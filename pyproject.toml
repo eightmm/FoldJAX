@@ -1,0 +1,173 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foldjax"
+version = "0.3.0"
+description = "One standalone JAX package for Boltz-2, Chai-1, OpenDDE, and Protenix inference"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+keywords = [
+    "biomolecular-structure-prediction",
+    "boltz-2",
+    "chai-1",
+    "jax",
+    "opendde",
+    "protein-structure",
+    "protenix",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# Union of the four vendored ports' runtime requirements. FoldJAX itself adds
+# no third-party dependency beyond what the vendored models already need.
+dependencies = [
+    # shared JAX runtime
+    "jax==0.10.1",
+    "numpy>=2.0",
+    "cuequivariance-jax==0.10.0",
+    "tokamax==0.0.12",
+    # boltz2
+    "chex>=0.1.86",
+    "einops>=0.8.0",
+    "jaxtyping>=0.2.34",
+    "pyyaml>=6.0.2",
+    "safetensors>=0.8.0",
+    "tqdm>=4.66.0",
+    # chai (gemmi range is chai's <0.8 ceiling intersected with protenix's >=0.6)
+    "gemmi>=0.7.5,<0.8",
+    "modelcif>=1.0",
+    "pyarrow>=18.0",
+    # chai + protenix/opendde preprocessing. AlphaFold 3 pins rdkit==2025.9.4
+    # exactly, so the floor stays at that release for the optional af3 extra.
+    "rdkit>=2025.9.4,<2026",
+    # opendde
+    "scipy>=1.9",
+    # Boltz-2 preprocessing. These are ordinary scientific libraries, none of
+    # which pulls torch; only the featurizer's *array* layer used to need it,
+    # and that now runs on NumPy. Keeping them in the base set is what lets the
+    # boltz2 backend predict from a torch-free environment.
+    "biopython>=1.83",
+    "chembl_structure_pipeline>=1.2",
+    "hydra-core==1.3.2",
+    "ihm>=1.0",
+    "mashumaro==3.14",
+    "numba>=0.61",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+cuda13 = [
+    "cuequivariance-ops-jax-cu13==0.9.0",
+    "jax[cuda13]==0.10.1",
+    # cuequivariance-jax's GPU layer-norm/triangle kernels import triton but do
+    # not declare it. It used to arrive via torch; now that prediction is
+    # torch-free it has to be asked for directly.
+    "triton>=3.0",
+]
+# Boltz-2 prediction no longer needs this: its featurizer runs on FoldJAX's
+# NumPy array layer. The extra remains so the vendored featurizer can be run on
+# real torch — which is how the parity test checks the NumPy layer — and so
+# upstream Boltz's Lightning DataModule stays available.
+boltz-preprocess = [
+    "pytorch-lightning>=2.5.0",
+    "torch>=2.2",
+]
+# One-time conversion of released torch checkpoints into the native JAX weight
+# files. Never needed on the prediction path.
+torch-bridge = [
+    "antipickle==0.2.0",
+    "torch>=2.2",
+]
+esm = ["fair-esm>=2.0.0", "torch>=2.2"]
+# Only needed to cross-check FoldJAX's own conformer reader against Chai's
+# adapters. Converting and predicting need neither.
+chai-crosscheck = ["antipickle==0.2.0", "beartype>=0.19", "torch>=2.2"]
+# Two extra backends that cannot be vendored: AlphaFold 3 is not redistributable
+# and openfold3-jax is an in-progress sibling port. Both stay external.
+#
+# AlphaFold 3 is deliberately *not* listed as a resolvable dependency. Upstream
+# pins `jax[cuda12]`, which cannot co-resolve with a CUDA 13 cluster, and the
+# right JAX plugin differs per site. Install it into the same environment for
+# your own hardware (see docs/alphafold3.md); the backend finds it by import or
+# via ALPHAFOLD3_SOURCE.
+openfold3 = ["openfold3-jax"]
+
+[project.urls]
+Homepage = "https://github.com/eightmm/foldjax"
+Issues = "https://github.com/eightmm/foldjax/issues"
+
+[project.scripts]
+foldjax = "foldjax.cli:entrypoint"
+# Native per-model entry points, preserved from the vendored ports so their own
+# docs and error messages stay accurate.
+boltz-jax-export-weights = "foldjax.models.boltz2.bridge.export_weights:main"
+boltz-jax-inspect-checkpoint = "foldjax.models.boltz2.bridge.torch_checkpoint:main"
+chai-jax = "foldjax.models.chai.cli.main:main"
+chai-jax-export-bundle = "foldjax.models.chai.cli.assets:bundle_main"
+chai-jax-export-component = "foldjax.models.chai.cli.export_component:main"
+chai-jax-export-conformers = "foldjax.models.chai.cli.assets:conformers_main"
+chai-jax-export-esm2 = "foldjax.models.chai.cli.export_esm2:main"
+chai-jax-inspect-component = "foldjax.models.chai.cli.inspect_component:main"
+opendde-jax-export-weights = "foldjax.models.opendde.bridge.export_weights:main"
+opendde-jax-predict = "foldjax.models.opendde.cli.predict:main"
+opendde-jax-verify-inputs = "foldjax.models.opendde.cli.verify_inputs:main"
+protenix-jax-export-weights = "foldjax.models.protenix.bridge.export_weights:main"
+protenix-jax-featurize-json = "foldjax.models.protenix.data.featurize_json:main"
+protenix-jax-predict = "foldjax.models.protenix.cli.predict:main"
+protenix-jax-static-infer = "foldjax.models.protenix.cli.static_infer:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Every vendored port ships its upstream's licence and attribution with it.
+"foldjax.models.opendde" = ["data/*.npz", "LICENSE", "NOTICE"]
+"foldjax.models.protenix" = ["data/*.npz", "LICENSE", "NOTICE"]
+"foldjax.models.boltz2" = ["LICENSE", "NOTICE"]
+"foldjax.models.chai" = ["LICENSE", "NOTICE"]
+
+[tool.uv.sources]
+openfold3-jax = { path = "../openfold3_jax", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+    # Used to assert the materialized Boltz job really parses as YAML.
+    "pyyaml>=6.0.2",
+    "ruff>=0.6.0",
+    # The vendored Boltz-2 suite compares against an einx reference.
+    "einx>=0.4.3",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+# Vendored verbatim from upstream Boltz (MIT); keep upstream style.
+extend-exclude = ["src/foldjax/models/boltz2/data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Coverage is gated on the FoldJAX orchestration layer. The vendored ports keep
+# their own suites under tests/models/ but are not held to that gate, because
+# each was ported against upstream torch parity rather than line coverage.
+addopts = "--cov=foldjax --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    "slow: end-to-end / checkpoint-heavy tests",
+    "official_parity: requires official model assets or an upstream checkout",
+]
+
+[tool.coverage.run]
+omit = ["*/foldjax/models/*"]

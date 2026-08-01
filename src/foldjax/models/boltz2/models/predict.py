@@ -1,0 +1,261 @@
+"""Single Boltz2.forward-equivalent JAX inference wrapper.
+
+Mirrors ``boltz.model.models.boltz2.Boltz2.forward`` (trunk -> structure
+sampling -> distogram -> (bfactor) -> confidence -> (affinity)) and returns
+ONE result dict. The individual head functions are reused unchanged so the
+wrapper does not alter numerics.
+
+Key mapping (foldjax.models.boltz2 key -> Boltz2.forward key):
+    sample_atom_coords -> sample_atom_coords  (structure sampler)
+    pdistogram         -> pdistogram          (distogram head)
+    pbfactor           -> pbfactor            (bfactor head, optional)
+    plddt/pae/pde/ptm/iptm/complex_*/... -> confidence_module outputs
+    affinity_*         -> affinity_module outputs (only if affinity_params given)
+
+Training-only branches and miniformer are outside this inference wrapper. The
+template path and the complete two-member affinity ensemble are supported; the
+``s``/``z`` trunk tensors are kept internal.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+import jax
+import jax.numpy as jnp
+
+from foldjax.models.boltz2.models.heads.affinity import affinity_module_forward
+from foldjax.models.boltz2.models.heads.bfactor import bfactor_forward
+from foldjax.models.boltz2.models.heads.confidence import confidence_module_forward
+from foldjax.models.boltz2.models.heads.distogram import distogram_forward
+from foldjax.models.boltz2.models.trunk_blocks.input_embedder import (
+    input_embedder_forward,
+)
+from foldjax.models.boltz2.models.trunk_blocks.trunk import (
+    _cast_float_feats,
+    _cast_params,
+    boltz2_sample_forward,
+    boltz2_trunk_forward,
+)
+
+Params = Mapping[str, object]
+
+
+def boltz2_predict(
+    params: Params,
+    feats: Mapping[str, jnp.ndarray],
+    key: jnp.ndarray,
+    *,
+    recycling_steps: int = 3,
+    num_sampling_steps: int = 200,
+    augmentation: bool = True,
+    steering_args: Mapping[str, object] | None = None,
+    run_confidence: bool = True,
+    run_distogram: bool = True,
+    run_bfactor: bool = False,
+    affinity_params: Params | None = None,
+    affinity_mw_correction: bool = False,
+    eps: float = 1e-5,
+    subsample_msa: bool = True,
+    num_subsampled_msa: int = 1024,
+    **sample_kwargs: object,
+) -> dict[str, object]:
+    """Run the full Boltz-2 inference graph and return one result dict.
+
+    Computes the deterministic trunk once, then reuses it for structure sampling
+    and downstream heads. Head numerics are identical to calling each head
+    function directly with the same trunk/sample tensors.
+    """
+    multiplicity = int(sample_kwargs.pop("multiplicity", 1))
+    if affinity_params is None and "affinity" in params:
+        affinity_params = params["affinity"]
+    return_pair_chains_iptm = bool(
+        sample_kwargs.pop("return_pair_chains_iptm", True)
+    )
+    confidence_sequentially = bool(
+        sample_kwargs.pop("confidence_sequentially", False)
+    )
+    recompute_nonpolymer_frames = bool(
+        sample_kwargs.pop("recompute_nonpolymer_frames", True)
+    )
+    # Decided by the caller from concrete features: under jit the template mask
+    # is a tracer, so the trunk cannot make this call itself.
+    use_template = sample_kwargs.pop("use_template", None)
+    trunk_use_scan = sample_kwargs.get(
+        "trunk_use_scan", sample_kwargs.get("use_scan", True)
+    )
+    compute_dtype = jnp.dtype(sample_kwargs.get("compute_dtype", jnp.float32))
+    trunk_params = params["trunk"]
+    trunk_feats = feats
+    if compute_dtype != jnp.float32:
+        # boltz2_sample_forward applies this mixed-precision policy when it
+        # owns the trunk calculation.  The full predict wrapper computes the
+        # trunk separately for reuse by the heads, so it must apply the same
+        # casts here rather than handing an already-fp32 trunk to the sampler.
+        trunk_params = _cast_params(trunk_params, compute_dtype)
+        trunk_feats = _cast_float_feats(feats, compute_dtype)
+
+    trunk = boltz2_trunk_forward(
+        trunk_params,
+        trunk_feats,
+        recycling_steps=recycling_steps,
+        eps=eps,
+        use_scan=bool(trunk_use_scan),
+        chunk_size=int(sample_kwargs.get("chunk_size", 128)),
+        triangle_attention_chunk=sample_kwargs.get("triangle_attention_chunk"),
+        triangle_attention_q_chunk=sample_kwargs.get("triangle_attention_q_chunk"),
+        transition_hidden_chunk=sample_kwargs.get("transition_hidden_chunk"),
+        matmul_precision=str(sample_kwargs.get("matmul_precision", "highest")),
+        attention_backend=str(sample_kwargs.get("attention_backend", "xla")),
+        triangle_backend=str(sample_kwargs.get("triangle_backend", "cueq")),
+        glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
+        subsample_msa=subsample_msa,
+        num_subsampled_msa=num_subsampled_msa,
+        use_template=use_template,
+    )
+    s_inputs, s, z = trunk["s_inputs"], trunk["s"], trunk["z"]
+
+    sample_out = boltz2_sample_forward(
+        params,
+        feats,
+        key,
+        recycling_steps=recycling_steps,
+        num_sampling_steps=num_sampling_steps,
+        augmentation=augmentation,
+        steering_args=steering_args,
+        multiplicity=multiplicity,
+        eps=eps,
+        trunk=trunk,
+        **sample_kwargs,
+    )
+    sample_atom_coords = sample_out["sample_atom_coords"]
+
+    out: dict[str, object] = {"sample_atom_coords": sample_atom_coords}
+
+    pdistogram = None
+    if run_distogram or run_confidence:
+        pdistogram = distogram_forward(params, z)
+        if run_distogram:
+            out["pdistogram"] = pdistogram
+
+    if run_bfactor:
+        out["pbfactor"] = bfactor_forward(params, s)
+
+    if run_confidence:
+        # Boltz2.forward feeds the first distogram's logits: pdistogram[:,:,:,0].
+        pred_distogram_logits = pdistogram[:, :, :, 0]
+        confidence_kwargs = dict(
+            eps=eps,
+            use_scan=bool(sample_kwargs.get("use_scan", True)),
+            chunk_size=int(sample_kwargs.get("chunk_size", 128)),
+            triangle_attention_chunk=sample_kwargs.get("triangle_attention_chunk"),
+            triangle_attention_q_chunk=sample_kwargs.get("triangle_attention_q_chunk"),
+            transition_hidden_chunk=sample_kwargs.get("transition_hidden_chunk"),
+            matmul_precision=str(sample_kwargs.get("matmul_precision", "highest")),
+            attention_backend=str(sample_kwargs.get("attention_backend", "xla")),
+            triangle_backend=str(sample_kwargs.get("triangle_backend", "cueq")),
+            glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
+            return_pair_chains_iptm=return_pair_chains_iptm,
+            recompute_nonpolymer_frames=recompute_nonpolymer_frames,
+        )
+
+        def confidence_call(x_pred: jnp.ndarray, conf_multiplicity: int):
+            return confidence_module_forward(
+                params["confidence"],
+                s_inputs=s_inputs,
+                s=s,
+                z=z,
+                x_pred=x_pred,
+                feats=feats,
+                pred_distogram_logits=pred_distogram_logits,
+                multiplicity=conf_multiplicity,
+                **confidence_kwargs,
+            )
+
+        if confidence_sequentially and multiplicity > 1:
+            # Match upstream production inference: keep diffusion samples
+            # parallel, but process the O(N^2) confidence stack one sample at
+            # a time. lax.map preserves full JIT compatibility without the
+            # multiplicity-sized pair activation peak.
+            conf = jax.lax.map(
+                lambda coords: confidence_call(coords[None], 1),
+                sample_atom_coords,
+            )
+            conf = jax.tree.map(lambda value: jnp.squeeze(value, axis=1), conf)
+        else:
+            conf = confidence_call(sample_atom_coords, multiplicity)
+        out.update(conf)
+
+    if affinity_params is not None and "modules" in affinity_params:
+        pad_mask = feats["token_pad_mask"][0].astype(z.dtype)
+        rec_mask = (feats["mol_type"][0] == 0).astype(z.dtype) * pad_mask
+        lig_mask = (feats["affinity_token_mask"][0] != 0).astype(z.dtype) * pad_mask
+        cross_pair_mask = (
+            lig_mask[:, None] * rec_mask[None, :]
+            + rec_mask[:, None] * lig_mask[None, :]
+            + lig_mask[:, None] * lig_mask[None, :]
+        )
+        z_affinity = z * cross_pair_mask[None, :, :, None]
+        if multiplicity > 1:
+            if "iptm" not in out:
+                raise ValueError(
+                    "multi-sample affinity requires confidence output to select "
+                    "the best ipTM sample"
+                )
+            best_idx = jnp.argmax(out["iptm"])
+        else:
+            best_idx = jnp.asarray(0, dtype=jnp.int32)
+        coords_affinity = jnp.take(sample_atom_coords, best_idx, axis=0)[None, None]
+        affinity_s_inputs = input_embedder_forward(
+            params["trunk"]["input_embedder"],
+            feats,
+            eps=eps,
+            attention_backend=str(sample_kwargs.get("attention_backend", "xla")),
+            affinity=True,
+        )
+        module_outputs = [
+            affinity_module_forward(
+                module_params,
+                s_inputs=affinity_s_inputs,
+                z=z_affinity,
+                x_pred=coords_affinity,
+                feats=feats,
+                multiplicity=1,
+                eps=eps,
+            )
+            for module_params in affinity_params["modules"]
+        ]
+        values = [module_out["affinity_pred_value"] for module_out in module_outputs]
+        probabilities = [
+            jax.nn.sigmoid(module_out["affinity_logits_binary"])
+            for module_out in module_outputs
+        ]
+        affinity_value = sum(values) / len(values)
+        if affinity_mw_correction:
+            affinity_value = (
+                1.03525938 * affinity_value
+                - 0.59992683 * feats["affinity_mw"][0] ** 0.3
+                + 2.83288489
+            )
+        out["affinity_pred_value"] = affinity_value
+        out["affinity_probability_binary"] = sum(probabilities) / len(probabilities)
+        for index, (value, probability) in enumerate(
+            zip(values, probabilities, strict=True), start=1
+        ):
+            out[f"affinity_pred_value{index}"] = value
+            out[f"affinity_probability_binary{index}"] = probability
+    elif affinity_params is not None:
+        # Backward compatibility for native bundles exported before ensemble
+        # support. New exports always use the complete ``modules`` structure.
+        aff = affinity_module_forward(
+            affinity_params,
+            s_inputs=s_inputs,
+            z=z,
+            x_pred=sample_atom_coords,
+            feats=feats,
+            multiplicity=multiplicity,
+            eps=eps,
+        )
+        out.update(aff)
+
+    return out

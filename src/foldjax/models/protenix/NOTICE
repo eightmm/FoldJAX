@@ -1,0 +1,12 @@
+Protenix-JAX
+Copyright 2026 Protenix-JAX contributors
+
+This product includes software derived from Protenix:
+https://github.com/bytedance/Protenix
+
+Protenix is Copyright 2024 ByteDance and/or its affiliates and is licensed
+under the Apache License, Version 2.0.
+
+Protenix-JAX is an independent community port and is not an official ByteDance
+or Protenix project. Protenix model weights are not distributed with this
+software and may be subject to separate upstream terms.

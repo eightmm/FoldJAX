@@ -1,0 +1,310 @@
+"""Triangle pair-update blocks for the Protenix JAX port."""
+
+from __future__ import annotations
+
+import os
+from typing import Literal, NamedTuple
+
+import jax
+import jax.numpy as jnp
+
+from foldjax.models.protenix.models.primitives.attention import AttentionParams
+from foldjax.models.protenix.models.primitives.primitives import (
+    LayerNormParams,
+    LinearParams,
+    layer_norm,
+    linear,
+    sigmoid,
+)
+
+
+def _triangle_attention_backend() -> str:
+    """Return the configured triangle-attention backend."""
+    backend = os.environ.get("PROTENIX_TRIANGLE_BACKEND", "cueq_jit").lower()
+    if backend not in {"xla", "xla_jit", "tokamax", "cueq", "cueq_jit"}:
+        raise ValueError(f"unsupported triangle attention backend: {backend!r}")
+    return backend
+
+TriangleDirection = Literal["outgoing", "incoming"]
+
+
+class TriangleMultiplicationParams(NamedTuple):
+    """Parameters for ``TriangleMultiplicativeUpdate``."""
+
+    layer_norm_in: LayerNormParams
+    layer_norm_out: LayerNormParams
+    linear_a_p: LinearParams
+    linear_a_g: LinearParams
+    linear_b_p: LinearParams
+    linear_b_g: LinearParams
+    linear_z: LinearParams
+    linear_g: LinearParams
+
+
+class TriangleAttentionParams(NamedTuple):
+    """Parameters for Protenix ``TriangleAttention``."""
+
+    layer_norm: LayerNormParams
+    linear: LinearParams
+    attention: AttentionParams
+
+
+def triangle_multiplication(
+    z: jnp.ndarray,
+    mask: jnp.ndarray | None,
+    params: TriangleMultiplicationParams,
+    direction: TriangleDirection,
+    *,
+    chunk_size: int | None = None,
+    use_jit: bool = False,
+) -> jnp.ndarray:
+    """Apply Protenix triangle multiplication without eval in-place mutation."""
+
+    if use_jit:
+        return _compiled_triangle_multiplication(
+            z,
+            mask,
+            params,
+            direction,
+            chunk_size=chunk_size,
+            use_jit=False,
+        )
+    if mask is None:
+        mask = jnp.ones(z.shape[:-1], dtype=z.dtype)
+    backend = os.environ.get(
+        "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
+    ).lower()
+    cueq_supported = (
+        params.linear_a_p.weight.shape[0] == z.shape[-1]
+        and z.shape[-1] % 32 == 0
+    )
+    if backend == "cueq" and cueq_supported:
+        from foldjax.models.protenix.models.triangle.triangle_cueq import (
+            cueq_triangle_multiplication,
+        )
+
+        return cueq_triangle_multiplication(z, mask, params, direction)
+    if backend not in {"cueq", "xla"}:
+        raise ValueError(f"unsupported triangle multiplication backend: {backend!r}")
+    mask = mask.astype(z.dtype)[..., None]
+
+    z_norm = layer_norm(z, params.layer_norm_in)
+    a = mask * sigmoid(linear(z_norm, params.linear_a_g))
+    a = a * linear(z_norm, params.linear_a_p)
+    b = mask * sigmoid(linear(z_norm, params.linear_b_g))
+    b = b * linear(z_norm, params.linear_b_p)
+
+    out = _triangle_contract(
+        a.astype(jnp.float32),
+        b.astype(jnp.float32),
+        direction,
+        chunk_size,
+    )
+    out = out.astype(z.dtype)
+    out = layer_norm(out, params.layer_norm_out)
+    out = linear(out, params.linear_z)
+    return out * sigmoid(linear(z_norm, params.linear_g))
+
+
+_compiled_triangle_multiplication = jax.jit(
+    triangle_multiplication,
+    static_argnames=("direction", "chunk_size", "use_jit"),
+)
+
+
+def _triangle_contract(
+    a: jnp.ndarray,
+    b: jnp.ndarray,
+    direction: TriangleDirection,
+    chunk_size: int | None,
+) -> jnp.ndarray:
+    if chunk_size is None or chunk_size <= 0:
+        return _triangle_contract_block(a, b, direction)
+
+    n = a.shape[-3]
+    if chunk_size >= n:
+        return _triangle_contract_block(a, b, direction)
+
+    out = jnp.zeros(a.shape[:-3] + (n, n, a.shape[-1]), dtype=a.dtype)
+    for start in range(0, n, chunk_size):
+        size = min(chunk_size, n - start)
+        axis = -3 if direction == "outgoing" else -2
+        a_block = jax.lax.dynamic_slice_in_dim(a, start, size, axis=axis)
+        block = _triangle_contract_block(a_block, b, direction)
+        out = out.at[..., start : start + size, :, :].set(block)
+    return out
+
+
+def _triangle_contract_block(
+    a: jnp.ndarray,
+    b: jnp.ndarray,
+    direction: TriangleDirection,
+) -> jnp.ndarray:
+    # NOTE: writing this as permute_final_dims+matmul (to mirror torch's GEMM)
+    # is a no-op in JAX — XLA lowers both einsum and matmul to the same
+    # dot_general, so the reduction order is XLA's choice regardless. The
+    # einsum form is kept for clarity.
+    if direction == "outgoing":
+        return jnp.einsum("...ikd,...jkd->...ijd", a, b)
+    if direction == "incoming":
+        return jnp.einsum("...kid,...kjd->...ijd", a, b)
+    raise ValueError(f"unsupported triangle direction: {direction!r}")
+
+
+def triangle_attention(
+    x: jnp.ndarray,
+    mask: jnp.ndarray | None,
+    params: TriangleAttentionParams,
+    *,
+    num_heads: int,
+    starting: bool = True,
+    inf: float = 1e9,
+    q_chunk_size: int | None = None,
+    attention_backend: str | None = None,
+) -> jnp.ndarray:
+    """Apply Protenix triangle attention in the dense XLA path."""
+
+    backend = (
+        _triangle_attention_backend()
+        if attention_backend is None
+        else attention_backend
+    )
+    if backend in {"xla_jit", "cueq_jit"}:
+        return _compiled_triangle_attention(
+            x,
+            mask,
+            params,
+            num_heads=num_heads,
+            starting=starting,
+            inf=inf,
+            q_chunk_size=q_chunk_size,
+            attention_backend=backend.removesuffix("_jit"),
+        )
+    if backend not in {"xla", "tokamax", "cueq"}:
+        raise ValueError(f"unsupported triangle attention backend: {backend!r}")
+    if mask is None:
+        mask = jnp.ones(x.shape[:-1], dtype=x.dtype)
+    if not starting:
+        x = jnp.swapaxes(x, -2, -3)
+        mask = jnp.swapaxes(mask, -1, -2)
+
+    x = layer_norm(x, params.layer_norm)
+    mask_bias = inf * (mask.astype(jnp.float32) - 1.0)
+    mask_bias = mask_bias[..., :, None, None, :]
+    triangle_bias = linear(x, params.linear)
+    triangle_bias = jnp.moveaxis(triangle_bias, -1, -3)
+    triangle_bias = jnp.expand_dims(triangle_bias, axis=-4)
+
+    out = _triangle_attention_dense(
+        x,
+        params,
+        num_heads,
+        mask_bias,
+        triangle_bias,
+        q_chunk_size,
+        backend,
+    )
+    if not starting:
+        out = jnp.swapaxes(out, -2, -3)
+    return out
+
+
+_compiled_triangle_attention = jax.jit(
+    triangle_attention,
+    static_argnames=(
+        "num_heads",
+        "starting",
+        "inf",
+        "q_chunk_size",
+        "attention_backend",
+    ),
+)
+
+
+def _triangle_attention_dense(
+    x: jnp.ndarray,
+    params: TriangleAttentionParams,
+    num_heads: int,
+    mask_bias: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+    q_chunk_size: int | None,
+    attention_backend: str,
+) -> jnp.ndarray:
+    q = _project_heads(x, params.attention.linear_q, num_heads)
+    k = _project_heads(x, params.attention.linear_k, num_heads)
+    v = _project_heads(x, params.attention.linear_v, num_heads)
+    scale = float(q.shape[-1] ** -0.5)
+
+    if attention_backend == "cueq" and q.shape[-2] > 16:
+        from foldjax.models.protenix.models.triangle.triangle_cueq import (
+            cueq_attention_core,
+        )
+
+        out = cueq_attention_core(
+            q,
+            k,
+            v,
+            triangle_bias,
+            mask_bias,
+            scale=scale,
+        )
+    else:
+        q = q * jnp.asarray(scale, dtype=q.dtype)
+
+    if attention_backend == "tokamax":
+        # q/k/v are [..., N_row, h, j, d], triangle_bias [..., 1, h, N, N],
+        # mask_bias [..., N, 1, 1, N] — already the layout tokamax expects; q is
+        # pre-scaled (scale=1.0 inside). Returns [..., h, i, d] like the block.
+        from foldjax.models.protenix.models.triangle.triangle_attention_tokamax import (
+            tokamax_attention_core,
+        )
+
+        out = tokamax_attention_core(q, k, v, triangle_bias, mask_bias)
+    elif attention_backend == "cueq" and q.shape[-2] > 16:
+        pass
+    elif q_chunk_size is None or q_chunk_size <= 0 or q_chunk_size >= q.shape[-2]:
+        out = _triangle_attention_block(q, k, v, mask_bias, triangle_bias)
+    else:
+        out = jnp.zeros(q.shape, dtype=q.dtype)
+        for start in range(0, q.shape[-2], q_chunk_size):
+            size = min(q_chunk_size, q.shape[-2] - start)
+            q_block = jax.lax.dynamic_slice_in_dim(q, start, size, axis=-2)
+            tri_block = jax.lax.dynamic_slice_in_dim(
+                triangle_bias,
+                start,
+                size,
+                axis=-2,
+            )
+            block = _triangle_attention_block(q_block, k, v, mask_bias, tri_block)
+            out = out.at[..., start : start + size, :].set(block)
+
+    out = jnp.swapaxes(out, -2, -3)
+    if params.attention.linear_g is not None:
+        gate = sigmoid(linear(x, params.attention.linear_g))
+        gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
+        out = out * gate
+    out = out.reshape(out.shape[:-2] + (-1,))
+    return linear(out, params.attention.linear_o)
+
+
+def _triangle_attention_block(
+    q: jnp.ndarray,
+    k: jnp.ndarray,
+    v: jnp.ndarray,
+    mask_bias: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+) -> jnp.ndarray:
+    logits = jnp.einsum("...hid,...hjd->...hij", q, k)
+    logits = logits + mask_bias + triangle_bias
+    probs = jax.nn.softmax(logits.astype(jnp.float32), axis=-1).astype(v.dtype)
+    return jnp.einsum("...hij,...hjd->...hid", probs, v)
+
+
+def _project_heads(
+    x: jnp.ndarray,
+    params: LinearParams,
+    num_heads: int,
+) -> jnp.ndarray:
+    y = linear(x, params)
+    y = y.reshape(y.shape[:-1] + (num_heads, -1))
+    return jnp.swapaxes(y, -2, -3)

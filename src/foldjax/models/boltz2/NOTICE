@@ -1,0 +1,27 @@
+boltz2-jax
+==========
+
+This product includes software adapted from the Boltz project.
+
+Boltz
+-----
+Copyright (c) 2024 Jeremy Wohlwend, Gabriele Corso, Saro Passaro, and the
+Boltz contributors.
+Licensed under the MIT License.
+Source: https://github.com/jwohlwend/boltz
+
+The following files under src/boltz_jax/data/ are adapted (with import-path
+changes and protein-path pruning) from boltz/src/boltz/data/:
+  types.py, const.py, pad.py, mol.py,
+  tokenize/tokenizer.py, tokenize/boltz2.py,
+  feature/featurizerv2.py, module/inferencev2.py,
+  parse/{yaml,fasta,schema,mmcif,pdb}.py, preprocess.py (extracted from main.py),
+  _external.py (functions adapted from boltz/src/boltz/model/).
+
+The Boltz-2 model weights and molecule database referenced by this project are
+distributed by the Boltz community (https://huggingface.co/boltz-community)
+under the MIT License.
+
+Model references:
+  Boltz-2 technical report: https://doi.org/10.1101/2025.06.14.659707
+  Boltz-1 technical report: https://doi.org/10.1101/2024.11.19.624167

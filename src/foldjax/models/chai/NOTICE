@@ -1,0 +1,12 @@
+Chai-1 JAX port
+Copyright 2026 FoldJAX contributors
+
+This product includes software derived from chai-lab:
+https://github.com/chaidiscovery/chai-lab
+
+chai-lab is Copyright 2024 Chai Discovery and is licensed under the Apache
+License, Version 2.0. A copy is in LICENSE beside this file.
+
+This is an independent community port and is not an official Chai Discovery
+project. Chai-1 model weights are not distributed with this software and may be
+subject to separate upstream terms.

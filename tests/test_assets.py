@@ -1,0 +1,201 @@
+"""The weight store: fetch, verify, convert, resolve.
+
+The network and the multi-GB conversions are not exercised here — the download
+loop is driven against a local file:// URL so verification, resume, and failure
+behaviour are all real, and the registry itself is checked for the mistakes that
+would only surface after someone waited on a 2.6 GB download.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from foldjax import assets, paths
+
+
+def test_home_follows_its_environment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "explicit"))
+    assert paths.foldjax_home() == tmp_path / "explicit"
+
+    monkeypatch.delenv("FOLDJAX_HOME")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert paths.foldjax_home() == tmp_path / "xdg" / "foldjax"
+
+    monkeypatch.delenv("XDG_CACHE_HOME")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    assert paths.foldjax_home() == tmp_path / "home" / ".cache" / "foldjax"
+
+
+def test_every_registered_model_is_a_real_backend() -> None:
+    for name in assets.available():
+        assert name in foldjax_models(), name
+
+
+def foldjax_models() -> tuple[str, ...]:
+    from foldjax.registry import available_models
+
+    return available_models()
+
+
+def test_registry_declares_what_each_model_needs() -> None:
+    for name in assets.available():
+        spec = assets.REGISTRY[name]
+        # AlphaFold 3 is the one model with nothing to download: DeepMind
+        # releases its parameters only to applicants who accept their terms, so
+        # the registry knows where they belong but never fetches them.
+        if name != "alphafold3":
+            assert spec.downloads, name
+        assert spec.requires, name
+        assert spec.licence and spec.source, name
+        # `native` is what --weights points at, so it has to be inside the
+        # model's weight directory rather than an absolute path.
+        assert not Path(spec.native).is_absolute(), name
+        for url in (item.url for item in spec.downloads):
+            assert url.startswith("https://"), (name, url)
+
+
+def test_published_hashes_are_well_formed() -> None:
+    for name in assets.available():
+        for item in assets.REGISTRY[name].downloads:
+            if item.sha256 is None:
+                continue
+            assert len(item.sha256) == 64, (name, item.name)
+            assert set(item.sha256) <= set("0123456789abcdef"), (name, item.name)
+
+
+def test_chai_resolves_to_an_asset_root_not_a_single_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Chai takes a directory; returning one file would fail only at inference."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("chai")
+    (root / "models" / "chai1").mkdir(parents=True)
+    (root / "conformers.npz").touch()
+
+    assert assets.resolve_weights("chai") == root
+    assert assets.assets_for("chai").ready()
+
+
+def test_a_partially_converted_model_is_not_reported_ready(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("chai")
+    (root / "models" / "chai1").mkdir(parents=True)  # conformers still missing
+
+    assert not assets.assets_for("chai").ready()
+    with pytest.raises(FileNotFoundError, match="foldjax weights fetch"):
+        assets.resolve_weights("chai")
+
+
+def test_boltz_is_not_ready_without_its_molecule_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Boltz reads CCD pickles from a directory; weights alone cannot predict."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("boltz2")
+    root.mkdir(parents=True)
+    (root / "boltz2_conf.safetensors").touch()
+
+    assert not assets.assets_for("boltz2").ready()
+    (root / "mols").mkdir()
+    assert assets.assets_for("boltz2").ready()
+
+
+def test_shared_assets_are_not_duplicated_per_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Protenix and OpenDDE read the same CCD files; one copy, not two."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    shared = [
+        item
+        for item in assets.REGISTRY["protenix"].downloads
+        if item.name == "components.cif"
+    ]
+    assert shared, "components.cif is no longer registered"
+    item = shared[0]
+    assert item.shared
+    shared_path = paths.assets_dir() / item.name
+    assert item.target("protenix") == shared_path
+    assert item.target("opendde") == shared_path
+
+
+def _serve(tmp_path: Path, payload: bytes) -> str:
+    source = tmp_path / "published.bin"
+    source.write_bytes(payload)
+    return source.resolve().as_uri()
+
+
+def test_download_verifies_the_published_hash(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    payload = b"native weights would go here" * 64
+    item = assets.Download(
+        name="thing.bin",
+        url=_serve(tmp_path, payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    path = assets.download(item, "protenix")
+    assert path.read_bytes() == payload
+
+    # A second call is a no-op rather than a re-download.
+    stamp = path.stat().st_mtime_ns
+    assert assets.download(item, "protenix").stat().st_mtime_ns == stamp
+
+
+def test_a_corrupted_download_fails_loudly_and_leaves_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    item = assets.Download(
+        name="thing.bin",
+        url=_serve(tmp_path, b"not what was published"),
+        sha256="0" * 64,
+    )
+    with pytest.raises(ValueError, match="failed verification"):
+        assets.download(item, "protenix")
+    assert not (paths.downloads_dir("protenix") / "thing.bin").exists()
+    assert not list(paths.downloads_dir("protenix").glob("*.part"))
+
+
+def test_a_truncated_file_is_re_downloaded(tmp_path: Path, monkeypatch) -> None:
+    """A size mismatch means the last attempt died mid-write."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    payload = b"complete payload"
+    item = assets.Download(
+        name="thing.bin", url=_serve(tmp_path, payload), size=len(payload)
+    )
+    target = paths.downloads_dir("protenix") / "thing.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(payload[:4])
+
+    assert assets.download(item, "protenix").read_bytes() == payload
+
+
+def test_status_reports_progress_per_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    rows = {row["model"]: row for row in assets.status()}
+    assert set(rows) == set(assets.available())
+    assert all(row["converted"] is False for row in rows.values())
+    assert all(row["downloaded"].startswith("0/") for row in rows.values())
+
+
+def test_an_unmanaged_model_says_so() -> None:
+    with pytest.raises(ValueError, match="has no managed assets"):
+        assets.assets_for("openfold3")
+
+
+def test_alphafold3_is_managed_but_never_downloaded() -> None:
+    """Its parameters are not redistributable, so the store only locates them.
+
+    The entry still has to declare what a ready installation looks like, or
+    `--model alphafold3` would fall back to an unhelpful "no managed assets".
+    """
+    spec = assets.assets_for("alphafold3")
+    assert spec.downloads == ()
+    assert spec.requires == ("af3.bin",)
+    assert spec.native == "."
+    assert "redistributable" in spec.licence

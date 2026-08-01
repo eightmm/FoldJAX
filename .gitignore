@@ -1,0 +1,22 @@
+.venv/
+.cache/
+.pytest_cache/
+.coverage
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+outputs/
+*.ckpt
+*.safetensors
+*.log
+.env
+.env.*
+
+# agent session state, not part of the project
+.omc/
+.oms/
+foldjax-outputs/
+_archive/

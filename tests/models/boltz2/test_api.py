@@ -1,0 +1,239 @@
+from pathlib import Path
+
+import jax.numpy as jnp
+import numpy as np
+import pytest
+
+import foldjax.models.boltz2.api as api
+
+
+def _fake_features(*, affinity: bool) -> dict[str, np.ndarray]:
+    return {
+        "atom_pad_mask": np.ones((1, 3), dtype=np.float32),
+        "token_pad_mask": np.ones((1, 2), dtype=np.float32),
+        "mol_type": np.asarray([[0, 3]], dtype=np.int32),
+        "affinity_token_mask": np.asarray(
+            [[0.0, 1.0 if affinity else 0.0]], dtype=np.float32
+        ),
+    }
+
+
+def test_featurize_forwards_all_msa_server_controls(tmp_path, monkeypatch) -> None:
+    seen = {}
+
+    def fake_featurize_yaml(*args, **kwargs):
+        seen.update(kwargs)
+        structures = tmp_path / "structures"
+        structures.mkdir()
+        (structures / "job.npz").touch()
+        return _fake_features(affinity=False), None, structures
+
+    monkeypatch.setattr(api, "featurize_yaml", fake_featurize_yaml)
+
+    api.featurize(
+        input=tmp_path / "job.yaml",
+        mols=tmp_path,
+        out_dir=tmp_path / "out",
+        use_msa_server=True,
+        msa_server_url="https://msa.example.test",
+        msa_pairing_strategy="complete",
+        msa_server_username="user",
+        msa_server_password="password",
+        msa_api_key_header=None,
+        msa_api_key_value=None,
+    )
+
+    assert seen["use_msa_server"] is True
+    assert seen["msa_server_url"] == "https://msa.example.test"
+    assert seen["msa_pairing_strategy"] == "complete"
+    assert seen["msa_server_username"] == "user"
+    assert seen["msa_server_password"] == "password"
+
+
+def test_featurize_reads_msa_api_key_from_environment(tmp_path, monkeypatch) -> None:
+    seen = {}
+
+    def fake_featurize_yaml(*args, **kwargs):
+        seen.update(kwargs)
+        structures = tmp_path / "structures"
+        structures.mkdir()
+        (structures / "job.npz").touch()
+        return _fake_features(affinity=False), None, structures
+
+    monkeypatch.setattr(api, "featurize_yaml", fake_featurize_yaml)
+    monkeypatch.setenv("MSA_API_KEY_VALUE", "env-key")
+
+    api.featurize(
+        input=tmp_path / "job.yaml",
+        mols=tmp_path,
+        out_dir=tmp_path / "out",
+        use_msa_server=True,
+    )
+
+    assert seen["msa_server_username"] is None
+    assert seen["msa_server_password"] is None
+    assert seen["msa_api_key_value"] == "env-key"
+
+
+def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None:
+    confidence_weights = tmp_path / "boltz2_conf"
+    affinity_weights = tmp_path / "boltz2_aff"
+    affinity_weights.with_suffix(".npz").touch()
+    loaded = []
+    seen = []
+
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: (_fake_features(affinity=True), "job", tmp_path),
+    )
+
+    def fake_load_params(path: Path):
+        loaded.append(Path(path))
+        if Path(path) == affinity_weights:
+            return {
+                "trunk": {"stage": jnp.asarray([2.0])},
+                "affinity": {"modules": [{"head": jnp.asarray([1.0])}]},
+            }
+        return {"trunk": {}}
+
+    def fake_predict(params, feats, key, **kwargs):
+        controls = {
+            key: kwargs[key]
+            for key in (
+                "steering_args",
+                "multiplicity",
+                "attention_backend",
+                "triangle_backend",
+                "glu_backend",
+            )
+        }
+        second_stage = "affinity" in params
+        seen.append((second_stage, controls))
+        if second_stage:
+            return {
+                "sample_atom_coords": jnp.zeros((5, 3, 3)),
+                "plddt": jnp.ones((5, 3)),
+                "affinity_pred_value": jnp.asarray([2.0]),
+            }
+        return {
+            "sample_atom_coords": jnp.zeros((2, 3, 3)),
+            "plddt": jnp.ones((2, 3)),
+            "iptm": jnp.asarray([0.1, 0.9]),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", fake_load_params
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+    monkeypatch.setattr(
+        api,
+        "_prepare_affinity_features",
+        lambda **kwargs: _fake_features(affinity=True),
+        raising=False,
+    )
+
+    out = api.predict(
+        seq=["ACD"],
+        weights=confidence_weights,
+        affinity_weights=affinity_weights,
+        mols=tmp_path,
+        out_dir=tmp_path,
+        steering_args={"fk_steering": False},
+        diffusion_samples=2,
+        attention_backend="xla",
+        triangle_backend="xla",
+        glu_backend="xla",
+    )
+
+    assert loaded == [confidence_weights, affinity_weights]
+    assert seen[0] == (False, {
+        "steering_args": {"fk_steering": False},
+        "multiplicity": 2,
+        "attention_backend": "xla",
+        "triangle_backend": "xla",
+        "glu_backend": "xla",
+    })
+    assert seen[1][0] is True
+    assert seen[1][1]["multiplicity"] == 5
+    np.testing.assert_array_equal(out["raw"]["affinity_pred_value"], [2.0])
+    assert out["coords"].shape == (2, 3, 3)
+    assert out["plddt"].shape == (2, 3)
+
+
+def test_api_rejects_affinity_job_without_native_affinity_weights(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: (_fake_features(affinity=True), "job", tmp_path),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+
+    with pytest.raises(FileNotFoundError, match="affinity weights"):
+        api.predict(
+            seq=["ACD"],
+            weights=tmp_path / "boltz2_conf",
+            mols=tmp_path,
+            out_dir=tmp_path,
+        )
+
+
+def test_bucket_api_crops_public_and_raw_outputs(tmp_path, monkeypatch) -> None:
+    feats = _fake_features(affinity=False)
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: (feats, "job", tmp_path),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        atoms = model_feats["atom_pad_mask"].shape[-1]
+        tokens = model_feats["token_pad_mask"].shape[-1]
+        samples = kwargs["multiplicity"]
+        return {
+            "sample_atom_coords": jnp.zeros((samples, atoms, 3)),
+            "plddt": jnp.ones((samples, tokens)),
+            "plddt_logits": jnp.ones((samples, tokens, 50)),
+            "pae": jnp.ones((samples, tokens, tokens)),
+            "pdistogram": jnp.ones((1, tokens, tokens, 1, 64)),
+            "iptm": jnp.ones((samples,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+
+    out = api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        bucket=True,
+        diffusion_samples=2,
+    )
+
+    assert out["coords"].shape == (2, 3, 3)
+    assert out["plddt"].shape == (2, 2)
+    assert out["raw"]["sample_atom_coords"].shape == (2, 3, 3)
+    assert out["raw"]["plddt_logits"].shape == (2, 2, 50)
+    assert out["raw"]["pae"].shape == (2, 2, 2)
+    assert out["raw"]["pdistogram"].shape == (1, 2, 2, 1, 64)
+
+
+def test_api_rejects_nonpositive_diffusion_samples(tmp_path) -> None:
+    with pytest.raises(ValueError, match="diffusion_samples"):
+        api.predict(
+            seq=["ACD"],
+            weights=tmp_path / "boltz2_conf",
+            mols=tmp_path,
+            diffusion_samples=0,
+        )

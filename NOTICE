@@ -1,0 +1,36 @@
+FoldJAX
+Copyright 2026 FoldJAX contributors
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product carries JAX inference ports of four published structure-prediction
+models. Each port lives under `src/foldjax/models/<name>/`, keeps its upstream
+module layout, and carries that upstream's own LICENSE and NOTICE beside it.
+None of them is an official project of the organisation that published the
+original, and no model weights are distributed with this software.
+
+  Boltz-2      https://github.com/jwohlwend/boltz
+               MIT, Copyright (c) 2024 Jeremy Wohlwend, Gabriele Corso,
+               Saro Passaro and contributors
+               -> src/foldjax/models/boltz2/{LICENSE,NOTICE}
+
+  Chai-1       https://github.com/chaidiscovery/chai-lab
+               Apache-2.0, Copyright 2024 Chai Discovery
+               -> src/foldjax/models/chai/{LICENSE,NOTICE}
+
+  OpenDDE      https://huggingface.co/aurekaresearch/OpenDDE
+               Apache-2.0
+               -> src/foldjax/models/opendde/{LICENSE,NOTICE}
+
+  Protenix     https://github.com/bytedance/Protenix
+               Apache-2.0, Copyright 2024 ByteDance and/or its affiliates
+               -> src/foldjax/models/protenix/{LICENSE,NOTICE}
+
+AlphaFold 3 (https://github.com/google-deepmind/alphafold3) is *not* carried
+here. FoldJAX drives an installation you provide, and its model parameters are
+released by Google DeepMind under terms that forbid redistribution. FoldJAX
+never downloads, converts, or redistributes them. See docs/alphafold3.md and
+the upstream WEIGHTS_TERMS_OF_USE.md.
+
+Model weights for every backend are subject to their publishers' own terms,
+which are separate from this software's licence.

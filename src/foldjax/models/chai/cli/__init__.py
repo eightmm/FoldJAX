@@ -1,0 +1,1 @@
+"""foldjax.models.chai subpackage."""
