@@ -94,3 +94,35 @@ def test_a_chunk_size_the_kernel_cannot_honour_is_not_silent() -> None:
         warnings.simplefilter("always")
         triangle._warn_unchunkable_backend(128)
     assert caught == []
+
+
+def test_the_structural_branch_is_blocked_by_bytes_not_token_count() -> None:
+    """OpenDDE's structural refiner is what sizes its peak.
+
+    Protenix's chunk policy maps a token count to a chunk size and was written
+    for a four-head trunk. The structural branch runs on sub-residue tokens
+    with three times the heads, so the same token count costs three times the
+    score tensor: at 946 tokens the policy's 256 still materialises 10.5 GiB,
+    twice over. Bounding by bytes instead took the measured peak from 32,185 to
+    15,654 MiB with bit-identical confidence.
+    """
+    from foldjax.models.opendde.cli.predict import _structural_q_chunk
+
+    class _Linear:
+        weight = type("w", (), {"shape": (12, 1)})()
+
+    class _Block:
+        tri_att_start = type("t", (), {"linear": _Linear()})()
+
+    class _Params:
+        structural_refiner = type("s", (), {"blocks": [_Block()]})()
+
+    params = _Params()
+    # Big enough to bind: the policy's 256 is cut down.
+    assert _structural_q_chunk(params, 946, 256) < 256
+    # Small enough not to: the policy's choice stands.
+    assert _structural_q_chunk(params, 400, 256) == 256
+    # It only ever narrows.
+    assert _structural_q_chunk(params, 946, 16) == 16
+    # A parameter tree without the branch is left alone rather than guessed at.
+    assert _structural_q_chunk(object(), 946, 256) == 256

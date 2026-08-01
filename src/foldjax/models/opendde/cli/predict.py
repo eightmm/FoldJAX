@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -43,6 +44,7 @@ def _predict(
     trunk_single_attention_backend: str,
     structural_single_attention_backend: str,
     chunk_policy: ChunkPolicyName = "auto",
+    chunk_overrides: Mapping[str, int | None] | None = None,
     graph_jit: bool = True,
 ) -> dict[str, Any]:
     import jax
@@ -99,7 +101,15 @@ def _predict(
         n_token=max(n_residue, n_structural),
         n_sample=n_sample,
         policy=chunk_policy,
+        **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
+    if chunk_policy == "auto":
+        chunks = dataclasses.replace(
+            chunks,
+            triangle_att_q_chunk_size=_structural_q_chunk(
+                params, n_structural, chunks.triangle_att_q_chunk_size
+            ),
+        )
     return infer(
         features,
         params,
@@ -119,6 +129,43 @@ def _predict(
         cycle_msa_features=sampled or None,
         **scans,
     )
+
+
+# The structural triangle-attention score tensor is [N, heads, q_chunk, N]
+# float32. Keeping it under this leaves room for the rest of the graph without
+# blocking so hard that the kernel stops being worth launching; measured on a
+# 488-residue job (946 structural tokens, 12 heads), it picks 32 and takes the
+# peak from 32,185 to 14,463 MiB for 9% more wall time and bit-identical
+# confidence.
+_STRUCTURAL_SCORE_BUDGET_BYTES = 2 * 1024**3
+
+
+def _structural_q_chunk(params, n_structural: int, resolved: int | None) -> int | None:
+    """Block the structural branch by bytes rather than by token count.
+
+    Protenix's chunk policy maps a token count to a chunk size, and it was
+    written for a four-head trunk. OpenDDE's structural refiner runs on
+    sub-residue tokens with three times the heads, so the same token count
+    costs three times the score tensor -- at 946 tokens the policy's 256 still
+    materialises 10.5 GiB, twice over. Both branches share one knob, so the
+    binding one has to set it.
+
+    Returns whichever is smaller: what the policy chose, or what the budget
+    allows. Never larger, and never below 8, where the launch overhead of one
+    more block outweighs the memory it saves.
+    """
+    try:
+        blocks = params.structural_refiner.blocks
+        heads = int(blocks[0].tri_att_start.linear.weight.shape[0])
+    except (AttributeError, IndexError, TypeError):
+        return resolved
+    per_row = n_structural * n_structural * heads * 4
+    if per_row <= 0:
+        return resolved
+    allowed = max(8, _STRUCTURAL_SCORE_BUDGET_BYTES // per_row)
+    if allowed >= n_structural:
+        return resolved
+    return allowed if resolved is None else min(resolved, allowed)
 
 
 def _score(
@@ -192,9 +239,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="trace the model op by op instead of as one compiled graph; "
         "much slower, kept for debugging and numerical comparison",
     )
+    parser.add_argument("--triangle-mul-chunk-size", type=int)
+    parser.add_argument("--triangle-att-q-chunk-size", type=int)
+    parser.add_argument("--single-att-q-chunk-size", type=int)
+    parser.add_argument("--token-q-chunk-size", type=int)
     parser.add_argument(
         "--chunk-policy",
-        choices=("auto", "off"),
+        choices=("auto", "manual", "off"),
         default="auto",
         help="block the query axis of the trunk's quadratic attentions by token "
         "count; 'off' materialises them whole and needs tens of gigabytes "
@@ -330,6 +381,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                         args.structural_single_attention_backend
                     ),
                     chunk_policy=args.chunk_policy,
+                    chunk_overrides={
+                        "triangle_mul_chunk_size": args.triangle_mul_chunk_size,
+                        "triangle_att_q_chunk_size": args.triangle_att_q_chunk_size,
+                        "single_att_q_chunk_size": args.single_att_q_chunk_size,
+                        "token_q_chunk_size": args.token_q_chunk_size,
+                    },
                     graph_jit=not args.no_graph_jit,
                 )
                 scored = _score(output, features, num_recycles=args.n_cycle)

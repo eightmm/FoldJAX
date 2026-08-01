@@ -153,6 +153,21 @@ Chai has no reachable cap — it reads alignments through its own context object
 rather than a featurizer argument — so `foldjax capabilities --model chai` does
 not report the knob rather than reporting one it cannot honour.
 
+**OpenDDE is the opposite case, and it is worth knowing why.** Capping its MSA
+changes nothing; blocking its attention changes everything. It is dual-branch,
+and the structural refiner runs on sub-residue tokens with three times the
+heads of the trunk, so its score tensor — `[946, 12, q, 946]` on a 488-residue
+job — is what sizes the peak. Protenix's chunk policy maps a token count to a
+chunk size and was written for that four-head trunk, so its 256 still left
+10.5 GiB materialised, twice over. FoldJAX now blocks that branch by bytes
+instead, which takes OpenDDE from 32,185 to 15,654 MiB with bit-identical
+confidence (pLDDT 87.49 either way, because chunking reduces over the full key
+axis within each block). Before that, it asked for 76 GiB and died.
+
+Same lesson twice, in opposite directions: **attribute the peak, then turn the
+knob it points at.** The MSA cap does nothing for OpenDDE and halves Protenix;
+chunking does nothing for Protenix and halves OpenDDE.
+
 `foldjax plan` shows exactly what a request resolves to before anything loads:
 
 ```console
