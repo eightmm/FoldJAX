@@ -1,10 +1,13 @@
 """Render the FoldJAX repository banner.
 
-The graphic is the product's one-line pitch: a flat residue chain on the left
-genuinely coils into an alpha helix on the right. The curve is computed, not
-drawn — radius ramps from zero, the turn angle accumulates only while folding,
-and the x advance compresses as the coil tightens, so the shape is a real helix
-seen from the side rather than a decorative squiggle.
+Two ideas, stacked. The wordmark sets each letter in its own rounded tile, the
+way JAX writes its own name — this project is a JAX project before it is
+anything else, and the tiles carry the gradient that runs through the graphic
+below them. Under it, a flat residue chain genuinely coils into an alpha helix:
+the curve is computed, not drawn — radius ramps from zero, the turn angle
+accumulates only while folding, and the x advance compresses as the coil
+tightens, so the shape is a real helix seen from the side rather than a
+decorative squiggle.
 
     uv run python docs/make_banner.py
 """
@@ -18,6 +21,16 @@ from PIL import Image, ImageDraw, ImageFont
 
 WIDTH, HEIGHT = 1280, 400
 SCALE = 3  # supersample, then downsample for clean edges
+
+# The wordmark: one rounded tile per letter, centred, with the gradient running
+# across them. Everything else in the layout is placed relative to this block.
+WORDMARK = "FOLDJAX"
+TILE_SIDE = 104
+TILE_GAP = 14
+TILE_TOP = 84
+# The chain runs as a band under the wordmark rather than through it.
+AXIS_Y = 328.0
+AXIS_RADIUS = 56.0
 
 FONTS = {
     "display": "/usr/share/fonts/opentype/urw-base35/URWGothic-Demi.otf",
@@ -93,9 +106,11 @@ def fold_curve(n=4200, turns=9.0, tilt=0.62):
     pitch drops below the coil width — that self-overlap is what reads as a
     three-dimensional coil.
     """
-    x0, x1 = 62.0, 1268.0
-    axis_y = 312.0
-    radius = 66.0
+    # The coil has to finish inside the frame: a turn clipped by the right edge
+    # reads as a rendering accident rather than the end of a helix.
+    x0, x1 = 74.0, 1198.0
+    axis_y = AXIS_Y
+    radius = AXIS_RADIUS
 
     folded = [smoothstep(0.26, 0.60, i / (n - 1)) for i in range(n)]
     total = sum(folded) or 1.0
@@ -109,7 +124,7 @@ def fold_curve(n=4200, turns=9.0, tilt=0.62):
         r = radius * f
         # The straight run spends x quickly; once the coil forms, x advances
         # only by the helix pitch, which is what tightens it.
-        advance = (i / (n - 1)) * 0.26 + (turned / total) * 0.74
+        advance = (i / (n - 1)) * 0.34 + (turned / total) * 0.66
         x = lerp(x0, x1, advance) + r * math.cos(theta) * tilt
         y = axis_y + r * math.sin(theta)
         points.append((x, y, math.cos(theta) * f, theta, t))
@@ -216,66 +231,68 @@ def draw_banner(theme: Theme) -> Image.Image:
     )
 
     # --- type ------------------------------------------------------------
-    display = ImageFont.truetype(FONTS["display"], int(s(92)))
-    book = ImageFont.truetype(FONTS["display_book"], int(s(92)))
-    tagline = ImageFont.truetype(FONTS["sans"], int(s(25)))
-    mono = ImageFont.truetype(FONTS["mono"], int(s(19)))
-    label = ImageFont.truetype(FONTS["mono"], int(s(16)))
+    tagline = ImageFont.truetype(FONTS["sans"], int(s(26)))
+    label = ImageFont.truetype(FONTS["mono"], int(s(15)))
+    centre = s(WIDTH / 2)
 
-    left, baseline = s(88), s(132)
-
-    # "Fold" in the book weight, "JAX" in demi: the fold is the subject, JAX is
-    # the substrate, and the weight change says so without a second colour.
-    fold_w = draw.textlength("Fold", font=book)
-    draw.text((left, baseline), "Fold", font=book, fill=theme.paper, anchor="ls")
+    # An eyebrow naming what actually runs, in the vernacular of the field
+    # rather than the codebase.
     draw.text(
-        (left + fold_w, baseline),
-        "JAX",
-        font=display,
-        fill=theme.stops[2],
-        anchor="ls",
-    )
-
-    draw.text(
-        (left + s(4), baseline + s(38)),
-        "protein folding, compiled",
-        font=tagline,
-        fill=theme.muted,
-        anchor="ls",
-    )
-
-    # An eyebrow that says what the thing actually is, in the vernacular of the
-    # field rather than the codebase.
-    draw.text(
-        (left + s(5), s(58)),
-        "B O L T Z - 2   ·   C H A I - 1   ·   O P E N D D E   ·   P R O T E N I X",
+        (centre, s(56)),
+        "A L P H A F O L D  3   ·   B O L T Z - 2   ·   C H A I - 1"
+        "   ·   O P E N D D E   ·   P R O T E N I X",
         font=label,
         fill=theme.muted,
-        anchor="ls",
+        anchor="ms",
     )
 
-    # The real command, because it is the shortest true description of the API.
-    command = "$ foldjax predict --model boltz2 --input job.yaml"
-    pad_x = s(18)
-    box_w = draw.textlength(command, font=mono) + pad_x * 2
-    box_h = s(44)
-    box_y = s(186)
-    draw.rounded_rectangle(
-        [left, box_y, left + box_w, box_y + box_h],
-        radius=s(8),
-        fill=(*theme.hairline, 130),
-        outline=(*theme.hairline, 255),
-        width=max(1, int(s(1))),
-    )
+    draw_wordmark(draw, theme, s)
+
     draw.text(
-        (left + pad_x, box_y + box_h / 2),
-        command,
-        font=mono,
+        (centre, s(TILE_TOP + TILE_SIDE + 44)),
+        "biomolecular structure prediction, compiled",
+        font=tagline,
         fill=theme.muted,
-        anchor="lm",
+        anchor="ms",
     )
 
     return image.resize((WIDTH, HEIGHT), Image.LANCZOS)
+
+
+def draw_wordmark(draw, theme, s) -> None:
+    """Set the name one letter per tile, the way JAX writes its own.
+
+    The tiles carry the same violet -> azure -> teal ramp as the chain below,
+    sampled at each letter's position, so the wordmark and the graphic are
+    visibly the same object. Letters are knocked out to the page colour rather
+    than painted, which is what makes a tile read as a tile.
+    """
+    count = len(WORDMARK)
+    span = count * TILE_SIDE + (count - 1) * TILE_GAP
+    left = (WIDTH - span) / 2
+    font = ImageFont.truetype(FONTS["display"], int(s(TILE_SIDE * 0.58)))
+
+    for index, character in enumerate(WORDMARK):
+        x0 = left + index * (TILE_SIDE + TILE_GAP)
+        fill = ramp(theme, index / (count - 1))
+        draw.rounded_rectangle(
+            [s(x0), s(TILE_TOP), s(x0 + TILE_SIDE), s(TILE_TOP + TILE_SIDE)],
+            radius=s(TILE_SIDE * 0.26),
+            fill=(*fill, 255),
+        )
+        # Centre on the glyph's own ink, not on its advance width: the letters
+        # have different side bearings and centring on the box makes O and X
+        # sit visibly off-axis from each other.
+        box = draw.textbbox((0, 0), character, font=font)
+        draw.text(
+            (
+                s(x0 + TILE_SIDE / 2) - (box[0] + box[2]) / 2,
+                s(TILE_TOP + TILE_SIDE / 2) - (box[1] + box[3]) / 2,
+            ),
+            character,
+            font=font,
+            fill=(*theme.ground, 255),
+        )
 
 
 def main() -> None:

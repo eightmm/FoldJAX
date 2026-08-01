@@ -1,13 +1,13 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/banner-light.png">
-  <img alt="FoldJAX — protein folding, compiled" src="docs/banner-dark.png">
+  <img alt="FoldJAX — biomolecular structure prediction, compiled" src="docs/banner-dark.png">
 </picture>
 
 # FoldJAX
 
-Biomolecular structure prediction in JAX. Four complete inference ports live
-inside the package, behind one interface:
+Biomolecular structure prediction in JAX. Five models behind one interface —
+four carried complete inside the package:
 
 | model | vendored at | licence | upstream |
 |---|---|---|---|
@@ -15,6 +15,10 @@ inside the package, behind one interface:
 | `chai` | `foldjax.models.chai` | Apache-2.0 | [chaidiscovery/chai-lab](https://github.com/chaidiscovery/chai-lab) |
 | `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
 | `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
+
+— plus `alphafold3`, which FoldJAX drives rather than carries, because its
+parameters may not be redistributed. It takes the same job file as the rest
+once installed; see [docs/alphafold3.md](docs/alphafold3.md).
 
 Give it one job file and a model name. Weights, the input dialect, the output
 directory, and the XLA compile cache are all resolved for you.
@@ -75,10 +79,17 @@ translated into each backend's own names — Protenix and OpenDDE want
 `CCD_`-prefixed types and entity-indexed `covalent_bonds`, Boltz wants
 `{ccd, position}` and a `bond` constraint, AlphaFold 3 wants bare `ptmType`.
 
-**A field a backend cannot express is rejected, not dropped.** Boltz has no
-place for a separate `paired_msa`; Chai addresses ligands by SMILES only and
-takes a job-level MSA directory rather than per-chain paths. Silently discarding
-an MSA would change the science without changing the exit code.
+**A field a backend cannot express is rejected, not dropped.** Neither Boltz nor
+Chai has a place for a separate `paired_msa`, and Chai addresses ligands by
+SMILES only. Silently discarding an MSA would change the science without
+changing the exit code.
+
+`unpaired_msa` reaches every model, Chai included. Chai's own input is a FASTA
+with nowhere to put an alignment path, so FoldJAX converts the A3M into the
+`.aligned.pqt` form it reads and writes that beside the FASTA. That matters more
+than it sounds: otherwise a job that pins an alignment pins it everywhere except
+Chai, which quietly runs on a different one — and any comparison across models
+becomes a comparison of MSAs.
 
 ## Choosing what to run
 
@@ -95,14 +106,17 @@ uv run foldjax predict \
 `--num-samples`, `--num-steps`, and `--num-recycles` are model-neutral. Each
 backend calls them something different, and FoldJAX translates:
 
-| neutral | boltz2 | chai | opendde / protenix |
-|---|---|---|---|
-| `--num-samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
-| `--num-steps` | `steps` | `num_diffusion_timesteps` | `n_step` |
-| `--num-recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
+| neutral | alphafold3 | boltz2 | chai | opendde / protenix |
+|---|---|---|---|---|
+| `--num-samples` | `diffusion_samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
+| `--num-steps` | — | `steps` | `num_diffusion_timesteps` | `n_step` |
+| `--num-recycles` | `recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
 
 Setting both a neutral knob and its native name is an error rather than a silent
-preference. `--option KEY=VALUE` still passes anything native straight through.
+preference, and so is asking for a knob a backend does not have — AlphaFold 3
+exposes no diffusion-step count, so `--num-steps` is refused for it rather than
+quietly ignored. `--option KEY=VALUE` still passes anything native straight
+through.
 
 `foldjax plan` shows exactly what a request resolves to before anything loads:
 
@@ -223,7 +237,7 @@ kernel image is available" while its runner still reports success, so it was
 upgraded to `torch==2.12.0+cu130` to run at all.
 
 `--no-cache` turns it off for benchmark or ephemeral runs; `--cache-dir` moves
-the root. All four models also run on CPU, slowly.
+the root. Every model also runs on CPU, slowly.
 
 ## Python API
 
@@ -259,7 +273,7 @@ uv sync --extra cuda13 --group dev                       # predict with any mode
 uv sync --extra cuda13 --extra torch-bridge --group dev  # + convert checkpoints
 ```
 
-**The prediction environment is torch-free for all four models.** Boltz-2's
+**The prediction environment is torch-free for every model.** Boltz-2's
 featurizer is vendored from upstream Boltz and written against torch; it runs
 here on a NumPy array layer (`foldjax.models.boltz2.data._numpy_torch`) that
 reproduces the torch featurizer exactly. `--extra boltz-preprocess` installs
@@ -288,12 +302,13 @@ JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q
 uv run --extra cuda13 --group dev ruff check .
 ```
 
-869 tests pass in the torch-free environment, 84% coverage on the
-orchestration layer. Each vendored port
-brought its own suite to `tests/models/<name>/`, including the torch-parity
-gates it was built against; those are excluded from collection unless the extra
-they need is installed, and `tests/models/test_optional_suite_gate.py` keeps that
-exclusion list honest.
+1,020 tests pass with the optional extras installed, 85% coverage on the
+orchestration layer. Each vendored port brought its own suite to
+`tests/models/<name>/`, including the torch-parity gates it was built against.
+Those are excluded from collection unless the extra they need is installed — so
+the torch-free environment runs the subset that does not need one — and
+`tests/models/test_optional_suite_gate.py` keeps that exclusion list honest
+rather than letting a suite go quietly uncollected.
 
 ## Provenance
 
