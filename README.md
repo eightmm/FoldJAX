@@ -111,12 +111,47 @@ backend calls them something different, and FoldJAX translates:
 | `--num-samples` | `diffusion_samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
 | `--num-steps` | — | `steps` | `num_diffusion_timesteps` | `n_step` |
 | `--num-recycles` | `recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
+| `--max-msa-depth` | — | `max_msa_depth` | — | `max_msa_rows` |
 
 Setting both a neutral knob and its native name is an error rather than a silent
 preference, and so is asking for a knob a backend does not have — AlphaFold 3
 exposes no diffusion-step count, so `--num-steps` is refused for it rather than
 quietly ignored. `--option KEY=VALUE` still passes anything native straight
 through.
+
+### Memory: `--max-msa-depth`
+
+One knob dominates peak memory, and it is not the one you would guess. Every
+trunk here holds an `[depth, tokens, channels]` MSA representation. On a
+488-token job with a 13,254-row alignment that single tensor is 3,158 MiB, and
+three are live at once — 9.5 GiB of Protenix's 12.2 GiB peak.
+
+| protenix, 488 tokens | peak | warm | pLDDT | pTM |
+|---|---|---|---|---|
+| default (13,254 rows) | 12,264 MiB | 5.55 s | 75.1 | 0.749 |
+| `--max-msa-depth 4096` | 6,008 MiB | 5.44 s | 70.3 | 0.856 |
+| `--max-msa-depth 2048` | 5,991 MiB | 5.40 s | 76.6 | 0.902 |
+| `--max-msa-depth 1024` | **5,986 MiB** | **5.40 s** | 79.9 | 0.915 |
+
+Half the memory, marginally *faster*, and the cap barely matters below ~4096 —
+once the MSA stops being the largest buffer, something else is, so there is no
+reason to cut harder than you have to. Five samples instead of one costs 11%
+more (5,986 → 6,666 MiB): the sample axis is already sequential.
+
+Two things that sound like memory knobs and are not, both measured on the same
+job: a bfloat16 trunk moved the peak by 0.3% (12,264 → 12,223 MiB), and
+blocking the triangle attention moved it by 0.4% (→ 12,217 MiB). Neither is
+where the memory is. **Attribute the peak before turning knobs** — these were
+found by reading XLA's buffer assignment, not by guessing.
+
+Confidence moves with the cap, but not monotonically (79.9 at 1024, 70.3 at
+4096), because which rows get sampled changes. Treat that spread as the
+alignment's own variance, not as evidence that a shallower MSA predicts better.
+The default keeps each port's own depth; nothing changes unless you ask.
+
+Chai has no reachable cap — it reads alignments through its own context objects
+rather than a featurizer argument — so `foldjax capabilities --model chai` does
+not report the knob rather than reporting one it cannot honour.
 
 `foldjax plan` shows exactly what a request resolves to before anything loads:
 

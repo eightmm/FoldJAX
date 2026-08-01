@@ -164,6 +164,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         extra_mols_dir: Path | None = None,
         override_method: str | None = None,
         affinity: bool = False,
+        max_msa_seqs: int | None = None,
     ) -> None:
         """Initialize the training dataset.
 
@@ -196,6 +197,12 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.extra_mols_dir = extra_mols_dir
         self.override_method = override_method
         self.affinity = affinity
+        # How deep an MSA the featurizer keeps. The trunk holds an
+        # [depth, tokens, channels] representation, so this is the dominant
+        # memory knob; `None` keeps Boltz's own default.
+        self.max_msa_seqs = (
+            const.max_msa_seqs if max_msa_seqs is None else int(max_msa_seqs)
+        )
         if self.affinity:
             # Lazy import: AffinityCropper lives in foldjax.models.boltz2.data.crop (not
             # copied for the protein-only path). Only needed when affinity=True.
@@ -281,7 +288,7 @@ class PredictionDataset(torch.utils.data.Dataset):
                 training=False,
                 max_atoms=None,
                 max_tokens=None,
-                max_seqs=const.max_msa_seqs,
+                max_seqs=self.max_msa_seqs,
                 pad_to_max_seqs=False,
                 single_sequence_prop=0.0,
                 compute_frames=True,

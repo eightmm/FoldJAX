@@ -24,6 +24,12 @@ _CLI_OPTIONS = {
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
     "trunk_triangle_attention_backend",
+    "chunk_policy",
+    "triangle_mul_chunk_size",
+    "triangle_att_q_chunk_size",
+    "single_att_q_chunk_size",
+    "token_q_chunk_size",
+    "diffusion_chunk_size",
 }
 # Protenix writes "<name>_sample_<rank>.cif" next to
 # "<name>_summary_confidence_sample_<rank>.json" in one predictions directory.
@@ -36,6 +42,7 @@ class ProtenixBackend(Backend):
         "num_samples": "n_sample",
         "num_steps": "n_step",
         "num_recycles": "n_cycle",
+        "max_msa_depth": "max_msa_rows",
     }
     compile_options = (
         "n_sample",
@@ -46,6 +53,12 @@ class ProtenixBackend(Backend):
         "diffusion_attention_backend",
         "trunk_single_attention_backend",
         "trunk_triangle_attention_backend",
+        "chunk_policy",
+        "triangle_mul_chunk_size",
+        "triangle_att_q_chunk_size",
+        "single_att_q_chunk_size",
+        "token_q_chunk_size",
+        "diffusion_chunk_size",
         "cli_args",
     )
 

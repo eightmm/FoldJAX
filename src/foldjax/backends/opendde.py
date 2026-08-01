@@ -54,6 +54,7 @@ class OpenDDEBackend(Backend):
         "num_samples": "n_sample",
         "num_steps": "n_step",
         "num_recycles": "n_cycle",
+        "max_msa_depth": "max_msa_rows",
     }
     compile_options = tuple(sorted(_CLI_OPTIONS))
 

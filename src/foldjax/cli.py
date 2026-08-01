@@ -41,6 +41,14 @@ def _add_predict_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--num-steps", type=int, help="diffusion steps per structure")
     parser.add_argument("--num-recycles", type=int, help="trunk recycling iterations")
     parser.add_argument(
+        "--max-msa-depth",
+        type=int,
+        help="cap how many MSA rows the model keeps. The trunk holds a "
+        "[depth, tokens, channels] representation, so this is the dominant "
+        "memory knob: capping a 13k-row alignment to 1024 halved Protenix's "
+        "peak at 488 tokens. Omit to keep each backend's own default",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         help=f"compile cache root (default {paths.compile_cache_dir()})",
@@ -124,6 +132,7 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         num_samples=args.num_samples,
         num_steps=args.num_steps,
         num_recycles=args.num_recycles,
+        max_msa_depth=args.max_msa_depth,
         cache_dir=args.cache_dir,
         use_compile_cache=not args.no_cache,
         options=_options(args.option),

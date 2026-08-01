@@ -64,6 +64,7 @@ def featurize_yaml(
     msa_api_key_header: str | None = None,
     msa_api_key_value: str | None = None,
     cache_dir: Path | None = None,
+    max_msa_depth: int | None = None,
 ) -> tuple[dict[str, np.ndarray], object, Path]:
     """Run preprocessing + featurization for one YAML.
 
@@ -116,6 +117,7 @@ def featurize_yaml(
         constraints_dir=processed / "constraints",
         template_dir=processed / "templates",
         extra_mols_dir=processed / "mols",
+        max_msa_seqs=max_msa_depth,
     )
     features = dataset[0]
 

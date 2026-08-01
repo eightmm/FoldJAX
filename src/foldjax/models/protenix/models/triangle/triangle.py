@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Literal, NamedTuple
 
 import jax
@@ -151,6 +152,32 @@ def _triangle_contract_block(
     raise ValueError(f"unsupported triangle direction: {direction!r}")
 
 
+_WARNED_UNCHUNKABLE = False
+
+
+def _warn_unchunkable_backend(q_chunk_size: int) -> None:
+    """Say that a requested chunk size cannot be honoured, once.
+
+    The cuEquivariance kernel takes the whole query axis; blocking is only
+    implemented in the XLA path. A chunk size that reaches this branch bounds
+    nothing, and the [N, h, N, N] score tensor it exists to bound is
+    materialised whole. That is worth one line on stderr rather than silence --
+    and not an exception, because the automatic chunk policy legitimately emits
+    a size without knowing which backend will run.
+    """
+    global _WARNED_UNCHUNKABLE
+    if _WARNED_UNCHUNKABLE:
+        return
+    _WARNED_UNCHUNKABLE = True
+    warnings.warn(
+        f"triangle attention q_chunk_size={q_chunk_size} is ignored by the "
+        "'cueq' backend, which has no chunked kernel: the full score tensor is "
+        "materialised. Pass attention_backend='xla' to block the query axis.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
 def triangle_attention(
     x: jnp.ndarray,
     mask: jnp.ndarray | None,
@@ -236,6 +263,14 @@ def _triangle_attention_dense(
     scale = float(q.shape[-1] ** -0.5)
 
     if attention_backend == "cueq" and q.shape[-2] > 16:
+        # The cuEquivariance kernel takes the whole query axis; there is no
+        # chunked entry point. Blocking is only implemented in the XLA path
+        # below, so a caller who asked for a chunk size and got this branch
+        # would silently get an unchunked, unbounded [N, h, N, N] score tensor
+        # -- which is exactly the buffer the chunk size exists to bound. Say so
+        # rather than accepting the argument and ignoring it.
+        if q_chunk_size is not None and 0 < q_chunk_size < q.shape[-2]:
+            _warn_unchunkable_backend(q_chunk_size)
         from foldjax.models.protenix.models.triangle.triangle_cueq import (
             cueq_attention_core,
         )

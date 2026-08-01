@@ -48,6 +48,7 @@ def featurize(
     msa_api_key_header: str | None = None,
     msa_api_key_value: str | None = None,
     feature_cache: str | Path | None = None,
+    max_msa_depth: int | None = None,
 ) -> tuple[dict[str, np.ndarray], str, Path]:
     """Featurize a YAML path or bare entities.
 
@@ -82,6 +83,7 @@ def featurize(
         msa_api_key_header=msa_api_key_header,
         msa_api_key_value=msa_api_key_value,
         cache_dir=Path(feature_cache) if feature_cache is not None else None,
+        max_msa_depth=max_msa_depth,
     )
     if manifest is not None:
         record_id = manifest.records[0].id
@@ -125,6 +127,7 @@ def predict(
     compile_cache: str | Path | None = None,
     bucket: bool = False,
     write_fmt: str | None = None,
+    max_msa_depth: int | None = None,
 ) -> dict[str, Any]:
     """Run end-to-end Boltz-2 inference.
 
@@ -154,6 +157,7 @@ def predict(
         msa_api_key_header=msa_api_key_header,
         msa_api_key_value=msa_api_key_value,
         feature_cache=feature_cache,
+        max_msa_depth=max_msa_depth,
     )
 
     jax.config.update("jax_default_matmul_precision", "highest")

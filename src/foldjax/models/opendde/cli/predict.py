@@ -8,6 +8,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from foldjax.models.protenix.chunking import ChunkPolicyName
+
 
 def _load_jobs(path: Path) -> list[dict[str, Any]]:
     from foldjax.models.opendde.data.featurize_json import load_jobs
@@ -40,6 +42,7 @@ def _predict(
     diffusion_attention_backend: str,
     trunk_single_attention_backend: str,
     structural_single_attention_backend: str,
+    chunk_policy: ChunkPolicyName = "auto",
     graph_jit: bool = True,
 ) -> dict[str, Any]:
     import jax
@@ -51,6 +54,7 @@ def _predict(
     from foldjax.models.opendde.models.msa_sampling import (
         sample_opendde_msa_cycle_features,
     )
+    from foldjax.models.protenix.chunking import resolve_chunk_config
     from foldjax.models.protenix.models.diffusion.diffusion import (
         inference_noise_schedule,
     )
@@ -76,6 +80,26 @@ def _predict(
         if graph_jit
         else {}
     )
+    # OpenDDE drives the Protenix trunk, whose triangle attention materialises a
+    # [rows, heads, N, N] score tensor -- quadratic in token count, and unbounded
+    # unless the query axis is blocked. Protenix resolves those chunk sizes from
+    # its token count; OpenDDE never resolved them at all, so it ran the same
+    # code unchunked and asked for 76 GiB on a 488-residue job that Protenix
+    # completes in 12 GiB.
+    #
+    # The size to bound is not the residue count. OpenDDE is dual-branch: the
+    # residue trunk and the structural refiner share one set of chunk knobs, and
+    # the structural branch runs on sub-residue tokens, so it is several times
+    # the larger of the two. Resolving the policy from the residue count alone
+    # would leave the branch that actually needs blocking unblocked.
+    # `--chunk-policy off` restores the unbounded form.
+    n_residue = int(features["restype"].shape[-2])
+    n_structural = int(features["parent_residue_idx"].shape[0])
+    chunks = resolve_chunk_config(
+        n_token=max(n_residue, n_structural),
+        n_sample=n_sample,
+        policy=chunk_policy,
+    )
     return infer(
         features,
         params,
@@ -88,6 +112,10 @@ def _predict(
         diffusion_attention_backend=diffusion_attention_backend,
         trunk_single_attention_backend=trunk_single_attention_backend,
         structural_single_attention_backend=structural_single_attention_backend,
+        triangle_mul_chunk_size=chunks.triangle_mul_chunk_size,
+        triangle_att_q_chunk_size=chunks.triangle_att_q_chunk_size,
+        single_att_q_chunk_size=chunks.single_att_q_chunk_size,
+        token_q_chunk_size=chunks.token_q_chunk_size,
         cycle_msa_features=sampled or None,
         **scans,
     )
@@ -163,6 +191,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="trace the model op by op instead of as one compiled graph; "
         "much slower, kept for debugging and numerical comparison",
+    )
+    parser.add_argument(
+        "--chunk-policy",
+        choices=("auto", "off"),
+        default="auto",
+        help="block the query axis of the trunk's quadratic attentions by token "
+        "count; 'off' materialises them whole and needs tens of gigabytes "
+        "past a few hundred tokens",
     )
     parser.add_argument("--include-raw", action="store_true")
     parser.add_argument("--cpu-only", action="store_true")
@@ -293,6 +329,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     structural_single_attention_backend=(
                         args.structural_single_attention_backend
                     ),
+                    chunk_policy=args.chunk_policy,
                     graph_jit=not args.no_graph_jit,
                 )
                 scored = _score(output, features, num_recycles=args.n_cycle)

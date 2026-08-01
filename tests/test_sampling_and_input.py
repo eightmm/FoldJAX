@@ -166,7 +166,18 @@ def test_knobs_must_be_positive(tmp_path: Path) -> None:
 def test_capabilities_report_the_knobs_each_backend_honours() -> None:
     for name in ("boltz2", "chai", "opendde", "protenix"):
         sampling = foldjax.capabilities(name).sampling
-        assert set(sampling) == {"num_samples", "num_steps", "num_recycles"}, name
+        assert {"num_samples", "num_steps", "num_recycles"} <= set(sampling), name
+    # Chai has no reachable MSA depth cap: it reads alignments through its own
+    # context objects rather than a featurizer argument. Reporting the knob it
+    # cannot honour would be worse than reporting none.
+    assert "max_msa_depth" not in foldjax.capabilities("chai").sampling
+    for name in ("boltz2", "opendde", "protenix"):
+        assert "max_msa_depth" in foldjax.capabilities(name).sampling, name
+    # AlphaFold 3 has no diffusion-step count at all.
+    assert set(foldjax.capabilities("alphafold3").sampling) == {
+        "num_samples",
+        "num_recycles",
+    }
 
 
 # --------------------------------------------------------------------------

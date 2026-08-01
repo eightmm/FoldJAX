@@ -56,6 +56,7 @@ class Boltz2Backend(Backend):
         "num_samples": "diffusion_samples",
         "num_steps": "steps",
         "num_recycles": "recycling",
+        "max_msa_depth": "max_msa_depth",
     }
     compile_options = (
         "steps",
@@ -64,6 +65,7 @@ class Boltz2Backend(Backend):
         "affinity_steps",
         "affinity_diffusion_samples",
         "compute_dtype",
+        "max_msa_depth",
         "attention_backend",
         "triangle_backend",
         "glu_backend",
