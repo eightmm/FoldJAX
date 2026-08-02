@@ -159,10 +159,17 @@ select = ["E", "F", "I", "N", "UP", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Coverage is gated on the FoldJAX orchestration layer. The vendored ports keep
-# their own suites under tests/models/ but are not held to that gate, because
-# each was ported against upstream torch parity rather than line coverage.
-addopts = "--cov=foldjax --cov-report=term-missing --cov-fail-under=80"
+# Coverage is deliberately *not* in addopts. The gate only means anything for a
+# full run, so putting it here made every focused invocation fail: `pytest
+# tests/test_cache.py` passed its 7 tests and still exited 1 with "Required
+# test coverage of 80% not reached", because 7 tests cannot cover the package.
+# That turns the ordinary edit-test loop into a permanent red and trains
+# everyone to pass --no-cov, which then also disables it when it matters.
+#
+# CI runs the gate on the whole suite (.github/workflows/ci.yml), which is the
+# only place the number is meaningful. To reproduce it locally:
+#   pytest --cov=foldjax --cov-report=term-missing --cov-fail-under=80
+addopts = ""
 markers = [
     "slow: end-to-end / checkpoint-heavy tests",
     "official_parity: requires official model assets or an upstream checkout",

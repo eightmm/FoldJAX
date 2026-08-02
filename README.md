@@ -490,6 +490,14 @@ current state of the port.
 ```bash
 JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q
 uv run --extra cuda13 --group dev ruff check .
+
+# One file, or one test, with no coverage gate in the way:
+JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q tests/test_cache.py
+
+# The 80% orchestration-layer gate, which only means anything on a full run.
+# This is what CI enforces.
+JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q \
+    --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 ```
 
 1,020 tests pass with the optional extras installed, 85% coverage on the

@@ -46,8 +46,17 @@ jobs:
       # No CUDA extra: the CPU wheel is what a GPU-less runner can install, and
       # it still collects every test that does not need a device. The GPU
       # suites and the torch-parity gates skip themselves.
+      #
+      # The coverage gate lives here rather than in addopts: it only means
+      # anything on a full run, and in addopts it made every focused local
+      # invocation exit 1. It covers the orchestration layer only — the
+      # vendored ports were built against upstream torch parity rather than
+      # line coverage, so holding them to a line number would measure the
+      # wrong thing.
       - name: Tests
-        run: uv run --no-sync pytest -q
+        run: >
+          uv run --no-sync pytest -q
+          --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 
   imports:
     name: every backend registers
