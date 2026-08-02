@@ -172,6 +172,11 @@ def test_default_cache_prefers_foldjax_but_keeps_a_populated_legacy_tree(
     """The ESM2 bundle is multi-GB, so a pre-FoldJAX export must stay usable."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    # This exercises the home-directory fallback, so the two overrides that
+    # come before it have to be absent -- otherwise the test passes or fails
+    # depending on the environment it is run in.
+    monkeypatch.delenv("FOLDJAX_HOME", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
 
     # Neither exists: the FoldJAX location is what gets created.
     assert _default_cache("models") == tmp_path / ".cache/foldjax/chai/models"
