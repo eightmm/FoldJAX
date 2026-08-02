@@ -254,6 +254,7 @@ def main() -> int:
     if peak_file.is_file():
         peak = float(peak_file.read_text().strip() or 0) / 2**20
 
+    found = scores(args.model, args.output_dir)
     record = {
         "impl": "upstream",
         "model": args.model,
@@ -264,10 +265,21 @@ def main() -> int:
         "wall_s": round(elapsed, 2),
         "peak_mib": round(peak, 1),
         "returncode": completed.returncode,
-        "samples": [{"scores": entry} for entry in scores(args.model, args.output_dir)],
+        "samples": [{"scores": entry} for entry in found],
     }
     if completed.returncode != 0:
         record["stderr_tail"] = completed.stderr[-2000:]
+    elif not found:
+        # An exit status of 0 is not evidence that anything was predicted.
+        # OpenDDE's runner catches a CUDA OOM, writes it to an ERR/ file, and
+        # returns 0 -- at 976 tokens it asked for 40.8 GiB on top of 58.5 GiB
+        # already held and died, and without this the row would be published as
+        # a 12-second run that beat everything else.
+        record["failed"] = True
+        record["reason"] = "exited 0 but produced no structures"
+        errors = sorted(args.output_dir.rglob("ERR/*.txt"))
+        if errors:
+            record["stderr_tail"] = errors[0].read_text(errors="replace")[-2000:]
     text = json.dumps(record, sort_keys=True)
     print(text)
     if args.json_out:

@@ -111,20 +111,24 @@ def main() -> int:
             if fj is None and up is None:
                 continue
 
+            def broken(row) -> bool:
+                """A run that produced no structure did not run, whatever it exited."""
+                return bool(
+                    row.get("failed")
+                    or row.get("returncode", 0) != 0
+                    or not row.get("samples")
+                )
+
             def cell(row, field, suffix=""):
                 if row is None:
                     return "-"
-                if row.get("failed") or row.get("returncode", 0) != 0:
+                if broken(row):
                     return "failed"
                 return f"{row[field]:,.0f}{suffix}"
 
             ratio_time = ratio_mem = "-"
-            usable = (
-                fj
-                and up
-                and not fj.get("failed")
-                and not up.get("failed")
-                and up.get("returncode", 0) == 0
+            usable = fj is not None and up is not None and not (
+                broken(fj) or broken(up)
             )
             if usable and up["wall_s"]:
                 ratio_time = f"{up['wall_s'] / fj['wall_s']:.2f}x"
@@ -140,7 +144,8 @@ def main() -> int:
             )
     print(
         "\nspeed/memory are upstream divided by FoldJAX: above 1.00x means "
-        "FoldJAX is faster / uses less."
+        "FoldJAX is faster / uses less. `failed` means that side did not "
+        "produce a structure at that size."
     )
     if args.markdown:
         print(_method_notes())
@@ -171,6 +176,13 @@ the two numbers are the same statistic. They are still different samples: the
 torch and JAX PRNG streams differ, so a seed does not put the two on the same
 random tape. Same-seed parity was established per port against a matched tape
 and is a separate exercise from this table.
+
+A row is `failed` when that side produced no structure, which is not the same
+as a non-zero exit. Upstream OpenDDE runs out of memory at 976 tokens -- it
+asks for 40.8 GiB of triangle-attention softmax on top of 58.5 GiB already
+held, on a 95 GiB card -- then catches the error, writes it to an `ERR/` file
+and exits 0. Taken at its word that was a 12-second run that beat everything
+else in the table.
 
 Two caveats, both of which flatter FoldJAX and neither of which is removable
 here without changing another project's environment:
