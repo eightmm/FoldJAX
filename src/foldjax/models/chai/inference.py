@@ -1183,7 +1183,30 @@ def _msa_pair_subchunk_size(token_count: int) -> int | None:
     return None
 
 
-def _use_low_memory_pairformer(token_count: int) -> bool:
+# Chai's pair representation is quadratic in the padded token count, so a
+# threshold written as a token count crosses budget somewhere between two
+# buckets rather than at one. It was 1536, which left the 1024 bucket on the
+# full-memory path: a 976-token job peaked at 21,023 MiB where the low-memory
+# path takes it to 19,229 with identical scores, for 12% more wall time. Keyed
+# to the tensor's own size instead, the same rule holds at every bucket and on
+# every card.
+_LOW_MEMORY_PAIR_BUDGET_BYTES = 256 * 1024**2
+
+
+def _pair_bytes(pair: jax.Array) -> int:
+    total = pair.dtype.itemsize
+    for dim in pair.shape:
+        total *= dim
+    return total
+
+
+def _use_low_memory_pairformer(pair: jax.Array | int) -> bool:
+    if isinstance(pair, int):  # token count, kept for the backend-selection tests
+        token_count = pair
+    else:
+        if _pair_bytes(pair) >= _LOW_MEMORY_PAIR_BUDGET_BYTES:
+            return True
+        token_count = pair.shape[-2]
     return token_count >= 2048 or (
         token_count >= 1536 and _triangle_attention_backend() == "xla"
     )
@@ -1267,7 +1290,7 @@ def _run_staged_trunk(
         else:
             pair = _compiled_msa_pair(pair, pair_mask, block.pair)
     pair = _compiled_residual_add(pair_before_msa, pair)
-    if _use_low_memory_pairformer(pair.shape[-2]):
+    if _use_low_memory_pairformer(pair):
         jax.block_until_ready((single, pair))
         del msa, msa_input, pair_before_msa, block
         for block in params.pairformer_blocks:
