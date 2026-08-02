@@ -44,6 +44,8 @@ def test_predict_native_runtime_imports_no_torch_or_protenix(tmp_path, monkeypat
 
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--features",
@@ -104,6 +106,8 @@ def test_predict_direct_json_to_output_imports_no_torch_or_protenix(
 
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--input-json",

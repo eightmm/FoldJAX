@@ -53,6 +53,8 @@ def test_static_infer_rejects_non_object_guidance_config(tmp_path) -> None:
             [
                 "--features",
                 str(tmp_path / "unused.npz"),
+                "--model-name",
+                "unknown",
                 "--weights",
                 str(tmp_path / "unused.pkl"),
                 "--out",
@@ -61,6 +63,44 @@ def test_static_infer_rejects_non_object_guidance_config(tmp_path) -> None:
                 str(config),
             ]
         )
+
+
+def test_the_model_name_must_be_known_or_explicitly_waived(tmp_path) -> None:
+    """A checkpoint whose name says nothing must not silently pick a schedule.
+
+    The model name selects the sampler schedule (mini runs 5 steps at
+    gamma0=0, base runs 200 at 0.8), decides whether ESM/ISM conditioning is
+    built at all, and carries the protenix-v2 token limit. Inferring it from
+    the filename meant renaming a checkpoint quietly changed all three: an ISM
+    model run from a renamed file became a different model, with a
+    plausible-looking structure and no warning.
+    """
+    weights_path = tmp_path / "my_own_checkpoint.pkl"
+    features_path = tmp_path / "toy_features.npz"
+    out_path = tmp_path / "out.npz"
+    save_native_weights(weights_path, _toy_params(), compress=False)
+    save_static_feature_npz(features_path, _toy_features())
+    argv = [
+        "--weights", str(weights_path),
+        "--features", str(features_path),
+        "--out", str(out_path),
+        "--n-sample", "1", "--n-step", "1", "--n-cycle", "1",
+        "--input-atom-heads", "1", "--atom-encoder-heads", "1",
+        "--token-heads", "1", "--atom-decoder-heads", "1",
+        "--n-queries", "2", "--n-keys", "4",
+        "--sigma-data", "4.0", "--cpu-only",
+    ]
+
+    with pytest.raises(SystemExit, match="cannot tell which Protenix model"):
+        main(argv)
+    assert not out_path.exists()
+
+    # Waiving it is one flag, and then the same run proceeds normally.
+    main([*argv, "--model-name", "unknown"])
+    with np.load(out_path) as data:
+        assert data["coordinate"].shape == (1, 3, 3)
+
+
 def test_static_infer_runs_with_native_weights(tmp_path) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     features_path = tmp_path / "toy_features.npz"
@@ -70,6 +110,8 @@ def test_static_infer_runs_with_native_weights(tmp_path) -> None:
 
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--features",
@@ -125,6 +167,8 @@ def test_static_infer_prewarm_populates_graph_without_writing_output(
     )
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--features",
@@ -167,6 +211,8 @@ def test_static_infer_runs_from_sequence_json_features(tmp_path) -> None:
 
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--features",
@@ -214,6 +260,8 @@ def test_static_infer_runs_directly_from_sequence_json(tmp_path) -> None:
 
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--input-json",
@@ -286,6 +334,8 @@ def test_static_infer_processes_every_job_and_seed(tmp_path, monkeypatch) -> Non
     )
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--input-json",
@@ -346,6 +396,8 @@ def test_static_infer_uses_model_seeds_from_direct_json(tmp_path, monkeypatch) -
     )
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--input-json",
@@ -541,6 +593,8 @@ def test_static_infer_applies_enabled_msa_search_before_featurization(
     )
     main(
         [
+            "--model-name",
+            "unknown",
             "--weights",
             str(weights_path),
             "--input-json",
@@ -631,6 +685,7 @@ def test_static_infer_orders_msa_template_and_rna_preprocessing(
         },
     )
     main([
+        "--model-name", "unknown",
         "--weights", str(weights_path), "--input-json", str(input_json),
         "--out", str(tmp_path / "out.npz"),
         "--msa-search", "local", "--msa-local-command", "protein-search",
