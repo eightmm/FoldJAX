@@ -50,6 +50,20 @@ MSA depth is deliberately not pinned: upstream Chai has no depth argument, so
 fixing one would mean FoldJAX doing something its own reference cannot. Both
 sides read the same alignment and apply the same default.
 
+## Caveats that favour FoldJAX
+
+Neither can be removed here without changing another project's environment, so
+both are stated rather than worked around:
+
+- Upstream Protenix runs with `LAYERNORM_TYPE=torch`. Its default layer norm is
+  a CUDA extension built on first use, and this host has the CUDA runtime
+  libraries but no `nvcc`, so the build fails at import. Its time is an upper
+  bound.
+- Upstream OpenDDE has no `cuequivariance` installed, so its `auto` triangle
+  kernels resolve to the plain-torch path and materialise tensors it would
+  otherwise fuse. Its memory is an upper bound. Boltz-2 and Protenix upstream
+  both have cuEquivariance installed; Chai does not use it.
+
 ## Running it
 
 Data (alignments, jobs, sequences) lives outside the repository; point
