@@ -10,6 +10,7 @@ placeholder structure.
 
 from __future__ import annotations
 
+import functools
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -185,6 +186,30 @@ _MSA_ROW_FEATURE_NAMES = (
     "MSAHasDeletion",
     "MSAOneHot",
 )
+
+
+def chai_precision(function):
+    """Run `function` with JAX's matmul precision pinned to "highest".
+
+    Chai's exported Torch components use full FP32 products wherever a tensor
+    was not explicitly cast to BF16. JAX otherwise permits TF32 on NVIDIA GPUs,
+    which introduces parity drift before diffusion amplifies it.
+
+    This used to be a `jax.config.update` at import time, which is
+    process-global: importing Chai silently re-specified the numerics of every
+    other model in the same process, and of the ~186 non-Chai tests that
+    happen to be collected after it. Scoping it to Chai's own entry points
+    keeps the guarantee where it belongs. The setting has to be active during
+    tracing, not just execution, and Chai's module-level `jax.jit` primitives
+    are traced on first call from inside these functions.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        with jax.default_matmul_precision("highest"):
+            return function(*args, **kwargs)
+
+    return wrapper
 _MODEL_PADDED_INPUT_KEYS = frozenset(
     {
         "atom_exists_mask",
@@ -527,6 +552,7 @@ def _collate_inference_inputs(
     return pad_sizes.n_tokens, values
 
 
+@chai_precision
 def prepare_inference_from_assets(
     fasta_file: str | Path,
     assets: InferenceAssets,
@@ -591,6 +617,7 @@ def prepare_inference_from_assets(
     )
 
 
+@chai_precision
 def prepare_inference(
     fasta_file: str | Path,
     *,
@@ -2232,6 +2259,7 @@ def execute_prepared_inference(
     )
 
 
+@chai_precision
 def run_inference(
     fasta_file: str | Path,
     *,
