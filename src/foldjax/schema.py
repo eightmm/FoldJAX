@@ -36,6 +36,11 @@ class PredictionRequest:
     output_dir: Path | None = None
     input_format: str = "auto"
     seed: int = 0
+    # Several models take a list of seeds natively, and running one job under
+    # more than one is the ordinary way to use them -- the samples from a single
+    # seed are correlated. `seeds` runs the job once per entry and returns every
+    # structure together; leave it unset to run the single `seed`.
+    seeds: tuple[int, ...] | None = None
     # Model-neutral sampling knobs. None means "keep this backend's default".
     num_samples: int | None = None
     num_steps: int | None = None
@@ -61,12 +66,31 @@ class PredictionRequest:
             raise FileNotFoundError(f"input does not exist: {self.input}")
         if self.weights is not None and not self.weights.exists():
             raise FileNotFoundError(f"weights do not exist: {self.weights}")
+        if self.seeds is not None:
+            seeds = tuple(int(value) for value in self.seeds)
+            if not seeds:
+                raise ValueError("seeds must not be empty")
+            if any(value < 0 for value in seeds):
+                raise ValueError("seeds must be non-negative")
+            if len(set(seeds)) != len(seeds):
+                raise ValueError("seeds must be unique")
+            if self.seed != 0:
+                # Silently preferring one would change which structures come
+                # back without changing the exit code, the same rule the
+                # sampling knobs follow.
+                raise ValueError("seed and seeds were both set; pass one of them")
+            object.__setattr__(self, "seeds", seeds)
         if self.seed < 0:
             raise ValueError("seed must be non-negative")
         for name in ("num_samples", "num_steps", "num_recycles", "max_msa_depth"):
             value = getattr(self, name)
             if value is not None and value < 1:
                 raise ValueError(f"{name} must be at least 1")
+
+    @property
+    def resolved_seeds(self) -> tuple[int, ...]:
+        """Every seed this request runs, whichever field was used to say so."""
+        return self.seeds if self.seeds is not None else (self.seed,)
 
     @property
     def sampling(self) -> dict[str, int]:

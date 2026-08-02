@@ -91,17 +91,53 @@ def _settle_absl_flags() -> None:
         flags.FLAGS.mark_as_parsed()
 
 
+#: Where the two knobs `make_model_config` does not take live in the config it
+#: returns. Named so a version that moves them fails with the path it looked
+#: for rather than silently leaving the released default in place.
+_DIFFUSION_STEPS = ("heads", "diffusion", "eval", "steps")
+_MSA_DEPTH = ("evoformer", "num_msa")
+
+
+def _set_nested(config: Any, path: tuple[str, ...], value: Any) -> None:
+    """Assign `value` at `path`, or explain which attribute is missing."""
+    if value is None:
+        return
+    target = config
+    for attribute in path[:-1]:
+        target = getattr(target, attribute, None)
+        if target is None:
+            raise ValueError(
+                f"this AlphaFold 3 build has no {'.'.join(path)} to set; "
+                "the option cannot be honoured and is not being ignored"
+            )
+    if not hasattr(target, path[-1]):
+        raise ValueError(
+            f"this AlphaFold 3 build has no {'.'.join(path)} to set; "
+            "the option cannot be honoured and is not being ignored"
+        )
+    setattr(target, path[-1], int(value))
+
+
 class AlphaFold3Backend(Backend):
     name = "alphafold3"
-    # AlphaFold 3 has no exposed diffusion-step count: `num_steps` is rejected
-    # rather than silently ignored, which is the point of the neutral knobs.
+    # `make_model_config` takes only four of these as parameters, but it returns
+    # a plain mutable config and already sets `num_samples` by assignment. The
+    # step count and the MSA depth live one level deeper -- at
+    # `heads.diffusion.eval.steps` (200) and `evoformer.num_msa` (1024) -- and
+    # are set the same way. They were previously reported as unsupported, which
+    # made AlphaFold 3 the one backend that could not be held to the same
+    # schedule as the others, and so could not be benchmarked against them.
     sampling_options: dict[str, str] = {
         "num_samples": "diffusion_samples",
+        "num_steps": "diffusion_steps",
         "num_recycles": "recycles",
+        "max_msa_depth": "max_msa_depth",
     }
     compile_options = (
         "diffusion_samples",
+        "diffusion_steps",
         "recycles",
+        "max_msa_depth",
         "buckets",
         "attention_backend",
         "return_embeddings",
@@ -133,16 +169,17 @@ class AlphaFold3Backend(Backend):
             jax.local_devices(backend=platform) if platform else jax.local_devices()
         )
         device = devices[int(options.pop("device", 0))]
+        config = runner.make_model_config(
+            flash_attention_implementation=options.pop("attention_backend", "triton"),
+            num_diffusion_samples=int(options.pop("diffusion_samples", 5)),
+            num_recycles=int(options.pop("recycles", 10)),
+            return_embeddings=bool(options.pop("return_embeddings", False)),
+            return_distogram=bool(options.pop("return_distogram", False)),
+        )
+        _set_nested(config, _DIFFUSION_STEPS, options.pop("diffusion_steps", None))
+        _set_nested(config, _MSA_DEPTH, options.pop("max_msa_depth", None))
         model_runner = runner.ModelRunner(
-            config=runner.make_model_config(
-                flash_attention_implementation=options.pop(
-                    "attention_backend", "triton"
-                ),
-                num_diffusion_samples=int(options.pop("diffusion_samples", 5)),
-                num_recycles=int(options.pop("recycles", 10)),
-                return_embeddings=bool(options.pop("return_embeddings", False)),
-                return_distogram=bool(options.pop("return_distogram", False)),
-            ),
+            config=config,
             device=device,
             model_dir=request.weights,
         )

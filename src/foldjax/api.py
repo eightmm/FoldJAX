@@ -65,8 +65,40 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
 
 
 def predict(request: PredictionRequest) -> PredictionResult:
-    """Dispatch one request to its selected native backend."""
+    """Dispatch one request to its selected native backend.
+
+    A request naming several seeds runs the job once per seed, into a
+    ``seed_<n>`` subdirectory each, and returns every structure in one result.
+    The loop lives here rather than in each adapter because only three of the
+    six models take a seed list natively, and a knob that works on half the
+    models is not a neutral knob. Each pass reloads the weights; the compiled
+    program is read back from the cache, so the repeat cost is the load, not
+    the compile.
+    """
     request = resolve_request(request)
+    seeds = request.resolved_seeds
+    if len(seeds) == 1:
+        return _predict_once(request, seeds[0], request.output_dir)
+
+    results = [
+        _predict_once(request, seed, request.output_dir / f"seed_{seed}")
+        for seed in seeds
+    ]
+    return PredictionResult(
+        model=results[0].model,
+        samples=tuple(sample for result in results for sample in result.samples),
+        output_dir=request.output_dir,
+        raw=[result.raw for result in results],
+    )
+
+
+def _predict_once(
+    request: PredictionRequest, seed: int, output_dir: Path
+) -> PredictionResult:
+    """Run the job under exactly one seed, writing into ``output_dir``."""
+    request = dataclasses.replace(
+        request, seed=seed, seeds=None, output_dir=output_dir
+    )
     backend = get_backend(request.model)
     capabilities = backend.capabilities()
 

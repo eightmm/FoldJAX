@@ -36,6 +36,15 @@ def _add_predict_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        help="run the job once per seed, into a seed_<n> directory each, and "
+        "return every structure together. The samples from one seed are "
+        "correlated, so this is the usual way to get independent predictions. "
+        "Mutually exclusive with --seed",
+    )
+    parser.add_argument(
         "--num-samples", type=int, help="how many structures to generate"
     )
     parser.add_argument("--num-steps", type=int, help="diffusion steps per structure")
@@ -129,6 +138,7 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         output_dir=args.output_dir,
         input_format=args.input_format,
         seed=args.seed,
+        seeds=tuple(args.seeds) if args.seeds else None,
         num_samples=args.num_samples,
         num_steps=args.num_steps,
         num_recycles=args.num_recycles,
@@ -199,7 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "weights": str(resolved.weights),
                     "output_dir": str(resolved.output_dir),
                     "cache_dir": str(resolved.cache_dir),
-                    "seed": resolved.seed,
+                    "seeds": list(resolved.resolved_seeds),
                     "sampling": resolved.sampling,
                     "options": {k: str(v) for k, v in resolved.options.items()},
                 },

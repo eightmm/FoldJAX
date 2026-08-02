@@ -146,16 +146,22 @@ def test_setting_a_knob_and_its_native_name_together_is_rejected(
 
 
 def test_a_knob_the_backend_cannot_express_is_rejected(tmp_path: Path) -> None:
-    from foldjax.backends.alphafold3 import AlphaFold3Backend
+    """OpenFold3 exposes no MSA-depth argument, so asking for one is an error.
+
+    Quietly ignoring it would return a prediction at the model's own depth while
+    the caller believed the cap had been applied -- and the cap is the dominant
+    memory knob, so they would also be comparing peaks that are not comparable.
+    """
+    from foldjax.backends.openfold3 import OpenFold3Backend
 
     request = PredictionRequest(
-        model="alphafold3",
+        model="openfold3",
         input=_job_file(tmp_path),
         weights=_weights(tmp_path),
-        num_steps=8,
+        max_msa_depth=1024,
     )
-    with pytest.raises(ValueError, match="does not support num_steps"):
-        AlphaFold3Backend().apply_sampling(request)
+    with pytest.raises(ValueError, match="does not support max_msa_depth"):
+        OpenFold3Backend().apply_sampling(request)
 
 
 def test_knobs_must_be_positive(tmp_path: Path) -> None:
@@ -164,14 +170,27 @@ def test_knobs_must_be_positive(tmp_path: Path) -> None:
 
 
 def test_capabilities_report_the_knobs_each_backend_honours() -> None:
-    for name in ("boltz2", "chai", "opendde", "protenix"):
+    """All four knobs reach every model that can express them.
+
+    AlphaFold 3 is included: `make_model_config` takes only four arguments, but
+    it returns a mutable config and already sets the sample count by
+    assignment. The step count and the MSA depth sit one level deeper, at
+    `heads.diffusion.eval.steps` and `evoformer.num_msa`. Reporting them as
+    unsupported made AlphaFold 3 the one model that could not be held to the
+    same schedule as the others -- which is exactly what comparing them needs.
+    """
+    for name in ("alphafold3", "boltz2", "chai", "opendde", "protenix"):
         sampling = foldjax.capabilities(name).sampling
-        assert {"num_samples", "num_steps", "num_recycles"} <= set(sampling), name
-    for name in ("boltz2", "chai", "opendde", "protenix"):
-        assert "max_msa_depth" in foldjax.capabilities(name).sampling, name
-    # AlphaFold 3 has no diffusion-step count at all.
-    assert set(foldjax.capabilities("alphafold3").sampling) == {
+        assert {
+            "num_samples",
+            "num_steps",
+            "num_recycles",
+            "max_msa_depth",
+        } == set(sampling), name
+    # OpenFold3 has no MSA-depth argument, and the port is unfinished.
+    assert set(foldjax.capabilities("openfold3").sampling) == {
         "num_samples",
+        "num_steps",
         "num_recycles",
     }
 
@@ -251,3 +270,98 @@ def test_sampling_knobs_survive_the_whole_predict_path(tmp_path: Path) -> None:
     assert backend.seen is not None
     assert backend.seen.num_samples == 4
     assert OpenDDEBackend().apply_sampling(backend.seen)["n_sample"] == 4
+
+
+# --------------------------------------------------------------------------
+# multiple seeds
+# --------------------------------------------------------------------------
+
+
+def test_seeds_run_the_job_once_each_and_return_every_structure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Three of the six models take a seed list natively and three do not.
+
+    A knob that works on half the models is not a neutral knob, so the loop
+    lives in `predict` and every backend gets it identically. Each seed writes
+    into its own directory, because the models that do not namespace by seed
+    would otherwise overwrite each other's structures.
+    """
+    from foldjax.schema import PredictionResult, PredictionSample
+
+    seen: list[tuple[int, Path]] = []
+
+    class Recorder(OpenDDEBackend):
+        def predict(self, request):
+            seen.append((request.seed, request.output_dir))
+            path = request.output_dir / f"s{request.seed}.cif"
+            return PredictionResult(
+                model="opendde",
+                samples=(PredictionSample(seed=request.seed, structure_path=path),),
+                output_dir=request.output_dir,
+            )
+
+    out = tmp_path / "out"
+    request = PredictionRequest(
+        model="opendde",
+        input=_job_file(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=out,
+        seeds=(7, 11, 13),
+        use_compile_cache=False,
+    )
+    with backend_override("opendde", Recorder):
+        result = foldjax.predict(request)
+
+    assert [seed for seed, _ in seen] == [7, 11, 13]
+    assert [directory for _, directory in seen] == [
+        out / "seed_7",
+        out / "seed_11",
+        out / "seed_13",
+    ]
+    assert [sample.seed for sample in result.samples] == [7, 11, 13]
+    assert result.output_dir == out
+
+
+def test_one_seed_keeps_the_output_directory_it_was_given(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The single-seed path must not gain a directory level."""
+    from foldjax.schema import PredictionResult
+
+    seen: list[Path] = []
+
+    class Recorder(OpenDDEBackend):
+        def predict(self, request):
+            seen.append(request.output_dir)
+            return PredictionResult(model="opendde", output_dir=request.output_dir)
+
+    out = tmp_path / "out"
+    with backend_override("opendde", Recorder):
+        foldjax.predict(
+            PredictionRequest(
+                model="opendde",
+                input=_job_file(tmp_path),
+                weights=_weights(tmp_path),
+                output_dir=out,
+                seed=4,
+                use_compile_cache=False,
+            )
+        )
+    assert seen == [out]
+
+
+def test_seed_and_seeds_together_are_an_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="both set"):
+        PredictionRequest(
+            model="opendde", input=_job_file(tmp_path), seed=3, seeds=(1, 2)
+        )
+
+
+@pytest.mark.parametrize(
+    ("seeds", "message"),
+    [((), "must not be empty"), ((1, 1), "must be unique"), ((-1,), "non-negative")],
+)
+def test_a_malformed_seed_list_is_refused(tmp_path: Path, seeds, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        PredictionRequest(model="opendde", input=_job_file(tmp_path), seeds=seeds)

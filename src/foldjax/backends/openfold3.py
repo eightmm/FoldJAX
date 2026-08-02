@@ -28,10 +28,17 @@ _COMPILE_OPTIONS = ("num_samples", "no_rollout_steps", "num_cycles", "pair_chunk
 
 class OpenFold3Backend(Backend):
     name = "openfold3"
+    # OpenFold3 spells these `no_rollout_steps` and `num_cycles`, which is what
+    # `released_config` takes and what `predict` below pops. Mapping them onto
+    # their own neutral names put `num_steps` and `num_recycles` into the option
+    # dict, where nothing consumed them, so both knobs raised "unsupported
+    # OpenFold3 options" -- capabilities advertised two knobs that could only
+    # ever fail. `max_msa_depth` is deliberately absent: OpenFold3 exposes no
+    # MSA-depth argument, so it is refused rather than quietly ignored.
     sampling_options = {
         "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
+        "num_steps": "no_rollout_steps",
+        "num_recycles": "num_cycles",
     }
     compile_options = _COMPILE_OPTIONS
 
