@@ -133,24 +133,26 @@ def _predict(
     )
 
 
-# The structural triangle-attention score tensor is [N, heads, q_chunk, N]
-# float32, and this bounds it. Swept on a 488-residue job (946 structural
-# tokens, 12 heads), peak / warm wall / pLDDT came out:
+# Triangle attention blocks its *row* axis, and each row is an independent
+# attention, so a block bounds the projections and the score tensor together.
+# Swept at two sizes, and both optima are the same block size rather than the
+# same number of bytes:
 #
-#     2048 MiB -> 15,639 MiB  11.1 s  87.4899
-#     1024 MiB -> 14,443 MiB  12.3 s  87.4907
-#      512 MiB -> 14,465 MiB  13.9 s  87.4901
-#      256 MiB -> 14,463 MiB  15.4 s  87.4918
+#     488 residues (946 structural tokens)   976 residues (1,892 tokens)
+#       25 rows ->  9,760 MiB  (1 GiB score)   25 rows -> 32,641 MiB (4 GiB)
+#       50 rows -> 11,752 MiB  (2 GiB score)    6 rows -> 43,569 MiB (1 GiB)
+#      100 rows -> 15,593 MiB  (4 GiB score)   50 rows -> 37,687 MiB (8 GiB)
 #
-# The knee is at 1 GiB: past it the score tensor is no longer what sizes the
-# peak, so tightening further buys nothing and costs 13% more wall time per
-# halving. Confidence is flat across the sweep -- blocking the query axis is
-# exact, since the softmax still reduces over the whole key axis in each block.
-_STRUCTURAL_SCORE_BUDGET_BYTES = 1024**3
+# So the rule is a row count, not a byte budget: too few rows pays per-block
+# overhead across hundreds of blocks, too many lets the score tensor take over.
+# Bytes remain as the ceiling, because a fixed row count grows the score as N²
+# and would run away on a very large complex.
+_STRUCTURAL_ROWS_PER_BLOCK = 25
+_STRUCTURAL_SCORE_CEILING_BYTES = 4 * 1024**3
 
 
 def _structural_q_chunk(params, n_structural: int, resolved: int | None) -> int | None:
-    """Block the structural branch by bytes rather than by token count.
+    """Choose the structural branch's row-block size.
 
     Protenix's chunk policy maps a token count to a chunk size, and it was
     written for a four-head trunk. OpenDDE's structural refiner runs on
@@ -159,9 +161,9 @@ def _structural_q_chunk(params, n_structural: int, resolved: int | None) -> int 
     materialises 10.5 GiB, twice over. Both branches share one knob, so the
     binding one has to set it.
 
-    Returns whichever is smaller: what the policy chose, or what the budget
-    allows. Never larger, and never below 8, where the launch overhead of one
-    more block outweighs the memory it saves.
+    Returns the smallest of: what the policy chose, the measured row block, and
+    whatever the score ceiling allows. Never larger, and never below 8, where
+    the launch overhead of one more block outweighs the memory it saves.
     """
     try:
         blocks = params.structural_refiner.blocks
@@ -171,7 +173,10 @@ def _structural_q_chunk(params, n_structural: int, resolved: int | None) -> int 
     per_row = n_structural * n_structural * heads * 4
     if per_row <= 0:
         return resolved
-    allowed = max(8, _STRUCTURAL_SCORE_BUDGET_BYTES // per_row)
+    allowed = max(8, min(
+        _STRUCTURAL_ROWS_PER_BLOCK,
+        _STRUCTURAL_SCORE_CEILING_BYTES // per_row,
+    ))
     if allowed >= n_structural:
         return resolved
     return allowed if resolved is None else min(resolved, allowed)

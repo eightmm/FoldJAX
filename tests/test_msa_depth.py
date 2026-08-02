@@ -75,18 +75,19 @@ def test_the_cap_changes_the_compile_cache_namespace(tmp_path) -> None:
 
 
 def test_a_chunk_size_the_kernel_cannot_honour_is_not_silent() -> None:
-    """cuEquivariance has no chunked triangle-attention kernel.
+    """cuEquivariance takes the whole query axis, so a chunk size never lands.
 
-    A chunk size that reaches it bounds nothing, and the score tensor it exists
-    to bound is materialised whole. That was silent, which is how a knob comes
-    to look like it works.
+    Nothing is wrong when it does not -- the kernel is fused and never builds
+    the score tensor a chunk size would bound; a materialised one would be
+    14.9 TB at 976 tokens, against a 13,750 MiB measured peak. But a knob that
+    does nothing should still say so rather than look like it worked.
     """
     import warnings
 
     from foldjax.models.protenix.models.triangle import triangle
 
     triangle._WARNED_UNCHUNKABLE = False
-    with pytest.warns(RuntimeWarning, match="ignored by the 'cueq' backend"):
+    with pytest.warns(RuntimeWarning, match="not used by the 'cueq' backend"):
         triangle._warn_unchunkable_backend(128)
     # Once per process: the trunk calls this per block per layer, and warning
     # every time would bury the run in identical noise.
@@ -96,17 +97,24 @@ def test_a_chunk_size_the_kernel_cannot_honour_is_not_silent() -> None:
     assert caught == []
 
 
-def test_the_structural_branch_is_blocked_by_bytes_not_token_count() -> None:
+def test_the_structural_branch_is_blocked_by_rows_not_token_count() -> None:
     """OpenDDE's structural refiner is what sizes its peak.
 
     Protenix's chunk policy maps a token count to a chunk size and was written
     for a four-head trunk. The structural branch runs on sub-residue tokens
     with three times the heads, so the same token count costs three times the
     score tensor: at 946 tokens the policy's 256 still materialises 10.5 GiB,
-    twice over. Bounding by bytes instead took the measured peak from 32,185 to
-    14,443 MiB with confidence flat to four decimals.
+    twice over.
+
+    The block is a row count rather than a byte budget because that is what the
+    sweep found -- 25 rows was the optimum at 946 *and* at 1,892 tokens, where
+    the equivalent byte budgets differ fourfold. Bytes stay on as a ceiling, so
+    a fixed row count cannot let the score grow as N² without limit.
     """
-    from foldjax.models.opendde.cli.predict import _structural_q_chunk
+    from foldjax.models.opendde.cli.predict import (
+        _STRUCTURAL_ROWS_PER_BLOCK,
+        _structural_q_chunk,
+    )
 
     class _Linear:
         weight = type("w", (), {"shape": (12, 1)})()
@@ -118,13 +126,16 @@ def test_the_structural_branch_is_blocked_by_bytes_not_token_count() -> None:
         structural_refiner = type("s", (), {"blocks": [_Block()]})()
 
     params = _Params()
-    # Big enough to bind: the policy's 256 is cut down.
-    assert _structural_q_chunk(params, 946, 256) < 256
-    # Small enough not to: the policy's choice stands. The threshold moves with
-    # the budget, so this is well under it rather than just below.
-    assert _structural_q_chunk(params, 200, 256) == 256
-    # It only ever narrows.
+    # The policy's 256 is cut down to the measured row block.
+    assert _structural_q_chunk(params, 946, 256) == _STRUCTURAL_ROWS_PER_BLOCK
+    # It only ever narrows: a policy that already asked for less is respected.
     assert _structural_q_chunk(params, 946, 16) == 16
+    # Small enough that blocking would buy nothing: left alone.
+    assert _structural_q_chunk(params, 20, 256) == 256
+    # The ceiling binds before the row count on a very large complex, and never
+    # drops below the floor where launch overhead dominates.
+    huge = _structural_q_chunk(params, 20_000, 256)
+    assert 8 <= huge < _STRUCTURAL_ROWS_PER_BLOCK
     # A parameter tree without the branch is left alone rather than guessed at.
     assert _structural_q_chunk(object(), 946, 256) == 256
 

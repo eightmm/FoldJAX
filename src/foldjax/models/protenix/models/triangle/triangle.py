@@ -190,23 +190,27 @@ _WARNED_UNCHUNKABLE = False
 
 
 def _warn_unchunkable_backend(q_chunk_size: int) -> None:
-    """Say that a requested chunk size cannot be honoured, once.
+    """Say that a requested chunk size is not used, once.
 
-    The cuEquivariance kernel takes the whole query axis; blocking is only
-    implemented in the XLA path. A chunk size that reaches this branch bounds
-    nothing, and the [N, h, N, N] score tensor it exists to bound is
-    materialised whole. That is worth one line on stderr rather than silence --
-    and not an exception, because the automatic chunk policy legitimately emits
-    a size without knowing which backend will run.
+    The cuEquivariance kernel takes the whole query axis, so an explicit chunk
+    size does not reach it. That is worth one line rather than silence, because
+    a knob that does nothing should say so -- but it is not a problem: the
+    kernel is fused and never builds the [N, h, N, N] score tensor that the
+    chunk size exists to bound. Blocking is only implemented in the XLA path,
+    which needs it precisely because it does build that tensor.
+
+    Not an exception, because the automatic chunk policy legitimately emits a
+    size without knowing which backend will run.
     """
     global _WARNED_UNCHUNKABLE
     if _WARNED_UNCHUNKABLE:
         return
     _WARNED_UNCHUNKABLE = True
     warnings.warn(
-        f"triangle attention q_chunk_size={q_chunk_size} is ignored by the "
-        "'cueq' backend, which has no chunked kernel: the full score tensor is "
-        "materialised. Pass attention_backend='xla' to block the query axis.",
+        f"triangle attention q_chunk_size={q_chunk_size} is not used by the "
+        "'cueq' backend, whose fused kernel never materialises the score "
+        "tensor the chunk size would bound. No action needed; the XLA backend "
+        "is the one that honours it.",
         RuntimeWarning,
         stacklevel=2,
     )
@@ -291,32 +295,34 @@ def _triangle_attention_dense(
     q_chunk_size: int | None,
     attention_backend: str,
 ) -> jnp.ndarray:
-    k = _project_heads(x, params.attention.linear_k, num_heads)
-    v = _project_heads(x, params.attention.linear_v, num_heads)
-    scale = float(k.shape[-1] ** -0.5)
-    # The chunked path below reads one block of queries at a time, so it
-    # projects them per block instead of holding the whole thing. `q` is
-    # [N, heads, N, d] -- 1,311 MiB on OpenDDE's structural branch, the same
-    # size as `k` and `v`, and unlike them it is never needed whole. Every
-    # other path does need it whole.
+    # Triangle attention is a batch of independent attentions, one per row of
+    # the pair representation: `q`, `k` and `v` are [N_row, heads, N_col, d] and
+    # nothing in the softmax crosses a row. Blocking that row axis therefore
+    # bounds all three projections *and* the [N_row, heads, N_col, N_col] score
+    # tensor at once, for the same block count, the same score budget and the
+    # same arithmetic -- each row is projected exactly once either way.
+    #
+    # Blocking the query axis instead, which is what this did, bounds only the
+    # scores and `q`; `k` and `v` stay whole, at 1,311 MiB apiece on OpenDDE's
+    # structural branch.
     chunked = (
         attention_backend not in {"cueq", "tokamax"}
         and q_chunk_size is not None
-        and 0 < q_chunk_size < x.shape[-2]
+        and 0 < q_chunk_size < x.shape[-3]
     )
-    q = (
-        None
-        if chunked
-        else _project_heads(x, params.attention.linear_q, num_heads)
-    )
+    scale = float(params.attention.linear_k.weight.shape[0] // num_heads) ** -0.5
+    if chunked:
+        q = k = v = None
+    else:
+        q = _project_heads(x, params.attention.linear_q, num_heads)
+        k = _project_heads(x, params.attention.linear_k, num_heads)
+        v = _project_heads(x, params.attention.linear_v, num_heads)
 
     if attention_backend == "cueq" and x.shape[-2] > 16:
-        # The cuEquivariance kernel takes the whole query axis; there is no
-        # chunked entry point. Blocking is only implemented in the XLA path
-        # below, so a caller who asked for a chunk size and got this branch
-        # would silently get an unchunked, unbounded [N, h, N, N] score tensor
-        # -- which is exactly the buffer the chunk size exists to bound. Say so
-        # rather than accepting the argument and ignoring it.
+        # The cuEquivariance kernel is fused and takes the whole thing, so a
+        # chunk size does not reach it. Nothing is materialised that a chunk
+        # size would have bounded; say so once rather than let a knob look
+        # like it worked.
         if q_chunk_size is not None and 0 < q_chunk_size < x.shape[-2]:
             _warn_unchunkable_backend(q_chunk_size)
         from foldjax.models.protenix.models.triangle.triangle_cueq import (
@@ -349,30 +355,38 @@ def _triangle_attention_dense(
     elif not chunked:
         out = _triangle_attention_block(q, k, v, mask_bias, triangle_bias)
     else:
-        rows = x.shape[-2]
-        blocks = []
+        rows = x.shape[-3]
+        # Written into one preallocated buffer rather than concatenated at the
+        # end: at 1,892 structural tokens the row budget picks blocks of six,
+        # and holding all 316 results live to concatenate them costs a second
+        # copy of the [N_row, heads, N_col, d] output -- 5,244 MiB.
+        head_dim = params.attention.linear_q.weight.shape[0] // num_heads
+        out = jnp.zeros(
+            x.shape[:-3] + (rows, num_heads, x.shape[-2], head_dim),
+            dtype=x.dtype,
+        )
         for start in range(0, rows, q_chunk_size):
             size = min(q_chunk_size, rows - start)
-            # Project this block's queries straight from `x`. Slicing `x` on
-            # the query axis and then projecting is the same arithmetic as
-            # projecting and then slicing -- the linear contracts over the
-            # channel axis -- but it never builds the full `q`.
-            q_block = _project_heads(
-                jax.lax.dynamic_slice_in_dim(x, start, size, axis=-2),
-                params.attention.linear_q,
-                num_heads,
-            )
+            # One block of rows, projected straight from `x`. Slicing the row
+            # axis and then projecting is the same arithmetic as projecting and
+            # then slicing -- the linear contracts over the channel axis -- and
+            # each row is still projected exactly once across the whole loop.
+            x_rows = jax.lax.dynamic_slice_in_dim(x, start, size, axis=-3)
+            q_block = _project_heads(x_rows, params.attention.linear_q, num_heads)
             q_block = q_block * jnp.asarray(scale, dtype=q_block.dtype)
-            tri_block = jax.lax.dynamic_slice_in_dim(
+            block = _triangle_attention_block(
+                q_block,
+                _project_heads(x_rows, params.attention.linear_k, num_heads),
+                _project_heads(x_rows, params.attention.linear_v, num_heads),
+                # mask_bias is [..., N_row, 1, 1, N_col]; the row axis is -4.
+                # triangle_bias is [..., 1, heads, N, N] -- already broadcast
+                # over rows, so it is passed through whole.
+                jax.lax.dynamic_slice_in_dim(mask_bias, start, size, axis=-4),
                 triangle_bias,
-                start,
-                size,
-                axis=-2,
             )
-            blocks.append(
-                _triangle_attention_block(q_block, k, v, mask_bias, tri_block)
+            out = out.at[..., start : start + size, :, :, :].set(
+                block.astype(out.dtype)
             )
-        out = jnp.concatenate(blocks, axis=-2)
 
     out = jnp.swapaxes(out, -2, -3)
     if params.attention.linear_g is not None:
