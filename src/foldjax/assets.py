@@ -21,6 +21,12 @@ from pathlib import Path
 from foldjax.paths import assets_dir, downloads_dir, weights_dir
 
 _CHUNK = 1 << 20
+#: Seconds a socket may stall before the attempt is abandoned. Generous, since
+#: a large file over a slow link is not the same thing as a stalled one.
+_TIMEOUT = 120
+#: A dropped connection part-way through several GB should not mean starting
+#: the whole fetch again by hand.
+_ATTEMPTS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,22 +376,39 @@ def _verified(path: Path, item: Download) -> bool:
 
 
 def download(item: Download, model: str, *, on_progress=None) -> Path:
-    """Download one file unless a verified copy is already present."""
+    """Download one file unless a verified copy is already present.
+
+    These are multi-gigabyte model weights over the public internet, so a
+    dropped or stalled connection is an ordinary event rather than an
+    exceptional one. Three things follow from that:
+
+    * a read that ends short of ``Content-Length`` is a truncation, not a
+      finished download. Most published files here carry no sha256, so without
+      this check a half-written checkpoint is renamed into place and passes
+      every later "is it there?" test permanently;
+    * a socket with no timeout can wait forever on a server that accepted the
+      connection and then stopped sending;
+    * one transient failure should not throw away several GB of progress, so
+      the attempt is retried.
+    """
     path = item.target(model)
     if _verified(path, item):
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
 
-    with urllib.request.urlopen(item.url) as response:  # noqa: S310 - pinned https
-        total = int(response.headers.get("Content-Length") or 0) or item.size
-        done = 0
-        with open(partial, "wb") as handle:
-            while chunk := response.read(_CHUNK):
-                handle.write(chunk)
-                done += len(chunk)
-                if on_progress is not None:
-                    on_progress(item.name, done, total)
+    last_error: Exception | None = None
+    for attempt in range(_ATTEMPTS):
+        try:
+            _stream(item, partial, on_progress=on_progress)
+            break
+        except (OSError, ValueError) as error:
+            last_error = error
+            partial.unlink(missing_ok=True)
+            if attempt == _ATTEMPTS - 1:
+                raise
+    else:  # pragma: no cover - the loop always breaks or raises
+        raise last_error  # type: ignore[misc]
 
     if item.sha256 is not None:
         actual = _digest(partial)
@@ -397,6 +420,25 @@ def download(item: Download, model: str, *, on_progress=None) -> Path:
             )
     partial.replace(path)
     return path
+
+
+def _stream(item: Download, partial: Path, *, on_progress=None) -> None:
+    """Fetch ``item`` into ``partial``, or raise if it arrives incomplete."""
+    request = urllib.request.Request(item.url)  # noqa: S310 - pinned https
+    with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:  # noqa: S310
+        declared = int(response.headers.get("Content-Length") or 0) or item.size
+        done = 0
+        with open(partial, "wb") as handle:
+            while chunk := response.read(_CHUNK):
+                handle.write(chunk)
+                done += len(chunk)
+                if on_progress is not None:
+                    on_progress(item.name, done, declared)
+    if declared and done != declared:
+        raise OSError(
+            f"{item.name} arrived incomplete: {done} of {declared} bytes. "
+            "The connection dropped; nothing was kept"
+        )
 
 
 def fetch(model: str, *, on_progress=None, convert: bool = True) -> Path:

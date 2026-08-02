@@ -227,3 +227,95 @@ def test_the_cli_reports_an_unfetchable_model_without_a_traceback(
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
     assert main(["weights", "fetch", "--model", "alphafold3"]) == 1
     assert "not redistributable" in capsys.readouterr().err
+
+
+def test_a_truncated_download_is_not_accepted(tmp_path: Path, monkeypatch) -> None:
+    """A short read is a truncation, not a finished download.
+
+    Most published files here carry no sha256, so without a length check a
+    half-written multi-GB checkpoint gets renamed into place and passes every
+    later "is it there?" test permanently.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    item = assets.Download(name="w.bin", url="https://example.invalid/w.bin")
+
+    class _Short:
+        headers = {"Content-Length": "100"}
+
+        def read(self, _size):
+            payload, self._sent = (b"x" * 40, True) if not getattr(
+                self, "_sent", False
+            ) else (b"", True)
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(assets.urllib.request, "urlopen", lambda *a, **k: _Short())
+    with pytest.raises(OSError, match="arrived incomplete"):
+        assets.download(item, "protenix")
+    # Nothing partial is left behind to be mistaken for the real file.
+    assert not list(tmp_path.rglob("*.part"))
+    assert not list(tmp_path.rglob("w.bin"))
+
+
+def test_a_complete_download_is_kept(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    item = assets.Download(name="w.bin", url="https://example.invalid/w.bin")
+
+    class _Whole:
+        headers = {"Content-Length": "40"}
+
+        def read(self, _size):
+            if getattr(self, "_sent", False):
+                return b""
+            self._sent = True
+            return b"x" * 40
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(assets.urllib.request, "urlopen", lambda *a, **k: _Whole())
+    written = assets.download(item, "protenix")
+    assert written.read_bytes() == b"x" * 40
+
+
+def test_a_dropped_connection_is_retried(tmp_path: Path, monkeypatch) -> None:
+    """Several GB of progress should not be lost to one transient failure."""
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    item = assets.Download(name="w.bin", url="https://example.invalid/w.bin")
+    attempts = []
+
+    class _Flaky:
+        def __init__(self, attempt):
+            self.attempt = attempt
+            self.headers = {"Content-Length": "40"}
+            self._sent = False
+
+        def read(self, _size):
+            if self.attempt == 0:
+                raise OSError("connection reset")
+            if self._sent:
+                return b""
+            self._sent = True
+            return b"x" * 40
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(*_a, **_k):
+        attempts.append(1)
+        return _Flaky(len(attempts) - 1)
+
+    monkeypatch.setattr(assets.urllib.request, "urlopen", urlopen)
+    assert assets.download(item, "protenix").read_bytes() == b"x" * 40
+    assert len(attempts) == 2
