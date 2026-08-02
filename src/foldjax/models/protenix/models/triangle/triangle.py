@@ -307,17 +307,23 @@ _compiled_triangle_attention = jax.jit(
 
 # One row of the score tensor costs `heads * N * N * 4` bytes -- the logits are
 # float32 whatever the trunk dtype is, because the mask bias is. Blocking rows
-# is what bounds it, so the block size is a row count, and both places it was
-# swept independently landed on the same rule:
+# is what bounds it, and both branches were swept independently, at two sizes
+# each:
 #
 #   protenix, 4 heads:   64 rows optimal at 490 tokens and again at 976
-#   opendde, 12 heads:   25 rows optimal at 948 tokens and again at 1,892
+#   opendde, 12 heads:   ~25 rows optimal at 948 tokens and again at 1,892
 #
-# `min(64, 1 GiB / row)` reproduces both exactly. Below the cap the budget
-# binds and the count falls with N^2; above it, more rows per block stops
-# helping and only grows the score tensor. The floor is where one more block
-# costs more in launch overhead than it saves.
-_SCORE_BUDGET_BYTES = 1024**3
+# The optimum is the same row count at both sizes for a given branch, so it is
+# not a byte budget -- a budget halves the count every time the tokens double,
+# and at 1,892 tokens that meant 6 rows, which measured 43,569 MiB against
+# 32,641 at 25. What is invariant is `rows * heads`: 64*4 = 256, 25*12 = 300.
+# Too few rows pays per-block overhead across hundreds of blocks; too many lets
+# the score tensor take over.
+#
+# Bytes stay on as a ceiling, because a fixed row count grows the score as N^2
+# and would run away on a very large complex.
+_SCORE_ROWS_TIMES_HEADS = 288
+_SCORE_CEILING_BYTES = 8 * 1024**3
 _PROJECTION_BUDGET_BYTES = 128 * 1024**2
 _MAX_ROWS_PER_BLOCK = 64
 _MIN_ROWS_PER_BLOCK = 8
@@ -328,17 +334,26 @@ def _row_block(
     rows: int,
     per_row: int,
     requested: int | None,
-    budget: int = _SCORE_BUDGET_BYTES,
+    cap: int = _MAX_ROWS_PER_BLOCK,
+    budget: int = _SCORE_CEILING_BYTES,
 ) -> int | None:
     """Rows per block: the caller's request, narrowed to what the budget allows."""
     if per_row <= 0 or rows < 2:
         return requested
-    allowed = max(
-        _MIN_ROWS_PER_BLOCK, min(_MAX_ROWS_PER_BLOCK, budget // per_row)
-    )
+    allowed = max(_MIN_ROWS_PER_BLOCK, min(cap, budget // per_row))
     if allowed >= rows:
         return requested
     return allowed if requested is None else min(requested, allowed)
+
+
+def _score_rows(*, rows: int, cols: int, num_heads: int, requested: int | None):
+    """Row block for a triangle attention, from its own head count and width."""
+    return _row_block(
+        rows=rows,
+        per_row=num_heads * cols * cols * 4,
+        requested=requested,
+        cap=min(_MAX_ROWS_PER_BLOCK, max(1, _SCORE_ROWS_TIMES_HEADS // num_heads)),
+    )
 
 
 def _triangle_attention_dense(
@@ -361,9 +376,10 @@ def _triangle_attention_dense(
     # scores and `q`; `k` and `v` stay whole, at 1,311 MiB apiece on OpenDDE's
     # structural branch.
     if attention_backend not in {"cueq", "tokamax"}:
-        q_chunk_size = _row_block(
+        q_chunk_size = _score_rows(
             rows=x.shape[-3],
-            per_row=num_heads * x.shape[-2] * x.shape[-2] * 4,
+            cols=x.shape[-2],
+            num_heads=num_heads,
             requested=q_chunk_size,
         )
     chunked = (

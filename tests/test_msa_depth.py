@@ -107,20 +107,22 @@ def test_triangle_attention_blocks_rows_by_one_rule_for_every_branch() -> None:
     count alone -- it is resolved inside the attention, where both the token
     count and the head count of *that* call are known.
 
-    The rule is `min(64 rows, 1 GiB / row)`, and it reproduces both independent
-    sweeps: 64 rows for Protenix's 4-head trunk, which the cap decides at 490
-    and 976 tokens alike, and ~24 for OpenDDE's 12-head structural branch,
-    where the budget decides instead.
+    The optimum is the same row count at both sizes for a given branch, which
+    rules a byte budget out: a budget halves the count every time the tokens
+    double, and at 1,892 tokens that gave 6 rows, measured at 43,569 MiB
+    against 32,641 at 25. What is invariant is `rows * heads` -- 64*4 for
+    Protenix's trunk, 25*12 for OpenDDE's structural branch.
     """
     from foldjax.models.protenix.models.triangle.triangle import (
         _MAX_ROWS_PER_BLOCK,
         _MIN_ROWS_PER_BLOCK,
         _row_block,
+        _score_rows,
     )
 
     def score_rows(tokens: int, heads: int, requested=None):
-        return _row_block(
-            rows=tokens, per_row=heads * tokens * tokens * 4, requested=requested
+        return _score_rows(
+            rows=tokens, cols=tokens, num_heads=heads, requested=requested
         )
 
     # Protenix's trunk: the cap binds, not the budget.
@@ -128,14 +130,16 @@ def test_triangle_attention_blocks_rows_by_one_rule_for_every_branch() -> None:
     assert score_rows(976, 4) == 64
     # OpenDDE's structural branch: 12 heads makes the budget bind instead, and
     # the block shrinks with the token count where the trunk's stays at the cap.
+    # The head count decides, and it does not move with the token count: the
+    # 12-head branch gets the same block at 948 tokens and at 1,892.
     wide = score_rows(948, 12)
-    wider = score_rows(1892, 12)
-    assert wide == 1024**3 // (12 * 948 * 948 * 4) < _MAX_ROWS_PER_BLOCK
-    assert _MIN_ROWS_PER_BLOCK <= wider < wide
+    assert wide == score_rows(1892, 12) < _MAX_ROWS_PER_BLOCK
+    assert wide * 12 == pytest.approx(64 * 4, rel=0.2)
     # It only ever narrows what the policy proposed.
     assert score_rows(948, 12, requested=256) == wide
     assert score_rows(948, 12, requested=16) == 16
-    # Never below the floor, where one more block costs more than it saves.
+    # The byte ceiling still takes over on a complex big enough for a fixed row
+    # count to run away, and never goes below the floor.
     assert score_rows(20_000, 12) == _MIN_ROWS_PER_BLOCK
     # Small enough that blocking buys nothing: the request stands untouched.
     assert score_rows(20, 4) is None
