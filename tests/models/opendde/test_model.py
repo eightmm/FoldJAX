@@ -201,9 +201,19 @@ def test_full_inference_mapper_composes_open_dde_specific_modules(
         assert getattr(actual, name) is value
 
 
+@pytest.mark.parametrize("return_representations", [True, False])
 def test_static_inference_routes_residue_heads_and_structural_diffusion(
-    monkeypatch,
+    monkeypatch, return_representations: bool
 ) -> None:
+    """Both output contracts, including the default.
+
+    The default stopped returning the six representation tensors -- the
+    structural pair one alone was 1,311 MiB of a 1,869 MiB output, and
+    returning it held the refiner's working buffer live to the end of the
+    program. Only the opted-in contract was covered, so nothing checked that
+    the default still returns everything the CIF writer and the confidence
+    summaries read.
+    """
     monkeypatch.delenv("PROTENIX_TRIANGLE_BACKEND", raising=False)
     monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
     residue_s_inputs = jnp.full((2, 5), 1.0)
@@ -372,15 +382,27 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         key=None,
         n_sample=1,
         pair_mask=residue_pair_mask,
-        return_representations=True,
+        return_representations=return_representations,
     )
 
-    assert actual["s_inputs"] is residue_s_inputs
-    assert actual["s_trunk"] is residue_s
-    assert actual["z_trunk"] is residue_z
-    assert actual["structural_s_inputs"] is structural_s_inputs
-    assert actual["structural_s_trunk"] is refined_s
-    assert actual["structural_z_trunk"] is refined_z
+    representations = (
+        "s_inputs",
+        "s_trunk",
+        "z_trunk",
+        "structural_s_inputs",
+        "structural_s_trunk",
+        "structural_z_trunk",
+    )
+    if return_representations:
+        assert actual["s_inputs"] is residue_s_inputs
+        assert actual["s_trunk"] is residue_s
+        assert actual["z_trunk"] is residue_z
+        assert actual["structural_s_inputs"] is structural_s_inputs
+        assert actual["structural_s_trunk"] is refined_s
+        assert actual["structural_z_trunk"] is refined_z
+    else:
+        assert not [name for name in representations if name in actual]
+    # Whatever the contract, everything the outputs are built from stays.
     assert actual["coordinate"] is coordinates
     assert actual["distogram_logits"].shape == (2, 2, 2)
     assert actual["plddt"].shape == (1, 3, 2)
