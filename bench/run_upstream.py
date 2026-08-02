@@ -229,6 +229,14 @@ def main() -> int:
     environment["PYTHONPATH"] = (
         f"{hook}:{environment['PYTHONPATH']}" if "PYTHONPATH" in environment else hook
     )
+    # Invoking `.venv/bin/python` directly does not put that venv's `bin` on
+    # PATH the way activating it would, so tools installed alongside the
+    # interpreter are invisible. Protenix needs `ninja` there: its fused
+    # layer-norm is a CUDA extension compiled on first use, and without it the
+    # run dies at import. Running upstream on its pure-torch fallback instead
+    # would be measuring a different thing than upstream's own default.
+    venv_bin = str(Path(argv[0]).parent)
+    environment["PATH"] = f"{venv_bin}:{environment.get('PATH', '')}"
 
     start = time.perf_counter()
     completed = subprocess.run(
