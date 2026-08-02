@@ -119,35 +119,78 @@ exposes no diffusion-step count, so `--num-steps` is refused for it rather than
 quietly ignored. `--option KEY=VALUE` still passes anything native straight
 through.
 
-### Memory: `--max-msa-depth`
+### Memory
 
-One knob dominates peak memory, and it is not the one you would guess. Every
-trunk here holds an `[depth, tokens, channels]` MSA representation. On a
-488-token job with a 13,254-row alignment that single tensor is 3,158 MiB, and
-three are live at once — 9.5 GiB of Protenix's 12.2 GiB peak.
+Peak memory on a 488-token job, one sample, at each port's own defaults:
 
-| protenix, 488 tokens | peak | warm | pLDDT | pTM |
-|---|---|---|---|---|
-| default (13,254 rows) | 12,264 MiB | 5.55 s | 75.1 | 0.749 |
-| `--max-msa-depth 4096` | 6,008 MiB | 5.44 s | 70.3 | 0.856 |
-| `--max-msa-depth 2048` | 5,991 MiB | 5.40 s | 76.6 | 0.902 |
-| `--max-msa-depth 1024` | **5,986 MiB** | **5.40 s** | 79.9 | 0.915 |
+| model | peak | warm | confidence |
+|---|---|---|---|
+| alphafold3 | 3,983 MiB | 14.8 s | pTM 0.66 |
+| boltz2 | 4,684 MiB | 7.9 s | pLDDT 0.892 |
+| protenix | 6,089 MiB | 5.5 s | pLDDT 75.05 |
+| chai | 7,577 MiB | 8.6 s | pLDDT 0.849 |
+| opendde | 13,433 MiB | 12.1 s | pLDDT 87.49 |
 
-Half the memory, marginally *faster*, and the cap barely matters below ~4096 —
-once the MSA stops being the largest buffer, something else is, so there is no
-reason to cut harder than you have to. Five samples instead of one costs 11%
-more (5,986 → 6,666 MiB): the sample axis is already sequential.
+Getting there took four changes, none of which was the knob we expected. Each
+came from reading XLA's buffer assignment for the peak and fixing whatever it
+named — a habit worth more than any individual fix below.
 
-Two things that sound like memory knobs and are not, both measured on the same
-job: a bfloat16 trunk moved the peak by 0.3% (12,264 → 12,223 MiB), and
-blocking the triangle attention moved it by 0.4% (→ 12,217 MiB). Neither is
-where the memory is. **Attribute the peak before turning knobs** — these were
-found by reading XLA's buffer assignment, not by guessing.
+**The transition was the largest buffer in three of the four ports.** It widens
+its input before narrowing it again and holds three copies of the wide form at
+once — `a`, `b`, and `silu(a) * b`. On OpenDDE's structural pair representation
+those were three `f32[946, 946, 768]` buffers, 2,622 MiB apiece: 7,866 MiB of a
+10,914 MiB arena, for an operation that reduces only over the channel axis.
+Blocking the leading axis is mathematically exact, so it needs no flag: there
+is no accuracy to trade, only kernel launches, and only on tensors already big
+enough for that to be cheap.
 
-Confidence moves with the cap, but not monotonically (79.9 at 1024, 70.3 at
-4096), because which rows get sampled changes. Treat that spread as the
-alignment's own variance, not as evidence that a shallower MSA predicts better.
-The default keeps each port's own depth; nothing changes unless you ask.
+**Triangle multiplication widened its projections before contracting them.**
+Both are `[N, N, c_hidden]` — 1,311 MiB each on OpenDDE's structural branch —
+and they were cast to float32 first, so a bfloat16 trunk still paid float32 for
+its two largest tensors. They now keep their own dtype and accumulate through
+`preferred_element_type`: identical float32 accumulation, half the operand
+bytes. It is what AlphaFold 3's `BF16_BF16_F32` algorithm already does, and it
+is most of why AF3's peak sits where it does — its released trunk runs bfloat16
+weights *and* activations.
+
+Together those two took Protenix from 12,264 to 6,089 MiB and OpenDDE from
+32,185 to 13,433 MiB, with confidence flat (75.08 → 75.05 and 87.49 → 87.489).
+
+**Eager arithmetic between compiled blocks is not free.** Chai runs its trunk
+as many small programs on purpose, so XLA can release MSA intermediates between
+them — but the residual `a + b` joining those programs dispatches its own
+executable, with all three buffers live. On the MSA representation that is
+three copies of the largest tensor in the trunk, for an add. Routing them
+through a compiled add that donates its update buffer is the same arithmetic
+and took Chai from 8,637 to 7,577 MiB with scores unchanged to five decimals.
+
+**Dead outputs cost twice.** OpenDDE returned six representation tensors that
+nothing reads; the structural pair representation alone was 1,311 MiB of a
+1,869 MiB output, and returning it kept the refiner's working buffer live to
+the end of the program. Pass `return_representations=True` to get them back.
+
+Two things that sound like memory knobs and were not, both measured before the
+fixes above: blocking the triangle *attention* moved Protenix's peak by 0.4%,
+and switching its trunk to bfloat16 moved it by 0.3% — the latter because
+Protenix's CLI already defaults to `--trunk-dtype bf16`, so it was measuring
+nothing at all.
+
+### `--max-msa-depth`
+
+Every trunk holds a `[depth, tokens, channels]` MSA representation, and on a
+488-token job with a 13,254-row alignment that tensor is 3,158 MiB. Capping the
+depth used to halve Protenix. It no longer does — the transition fix took the
+same memory without touching the alignment:
+
+| protenix, 488 tokens | peak | pLDDT | pTM |
+|---|---|---|---|
+| default (13,254 rows) | 6,089 MiB | 75.05 | 0.749 |
+| `--max-msa-depth 1024` | 5,989 MiB | 79.88 | 0.915 |
+
+A 1.6% saving now, so treat it as an accuracy knob rather than a memory one.
+Confidence moves with it and not monotonically, because which rows get sampled
+changes; that spread is the alignment's own variance, not evidence that a
+shallower MSA predicts better. The default keeps each port's own depth.
 
 **Chai has the same knob but not the same bargain.** It embeds the selected
 rows once into a `[1, depth, tokens, 64]` tensor — 2,048 MiB at its 16,384-row
@@ -157,7 +200,7 @@ but unlike Protenix it costs accuracy rather than trading noise:
 
 | chai, 488 tokens | peak | mean pLDDT | pTM |
 |---|---|---|---|
-| default | 7,613 MiB | 0.849 | 0.744 |
+| default | 7,577 MiB | 0.849 | 0.744 |
 | `--max-msa-depth 4096` | 5,126 MiB | 0.838 | 0.735 |
 | `--max-msa-depth 2048` | 4,856 MiB | 0.829 | 0.697 |
 | `--max-msa-depth 1024` | **4,707 MiB** | 0.830 | 0.705 |
@@ -165,6 +208,11 @@ but unlike Protenix it costs accuracy rather than trading noise:
 A third of the memory for one point of pLDDT. It stays off by default. Boltz-2
 is the least sensitive of the four — 4,766 → 4,688 MiB at 1024, for 0.891 →
 0.880 pLDDT — which is not worth spending, so it is off there too.
+
+Chai's cap has two crop sites and only one of them counts: the selection in
+`_embed_and_initialize` decides what gets embedded and therefore how big that
+tensor is. Capping the per-recycle crop alone leaves it at full depth and moves
+nothing — which is exactly what the first attempt did.
 
 **OpenDDE is the opposite case, and it is worth knowing why.** Capping its MSA
 changes nothing; blocking its attention changes everything. It is dual-branch,
@@ -182,26 +230,30 @@ The budget was then swept rather than guessed:
 | 512 MiB | 14,465 MiB | 13.9 s | 87.4901 |
 | 256 MiB | 14,463 MiB | 15.4 s | 87.4918 |
 
+(Swept before the transition and triangle fixes above, which later took the
+same configuration to 13,433 MiB; the shape of the curve is what matters here.)
+
 The knee is at 1 GiB: past it the score tensor is no longer what sizes the
 peak, so tightening buys nothing and costs 13% wall time per halving.
 Confidence is flat across the whole sweep, because blocking the query axis is
 exact — the softmax still reduces over the entire key axis inside each block.
 Before any of this, OpenDDE asked for 76 GiB and died.
 
-Same lesson twice, in opposite directions: **attribute the peak, then turn the
-knob it points at.** The MSA cap does nothing for OpenDDE and halves Protenix;
-chunking does nothing for Protenix and halves OpenDDE.
+OpenDDE is still the heaviest of the five, and some of that is the model rather
+than the implementation: its structural refiner runs on 946 sub-residue tokens
+for a 488-residue job, with a 384-channel pair representation. That tensor is
+1,311 MiB in float32 where AlphaFold 3's `[488, 488, 128]` bfloat16 pair is
+61 MiB, and the refiner keeps several of them live at once. `--trunk-dtype
+bf16` halves the element width for 12,563 MiB at a cost of 0.098 pLDDT; it is
+off by default because that cost is real, small as it is.
 
-### Eager arithmetic between compiled blocks
-
-Chai runs its trunk as many small compiled programs on purpose, so XLA can
-release MSA intermediates between them. But a plain `a + b` on two device
-arrays is not free glue between those programs — it dispatches its own XLA
-executable, and all three buffers are live while it runs. On the MSA
-representation that is three copies of the largest tensor in the trunk, for an
-add. Routing those residuals through a compiled add that donates its update
-buffer is the same arithmetic, bit for bit, and took Chai from 8,637 to
-7,613 MiB with the scores unchanged to five decimals.
+The same lesson every time, and never in the same direction twice: **attribute
+the peak, then turn the knob it points at.** Capping the MSA halved Protenix
+and did nothing for OpenDDE; blocking the attention halved OpenDDE and did
+nothing for Protenix; and blocking the transition then halved Protenix again,
+which made the MSA cap it had started with almost irrelevant. Every one of
+those was read out of XLA's buffer assignment. None was guessable from the
+model description, and two of our confident predictions were wrong.
 
 `foldjax plan` shows exactly what a request resolves to before anything loads:
 
@@ -267,6 +319,11 @@ output formatting never fragment one.
 Measured on an RTX PRO 6000 Blackwell Max-Q, same 35-residue job, one sample,
 20 diffusion steps, one recycle. Upstream is each model's own repository on
 torch, given the same input and settings.
+
+This table predates the memory work above and has not been re-run against
+upstream since; the FoldJAX peak column is now lower than it shows. Read it for
+the wall-clock and program-count comparison, and the 488-token table at the top
+of [Memory](#memory) for current peaks.
 
 | model | FoldJAX | of which model | upstream | FoldJAX peak | upstream peak | programs |
 |---|---|---|---|---|---|---|
