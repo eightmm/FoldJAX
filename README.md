@@ -129,7 +129,7 @@ Peak memory on a 488-token job, one sample, at each port's own defaults:
 | boltz2 | 4,788 MiB | 4,766 | 8.0 s | pLDDT 0.892 |
 | protenix | **6,043 MiB** | 12,264 | 5.4 s | pLDDT 75.07 |
 | chai | **7,576 MiB** | 8,637 | 8.8 s | pLDDT 0.849 |
-| opendde | **12,530 MiB** | 32,185 | 12.2 s | pLDDT 87.49 |
+| opendde | **9,761 MiB** | 32,185 | 10.9 s | pLDDT 87.49 |
 
 AlphaFold 3 is the reference and is untouched. OpenDDE would not run at all
 before this work — it asked for 76 GiB on this job and died.
@@ -156,14 +156,22 @@ bytes. It is what AlphaFold 3's `BF16_BF16_F32` algorithm already does, and it
 is most of why AF3's peak sits where it does — its released trunk runs bfloat16
 weights *and* activations.
 
-The chunked triangle attention also projects its queries per block rather than
-whole. `q` is the same size as `k` and `v` — 1,311 MiB on OpenDDE's structural
-branch — and unlike them it is never needed all at once; slicing `x` on the
-query axis and projecting that is the same arithmetic, because the linear
-contracts over the channel axis.
+**Triangle attention is a batch of independent attentions, one per row.**
+`q`, `k` and `v` are `[N_row, heads, N_col, d]` and nothing in the softmax
+crosses a row, so blocking the row axis bounds all three projections *and* the
+score tensor together — for the same block count and the same arithmetic, since
+each row is projected exactly once either way. Blocking the query axis, which
+is the obvious reading of "chunk the attention", bounds only the scores and
+`q`; `k` and `v` stay whole at 1,311 MiB apiece. Row blocking is also
+bit-identical, being a pure batch split, where query blocking perturbs every
+GEMM shape.
+
+The block size is a row count, not a byte budget, because that is what the
+sweep found: 25 rows is the optimum at 946 structural tokens *and* at 1,892,
+where the equivalent byte budgets differ fourfold. Bytes stay on as a ceiling.
 
 Together those took Protenix from 12,264 to 6,043 MiB and OpenDDE from 32,185
-to 12,530 MiB, with confidence flat (75.08 → 75.07 and 87.49 → 87.49).
+to 9,761 MiB, with confidence flat (75.08 → 75.07 and 87.49 → 87.49).
 
 **Eager arithmetic between compiled blocks is not free.** Chai runs its trunk
 as many small programs on purpose, so XLA can release MSA intermediates between
@@ -172,6 +180,32 @@ executable, with all three buffers live. On the MSA representation that is
 three copies of the largest tensor in the trunk, for an add. Routing them
 through a compiled add that donates its update buffer is the same arithmetic
 and took Chai from 8,637 to 7,576 MiB with scores unchanged to five decimals.
+
+### `--trunk-dtype bf16`
+
+AlphaFold 3 runs its trunk in bfloat16 — weights *and* activations — and that
+is most of why its peak sits where it does. Protenix ships the same default;
+OpenDDE does not, and the flag that was supposed to give it to you only
+narrowed the weights. Every activation stayed float32, because three arrays
+entered the trunk wide and promoted everything downstream of them: `s_inputs`
+(the MSA one-hot is allocated with *its* dtype, which is how one array decided
+the dtype of the whole MSA module), `relp` and the token bonds (built in the
+trunk from integer features), and the per-cycle alignments (sampled from the
+raw features rather than the trunk's own narrowed dict).
+
+All three are now cast where they cross the boundary, which is what AF3 does
+(`prev['pair'].astype(pair_activations.dtype)`) rather than trying to stop every
+internal op from widening. It matters more the larger the job, because the
+activations are quadratic and the weights are not:
+
+| opendde | fp32 | bf16 | |
+|---|---|---|---|
+| 488 tokens | 9,837 MiB, 10.5 s | **7,533 MiB, 8.6 s** | pLDDT 87.490 → 87.404 |
+| 976 tokens | 32,714 MiB, 46.3 s | **18,091 MiB, 28.9 s** | pLDDT 79.235 → 78.859 |
+
+Nearly half the memory and a third off the wall clock at 976 tokens, for 0.5%
+of pLDDT. It stays off by default because that cost is real; turn it on when
+the job would not otherwise fit.
 
 **Dead outputs cost twice.** OpenDDE returned six representation tensors that
 nothing reads; the structural pair representation alone was 1,311 MiB of a
