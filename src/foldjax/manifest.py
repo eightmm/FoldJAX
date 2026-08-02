@@ -46,9 +46,19 @@ def _digest(path: Path) -> str | None:
 
 
 def describe_run(
-    request: PredictionRequest, result: PredictionResult
+    request: PredictionRequest,
+    result: PredictionResult,
+    *,
+    native_input: Path | None = None,
 ) -> dict[str, Any]:
-    """Build the manifest for one finished prediction."""
+    """Build the manifest for one finished prediction.
+
+    ``request`` is what the caller asked for. ``native_input`` is the backend
+    dialect FoldJAX generated from it, when the job arrived in the common
+    schema -- recorded alongside rather than instead, because that file lives
+    inside the output directory being described and naming only it would say
+    nothing about which job produced the directory.
+    """
     from foldjax import __version__
     from foldjax.cache import runtime_profile, weight_identity
 
@@ -65,6 +75,7 @@ def describe_run(
             "path": str(request.input),
             "format": request.input_format,
             "sha256": _digest(request.input),
+            "native": str(native_input) if native_input is not None else None,
         },
         "weights": {"path": str(weights) if weights else None, "label": label,
                     "identity": identity},
@@ -77,7 +88,11 @@ def describe_run(
 
 
 def write(
-    request: PredictionRequest, result: PredictionResult, directory: Path
+    request: PredictionRequest,
+    result: PredictionResult,
+    directory: Path,
+    *,
+    native_input: Path | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -88,7 +103,12 @@ def write(
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / MANIFEST_NAME
         path.write_text(
-            json.dumps(describe_run(request, result), indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                describe_run(request, result, native_input=native_input),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
         return path

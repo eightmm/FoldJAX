@@ -103,6 +103,11 @@ def _predict_once(
     request = dataclasses.replace(
         request, seed=seed, seeds=None, output_dir=output_dir
     )
+    # What the caller asked for, before common-schema input is translated into
+    # a backend dialect. The manifest records this rather than the generated
+    # file: the generated one lives inside the output directory it describes,
+    # so a manifest naming it says nothing about which job was run.
+    asked = request
     backend = get_backend(request.model)
     capabilities = backend.capabilities()
 
@@ -127,7 +132,12 @@ def _predict_once(
     request.output_dir.mkdir(parents=True, exist_ok=True)
     result = backend.predict(request)
     # Written after the run, so its presence also says the run finished.
-    write_manifest(request, result, request.output_dir)
+    write_manifest(
+        asked,
+        result,
+        request.output_dir,
+        native_input=request.input if request.input != asked.input else None,
+    )
     return result
 
 

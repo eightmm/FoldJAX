@@ -134,3 +134,37 @@ def test_a_manifest_that_cannot_be_written_does_not_fail_the_run(
 
     monkeypatch.setattr(Path, "write_text", refuse)
     assert manifest.write(request, PredictionResult(model="opendde"), tmp_path) is None
+
+
+def test_the_manifest_names_the_job_that_was_asked_for(tmp_path: Path) -> None:
+    """Common-schema input is translated before the backend sees it.
+
+    The translated file lives inside the output directory being described, so
+    a manifest naming only it says nothing about which job produced the
+    directory. The original is recorded, with the generated dialect alongside.
+    """
+    job = _job(tmp_path)
+    out = tmp_path / "out"
+    request = PredictionRequest(
+        model="opendde",
+        input=job,
+        weights=_weights(tmp_path),
+        output_dir=out,
+        seed=1,
+        use_compile_cache=False,
+    )
+    with backend_override("opendde", _Recorder):
+        foldjax.predict(request)
+
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert manifest["input"]["path"] == str(job)
+    assert manifest["input"]["format"] == "foldjax"
+    assert manifest["input"]["sha256"] == _sha256(job)
+    # The generated dialect is recorded too, since that is what actually ran.
+    assert manifest["input"]["native"].endswith("opendde_input.json")
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
