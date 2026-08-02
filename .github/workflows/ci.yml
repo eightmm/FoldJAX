@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # These graphs take minutes to compile and the runner has no GPU, so nothing
+  # here should try. Keeping it explicit also stops a stray CUDA plugin from
+  # changing what the suite exercises.
+  JAX_PLATFORMS: cpu
+
+jobs:
+  check:
+    name: lint + tests (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.3"
+          enable-cache: true
+
+      # A clean runner has no sibling checkouts, which is the whole point: the
+      # `openfold3` extra used to resolve to `../openfold3_jax` and made this
+      # command fail for everyone but the machine it was written on. This job
+      # is that regression test.
+      - name: Install
+        run: uv sync --group dev --frozen
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      # No CUDA extra: the CPU wheel is what a GPU-less runner can install, and
+      # it still collects every test that does not need a device. The GPU
+      # suites and the torch-parity gates skip themselves.
+      - name: Tests
+        run: uv run --no-sync pytest -q
+
+  imports:
+    name: every backend registers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.3"
+          enable-cache: true
+
+      - name: Install without dev dependencies
+        run: uv sync --frozen
+
+      # Importing the package is not the same as reaching each adapter: a
+      # backend is resolved lazily, so a broken import in one of them stays
+      # invisible until someone selects that model.
+      - name: Resolve each backend
+        run: |
+          uv run --no-sync python - <<'PY'
+          from foldjax import available_models, capabilities
+          for model in available_models():
+              caps = capabilities(model)
+              print(f"{model}: {sorted(caps.sampling)}")
+          PY

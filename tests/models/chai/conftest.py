@@ -15,13 +15,13 @@ def _unavailable(config: pytest.Config, message: str) -> NoReturn:
     pytest.skip(message)
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--run-official-parity",
-        action="store_true",
-        default=False,
-        help="run tests that require official Chai assets or an upstream checkout",
-    )
+# `--run-official-parity` is registered in tests/conftest.py, not here. pytest
+# only parses options from *initial* conftests, and the initial set is the
+# rootdir chain plus `test*` subdirectories of the args; `tests/models/chai` is
+# reached through `models/`, which does not match, so registering it here made
+# the flag exist only when someone ran this directory by name. From the
+# documented root invocation it was an unrecognized argument, which is why
+# these 83 tests had no way to run in CI.
 
 
 def _require_official_runtime(config: pytest.Config) -> None:
