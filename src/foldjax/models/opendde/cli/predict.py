@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -92,10 +91,12 @@ def _predict(
     #
     # The size to bound is not the residue count. OpenDDE is dual-branch: the
     # residue trunk and the structural refiner share one set of chunk knobs, and
-    # the structural branch runs on sub-residue tokens, so it is several times
-    # the larger of the two. Resolving the policy from the residue count alone
-    # would leave the branch that actually needs blocking unblocked.
-    # `--chunk-policy off` restores the unbounded form.
+    # the structural branch runs on sub-residue tokens with three times the
+    # heads, so it is several times the larger of the two. This policy therefore
+    # only proposes a chunk size; the triangle attention narrows it per call
+    # site from that branch's own shape, which is the only place both the token
+    # count and the head count are known. `--chunk-policy off` restores the
+    # unbounded form.
     n_residue = int(features["restype"].shape[-2])
     n_structural = int(features["parent_residue_idx"].shape[0])
     chunks = resolve_chunk_config(
@@ -104,13 +105,6 @@ def _predict(
         policy=chunk_policy,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
-    if chunk_policy == "auto":
-        chunks = dataclasses.replace(
-            chunks,
-            triangle_att_q_chunk_size=_structural_q_chunk(
-                params, n_structural, chunks.triangle_att_q_chunk_size
-            ),
-        )
     return infer(
         features,
         params,
@@ -131,55 +125,6 @@ def _predict(
         trunk_dtype=trunk_dtype,
         **scans,
     )
-
-
-# Triangle attention blocks its *row* axis, and each row is an independent
-# attention, so a block bounds the projections and the score tensor together.
-# Swept at two sizes, and both optima are the same block size rather than the
-# same number of bytes:
-#
-#     488 residues (946 structural tokens)   976 residues (1,892 tokens)
-#       25 rows ->  9,760 MiB  (1 GiB score)   25 rows -> 32,641 MiB (4 GiB)
-#       50 rows -> 11,752 MiB  (2 GiB score)    6 rows -> 43,569 MiB (1 GiB)
-#      100 rows -> 15,593 MiB  (4 GiB score)   50 rows -> 37,687 MiB (8 GiB)
-#
-# So the rule is a row count, not a byte budget: too few rows pays per-block
-# overhead across hundreds of blocks, too many lets the score tensor take over.
-# Bytes remain as the ceiling, because a fixed row count grows the score as N²
-# and would run away on a very large complex.
-_STRUCTURAL_ROWS_PER_BLOCK = 25
-_STRUCTURAL_SCORE_CEILING_BYTES = 4 * 1024**3
-
-
-def _structural_q_chunk(params, n_structural: int, resolved: int | None) -> int | None:
-    """Choose the structural branch's row-block size.
-
-    Protenix's chunk policy maps a token count to a chunk size, and it was
-    written for a four-head trunk. OpenDDE's structural refiner runs on
-    sub-residue tokens with three times the heads, so the same token count
-    costs three times the score tensor -- at 946 tokens the policy's 256 still
-    materialises 10.5 GiB, twice over. Both branches share one knob, so the
-    binding one has to set it.
-
-    Returns the smallest of: what the policy chose, the measured row block, and
-    whatever the score ceiling allows. Never larger, and never below 8, where
-    the launch overhead of one more block outweighs the memory it saves.
-    """
-    try:
-        blocks = params.structural_refiner.blocks
-        heads = int(blocks[0].tri_att_start.linear.weight.shape[0])
-    except (AttributeError, IndexError, TypeError):
-        return resolved
-    per_row = n_structural * n_structural * heads * 4
-    if per_row <= 0:
-        return resolved
-    allowed = max(8, min(
-        _STRUCTURAL_ROWS_PER_BLOCK,
-        _STRUCTURAL_SCORE_CEILING_BYTES // per_row,
-    ))
-    if allowed >= n_structural:
-        return resolved
-    return allowed if resolved is None else min(resolved, allowed)
 
 
 def _score(

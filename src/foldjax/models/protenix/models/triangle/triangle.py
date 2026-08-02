@@ -21,8 +21,16 @@ from foldjax.models.protenix.models.primitives.primitives import (
 
 
 def _triangle_attention_backend() -> str:
-    """Return the configured triangle-attention backend."""
-    backend = os.environ.get("PROTENIX_TRIANGLE_BACKEND", "cueq_jit").lower()
+    """Return the configured triangle-attention backend.
+
+    Defaults to the XLA path because it is the only one that blocks rows, and
+    blocking is what bounds the score tensor. The cuEquivariance kernel was the
+    default on the assumption that it fused the score away; measured, it does
+    not -- at 490 tokens it and the unblocked XLA path both peak at 6,048 MiB,
+    where the blocked XLA path peaks at 4,348. Set
+    ``PROTENIX_TRIANGLE_BACKEND=cueq_jit`` to go back.
+    """
+    backend = os.environ.get("PROTENIX_TRIANGLE_BACKEND", "xla_jit").lower()
     if backend not in {"xla", "xla_jit", "tokamax", "cueq", "cueq_jit"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
     return backend
@@ -192,12 +200,11 @@ _WARNED_UNCHUNKABLE = False
 def _warn_unchunkable_backend(q_chunk_size: int) -> None:
     """Say that a requested chunk size is not used, once.
 
-    The cuEquivariance kernel takes the whole query axis, so an explicit chunk
-    size does not reach it. That is worth one line rather than silence, because
-    a knob that does nothing should say so -- but it is not a problem: the
-    kernel is fused and never builds the [N, h, N, N] score tensor that the
-    chunk size exists to bound. Blocking is only implemented in the XLA path,
-    which needs it precisely because it does build that tensor.
+    The cuEquivariance kernel takes the whole thing, so a chunk size does not
+    reach it -- and it does not make up for that by fusing the score tensor
+    away. Measured at 490 tokens, cuEquivariance and the *unblocked* XLA path
+    peak identically (6,048 and 6,049 MiB) where the blocked XLA path peaks at
+    4,348, so choosing it costs the memory the chunk size would have saved.
 
     Not an exception, because the automatic chunk policy legitimately emits a
     size without knowing which backend will run.
@@ -208,9 +215,9 @@ def _warn_unchunkable_backend(q_chunk_size: int) -> None:
     _WARNED_UNCHUNKABLE = True
     warnings.warn(
         f"triangle attention q_chunk_size={q_chunk_size} is not used by the "
-        "'cueq' backend, whose fused kernel never materialises the score "
-        "tensor the chunk size would bound. No action needed; the XLA backend "
-        "is the one that honours it.",
+        "'cueq' backend, which still materialises the score tensor the chunk "
+        "size exists to bound. The default 'xla' backend blocks it instead, "
+        "and measured lower on every size tried.",
         RuntimeWarning,
         stacklevel=2,
     )
@@ -286,6 +293,39 @@ _compiled_triangle_attention = jax.jit(
 )
 
 
+# One row of the score tensor costs `heads * N * N * 4` bytes -- the logits are
+# float32 whatever the trunk dtype is, because the mask bias is. Blocking rows
+# is what bounds it, so the block size is a row count, and both places it was
+# swept independently landed on the same rule:
+#
+#   protenix, 4 heads:   64 rows optimal at 490 tokens and again at 976
+#   opendde, 12 heads:   25 rows optimal at 948 tokens and again at 1,892
+#
+# `min(64, 1 GiB / row)` reproduces both exactly. Below the cap the budget
+# binds and the count falls with N^2; above it, more rows per block stops
+# helping and only grows the score tensor. The floor is where one more block
+# costs more in launch overhead than it saves.
+_SCORE_BUDGET_BYTES = 1024**3
+_MAX_ROWS_PER_BLOCK = 64
+_MIN_ROWS_PER_BLOCK = 8
+
+
+def _row_block(
+    *, rows: int, cols: int, num_heads: int, requested: int | None
+) -> int | None:
+    """Rows per block: the caller's request, narrowed to what the budget allows."""
+    per_row = num_heads * cols * cols * 4
+    if per_row <= 0 or rows < 2:
+        return requested
+    allowed = max(
+        _MIN_ROWS_PER_BLOCK,
+        min(_MAX_ROWS_PER_BLOCK, _SCORE_BUDGET_BYTES // per_row),
+    )
+    if allowed >= rows:
+        return requested
+    return allowed if requested is None else min(requested, allowed)
+
+
 def _triangle_attention_dense(
     x: jnp.ndarray,
     params: TriangleAttentionParams,
@@ -305,9 +345,16 @@ def _triangle_attention_dense(
     # Blocking the query axis instead, which is what this did, bounds only the
     # scores and `q`; `k` and `v` stay whole, at 1,311 MiB apiece on OpenDDE's
     # structural branch.
+    if attention_backend not in {"cueq", "tokamax"}:
+        q_chunk_size = _row_block(
+            rows=x.shape[-3],
+            cols=x.shape[-2],
+            num_heads=num_heads,
+            requested=q_chunk_size,
+        )
     chunked = (
-        attention_backend not in {"cueq", "tokamax"}
-        and q_chunk_size is not None
+        q_chunk_size is not None
+        and attention_backend not in {"cueq", "tokamax"}
         and 0 < q_chunk_size < x.shape[-3]
     )
     scale = float(params.attention.linear_k.weight.shape[0] // num_heads) ** -0.5

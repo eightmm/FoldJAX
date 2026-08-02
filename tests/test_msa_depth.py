@@ -75,12 +75,12 @@ def test_the_cap_changes_the_compile_cache_namespace(tmp_path) -> None:
 
 
 def test_a_chunk_size_the_kernel_cannot_honour_is_not_silent() -> None:
-    """cuEquivariance takes the whole query axis, so a chunk size never lands.
+    """cuEquivariance takes the whole thing, so a chunk size never lands.
 
-    Nothing is wrong when it does not -- the kernel is fused and never builds
-    the score tensor a chunk size would bound; a materialised one would be
-    14.9 TB at 976 tokens, against a 13,750 MiB measured peak. But a knob that
-    does nothing should still say so rather than look like it worked.
+    It was the default on the assumption that it fused the score tensor away.
+    It does not: at 490 tokens cuEquivariance and the unblocked XLA path peak
+    identically, and the blocked XLA path peaks 28% lower. So a chunk size
+    reaching this branch is a real loss, not a harmless no-op, and it says so.
     """
     import warnings
 
@@ -97,47 +97,46 @@ def test_a_chunk_size_the_kernel_cannot_honour_is_not_silent() -> None:
     assert caught == []
 
 
-def test_the_structural_branch_is_blocked_by_rows_not_token_count() -> None:
-    """OpenDDE's structural refiner is what sizes its peak.
+def test_triangle_attention_blocks_rows_by_one_rule_for_every_branch() -> None:
+    """One row-block rule, derived per call site from that branch's own shape.
 
-    Protenix's chunk policy maps a token count to a chunk size and was written
-    for a four-head trunk. The structural branch runs on sub-residue tokens
-    with three times the heads, so the same token count costs three times the
-    score tensor: at 946 tokens the policy's 256 still materialises 10.5 GiB,
-    twice over.
+    OpenDDE is dual-branch: the residue trunk and the structural refiner share
+    a single chunk knob, but the structural branch runs on sub-residue tokens
+    with three times the heads, so the same chunk size costs three times the
+    score tensor. The block size therefore cannot be resolved from the token
+    count alone -- it is resolved inside the attention, where both the token
+    count and the head count of *that* call are known.
 
-    The block is a row count rather than a byte budget because that is what the
-    sweep found -- 25 rows was the optimum at 946 *and* at 1,892 tokens, where
-    the equivalent byte budgets differ fourfold. Bytes stay on as a ceiling, so
-    a fixed row count cannot let the score grow as N² without limit.
+    The rule is `min(64 rows, 1 GiB / row)`, and it reproduces both independent
+    sweeps: 64 rows for Protenix's 4-head trunk, which the cap decides at 490
+    and 976 tokens alike, and ~24 for OpenDDE's 12-head structural branch,
+    where the budget decides instead.
     """
-    from foldjax.models.opendde.cli.predict import (
-        _STRUCTURAL_ROWS_PER_BLOCK,
-        _structural_q_chunk,
+    from foldjax.models.protenix.models.triangle.triangle import (
+        _MAX_ROWS_PER_BLOCK,
+        _MIN_ROWS_PER_BLOCK,
+        _row_block,
     )
 
-    class _Linear:
-        weight = type("w", (), {"shape": (12, 1)})()
-
-    class _Block:
-        tri_att_start = type("t", (), {"linear": _Linear()})()
-
-    class _Params:
-        structural_refiner = type("s", (), {"blocks": [_Block()]})()
-
-    params = _Params()
-    # The policy's 256 is cut down to the measured row block.
-    assert _structural_q_chunk(params, 946, 256) == _STRUCTURAL_ROWS_PER_BLOCK
-    # It only ever narrows: a policy that already asked for less is respected.
-    assert _structural_q_chunk(params, 946, 16) == 16
-    # Small enough that blocking would buy nothing: left alone.
-    assert _structural_q_chunk(params, 20, 256) == 256
-    # The ceiling binds before the row count on a very large complex, and never
-    # drops below the floor where launch overhead dominates.
-    huge = _structural_q_chunk(params, 20_000, 256)
-    assert 8 <= huge < _STRUCTURAL_ROWS_PER_BLOCK
-    # A parameter tree without the branch is left alone rather than guessed at.
-    assert _structural_q_chunk(object(), 946, 256) == 256
+    # Protenix's trunk: the cap binds, not the budget.
+    assert _row_block(rows=490, cols=490, num_heads=4, requested=None) == 64
+    assert _row_block(rows=976, cols=976, num_heads=4, requested=None) == 64
+    # OpenDDE's structural branch: 12 heads makes the budget bind instead, and
+    # the block shrinks with the token count where the trunk's stays at the cap.
+    wide = _row_block(rows=948, cols=948, num_heads=12, requested=None)
+    wider = _row_block(rows=1892, cols=1892, num_heads=12, requested=None)
+    assert wide == 1024**3 // (12 * 948 * 948 * 4) < _MAX_ROWS_PER_BLOCK
+    assert _MIN_ROWS_PER_BLOCK <= wider < wide
+    # It only ever narrows what the policy proposed.
+    assert _row_block(rows=948, cols=948, num_heads=12, requested=256) == wide
+    assert _row_block(rows=948, cols=948, num_heads=12, requested=16) == 16
+    # Never below the floor, where one more block costs more than it saves.
+    assert _row_block(
+        rows=20_000, cols=20_000, num_heads=12, requested=None
+    ) == _MIN_ROWS_PER_BLOCK
+    # Small enough that blocking buys nothing: the request stands untouched.
+    assert _row_block(rows=20, cols=20, num_heads=4, requested=None) is None
+    assert _MIN_ROWS_PER_BLOCK < _MAX_ROWS_PER_BLOCK
 
 
 def test_chai_caps_alignment_rows_before_bucketing() -> None:

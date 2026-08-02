@@ -127,9 +127,19 @@ def test_cueq_attention_maps_torch_mask_and_scale(monkeypatch) -> None:
     assert jnp.array_equal(captured["mask"], (mask_bias == 0)[None])
 
 
-def test_cueq_jit_is_default_triangle_attention_backend(monkeypatch) -> None:
+def test_the_blocking_backend_is_the_default_triangle_attention_backend(
+    monkeypatch,
+) -> None:
+    """cuEquivariance was the default until its cost was actually measured.
+
+    It takes the whole tensor, so the row block that bounds the score never
+    reaches it -- and it does not fuse the score away in exchange. At 490
+    tokens cuEquivariance and the unblocked XLA path peak identically (6,048
+    and 6,049 MiB) where the blocked XLA path peaks at 4,348, and at 976 the
+    gap is 12,893 against 8,974. The default is now the one that blocks.
+    """
     monkeypatch.delenv("PROTENIX_TRIANGLE_BACKEND", raising=False)
-    assert _triangle_attention_backend() == "cueq_jit"
+    assert _triangle_attention_backend() == "xla_jit"
 
 
 def test_cueq_jit_is_valid_triangle_attention_backend(monkeypatch) -> None:
