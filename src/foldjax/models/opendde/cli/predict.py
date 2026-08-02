@@ -72,12 +72,20 @@ def _predict(
     # one executable, which is what made the compiled program slow to build and
     # to load back from the cache (105 s vs 187 s to compile, 5 s vs 21 s to
     # load). Op-by-op execution keeps the original unrolled form.
+    #
+    # `use_sampler_scan` was missing from this list, and it is the one whose
+    # repeat count the user sets. At the released 200-step schedule the
+    # unrolled sampler put 200 copies of the denoiser into one executable; at
+    # the 20 steps this list was tuned against, it was 20, which is why the
+    # omission did not show. Measured on a 132-residue job at 5 samples / 200
+    # steps / 10 cycles, OpenDDE took 682 s against upstream's 15 s.
     scans = (
         dict(
             use_diffusion_scan=True,
             use_pairformer_scan=True,
             use_structural_refiner_scan=True,
             use_confidence_scan=True,
+            use_sampler_scan=True,
         )
         if graph_jit
         else {}

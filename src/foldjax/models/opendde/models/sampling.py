@@ -30,8 +30,17 @@ def sample_diffusion(
     noise_scale_lambda: float = 1.003,
     step_scale_eta: float = 1.5,
     dtype: jnp.dtype = jnp.float32,
+    use_scan: bool = False,
 ) -> jnp.ndarray:
-    """Run OpenDDE's loop sampler with optional shared random tapes."""
+    """Run OpenDDE's loop sampler with optional shared random tapes.
+
+    ``use_scan`` rolls the step loop into ``lax.scan`` instead of writing one
+    copy of the denoiser per step into the graph. Every other repeated stack in
+    this port is already scanned; the sampler was the one that was not, and it
+    is the one whose count is a user-facing knob. At the released 200-step
+    schedule the unrolled form puts 200 copies of the structural refiner in a
+    single executable, which is why OpenDDE was the slowest model here by far.
+    """
 
     noise_schedule = jnp.asarray(noise_schedule, dtype=dtype)
     n_steps = int(noise_schedule.shape[0]) - 1
@@ -102,16 +111,16 @@ def sample_diffusion(
         )
 
     x_l = noise_schedule[0] * init_noise
-    for step_index in range(n_steps):
+
+    def one_step(x_current, c_tau_last, c_tau, step_noise, rotation, translation):
+        """One Algorithm 18 step. Shared by the rolled and unrolled paths."""
         augmented = centre_random_augmentation(
-            x_l,
+            x_current,
             n_sample=1,
-            rotations=rotations[step_index][..., None, :, :],
-            translations=translations[step_index][..., None, :],
+            rotations=rotation[..., None, :, :],
+            translations=translation[..., None, :],
         )
-        x_l = jnp.squeeze(augmented, axis=-3).astype(dtype)
-        c_tau_last = noise_schedule[step_index]
-        c_tau = noise_schedule[step_index + 1]
+        x_current = jnp.squeeze(augmented, axis=-3).astype(dtype)
         gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
         t_hat_scalar = c_tau_last * (gamma + 1.0)
         # `t_hat**2 - c**2` is a difference of nearly equal squares and exactly
@@ -120,10 +129,42 @@ def sample_diffusion(
         # `t_hat**2 - c**2 == c**2 * gamma * (gamma + 2)` avoids the
         # cancellation. Same defect and same fix as the Protenix sampler.
         delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
-        x_noisy = x_l + noise_scale_lambda * delta_noise_level * step_noises[step_index]
+        x_noisy = x_current + noise_scale_lambda * delta_noise_level * step_noise
         t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
         x_denoised = denoise_fn(x_noisy, t_hat)
         delta = (x_noisy - x_denoised) / t_hat[..., None, None]
         dt = c_tau - t_hat
-        x_l = x_noisy + step_scale_eta * dt[..., None, None] * delta
+        return x_noisy + step_scale_eta * dt[..., None, None] * delta
+
+    if use_scan:
+        stacked_noises = jnp.stack(tuple(step_noises), axis=0)
+
+        def body(x_carry, xs):
+            c_tau_last, c_tau, step_noise, rotation, translation = xs
+            return one_step(
+                x_carry, c_tau_last, c_tau, step_noise, rotation, translation
+            ), None
+
+        x_l, _ = jax.lax.scan(
+            body,
+            x_l,
+            xs=(
+                noise_schedule[:-1],
+                noise_schedule[1:],
+                stacked_noises,
+                rotations,
+                translations,
+            ),
+        )
+        return x_l
+
+    for step_index in range(n_steps):
+        x_l = one_step(
+            x_l,
+            noise_schedule[step_index],
+            noise_schedule[step_index + 1],
+            step_noises[step_index],
+            rotations[step_index],
+            translations[step_index],
+        )
     return x_l

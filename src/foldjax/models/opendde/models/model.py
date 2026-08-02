@@ -349,6 +349,7 @@ def opendde_infer_static(
     use_structural_refiner_scan: bool = False,
     use_confidence_scan: bool = False,
     use_diffusion_scan: bool = False,
+    use_sampler_scan: bool = False,
     use_diffusion_efficient_fusion: bool = False,
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
@@ -561,6 +562,7 @@ def opendde_infer_static(
         gamma_min=gamma_min,
         noise_scale_lambda=noise_scale_lambda,
         step_scale_eta=step_scale_eta,
+        use_scan=use_sampler_scan,
     )
 
     head_s_inputs = as_float32(s_inputs_residue)
@@ -644,6 +646,7 @@ GRAPH_STATIC_ARGNAMES = (
     "use_diffusion_efficient_fusion",
     "use_diffusion_scan",
     "use_pairformer_scan",
+    "use_sampler_scan",
     "use_structural_refiner_scan",
     "validate_feature_values",
 )
