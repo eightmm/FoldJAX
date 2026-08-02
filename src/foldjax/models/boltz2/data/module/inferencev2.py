@@ -236,11 +236,8 @@ class PredictionDataset(torch.utils.data.Dataset):
         # Tokenize structure
         try:
             tokenized = self.tokenizer.tokenize(input_data)
-        except Exception as e:  # noqa: BLE001
-            print(  # noqa: T201
-                f"Tokenizer failed on {record.id} with error {e}. Skipping."
-            )
-            return self.__getitem__(0)
+        except Exception as e:
+            raise RuntimeError(f"tokenizing {record.id} failed") from e
 
         if self.affinity:
             try:
@@ -249,9 +246,8 @@ class PredictionDataset(torch.utils.data.Dataset):
                     max_tokens=256,
                     max_atoms=2048,
                 )
-            except Exception as e:  # noqa: BLE001
-                print(f"Cropper failed on {record.id} with error {e}. Skipping.")  # noqa: T201
-                return self.__getitem__(0)
+            except Exception as e:
+                raise RuntimeError(f"cropping {record.id} failed") from e
 
         # Load conformers
         try:
@@ -261,9 +257,8 @@ class PredictionDataset(torch.utils.data.Dataset):
             mol_names = set(tokenized.tokens["res_name"].tolist())
             mol_names = mol_names - set(molecules.keys())
             molecules.update(load_molecules(self.mol_dir, mol_names))
-        except Exception as e:  # noqa: BLE001
-            print(f"Molecule loading failed for {record.id} with error {e}. Skipping.")
-            return self.__getitem__(0)
+        except Exception as e:
+            raise RuntimeError(f"loading molecules for {record.id} failed") from e
 
         # Inference specific options
         options = record.inference_options
@@ -298,12 +293,8 @@ class PredictionDataset(torch.utils.data.Dataset):
                 override_method=self.override_method,
                 compute_affinity=self.affinity,
             )
-        except Exception as e:  # noqa: BLE001
-            import traceback
-
-            traceback.print_exc()
-            print(f"Featurizer failed on {record.id} with error {e}. Skipping.")  # noqa: T201
-            return self.__getitem__(0)
+        except Exception as e:
+            raise RuntimeError(f"featurizing {record.id} failed") from e
 
         # Add record
         features["record"] = record
