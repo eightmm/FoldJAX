@@ -755,3 +755,52 @@ def _toy_params_with_relp_dim(relp_dim: int):
     )
     diffusion = diffusion._replace(conditioning=conditioning)
     return params._replace(pairformer_output=pairformer_output, diffusion=diffusion)
+
+
+def test_the_triangle_backend_default_lives_in_one_place() -> None:
+    """The documented default has to be the effective one.
+
+    `_triangle_attention_backend()` resolves the backend, honours
+    PROTENIX_TRIANGLE_BACKEND, and defaults to the blocked XLA path -- and a
+    test asserts that. But "cueq_jit" was also written as the default in the
+    CLI and in two module signatures, and those win: every real call passed
+    cueq_jit, which does not block rows and so does not bound the score tensor.
+    The tested default was the one nothing used.
+    """
+    import inspect
+
+    from foldjax.models.protenix.cli.predict import main as predict_main
+    from foldjax.models.protenix.models import model as model_impl
+    from foldjax.models.protenix.models import predict as predict_impl
+
+    entry_points = (
+        model_impl.protenix_infer_static,
+        predict_impl.protenix_predict_static,
+    )
+    for function in entry_points:
+        default = inspect.signature(function).parameters[
+            "trunk_triangle_attention_backend"
+        ].default
+        assert default is None, f"{function.__name__} pins a backend of its own"
+
+    parser_defaults = _cli_defaults(predict_main)
+    assert parser_defaults["trunk_triangle_attention_backend"] is None
+
+
+def _cli_defaults(entry) -> dict:
+    """Parse the CLI with only its required arguments to read the defaults."""
+    import argparse
+    from unittest.mock import patch
+
+    captured = {}
+    real_parse = argparse.ArgumentParser.parse_args
+
+    def capture(self, args=None, namespace=None):
+        parsed = real_parse(self, args, namespace)
+        captured.update(vars(parsed))
+        raise SystemExit(0)
+
+    with patch.object(argparse.ArgumentParser, "parse_args", capture):
+        with pytest.raises(SystemExit):
+            entry(["--features", "x.npz", "--weights", "w.pkl", "--out", "o.npz"])
+    return captured

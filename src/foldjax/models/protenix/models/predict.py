@@ -49,7 +49,7 @@ def protenix_predict_static(
     use_diffusion_efficient_fusion: bool = False,
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
-    trunk_triangle_attention_backend: str | None = "cueq_jit",
+    trunk_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
     run_confidence_scores: bool = True,

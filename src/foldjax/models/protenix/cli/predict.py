@@ -162,7 +162,14 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     parser.add_argument(
         "--trunk-triangle-attention-backend",
         choices=("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
-        default="cueq_jit",
+        # Left unset so the backend is resolved in one place, by
+        # `_triangle_attention_backend()`, which honours
+        # PROTENIX_TRIANGLE_BACKEND and otherwise picks the blocked XLA path.
+        # This default used to be spelled "cueq_jit" here and in two module
+        # signatures, so the documented and tested default was never the
+        # effective one: every real caller passed cueq_jit, which does not
+        # block rows and so does not bound the score tensor.
+        default=None,
     )
     confidence_scan_group = parser.add_mutually_exclusive_group()
     confidence_scan_group.add_argument(
