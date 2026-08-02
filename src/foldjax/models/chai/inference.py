@@ -170,8 +170,17 @@ def _default_cache(*parts: str) -> Path:
     These assets are exported once and are large (the ESM2 bundle is several
     GB), so a checkout that already populated ``~/.cache/chai_jax`` from the
     standalone package keeps using it instead of silently re-exporting.
+
+    The root comes from `foldjax_home()`, so `FOLDJAX_HOME` and
+    `XDG_CACHE_HOME` move it like they move everything else. It used to be
+    built from `Path.home()` directly, which meant the one setting documented
+    as controlling where FoldJAX writes did not control the largest thing it
+    writes -- and pointing FOLDJAX_HOME at a scratch filesystem still put
+    several GB in the user's home directory.
     """
-    current = Path.home().joinpath(".cache", "foldjax", "chai", *parts)
+    from foldjax.paths import foldjax_home
+
+    current = foldjax_home().joinpath("chai", *parts)
     if current.exists():
         return current
     legacy = Path.home().joinpath(".cache", "chai_jax", *parts)

@@ -183,3 +183,27 @@ def test_default_cache_prefers_foldjax_but_keeps_a_populated_legacy_tree(
     current = tmp_path / ".cache/foldjax/chai/models"
     current.mkdir(parents=True)
     assert _default_cache("models") == current
+
+
+def test_the_chai_cache_follows_foldjax_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FOLDJAX_HOME is documented as the one root, so it must move this too.
+
+    The ESM2 bundle is several GB and is the largest thing FoldJAX writes. It
+    was resolved from `Path.home()` directly, so pointing FOLDJAX_HOME at a
+    scratch filesystem still filled the user's home directory.
+    """
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "scratch"))
+    assert _default_cache("models") == tmp_path / "scratch/chai/models"
+
+    monkeypatch.delenv("FOLDJAX_HOME")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert _default_cache("models") == tmp_path / "xdg/foldjax/chai/models"
+
+    # With neither set it is exactly where it always was.
+    monkeypatch.delenv("XDG_CACHE_HOME")
+    assert _default_cache("models") == tmp_path / "home/.cache/foldjax/chai/models"
