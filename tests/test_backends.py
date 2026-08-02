@@ -270,6 +270,34 @@ def test_protenix_adapter_tolerates_missing_confidence_json(
     assert result.samples[0].scores == {}
 
 
+def test_no_cache_reaches_protenix_as_an_explicit_refusal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Omitting the flag does not disable Protenix's cache -- it moves it.
+
+    The native CLI defaults `--compile-cache` to `outputs/compile_cache`, a
+    relative path, so a request that asked to write nothing still created a
+    cache directory beside whatever the working directory happened to be.
+    """
+    seen = []
+
+    def native_main(argv):
+        seen.extend(argv)
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module",
+        lambda name: SimpleNamespace(main=native_main),
+    )
+    request = dataclasses.replace(
+        _request(tmp_path, "protenix"), cache_dir=None, use_compile_cache=False
+    )
+    ProtenixBackend().predict(request)
+
+    assert "--no-compile-cache" in seen
+    assert "--compile-cache" not in seen
+
+
 def test_protenix_adapter_rejects_unknown_options(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported Protenix options"):
         ProtenixBackend().predict(_request(tmp_path, "protenix", nonsense=1))

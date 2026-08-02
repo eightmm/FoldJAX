@@ -21,6 +21,22 @@ from foldjax.models.boltz2.data.preprocess import check_inputs, process_inputs
 from foldjax.models.boltz2.data.types import Manifest, StructureV2
 
 
+def _cache_opts(
+    use_msa_server: bool,
+    msa_server_url: str,
+    msa_pairing_strategy: str,
+    max_msa_depth: int | None,
+) -> tuple:
+    """Everything besides the input files that changes the features produced.
+
+    `max_msa_depth` belongs here and was missing. Without it a run that asked
+    for a cap got an earlier uncapped run's features straight back from cache,
+    and a run that asked for no cap got the capped ones -- on the knob that
+    dominates both peak memory and accuracy, with nothing to say it happened.
+    """
+    return (use_msa_server, msa_server_url, msa_pairing_strategy, max_msa_depth)
+
+
 def _input_digest(yaml_path: Path, mol_dir: Path, opts: tuple) -> str:
     """Content digest of a featurization request.
 
@@ -36,12 +52,21 @@ def _input_digest(yaml_path: Path, mol_dir: Path, opts: tuple) -> str:
     # Fold in the content of any referenced file that exists on disk. Only
     # consider path-like tokens (contain '/' or a file extension) and short
     # enough to be a real path -- avoids treating long sequence strings as paths.
+    #
+    # Relative references are resolved against the job file, not the process
+    # working directory. Boltz job files name their alignments relative to
+    # themselves, so resolving against the CWD found nothing, folded nothing
+    # in, and left the digest blind to the alignment: editing an a3m then
+    # re-running returned the previous features from cache.
     for tok in re.findall(rb"[\w./@-]+", text):
         s = tok.decode("utf-8", "ignore")
         if len(s) > 255 or ("/" not in s and "." not in s):
             continue
         try:
             p = Path(s)
+            if not p.is_absolute():
+                beside = yaml_path.parent / p
+                p = beside if beside.is_file() else p
             if not p.is_file():
                 continue
             with p.open("rb") as fh:
@@ -78,7 +103,9 @@ def featurize_yaml(
 
     assert mol_dir.exists(), f"missing mols dir: {mol_dir}"
 
-    opts = (use_msa_server, msa_server_url, msa_pairing_strategy)
+    opts = _cache_opts(
+        use_msa_server, msa_server_url, msa_pairing_strategy, max_msa_depth
+    )
     cache_entry = None
     if cache_dir is not None:
         digest = _input_digest(yaml_path, mol_dir, opts)

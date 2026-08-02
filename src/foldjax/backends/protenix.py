@@ -85,6 +85,14 @@ class ProtenixBackend(Backend):
         ]
         if request.cache_dir is not None:
             argv.extend(("--compile-cache", str(request.cache_dir)))
+        else:
+            # Protenix's native CLI defaults --compile-cache to
+            # `outputs/compile_cache`, so leaving the flag off does not turn
+            # the cache off -- it relocates it, to a path relative to whatever
+            # the working directory happens to be. `--no-cache` has to be said
+            # out loud, or a run asked to write nothing still seeds a cache
+            # directory next to wherever it was launched.
+            argv.append("--no-compile-cache")
         for key in sorted(_CLI_OPTIONS):
             if key in options:
                 argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))
