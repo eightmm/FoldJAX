@@ -22,24 +22,51 @@ def load(results: Path) -> list[dict]:
     return rows
 
 
-def _confidence(row: dict) -> str:
-    """One comparable number per row, named, or '-' if the run produced none.
+#: Preference order for the one confidence number shown per row. Each is a
+#: whole-prediction score, best-first among the samples.
+_CONFIDENCE_KEYS = (
+    "ranking_score",
+    "aggregate_score",
+    "confidence_score",
+    "complex_plddt",
+    "ptm",
+    "plddt",
+)
 
-    The models do not report the same confidence fields, and the ones they
-    share are not interchangeable across models -- only across the two
-    implementations of the same model, which is the comparison this column is
-    for.
+
+def _available(row: dict | None) -> set[str]:
+    if not row:
+        return set()
+    return {
+        key
+        for sample in row.get("samples") or []
+        if isinstance(sample.get("scores"), dict)
+        for key in sample["scores"]
+    }
+
+
+def _shared_key(left: dict | None, right: dict | None) -> str | None:
+    """The best confidence field *both* sides reported, or None.
+
+    Falling back independently on each side put `ptm` in one column and
+    `confidence_score` in the other and printed them as though they were a
+    comparison. These scores are only comparable between two implementations of
+    the same model, and only when they are the same field.
     """
-    samples = row.get("samples") or []
-    for key in ("ranking_score", "aggregate_score", "confidence_score", "ptm"):
-        values = [
-            sample["scores"][key]
-            for sample in samples
-            if isinstance(sample.get("scores"), dict) and key in sample["scores"]
-        ]
-        if values:
-            return f"{key} {max(values):.4f}"
-    return "-"
+    common = _available(left) & _available(right)
+    return next((key for key in _CONFIDENCE_KEYS if key in common), None)
+
+
+def _confidence(row: dict | None, key: str | None) -> str:
+    """Best sample's value of `key`, or '-' if this run has no such number."""
+    if row is None or key is None:
+        return "-"
+    values = [
+        sample["scores"][key]
+        for sample in row.get("samples") or []
+        if isinstance(sample.get("scores"), dict) and key in sample["scores"]
+    ]
+    return f"{max(values):.4f}" if values else "-"
 
 
 def main() -> int:
@@ -73,10 +100,10 @@ def main() -> int:
 
     header = (
         "| tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB "
-        "| speed | memory | FoldJAX confidence | upstream confidence |"
+        "| speed | memory | confidence | FoldJAX | upstream |"
     )
     print(header)
-    print("|" + "---|" * 10)
+    print("|" + "---|" * 11)
     for length, case in cases:
         for model in models:
             fj = by_key.get((model, case, "foldjax"))
@@ -104,12 +131,12 @@ def main() -> int:
             if usable and fj["peak_mib"]:
                 ratio_mem = f"{up['peak_mib'] / fj['peak_mib']:.2f}x"
 
+            key = _shared_key(fj, up)
             print(
                 f"| {length} | {model} | {cell(fj, 'wall_s')} | {cell(up, 'wall_s')} "
                 f"| {cell(fj, 'peak_mib')} | {cell(up, 'peak_mib')} "
-                f"| {ratio_time} | {ratio_mem} "
-                f"| {_confidence(fj) if fj else '-'} "
-                f"| {_confidence(up) if up else '-'} |"
+                f"| {ratio_time} | {ratio_mem} | {key or '-'} "
+                f"| {_confidence(fj, key)} | {_confidence(up, key)} |"
             )
     print(
         "\nspeed/memory are upstream divided by FoldJAX: above 1.00x means "
