@@ -107,10 +107,15 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
                 seed,
             ),
             repo,
-            # The fused layer norm JIT-compiles a CUDA extension on first use.
-            # It is already built in this checkout, but pinning the pure-torch
-            # path would change what is being measured, so leave it default.
-            {"PYTHONPATH": str(repo)},
+            # Upstream's default layer norm is a CUDA extension compiled on
+            # first use, and this machine has CUDA runtime libraries but no
+            # `nvcc`, so it cannot be built: the run dies at import with
+            # "CUDA_HOME environment variable is not set". The pure-PyTorch
+            # fallback is the only way to get a number here, and it is slower
+            # than the fused kernel would be -- so Protenix's upstream time is
+            # an upper bound, and the report says so rather than quietly
+            # crediting FoldJAX for the difference.
+            {"PYTHONPATH": str(repo), "LAYERNORM_TYPE": "torch"},
         )
     if model == "opendde":
         repo = ROOT / "OpenDDE"

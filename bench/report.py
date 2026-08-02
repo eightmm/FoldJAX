@@ -171,6 +171,12 @@ the two numbers are the same statistic. They are still different samples: the
 torch and JAX PRNG streams differ, so a seed does not put the two on the same
 random tape. Same-seed parity was established per port against a matched tape
 and is a separate exercise from this table.
+
+One caveat that favours FoldJAX and cannot be removed on this machine: upstream
+Protenix runs with `LAYERNORM_TYPE=torch`. Its default layer norm is a CUDA
+extension built on first use, and this host has the CUDA runtime libraries but
+no `nvcc`, so the build fails at import. Protenix's upstream time is therefore
+an upper bound.
 """.rstrip()
 
 
