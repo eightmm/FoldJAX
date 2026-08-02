@@ -91,15 +91,17 @@ esm = ["fair-esm>=2.0.0", "torch>=2.2"]
 # Only needed to cross-check FoldJAX's own conformer reader against Chai's
 # adapters. Converting and predicting need neither.
 chai-crosscheck = ["antipickle==0.2.0", "beartype>=0.19", "torch>=2.2"]
-# Two extra backends that cannot be vendored: AlphaFold 3 is not redistributable
-# and openfold3-jax is an in-progress sibling port. Both stay external.
+# Two extra backends cannot be vendored: AlphaFold 3 is not redistributable and
+# openfold3-jax is an in-progress port that is not published anywhere. Neither
+# is a resolvable dependency, and that is deliberate.
 #
-# AlphaFold 3 is deliberately *not* listed as a resolvable dependency. Upstream
-# pins `jax[cuda12]`, which cannot co-resolve with a CUDA 13 cluster, and the
-# right JAX plugin differs per site. Install it into the same environment for
-# your own hardware (see docs/alphafold3.md); the backend finds it by import or
-# via ALPHAFOLD3_SOURCE.
-openfold3 = ["openfold3-jax"]
+# AlphaFold 3 upstream pins `jax[cuda12]`, which cannot co-resolve with a CUDA
+# 13 cluster, and the right JAX plugin differs per site. OpenFold3-JAX has no
+# release on any index. Naming either one here — even behind an extra — makes
+# `uv sync` fail for everyone who does not already have that checkout, because
+# uv resolves every extra to build the lockfile. Install them into the same
+# environment yourself (see docs/alphafold3.md and docs/openfold3.md); both
+# backends find their package by import.
 
 [project.urls]
 Homepage = "https://github.com/eightmm/foldjax"
@@ -134,9 +136,6 @@ where = ["src"]
 "foldjax.models.protenix" = ["data/*.npz", "LICENSE", "NOTICE"]
 "foldjax.models.boltz2" = ["LICENSE", "NOTICE"]
 "foldjax.models.chai" = ["LICENSE", "NOTICE"]
-
-[tool.uv.sources]
-openfold3-jax = { path = "../openfold3_jax", editable = true }
 
 [dependency-groups]
 dev = [

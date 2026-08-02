@@ -510,9 +510,6 @@ esm = [
     { name = "fair-esm" },
     { name = "torch" },
 ]
-openfold3 = [
-    { name = "openfold3-jax" },
-]
 torch-bridge = [
     { name = "antipickle" },
     { name = "torch" },
@@ -549,7 +546,6 @@ requires-dist = [
     { name = "modelcif", specifier = ">=1.0" },
     { name = "numba", specifier = ">=0.61" },
     { name = "numpy", specifier = ">=2.0" },
-    { name = "openfold3-jax", marker = "extra == 'openfold3'", editable = "../openfold3_jax" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=18.0" },
     { name = "pytorch-lightning", marker = "extra == 'boltz-preprocess'", specifier = ">=2.5.0" },
@@ -567,7 +563,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.0" },
     { name = "triton", marker = "extra == 'cuda13'", specifier = ">=3.0" },
 ]
-provides-extras = ["cuda13", "boltz-preprocess", "torch-bridge", "esm", "chai-crosscheck", "openfold3"]
+provides-extras = ["cuda13", "boltz-preprocess", "torch-bridge", "esm", "chai-crosscheck"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1271,55 +1267,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/ce/3d/e4b57b8d9008c6ebe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/0e/152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/omegaconf-2.3.1-py3-none-any.whl", hash = "sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0", size = 79502, upload-time = "2026-06-11T05:05:09.954Z" },
 ]
-
-[[package]]
-name = "openfold3-jax"
-version = "0.1.0"
-source = { editable = "../openfold3_jax" }
-dependencies = [
-    { name = "jax" },
-    { name = "numpy" },
-    { name = "safetensors" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "biotite", marker = "extra == 'torch-bridge'" },
-    { name = "boto3", marker = "extra == 'data-reference'" },
-    { name = "click", marker = "extra == 'data-reference'" },
-    { name = "cuequivariance-jax", marker = "extra == 'cuda13'", specifier = "==0.10.0" },
-    { name = "cuequivariance-ops-jax-cu13", marker = "extra == 'cuda13'", specifier = "==0.9.0" },
-    { name = "foldbench", marker = "extra == 'bench'", editable = "../foldbench" },
-    { name = "foldsearch", marker = "extra == 'msa'", editable = "../foldsearch" },
-    { name = "func-timeout", marker = "extra == 'data-reference'" },
-    { name = "gemmi", marker = "extra == 'output'", specifier = ">=0.7.3" },
-    { name = "gemmi", marker = "extra == 'torch-bridge'", specifier = ">=0.7.3" },
-    { name = "ijson", marker = "extra == 'data-reference'" },
-    { name = "jax", specifier = ">=0.7.1" },
-    { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.7.1" },
-    { name = "kalign-python", marker = "extra == 'data-reference'" },
-    { name = "lmdb", marker = "extra == 'data-reference'" },
-    { name = "memory-profiler", marker = "extra == 'data-reference'" },
-    { name = "ml-collections", marker = "extra == 'torch-bridge'", specifier = ">=0.1.1" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "openfold3-jax", extras = ["torch-bridge"], marker = "extra == 'data-reference'" },
-    { name = "packaging", marker = "extra == 'torch-bridge'" },
-    { name = "pandas", marker = "extra == 'data-reference'" },
-    { name = "pdbeccdutils", marker = "extra == 'data-reference'" },
-    { name = "pydantic", marker = "extra == 'data-reference'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytorch-lightning", marker = "extra == 'data-reference'", specifier = ">=2.1" },
-    { name = "pyyaml", marker = "extra == 'data-reference'" },
-    { name = "rdkit", marker = "extra == 'data-reference'", specifier = "<2026" },
-    { name = "requests", marker = "extra == 'data-reference'" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "safetensors", specifier = ">=0.4" },
-    { name = "scipy", marker = "extra == 'torch-bridge'" },
-    { name = "torch", marker = "extra == 'torch-bridge'", specifier = ">=2.5" },
-    { name = "tqdm", marker = "extra == 'data-reference'" },
-    { name = "typing-extensions", marker = "extra == 'data-reference'" },
-]
-provides-extras = ["msa", "output", "cuda13", "dev", "bench", "torch-bridge", "data-reference"]
 
 [[package]]
 name = "opt-einsum"

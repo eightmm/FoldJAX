@@ -478,8 +478,12 @@ deliberately absent from the dependency set.
 generation, where the weights go, and what changes on a device whose shared
 memory the upstream Triton kernels do not fit.
 
-**`openfold3-jax`** is an in-progress sibling port, registered and enabled by
-`--extra openfold3`.
+**OpenFold3** is registered the same way and for the same reason, but the port
+behind it (`openfold3-jax`) is still in progress and is published on no index.
+It is therefore not a dependency either — naming it would break `uv sync` for
+everyone without that checkout, since uv resolves every extra to build the
+lockfile. [docs/openfold3.md](docs/openfold3.md) has the install and the
+current state of the port.
 
 ## Tests
 
