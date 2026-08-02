@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Callable
 from typing import Literal, NamedTuple
 
 import jax
@@ -90,10 +91,12 @@ def triangle_multiplication(
     mask = mask.astype(z.dtype)[..., None]
 
     z_norm = layer_norm(z, params.layer_norm_in)
-    a = mask * sigmoid(linear(z_norm, params.linear_a_g))
-    a = a * linear(z_norm, params.linear_a_p)
     b = mask * sigmoid(linear(z_norm, params.linear_b_g))
     b = b * linear(z_norm, params.linear_b_p)
+
+    def project_a(z_slice: jnp.ndarray, mask_slice: jnp.ndarray) -> jnp.ndarray:
+        gated = mask_slice * sigmoid(linear(z_slice, params.linear_a_g))
+        return gated * linear(z_slice, params.linear_a_p)
 
     # Keep the projections in the trunk's own dtype and accumulate in float32
     # instead of widening them first. `a` and `b` are each [N, N, c_hidden] --
@@ -102,7 +105,19 @@ def triangle_multiplication(
     # `preferred_element_type` gives the same float32 accumulation without the
     # widened operands, which is what AlphaFold 3's BF16_BF16_F32 algorithm
     # does. With a float32 trunk both forms are identical.
-    out = _triangle_contract(a, b, direction, chunk_size)
+    #
+    # `a` is also built one block at a time when the contraction is blocked.
+    # Each output row block reduces over the whole of `b` but only its own rows
+    # of `a`, so the rest of `a` never has to exist -- the same trade the
+    # attention makes with its queries.
+    out = _triangle_contract(
+        project_a,
+        z_norm,
+        mask,
+        b,
+        direction,
+        chunk_size,
+    )
     out = out.astype(z.dtype)
     out = layer_norm(out, params.layer_norm_out)
     out = linear(out, params.linear_z)
@@ -116,29 +131,39 @@ _compiled_triangle_multiplication = jax.jit(
 
 
 def _triangle_contract(
-    a: jnp.ndarray,
+    project_a: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
+    z_norm: jnp.ndarray,
+    mask: jnp.ndarray,
     b: jnp.ndarray,
     direction: TriangleDirection,
     chunk_size: int | None,
 ) -> jnp.ndarray:
-    if chunk_size is None or chunk_size <= 0:
-        return _triangle_contract_block(a, b, direction)
+    """Contract ``a`` against ``b``, building ``a`` whole or one block at a time.
 
-    n = a.shape[-3]
-    if chunk_size >= n:
-        return _triangle_contract_block(a, b, direction)
+    ``project_a`` takes a slice of the normalised pair representation and its
+    matching mask slice and returns that slice of ``a``. Blocking the output
+    rows only ever needs the matching rows of ``a``, so when the contraction is
+    blocked the full projection is never materialised.
+    """
+    n = z_norm.shape[-3]
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= n:
+        return _triangle_contract_block(project_a(z_norm, mask), b, direction)
 
     # The blocks accumulate in float32 regardless of the operand dtype, so the
     # destination has to be float32 too or every block would be rounded back
     # down on the way in.
-    out = jnp.zeros(a.shape[:-3] + (n, n, a.shape[-1]), dtype=jnp.float32)
+    axis = -3 if direction == "outgoing" else -2
+    blocks = []
     for start in range(0, n, chunk_size):
         size = min(chunk_size, n - start)
-        axis = -3 if direction == "outgoing" else -2
-        a_block = jax.lax.dynamic_slice_in_dim(a, start, size, axis=axis)
-        block = _triangle_contract_block(a_block, b, direction)
-        out = out.at[..., start : start + size, :, :].set(block)
-    return out
+        a_block = project_a(
+            jax.lax.dynamic_slice_in_dim(z_norm, start, size, axis=axis),
+            jax.lax.dynamic_slice_in_dim(mask, start, size, axis=axis),
+        )
+        blocks.append(
+            _triangle_contract_block(a_block, b, direction).astype(jnp.float32)
+        )
+    return jnp.concatenate(blocks, axis=-3)
 
 
 def _triangle_contract_block(
