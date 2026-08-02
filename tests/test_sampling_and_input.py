@@ -365,3 +365,34 @@ def test_seed_and_seeds_together_are_an_error(tmp_path: Path) -> None:
 def test_a_malformed_seed_list_is_refused(tmp_path: Path, seeds, message) -> None:
     with pytest.raises(ValueError, match=message):
         PredictionRequest(model="opendde", input=_job_file(tmp_path), seeds=seeds)
+
+
+def test_openfold3_knobs_use_the_names_its_config_takes(tmp_path: Path) -> None:
+    """The map has to land on `released_config`'s own argument names.
+
+    It mapped `num_steps` and `num_recycles` onto themselves, while the config
+    and the adapter's own pop list call them `no_rollout_steps` and
+    `num_cycles`. Both therefore stayed in the leftover options and the adapter
+    raised "unsupported OpenFold3 options" -- two of the three knobs it
+    advertised could only ever fail. The port is not installed here, so this
+    checks the translation rather than a run.
+    """
+    from foldjax.backends.openfold3 import _COMPILE_OPTIONS, OpenFold3Backend
+
+    backend = OpenFold3Backend()
+    request = PredictionRequest(
+        model="openfold3",
+        input=_job_file(tmp_path),
+        weights=_weights(tmp_path),
+        num_samples=3,
+        num_steps=40,
+        num_recycles=2,
+    )
+    assert backend.apply_sampling(request) == {
+        "num_samples": 3,
+        "no_rollout_steps": 40,
+        "num_cycles": 2,
+    }
+    # Every translated name must also be one the cache namespace knows about,
+    # or two different schedules would share a compiled program.
+    assert set(backend.sampling_options.values()) <= set(_COMPILE_OPTIONS)
