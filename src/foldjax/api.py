@@ -16,6 +16,7 @@ from typing import Any
 from foldjax.backends.base import Backend
 from foldjax.cache import cache_namespace, runtime_profile, weight_identity
 from foldjax.input import materialize_native_input, read_job_document
+from foldjax.manifest import write as write_manifest
 from foldjax.paths import compile_cache_dir
 from foldjax.registry import get_backend
 from foldjax.schema import PredictionRequest, PredictionResult
@@ -84,12 +85,15 @@ def predict(request: PredictionRequest) -> PredictionResult:
         _predict_once(request, seed, request.output_dir / f"seed_{seed}")
         for seed in seeds
     ]
-    return PredictionResult(
+    combined = PredictionResult(
         model=results[0].model,
         samples=tuple(sample for result in results for sample in result.samples),
         output_dir=request.output_dir,
         raw=[result.raw for result in results],
     )
+    # Each seed already recorded its own; this one covers the whole request.
+    write_manifest(request, combined, request.output_dir)
+    return combined
 
 
 def _predict_once(
@@ -121,7 +125,10 @@ def _predict_once(
             request, cache_dir=resolve_cache_dir(request, backend)
         )
     request.output_dir.mkdir(parents=True, exist_ok=True)
-    return backend.predict(request)
+    result = backend.predict(request)
+    # Written after the run, so its presence also says the run finished.
+    write_manifest(request, result, request.output_dir)
+    return result
 
 
 def resolve_cache_dir(request: PredictionRequest, backend: Backend) -> Path:
