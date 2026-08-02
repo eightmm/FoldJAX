@@ -186,7 +186,15 @@ def _samples(candidates: Any, seed: int) -> tuple[PredictionSample, ...]:
     """
     paths = list(getattr(candidates, "cif_paths", ()) or ())
     if not paths:
-        return ()
+        # Chai always writes one structure per diffusion sample, and the sample
+        # count is at least one, so an empty candidate set means the run did
+        # not do what was asked. Returning it as a successful result with no
+        # samples pushes that discovery to whoever later iterates the empty
+        # tuple, far from the cause.
+        raise RuntimeError(
+            "Chai returned no structures. The run reported success but wrote "
+            "nothing, so the prediction did not happen"
+        )
     rankings = list(getattr(candidates, "ranking_data", ()) or ())
     plddt = np.asarray(getattr(candidates, "plddt", np.empty(0)))
     # ``get_scores`` lives on the ``rank`` module; the ``ranking`` package does

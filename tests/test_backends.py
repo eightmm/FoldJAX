@@ -702,3 +702,28 @@ def test_chai_adapter_keeps_its_output_directory_clear_of_materialized_inputs(
 
     assert seen["output_dir"] == request.output_dir / "predictions"
     assert seen["output_dir"] != request.output_dir
+
+
+def test_chai_refuses_to_report_success_with_no_structures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A run that wrote nothing did not happen, whatever its exit status.
+
+    Chai writes one structure per diffusion sample and the sample count is at
+    least one, so an empty candidate set means the run failed. It used to come
+    back as a PredictionResult with no samples, which is indistinguishable from
+    success until something later iterates the empty tuple.
+    """
+    _chai_assets(tmp_path)
+
+    def empty_run(fasta_file, **kwargs):
+        return SimpleNamespace(cif_paths=[], ranking_data=[], plddt=np.empty(0))
+
+    monkeypatch.setattr(
+        "foldjax.backends.chai.import_module",
+        lambda name: SimpleNamespace(
+            InferenceConfig=FakeInferenceConfig, run_inference=empty_run
+        ),
+    )
+    with pytest.raises(RuntimeError, match="no structures"):
+        ChaiBackend().predict(_request(tmp_path, "chai"))
