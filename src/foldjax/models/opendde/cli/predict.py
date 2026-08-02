@@ -165,7 +165,7 @@ def _job_seeds(job: Mapping[str, Any], explicit_seed: int | None) -> list[int]:
     return result
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-json", type=Path, required=True)
     parser.add_argument("--weights", type=Path, required=True)
@@ -314,6 +314,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         jax.config.update("jax_compilation_cache_dir", str(cache))
         jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
 
+    # Returned so a caller knows which files *this* run produced. FoldJAX used
+    # to recover them by globbing the output tree, which cannot tell a
+    # structure written now from one left by an earlier run into the same
+    # directory.
+    written: list[Path] = []
     try:
         jobs = _load_jobs(args.input_json)
         if not jobs:
@@ -374,9 +379,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                     include_raw=args.include_raw,
                     include_trunk=False,
                 )
+                written.extend(paths)
                 print(f"wrote: {paths[0].parent}")
     except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
+    return written
 
 
 if __name__ == "__main__":

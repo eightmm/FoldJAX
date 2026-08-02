@@ -310,6 +310,8 @@ def test_opendde_adapter_restores_every_environment_variable_the_cli_exports(
     def fake_main(argv):
         os.environ["PROTENIX_CCD_COMPONENTS_FILE"] = "/leaked/components.cif"
         os.environ["PROTENIX_KALIGN_BINARY"] = "/leaked/kalign"
+        # The real CLI returns the paths it wrote; this run writes none.
+        return []
 
     monkeypatch.setattr(
         opendde, "import_module", lambda name: type("M", (), {"main": fake_main})

@@ -66,20 +66,117 @@ def test_boltz_adapter_calls_native_api_and_normalizes_samples(
     assert result.samples[0].scores == {"iptm": 0.6, "mean_plddt": 0.75}
 
 
+def test_boltz_gives_each_sample_its_own_confidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Ranking samples is the reason to generate more than one.
+
+    Boltz-2 reports pLDDT as [n_sample, n_token] and the pTM family as one
+    value per sample. The adapter used to average pLDDT over the whole batch,
+    take element 0 of iptm, and copy that one dict onto every sample -- so
+    three structures came back with three identical score sets and nothing to
+    rank them by, with no error to say so.
+    """
+    mols = tmp_path / "mols"
+    mols.mkdir()
+    paths = [tmp_path / "out" / f"job_model_{index}.cif" for index in range(3)]
+
+    def native_predict(**kwargs):
+        return {
+            "coords": np.zeros((3, 4, 3)),
+            # Per-sample means are 0.1, 0.5 and 0.9.
+            "plddt": np.asarray([[0.1] * 4, [0.5] * 4, [0.9] * 4]),
+            "out_paths": paths,
+            "raw": {
+                "iptm": np.asarray([0.11, 0.55, 0.99]),
+                "ptm": np.asarray([0.12, 0.56, 0.98]),
+                "ligand_iptm": np.asarray([0.13, 0.57, 0.97]),
+            },
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    result = Boltz2Backend().predict(_request(tmp_path, "boltz2", mols=mols))
+
+    assert len(result.samples) == 3
+    assert [sample.scores["mean_plddt"] for sample in result.samples] == pytest.approx(
+        [0.1, 0.5, 0.9]
+    )
+    assert [sample.scores["iptm"] for sample in result.samples] == pytest.approx(
+        [0.11, 0.55, 0.99]
+    )
+    assert [sample.scores["ptm"] for sample in result.samples] == pytest.approx(
+        [0.12, 0.56, 0.98]
+    )
+    assert [
+        sample.scores["ligand_iptm"] for sample in result.samples
+    ] == pytest.approx([0.13, 0.57, 0.97])
+
+
+def test_boltz_shares_a_confidence_value_that_is_not_per_sample(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A single reported value describes the whole prediction, so it is shared.
+
+    Indexing it by sample would read past the end or, worse, hand sample 1 a
+    number belonging to something else.
+    """
+    mols = tmp_path / "mols"
+    mols.mkdir()
+
+    def native_predict(**kwargs):
+        return {
+            "coords": np.zeros((2, 4, 3)),
+            "plddt": np.asarray([[0.2] * 4, [0.8] * 4]),
+            "out_paths": [tmp_path / "a.cif", tmp_path / "b.cif"],
+            "raw": {"iptm": np.asarray([0.42])},
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    result = Boltz2Backend().predict(_request(tmp_path, "boltz2", mols=mols))
+
+    assert [sample.scores["iptm"] for sample in result.samples] == [0.42, 0.42]
+    assert [sample.scores["mean_plddt"] for sample in result.samples] == pytest.approx(
+        [0.2, 0.8]
+    )
+
+
 def test_boltz_adapter_requires_molecule_data(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="mols"):
         Boltz2Backend().predict(_request(tmp_path, "boltz2"))
 
 
-def _write_protenix_outputs(out: Path) -> None:
+def _write_protenix_outputs(out: Path, samples: int = 1) -> list[Path]:
+    """Write what the shared Protenix writer writes, and return what it returns.
+
+    The real `main` hands back every path it produced, in rank order. The
+    adapters read that list rather than globbing, so a double that returns
+    nothing is not modelling the contract.
+    """
     predictions = out / "job" / "seed_5" / "predictions"
-    predictions.mkdir(parents=True)
-    (predictions / "job_sample_0.cif").touch()
-    (predictions / "job_summary_confidence_sample_0.json").write_text(
-        json.dumps(
-            {"ptm": 0.81, "iptm": 0.42, "ranking_score": 0.77, "chain_ptm": [0.8, 0.9]}
+    predictions.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for rank in range(samples):
+        cif = predictions / f"job_sample_{rank}.cif"
+        cif.touch()
+        confidence = predictions / f"job_summary_confidence_sample_{rank}.json"
+        confidence.write_text(
+            json.dumps(
+                {
+                    "ptm": 0.81,
+                    "iptm": 0.42,
+                    "ranking_score": 0.77,
+                    "chain_ptm": [0.8, 0.9],
+                }
+            )
         )
-    )
+        written.extend((cif, confidence))
+    return written
 
 
 def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) -> None:
@@ -87,7 +184,7 @@ def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) ->
 
     def native_main(argv):
         seen.extend(argv)
-        _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
@@ -123,7 +220,9 @@ def test_protenix_adapter_tolerates_missing_confidence_json(
     def native_main(argv):
         out = Path(argv[argv.index("--out") + 1])
         out.mkdir(parents=True)
-        (out / "ranked_0.cif").touch()
+        path = out / "ranked_0.cif"
+        path.touch()
+        return [path]
 
     monkeypatch.setattr(
         "foldjax.backends.protenix.import_module",
@@ -151,7 +250,7 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
 
     def native_main(argv):
         seen.extend(argv)
-        _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
 
     monkeypatch.setattr(
         "foldjax.backends.opendde.import_module",
@@ -205,6 +304,73 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
         "iptm": 0.42,
         "ranking_score": 0.77,
     }
+
+
+@pytest.mark.parametrize(
+    ("model", "backend"),
+    [("protenix", ProtenixBackend), ("opendde", OpenDDEBackend)],
+)
+def test_a_rerun_does_not_report_the_previous_runs_structures(
+    tmp_path: Path, monkeypatch, model: str, backend
+) -> None:
+    """Only what this run wrote is this run's result.
+
+    The output directory defaults to one derived from the input, so running the
+    same job twice reuses it. These adapters used to recover their samples by
+    globbing the tree for ``*.cif``, which cannot tell a structure written now
+    from one left behind earlier -- so asking for one sample after a five-sample
+    run returned five, four of them stale, with no error. The native CLIs now
+    return the paths they wrote and the adapters read that.
+    """
+    out = tmp_path / "out"
+
+    def five_samples(argv):
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]), samples=5)
+
+    def one_sample(argv):
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]), samples=1)
+
+    monkeypatch.setattr(
+        f"foldjax.backends.{model}.import_module",
+        lambda name: SimpleNamespace(main=five_samples),
+    )
+    first = backend().predict(_request(tmp_path, model))
+    assert len(first.samples) == 5
+
+    monkeypatch.setattr(
+        f"foldjax.backends.{model}.import_module",
+        lambda name: SimpleNamespace(main=one_sample),
+    )
+    second = backend().predict(_request(tmp_path, model))
+
+    assert len(second.samples) == 1
+    assert second.samples[0].structure_path.name == "job_sample_0.cif"
+    # The four files from the first run are still on disk; they are simply not
+    # claimed as results of the second.
+    assert len(list(out.rglob("*.cif"))) == 5
+
+
+def test_samples_come_back_in_rank_order_past_ten(tmp_path: Path, monkeypatch) -> None:
+    """Rank order is what the writer emits, not what sorting the names gives.
+
+    Protenix names its files ``job_sample_<rank>.cif``, so a lexicographic sort
+    puts sample_10 second, right after sample_0. Ten or more samples is the
+    common case for anything being ranked, and the top hit is the one that
+    matters, so this silently mislabelled which structure was best.
+    """
+
+    def twelve(argv):
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]), samples=12)
+
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module",
+        lambda name: SimpleNamespace(main=twelve),
+    )
+    result = ProtenixBackend().predict(_request(tmp_path, "protenix"))
+
+    assert [sample.structure_path.name for sample in result.samples] == [
+        f"job_sample_{rank}.cif" for rank in range(12)
+    ]
 
 
 def test_opendde_adapter_rejects_unknown_and_mistyped_options(tmp_path: Path) -> None:

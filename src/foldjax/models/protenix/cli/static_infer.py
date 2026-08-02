@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from foldjax.models.protenix.cli.predict import main as _predict_main
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    _predict_main(argv)
+def main(argv: Sequence[str] | None = None) -> list[Path]:
+    return _predict_main(argv)
 
 
 if __name__ == "__main__":

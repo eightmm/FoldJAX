@@ -109,14 +109,15 @@ class OpenDDEBackend(Backend):
             raise ValueError(f"unsupported OpenDDE options: {', '.join(options)}")
 
         with _restored_environment():
-            import_module("foldjax.models.opendde.cli.predict").main(argv)
+            written = import_module("foldjax.models.opendde.cli.predict").main(argv)
         samples = tuple(
             PredictionSample(
                 seed=request.seed,
                 structure_path=path,
                 scores=_scores(path),
             )
-            for path in sorted(request.output_dir.rglob("*.cif"))
+            for path in written
+            if path.suffix == ".cif"
         )
         return PredictionResult(
             model=self.name,

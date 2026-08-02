@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     feature_group = parser.add_mutually_exclusive_group(required=True)
     feature_group.add_argument("--features", type=Path)
@@ -203,7 +203,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--model-name",
         default="auto",
-        help="Known Protenix model name for runtime limits, or 'auto'.",
+        help="Known Protenix model name, 'auto' to infer it from the weight "
+        "filename, or 'unknown' to accept the base-model defaults for a "
+        "checkpoint this build does not recognise.",
     )
     parser.add_argument(
         "--esm-checkpoint-dir",
@@ -262,6 +264,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         sample_msa_cycle_features,
     )
     from foldjax.models.protenix.runtime_policy import (
+        KNOWN_MODEL_NAMES,
         infer_model_name_from_path,
         model_inference_defaults,
         validate_inference_limits,
@@ -270,6 +273,23 @@ def main(argv: Sequence[str] | None = None) -> None:
     model_name = args.model_name
     if model_name == "auto":
         model_name = infer_model_name_from_path(args.weights)
+        if model_name is None:
+            # The model name is not cosmetic. It selects the sampler schedule
+            # (the mini models run 5 steps at gamma0=0, the base models 200 at
+            # 0.8), it decides whether ESM/ISM conditioning is built at all,
+            # and it carries the protenix-v2 token limit. Inferring it from the
+            # filename means renaming a checkpoint silently changed all three:
+            # an ISM model run from a renamed file quietly became a different
+            # model, with no warning and a plausible-looking structure out.
+            raise SystemExit(
+                f"cannot tell which Protenix model {args.weights.name!r} is, "
+                "and the name selects the sampler schedule, the ESM/ISM "
+                "conditioning, and the token limit. Pass --model-name with one "
+                f"of: {', '.join(KNOWN_MODEL_NAMES)}; or --model-name unknown "
+                "to accept the base-model schedule with no ESM conditioning."
+            )
+    if model_name == "unknown":
+        model_name = None
     if model_name is None:
         sampler_defaults = {
             "n_cycle": 10,
@@ -496,6 +516,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     legacy_npz = (
         args.output_format == "npz" and len(jobs) == 1 and len(job_seeds[0]) == 1
     )
+    # Returned so a caller knows which files *this* run produced. FoldJAX used
+    # to recover them by globbing the output tree, which cannot tell a
+    # structure written now from one left by an earlier run into the same
+    # directory.
+    written: list[Path] = []
     for job, seeds in zip(jobs, job_seeds, strict=True):
         features = job["features"]
         guidance_features = None
@@ -586,6 +611,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     include_raw=args.output_format == "both",
                     include_trunk=args.include_trunk,
                 )
+                written.extend(paths)
                 print(f"wrote: {paths[0].parent}")
             else:
                 if legacy_npz:
@@ -611,7 +637,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                         "outputs are quadratic in token count, and at this size the "
                         "copy to host costs more than the prediction did"
                     )
+                written.append(output_path)
                 print(f"wrote: {output_path}")
+    return written
 
 
 def _resolve_seeds(args: argparse.Namespace, model_seeds: Any) -> list[int]:
