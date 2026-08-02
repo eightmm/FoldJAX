@@ -46,6 +46,7 @@ def _predict(
     chunk_policy: ChunkPolicyName = "auto",
     chunk_overrides: Mapping[str, int | None] | None = None,
     graph_jit: bool = True,
+    trunk_dtype: Any = None,
 ) -> dict[str, Any]:
     import jax
 
@@ -127,6 +128,7 @@ def _predict(
         single_att_q_chunk_size=chunks.single_att_q_chunk_size,
         token_q_chunk_size=chunks.token_q_chunk_size,
         cycle_msa_features=sampled or None,
+        trunk_dtype=trunk_dtype,
         **scans,
     )
 
@@ -258,6 +260,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         "count; 'off' materialises them whole and needs tens of gigabytes "
         "past a few hundred tokens",
     )
+    parser.add_argument(
+        "--trunk-dtype",
+        choices=("bf16", "fp32"),
+        default="fp32",
+        help="element width of the embedder and both trunks; the diffusion "
+        "sampler and the output heads stay FP32 either way",
+    )
     parser.add_argument("--include-raw", action="store_true")
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--compile-cache", type=Path)
@@ -360,6 +369,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         if not jobs:
             raise ValueError("input JSON must contain at least one job")
         params = _load_weights(args.weights)
+        trunk_dtype = None
+        if args.trunk_dtype == "bf16":
+            import jax.numpy as jnp
+
+            from foldjax.models.opendde.models.model import cast_trunk_params
+
+            trunk_dtype = jnp.bfloat16
+            params = cast_trunk_params(params, trunk_dtype)
         for job in jobs:
             job_name = str(job.get("name") or args.input_json.stem)
             for seed in _job_seeds(job, args.seed):
@@ -387,6 +404,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     structural_single_attention_backend=(
                         args.structural_single_attention_backend
                     ),
+                    trunk_dtype=trunk_dtype,
                     chunk_policy=args.chunk_policy,
                     chunk_overrides={
                         "triangle_mul_chunk_size": args.triangle_mul_chunk_size,

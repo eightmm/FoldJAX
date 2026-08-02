@@ -48,6 +48,7 @@ _CLI_OPTIONS = {
     "template_mmcif_dir",
     "template_obsolete_map",
     "template_release_dates",
+    "trunk_dtype",
     "trunk_single_attention_backend",
 }
 _CONFIDENCE_INFIX = "_summary_confidence_sample_"

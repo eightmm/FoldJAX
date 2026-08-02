@@ -95,12 +95,14 @@ def triangle_multiplication(
     b = mask * sigmoid(linear(z_norm, params.linear_b_g))
     b = b * linear(z_norm, params.linear_b_p)
 
-    out = _triangle_contract(
-        a.astype(jnp.float32),
-        b.astype(jnp.float32),
-        direction,
-        chunk_size,
-    )
+    # Keep the projections in the trunk's own dtype and accumulate in float32
+    # instead of widening them first. `a` and `b` are each [N, N, c_hidden] --
+    # 1,311 MiB apiece on OpenDDE's structural branch -- so casting them up
+    # meant a bfloat16 trunk still paid float32 for its two largest buffers.
+    # `preferred_element_type` gives the same float32 accumulation without the
+    # widened operands, which is what AlphaFold 3's BF16_BF16_F32 algorithm
+    # does. With a float32 trunk both forms are identical.
+    out = _triangle_contract(a, b, direction, chunk_size)
     out = out.astype(z.dtype)
     out = layer_norm(out, params.layer_norm_out)
     out = linear(out, params.linear_z)
@@ -126,7 +128,10 @@ def _triangle_contract(
     if chunk_size >= n:
         return _triangle_contract_block(a, b, direction)
 
-    out = jnp.zeros(a.shape[:-3] + (n, n, a.shape[-1]), dtype=a.dtype)
+    # The blocks accumulate in float32 regardless of the operand dtype, so the
+    # destination has to be float32 too or every block would be rounded back
+    # down on the way in.
+    out = jnp.zeros(a.shape[:-3] + (n, n, a.shape[-1]), dtype=jnp.float32)
     for start in range(0, n, chunk_size):
         size = min(chunk_size, n - start)
         axis = -3 if direction == "outgoing" else -2
@@ -146,9 +151,13 @@ def _triangle_contract_block(
     # dot_general, so the reduction order is XLA's choice regardless. The
     # einsum form is kept for clarity.
     if direction == "outgoing":
-        return jnp.einsum("...ikd,...jkd->...ijd", a, b)
+        return jnp.einsum(
+            "...ikd,...jkd->...ijd", a, b, preferred_element_type=jnp.float32
+        )
     if direction == "incoming":
-        return jnp.einsum("...kid,...kjd->...ijd", a, b)
+        return jnp.einsum(
+            "...kid,...kjd->...ijd", a, b, preferred_element_type=jnp.float32
+        )
     raise ValueError(f"unsupported triangle direction: {direction!r}")
 
 

@@ -372,6 +372,7 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         key=None,
         n_sample=1,
         pair_mask=residue_pair_mask,
+        return_representations=True,
     )
 
     assert actual["s_inputs"] is residue_s_inputs

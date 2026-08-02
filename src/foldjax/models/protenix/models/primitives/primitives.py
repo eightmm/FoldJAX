@@ -84,16 +84,69 @@ def sigmoid(x: jnp.ndarray) -> jnp.ndarray:
     return jnp.reciprocal(1.0 + jnp.exp(-x))
 
 
-def transition(x: jnp.ndarray, params: TransitionParams) -> jnp.ndarray:
-    """Apply the Protenix transition block without eval chunking."""
+# The transition widens its input before narrowing it again, and holds three
+# copies of the wide form at once -- `a`, `b`, and `silu(a) * b`. On OpenDDE's
+# structural pair representation that is three f32[946, 946, 768] buffers,
+# 2,622 MiB each: 7,866 MiB of a 10,914 MiB temp arena, for an operation that
+# is elementwise over every axis but the last.
+#
+# Blocking the leading axis is mathematically exact: layer norm reduces over
+# the channel axis and the linears contract over it, so no reduction crosses a
+# block boundary. It is not bit-identical, because XLA picks a different GEMM
+# tiling for the blocked shape -- measured at 2e-4 relative under the default
+# TF32 precision and 3e-7 under `float32` precision, i.e. the same order as any
+# other shape change. There is no knob to trade here, only kernel launches, and
+# only on tensors already large enough for that to be cheap.
+_TRANSITION_WIDE_BUDGET_BYTES = 512 * 1024**2
 
+
+def _transition_chunk_rows(x: jnp.ndarray, params: TransitionParams) -> int | None:
+    """Rows of ``x`` whose widened form fits the budget, or None to do it whole."""
+    rows = x.shape[0]
+    if rows < 2:
+        return None
+    hidden = params.linear_a.weight.shape[0]
+    per_row = hidden * x.dtype.itemsize
+    for size in x.shape[1:-1]:
+        per_row *= size
+    if per_row <= 0 or per_row * rows <= _TRANSITION_WIDE_BUDGET_BYTES:
+        return None
+    return max(1, _TRANSITION_WIDE_BUDGET_BYTES // per_row)
+
+
+def _transition_block(x: jnp.ndarray, params: TransitionParams) -> jnp.ndarray:
     y = layer_norm(x, params.layer_norm)
     a = linear(y, params.linear_a)
     b = linear(y, params.linear_b)
     return linear(silu(a) * b, params.linear_out)
 
 
-compiled_transition = jax.jit(transition)
+def transition(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int | None = None,
+) -> jnp.ndarray:
+    """Apply the Protenix transition block, blocking the widened intermediates.
+
+    ``chunk_size`` overrides the automatic block size; ``0`` disables blocking
+    and materialises the wide form whole.
+    """
+
+    if chunk_size is None:
+        chunk_size = _transition_chunk_rows(x, params)
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= x.shape[0]:
+        return _transition_block(x, params)
+    return jnp.concatenate(
+        [
+            _transition_block(x[start : start + chunk_size], params)
+            for start in range(0, x.shape[0], chunk_size)
+        ],
+        axis=0,
+    )
+
+
+compiled_transition = jax.jit(transition, static_argnames=("chunk_size",))
 
 
 def adaptive_layer_norm(

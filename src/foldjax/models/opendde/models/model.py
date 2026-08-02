@@ -59,6 +59,38 @@ class OpenDDEInferenceParams(NamedTuple):
     confidence: ConfidenceHeadParams
 
 
+def cast_trunk_params(
+    params: OpenDDEInferenceParams,
+    dtype: jnp.dtype,
+) -> OpenDDEInferenceParams:
+    """Cast the embedder and both trunks, leaving the output heads in FP32.
+
+    OpenDDE's memory is in the structural refiner: its pair representation is
+    ``[n_structural, n_structural, 384]``, and the XLA triangle path holds two
+    full projections of that shape at once -- 1,311 MiB each on a 488-residue
+    job. Halving the element width is the only lever that touches all three at
+    once, and it is the one AlphaFold 3 already pulls (its released trunk runs
+    bfloat16 weights and activations, which is most of why its peak is 3,985
+    MiB where the FP32 ports sit two to four times higher).
+
+    The diffusion module, distogram, and confidence heads keep FP32 weights.
+    The sampler already upcasts its inputs at the boundary, so the cast stops
+    where the coordinates start.
+    """
+
+    def cast_leaf(value):
+        if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating):
+            return value.astype(dtype)
+        return value
+
+    return params._replace(
+        input_embedder=jax.tree.map(cast_leaf, params.input_embedder),
+        pairformer_output=jax.tree.map(cast_leaf, params.pairformer_output),
+        structural_expander=jax.tree.map(cast_leaf, params.structural_expander),
+        structural_refiner=jax.tree.map(cast_leaf, params.structural_refiner),
+    )
+
+
 def _with_xla_triangle_defaults(function):
     """Use dependency-free XLA triangle kernels without leaking process state."""
 
@@ -336,6 +368,8 @@ def opendde_infer_static(
     step_scale_eta: float = 1.5,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     validate_feature_values: bool = True,
+    return_representations: bool = False,
+    trunk_dtype: jnp.dtype | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Run OpenDDE from already-featurized, unbatched static inputs.
 
@@ -362,8 +396,21 @@ def opendde_infer_static(
             "pair_mask expected shape "
             f"{(n_residue_token, n_residue_token)}, got {tuple(pair_mask.shape)}"
         )
+    trunk_features = input_feature_dict
+    trunk_pair_mask = pair_mask
+    if trunk_dtype is not None:
+        trunk_features = jax.tree.map(
+            lambda value: (
+                value.astype(trunk_dtype)
+                if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating)
+                else value
+            ),
+            input_feature_dict,
+        )
+        if pair_mask is not None:
+            trunk_pair_mask = pair_mask.astype(trunk_dtype)
     s_inputs_residue = input_feature_embedder(
-        input_feature_dict,
+        trunk_features,
         params.input_embedder,
         n_token=n_residue_token,
         n_heads=input_atom_heads,
@@ -372,11 +419,11 @@ def opendde_infer_static(
         use_scan=use_diffusion_scan,
     )
     s_inputs_residue, s_residue, z_residue = pairformer_output_from_s_inputs(
-        input_feature_dict,
+        trunk_features,
         s_inputs_residue,
         params.pairformer_output,
         n_cycle=n_cycle,
-        pair_mask=pair_mask,
+        pair_mask=trunk_pair_mask,
         use_pairformer_scan=use_pairformer_scan,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
@@ -392,14 +439,14 @@ def opendde_infer_static(
         z_structural,
         structural_pair_features,
     ) = structural_token_expand(
-        input_feature_dict,
+        trunk_features,
         s_inputs_residue,
         s_residue,
         z_residue,
         params.structural_expander,
     )
     structural_features = prepare_structural_features(
-        input_feature_dict,
+        trunk_features,
         structural_pair_features,
     )
     structural_pair_bias = structural_features.get("structural_pair_attn_bias")
@@ -520,18 +567,28 @@ def opendde_infer_static(
     head_s_trunk = as_float32(s_residue)
     head_z_trunk = as_float32(z_residue)
     output = {
-        "s_inputs": s_inputs_residue,
-        "s_trunk": s_residue,
-        "z_trunk": z_residue,
-        "structural_s_inputs": s_inputs_structural,
-        "structural_s_trunk": s_structural,
-        "structural_z_trunk": z_structural,
         "coordinate": coordinates,
         "distogram_logits": distogram_head(
             head_z_trunk,
             params.distogram,
         ),
     }
+    if return_representations:
+        # Off by default because these are the largest buffers the program can
+        # hand back and nothing downstream reads them: the structural pair
+        # representation alone is [946, 946, 384] float32 -- 1,311 MiB on a
+        # 488-residue job, most of the 1,869 MiB output. Returning it also
+        # keeps it live to the end of the program, so the refiner's working
+        # buffer cannot be reused by anything after it. Scores and structures
+        # need only `coordinate`, `distogram_logits`, and the confidence heads.
+        output.update(
+            s_inputs=s_inputs_residue,
+            s_trunk=s_residue,
+            z_trunk=z_residue,
+            structural_s_inputs=s_inputs_structural,
+            structural_s_trunk=s_structural,
+            structural_z_trunk=z_structural,
+        )
     if run_confidence:
         output.update(
             confidence_head(
@@ -569,6 +626,7 @@ GRAPH_STATIC_ARGNAMES = (
     "n_queries",
     "n_sample",
     "noise_scale_lambda",
+    "return_representations",
     "run_confidence",
     "sigma_data",
     "single_att_q_chunk_size",
@@ -577,6 +635,7 @@ GRAPH_STATIC_ARGNAMES = (
     "structural_triangle_attention_backend",
     "token_heads",
     "token_q_chunk_size",
+    "trunk_dtype",
     "triangle_att_q_chunk_size",
     "triangle_mul_chunk_size",
     "trunk_single_attention_backend",

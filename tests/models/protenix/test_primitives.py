@@ -119,3 +119,66 @@ def test_fourier_embedding_matches_protenix_formula() -> None:
     )
 
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+def _transition_params(rng, channels: int, hidden: int) -> TransitionParams:
+    def linear(out_features: int, in_features: int) -> LinearParams:
+        return LinearParams(
+            weight=rng.normal(size=(out_features, in_features)).astype(np.float32),
+            bias=None,
+        )
+
+    return TransitionParams(
+        layer_norm=LayerNormParams(
+            weight=rng.normal(size=(channels,)).astype(np.float32),
+            bias=rng.normal(size=(channels,)).astype(np.float32),
+        ),
+        linear_a=linear(hidden, channels),
+        linear_b=linear(hidden, channels),
+        linear_out=linear(channels, hidden),
+    )
+
+
+def test_blocking_the_transition_does_not_change_what_it_computes() -> None:
+    """The transition widens before it narrows, and holds three wide copies.
+
+    On OpenDDE's structural pair representation those are three
+    f32[946, 946, 768] buffers -- 7,866 MiB of a 10,914 MiB temp arena for an
+    operation that reduces only over the channel axis. Blocking the leading
+    axis is therefore mathematically exact; it is not bit-identical only
+    because XLA tiles the smaller GEMM differently.
+    """
+    rng = np.random.default_rng(11)
+    x = jnp.asarray(rng.normal(size=(24, 5, 6)).astype(np.float32))
+    params = _transition_params(rng, channels=6, hidden=16)
+
+    whole = np.asarray(transition(x, params, chunk_size=0))
+    for chunk_size in (1, 5, 7, 23, 24, 100):
+        blocked = np.asarray(transition(x, params, chunk_size=chunk_size))
+        assert blocked.shape == whole.shape
+        np.testing.assert_allclose(blocked, whole, rtol=1e-3, atol=1e-3)
+
+
+def test_the_transition_blocks_itself_only_when_the_wide_form_is_large() -> None:
+    """No knob: there is no accuracy to trade, only kernel launches.
+
+    Blocking a tensor that already fits would pay launch overhead for nothing,
+    so the budget has to bind on size rather than on rank or call site.
+    """
+    from foldjax.models.protenix.models.primitives.primitives import (
+        _TRANSITION_WIDE_BUDGET_BYTES,
+        _transition_chunk_rows,
+    )
+
+    rng = np.random.default_rng(12)
+    params = _transition_params(rng, channels=6, hidden=16)
+
+    # Small: left whole.
+    assert _transition_chunk_rows(jnp.zeros((24, 5, 6), jnp.float32), params) is None
+    # A single row cannot be split further.
+    assert _transition_chunk_rows(jnp.zeros((1, 5, 6), jnp.float32), params) is None
+
+    # Large enough to bind: the widened form is rows * 4096 * 16 * 4 bytes.
+    rows = _transition_chunk_rows(jnp.zeros((4096, 4096, 6), jnp.float32), params)
+    assert rows is not None and 1 <= rows < 4096
+    assert rows * 4096 * 16 * 4 <= _TRANSITION_WIDE_BUDGET_BYTES
