@@ -121,22 +121,19 @@ through.
 
 ### Memory
 
-Peak memory on a 488-token job, one sample, at each port's own defaults:
+For what these models cost against their own upstream repositories, under one
+schedule and one measurement, see
+[FoldJAX against upstream](#foldjax-against-upstream). This section is about
+*why* the peaks landed where they did.
 
-| model | peak | was | warm | confidence |
-|---|---|---|---|---|
-| alphafold3 | 3,984 MiB | — | 14.6 s | pTM 0.66 |
-| boltz2 | 4,788 MiB | 4,766 | 8.0 s | pLDDT 0.892 |
-| protenix | **6,043 MiB** | 12,264 | 5.4 s | pLDDT 75.07 |
-| chai | **7,576 MiB** | 8,637 | 8.8 s | pLDDT 0.849 |
-| opendde | **9,761 MiB** | 32,185 | 10.9 s | pLDDT 87.49 |
+OpenDDE is the example worth keeping: it would not run at all before this work,
+asking for 76 GiB on a 488-token job and dying. It now runs that job in about
+10 GiB, and at 490 residues under the released schedule it peaks at 10.5 GiB
+against upstream torch's 91.2 GiB.
 
-AlphaFold 3 is the reference and is untouched. OpenDDE would not run at all
-before this work — it asked for 76 GiB on this job and died.
-
-Getting there took four changes, none of which was the knob we expected. Each
-came from reading XLA's buffer assignment for the peak and fixing whatever it
-named — a habit worth more than any individual fix below.
+Each of the changes below came from reading XLA's buffer assignment for the
+peak and fixing whatever it named — a habit worth more than any individual fix
+in the list.
 
 **The transition was the largest buffer in three of the four ports.** It widens
 its input before narrowing it again and holds three copies of the wide form at
@@ -163,15 +160,21 @@ score tensor together — for the same block count and the same arithmetic, sinc
 each row is projected exactly once either way. Blocking the query axis, which
 is the obvious reading of "chunk the attention", bounds only the scores and
 `q`; `k` and `v` stay whole at 1,311 MiB apiece. Row blocking is also
-bit-identical, being a pure batch split, where query blocking perturbs every
-GEMM shape.
+mathematically exact — it divides a batch, not a reduction — where query
+blocking splits the softmax's own axis. Exact is not the same as bit-identical:
+changing the batch extent changes the GEMM shape, and XLA may tile and
+accumulate it differently, the same caveat the transition's row chunk carries.
 
 The block size is a row count, not a byte budget, because that is what the
 sweep found: 25 rows is the optimum at 946 structural tokens *and* at 1,892,
 where the equivalent byte budgets differ fourfold. Bytes stay on as a ceiling.
 
-Together those took Protenix from 12,264 to 6,043 MiB and OpenDDE from 32,185
-to 9,761 MiB, with confidence flat (75.08 → 75.07 and 87.49 → 87.49).
+Measured as they landed, those took Protenix from 12,264 to 6,043 MiB and
+OpenDDE from 32,185 to 9,761 MiB on a 488-token job, with confidence flat
+(75.08 → 75.07 and 87.49 → 87.49). Both have moved again since — the default
+triangle-attention backend changed and the block rule was re-derived — so read
+[FoldJAX against upstream](#foldjax-against-upstream) for what they cost now.
+These figures are the size of each step, not a current reading.
 
 **Eager arithmetic between compiled blocks is not free.** Chai runs its trunk
 as many small programs on purpose, so XLA can release MSA intermediates between
