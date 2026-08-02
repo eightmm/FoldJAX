@@ -37,18 +37,29 @@ def main() -> int:
         action="store_true",
         help="run for the compile cache only; report nothing",
     )
+    parser.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="backend option, e.g. compute_dtype=bfloat16. Used to match a "
+        "precision the upstream runs by default and FoldJAX does not",
+    )
+    parser.add_argument("--label", help="tag for this row, defaults to the model")
     args = parser.parse_args()
 
     import foldjax
     from bench.spec import SCHEDULE, SEED, cases
     from foldjax.schema import PredictionRequest
 
+    options = dict(entry.split("=", 1) for entry in args.option)
     case = next(item for item in cases() if item.name == args.case)
     request = PredictionRequest(
         model=args.model,
         input=case.job,
         output_dir=args.output_dir,
         seed=SEED,
+        options=options,
         **SCHEDULE,
     )
 
@@ -62,6 +73,8 @@ def main() -> int:
     record = {
         "impl": "foldjax",
         "model": args.model,
+        "label": args.label or args.model,
+        "options": options,
         "case": case.name,
         "length": case.length,
         "schedule": dict(SCHEDULE),

@@ -93,6 +93,28 @@ def main() -> int:
                 print(f"[run ] {model} {impl} {case_name}", flush=True)
 
                 if impl == "foldjax":
+                    # Fill the compile cache first and throw the run away. A
+                    # cold JAX run is dominated by XLA compilation, which the
+                    # torch side has no equivalent of, so timing one against
+                    # the other measures the compiler rather than the model.
+                    # Compilation is paid once per shape and replayed from disk
+                    # after that, which is what a second prediction costs.
+                    warm = args.work / f"{model}-{impl}-{case_name}-warmup"
+                    subprocess.run(["rm", "-rf", str(warm)], check=False)
+                    warm.mkdir(parents=True, exist_ok=True)
+                    print(f"[warm] {model} {case_name}", flush=True)
+                    subprocess.run(
+                        [
+                            str(REPO / ".venv/bin/python"), "-m", "bench.run_foldjax",
+                            "--model", model, "--case", case_name,
+                            "--output-dir", str(warm), "--warmup",
+                        ],
+                        cwd=REPO, capture_output=True, text=True,
+                        env={**__import__("os").environ, "PYTHONPATH": str(REPO)},
+                        timeout=args.timeout + 600,
+                    )
+                    subprocess.run(["rm", "-rf", str(warm)], check=False)
+                    gpu_idle()
                     argv = [
                         str(REPO / ".venv/bin/python"), "-m", "bench.run_foldjax",
                         "--model", model, "--case", case_name,

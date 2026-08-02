@@ -22,6 +22,16 @@ resemble each other:
   than the model's need. The torch side is read by `peakhook/sitecustomize.py`,
   injected on `PYTHONPATH`, so no upstream file is modified.
 
+- **The same starting state.** FoldJAX is measured warm: the case is run once
+  to fill the XLA compile cache and that run is discarded. A cold JAX run is
+  dominated by compilation, which the torch side has no equivalent of, so
+  timing one against the other measures the compiler rather than the model —
+  at 132 tokens that was 174 s against 29 s, and almost all of the difference
+  was compilation. Compilation is paid once per shape and replayed from disk
+  afterwards, which is what a second prediction actually costs. Upstream needs
+  no equivalent step: Protenix's fused layer-norm extension is the only thing
+  it builds on first use, and it is already built in that checkout.
+
 Each measurement is its own process, because a peak is a process-lifetime
 high-water mark: two runs in one process report the larger, and the second
 one's number is unknowable. The card is allowed to go idle between runs, since

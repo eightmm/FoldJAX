@@ -115,6 +115,44 @@ def test_boltz_gives_each_sample_its_own_confidence(
     ] == pytest.approx([0.13, 0.57, 0.97])
 
 
+def test_boltz_reports_the_heads_own_plddt_aggregate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`complex_plddt` is the number upstream writes, so it is the comparable one.
+
+    The confidence head computes `(plddt * token_pad_mask).sum() /
+    token_pad_mask.sum()` and Boltz's own writer puts that in its confidence
+    JSON. FoldJAX reported only a plain mean of the pLDDT vector, which weights
+    padded and masked positions like everything else, so the two
+    implementations were being compared on two different statistics.
+    """
+    mols = tmp_path / "mols"
+    mols.mkdir()
+
+    def native_predict(**kwargs):
+        return {
+            "coords": np.zeros((2, 4, 3)),
+            "plddt": np.asarray([[0.2, 0.2, 0.0, 0.0], [0.8, 0.8, 0.0, 0.0]]),
+            "out_paths": [tmp_path / "a.cif", tmp_path / "b.cif"],
+            "raw": {"complex_plddt": np.asarray([0.40, 0.90])},
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    result = Boltz2Backend().predict(_request(tmp_path, "boltz2", mols=mols))
+
+    # The head's masked aggregate, per sample -- not the 0.1/0.4 a plain mean
+    # over the padded vector gives.
+    assert [
+        sample.scores["complex_plddt"] for sample in result.samples
+    ] == pytest.approx([0.40, 0.90])
+    assert [sample.scores["mean_plddt"] for sample in result.samples] == pytest.approx(
+        [0.1, 0.4]
+    )
+
+
 def test_boltz_shares_a_confidence_value_that_is_not_per_sample(
     tmp_path: Path, monkeypatch
 ) -> None:

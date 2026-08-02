@@ -39,11 +39,19 @@ def _native_module():
 
 #: Scalar confidence the Boltz-2 confidence head reports, one value per
 #: diffusion sample. `pae` and the `*_logits` arrays stay in `raw`.
+#:
+#: `complex_plddt` and `complex_iplddt` are the head's own aggregates,
+#: `(plddt * token_pad_mask).sum() / token_pad_mask.sum()`. They are what
+#: upstream writes into its confidence JSON, so they are the pLDDT that can be
+#: compared against it -- unlike the plain mean below, which weights padding
+#: and interface tokens the same as everything else.
 _CONFIDENCE_FIELDS = (
     "ptm",
     "iptm",
     "ligand_iptm",
     "protein_iptm",
+    "complex_plddt",
+    "complex_iplddt",
 )
 
 
