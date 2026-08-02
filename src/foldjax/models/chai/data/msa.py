@@ -309,6 +309,7 @@ def write_aligned_pqt_from_a3m(
     directory: str | Path,
     *,
     source_database: str = "uniref90",
+    query_sequence: str | None = None,
 ) -> Path:
     """Write an A3M alignment as the aligned-Parquet file Chai reads.
 
@@ -323,6 +324,14 @@ def write_aligned_pqt_from_a3m(
     The first A3M record is the query, and is written as the query row Chai
     requires. Lowercase insertion columns are preserved verbatim, since that is
     how the A3M encodes deletions and Chai's reader expects them.
+
+    ``query_sequence`` is the sequence the *job* asks to fold. It decides the
+    filename, because that is what the reader will look the file up by, and the
+    A3M's own query row is checked against it. Deriving the name from the file
+    instead let the two disagree: the alignment was written under one hash and
+    looked for under another, and Chai answered a missing file with a warning
+    and a single-sequence run. A trailing NUL from a downloaded A3M was enough
+    to trigger it, and the prediction still reported success.
     """
     records = _a3m_records(a3m_text)
     if not records:
@@ -336,6 +345,15 @@ def write_aligned_pqt_from_a3m(
         for character in query_aligned
         if character.isupper() and character != "-"
     )
+    if query_sequence is not None:
+        if query.upper() != query_sequence.upper():
+            raise ValueError(
+                "the A3M query row does not match the sequence being folded, so "
+                "this alignment is for a different protein.\n"
+                f"  job:  {query_sequence.upper()}\n"
+                f"  a3m:  {query.upper()}"
+            )
+        query = query_sequence
     sources = [MSADataSource.QUERY.value] + [source_database] * (len(records) - 1)
     table = pa.table(
         {

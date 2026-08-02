@@ -382,3 +382,59 @@ def test_boltz_keeps_a_supplied_alignment(tmp_path) -> None:
         tmp_path,
     )
     assert document["sequences"][0]["protein"]["msa"].endswith("hits.a3m")
+
+
+def _chai_job(tmp_path: Path, sequence: str, a3m_query: str) -> Path:
+    alignment = tmp_path / "hits.a3m"
+    alignment.write_text(f">query\n{a3m_query}\n>hit1\n{'A' * len(a3m_query)}\n")
+    return _write(
+        tmp_path / "job.json",
+        {
+            "name": "t",
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": ["A"],
+                    "sequence": sequence,
+                    "unpaired_msa": str(alignment),
+                }
+            ],
+        },
+    )
+
+
+def test_chai_writes_the_alignment_under_the_sequence_it_will_be_looked_up_by(
+    tmp_path,
+) -> None:
+    """Chai addresses alignments by a hash of the query sequence.
+
+    The reader looks the file up by the *job's* sequence, so that is what has
+    to name it.
+    """
+    from foldjax.input import CHAI_MSA_DIRNAME
+    from foldjax.models.chai.data.msa import expected_aligned_pqt_basename
+
+    out = tmp_path / "out"
+    _materialize(_chai_job(tmp_path, "GSHM", "GSHM"), "chai", out)
+
+    written = sorted((out / CHAI_MSA_DIRNAME).glob("*.aligned.pqt"))
+    assert [path.name for path in written] == [expected_aligned_pqt_basename("GSHM")]
+
+
+def test_chai_refuses_an_alignment_built_for_a_different_sequence(tmp_path) -> None:
+    """A query row that is not the folded sequence means the wrong alignment.
+
+    The filename used to come from the A3M's own query row while the reader
+    looked it up by the job's sequence, so this case wrote a file under a hash
+    nothing would ask for. Chai answers a missing alignment with a warning and
+    a single-sequence run, so the prediction reported success with the MSA
+    silently gone -- the one failure mode an alignment is supposed to prevent.
+    It is now refused outright, and nothing is written.
+    """
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="different protein"):
+        _materialize(_chai_job(tmp_path, "GSHM", "WWWW"), "chai", out)
+
+    from foldjax.input import CHAI_MSA_DIRNAME
+
+    assert not list((out / CHAI_MSA_DIRNAME).glob("*.aligned.pqt"))

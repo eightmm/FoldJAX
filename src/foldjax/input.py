@@ -402,9 +402,14 @@ def _chai(job: dict[str, Any], base: Path, output_dir: Path) -> str:
         from foldjax.models.chai.data.msa import write_aligned_pqt_from_a3m
 
         destination = Path(output_dir) / CHAI_MSA_DIRNAME
-        for _sequence, alignment in alignments:
+        for sequence, alignment in alignments:
+            # The job's sequence names the file, because that is what Chai will
+            # look it up by. Deriving the name from the A3M instead let the two
+            # disagree and silently cost the alignment.
             write_aligned_pqt_from_a3m(
-                alignment.read_text(encoding="utf-8"), destination
+                alignment.read_text(encoding="utf-8"),
+                destination,
+                query_sequence=sequence,
             )
     return "\n".join(records) + "\n"
 
