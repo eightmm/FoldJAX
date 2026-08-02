@@ -181,7 +181,17 @@ three copies of the largest tensor in the trunk, for an add. Routing them
 through a compiled add that donates its update buffer is the same arithmetic
 and took Chai from 8,637 to 7,576 MiB with scores unchanged to five decimals.
 
-### `--trunk-dtype bf16`
+### A bfloat16 trunk (`--option trunk_dtype=bf16`)
+
+This is a backend option, not a FoldJAX flag, and only Protenix and OpenDDE
+have it — the two Protenix-family ports:
+
+```bash
+foldjax predict --model opendde --input job.yaml --option trunk_dtype=bf16
+```
+
+Protenix already defaults to `bf16`; OpenDDE defaults to `fp32`, so it is
+OpenDDE the option is worth setting on.
 
 AlphaFold 3 runs its trunk in bfloat16 — weights *and* activations — and that
 is most of why its peak sits where it does. Protenix ships the same default;
@@ -210,7 +220,9 @@ the job would not otherwise fit.
 **Dead outputs cost twice.** OpenDDE returned six representation tensors that
 nothing reads; the structural pair representation alone was 1,311 MiB of a
 1,869 MiB output, and returning it kept the refiner's working buffer live to
-the end of the program. Pass `return_representations=True` to get them back.
+the end of the program. They are still available from the Python API —
+`foldjax.models.opendde.models.model` takes `return_representations=True` —
+but no CLI path asks for them, because no CLI output uses them.
 
 Two things that sound like memory knobs and were not, both measured before the
 fixes above: blocking the triangle *attention* moved Protenix's peak by 0.4%,
@@ -400,7 +412,9 @@ once -- `opendde_infer_compiled`, `protenix_infer_compiled` -- collapsed those
 to 238 and 159. For Protenix that is 30.9 s down to 12.1 s, with the predicted
 structure identical to the op-by-op path within its own run-to-run noise
 (0.0753 A RMSD against a 0.0738 A floor between two identical eager runs).
-`--no-graph-jit` restores the op-by-op path on either model.
+`--no-graph-jit` restores the op-by-op path on either model — it is a flag on
+those two ports' own CLIs (`protenix-jax-predict`, `opendde-jax-predict`),
+not on `foldjax predict`.
 
 The "of which model" column is the second prediction in the same process, so it
 excludes weight loading, featurization, and reading the compiled program back
