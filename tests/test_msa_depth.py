@@ -118,24 +118,37 @@ def test_triangle_attention_blocks_rows_by_one_rule_for_every_branch() -> None:
         _row_block,
     )
 
+    def score_rows(tokens: int, heads: int, requested=None):
+        return _row_block(
+            rows=tokens, per_row=heads * tokens * tokens * 4, requested=requested
+        )
+
     # Protenix's trunk: the cap binds, not the budget.
-    assert _row_block(rows=490, cols=490, num_heads=4, requested=None) == 64
-    assert _row_block(rows=976, cols=976, num_heads=4, requested=None) == 64
+    assert score_rows(490, 4) == 64
+    assert score_rows(976, 4) == 64
     # OpenDDE's structural branch: 12 heads makes the budget bind instead, and
     # the block shrinks with the token count where the trunk's stays at the cap.
-    wide = _row_block(rows=948, cols=948, num_heads=12, requested=None)
-    wider = _row_block(rows=1892, cols=1892, num_heads=12, requested=None)
+    wide = score_rows(948, 12)
+    wider = score_rows(1892, 12)
     assert wide == 1024**3 // (12 * 948 * 948 * 4) < _MAX_ROWS_PER_BLOCK
     assert _MIN_ROWS_PER_BLOCK <= wider < wide
     # It only ever narrows what the policy proposed.
-    assert _row_block(rows=948, cols=948, num_heads=12, requested=256) == wide
-    assert _row_block(rows=948, cols=948, num_heads=12, requested=16) == 16
+    assert score_rows(948, 12, requested=256) == wide
+    assert score_rows(948, 12, requested=16) == 16
     # Never below the floor, where one more block costs more than it saves.
-    assert _row_block(
-        rows=20_000, cols=20_000, num_heads=12, requested=None
-    ) == _MIN_ROWS_PER_BLOCK
+    assert score_rows(20_000, 12) == _MIN_ROWS_PER_BLOCK
     # Small enough that blocking buys nothing: the request stands untouched.
-    assert _row_block(rows=20, cols=20, num_heads=4, requested=None) is None
+    assert score_rows(20, 4) is None
+    # The same rule sizes the triangle multiplication, off a different budget:
+    # there the block bounds one projection, not a score tensor.
+    from foldjax.models.protenix.models.triangle.triangle import (
+        _PROJECTION_BUDGET_BYTES,
+    )
+
+    assert _row_block(
+        rows=948, per_row=948 * 384 * 4, requested=256,
+        budget=_PROJECTION_BUDGET_BYTES,
+    ) == _MAX_ROWS_PER_BLOCK
     assert _MIN_ROWS_PER_BLOCK < _MAX_ROWS_PER_BLOCK
 
 

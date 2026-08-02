@@ -97,6 +97,18 @@ def triangle_multiplication(
     if backend not in {"cueq", "xla"}:
         raise ValueError(f"unsupported triangle multiplication backend: {backend!r}")
     mask = mask.astype(z.dtype)[..., None]
+    # Same reasoning as the attention: the block belongs to the tensor, not to
+    # the token count. One row of `a` costs `N * c_hidden * itemsize`, so the
+    # chunk policy's 256 means 373 MiB per block on OpenDDE's structural branch
+    # and a fifth of that on a narrower trunk. Swept there against the policy's
+    # value, the peak went 9,809 -> 9,652 -> 9,628 MiB at 256 -> 128 -> 64 rows,
+    # against a 9 MiB run-to-run spread.
+    chunk_size = _row_block(
+        rows=z.shape[-3],
+        per_row=z.shape[-2] * params.linear_a_p.weight.shape[0] * z.dtype.itemsize,
+        requested=chunk_size,
+        budget=_PROJECTION_BUDGET_BYTES,
+    )
 
     z_norm = layer_norm(z, params.layer_norm_in)
     b = mask * sigmoid(linear(z_norm, params.linear_b_g))
@@ -306,20 +318,23 @@ _compiled_triangle_attention = jax.jit(
 # helping and only grows the score tensor. The floor is where one more block
 # costs more in launch overhead than it saves.
 _SCORE_BUDGET_BYTES = 1024**3
+_PROJECTION_BUDGET_BYTES = 128 * 1024**2
 _MAX_ROWS_PER_BLOCK = 64
 _MIN_ROWS_PER_BLOCK = 8
 
 
 def _row_block(
-    *, rows: int, cols: int, num_heads: int, requested: int | None
+    *,
+    rows: int,
+    per_row: int,
+    requested: int | None,
+    budget: int = _SCORE_BUDGET_BYTES,
 ) -> int | None:
     """Rows per block: the caller's request, narrowed to what the budget allows."""
-    per_row = num_heads * cols * cols * 4
     if per_row <= 0 or rows < 2:
         return requested
     allowed = max(
-        _MIN_ROWS_PER_BLOCK,
-        min(_MAX_ROWS_PER_BLOCK, _SCORE_BUDGET_BYTES // per_row),
+        _MIN_ROWS_PER_BLOCK, min(_MAX_ROWS_PER_BLOCK, budget // per_row)
     )
     if allowed >= rows:
         return requested
@@ -348,8 +363,7 @@ def _triangle_attention_dense(
     if attention_backend not in {"cueq", "tokamax"}:
         q_chunk_size = _row_block(
             rows=x.shape[-3],
-            cols=x.shape[-2],
-            num_heads=num_heads,
+            per_row=num_heads * x.shape[-2] * x.shape[-2] * 4,
             requested=q_chunk_size,
         )
     chunked = (
