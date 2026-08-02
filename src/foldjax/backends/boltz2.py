@@ -37,6 +37,51 @@ def _native_module():
     return native
 
 
+#: Scalar confidence the Boltz-2 confidence head reports, one value per
+#: diffusion sample. `pae` and the `*_logits` arrays stay in `raw`.
+_CONFIDENCE_FIELDS = (
+    "ptm",
+    "iptm",
+    "ligand_iptm",
+    "protein_iptm",
+)
+
+
+def _sample_scores(
+    output: Mapping[str, object],
+    plddt: np.ndarray,
+    index: int,
+    sample_count: int,
+) -> dict[str, float]:
+    """Confidence for one diffusion sample.
+
+    Every field here is produced per sample, so reading a whole-batch mean or
+    always element 0 makes the samples indistinguishable. That is what used to
+    happen: `mean_plddt` was the mean over *all* samples and `iptm` was always
+    the first one's, and the identical dict was copied onto each sample. Asking
+    Boltz-2 for five structures returned five identical score sets, so ranking
+    them -- the reason to generate more than one -- silently could not work.
+    """
+    scores: dict[str, float] = {}
+    if plddt.size:
+        # [n_sample, n_token] when more than one was requested, else [n_token].
+        per_sample = plddt[index] if plddt.ndim == 2 else plddt
+        scores["mean_plddt"] = float(per_sample.mean())
+    raw = output.get("raw")
+    for field in _CONFIDENCE_FIELDS:
+        value = output.get(field)
+        if value is None and isinstance(raw, Mapping):
+            value = raw.get(field)
+        if value is None:
+            continue
+        flat = np.asarray(value).reshape(-1)
+        if flat.size == 0:
+            continue
+        # A per-sample vector is indexed; a single value applies to them all.
+        scores[field] = float(flat[index] if flat.size == sample_count else flat[0])
+    return scores
+
+
 def _default_mols(weights: Path) -> Path | None:
     """Find the CCD molecule directory that `foldjax weights fetch` unpacked.
 
@@ -106,20 +151,12 @@ class Boltz2Backend(Backend):
         paths = output.get("out_paths")
         if paths is None:
             paths = [output.get("out_path")] * sample_count
-        scores = {}
-        if plddt.size:
-            scores["mean_plddt"] = float(plddt.mean())
-        iptm = output.get("iptm")
-        if iptm is None and isinstance(output.get("raw"), Mapping):
-            iptm = output["raw"].get("iptm")
-        if iptm is not None:
-            scores["iptm"] = float(np.asarray(iptm).reshape(-1)[0])
         samples = tuple(
             PredictionSample(
                 seed=request.seed,
                 structure_path=Path(paths[index]) if paths[index] else None,
                 coordinates=coords[index] if coords.ndim == 3 else coords,
-                scores=dict(scores),
+                scores=_sample_scores(output, plddt, index, sample_count),
             )
             for index in range(sample_count)
         )
