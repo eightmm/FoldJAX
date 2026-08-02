@@ -199,3 +199,31 @@ def test_alphafold3_is_managed_but_never_downloaded() -> None:
     assert spec.requires == ("af3.bin",)
     assert spec.native == "."
     assert "redistributable" in spec.licence
+
+
+def test_fetching_a_non_redistributable_model_explains_itself(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AlphaFold 3's parameters cannot be fetched, and the error must say so.
+
+    The entry has no downloads and nothing to convert, so `fetch` fell through
+    to its post-conversion check and reported "conversion did not produce
+    af3.bin" -- describing a step that never runs and omitting the one thing
+    the user has to do. It also reached the CLI as an unhandled traceback.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    with pytest.raises(RuntimeError, match="not redistributable") as error:
+        assets.fetch("alphafold3")
+    message = str(error.value)
+    assert "Request the parameters from DeepMind" in message
+    assert str(tmp_path) in message, "must say where to put the file"
+
+
+def test_the_cli_reports_an_unfetchable_model_without_a_traceback(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.cli import main
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    assert main(["weights", "fetch", "--model", "alphafold3"]) == 1
+    assert "not redistributable" in capsys.readouterr().err

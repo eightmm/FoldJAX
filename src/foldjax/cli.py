@@ -173,9 +173,18 @@ def _run_weights(args: argparse.Namespace) -> int:
     spec = assets.assets_for(args.model)
     print(f"{spec.model}: {len(spec.downloads)} file(s) from {spec.source}")
     print(f"licence: {spec.licence}")
-    result = assets.fetch(
-        spec.model, on_progress=_report, convert=not args.download_only
-    )
+    try:
+        result = assets.fetch(
+            spec.model, on_progress=_report, convert=not args.download_only
+        )
+    except (RuntimeError, OSError, ValueError) as error:
+        # A missing or unfetchable asset is an ordinary outcome of this
+        # command -- most often a model whose publisher releases the weights
+        # only to applicants. It should read as an instruction, not as a
+        # FoldJAX stack trace.
+        print(file=sys.stderr)
+        print(str(error), file=sys.stderr)
+        return 1
     print(file=sys.stderr)
     print(f"ready: {result}")
     return 0

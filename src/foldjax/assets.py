@@ -421,6 +421,17 @@ def fetch(model: str, *, on_progress=None, convert: bool = True) -> Path:
             for item in spec.requires
             if not (weights_dir(spec.model) / item).exists()
         ]
+        if not spec.downloads:
+            # Nothing was downloaded because nothing can be: these are the
+            # models whose parameters their publisher releases only to
+            # applicants. Reporting it as a failed conversion describes a step
+            # that never runs and hides the one thing the user has to do.
+            raise RuntimeError(
+                f"{spec.model} parameters are not redistributable, so FoldJAX "
+                f"cannot fetch them.\n{spec.notes}\n"
+                f"Expected here: {weights_dir(spec.model)}\n"
+                f"Still missing: {', '.join(missing)}"
+            )
         raise RuntimeError(
             f"{spec.model} conversion did not produce: {', '.join(missing)}"
         )
