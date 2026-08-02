@@ -123,13 +123,16 @@ through.
 
 Peak memory on a 488-token job, one sample, at each port's own defaults:
 
-| model | peak | warm | confidence |
-|---|---|---|---|
-| alphafold3 | 3,983 MiB | 14.8 s | pTM 0.66 |
-| boltz2 | 4,684 MiB | 7.9 s | pLDDT 0.892 |
-| protenix | 6,089 MiB | 5.5 s | pLDDT 75.05 |
-| chai | 7,577 MiB | 8.6 s | pLDDT 0.849 |
-| opendde | 13,433 MiB | 12.1 s | pLDDT 87.49 |
+| model | peak | was | warm | confidence |
+|---|---|---|---|---|
+| alphafold3 | 3,984 MiB | — | 14.6 s | pTM 0.66 |
+| boltz2 | 4,788 MiB | 4,766 | 8.0 s | pLDDT 0.892 |
+| protenix | **6,043 MiB** | 12,264 | 5.4 s | pLDDT 75.07 |
+| chai | **7,576 MiB** | 8,637 | 8.8 s | pLDDT 0.849 |
+| opendde | **12,530 MiB** | 32,185 | 12.2 s | pLDDT 87.49 |
+
+AlphaFold 3 is the reference and is untouched. OpenDDE would not run at all
+before this work — it asked for 76 GiB on this job and died.
 
 Getting there took four changes, none of which was the knob we expected. Each
 came from reading XLA's buffer assignment for the peak and fixing whatever it
@@ -153,8 +156,14 @@ bytes. It is what AlphaFold 3's `BF16_BF16_F32` algorithm already does, and it
 is most of why AF3's peak sits where it does — its released trunk runs bfloat16
 weights *and* activations.
 
-Together those two took Protenix from 12,264 to 6,089 MiB and OpenDDE from
-32,185 to 13,433 MiB, with confidence flat (75.08 → 75.05 and 87.49 → 87.489).
+The chunked triangle attention also projects its queries per block rather than
+whole. `q` is the same size as `k` and `v` — 1,311 MiB on OpenDDE's structural
+branch — and unlike them it is never needed all at once; slicing `x` on the
+query axis and projecting that is the same arithmetic, because the linear
+contracts over the channel axis.
+
+Together those took Protenix from 12,264 to 6,043 MiB and OpenDDE from 32,185
+to 12,530 MiB, with confidence flat (75.08 → 75.07 and 87.49 → 87.49).
 
 **Eager arithmetic between compiled blocks is not free.** Chai runs its trunk
 as many small programs on purpose, so XLA can release MSA intermediates between
@@ -162,7 +171,7 @@ them — but the residual `a + b` joining those programs dispatches its own
 executable, with all three buffers live. On the MSA representation that is
 three copies of the largest tensor in the trunk, for an add. Routing them
 through a compiled add that donates its update buffer is the same arithmetic
-and took Chai from 8,637 to 7,577 MiB with scores unchanged to five decimals.
+and took Chai from 8,637 to 7,576 MiB with scores unchanged to five decimals.
 
 **Dead outputs cost twice.** OpenDDE returned six representation tensors that
 nothing reads; the structural pair representation alone was 1,311 MiB of a
@@ -184,10 +193,10 @@ same memory without touching the alignment:
 
 | protenix, 488 tokens | peak | pLDDT | pTM |
 |---|---|---|---|
-| default (13,254 rows) | 6,089 MiB | 75.05 | 0.749 |
+| default (13,254 rows) | 6,043 MiB | 75.07 | 0.749 |
 | `--max-msa-depth 1024` | 5,989 MiB | 79.88 | 0.915 |
 
-A 1.6% saving now, so treat it as an accuracy knob rather than a memory one.
+A 0.9% saving now, so treat it as an accuracy knob rather than a memory one.
 Confidence moves with it and not monotonically, because which rows get sampled
 changes; that spread is the alignment's own variance, not evidence that a
 shallower MSA predicts better. The default keeps each port's own depth.
@@ -200,7 +209,7 @@ but unlike Protenix it costs accuracy rather than trading noise:
 
 | chai, 488 tokens | peak | mean pLDDT | pTM |
 |---|---|---|---|
-| default | 7,577 MiB | 0.849 | 0.744 |
+| default | 7,576 MiB | 0.849 | 0.744 |
 | `--max-msa-depth 4096` | 5,126 MiB | 0.838 | 0.735 |
 | `--max-msa-depth 2048` | 4,856 MiB | 0.829 | 0.697 |
 | `--max-msa-depth 1024` | **4,707 MiB** | 0.830 | 0.705 |
@@ -231,7 +240,7 @@ The budget was then swept rather than guessed:
 | 256 MiB | 14,463 MiB | 15.4 s | 87.4918 |
 
 (Swept before the transition and triangle fixes above, which later took the
-same configuration to 13,433 MiB; the shape of the curve is what matters here.)
+same configuration to 12,530 MiB; the shape of the curve is what matters here.)
 
 The knee is at 1 GiB: past it the score tensor is no longer what sizes the
 peak, so tightening buys nothing and costs 13% wall time per halving.
@@ -244,8 +253,9 @@ than the implementation: its structural refiner runs on 946 sub-residue tokens
 for a 488-residue job, with a 384-channel pair representation. That tensor is
 1,311 MiB in float32 where AlphaFold 3's `[488, 488, 128]` bfloat16 pair is
 61 MiB, and the refiner keeps several of them live at once. `--trunk-dtype
-bf16` halves the element width for 12,563 MiB at a cost of 0.098 pLDDT; it is
-off by default because that cost is real, small as it is.
+bf16` narrows the element width for 11,722 MiB at a cost of 0.10 pLDDT; it is
+off by default because that cost is real, small as it is. Protenix runs bf16 by
+default, where it is worth 8,616 -> 6,043 MiB.
 
 The same lesson every time, and never in the same direction twice: **attribute
 the peak, then turn the knob it points at.** Capping the MSA halved Protenix
