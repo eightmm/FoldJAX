@@ -145,6 +145,15 @@ def pairformer_output_from_s_inputs(
         params.trunk.initial,
         z_constraint=z_constraint,
     )
+    # The trunk's state has to follow the dtype of its own embedding. `relp` is
+    # built here rather than passed in, so it lands in float32 regardless of
+    # what the trunk was cast to, and one float32 operand is enough to promote
+    # `z` and everything downstream of it. Without this, `--trunk-dtype bf16`
+    # halved the weights and left every activation -- the pair representation
+    # included, which is the largest buffer in the graph -- in float32.
+    if s_init.dtype != s_inputs.dtype:
+        s_init = s_init.astype(s_inputs.dtype)
+        z_init = z_init.astype(s_inputs.dtype)
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
