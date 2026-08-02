@@ -106,6 +106,15 @@ def recycle_embeddings(
     return s_out, z_out
 
 
+def _parameter_dtype(params) -> jnp.dtype | None:
+    """Return the floating dtype these parameters were cast to, if any."""
+    for leaf in jax.tree.leaves(params):
+        dtype = getattr(leaf, "dtype", None)
+        if dtype is not None and jnp.issubdtype(dtype, jnp.floating):
+            return dtype
+    return None
+
+
 def pairformer_output_from_s_inputs(
     input_feature_dict: dict[str, jnp.ndarray],
     s_inputs: jnp.ndarray,
@@ -128,6 +137,14 @@ def pairformer_output_from_s_inputs(
     body per cycle. Same arithmetic; a tenth of the graph at the released depth.
     """
 
+    # Everything the trunk builds keys off `s_inputs`: the MSA one-hot is
+    # allocated with its dtype, and that one array decides the dtype of the MSA
+    # representation, and through it of the pair carry inside the MSA module's
+    # own scan. The embedder that produced it reads integer features, so it
+    # comes back float32 whatever the weights were cast to.
+    trunk_dtype = _parameter_dtype(params.trunk) or s_inputs.dtype
+    s_inputs = s_inputs.astype(trunk_dtype)
+
     z_constraint = None
     if "constraint_feature" in input_feature_dict:
         z_constraint = constraint_embedder(
@@ -145,15 +162,20 @@ def pairformer_output_from_s_inputs(
         params.trunk.initial,
         z_constraint=z_constraint,
     )
-    # The trunk's state has to follow the dtype of its own embedding. `relp` is
-    # built here rather than passed in, so it lands in float32 regardless of
-    # what the trunk was cast to, and one float32 operand is enough to promote
-    # `z` and everything downstream of it. Without this, `--trunk-dtype bf16`
-    # halved the weights and left every activation -- the pair representation
-    # included, which is the largest buffer in the graph -- in float32.
-    if s_init.dtype != s_inputs.dtype:
-        s_init = s_init.astype(s_inputs.dtype)
-        z_init = z_init.astype(s_inputs.dtype)
+    # The trunk state follows the dtype the trunk's own weights were cast to.
+    # `relp` and the token-bond features are built from integer inputs, so they
+    # land in float32 no matter what `--trunk-dtype` asked for, and a single
+    # float32 operand promotes `z` and everything downstream of it. Without
+    # this, bfloat16 narrowed the weights and left every activation -- the pair
+    # representation included, which is the largest buffer in the graph -- in
+    # float32. The embedding output cannot be the reference here for exactly
+    # the same reason: it is float32 too.
+    #
+    # AlphaFold 3 does the same thing, casting the recycled state at the trunk
+    # boundary (`prev['pair'].astype(pair_activations.dtype)`) rather than
+    # trying to keep every internal op from widening.
+    s_init = s_init.astype(trunk_dtype)
+    z_init = z_init.astype(trunk_dtype)
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
@@ -168,6 +190,20 @@ def pairformer_output_from_s_inputs(
         # ``None`` instead reaches ``msa_module`` as a missing feature dict.
         if msa_features is None:
             msa_features = input_feature_dict
+        # Per-cycle alignments are sampled from the raw features, not from the
+        # trunk's own (already narrowed) feature dict, so they arrive float32
+        # even when the trunk is bfloat16. The MSA module scans over its blocks
+        # with the pair representation in the carry, so one float32 row here
+        # widens `z` inside that scan and the carry no longer closes.
+        msa_features = jax.tree.map(
+            lambda value: (
+                value.astype(trunk_dtype)
+                if hasattr(value, "dtype")
+                and jnp.issubdtype(value.dtype, jnp.floating)
+                else value
+            ),
+            msa_features,
+        )
         s, z = recycle_embeddings(
             s_init,
             z_init,
@@ -207,7 +243,12 @@ def pairformer_output_from_s_inputs(
                 single_attention_backend=single_attention_backend,
                 triangle_attention_backend=triangle_attention_backend,
             )
-        return (s, z), None
+        # The template and MSA embedders read integer features and build their
+        # own float32 intermediates, so the state can come back wider than it
+        # went in. Under `lax.scan` that is not merely wasteful, it is a type
+        # error -- the carry has to close. Cast at the boundary, as AlphaFold 3
+        # does, rather than chasing every internal widening.
+        return (s.astype(trunk_dtype), z.astype(trunk_dtype)), None
 
     # Recycling is the same computation every cycle, differing only in the carry and
     # -- when the alignment is resampled per cycle -- in the MSA features. Both are
