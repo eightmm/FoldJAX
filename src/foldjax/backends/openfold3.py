@@ -51,12 +51,24 @@ class OpenFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
-        data = import_module("openfold3_jax.data")
-        inference = import_module("openfold3_jax.inference")
-        output = import_module("openfold3_jax.output")
-        chemistry = import_module("openfold3_jax.bridge.chemistry")
-        checkpoint = import_module("openfold3_jax.bridge.checkpoint")
-        mapping = import_module("openfold3_jax.bridge.torch_mapping")
+        try:
+            data = import_module("openfold3_jax.data")
+            inference = import_module("openfold3_jax.inference")
+            output = import_module("openfold3_jax.output")
+            chemistry = import_module("openfold3_jax.bridge.chemistry")
+            checkpoint = import_module("openfold3_jax.bridge.checkpoint")
+            mapping = import_module("openfold3_jax.bridge.torch_mapping")
+        except ModuleNotFoundError as error:
+            # It is published on no index and cannot be a dependency, so a bare
+            # "No module named 'openfold3_jax'" leaves the reader with no way
+            # to find out whether that is a bug, a missing extra, or by design.
+            raise ModuleNotFoundError(
+                "the openfold3 backend drives an OpenFold3-JAX installation you "
+                "provide; it is on no package index, so `uv sync` cannot "
+                "install it. See docs/openfold3.md -- the port is also still "
+                f"incomplete and has never run end to end here (missing: "
+                f"{error.name})"
+            ) from error
         jax = import_module("jax")
 
         spec = json.loads(Path(request.input).read_text(encoding="utf-8"))

@@ -727,3 +727,15 @@ def test_chai_refuses_to_report_success_with_no_structures(
     )
     with pytest.raises(RuntimeError, match="no structures"):
         ChaiBackend().predict(_request(tmp_path, "chai"))
+
+
+def test_openfold3_says_why_its_package_is_absent(tmp_path: Path) -> None:
+    """It is on no index, so a bare import error explains nothing.
+
+    The reader cannot tell from "No module named 'openfold3_jax'" whether that
+    is a bug, a missing extra, or the intended state of an unfinished port.
+    """
+    from foldjax.backends.openfold3 import OpenFold3Backend
+
+    with pytest.raises(ModuleNotFoundError, match="docs/openfold3.md"):
+        OpenFold3Backend().predict(_request(tmp_path, "openfold3"))
