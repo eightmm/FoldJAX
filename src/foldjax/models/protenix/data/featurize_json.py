@@ -1726,6 +1726,22 @@ def _normalize_mse_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _managed_ccd_asset(name: str) -> Path:
+    """Where `foldjax weights fetch` puts a shared CCD asset.
+
+    Both CCD files are declared `shared=True` in the asset registry, so the
+    store keeps one copy under `assets/` for Protenix and OpenDDE together.
+    Resolving it here is what makes a fetched asset actually reachable: the
+    OpenDDE CLI exports these paths into the environment, but the Protenix
+    backend never did, so a fetched components.cif still produced "set
+    PROTENIX_CCD_COMPONENTS_FILE" on the first modified residue or ligand.
+    """
+
+    from foldjax.paths import assets_dir
+
+    return assets_dir() / name
+
+
 def _external_ccd_component(code: str) -> dict[str, np.ndarray]:
     """Load an arbitrary CCD component from the official Protenix assets."""
 
@@ -1735,11 +1751,7 @@ def _external_ccd_component(code: str) -> dict[str, np.ndarray]:
         configured = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
         if configured:
             candidates.append(Path(configured))
-        # Source checkouts commonly keep the torch and JAX ports as siblings.
-        candidates.append(
-            Path(__file__).resolve().parents[6]
-            / "protenix/common/components.cif.rdkit_mol.pkl"
-        )
+        candidates.append(_managed_ccd_asset("components.cif.rdkit_mol.pkl"))
         cache_path = next((path for path in candidates if path.is_file()), None)
         if cache_path is None:
             raise ValueError(
@@ -1880,14 +1892,13 @@ def _external_ccd_atom_metadata(code: str) -> dict[str, Any]:
     configured_rdkit = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
     if configured_rdkit:
         candidates.append(Path(configured_rdkit).with_name("components.cif"))
-    candidates.append(
-        Path(__file__).resolve().parents[6] / "protenix/common/components.cif"
-    )
+    candidates.append(_managed_ccd_asset("components.cif"))
     components_path = next((path for path in candidates if path.is_file()), None)
     if components_path is None:
         raise ValueError(
-            f"CCD code {code!r} requires components.cif; set "
-            "PROTENIX_CCD_COMPONENTS_FILE"
+            f"CCD code {code!r} requires components.cif. Run "
+            "`foldjax weights fetch --model protenix`, which puts it in the "
+            "shared asset store, or set PROTENIX_CCD_COMPONENTS_FILE"
         )
     cache_key = (components_path.resolve(), code)
     cached = _EXTERNAL_CCD_ATOMS.get(cache_key)

@@ -487,6 +487,12 @@ def test_featurize_json_validates_supported_raw_features() -> None:
                 "covalent_bonds": [{"entity1": "1"}],
             }
         )
+    with pytest.raises(ValueError, match="unsupported residue"):
+        featurize_protein_json({"sequences": [{"proteinChain": {"sequence": "AJ"}}]})
+
+
+def test_selenomethionine_reaches_the_model_as_met(ccd_components) -> None:
+    """MSE is read out of the released components.cif, so it needs that asset."""
     modified = featurize_protein_json(
         {
             "sequences": [
@@ -507,8 +513,6 @@ def test_featurize_json_validates_supported_raw_features() -> None:
     # features read to keep the selenium provenance.
     assert modified["token_is_modified"].tolist() == [0]
     assert modified["token_reference_is_mse"].tolist() == [1]
-    with pytest.raises(ValueError, match="unsupported residue"):
-        featurize_protein_json({"sequences": [{"proteinChain": {"sequence": "AJ"}}]})
 
 
 def test_load_first_job_and_cli_write_static_npz(tmp_path) -> None:
