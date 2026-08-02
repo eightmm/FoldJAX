@@ -132,12 +132,19 @@ def _predict(
 
 
 # The structural triangle-attention score tensor is [N, heads, q_chunk, N]
-# float32. Keeping it under this leaves room for the rest of the graph without
-# blocking so hard that the kernel stops being worth launching; measured on a
-# 488-residue job (946 structural tokens, 12 heads), it picks 32 and takes the
-# peak from 32,185 to 14,463 MiB for 9% more wall time and bit-identical
-# confidence.
-_STRUCTURAL_SCORE_BUDGET_BYTES = 2 * 1024**3
+# float32, and this bounds it. Swept on a 488-residue job (946 structural
+# tokens, 12 heads), peak / warm wall / pLDDT came out:
+#
+#     2048 MiB -> 15,639 MiB  11.1 s  87.4899
+#     1024 MiB -> 14,443 MiB  12.3 s  87.4907
+#      512 MiB -> 14,465 MiB  13.9 s  87.4901
+#      256 MiB -> 14,463 MiB  15.4 s  87.4918
+#
+# The knee is at 1 GiB: past it the score tensor is no longer what sizes the
+# peak, so tightening further buys nothing and costs 13% more wall time per
+# halving. Confidence is flat across the sweep -- blocking the query axis is
+# exact, since the softmax still reduces over the whole key axis in each block.
+_STRUCTURAL_SCORE_BUDGET_BYTES = 1024**3
 
 
 def _structural_q_chunk(params, n_structural: int, resolved: int | None) -> int | None:

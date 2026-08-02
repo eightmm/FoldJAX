@@ -222,6 +222,7 @@ class InferenceConfig:
 
     num_trunk_recycles: int = 3
     recycle_msa_subsample: int = 0
+    max_msa_depth: int | None = None
     num_diffusion_timesteps: int = 200
     num_diffusion_samples: int = 5
     num_trunk_samples: int = 1
@@ -254,6 +255,8 @@ class InferenceConfig:
             raise ValueError("num_diffusion_samples must be positive")
         if self.num_trunk_samples < 1:
             raise ValueError("num_trunk_samples must be positive")
+        if self.max_msa_depth is not None and self.max_msa_depth < 1:
+            raise ValueError("max_msa_depth must be positive")
         if self.use_msa_server and self.msa_directory is not None:
             raise ValueError("use_msa_server and msa_directory are mutually exclusive")
         if self.use_templates_server and self.template_hits_path is not None:
@@ -681,6 +684,7 @@ def _embed_and_initialize(
     components: ModelComponents,
     *,
     msa_mode: str = "cropped",
+    max_msa_depth: int | None = None,
 ) -> tuple[
     dict[str, jnp.ndarray],
     jnp.ndarray,
@@ -692,8 +696,12 @@ def _embed_and_initialize(
         raise ValueError(f"invalid MSA embedding mode: {msa_mode!r}")
     row_indices = None
     if msa_mode == "cropped":
+        # This is the selection that sizes the embedded MSA -- the rows chosen
+        # here are the ones that get embedded, and the result is the largest
+        # tensor in the trunk. Capping only the per-recycle crop downstream
+        # would leave that tensor at full depth and move nothing.
         row_indices, _ = _msa_row_indices_and_mask(
-            prepared.padded_inputs["msa_mask"], key=None
+            prepared.padded_inputs["msa_mask"], key=None, max_depth=max_msa_depth
         )
     features = {}
     for name, value in prepared.features.items():
@@ -1216,25 +1224,39 @@ def _run_staged_trunk(
     # each MSA block do not replace this graph-level addition.
     pair_before_msa = pair
     msa = _compiled_msa_embedding(msa_features, single, params.msa.linear_s2m_weight)
+    msa_input = None
     for index, block in enumerate(params.msa.blocks):
-        pair = pair + _compiled_outer_product_mean(
-            msa,
-            msa_mask,
-            block.outer_product_mean,
+        # `a + b` on device arrays dispatches an eager `add`, which is its own
+        # XLA program: both operands and the result are live at once and none
+        # of the buffers can be reused. On the MSA representation that is three
+        # live copies of the largest tensor in the trunk. `_compiled_residual_add`
+        # is the same arithmetic with the update donated, so the sum is written
+        # back into it -- the pair path below already goes through it.
+        pair = _compiled_residual_add(
+            pair,
+            _compiled_outer_product_mean(msa, msa_mask, block.outer_product_mean),
         )
         if index < 3:
             msa_input = msa
-            msa = msa_input + _compiled_msa_transition(
+            msa = _compiled_residual_add(
                 msa_input,
-                block.msa_transition,
+                _compiled_msa_transition(msa_input, block.msa_transition),
             )
-            msa = msa + compiled_msa_weighted(
-                msa_input,
-                pair,
-                msa_mask,
-                pair_mask,
-                block.weighted_averaging,
+            msa = _compiled_residual_add(
+                msa,
+                compiled_msa_weighted(
+                    msa_input,
+                    pair,
+                    msa_mask,
+                    pair_mask,
+                    block.weighted_averaging,
+                ),
             )
+            # Last use: holding it through the pair block below would keep a
+            # second copy of the MSA alive for the most expensive part of the
+            # iteration. Rebound rather than deleted, because the low-memory
+            # branch after the loop deletes it by name.
+            msa_input = None
         if pair.shape[-2] >= 1536:
             pair = _run_msa_pair_block_low_memory(
                 pair,
@@ -1244,7 +1266,7 @@ def _run_staged_trunk(
             )
         else:
             pair = _compiled_msa_pair(pair, pair_mask, block.pair)
-    pair = pair_before_msa + pair
+    pair = _compiled_residual_add(pair_before_msa, pair)
     if _use_low_memory_pairformer(pair.shape[-2]):
         jax.block_until_ready((single, pair))
         del msa, msa_input, pair_before_msa, block
@@ -1267,10 +1289,13 @@ def _subsample_msa_for_recycle(
     msa_features: jax.Array,
     msa_mask: np.ndarray,
     key: jax.Array,
+    max_depth: int | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Subsample 4096 real MSA rows with an explicit JAX PRNG draw."""
+    """Subsample real MSA rows with an explicit JAX PRNG draw."""
 
-    row_indices, sampled_mask = _msa_row_indices_and_mask(msa_mask, key=key)
+    row_indices, sampled_mask = _msa_row_indices_and_mask(
+        msa_mask, key=key, max_depth=max_depth
+    )
     return jnp.take(msa_features, jnp.asarray(row_indices), axis=1), jnp.asarray(
         sampled_mask
     )
@@ -1280,7 +1305,15 @@ def _msa_row_indices_and_mask(
     msa_mask: np.ndarray,
     *,
     key: jax.Array | None,
+    max_depth: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Choose which alignment rows the trunk sees, and pad to a bucket.
+
+    ``max_depth`` caps the count before bucketing. Chai's rows arrive in
+    priority order, so the first N are the alignment's best N -- the same
+    tradeoff the other backends make under ``max_msa_depth``, and off by
+    default so the released behaviour is unchanged unless it is asked for.
+    """
     def bucket_plan(
         row_indices: np.ndarray, selected_mask: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -1306,18 +1339,22 @@ def _msa_row_indices_and_mask(
         )
         return padded_indices, padded_mask
 
+    if max_depth is not None and max_depth < 1:
+        raise ValueError("max_depth must be positive")
+
     mask = np.asarray(msa_mask, dtype=np.bool_)
     if key is not None:
         depth = mask.shape[1]
+        select_n_rows = 4096 if max_depth is None else min(4096, max_depth)
         random_values = np.asarray(jax.random.uniform(key, (depth,), dtype=jnp.float16))
         plan = msa_subsample_indices_and_mask(
             mask,
-            select_n_rows=4096,
+            select_n_rows=select_n_rows,
             random_values=random_values,
         )
         if plan is not None:
             row_order, sampled_mask = plan
-            selected_rows = min(4096, row_order.size)
+            selected_rows = min(select_n_rows, row_order.size)
             return bucket_plan(
                 row_order[:selected_rows], sampled_mask[:, :selected_rows]
             )
@@ -1325,17 +1362,20 @@ def _msa_row_indices_and_mask(
     active_rows = np.any(mask, axis=(0, 2))
     active_indices = np.flatnonzero(active_rows)
     kept_rows = int(active_indices[-1] + 1) if active_indices.size else 1
+    if max_depth is not None:
+        kept_rows = min(kept_rows, max_depth)
     return bucket_plan(np.arange(kept_rows), mask[:, :kept_rows])
 
 
 def _crop_trailing_masked_msa_rows(
     msa_features: jax.Array,
     msa_mask: np.ndarray | jax.Array,
+    max_depth: int | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """Remove trailing MSA rows that cannot affect any masked computation."""
 
     row_indices, cropped_mask = _msa_row_indices_and_mask(
-        np.asarray(msa_mask), key=None
+        np.asarray(msa_mask), key=None, max_depth=max_depth
     )
     return jnp.take(msa_features, jnp.asarray(row_indices), axis=1), jnp.asarray(
         cropped_mask
@@ -1977,7 +2017,12 @@ def execute_prepared_inference(
         pair_initial,
         msa_features,
         template_features,
-    ) = _embed_and_initialize(prepared, components, msa_mode=msa_mode)
+    ) = _embed_and_initialize(
+        prepared,
+        components,
+        msa_mode=msa_mode,
+        max_msa_depth=config.max_msa_depth,
+    )
     if split_msa:
         jax.block_until_ready(
             (
@@ -2007,10 +2052,13 @@ def execute_prepared_inference(
                 msa_features,
                 prepared.padded_inputs["msa_mask"],
                 recycle_key,
+                max_depth=config.max_msa_depth,
             )
         else:
             recycle_msa_features, recycle_msa_mask = _crop_trailing_masked_msa_rows(
-                msa_features, prepared.padded_inputs["msa_mask"]
+                msa_features,
+                prepared.padded_inputs["msa_mask"],
+                max_depth=config.max_msa_depth,
             )
         single, pair = _run_staged_trunk(
             single_initial,

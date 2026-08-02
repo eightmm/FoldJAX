@@ -111,7 +111,7 @@ backend calls them something different, and FoldJAX translates:
 | `--num-samples` | `diffusion_samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
 | `--num-steps` | — | `steps` | `num_diffusion_timesteps` | `n_step` |
 | `--num-recycles` | `recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
-| `--max-msa-depth` | — | `max_msa_depth` | — | `max_msa_rows` |
+| `--max-msa-depth` | — | `max_msa_depth` | `max_msa_depth` | `max_msa_rows` |
 
 Setting both a neutral knob and its native name is an error rather than a silent
 preference, and so is asking for a knob a backend does not have — AlphaFold 3
@@ -149,9 +149,22 @@ Confidence moves with the cap, but not monotonically (79.9 at 1024, 70.3 at
 alignment's own variance, not as evidence that a shallower MSA predicts better.
 The default keeps each port's own depth; nothing changes unless you ask.
 
-Chai has no reachable cap — it reads alignments through its own context objects
-rather than a featurizer argument — so `foldjax capabilities --model chai` does
-not report the knob rather than reporting one it cannot honour.
+**Chai has the same knob but not the same bargain.** It embeds the selected
+rows once into a `[1, depth, tokens, 64]` tensor — 2,048 MiB at its 16,384-row
+bucket — and the trunk reads that, so the cap has to act at the embedding, not
+at the per-recycle crop. It works, and it is the largest single lever there,
+but unlike Protenix it costs accuracy rather than trading noise:
+
+| chai, 488 tokens | peak | mean pLDDT | pTM |
+|---|---|---|---|
+| default | 7,613 MiB | 0.849 | 0.744 |
+| `--max-msa-depth 4096` | 5,126 MiB | 0.838 | 0.735 |
+| `--max-msa-depth 2048` | 4,856 MiB | 0.829 | 0.697 |
+| `--max-msa-depth 1024` | **4,707 MiB** | 0.830 | 0.705 |
+
+A third of the memory for one point of pLDDT. It stays off by default. Boltz-2
+is the least sensitive of the four — 4,766 → 4,688 MiB at 1024, for 0.891 →
+0.880 pLDDT — which is not worth spending, so it is off there too.
 
 **OpenDDE is the opposite case, and it is worth knowing why.** Capping its MSA
 changes nothing; blocking its attention changes everything. It is dual-branch,
@@ -159,14 +172,36 @@ and the structural refiner runs on sub-residue tokens with three times the
 heads of the trunk, so its score tensor — `[946, 12, q, 946]` on a 488-residue
 job — is what sizes the peak. Protenix's chunk policy maps a token count to a
 chunk size and was written for that four-head trunk, so its 256 still left
-10.5 GiB materialised, twice over. FoldJAX now blocks that branch by bytes
-instead, which takes OpenDDE from 32,185 to 15,654 MiB with bit-identical
-confidence (pLDDT 87.49 either way, because chunking reduces over the full key
-axis within each block). Before that, it asked for 76 GiB and died.
+10.5 GiB materialised, twice over. FoldJAX blocks that branch by bytes instead.
+The budget was then swept rather than guessed:
+
+| structural score budget | peak | warm | pLDDT |
+|---|---|---|---|
+| 2048 MiB | 15,639 MiB | 11.1 s | 87.4899 |
+| **1024 MiB** (default) | **14,443 MiB** | 12.3 s | 87.4907 |
+| 512 MiB | 14,465 MiB | 13.9 s | 87.4901 |
+| 256 MiB | 14,463 MiB | 15.4 s | 87.4918 |
+
+The knee is at 1 GiB: past it the score tensor is no longer what sizes the
+peak, so tightening buys nothing and costs 13% wall time per halving.
+Confidence is flat across the whole sweep, because blocking the query axis is
+exact — the softmax still reduces over the entire key axis inside each block.
+Before any of this, OpenDDE asked for 76 GiB and died.
 
 Same lesson twice, in opposite directions: **attribute the peak, then turn the
 knob it points at.** The MSA cap does nothing for OpenDDE and halves Protenix;
 chunking does nothing for Protenix and halves OpenDDE.
+
+### Eager arithmetic between compiled blocks
+
+Chai runs its trunk as many small compiled programs on purpose, so XLA can
+release MSA intermediates between them. But a plain `a + b` on two device
+arrays is not free glue between those programs — it dispatches its own XLA
+executable, and all three buffers are live while it runs. On the MSA
+representation that is three copies of the largest tensor in the trunk, for an
+add. Routing those residuals through a compiled add that donates its update
+buffer is the same arithmetic, bit for bit, and took Chai from 8,637 to
+7,613 MiB with the scores unchanged to five decimals.
 
 `foldjax plan` shows exactly what a request resolves to before anything loads:
 

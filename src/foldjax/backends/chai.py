@@ -51,10 +51,12 @@ class ChaiBackend(Backend):
         "num_samples": "num_diffusion_samples",
         "num_steps": "num_diffusion_timesteps",
         "num_recycles": "num_trunk_recycles",
+        "max_msa_depth": "max_msa_depth",
     }
     compile_options = (
         "num_trunk_recycles",
         "recycle_msa_subsample",
+        "max_msa_depth",
         "num_diffusion_timesteps",
         "num_diffusion_samples",
         "num_trunk_samples",

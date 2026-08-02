@@ -27,7 +27,7 @@ def _request(tmp_path, model, **kwargs):
     return PredictionRequest(model=model, input=job, **kwargs)
 
 
-@pytest.mark.parametrize("model", ["protenix", "opendde", "boltz2"])
+@pytest.mark.parametrize("model", ["protenix", "opendde", "boltz2", "chai"])
 def test_the_cap_is_a_neutral_knob(model: str) -> None:
     assert "max_msa_depth" in capabilities(model).sampling
 
@@ -35,7 +35,7 @@ def test_the_cap_is_a_neutral_knob(model: str) -> None:
 @pytest.mark.parametrize(
     ("model", "native"),
     [("protenix", "max_msa_rows"), ("opendde", "max_msa_rows"),
-     ("boltz2", "max_msa_depth")],
+     ("boltz2", "max_msa_depth"), ("chai", "max_msa_depth")],
 )
 def test_the_cap_reaches_each_backend_under_its_own_name(
     tmp_path, model: str, native: str
@@ -104,7 +104,7 @@ def test_the_structural_branch_is_blocked_by_bytes_not_token_count() -> None:
     with three times the heads, so the same token count costs three times the
     score tensor: at 946 tokens the policy's 256 still materialises 10.5 GiB,
     twice over. Bounding by bytes instead took the measured peak from 32,185 to
-    15,654 MiB with bit-identical confidence.
+    14,443 MiB with confidence flat to four decimals.
     """
     from foldjax.models.opendde.cli.predict import _structural_q_chunk
 
@@ -120,9 +120,53 @@ def test_the_structural_branch_is_blocked_by_bytes_not_token_count() -> None:
     params = _Params()
     # Big enough to bind: the policy's 256 is cut down.
     assert _structural_q_chunk(params, 946, 256) < 256
-    # Small enough not to: the policy's choice stands.
-    assert _structural_q_chunk(params, 400, 256) == 256
+    # Small enough not to: the policy's choice stands. The threshold moves with
+    # the budget, so this is well under it rather than just below.
+    assert _structural_q_chunk(params, 200, 256) == 256
     # It only ever narrows.
     assert _structural_q_chunk(params, 946, 16) == 16
     # A parameter tree without the branch is left alone rather than guessed at.
     assert _structural_q_chunk(object(), 946, 256) == 256
+
+
+def test_chai_caps_alignment_rows_before_bucketing() -> None:
+    """Chai's cap acts on the row count, which is what sizes the MSA tensor.
+
+    Chai does not take a depth argument at the featurizer; it selects rows from
+    its own mask and pads the count up to a bucket. So the cap has to act
+    there, before bucketing -- capping after would round straight back up.
+    Rows arrive in priority order, so the kept ones are the alignment's best.
+    """
+    import numpy as np
+
+    from foldjax.models.chai.inference import _msa_row_indices_and_mask
+
+    # 900 real rows over 4 tokens: without a cap this buckets up to 1024.
+    mask = np.zeros((1, 4096, 4), dtype=bool)
+    mask[:, :900, :] = True
+
+    rows, kept = _msa_row_indices_and_mask(mask, key=None)
+    assert rows.size == 1024
+    assert kept.shape[1] == 1024
+
+    # Capped to 256, which is itself a bucket, so no padding is added.
+    rows, kept = _msa_row_indices_and_mask(mask, key=None, max_depth=256)
+    assert rows.size == 256
+    assert kept.shape[1] == 256
+    # The rows kept are the first 256, not an arbitrary 256.
+    assert np.array_equal(rows, np.arange(256))
+
+    # A cap above what is there cannot invent rows.
+    rows, _ = _msa_row_indices_and_mask(mask, key=None, max_depth=99_999)
+    assert rows.size == 1024
+
+
+def test_chai_rejects_a_non_positive_cap() -> None:
+    import numpy as np
+
+    from foldjax.models.chai.inference import _msa_row_indices_and_mask
+
+    with pytest.raises(ValueError, match="max_depth must be positive"):
+        _msa_row_indices_and_mask(
+            np.ones((1, 8, 2), dtype=bool), key=None, max_depth=0
+        )
