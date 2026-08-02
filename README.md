@@ -108,16 +108,33 @@ backend calls them something different, and FoldJAX translates:
 
 | neutral | alphafold3 | boltz2 | chai | opendde / protenix |
 |---|---|---|---|---|
-| `--num-samples` | `diffusion_samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
-| `--num-steps` | — | `steps` | `num_diffusion_timesteps` | `n_step` |
-| `--num-recycles` | `recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
-| `--max-msa-depth` | — | `max_msa_depth` | `max_msa_depth` | `max_msa_rows` |
+| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
+| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `num_diffusion_timesteps` | `n_step` |
+| `--num-recycles` | `num_recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
+| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | `max_msa_depth` | `max_msa_rows` |
+
+All four reach all five models. AlphaFold 3's step count and MSA depth are not
+arguments of `make_model_config`, but the config it returns is an ordinary
+mutable object and upstream already sets the sample count on it by assignment;
+FoldJAX sets these the same way. That matters beyond convenience — a model that
+cannot be held to the same schedule as the others cannot be compared with them.
 
 Setting both a neutral knob and its native name is an error rather than a silent
-preference, and so is asking for a knob a backend does not have — AlphaFold 3
-exposes no diffusion-step count, so `--num-steps` is refused for it rather than
-quietly ignored. `--option KEY=VALUE` still passes anything native straight
+preference, and so is asking for a knob a backend does not have: OpenFold3
+exposes no MSA-depth argument, so `--max-msa-depth` is refused for it rather
+than quietly ignored. `--option KEY=VALUE` still passes anything native straight
 through.
+
+`--seeds 1 2 3` runs the job once per seed, into a `seed_<n>` directory each,
+and returns every structure together. The samples from one seed are correlated,
+so this is the usual way to get independent predictions. Three of the models
+take a seed list natively and three do not, so the loop lives in FoldJAX and
+every model gets it identically.
+
+Every run writes `foldjax_run.json` beside its structures: the model, the input
+and its SHA-256, the resolved weights, the seeds and knobs actually used, the
+JAX runtime, and each structure's confidence. A directory of `.cif` files
+otherwise cannot say what produced it.
 
 ### Memory
 
@@ -375,72 +392,109 @@ profile, and the options that actually change the compiled program. Different
 models and weight sets never share a cache entry, and options that only affect
 output formatting never fragment one.
 
-Measured on an RTX PRO 6000 Blackwell Max-Q, same 35-residue job, one sample,
-20 diffusion steps, one recycle. Upstream is each model's own repository on
-torch, given the same input and settings.
-
-This table predates the memory work above and has not been re-run against
-upstream since; the FoldJAX peak column is now lower than it shows. Read it for
-the wall-clock and program-count comparison, and the 488-token table at the top
-of [Memory](#memory) for current peaks.
-
-| model | FoldJAX | of which model | upstream | FoldJAX peak | upstream peak | programs |
-|---|---|---|---|---|---|---|
-| `boltz2` | **10.4 s** | 4.4 s | 19.7 s | **2183 MiB** | 2019 MiB | 140 |
-| `opendde` | 13.0 s | **1.8 s** | 9.1 s | **2731 MiB** | 5915 MiB* | 238 |
-| `chai` | 20.4 s | 5.2 s | 28.4 s | **1646 MiB** | 8065 MiB* | 523 |
-| `protenix` | **12.1 s** | 3.0 s | 49.4 s | **1832 MiB** | 3663 MiB* | 159 |
-
-**Read the memory column carefully, and do not read it off `nvidia-smi`.** That
-tool reports what the CUDA allocator has *reserved*, not what the program is
-using, and XLA's BFC allocator grows by doubling: three of these models parked
-on exactly 4094 MiB of reserved pool no matter whether they needed 1.6 GB or
-4.0 GB of it. The column above is `peak_bytes_in_use` from
-`jax.local_devices()[0].memory_stats()`, which is the real high-water mark;
-`nvidia-smi` sits 0.9-2.6 GB above it. The upstream column is
-`torch.cuda.max_memory_allocated()`, the same quantity. Starred entries are
-still `nvidia-smi` peaks, so they flatter FoldJAX by whatever torch's caching
-allocator over-reserved; `boltz2` is the one measured both ways on both sides.
-
-Two things made the difference. **Layer weights were being copied inside the
-traced graph**: every port stacks its per-layer parameters onto one axis so
-`lax.scan` can walk them, and doing that with `jnp.stack` inside `jit` makes
-XLA emit a `concatenate` over the weights -- 2,290 MiB of them in Boltz-2's
-optimized HLO, for a 35-residue job. Stacking on the host at load time instead
-(`foldjax.models._stacking`) cut the temp arena from 845 to 118 MiB for
-`boltz2` and from 1,438 to 88 MiB for `opendde`, and left the numbers
-unchanged. **And the eager ports were dispatching the model op by op**: OpenDDE
-once ran 1,824 programs per prediction, Protenix 666. Tracing each whole graph
-once -- `opendde_infer_compiled`, `protenix_infer_compiled` -- collapsed those
-to 238 and 159. For Protenix that is 30.9 s down to 12.1 s, with the predicted
-structure identical to the op-by-op path within its own run-to-run noise
-(0.0753 A RMSD against a 0.0738 A floor between two identical eager runs).
-`--no-graph-jit` restores the op-by-op path on either model — it is a flag on
-those two ports' own CLIs (`protenix-jax-predict`, `opendde-jax-predict`),
-not on `foldjax predict`.
-
-The "of which model" column is the second prediction in the same process, so it
-excludes weight loading, featurization, and reading the compiled program back
-from the cache. Those one-off costs dominate a single short job -- OpenDDE
-spends 1.8 s in the model and about 12 s getting ready to -- which is worth
-knowing before optimizing the wrong thing. Chai has the most room left: 523
-programs and the slowest steady state of the four.
-
-Confidence agrees with upstream where the sampler is converged enough to
-compare — OpenDDE pLDDT 92.75 vs 93.16, pTM 0.819 vs 0.828, gPDE 0.354 vs 0.357;
-Chai's aggregate score 0.16815 vs 0.1681. These are still *different samples*:
-torch and JAX PRNG streams differ, so the diffusion noise differs, and at a
-20-step schedule that moves the numbers. Same-seed numerical parity was
-established separately per port with a matched random tape.
-
-Two caveats on the upstream side: Protenix's fused CUDA layer-norm needs
-`ninja` to JIT-compile, so it ran with `LAYERNORM_TYPE=torch`; and OpenDDE pins
-`torch==2.7.1+cu126`, which has no kernels for this GPU and fails with "no
-kernel image is available" while its runner still reports success, so it was
-upgraded to `torch==2.12.0+cu130` to run at all.
+The old comparison that lived here -- a 35-residue job at one sample and
+20 steps, with three of its four upstream memory figures read off
+`nvidia-smi` -- has been replaced by
+[FoldJAX against upstream](#foldjax-against-upstream), which runs a real
+schedule at three sizes and measures both sides the same way.
 
 `--no-cache` turns it off for benchmark or ephemeral runs; `--cache-dir` moves
 the root. Every model also runs on CPU, slowly.
+
+## FoldJAX against upstream
+
+Every model here is a JAX reimplementation of a published torch model, so the
+only comparison worth making is against the repository it came from, on the
+same job, under the same schedule, measured the same way.
+
+That is what [`bench/`](bench/) does, and it is reproducible: one command per
+row, one process per measurement, results written as they land.
+
+**The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
+diffusion steps, 10 recycles, seed 101 — not a number chosen here.** Protenix's
+base model ships the same three. Chai and Boltz-2 default to 3 recycles rather
+than 10, so this asks more of them than their own default does; it asks the
+same of their upstream, which is what makes the comparison mean anything.
+
+| tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB | speed | memory | confidence | FoldJAX | upstream |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 132 | boltz2 | 14 | 27 | 2,621 | 2,947 | 1.95x | 1.12x | complex_plddt | 0.5750 | 0.7084 |
+| 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
+| 132 | opendde | 70 | 15 | 3,655 | 4,943 | 0.22x | 1.35x | ranking_score | 0.0947 | 0.0958 |
+| 132 | protenix | 16 | 53 | 1,778 | 2,910 | 3.42x | 1.64x | ranking_score | 0.1237 | 0.0997 |
+| 490 | boltz2 | 40 | 53 | 4,585 | 8,128 | 1.34x | 1.77x | complex_plddt | 0.3594 | 0.3629 |
+| 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
+| 490 | opendde | 181 | 117 | 10,552 | 91,191 | 0.65x | 8.64x | ranking_score | 0.0973 | 0.0914 |
+| 490 | protenix | 33 | 62 | 4,647 | 4,481 | 1.88x | 0.96x | ranking_score | 0.1292 | 0.0659 |
+| 970 | boltz2 | 132 | 127 | 9,820 | 14,211 | 0.96x | 1.45x | complex_plddt | 0.5312 | 0.5408 |
+| 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
+| 970 | opendde | 537 | failed | 34,411 | failed | - | - | - | - | - |
+| 970 | protenix | 98 | 235 | 10,795 | 12,315 | 2.39x | 1.14x | ranking_score | 0.1749 | 0.0832 |
+
+Read it with the method in mind:
+
+- **The same job.** The upstream side's input is generated by FoldJAX's own
+  translator, so neither side is running a hand-written approximation of the
+  other's job file, and both name the same alignment.
+- **The same measurement.** Peak memory is the live-bytes high-water mark on
+  both sides — `peak_bytes_in_use` under JAX, `max_memory_allocated` under
+  torch — never `nvidia-smi`, which reports the caching allocator's reserved
+  pool and so tracks its doubling schedule rather than the model.
+- **FoldJAX is timed warm.** Each case runs once to fill the XLA compile cache
+  and that run is discarded. A cold JAX run is mostly compilation, which the
+  torch side has no equivalent of: at 132 tokens it was 174 s against 29 s,
+  almost all of it compiling. Compilation is paid once per shape and replayed
+  from disk, which is what a second prediction costs.
+- **The confidence columns are the same field**, chosen as the best one *both*
+  implementations report. They are still different samples — the torch and JAX
+  PRNG streams differ, so a shared seed is not a shared random tape. Same-seed
+  numerical parity was established per port against a matched tape and is a
+  separate exercise from this table.
+
+Two caveats flatter FoldJAX, and neither can be removed without changing
+another project's environment:
+
+- Upstream Protenix runs with `LAYERNORM_TYPE=torch`, because its default layer
+  norm is a CUDA extension built on first use and this host has the CUDA
+  runtime but no `nvcc`. Its time is an upper bound.
+- Upstream OpenDDE has no `cuequivariance` installed, so its `auto` triangle
+  kernels resolve to the plain-torch path and materialise tensors it would
+  otherwise fuse. Its memory is an upper bound, and the OpenDDE memory ratio
+  should be read as "against an unaccelerated upstream". Boltz-2 and Protenix
+  upstream both have it; Chai does not use it.
+
+### What the table says
+
+- **Boltz-2, Chai and Protenix are faster than their upstream everywhere except
+  Boltz-2 at 970 tokens**, where they are level (132 s against 127 s). Protenix
+  is 1.9x–3.4x faster.
+- **They use less memory everywhere except two cells**: Chai at 970 tokens
+  (17,185 against 15,080, so 14% more) and Protenix at 490 (4,647 against
+  4,481, 4% more). Everywhere else FoldJAX is between 1.1x and 2.8x lower.
+- **OpenDDE at 970 tokens runs in FoldJAX and does not run upstream at all.**
+  Upstream asks for 40.8 GiB of triangle-attention softmax on top of 58.5 GiB
+  already held on a 95 GiB card and dies; FoldJAX does the same job in 34.4
+  GiB. Where upstream does fit, it is still faster than FoldJAX (117 s against
+  181 s at 490 tokens).
+- **OpenDDE was the one model slower than its own upstream, and most of that is
+  now gone.** Its sampler ran a Python loop over the diffusion steps, so the
+  released 200-step schedule put 200 copies of the denoiser into one graph.
+  Rolling it into `lax.scan` took the 132-token job from 682 s to 70 s and from
+  5,922 MiB to 3,655 — a 9.7x speed-up found by this table and fixed because of
+  it.
+- **Confidence agrees for Boltz-2 and Chai.** Chai's aggregate score matches to
+  four decimals at all three sizes; Boltz-2 agrees within 2% at 490 and 970 and
+  differs at 132, which is the smallest and least converged job.
+- **Protenix's confidence does not agree and is not yet explained.** FoldJAX
+  reports pTM 0.61 / 0.64 / 0.87 where upstream reports 0.50 / 0.33 / 0.42, and
+  pLDDT moves in both directions. That is too consistent to be sample variance,
+  so the Protenix confidence columns should be read as an open question rather
+  than as agreement. It is being tracked; the timing and memory columns are
+  unaffected.
+
+`alphafold3` has no upstream column: FoldJAX drives the AlphaFold 3
+installation you provide rather than reimplementing the model, so both columns
+would be the same code.
 
 ## Python API
 
