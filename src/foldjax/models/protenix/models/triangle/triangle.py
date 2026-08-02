@@ -266,19 +266,33 @@ def _triangle_attention_dense(
     q_chunk_size: int | None,
     attention_backend: str,
 ) -> jnp.ndarray:
-    q = _project_heads(x, params.attention.linear_q, num_heads)
     k = _project_heads(x, params.attention.linear_k, num_heads)
     v = _project_heads(x, params.attention.linear_v, num_heads)
-    scale = float(q.shape[-1] ** -0.5)
+    scale = float(k.shape[-1] ** -0.5)
+    # The chunked path below reads one block of queries at a time, so it
+    # projects them per block instead of holding the whole thing. `q` is
+    # [N, heads, N, d] -- 1,311 MiB on OpenDDE's structural branch, the same
+    # size as `k` and `v`, and unlike them it is never needed whole. Every
+    # other path does need it whole.
+    chunked = (
+        attention_backend not in {"cueq", "tokamax"}
+        and q_chunk_size is not None
+        and 0 < q_chunk_size < x.shape[-2]
+    )
+    q = (
+        None
+        if chunked
+        else _project_heads(x, params.attention.linear_q, num_heads)
+    )
 
-    if attention_backend == "cueq" and q.shape[-2] > 16:
+    if attention_backend == "cueq" and x.shape[-2] > 16:
         # The cuEquivariance kernel takes the whole query axis; there is no
         # chunked entry point. Blocking is only implemented in the XLA path
         # below, so a caller who asked for a chunk size and got this branch
         # would silently get an unchunked, unbounded [N, h, N, N] score tensor
         # -- which is exactly the buffer the chunk size exists to bound. Say so
         # rather than accepting the argument and ignoring it.
-        if q_chunk_size is not None and 0 < q_chunk_size < q.shape[-2]:
+        if q_chunk_size is not None and 0 < q_chunk_size < x.shape[-2]:
             _warn_unchunkable_backend(q_chunk_size)
         from foldjax.models.protenix.models.triangle.triangle_cueq import (
             cueq_attention_core,
@@ -292,7 +306,8 @@ def _triangle_attention_dense(
             mask_bias,
             scale=scale,
         )
-    else:
+    elif q is not None:
+        # The chunked path scales each block as it is projected instead.
         q = q * jnp.asarray(scale, dtype=q.dtype)
 
     if attention_backend == "tokamax":
@@ -304,23 +319,35 @@ def _triangle_attention_dense(
         )
 
         out = tokamax_attention_core(q, k, v, triangle_bias, mask_bias)
-    elif attention_backend == "cueq" and q.shape[-2] > 16:
+    elif attention_backend == "cueq" and x.shape[-2] > 16:
         pass
-    elif q_chunk_size is None or q_chunk_size <= 0 or q_chunk_size >= q.shape[-2]:
+    elif not chunked:
         out = _triangle_attention_block(q, k, v, mask_bias, triangle_bias)
     else:
-        out = jnp.zeros(q.shape, dtype=q.dtype)
-        for start in range(0, q.shape[-2], q_chunk_size):
-            size = min(q_chunk_size, q.shape[-2] - start)
-            q_block = jax.lax.dynamic_slice_in_dim(q, start, size, axis=-2)
+        rows = x.shape[-2]
+        blocks = []
+        for start in range(0, rows, q_chunk_size):
+            size = min(q_chunk_size, rows - start)
+            # Project this block's queries straight from `x`. Slicing `x` on
+            # the query axis and then projecting is the same arithmetic as
+            # projecting and then slicing -- the linear contracts over the
+            # channel axis -- but it never builds the full `q`.
+            q_block = _project_heads(
+                jax.lax.dynamic_slice_in_dim(x, start, size, axis=-2),
+                params.attention.linear_q,
+                num_heads,
+            )
+            q_block = q_block * jnp.asarray(scale, dtype=q_block.dtype)
             tri_block = jax.lax.dynamic_slice_in_dim(
                 triangle_bias,
                 start,
                 size,
                 axis=-2,
             )
-            block = _triangle_attention_block(q_block, k, v, mask_bias, tri_block)
-            out = out.at[..., start : start + size, :].set(block)
+            blocks.append(
+                _triangle_attention_block(q_block, k, v, mask_bias, tri_block)
+            )
+        out = jnp.concatenate(blocks, axis=-2)
 
     out = jnp.swapaxes(out, -2, -3)
     if params.attention.linear_g is not None:
