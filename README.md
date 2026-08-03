@@ -493,8 +493,15 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   recycle counts mean the same thing on both sides, and the trunk, confidence
   module and diffusion score network each match torch in their own parity
   tests. Those tests run on synthetic features with a handful of MSA rows and
-  one to four layers; production is 2,371 rows and 64, which is the only
-  regime where the chunked paths engage. That is where to look next.
+  one to four layers; production is 2,371 rows and 64.
+
+  The best lead is a behavioural difference the parity tests could not see:
+  `boltz predict` overrides its own default and turns MSA subsampling *on*, so
+  upstream draws a fresh random 1,024 of the available alignment rows on every
+  forward pass, while FoldJAX feeds all of them every pass. Every case here has
+  more than 1,024 rows, so it is always active. Capping FoldJAX's depth at
+  1,024 does not reproduce it, because that takes the top 1,024 once rather
+  than a different random 1,024 per pass -- which is the next thing to try.
 
   Read the Boltz-2 confidence columns as this model scoring its own output
   lower than upstream scores its own. The timing and memory columns are
