@@ -181,6 +181,50 @@ def test_checkpoint_boltz2_trunk_matches_boltz_torch(
     )
 
 
+def test_checkpoint_boltz2_trunk_matches_boltz_torch_while_recycling(
+    checkpoint_state: dict[str, torch.Tensor],
+) -> None:
+    """The recycled trunk, not just the first pass through it.
+
+    Recycling feeds the trunk its own output, so a block that composes its
+    sub-updates in the wrong order is wrong by a little on the first pass and
+    compounds from there -- which is how the same defect went unnoticed in the
+    Protenix port until the tenth cycle had `z` an order of magnitude out.
+    `recycling_steps=0` cannot see that: the recycled state is still zeros.
+    """
+
+    num_msa_layers = 1
+    num_pairformer_layers = 1
+    torch_module = _load_torch_trunk(
+        checkpoint_state,
+        num_msa_layers,
+        num_pairformer_layers,
+    )
+    params = map_boltz2_trunk_state_dict(
+        checkpoint_state,
+        num_msa_layers=num_msa_layers,
+        num_pairformer_layers=num_pairformer_layers,
+    )
+    feats = _trunk_feats()
+
+    with torch.no_grad():
+        expected = torch_module(feats, recycling_steps=3)
+    actual = boltz2_trunk_forward(params, _jax_feats(feats), recycling_steps=3)
+
+    np.testing.assert_allclose(
+        np.asarray(actual["s"]),
+        expected["s"].detach().numpy(),
+        rtol=5e-3,
+        atol=5e-3,
+    )
+    np.testing.assert_allclose(
+        np.asarray(actual["z"]),
+        expected["z"].detach().numpy(),
+        rtol=5e-3,
+        atol=5e-3,
+    )
+
+
 def test_checkpoint_boltz2_graph_score_jits(
     checkpoint_state: dict[str, torch.Tensor],
 ) -> None:

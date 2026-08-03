@@ -422,14 +422,15 @@ same of their upstream, which is what makes the comparison mean anything.
 | 132 | boltz2 | 14 | 27 | 2,621 | 2,947 | 1.95x | 1.12x | complex_plddt | 0.5750 | 0.7084 |
 | 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
 | 132 | opendde | 70 | 18 | 3,655 | 3,784 | 0.25x | 1.04x | ranking_score | 0.0947 | 0.0957 |
-| 132 | protenix | 16 | 52 | 1,778 | 2,910 | 3.32x | 1.64x | ranking_score | 0.1237 | 0.0997 |
+| 132 | protenix | 15 | 52 | 1,777 | 2,910 | 3.39x | 1.64x | ranking_score | 0.0996 | 0.0997 |
 | 490 | boltz2 | 40 | 53 | 4,585 | 8,128 | 1.34x | 1.77x | complex_plddt | 0.3594 | 0.3629 |
 | 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
 | 490 | opendde | 181 | 71 | 10,552 | 18,580 | 0.39x | 1.76x | ranking_score | 0.0973 | 0.0915 |
-| 490 | protenix | 33 | 60 | 4,647 | 4,481 | 1.83x | 0.96x | ranking_score | 0.1292 | 0.0659 |
+| 490 | protenix | 33 | 60 | 4,668 | 4,481 | 1.82x | 0.96x | ranking_score | 0.0670 | 0.0659 |
 | 970 | boltz2 | 132 | 127 | 9,820 | 14,211 | 0.96x | 1.45x | complex_plddt | 0.5312 | 0.5408 |
 | 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
 | 970 | opendde | 537 | 265 | 34,411 | 59,755 | 0.49x | 1.74x | ranking_score | 0.0963 | 0.0966 |
+| 970 | protenix | 98 | 94 | 10,807 | 12,315 | 0.96x | 1.14x | ranking_score | 0.0839 | 0.0834 |
 
 Read it with the method in mind:
 
@@ -474,31 +475,75 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   diffusion steps. Diffusion is effectively free since the sampler was rolled
   into `lax.scan`; the pairformer is what is left. Unrolling that stack instead
   is not the answer -- it does not finish compiling in ten minutes.
-- **Confidence agrees for Boltz-2, Chai and OpenDDE.** Chai matches to four
-  decimals at all three sizes, OpenDDE to within 1%, Boltz-2 within 2% at 490
-  and 970. **Protenix does not**: it reports pTM 0.61 / 0.64 / 0.87 where
-  upstream reports 0.50 / 0.33 / 0.42. The per-sample clusters are tight and
-  fully separated, so this is not sample variance, and at 490 tokens FoldJAX's
-  pLDDT is *lower* while its pTM is higher -- two confidence heads moving
-  opposite ways, which rules out "it simply predicts better structures".
-  AlphaFold 3 on the same sequence reports pTM 0.37-0.39, next to upstream
-  Protenix and far from FoldJAX's, which points at FoldJAX as the outlier.
+- **Confidence agrees for every model.** Chai matches to four decimals at all
+  three sizes, OpenDDE and Protenix to within 1-2%, Boltz-2 within 2% at 490
+  and 970. Boltz-2 at 132 tokens is the one remaining gap (0.575 against
+  0.708) and is being measured rather than assumed.
 
-  The sharpest symptom: **FoldJAX's confidence barely responds to the trunk
-  schedule, and responds the wrong way to recycling.** Going from 1 cycle to
-  10 takes its pTM from 0.745 to 0.612 and its gPDE from 2.96 to 3.14 -- worse
-  on both -- while upstream goes from 0.116 to 0.498 and 5.32 to 0.73, much
-  better on both. More diffusion steps does improve FoldJAX correctly. All
-  three heads (pLDDT, PAE/pTM, PDE/gPDE) disagree together, so the divergence
-  is in what they are fed rather than in any one of them.
+  Protenix used to be the exception here, and finding out why turned up a real
+  defect -- see below.
 
-  Ruled out by measurement: MSA depth (both load exactly 2,372 rows), the MSA
-  policy (0.618 per-cycle against 0.624 full-depth), the trunk dtype (0.6139
-  bf16 against 0.6155 fp32), upstream's fused layer norm, the recycling
-  initialisation, and the pTM computation itself -- bin parameters, the
-  normalization constant, the softmax axis, the reduction and the absent token
-  mask are all identical. Read the Protenix confidence columns as an open
-  question; the timing and memory columns are unaffected.
+### What the Protenix confidence gap turned out to be
+
+Protenix reported pTM 0.61 / 0.64 / 0.87 where upstream reported 0.50 / 0.33 /
+0.42. Two things said this was a defect and not a difference of opinion: at 490
+tokens FoldJAX's pLDDT was *lower* while its pTM was higher, so it was not
+simply predicting better structures; and AlphaFold 3, which this whole family
+descends from, reported 0.37-0.39 on the same sequence -- next to upstream
+Protenix, far from FoldJAX.
+
+The sharpest symptom was that **FoldJAX's confidence responded the wrong way to
+recycling**: 1 cycle to 10 took its pTM from 0.745 down to 0.612, where
+upstream went from 0.116 up to 0.498. All three heads (pLDDT, PAE, PDE)
+disagreed together, which points at their shared input -- the trunk -- rather
+than at any head.
+
+MSA depth, MSA policy, trunk dtype, upstream's fused layer norm, the recycling
+initialisation and the entire pTM computation were each ruled out by
+measurement without finding it. What found it was running both trunks stage by
+stage on the same feature tensors:
+
+| stage | upstream | FoldJAX, before |
+|---|---|---|
+| `s_inputs` | 0.06949 | 0.06949 |
+| `z_init` | 7.9353 | 7.9348 |
+| after recycle | 8.8778 | 8.8772 |
+| after template | 24.5211 | 24.5211 |
+| **after MSA** | **36.70** | **737.32** |
+
+Every stage before the MSA module agreed to five decimals. **The MSA block ran
+its two sub-updates in the wrong order**: Protenix does the communication first
+(`z += outer_product_mean(m)`) and then hands the MSA stack the pair
+representation that mean just produced, while the port did the MSA stack first
+and fed the outer product mean an already-updated `m`. Both halves were reading
+the other's output.
+
+Nothing failed, because nothing could: the two arrangements have identical
+shapes and dtypes, and produce a plausible number either way. The trunk simply
+converged to the wrong state -- and since it recycles that state, the error
+compounded, which is why more recycling made the confidence worse. `z` came out
+of the first cycle at std 428 against upstream's 44 and then oscillated between
+107 and 143 for ten cycles instead of settling at 46.8.
+
+Fixed, the trunk tracks upstream cycle for cycle and the confidence lands on it
+at all three sizes, at unchanged time and memory. Boltz-2's own order is
+different and matches *its* upstream; Chai already matched; OpenDDE has no such
+module.
+
+Two things had to be wrong at once for this to survive:
+
+- The block-composition test built its expectation by calling the same
+  sub-functions in the same order as the implementation, so it agreed with
+  whichever order the implementation used. It now records what each sub-update
+  is *handed*, which is the only thing that tells the two arrangements apart.
+- `parity_matched_noise.py` compared the trunk against a captured upstream run
+  and *printed* the correlation without checking it. It now takes a threshold
+  and exits non-zero.
+
+Protenix was also the only port with no torch-anchored test at all -- Boltz-2
+has a family of `*_checkpoint_parity.py` that load the real torch modules, and
+Chai has its own. `tests/models/protenix/scripts/trunk_stage_parity.py` is the
+attribution tool that found it, kept as a runnable check.
 
 ### Two earlier claims retracted
 
