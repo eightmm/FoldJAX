@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--no-pairformer-scan", action="store_true")
+    parser.add_argument(
+        "--min-correlation",
+        type=float,
+        default=0.999,
+        help="fail if any trunk tensor correlates below this with upstream's",
+    )
     parser.add_argument("--bf16-trunk", action="store_true")
     parser.add_argument(
         "--diffusion-attention-backend",
@@ -73,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,6 +207,34 @@ def main() -> None:
     np.save(args.out_dir / "coordinate.npy", coordinate)
     print(json.dumps(metrics, indent=2))
 
+    verdict = _verdict(metrics, min_correlation=args.min_correlation)
+    if verdict:
+        print("\n".join(["", "PARITY FAILED:", *verdict]))
+        return 1
+    print(f"\nPARITY OK: every trunk tensor correlates >= {args.min_correlation:g}.")
+    return 0
+
+
+def _verdict(metrics: dict, *, min_correlation: float) -> list[str]:
+    """Which trunk tensors fall short, as lines to print.
+
+    Printing metrics is not checking them. This harness reported a `z_trunk`
+    correlation for the whole life of the port and nothing ever read it, which
+    is how a transposed MSA block survived: the check existed, but nothing
+    failed when it was wrong. A threshold here is what turns the output into an
+    answer.
+    """
+    failures = []
+    for name in ("s_inputs", "s_trunk", "z_trunk"):
+        correlation = metrics.get(name, {}).get("correlation")
+        if correlation is None:
+            failures.append(f"  {name}: not reported")
+        elif not correlation >= min_correlation:
+            failures.append(
+                f"  {name}: correlation {correlation:.6f} < {min_correlation:g}"
+            )
+    return failures
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

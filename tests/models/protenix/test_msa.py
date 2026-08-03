@@ -10,7 +10,9 @@ from foldjax.models.protenix.bridge.torch_mapping import (
     map_outer_product_mean_state_dict,
 )
 from foldjax.models.protenix.models.primitives.primitives import transition
+from foldjax.models.protenix.models.trunk_blocks import msa as msa_blocks
 from foldjax.models.protenix.models.trunk_blocks.msa import (
+    MSABlockParams,
     msa_block,
     msa_module,
     msa_pair_weighted_averaging,
@@ -127,6 +129,98 @@ def test_msa_block_matches_reference_composition() -> None:
 
     np.testing.assert_allclose(np.asarray(actual_m), np.asarray(expected_m), atol=1e-5)
     np.testing.assert_allclose(np.asarray(actual_z), np.asarray(expected_z), atol=1e-5)
+
+
+def _recording_msa_block(monkeypatch) -> list[tuple[str, float]]:
+    """Replace the block's sub-updates with recorders and return the log.
+
+    Each stub returns a constant the others cannot produce, so the log says not
+    only in what order the sub-updates ran but what each one was handed.
+    """
+
+    calls: list[tuple[str, float]] = []
+
+    def fake_outer_product_mean(m, mask, params, **kwargs):
+        calls.append(("outer_product_mean", float(jnp.sum(m))))
+        return jnp.full((3, 3, 4), 7.0, dtype=jnp.float32)
+
+    def fake_pair_weighted_averaging(m, z, params, **kwargs):
+        calls.append(("msa_pair_weighted_averaging", float(jnp.sum(z))))
+        return jnp.full_like(m, 30.0)
+
+    def fake_transition(value, params, **kwargs):
+        calls.append(("transition", float(jnp.sum(value))))
+        return jnp.full_like(value, 500.0)
+
+    def fake_pairformer_block(s, z, pair_mask, params, **kwargs):
+        calls.append(("pair_stack", float(jnp.sum(z))))
+        return None, z
+
+    monkeypatch.setattr(msa_blocks, "outer_product_mean", fake_outer_product_mean)
+    monkeypatch.setattr(
+        msa_blocks, "msa_pair_weighted_averaging", fake_pair_weighted_averaging
+    )
+    monkeypatch.setattr(msa_blocks, "transition", fake_transition)
+    monkeypatch.setattr(msa_blocks, "pairformer_block", fake_pairformer_block)
+    return calls
+
+
+def test_msa_block_hands_each_sub_update_the_right_tensor(monkeypatch) -> None:
+    """Communication reads the incoming MSA; the MSA stack reads the updated pair.
+
+    Swapping the two is silent: both orders type-check, both preserve every
+    shape, and both produce a plausible number. Only which tensor each
+    sub-update receives tells them apart, so that is what this records rather
+    than recomputing the block's arithmetic -- an expectation built out of the
+    same calls in the same order agrees with either arrangement.
+    """
+
+    calls = _recording_msa_block(monkeypatch)
+    params = MSABlockParams(
+        outer_product_mean=object(),
+        msa_pair_weighted_averaging=object(),
+        msa_transition=object(),
+        pair_stack=object(),
+    )
+    m = jnp.ones((2, 3, 4), dtype=jnp.float32)
+    z = jnp.zeros((3, 3, 4), dtype=jnp.float32)
+
+    out_m, out_z = msa_block(m, z, None, params)
+
+    assert [name for name, _ in calls] == [
+        "outer_product_mean",
+        "msa_pair_weighted_averaging",
+        "transition",
+        "pair_stack",
+    ]
+    # The outer product mean sees `m` exactly as the block received it, not an
+    # `m` the MSA stack has already added 30 and 500 to.
+    assert calls[0][1] == float(jnp.sum(m))
+    # The MSA stack sees `z` after that mean has been added to it, not the zeros
+    # the block started with.
+    assert calls[1][1] == 7.0 * z.size
+    assert float(jnp.sum(out_m)) == float(jnp.sum(m)) + (30.0 + 500.0) * m.size
+    assert float(jnp.sum(out_z)) == 7.0 * z.size
+
+
+def test_msa_block_final_block_skips_the_msa_stack(monkeypatch) -> None:
+    """Protenix drops the MSA path from the last block and returns no `m`."""
+
+    calls = _recording_msa_block(monkeypatch)
+    params = MSABlockParams(
+        outer_product_mean=object(),
+        msa_pair_weighted_averaging=None,
+        msa_transition=None,
+        pair_stack=object(),
+    )
+    m = jnp.ones((2, 3, 4), dtype=jnp.float32)
+    z = jnp.zeros((3, 3, 4), dtype=jnp.float32)
+
+    out_m, out_z = msa_block(m, z, None, params)
+
+    assert [name for name, _ in calls] == ["outer_product_mean", "pair_stack"]
+    assert out_m is None
+    assert float(jnp.sum(out_z)) == 7.0 * z.size
 
 
 def test_msa_module_builds_msa_embedding_and_discovers_blocks() -> None:
