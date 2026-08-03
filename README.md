@@ -419,15 +419,15 @@ same of their upstream, which is what makes the comparison mean anything.
 | tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 132 | alphafold3 | 256 | - | 1,588 | - | - | - | - | - | - |
-| 132 | boltz2 | 14 | 27 | 2,621 | 2,947 | 1.95x | 1.12x | complex_plddt | 0.5750 | 0.7084 |
+| 132 | boltz2 | 14 | 27 | 2,654 | 2,947 | 1.94x | 1.11x | complex_plddt | 0.6690 | 0.7084 |
 | 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
 | 132 | opendde | 70 | 18 | 3,655 | 3,784 | 0.25x | 1.04x | ranking_score | 0.0947 | 0.0957 |
 | 132 | protenix | 15 | 52 | 1,777 | 2,910 | 3.39x | 1.64x | ranking_score | 0.0996 | 0.0997 |
-| 490 | boltz2 | 40 | 53 | 4,585 | 8,128 | 1.34x | 1.77x | complex_plddt | 0.3594 | 0.3629 |
+| 490 | boltz2 | 40 | 53 | 4,552 | 8,128 | 1.33x | 1.79x | complex_plddt | 0.3664 | 0.3629 |
 | 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
 | 490 | opendde | 181 | 71 | 10,552 | 18,580 | 0.39x | 1.76x | ranking_score | 0.0973 | 0.0915 |
 | 490 | protenix | 33 | 60 | 4,668 | 4,481 | 1.82x | 0.96x | ranking_score | 0.0670 | 0.0659 |
-| 970 | boltz2 | 132 | 127 | 9,820 | 14,211 | 0.96x | 1.45x | complex_plddt | 0.5312 | 0.5408 |
+| 970 | boltz2 | 137 | 127 | 9,802 | 14,211 | 0.92x | 1.45x | complex_plddt | 0.5323 | 0.5408 |
 | 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
 | 970 | opendde | 537 | 265 | 34,411 | 59,755 | 0.49x | 1.74x | ranking_score | 0.0963 | 0.0966 |
 | 970 | protenix | 98 | 94 | 10,807 | 12,315 | 0.96x | 1.14x | ranking_score | 0.0839 | 0.0834 |
@@ -475,37 +475,10 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   diffusion steps. Diffusion is effectively free since the sampler was rolled
   into `lax.scan`; the pairformer is what is left. Unrolling that stack instead
   is not the answer -- it does not finish compiling in ten minutes.
-- **Confidence agrees for Chai, OpenDDE and Protenix.** Chai matches to four
-  decimals at all three sizes, OpenDDE and Protenix to within 1-2%. Protenix
-  used to be the exception, and finding out why turned up a real defect --
-  see below.
-- **Boltz-2 scores systematically lower than its upstream, and that is an open
-  defect.** It is not sample variance: 20 samples a side (four seeds, five
-  samples each) at 132 tokens are completely disjoint, FoldJAX 0.481-0.566
-  against upstream 0.632-0.731. The same sign holds at 490 and 970, where it
-  is small enough to have read as noise.
-
-  It is located but not fixed. On the real 132-token features the two trunks
-  disagree -- correlation 0.9948 on `s` and 0.9868 on `z` against upstream's
-  final trunk state -- and the disagreement is already there after two passes
-  and barely grows by eleven, so it is a per-pass difference rather than
-  recycling drift. The features entering both trunks are bit-identical, the
-  recycle counts mean the same thing on both sides, and the trunk, confidence
-  module and diffusion score network each match torch in their own parity
-  tests. Those tests run on synthetic features with a handful of MSA rows and
-  one to four layers; production is 2,371 rows and 64.
-
-  The best lead is a behavioural difference the parity tests could not see:
-  `boltz predict` overrides its own default and turns MSA subsampling *on*, so
-  upstream draws a fresh random 1,024 of the available alignment rows on every
-  forward pass, while FoldJAX feeds all of them every pass. Every case here has
-  more than 1,024 rows, so it is always active. Capping FoldJAX's depth at
-  1,024 does not reproduce it, because that takes the top 1,024 once rather
-  than a different random 1,024 per pass -- which is the next thing to try.
-
-  Read the Boltz-2 confidence columns as this model scoring its own output
-  lower than upstream scores its own. The timing and memory columns are
-  unaffected.
+- **Confidence agrees for every model.** Chai matches to four decimals at all
+  three sizes, OpenDDE and Protenix to within 1-2%, Boltz-2 to within 1-2% at
+  490 and 970 and 5.6% at 132. Two of those took real fixes, both found the
+  same way and both described below.
 
 ### What the Protenix confidence gap turned out to be
 
@@ -568,6 +541,45 @@ Protenix was also the only port with no torch-anchored test at all -- Boltz-2
 has a family of `*_checkpoint_parity.py` that load the real torch modules, and
 Chai has its own. `tests/models/protenix/scripts/trunk_stage_parity.py` is the
 attribution tool that found it, kept as a runnable check.
+
+### What the Boltz-2 confidence gap turned out to be
+
+Boltz-2 scored its own structures systematically lower than upstream scored
+upstream's. It was not sample variance, which is what it had first been closed
+as: 20 samples a side at 132 tokens -- four seeds, five samples each -- were
+completely disjoint, 0.481-0.566 against 0.632-0.731, and the same sign held at
+490 and 970 where it was small enough to read as noise.
+
+The trunk, confidence module and diffusion score network each matched torch in
+their own parity tests, the features entering both models were bit-identical,
+and a fan-out comparing every trunk subsystem against upstream raised 21
+candidate divergences of which **none survived refutation** -- one of them
+measuring `corr(s) = corr(z) = 1.00000000` for the 64-layer pairformer on the
+real checkpoint at production shape.
+
+The cause was not in the arithmetic at all. `boltz predict` overrides its own
+`MSAModuleArgs` default and passes `subsample_msa=True`, so `MSAModule.forward`
+draws a fresh `torch.randperm(n_msa)[:1024]` **on every forward pass** -- eleven
+recycles see eleven different slices and ensemble over the whole alignment. The
+port subsampled to the same depth but always took the top 1,024, and took the
+same 1,024 again every pass. Its docstring described this as following
+AlphaFold 3's deterministic truncation, which is defensible in isolation and is
+not what Boltz-2 computes.
+
+| 132 tokens, 20 samples | min | max | mean |
+|---|---|---|---|
+| before, fixed top 1,024 | 0.481 | 0.566 | 0.530 |
+| after, fresh draw per pass | 0.590 | 0.724 | 0.645 |
+| upstream | 0.632 | 0.731 | 0.673 |
+
+Two distributions that shared no values now largely coincide, and the mean gap
+falls from 0.143 to 0.028. The residue is expected rather than outstanding:
+torch's `randperm` and JAX's `permutation` draw *different* subsets from the
+same alignment, so these are two different draws, not the same one.
+
+The key is derived with `fold_in` rather than `split`, so the sampler keeps the
+exact noise stream it had; otherwise every coordinate would have moved too and
+an MSA-selection change would have read as a diffusion change.
 
 ### Two earlier claims retracted
 
