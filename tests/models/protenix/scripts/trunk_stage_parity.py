@@ -105,11 +105,22 @@ def main() -> int:
 
     print(f"{'stage':22s} {'foldjax std':>14s} {'torch std':>14s} {'rel':>10s}")
     worst = 0.0
-    failures = []
+    # A stage the reference does not mention used to print a dash and carry on,
+    # which meant a reference file naming no stages at all -- an empty capture, a
+    # renamed stage, the wrong file -- reported that everything agreed. An
+    # unmatched stage is now a failure, because "not compared" and "compared and
+    # equal" are the two things this script exists to tell apart.
+    unmatched = [row["stage"] for row in rows if row["stage"] not in expected]
+    missing = [stage for stage in expected if stage not in {r["stage"] for r in rows}]
+    failures = [(stage, float("inf")) for stage in unmatched + missing]
+
     for row in rows:
         other = expected.get(row["stage"])
         if other is None:
-            print(f"{row['stage']:22s} {row['std']:14.5f} {'-':>14s} {'-':>10s}")
+            print(
+                f"{row['stage']:22s} {row['std']:14.5f} {'-':>14s} "
+                f"{'-':>10s}  <-- NOT IN REFERENCE"
+            )
             continue
         scale = max(abs(other["std"]), 1e-6)
         relative = abs(row["std"] - other["std"]) / scale
@@ -130,6 +141,12 @@ def main() -> int:
             )
         )
 
+    if unmatched or missing:
+        for stage in unmatched:
+            print(f"\nFAIL: {stage} has no counterpart in the reference capture.")
+        for stage in missing:
+            print(f"\nFAIL: reference has {stage}; this run produced no such stage.")
+        return 1
     if failures:
         first = failures[0][0]
         print(

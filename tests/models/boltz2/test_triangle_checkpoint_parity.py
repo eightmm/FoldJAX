@@ -14,9 +14,7 @@ from foldjax.models.boltz2.models.triangle.triangle import (
     triangle_multiplication_forward,
 )
 
-CHECKPOINT = (
-    Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
-)
+CHECKPOINT = Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
 
 
 @pytest.fixture(scope="module")
@@ -26,6 +24,7 @@ def checkpoint_state() -> dict[str, torch.Tensor]:
     return load_checkpoint_state_dict(CHECKPOINT)
 
 
+@pytest.mark.parametrize("backend", ["xla", "cueq"])
 @pytest.mark.parametrize(
     ("prefix", "direction"),
     [
@@ -37,7 +36,20 @@ def test_checkpoint_triangle_multiplication_matches_torch(
     checkpoint_state: dict[str, torch.Tensor],
     prefix: str,
     direction: str,
+    backend: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Both backends against torch, because the dispatch defaults to one of them.
+
+    `triangle_multiplication_forward` reads
+    `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND` and returns from the
+    cuEquivariance kernel before reaching its own XLA implementation unless the
+    variable says otherwise. Without pinning it this test ran the vendored
+    kernel twice and never executed the code it is named after: transposing the
+    XLA einsum -- an outright wrong pair update -- left the whole suite green.
+    """
+
+    monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", backend)
     x, mask = _triangle_inputs(checkpoint_state, prefix)
     params = map_triangle_multiplication_state_dict(checkpoint_state, prefix)
 
@@ -116,15 +128,25 @@ def _triangle_inputs(
     prefix: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     dim = state[f"{prefix}.norm_in.weight"].shape[0]
-    values = torch.linspace(-0.5, 0.5, steps=1 * 4 * 4 * dim, dtype=torch.float32)
-    x = values.reshape(1, 4, 4, dim)
+    # Not `linspace(...).reshape(1, 4, 4, dim)`. Consecutive slices of a linspace
+    # differ only by an additive offset, and the first thing this module does is
+    # a layer norm over the last axis -- which subtracts the mean and divides by
+    # the standard deviation, so every (i, j) position comes out as the *same*
+    # vector. The contraction is then symmetric in (i, j) and the test cannot
+    # see an error that transposes it, which is exactly the kind of error a
+    # triangle contraction is prone to. A seeded normal draw has no such
+    # structure and stays reproducible.
+    generator = torch.Generator().manual_seed(0)
+    x = torch.randn(1, 4, 4, dim, generator=generator, dtype=torch.float32)
     mask = torch.tensor(
-        [[
-            [1.0, 1.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0, 1.0],
-            [0.0, 1.0, 1.0, 1.0],
-        ]],
+        [
+            [
+                [1.0, 1.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0, 1.0],
+            ]
+        ],
         dtype=torch.float32,
     )
     return x, mask
