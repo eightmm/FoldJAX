@@ -467,7 +467,12 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   upstream at 970. Chai is faster at every size and pulls further ahead as the
   job grows (1.46x at 970).
 - **OpenDDE is the one model slower than its upstream**, by 2x-4x at every
-  size, while using 1.7x less memory at 490 and 970. That is the remaining gap.
+  size, while using 1.7x less memory at 490 and 970. That is the remaining gap,
+  and it is now located: at 132 tokens the whole job is 70 s, of which 31 s is
+  the nine extra trunk recycles (~3.4 s each) and just 1 s is the 199 extra
+  diffusion steps. Diffusion is effectively free since the sampler was rolled
+  into `lax.scan`; the pairformer is what is left. Unrolling that stack instead
+  is not the answer -- it does not finish compiling in ten minutes.
 - **Confidence agrees for Boltz-2, Chai and OpenDDE.** Chai matches to four
   decimals at all three sizes, OpenDDE to within 1%, Boltz-2 within 2% at 490
   and 970. **Protenix does not**: it reports pTM 0.61 / 0.64 / 0.87 where
