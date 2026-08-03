@@ -109,7 +109,11 @@ def main() -> int:
 
     def record_denoise(*pos, **kwargs):
         output = original_denoise(*pos, **kwargs)
-        if not captured_denoise:
+        # The whole prediction is one jitted program now, so this hook usually
+        # sees a tracer rather than a value. The first denoiser output is a
+        # diagnostic extra, not part of the parity verdict -- skip it when it
+        # cannot be read rather than aborting the comparison that can.
+        if not captured_denoise and not isinstance(output, jax.core.Tracer):
             captured_denoise.append(np.asarray(jax.block_until_ready(output)))
         return output
 
@@ -149,11 +153,12 @@ def main() -> int:
 
     coordinate = np.asarray(warm_output["coordinate"])[0]
     ca = ca_indices(features)
-    jax_denoise0 = captured_denoise[0]
-    while jax_denoise0.ndim > 3:
-        jax_denoise0 = jax_denoise0[0]
-    if jax_denoise0.ndim == 3:
-        jax_denoise0 = jax_denoise0[0]
+    jax_denoise0 = captured_denoise[0] if captured_denoise else None
+    if jax_denoise0 is not None:
+        while jax_denoise0.ndim > 3:
+            jax_denoise0 = jax_denoise0[0]
+        if jax_denoise0.ndim == 3:
+            jax_denoise0 = jax_denoise0[0]
     torch_d0 = torch_denoise0["x_denoised"]
     while torch_d0.ndim > 3:
         torch_d0 = torch_d0[0]
@@ -198,8 +203,12 @@ def main() -> int:
         "z_trunk": array_metrics(
             np.asarray(warm_output["z_trunk"]), torch_trunk["z_trunk"]
         ),
-        "denoise0_raw_rmsd": rmsd(jax_denoise0, torch_d0),
-        "denoise0_kabsch_rmsd": kabsch_rmsd(jax_denoise0, torch_d0),
+        "denoise0_raw_rmsd": (
+            None if jax_denoise0 is None else rmsd(jax_denoise0, torch_d0)
+        ),
+        "denoise0_kabsch_rmsd": (
+            None if jax_denoise0 is None else kabsch_rmsd(jax_denoise0, torch_d0)
+        ),
     }
     (args.out_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8"

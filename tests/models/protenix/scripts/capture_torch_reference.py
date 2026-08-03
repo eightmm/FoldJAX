@@ -18,7 +18,13 @@ def load_features(path: Path, device: torch.device) -> dict:
         for key in data.files:
             if key.startswith("pad_info."):
                 continue
-            value = torch.from_numpy(data[key])
+            array = data[key]
+            if array.dtype.kind in "USO":
+                # Feature dumps carry a few string fields (chain ids and the
+                # like). They are not model inputs and torch cannot hold them,
+                # so a dump containing any of them used to abort the capture.
+                continue
+            value = torch.from_numpy(array)
             if value.dtype in (torch.int8, torch.int16, torch.int32, torch.uint8):
                 value = value.long()
             features[key] = value.to(device)
