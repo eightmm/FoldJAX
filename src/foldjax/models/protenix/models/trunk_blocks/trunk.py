@@ -282,11 +282,21 @@ def _stacked_cycle_msa(
     this is possible. ``None`` is returned rather than raising when the shapes do
     not line up, because a caller is free to build the cycles itself; the loop then
     stays unrolled, which is slower to compile but correct.
+
+    The keys are walked in sorted order, and that is load-bearing rather than
+    tidy. Iterating a ``set`` of feature names emits these ``stack`` equations in
+    an order that depends on the strings' hashes, which CPython randomizes per
+    process. The arrays are identical either way, but the traced HLO is not: the
+    same prediction lowers to a differently ordered module in every process, so
+    its persistent-compile-cache key never repeats and every run recompiles the
+    whole program from scratch. Measured on OpenDDE at 132 tokens, that was a
+    warm run costing 32-57 s of recompilation against 3.4 s to replay the cached
+    executable, while the recycling it was blamed on is 0.24 s per cycle.
     """
     if not cycle_msa_features:
         return None
-    keys = set(cycle_msa_features[0])
-    if any(set(cycle) != keys for cycle in cycle_msa_features[1:]):
+    keys = sorted(cycle_msa_features[0])
+    if any(sorted(cycle) != keys for cycle in cycle_msa_features[1:]):
         return None
     for key in keys:
         shapes = {jnp.shape(cycle[key]) for cycle in cycle_msa_features}

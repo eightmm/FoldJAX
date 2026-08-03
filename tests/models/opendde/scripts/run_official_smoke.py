@@ -1,4 +1,12 @@
-"""Run the smallest real-weight OpenDDE-JAX inference smoke gate."""
+"""Run the smallest real-weight OpenDDE-JAX inference smoke gate.
+
+This is a liveness gate, not an accuracy one. It runs the trunk on the whole
+alignment, while upstream's MSA module subsamples to ``msa_depth`` rows afresh
+on every pass, so its ``--random-tape`` mode matches the sampler's draws but
+not the trunk's: on the 132-token job that alone accounts for 0.88 A of the
+0.88 A it reports. Use ``parity_matched_tape.py`` for a coordinate comparison
+-- it matches the rows too, and measures 0.0224 A on the same tape.
+"""
 
 from __future__ import annotations
 

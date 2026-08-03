@@ -19,8 +19,30 @@ here:
 The two `torch.randn` sites are told apart by shape: the coordinate draws carry
 an atom axis, the translation draws do not.
 
-Writes `tape.npz` (the arrays `run_official_smoke.py --random-tape` expects) and
-`coordinate.npy` (the reference structure to compare against).
+The sampler is not the only place OpenDDE draws random numbers, and matching it
+alone is not enough. `MSAModule._prepare_msa_sample` calls
+`subsample_msa_feature_dict_valid_first` on EVERY trunk pass, and that function
+says in its own docstring that "each call re-samples the order"; with
+`msa_depth = 1280` and an alignment deeper than that, each pass reads a
+different 1,280 rows. A port that reads the whole alignment is then not running
+the same model on the same input, and no amount of matched sampler noise can
+make the coordinates agree. So the row draw is captured too, per pass, both as
+indices and as the selected feature rows, and the indices are verified against
+the rows the sampler actually returned rather than assumed.
+
+The residue trunk's per-stage state is recorded as well -- `s_inputs`, `z_init`,
+and `z` leaving the recycle projection, the template embedder, the MSA module
+and the Pairformer. Every one of those stages is shape-preserving in `z`, so a
+whole-trunk comparison can only say that something is wrong; the first stage
+that drifts names the module.
+
+Writes, into `--out-dir`:
+
+    tape.npz         sampler tape, as `run_official_smoke.py --random-tape` wants
+    coordinate.npz   the reference structure
+    msa.npz          the alignment upstream read, and the rows each pass drew
+    trunk.npz        the residue trunk's per-stage tensors
+    tape.json        shapes and counts, for the parity harness to check against
 """
 
 from __future__ import annotations
@@ -114,6 +136,171 @@ class TapeRecorder:
         return value
 
 
+class MSARowRecorder:
+    """Record which alignment rows each trunk pass drew, and check them.
+
+    The upstream sampler returns the selected features but not the indices that
+    produced them, and the indices are what a port needs in order to read the
+    same alignment. They are reconstructed here from the `torch.randperm` draws
+    the function made -- and then verified by re-selecting with them and
+    comparing against what the function actually returned. A reconstruction
+    that is merely plausible would be worse than none: it would put a
+    confident, wrong alignment into the comparison.
+    """
+
+    def __init__(self) -> None:
+        self.rows: list[np.ndarray] = []
+        self.selected: list[dict[str, np.ndarray]] = []
+        self.source: dict[str, np.ndarray] | None = None
+        self.permutations: list[torch.Tensor] = []
+        self.active = False
+
+    def randperm(self, original, *args, **kwargs):
+        value = original(*args, **kwargs)
+        if self.active:
+            self.permutations.append(value.detach().clone())
+        return value
+
+    def subsample(self, original, collapse, *args, **kwargs):
+        import inspect
+
+        bound = inspect.signature(original).bind(*args, **kwargs)
+        bound.apply_defaults()
+        arguments = bound.arguments
+
+        self.permutations.clear()
+        self.active = True
+        try:
+            result = original(*args, **kwargs)
+        finally:
+            self.active = False
+
+        indices = self._reconstruct(collapse, arguments)
+        feat_dict = arguments["feat_dict"]
+        dim_dict = arguments["dim_dict"]
+        for name, dim in dim_dict.items():
+            expected = torch.index_select(feat_dict[name], dim=dim, index=indices)
+            if not torch.equal(expected, result[name]):
+                raise RuntimeError(
+                    f"reconstructed MSA rows do not reproduce upstream's {name!r}; "
+                    "the row capture cannot be trusted"
+                )
+        if self.source is None:
+            self.source = {
+                name: feat_dict[name].detach().cpu().numpy()
+                for name in (*dim_dict, "msa_mask")
+                if name in feat_dict
+            }
+        self.rows.append(indices.detach().cpu().numpy().astype(np.int64))
+        self.selected.append(
+            {name: result[name].detach().cpu().numpy() for name in dim_dict}
+        )
+        return result
+
+    def _reconstruct(self, collapse, arguments: dict) -> torch.Tensor:
+        """Replay the selection upstream just made, from its own permutations.
+
+        This mirrors `subsample_msa_feature_dict_valid_first` exactly; the
+        verification in `subsample` is what makes mirroring safe, because a
+        divergence in either the validity rule or the take order shows up as a
+        mismatch against the returned rows rather than as a silent skew.
+        """
+        feat_dict = arguments["feat_dict"]
+        msa = feat_dict["msa"]
+        msa_dim = arguments["dim_dict"]["msa"]
+        msa_len = msa.size(dim=msa_dim)
+        device = msa.device
+        num_msa = max(0, min(int(arguments["num_msa"]), msa_len))
+        if num_msa == 0:
+            return torch.empty(0, dtype=torch.long, device=device)
+
+        msa_mask = arguments.get("msa_mask")
+        gap_token = arguments.get("gap_token")
+        row_valid = None
+        if msa_mask is not None:
+            row_valid = collapse(msa_mask.bool().any(dim=-1))
+        if gap_token is not None and (row_valid is None or torch.all(row_valid)):
+            row_valid = collapse((msa != gap_token).any(dim=-1))
+        if row_valid is None:
+            row_valid = torch.ones(msa_len, dtype=torch.bool, device=device)
+
+        valid_idx = row_valid.nonzero(as_tuple=False).squeeze(-1)
+        invalid_idx = (~row_valid).nonzero(as_tuple=False).squeeze(-1)
+        selected = []
+        drawn = iter(self.permutations)
+        take_valid = min(valid_idx.numel(), num_msa)
+        if take_valid > 0:
+            selected.append(valid_idx[next(drawn)][:take_valid])
+        take_invalid = num_msa - take_valid
+        if take_invalid > 0 and invalid_idx.numel() > 0:
+            selected.append(invalid_idx[next(drawn)][:take_invalid])
+        if selected:
+            return torch.cat(selected, dim=0)
+        return torch.empty(0, dtype=torch.long, device=device)
+
+
+class StageRecorder:
+    """Keep the last value each named residue-trunk stage carried.
+
+    Only the last recycle is kept, because that is the state the rest of the
+    model consumes; earlier cycles differ from it only through the carry, which
+    the last cycle already reflects.
+    """
+
+    def __init__(self) -> None:
+        self.stages: dict[str, np.ndarray] = {}
+
+    def record(self, name: str, tensor: torch.Tensor) -> None:
+        self.stages[name] = tensor.detach().float().cpu().numpy()
+
+    def install(self, model) -> list:
+        """Hook the four residue-trunk submodules, returning removable handles.
+
+        `template_embedder` runs only when it has blocks, so `after_template` is
+        taken from what the MSA module was handed rather than from the template
+        embedder's own output -- that way the stage exists, and means the same
+        thing, whether or not templates are configured.
+        """
+        handles = []
+
+        def on_embedder(_module, _inputs, output):
+            self.record("s_inputs", output)
+
+        def on_z_cycle(_module, _inputs, output):
+            self.record("recycle_delta_z", output)
+
+        def on_template(_module, inputs, _output):
+            self.record("after_recycle_z", inputs[1])
+
+        def on_msa(_module, inputs, output):
+            self.record("after_template", inputs[1])
+            self.record("after_msa", output)
+
+        def on_pairformer(_module, inputs, output):
+            self.record("after_recycle_s", inputs[0])
+            self.record("after_pairformer_s", output[0])
+            self.record("after_pairformer_z", output[1])
+
+        handles.append(model.input_embedder.register_forward_hook(on_embedder))
+        handles.append(model.linear_no_bias_z_cycle.register_forward_hook(on_z_cycle))
+        if getattr(model.template_embedder, "n_blocks", 0) > 0:
+            handles.append(model.template_embedder.register_forward_hook(on_template))
+        handles.append(model.msa_module.register_forward_hook(on_msa))
+        handles.append(model.pairformer_stack.register_forward_hook(on_pairformer))
+        return handles
+
+    def finish(self) -> dict[str, np.ndarray]:
+        stages = dict(self.stages)
+        stages.setdefault("after_recycle_z", stages.get("after_template"))
+        # `z_init` is not a module output anywhere, but the first thing every
+        # cycle does is `z_init + linear_z_cycle(layernorm_z_cycle(z))`, so it
+        # is exactly the recycled state minus that projection. Recovering it
+        # this way needs no reimplementation of the embedding arithmetic.
+        if "after_recycle_z" in stages and "recycle_delta_z" in stages:
+            stages["z_init"] = stages["after_recycle_z"] - stages["recycle_delta_z"]
+        return {name: value for name, value in stages.items() if value is not None}
+
+
 def main() -> int:
     args = parse_args()
     os.environ.setdefault("PYTHONPATH", str(args.repo))
@@ -121,14 +308,22 @@ def main() -> int:
 
     sys.path.insert(0, str(args.repo))
 
-    from opendde.model import generator, utils
+    from opendde.model import generator, msa_sampling, utils
+    from opendde.model import opendde as opendde_model
+    from opendde.model.modules import pairformer as pairformer_module
 
     recorder = TapeRecorder()
+    msa_recorder = MSARowRecorder()
+    stage_recorder = StageRecorder()
     original_randn = torch.randn
+    original_randperm = torch.randperm
     original_rotation = utils.uniform_random_rotation
 
     def randn(*a, **k):
         return recorder.randn(original_randn, *a, **k)
+
+    def randperm(*a, **k):
+        return msa_recorder.randperm(original_randperm, *a, **k)
 
     def rotation(*a, **k):
         return recorder.rotation(original_rotation, *a, **k)
@@ -137,7 +332,34 @@ def main() -> int:
     # its own module globals, so patching the name in `utils` reaches it even
     # though `generator` imported the augmentation itself by value.
     torch.randn = randn
+    torch.randperm = randperm
     utils.uniform_random_rotation = rotation
+
+    # `pairformer` imported the sampler by value, so the name has to be replaced
+    # in the module that calls it, not in the one that defines it.
+    original_subsample = pairformer_module.subsample_msa_feature_dict_valid_first
+    collapse = msa_sampling._collapse_msa_row_mask
+
+    def subsample(*a, **k):
+        return msa_recorder.subsample(original_subsample, collapse, *a, **k)
+
+    pairformer_module.subsample_msa_feature_dict_valid_first = subsample
+
+    # Hooking the trunk's submodules only while `get_pairformer_output` is on
+    # the stack keeps the structural branch's own Pairformer out of the record:
+    # it is a different instance, but the same class, so a class-level patch
+    # would conflate the two.
+    original_pairformer_output = opendde_model.OpenDDE.get_pairformer_output
+
+    def get_pairformer_output(self, *a, **k):
+        handles = stage_recorder.install(self)
+        try:
+            return original_pairformer_output(self, *a, **k)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+    opendde_model.OpenDDE.get_pairformer_output = get_pairformer_output
 
     captured: dict[str, object] = {}
     original_sample = generator.sample_diffusion
@@ -160,13 +382,24 @@ def main() -> int:
         captured["coordinate"] = result.detach().float().cpu().numpy()
         return result
 
+    # `opendde/model/opendde.py` does `from opendde.model.generator import
+    # sample_diffusion`, so the name it calls is its own module global, bound at
+    # import time. Replacing only `generator.sample_diffusion` leaves that
+    # binding untouched and the hook never fires -- which is exactly what this
+    # script did until now, and why it could raise "sample_diffusion was never
+    # called" on a run that completed successfully. Patch the caller's name too.
     generator.sample_diffusion = sample_diffusion
+    opendde_model.sample_diffusion = sample_diffusion
     try:
         _run(args)
     finally:
         torch.randn = original_randn
+        torch.randperm = original_randperm
         utils.uniform_random_rotation = original_rotation
         generator.sample_diffusion = original_sample
+        opendde_model.sample_diffusion = original_sample
+        pairformer_module.subsample_msa_feature_dict_valid_first = original_subsample
+        opendde_model.OpenDDE.get_pairformer_output = original_pairformer_output
 
     if "coordinate" not in captured:
         raise RuntimeError("sample_diffusion was never called")
@@ -202,6 +435,12 @@ def main() -> int:
         if coordinate.ndim > 3
         else coordinate.astype(np.float32),
     )
+    msa_summary = _write_msa(args.out_dir, msa_recorder, n_cycle=args.n_cycle)
+    stages = stage_recorder.finish()
+    if not stages:
+        raise RuntimeError("no trunk stages were recorded")
+    np.savez_compressed(args.out_dir / "trunk.npz", **stages)
+
     (args.out_dir / "tape.json").write_text(
         json.dumps(
             {
@@ -210,6 +449,10 @@ def main() -> int:
                 "n_cycle": args.n_cycle,
                 "seed": args.seed,
                 "coordinate_shape": list(coordinate.shape),
+                "stages": {
+                    name: list(value.shape) for name, value in sorted(stages.items())
+                },
+                **msa_summary,
             },
             indent=2,
         )
@@ -222,12 +465,64 @@ def main() -> int:
                 "rotations": len(recorder.rotations),
                 "translations": len(translations),
                 "coordinate_shape": list(coordinate.shape),
+                "stages": sorted(stages),
+                **msa_summary,
                 "out": str(args.out_dir),
             },
             indent=2,
         )
     )
     return 0
+
+
+def _write_msa(out_dir: Path, msa_recorder: MSARowRecorder, *, n_cycle: int) -> dict:
+    """Write the alignment upstream read and the rows every pass drew.
+
+    Both are written. The indices alone would let a port re-select from its own
+    featurizer's alignment, which is only equivalent if the two featurizers
+    emit the same rows in the same order -- an assumption, not a fact. The
+    selected rows themselves make the parity run independent of it.
+    """
+    if not msa_recorder.rows:
+        raise RuntimeError(
+            "the MSA subsampler was never called; either this build does not "
+            "subsample or the patch did not reach it"
+        )
+    if len(msa_recorder.rows) != n_cycle:
+        raise RuntimeError(
+            f"expected {n_cycle} MSA row draws, one per trunk pass, got "
+            f"{len(msa_recorder.rows)}"
+        )
+    widths = {row.shape for row in msa_recorder.rows}
+    if len(widths) != 1:
+        raise RuntimeError(f"MSA draws differ in depth: {sorted(widths)}")
+
+    source = msa_recorder.source or {}
+    arrays: dict[str, np.ndarray] = {
+        "rows": np.stack(msa_recorder.rows),
+        **{f"input_{name}": value for name, value in source.items()},
+        **{
+            f"selected_{name}": np.stack(
+                [cycle[name] for cycle in msa_recorder.selected]
+            )
+            for name in msa_recorder.selected[0]
+        },
+    }
+    np.savez_compressed(out_dir / "msa.npz", **arrays)
+
+    rows = arrays["rows"]
+    identical = bool(np.all(rows == rows[0]))
+    return {
+        "msa_source_rows": int(np.shape(source.get("msa", np.empty(0)))[0])
+        if "msa" in source
+        else None,
+        "msa_sampled_rows": int(rows.shape[-1]),
+        "msa_passes": int(rows.shape[0]),
+        # If the draws were identical across passes there would be nothing to
+        # match and the whole question would be moot; say so rather than leave
+        # it to be inferred from the arrays.
+        "msa_rows_identical_across_passes": identical,
+    }
 
 
 #: The upstream runner is a config-driven CLI; this is the same argv

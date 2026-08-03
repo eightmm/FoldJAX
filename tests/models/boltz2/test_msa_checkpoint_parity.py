@@ -10,6 +10,8 @@ import torch
 from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import map_msa_module_state_dict
 from foldjax.models.boltz2.models.trunk_blocks.msa import (
+    _PWA_BUDGET_BYTES,
+    _auto_pair_averaging_chunk,
     msa_module_forward,
     pair_weighted_averaging_forward,
 )
@@ -210,6 +212,106 @@ def test_pair_weighted_averaging_preserves_bfloat16_activation_dtype() -> None:
     out = pair_weighted_averaging_forward(params, m, z, mask)
 
     assert out.dtype == jnp.bfloat16
+
+
+def _pair_averaging_case(n_msa: int, n_token: int, c_m: int = 8):
+    """Small PairWeightedAveraging inputs with a fixed, nonzero mask."""
+    rng = np.random.default_rng(7)
+    c_z, heads, c_h = 12, 4, 3
+
+    def w(*shape):
+        return jnp.asarray(rng.standard_normal(shape) * 0.1, dtype=jnp.float32)
+
+    params = {
+        "norm_m": {"scale": w(c_m), "bias": w(c_m)},
+        "norm_z": {"scale": w(c_z), "bias": w(c_z)},
+        "proj_m": {"kernel": w(c_m, heads * c_h)},
+        "proj_z": {"kernel": w(c_z, heads)},
+        "proj_g": {"kernel": w(c_m, heads * c_h)},
+        "proj_o": {"kernel": w(heads * c_h, c_m)},
+    }
+    m = jnp.asarray(rng.standard_normal((1, n_msa, n_token, c_m)), dtype=jnp.float32)
+    z = jnp.asarray(
+        rng.standard_normal((1, n_token, n_token, c_z)), dtype=jnp.float32
+    )
+    mask = jnp.ones((1, n_token, n_token), dtype=jnp.float32)
+    return params, m, z, mask
+
+
+@pytest.mark.parametrize("row_chunk_size", [1, 2, 3, 5])
+def test_pair_weighted_averaging_row_chunk_matches_whole_tensor(
+    row_chunk_size: int,
+) -> None:
+    """Splitting the MSA axis must not change what the block computes.
+
+    Rows of the MSA are a pure batch axis here, so a block boundary splits no
+    reduction: every chunk size, including ones that do not divide the depth,
+    has to reproduce the single-op result. Without this the chunk could silently
+    drop or double-count the ragged final block.
+    """
+    params, m, z, mask = _pair_averaging_case(n_msa=7, n_token=5)
+
+    whole = pair_weighted_averaging_forward(params, m, z, mask, row_chunk_size=0)
+    chunked = pair_weighted_averaging_forward(
+        params, m, z, mask, row_chunk_size=row_chunk_size
+    )
+
+    assert chunked.shape == whole.shape
+    np.testing.assert_allclose(chunked, whole, rtol=1e-6, atol=1e-6)
+
+
+def test_pair_averaging_chunk_leaves_small_alignments_on_the_single_op_path() -> None:
+    """The budget must not engage where the port already matched upstream.
+
+    A chunk is exact but not free: XLA tiles the smaller GEMMs differently, and
+    that moved the matched-tape RMSD when the 132-token benchmark job split.
+    That job's widened form is 132 * 256 * 4 bytes a row over 2,371 rows, and it
+    has to stay under the budget -- which is also what upstream runs there,
+    since 132 is below the 384-token threshold that turns on its own chunking.
+    """
+    params, m, _, _ = _pair_averaging_case(n_msa=2371, n_token=132, c_m=64)
+    params["proj_m"] = {"kernel": jnp.zeros((64, 256), jnp.float32)}
+
+    assert 2371 * 132 * 256 * 4 < _PWA_BUDGET_BYTES
+    assert _auto_pair_averaging_chunk(m, params) is None
+
+    # Not just "the chunk is off" but "the program is the one that shipped":
+    # lowering with the auto default has to produce the same HLO, character for
+    # character, as forcing the single-op path.
+    shapes = (
+        jax.ShapeDtypeStruct((1, 2371, 132, 64), jnp.float32),
+        jax.ShapeDtypeStruct((1, 132, 132, 12), jnp.float32),
+        jax.ShapeDtypeStruct((1, 132, 132), jnp.float32),
+    )
+    params = {**params, "norm_m": {"scale": jnp.zeros(64), "bias": jnp.zeros(64)}}
+    params["proj_g"] = {"kernel": jnp.zeros((64, 256), jnp.float32)}
+    params["proj_o"] = {"kernel": jnp.zeros((256, 64), jnp.float32)}
+
+    def lower(chunk):
+        return (
+            jax.jit(
+                pair_weighted_averaging_forward, static_argnames=("row_chunk_size",)
+            )
+            .lower(params, *shapes, row_chunk_size=chunk)
+            .as_text()
+        )
+
+    assert lower(None) == lower(0)
+
+
+def test_pair_averaging_chunk_splits_a_deep_alignment_under_the_budget() -> None:
+    """Above the budget the block must be small enough to have been worth it."""
+    params, _, _, _ = _pair_averaging_case(n_msa=2, n_token=2, c_m=64)
+    params["proj_m"] = {"kernel": jnp.zeros((64, 256), jnp.float32)}
+    # The 490-token benchmark job's real MSA, as a shape rather than 3.7 GiB of
+    # zeros: the block size is decided from shapes alone.
+    m = jax.ShapeDtypeStruct((1, 7917, 490, 64), jnp.float32)
+
+    rows = _auto_pair_averaging_chunk(m, params)
+
+    assert rows is not None
+    assert 0 < rows < 7917
+    assert rows * 490 * 256 * 4 <= _PWA_BUDGET_BYTES
 
 
 def _load_torch_msa_module(

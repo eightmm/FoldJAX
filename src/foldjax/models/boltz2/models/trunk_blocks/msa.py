@@ -35,6 +35,7 @@ def msa_module_forward(
     triangle_attention_chunk: int | None = None,
     triangle_attention_q_chunk: int | None = None,
     transition_hidden_chunk: int | None = None,
+    pair_averaging_chunk: int | None = None,
     matmul_precision: str = "highest",
     triangle_backend: str = "xla",
     glu_backend: str = "xla",
@@ -128,6 +129,7 @@ def msa_module_forward(
                 triangle_attention_chunk=triangle_attention_chunk,
                 triangle_attention_q_chunk=triangle_attention_q_chunk,
                 transition_hidden_chunk=transition_hidden_chunk,
+                pair_averaging_chunk=pair_averaging_chunk,
                 matmul_precision=matmul_precision,
                 triangle_backend=triangle_backend,
                 glu_backend=glu_backend,
@@ -149,6 +151,7 @@ def msa_module_forward(
             triangle_attention_chunk=triangle_attention_chunk,
             triangle_attention_q_chunk=triangle_attention_q_chunk,
             transition_hidden_chunk=transition_hidden_chunk,
+            pair_averaging_chunk=pair_averaging_chunk,
             matmul_precision=matmul_precision,
             triangle_backend=triangle_backend,
             glu_backend=glu_backend,
@@ -170,6 +173,7 @@ def msa_layer_forward(
     triangle_attention_chunk: int | None = None,
     triangle_attention_q_chunk: int | None = None,
     transition_hidden_chunk: int | None = None,
+    pair_averaging_chunk: int | None = None,
     matmul_precision: str = "highest",
     triangle_backend: str = "xla",
     glu_backend: str = "xla",
@@ -177,7 +181,12 @@ def msa_layer_forward(
     """Run one Boltz MSALayer in eval mode."""
 
     m = m + pair_weighted_averaging_forward(
-        params["pair_weighted_averaging"], m, z, token_mask, eps=eps
+        params["pair_weighted_averaging"],
+        m,
+        z,
+        token_mask,
+        eps=eps,
+        row_chunk_size=pair_averaging_chunk,
     )
     m = m + transition_forward(
         params["msa_transition"], m, eps=eps, glu_backend=glu_backend
@@ -201,6 +210,57 @@ def msa_layer_forward(
     return z, m
 
 
+#: Byte budget for one block of PairWeightedAveraging's widened MSA tensors.
+#:
+#: This block widens the MSA from ``c_m`` (64) to ``num_heads * c_h`` (256)
+#: channels three times over -- the projected values ``v``, the gate ``g``, and
+#: the averaged output ``o`` -- and ``v`` and ``o`` are live at the same
+#: instant. Read off XLA's buffer assignment for the 490-token benchmark job
+#: (7,917 alignment rows), those two were ``f32[1,7917,490,256]`` and
+#: ``f32[8,1,7917,32,490]``: 3.70 GiB each, 7.4 GiB of a 9,963 MiB temp arena,
+#: while every other block in the trunk was already chunked down to a few
+#: hundred MiB. That is the whole of this port's memory gap against upstream at
+#: full alignment depth, and it appears only above 384 tokens because that is
+#: where upstream turns its own version of this on (``chunk_heads_pwa`` in
+#: ``trunkv2.py``, gated on ``const.chunk_size_threshold``).
+#:
+#: Chunking over MSA rows rather than over heads is the safer of the two: rows
+#: are a pure batch axis of the einsum and of all four projections, so every
+#: reduction stays whole and the accumulation order does not change. Upstream's
+#: head chunk instead splits ``proj_o``'s 256-long reduction into eight partial
+#: sums.
+#:
+#: 512 MiB rather than the transition's 256 MiB, so that the 132-token
+#: benchmark job -- widened form 306 MiB over its 2,371 rows -- stays on the
+#: single-op path. That job is the one the matched-tape parity harness replays,
+#: and leaving it unsplit is what makes this change provably inert there: the
+#: module it lowers to is byte-identical to the one that shipped (sha256 of
+#: ``jax.jit(...).lower(...).as_text()``, asserted in the MSA parity tests). It
+#: is also what upstream runs at that size, below its own 384-token threshold.
+#:
+#: The identity matters because the harness cannot settle the question by
+#: measurement: six runs of unmodified code spanned 0.14522 to 0.14768 A, and
+#: two with XLA autotuning disabled still differed in the fourth decimal, so a
+#: repeated RMSD would not have shown a shift this small either way. A chunk is
+#: exact but not bit-identical -- XLA tiles the smaller GEMMs differently -- so
+#: "unchanged" has to mean the same program, not a similar number.
+#:
+#: Above the budget it splits: the 490-token job into eight blocks, and its
+#: trunk temp arena from 9,963 MiB to 3,649 MiB.
+_PWA_BUDGET_BYTES = 512 * 1024**2
+
+
+def _auto_pair_averaging_chunk(m: jnp.ndarray, params: Params) -> int | None:
+    """MSA rows whose widened form fits the budget, or None to do it whole."""
+    if m.ndim != 4 or m.shape[1] < 2:
+        return None
+    wide = params["proj_m"]["kernel"].shape[-1]
+    per_row = m.shape[2] * wide * m.dtype.itemsize
+    if per_row <= 0 or per_row * m.shape[1] <= _PWA_BUDGET_BYTES:
+        return None
+    return max(1, _PWA_BUDGET_BYTES // per_row)
+
+
 def pair_weighted_averaging_forward(
     params: Params,
     m: jnp.ndarray,
@@ -208,8 +268,29 @@ def pair_weighted_averaging_forward(
     mask: jnp.ndarray,
     eps: float = 1e-5,
     inf: float = 1e6,
+    row_chunk_size: int | None = None,
 ) -> jnp.ndarray:
-    """Run Boltz PairWeightedAveraging."""
+    """Run Boltz PairWeightedAveraging.
+
+    ``row_chunk_size`` splits axis 1 (MSA depth) into independent blocks, so the
+    widened ``[b, n_msa, n_token, num_heads * c_h]`` intermediates are never
+    resident all at once. Left as ``None`` the block size is derived from
+    ``_PWA_BUDGET_BYTES``; pass ``0`` to force the single-op path.
+
+    Below the budget this runs the original single-op body, statement for
+    statement. Sharing one body with the chunked path would mean hoisting the
+    pair weights above the MSA layer norm -- algebraically the same program, but
+    a different HLO, which is exactly what the budget is set to avoid. Two
+    bodies is the price of leaving the jobs that never needed a chunk on the
+    program they already ran.
+    """
+
+    if row_chunk_size is None:
+        row_chunk_size = _auto_pair_averaging_chunk(m, params)
+    if row_chunk_size is not None and 0 < row_chunk_size < m.shape[1]:
+        return _pair_weighted_averaging_chunked(
+            params, m, z, mask, eps, inf, row_chunk_size
+        )
 
     m = _layer_norm(m, params["norm_m"]["scale"], params["norm_m"]["bias"], eps)
     z = _layer_norm(z, params["norm_z"]["scale"], params["norm_z"]["bias"], eps)
@@ -231,6 +312,58 @@ def pair_weighted_averaging_forward(
     o = jnp.transpose(o, (0, 2, 3, 1, 4))
     o = jnp.reshape(o, (*o.shape[:3], num_heads * c_h))
     return _linear(g * o, params["proj_o"]["kernel"])
+
+
+def _pair_weighted_averaging_chunked(
+    params: Params,
+    m: jnp.ndarray,
+    z: jnp.ndarray,
+    mask: jnp.ndarray,
+    eps: float,
+    inf: float,
+    row_chunk_size: int,
+) -> jnp.ndarray:
+    """PairWeightedAveraging over blocks of MSA rows.
+
+    The pair weights do not depend on the MSA axis, so they are computed once
+    and every block reads them. Everything that does depend on it -- the MSA
+    layer norm, both widening projections, the weighted average, and the
+    narrowing projection -- is done a block at a time; each reduction still runs
+    over its whole axis, so no sum is split.
+    """
+
+    z = _layer_norm(z, params["norm_z"]["scale"], params["norm_z"]["bias"], eps)
+    num_heads = params["proj_z"]["kernel"].shape[-1]
+    c_h = params["proj_m"]["kernel"].shape[-1] // num_heads
+
+    b = _linear(z, params["proj_z"]["kernel"])
+    b = jnp.transpose(b, (0, 3, 1, 2))
+    mask = mask.astype(jnp.float32)
+    b = b.astype(jnp.float32) + (1.0 - mask[:, None]) * (-inf)
+    w = jax.nn.softmax(b, axis=-1).astype(m.dtype)
+
+    def block(m_block: jnp.ndarray) -> jnp.ndarray:
+        # Normalized per block rather than once up front: the normalized copy is
+        # as big as the MSA itself, and nothing outside this block reads it.
+        m_block = _layer_norm(
+            m_block, params["norm_m"]["scale"], params["norm_m"]["bias"], eps
+        )
+        v = _linear(m_block, params["proj_m"]["kernel"])
+        v = jnp.reshape(v, (*v.shape[:3], num_heads, c_h))
+        v = jnp.transpose(v, (0, 3, 1, 2, 4))
+        g = jax.nn.sigmoid(_linear(m_block, params["proj_g"]["kernel"]))
+        o = jnp.einsum("bhij,bhsjd->bhsid", w, v)
+        o = jnp.transpose(o, (0, 2, 3, 1, 4))
+        o = jnp.reshape(o, (*o.shape[:3], num_heads * c_h))
+        return _linear(g * o, params["proj_o"]["kernel"])
+
+    return jnp.concatenate(
+        [
+            block(m[:, start : start + row_chunk_size])
+            for start in range(0, m.shape[1], row_chunk_size)
+        ],
+        axis=1,
+    )
 
 
 def outer_product_mean_forward(
