@@ -419,17 +419,17 @@ same of their upstream, which is what makes the comparison mean anything.
 | tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 132 | alphafold3 | 256 | - | 1,588 | - | - | - | - | - | - |
-| 132 | boltz2 | 14 | 27 | 2,654 | 2,947 | 1.94x | 1.11x | complex_plddt | 0.6690 | 0.7084 |
+| 132 | boltz2 | 14 | 27 | 2,981 | 2,947 | 1.93x | 0.99x | complex_plddt | 0.7260 | 0.7084 |
 | 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
-| 132 | opendde | 70 | 18 | 3,655 | 3,784 | 0.25x | 1.04x | ranking_score | 0.0947 | 0.0957 |
+| 132 | opendde | 15 | 18 | 3,654 | 3,784 | 1.18x | 1.04x | ranking_score | 0.0947 | 0.0957 |
 | 132 | protenix | 15 | 52 | 1,777 | 2,910 | 3.39x | 1.64x | ranking_score | 0.0996 | 0.0997 |
-| 490 | boltz2 | 40 | 53 | 4,552 | 8,128 | 1.33x | 1.79x | complex_plddt | 0.3664 | 0.3629 |
+| 490 | boltz2 | 47 | 53 | 6,222 | 8,128 | 1.13x | 1.31x | complex_plddt | 0.3619 | 0.3629 |
 | 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
-| 490 | opendde | 181 | 71 | 10,552 | 18,580 | 0.39x | 1.76x | ranking_score | 0.0973 | 0.0915 |
+| 490 | opendde | 81 | 71 | 10,552 | 18,580 | 0.88x | 1.76x | ranking_score | 0.0974 | 0.0915 |
 | 490 | protenix | 33 | 60 | 4,668 | 4,481 | 1.82x | 0.96x | ranking_score | 0.0670 | 0.0659 |
-| 970 | boltz2 | 137 | 127 | 9,802 | 14,211 | 0.92x | 1.45x | complex_plddt | 0.5323 | 0.5408 |
+| 970 | boltz2 | 150 | 127 | 11,570 | 14,211 | 0.85x | 1.23x | complex_plddt | 0.5391 | 0.5408 |
 | 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
-| 970 | opendde | 537 | 265 | 34,411 | 59,755 | 0.49x | 1.74x | ranking_score | 0.0963 | 0.0966 |
+| 970 | opendde | 366 | 265 | 34,418 | 59,755 | 0.72x | 1.74x | ranking_score | 0.0963 | 0.0966 |
 | 970 | protenix | 98 | 94 | 10,807 | 12,315 | 0.96x | 1.14x | ranking_score | 0.0839 | 0.0834 |
 
 Read it with the method in mind:
