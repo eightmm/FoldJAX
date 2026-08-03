@@ -475,13 +475,30 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   diffusion steps. Diffusion is effectively free since the sampler was rolled
   into `lax.scan`; the pairformer is what is left. Unrolling that stack instead
   is not the answer -- it does not finish compiling in ten minutes.
-- **Confidence agrees for every model.** Chai matches to four decimals at all
-  three sizes, OpenDDE and Protenix to within 1-2%, Boltz-2 within 2% at 490
-  and 970. Boltz-2 at 132 tokens is the one remaining gap (0.575 against
-  0.708) and is being measured rather than assumed.
+- **Confidence agrees for Chai, OpenDDE and Protenix.** Chai matches to four
+  decimals at all three sizes, OpenDDE and Protenix to within 1-2%. Protenix
+  used to be the exception, and finding out why turned up a real defect --
+  see below.
+- **Boltz-2 scores systematically lower than its upstream, and that is an open
+  defect.** It is not sample variance: 20 samples a side (four seeds, five
+  samples each) at 132 tokens are completely disjoint, FoldJAX 0.481-0.566
+  against upstream 0.632-0.731. The same sign holds at 490 and 970, where it
+  is small enough to have read as noise.
 
-  Protenix used to be the exception here, and finding out why turned up a real
-  defect -- see below.
+  It is located but not fixed. On the real 132-token features the two trunks
+  disagree -- correlation 0.9948 on `s` and 0.9868 on `z` against upstream's
+  final trunk state -- and the disagreement is already there after two passes
+  and barely grows by eleven, so it is a per-pass difference rather than
+  recycling drift. The features entering both trunks are bit-identical, the
+  recycle counts mean the same thing on both sides, and the trunk, confidence
+  module and diffusion score network each match torch in their own parity
+  tests. Those tests run on synthetic features with a handful of MSA rows and
+  one to four layers; production is 2,371 rows and 64, which is the only
+  regime where the chunked paths engage. That is where to look next.
+
+  Read the Boltz-2 confidence columns as this model scoring its own output
+  lower than upstream scores its own. The timing and memory columns are
+  unaffected.
 
 ### What the Protenix confidence gap turned out to be
 

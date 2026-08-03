@@ -225,6 +225,50 @@ def test_checkpoint_boltz2_trunk_matches_boltz_torch_while_recycling(
     )
 
 
+def test_checkpoint_boltz2_trunk_matches_boltz_torch_at_released_msa_depth(
+    checkpoint_state: dict[str, torch.Tensor],
+) -> None:
+    """More than one layer of each stack, so layer *mapping* is covered.
+
+    A single-layer trunk exercises index 0 and nothing else: a state dict
+    mapped in the wrong order, or off by one past the first layer, produces the
+    same answer. The released MSA stack is four layers deep, which is cheap
+    enough to run in full; the pairformer's 64 are represented by four, which
+    is all it takes for an index to be wrong.
+    """
+
+    num_msa_layers = 4
+    num_pairformer_layers = 4
+    torch_module = _load_torch_trunk(
+        checkpoint_state,
+        num_msa_layers,
+        num_pairformer_layers,
+    )
+    params = map_boltz2_trunk_state_dict(
+        checkpoint_state,
+        num_msa_layers=num_msa_layers,
+        num_pairformer_layers=num_pairformer_layers,
+    )
+    feats = _trunk_feats()
+
+    with torch.no_grad():
+        expected = torch_module(feats, recycling_steps=2)
+    actual = boltz2_trunk_forward(params, _jax_feats(feats), recycling_steps=2)
+
+    np.testing.assert_allclose(
+        np.asarray(actual["s"]),
+        expected["s"].detach().numpy(),
+        rtol=5e-3,
+        atol=5e-3,
+    )
+    np.testing.assert_allclose(
+        np.asarray(actual["z"]),
+        expected["z"].detach().numpy(),
+        rtol=5e-3,
+        atol=5e-3,
+    )
+
+
 def test_checkpoint_boltz2_graph_score_jits(
     checkpoint_state: dict[str, torch.Tensor],
 ) -> None:
