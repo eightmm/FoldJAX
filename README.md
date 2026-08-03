@@ -418,6 +418,7 @@ same of their upstream, which is what makes the comparison mean anything.
 
 | tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
+| 132 | alphafold3 | 256 | - | 1,588 | - | - | - | - | - | - |
 | 132 | boltz2 | 14 | 27 | 2,621 | 2,947 | 1.95x | 1.12x | complex_plddt | 0.5750 | 0.7084 |
 | 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
 | 132 | opendde | 70 | 18 | 3,655 | 3,784 | 0.25x | 1.04x | ranking_score | 0.0947 | 0.0957 |
@@ -476,10 +477,20 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
 - **Confidence agrees for Boltz-2, Chai and OpenDDE.** Chai matches to four
   decimals at all three sizes, OpenDDE to within 1%, Boltz-2 within 2% at 490
   and 970. **Protenix does not**: it reports pTM 0.61 / 0.64 / 0.87 where
-  upstream reports 0.50 / 0.33 / 0.42. Rebuilding upstream's fused layer norm
-  did not move it, so the layer norm is not the cause. Read the Protenix
-  confidence columns as an open question; the timing and memory columns are
-  unaffected.
+  upstream reports 0.50 / 0.33 / 0.42. The per-sample clusters are tight and
+  fully separated, so this is not sample variance, and at 490 tokens FoldJAX's
+  pLDDT is *lower* while its pTM is higher -- two confidence heads moving
+  opposite ways, which rules out "it simply predicts better structures".
+  AlphaFold 3 on the same sequence reports pTM 0.37-0.39, next to upstream
+  Protenix and far from FoldJAX's, which points at FoldJAX as the outlier.
+
+  Ruled out so far: the MSA policy (`--sample-msa-per-cycle` gives 0.618
+  against `--full-depth-msa`'s 0.624, both far from 0.498), upstream's fused
+  layer norm, and the pTM computation itself -- bin parameters, the
+  normalization constant, the softmax axis and the reduction are identical, and
+  both sides pass no token mask. What remains is the PAE logits the confidence
+  head produces. Read the Protenix confidence columns as an open question; the
+  timing and memory columns are unaffected.
 
 ### Two earlier claims retracted
 
@@ -498,9 +509,13 @@ numbers. See [`bench/upstream-environments.md`](bench/upstream-environments.md).
   architecture list stopped one generation before this GPU; with both fixed,
   upstream's 970-token time went from 235 s to 94 s against FoldJAX's 98 s.
 
-`alphafold3` has no upstream column: FoldJAX drives the AlphaFold 3
-installation you provide rather than reimplementing the model, so both columns
-would be the same code.
+`alphafold3` has a FoldJAX column but no upstream one: FoldJAX drives the
+AlphaFold 3 installation you provide rather than reimplementing the model, so
+both columns would be the same code. Its row is there because it is the
+reference this architecture family descends from, and because it confirms the
+neutral knobs reach it -- 5 samples, 200 steps and 10 recycles all applied.
+It also has the lowest peak of any model here, 1,588 MiB, which is what a
+trunk that is bfloat16 throughout costs.
 
 ## Python API
 
