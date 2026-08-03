@@ -484,13 +484,21 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   AlphaFold 3 on the same sequence reports pTM 0.37-0.39, next to upstream
   Protenix and far from FoldJAX's, which points at FoldJAX as the outlier.
 
-  Ruled out so far: the MSA policy (`--sample-msa-per-cycle` gives 0.618
-  against `--full-depth-msa`'s 0.624, both far from 0.498), upstream's fused
-  layer norm, and the pTM computation itself -- bin parameters, the
-  normalization constant, the softmax axis and the reduction are identical, and
-  both sides pass no token mask. What remains is the PAE logits the confidence
-  head produces. Read the Protenix confidence columns as an open question; the
-  timing and memory columns are unaffected.
+  The sharpest symptom: **FoldJAX's confidence barely responds to the trunk
+  schedule, and responds the wrong way to recycling.** Going from 1 cycle to
+  10 takes its pTM from 0.745 to 0.612 and its gPDE from 2.96 to 3.14 -- worse
+  on both -- while upstream goes from 0.116 to 0.498 and 5.32 to 0.73, much
+  better on both. More diffusion steps does improve FoldJAX correctly. All
+  three heads (pLDDT, PAE/pTM, PDE/gPDE) disagree together, so the divergence
+  is in what they are fed rather than in any one of them.
+
+  Ruled out by measurement: MSA depth (both load exactly 2,372 rows), the MSA
+  policy (0.618 per-cycle against 0.624 full-depth), the trunk dtype (0.6139
+  bf16 against 0.6155 fp32), upstream's fused layer norm, the recycling
+  initialisation, and the pTM computation itself -- bin parameters, the
+  normalization constant, the softmax axis, the reduction and the absent token
+  mask are all identical. Read the Protenix confidence columns as an open
+  question; the timing and memory columns are unaffected.
 
 ### Two earlier claims retracted
 
