@@ -100,17 +100,24 @@ def test_msa_block_matches_reference_composition() -> None:
         params,
     )
 
-    expected_m = jnp.asarray(m) + msa_pair_weighted_averaging(
-        jnp.asarray(m),
-        jnp.asarray(z),
-        params.msa_pair_weighted_averaging,
-    )
-    expected_m = expected_m + transition(expected_m, params.msa_transition)
+    # Protenix's `MSABlock.forward`, in its order: communication, then the MSA
+    # stack, then the pair stack. Writing it the other way round type-checks and
+    # runs -- the shapes are identical either way -- so this ordering is the
+    # whole content of the test. Getting it backwards fed the outer product mean
+    # an already-updated `m` and the MSA stack a stale `z`, and the trunk's own
+    # recycling then amplified the error until `z` was an order of magnitude
+    # too large.
     expected_z = jnp.asarray(z) + outer_product_mean(
-        expected_m,
+        jnp.asarray(m),
         None,
         params.outer_product_mean,
     )
+    expected_m = jnp.asarray(m) + msa_pair_weighted_averaging(
+        jnp.asarray(m),
+        expected_z,
+        params.msa_pair_weighted_averaging,
+    )
+    expected_m = expected_m + transition(expected_m, params.msa_transition)
     _, expected_z = pairformer_block(
         None,
         expected_z,

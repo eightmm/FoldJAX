@@ -208,16 +208,23 @@ def msa_block(
 
     if m is None:
         raise ValueError("MSABlock requires m before the final block output")
+    # Algorithm 8 lines 6-13, in Protenix's order: communication first, then the
+    # MSA stack, then the pair stack. The two are not interchangeable -- the
+    # outer product mean has to read the MSA representation this block was
+    # handed, and the MSA stack has to read the pair representation that mean
+    # just updated. Running them the other way round feeds each the other's
+    # output, and because the trunk recycles its own state the error compounds:
+    # `z` grew by an order of magnitude per cycle instead of converging.
+    z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
     if params.msa_pair_weighted_averaging is not None:
+        if params.msa_transition is None:
+            raise ValueError("missing MSA transition for non-final MSA block")
         m = m + msa_pair_weighted_averaging(
             m,
             z,
             params.msa_pair_weighted_averaging,
         )
-        if params.msa_transition is None:
-            raise ValueError("missing MSA transition for non-final MSA block")
         m = m + transition(m, params.msa_transition)
-    z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
     _, z = pairformer_block(
         None,
         z,
@@ -298,6 +305,7 @@ def msa_module(
     for block_params in remaining:
         m, z = msa_block(m, z, pair_mask, block_params, **settings)
     return z
+
 
 def _uniform_prefix(blocks: tuple[MSABlockParams, ...]) -> int:
     """How many leading blocks share one parameter tree and leaf shapes.
