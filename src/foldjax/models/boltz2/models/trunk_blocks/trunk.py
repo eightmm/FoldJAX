@@ -752,6 +752,7 @@ def boltz2_trunk_forward(
     glu_backend: str = "xla",
     subsample_msa: bool = False,
     num_subsampled_msa: int = 1024,
+    msa_key: jnp.ndarray | None = None,
     mesh: object | None = None,
     token_axis: str = "tok",
     shard_tokens: bool = True,
@@ -845,7 +846,9 @@ def boltz2_trunk_forward(
         use_template = has_template_feats(feats)
     use_template = bool(use_template) and "template_module" in params
 
-    def _recycle_step(s: jnp.ndarray, z: jnp.ndarray) -> tuple[jnp.ndarray, ...]:
+    def _recycle_step(
+        s: jnp.ndarray, z: jnp.ndarray, step_key: jnp.ndarray | None
+    ) -> tuple[jnp.ndarray, ...]:
         s = s_init + _linear(
             _layer_norm(
                 s,
@@ -895,6 +898,7 @@ def boltz2_trunk_forward(
             glu_backend=glu_backend,
             subsample_msa=subsample_msa,
             num_subsampled_msa=num_subsampled_msa,
+            msa_key=step_key,
         )
         s, z = pairformer_module_forward(
             params["pairformer_module"],
@@ -922,17 +926,26 @@ def boltz2_trunk_forward(
     # of unrolling `recycling_steps + 1` copies into the HLO (faster compile,
     # smaller executable). Runtime/peak is unchanged. Eager path kept for parity
     # debugging and when scan is disabled.
+    # Upstream re-draws its MSA subsample inside every forward pass, so each
+    # recycle needs its own key. Splitting up front keeps the scan body's carry
+    # free of the key and makes the eager and scanned paths draw the same rows.
+    step_keys = (
+        jax.random.split(msa_key, recycling_steps + 1) if msa_key is not None else None
+    )
     if use_scan:
 
-        def _scan_body(carry, _):
-            return _recycle_step(*carry), None
+        def _scan_body(carry, step_key):
+            return _recycle_step(*carry, step_key), None
 
         (s, z), _ = jax.lax.scan(
-            _scan_body, (s, z), xs=None, length=recycling_steps + 1
+            _scan_body,
+            (s, z),
+            xs=step_keys,
+            length=recycling_steps + 1,
         )
     else:
-        for _ in range(recycling_steps + 1):
-            s, z = _recycle_step(s, z)
+        for cycle in range(recycling_steps + 1):
+            s, z = _recycle_step(s, z, None if step_keys is None else step_keys[cycle])
 
     return {
         "s_inputs": s_inputs,

@@ -40,6 +40,10 @@ from foldjax.models.boltz2.models.trunk_blocks.trunk import (
 
 Params = Mapping[str, object]
 
+#: Stream id folded into the run key for the MSA subsample, so those draws are
+#: independent of the sampler's noise and adding them moved nothing else.
+_MSA_SUBSAMPLE_STREAM = 0xB012
+
 
 def boltz2_predict(
     params: Params,
@@ -69,12 +73,8 @@ def boltz2_predict(
     multiplicity = int(sample_kwargs.pop("multiplicity", 1))
     if affinity_params is None and "affinity" in params:
         affinity_params = params["affinity"]
-    return_pair_chains_iptm = bool(
-        sample_kwargs.pop("return_pair_chains_iptm", True)
-    )
-    confidence_sequentially = bool(
-        sample_kwargs.pop("confidence_sequentially", False)
-    )
+    return_pair_chains_iptm = bool(sample_kwargs.pop("return_pair_chains_iptm", True))
+    confidence_sequentially = bool(sample_kwargs.pop("confidence_sequentially", False))
     recompute_nonpolymer_frames = bool(
         sample_kwargs.pop("recompute_nonpolymer_frames", True)
     )
@@ -95,9 +95,17 @@ def boltz2_predict(
         trunk_params = _cast_params(trunk_params, compute_dtype)
         trunk_feats = _cast_float_feats(feats, compute_dtype)
 
+    # Upstream's MSA subsample is drawn per forward pass from the run's own RNG,
+    # so it belongs on the run's key: one seed still reproduces one result.
+    # Derived by `fold_in` rather than `split` on purpose -- splitting would
+    # hand the sampler a different key and move every coordinate, making an
+    # MSA-selection change look like a diffusion change. This way the only
+    # thing that moves is which alignment rows the trunk sees.
+    msa_key = jax.random.fold_in(key, _MSA_SUBSAMPLE_STREAM)
     trunk = boltz2_trunk_forward(
         trunk_params,
         trunk_feats,
+        msa_key=msa_key if subsample_msa else None,
         recycling_steps=recycling_steps,
         eps=eps,
         use_scan=bool(trunk_use_scan),

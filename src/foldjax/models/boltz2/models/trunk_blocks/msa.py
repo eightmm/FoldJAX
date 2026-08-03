@@ -40,18 +40,26 @@ def msa_module_forward(
     glu_backend: str = "xla",
     subsample_msa: bool = False,
     num_subsampled_msa: int = 1024,
+    msa_key: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run Boltz MSAModule.
 
     ``use_scan=False`` (default) unrolls the layer stack in Python (lower steady
     latency). ``use_scan=True`` runs the stack via ``lax.scan`` (faster compile).
 
-    ``subsample_msa`` caps the MSA depth at ``num_subsampled_msa`` (default 1024)
-    by taking the first rows, matching the Boltz CLI's inference-time MSA
-    subsampling (Boltz draws a random 1024 subset per call; AF3 takes the first
-    1024 deterministically — we follow AF3's deterministic truncation, which is
-    reproducible and keeps the highest-ranked rows). Cuts MSA-module cost ~Nx for
-    deep MSAs.
+    ``subsample_msa`` caps the MSA depth at ``num_subsampled_msa`` (default
+    1024), which is what `boltz predict` does -- it overrides its own
+    ``MSAModuleArgs`` default and passes ``subsample_msa=True`` (``main.py``),
+    so upstream is subsampling on every run.
+
+    ``msa_key`` selects *which* rows. Upstream draws a fresh
+    ``torch.randperm(n_msa)[:1024]`` inside every forward pass
+    (``trunkv2.py``), so across a recycled trunk it sees a different slice of
+    the alignment each pass and effectively ensembles over the whole thing.
+    Passing a key reproduces that; passing ``None`` keeps the first
+    ``num_subsampled_msa`` rows, which is deterministic and reproducible but is
+    *not* what upstream computes -- with 2,372 rows and eleven passes it shows
+    the model the same top 1,024 eleven times instead of most of the alignment.
     """
 
     # Equivalent to one_hot(msa, num_tokens) @ kernel[:num_tokens] but without
@@ -71,12 +79,15 @@ def msa_module_forward(
     msa_paired = feats["msa_paired"]
     msa_mask = feats["msa_mask"]
     if subsample_msa and msa_d.shape[1] > num_subsampled_msa:
-        sl = slice(0, num_subsampled_msa)
-        msa_d = msa_d[:, sl]
-        has_del = has_del[:, sl]
-        del_val = del_val[:, sl]
-        msa_paired = msa_paired[:, sl]
-        msa_mask = msa_mask[:, sl]
+        if msa_key is None:
+            rows = jnp.arange(num_subsampled_msa)
+        else:
+            rows = jax.random.permutation(msa_key, msa_d.shape[1])[:num_subsampled_msa]
+        msa_d = jnp.take(msa_d, rows, axis=1)
+        has_del = jnp.take(has_del, rows, axis=1)
+        del_val = jnp.take(del_val, rows, axis=1)
+        msa_paired = jnp.take(msa_paired, rows, axis=1)
+        msa_mask = jnp.take(msa_mask, rows, axis=1)
     msa_idx = msa_d.astype(jnp.int32)
     extra = jnp.stack((has_del, del_val, msa_paired), axis=-1).astype(
         kernel_extra.dtype

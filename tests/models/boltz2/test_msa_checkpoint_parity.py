@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -72,6 +73,63 @@ def test_masked_msa_depth_padding_preserves_jax_output(
     np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=2e-5)
 
 
+def test_msa_subsample_without_a_key_takes_the_first_rows(
+    checkpoint_state: dict[str, torch.Tensor],
+) -> None:
+    """`msa_key=None` is plain truncation, which is what it must stay."""
+
+    params = map_msa_module_state_dict(checkpoint_state, PREFIX, num_layers=2)
+    z, emb, feats_torch = _msa_inputs()
+    feats = _jax_feats(feats_torch)
+    z_jax, emb_jax = jnp.asarray(z.numpy()), jnp.asarray(emb.numpy())
+
+    actual = msa_module_forward(
+        params, z_jax, emb_jax, feats, subsample_msa=True, num_subsampled_msa=2
+    )
+    truncated = dict(feats)
+    for key in ("msa", "has_deletion", "deletion_value", "msa_paired", "msa_mask"):
+        truncated[key] = feats[key][:, :2]
+    expected = msa_module_forward(params, z_jax, emb_jax, truncated)
+
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=2e-5)
+
+
+def test_msa_subsample_with_a_key_draws_a_different_slice_per_key(
+    checkpoint_state: dict[str, torch.Tensor],
+) -> None:
+    """Upstream re-draws its 1,024 rows inside every forward pass.
+
+    `boltz predict` overrides its own `MSAModuleArgs` default to
+    `subsample_msa=True`, and `MSAModule.forward` then calls
+    `torch.randperm(n_msa)[:1024]` -- a *different* slice each pass, so a
+    recycled trunk ensembles over the whole alignment. Taking the top rows
+    every pass instead shows the model the same 1,024 sequences eleven times,
+    and on a 2,372-row alignment that cost ~0.13 of complex_plddt against
+    upstream. Two keys must therefore disagree, and neither may equal
+    truncation.
+    """
+
+    params = map_msa_module_state_dict(checkpoint_state, PREFIX, num_layers=2)
+    # The module sums over MSA rows, so only the *set* of rows matters. With a
+    # handful of rows two independent draws collide often enough to make this
+    # test flaky, so give it enough to choose from.
+    z, emb, feats_torch = _msa_inputs(msa_rows=24)
+    feats = _jax_feats(feats_torch)
+    z_jax, emb_jax = jnp.asarray(z.numpy()), jnp.asarray(emb.numpy())
+    kwargs = dict(subsample_msa=True, num_subsampled_msa=8)
+
+    left = msa_module_forward(
+        params, z_jax, emb_jax, feats, msa_key=jax.random.PRNGKey(0), **kwargs
+    )
+    right = msa_module_forward(
+        params, z_jax, emb_jax, feats, msa_key=jax.random.PRNGKey(7), **kwargs
+    )
+    first_rows = msa_module_forward(params, z_jax, emb_jax, feats, **kwargs)
+
+    assert not np.allclose(np.asarray(left), np.asarray(right), atol=1e-6)
+    assert not np.allclose(np.asarray(left), np.asarray(first_rows), atol=1e-6)
+
+
 def test_pair_weighted_averaging_preserves_bfloat16_activation_dtype() -> None:
     rng = np.random.default_rng(0)
     c_m, c_z, heads, c_h = 8, 12, 4, 3
@@ -128,9 +186,10 @@ def _load_torch_msa_module(
     return module
 
 
-def _msa_inputs() -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+def _msa_inputs(
+    msa_rows: int = 3,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     tokens = 4
-    msa_rows = 3
     z = torch.linspace(-0.1, 0.1, steps=tokens * tokens * 128).reshape(
         1, tokens, tokens, 128
     )
