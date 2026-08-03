@@ -203,6 +203,46 @@ def test_msa_block_hands_each_sub_update_the_right_tensor(monkeypatch) -> None:
     assert float(jnp.sum(out_z)) == 7.0 * z.size
 
 
+def test_msa_block_reverses_the_order_for_opendde(monkeypatch) -> None:
+    """`msa_stack_first=True` is OpenDDE's order, and OpenDDE shares this module.
+
+    Protenix runs the communication first; OpenDDE runs the MSA stack first and
+    says so in its own source -- "Boltz updates MSA first, then writes the
+    refreshed MSA state back to z". Both orders preserve every shape, so a port
+    that hands one model the other's ordering fails nothing: it just computes a
+    different trunk. That is what happened when this module was corrected for
+    Protenix while OpenDDE went on calling it -- OpenDDE's pair representation
+    fell to a correlation of 0.47 with upstream's, and its structures moved
+    31.5 A on a matched random tape, while every confidence score it reports
+    stayed within 1% of upstream's.
+    """
+
+    calls = _recording_msa_block(monkeypatch)
+    params = MSABlockParams(
+        outer_product_mean=object(),
+        msa_pair_weighted_averaging=object(),
+        msa_transition=object(),
+        pair_stack=object(),
+    )
+    m = jnp.ones((2, 3, 4), dtype=jnp.float32)
+    z = jnp.zeros((3, 3, 4), dtype=jnp.float32)
+
+    out_m, out_z = msa_block(m, z, None, params, msa_stack_first=True)
+
+    assert [name for name, _ in calls] == [
+        "msa_pair_weighted_averaging",
+        "transition",
+        "outer_product_mean",
+        "pair_stack",
+    ]
+    # The MSA stack sees the `z` the block was handed, still zeros...
+    assert calls[0][1] == 0.0
+    # ...and the outer product mean sees the `m` that stack just produced.
+    assert calls[2][1] == float(jnp.sum(m)) + (30.0 + 500.0) * m.size
+    assert float(jnp.sum(out_m)) == float(jnp.sum(m)) + (30.0 + 500.0) * m.size
+    assert float(jnp.sum(out_z)) == 7.0 * z.size
+
+
 def test_msa_block_final_block_skips_the_msa_stack(monkeypatch) -> None:
     """Protenix drops the MSA path from the last block and returns no `m`."""
 

@@ -200,31 +200,50 @@ def msa_block(
     params: MSABlockParams,
     *,
     msa_mask: jnp.ndarray | None = None,
+    msa_stack_first: bool = False,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
 ) -> tuple[jnp.ndarray | None, jnp.ndarray]:
-    """Apply one inference-mode Protenix MSA block."""
+    """Apply one inference-mode MSA block of the Protenix family.
+
+    ``msa_stack_first`` picks between the two orderings this family uses, and
+    they are not interchangeable: whichever runs second reads the other's
+    output. Protenix runs the communication first (Algorithm 8 lines 6-13), so
+    the outer product mean sees the MSA representation the block was handed and
+    the MSA stack sees the pair representation that mean just produced. OpenDDE
+    reverses it, deliberately and with a comment saying so -- "Boltz updates MSA
+    first, then writes the refreshed MSA state back to z" -- which is also what
+    Boltz-2's own module does.
+
+    Both shapes are identical, so nothing fails when this is wrong; the trunk
+    simply converges to a different state, and since it recycles that state the
+    error compounds. Getting it backwards cost Protenix an order of magnitude on
+    `z` per cycle, and cost OpenDDE a pair representation that correlates 0.47
+    with upstream's.
+    """
 
     if m is None:
         raise ValueError("MSABlock requires m before the final block output")
-    # Algorithm 8 lines 6-13, in Protenix's order: communication first, then the
-    # MSA stack, then the pair stack. The two are not interchangeable -- the
-    # outer product mean has to read the MSA representation this block was
-    # handed, and the MSA stack has to read the pair representation that mean
-    # just updated. Running them the other way round feeds each the other's
-    # output, and because the trunk recycles its own state the error compounds:
-    # `z` grew by an order of magnitude per cycle instead of converging.
-    z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
-    if params.msa_pair_weighted_averaging is not None:
+
+    def msa_stack(m_in: jnp.ndarray, z_in: jnp.ndarray) -> jnp.ndarray:
+        if params.msa_pair_weighted_averaging is None:
+            return m_in
         if params.msa_transition is None:
             raise ValueError("missing MSA transition for non-final MSA block")
-        m = m + msa_pair_weighted_averaging(
-            m,
-            z,
+        m_out = m_in + msa_pair_weighted_averaging(
+            m_in,
+            z_in,
             params.msa_pair_weighted_averaging,
         )
-        m = m + transition(m, params.msa_transition)
+        return m_out + transition(m_out, params.msa_transition)
+
+    if msa_stack_first:
+        m = msa_stack(m, z)
+        z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
+    else:
+        z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
+        m = msa_stack(m, z)
     _, z = pairformer_block(
         None,
         z,
@@ -250,6 +269,7 @@ def msa_module(
     triangle_att_q_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
     use_scan: bool = True,
+    msa_stack_first: bool = False,
 ) -> jnp.ndarray:
     """Apply Protenix ``MSAModule`` to already-materialized MSA features.
 
@@ -281,6 +301,7 @@ def msa_module(
 
     settings = dict(
         msa_mask=msa_mask,
+        msa_stack_first=msa_stack_first,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
         triangle_attention_backend=triangle_attention_backend,

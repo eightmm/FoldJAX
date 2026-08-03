@@ -432,6 +432,13 @@ def opendde_infer_static(
         single_attention_backend=trunk_single_attention_backend,
         triangle_attention_backend=trunk_triangle_attention_backend,
         cycle_msa_features=cycle_msa_features,
+        # OpenDDE's MSA block runs the MSA stack before the communication, the
+        # reverse of Protenix's, whose trunk function this shares. Its own
+        # source says why: "Boltz updates MSA first, then writes the refreshed
+        # MSA state back to z". Both orders preserve every shape, so taking
+        # Protenix's here cost a pair representation that correlated 0.47 with
+        # upstream's while every score still matched to within 1%.
+        msa_stack_first=True,
     )
 
     (

@@ -46,7 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repo",
         type=Path,
-        default=Path("/home/jaemin/non-project/optimizing/OpenDDE"),
+        default=Path(__file__).resolve().parents[5] / "OpenDDE",
+        help="upstream OpenDDE checkout; defaults to a sibling of this repo",
     )
     return parser.parse_args()
 

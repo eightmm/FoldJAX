@@ -130,6 +130,7 @@ def pairformer_output_from_s_inputs(
     triangle_attention_backend: str | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     use_cycle_scan: bool = True,
+    msa_stack_first: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Apply Protenix trunk from precomputed ``InputFeatureEmbedder`` output.
 
@@ -226,6 +227,7 @@ def pairformer_output_from_s_inputs(
             s_inputs,
             pair_mask,
             params.msa,
+            msa_stack_first=msa_stack_first,
             triangle_mul_chunk_size=triangle_mul_chunk_size,
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             triangle_attention_backend=triangle_attention_backend,

@@ -408,3 +408,25 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
     assert actual["plddt"].shape == (1, 3, 2)
     assert "PROTENIX_TRIANGLE_BACKEND" not in os.environ
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND" not in os.environ
+
+
+def test_opendde_trunk_requests_its_own_msa_ordering() -> None:
+    """OpenDDE must ask the shared trunk for the MSA-stack-first order.
+
+    The trunk function comes from the Protenix port, whose model runs the two
+    MSA sub-updates the other way round. Nothing about the shapes distinguishes
+    them, so this is the only place the difference is stated, and getting it
+    wrong is silent: it cost OpenDDE a pair representation correlating 0.47
+    with upstream's and 31.5 A of coordinate error on a matched random tape,
+    while every confidence score stayed within 1% of upstream's.
+    """
+
+    import inspect
+
+    from foldjax.models.opendde.models import model as opendde_model
+
+    source = inspect.getsource(opendde_model)
+    trunk_call = source.split("pairformer_output_from_s_inputs(", 1)[1].split(
+        "\n    )", 1
+    )[0]
+    assert "msa_stack_first=True" in trunk_call
