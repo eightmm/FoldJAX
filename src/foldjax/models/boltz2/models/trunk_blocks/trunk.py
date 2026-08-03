@@ -753,12 +753,18 @@ def boltz2_trunk_forward(
     subsample_msa: bool = False,
     num_subsampled_msa: int = 1024,
     msa_key: jnp.ndarray | None = None,
+    msa_rows: jnp.ndarray | None = None,
     mesh: object | None = None,
     token_axis: str = "tok",
     shard_tokens: bool = True,
     use_template: bool | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Run the non-template Boltz-2 trunk in eval mode.
+
+    ``msa_rows`` is the per-pass MSA subsample injection point, shape
+    ``[recycling_steps + 1, num_subsampled_msa]``; it overrides ``msa_key`` so
+    a parity harness can replay the row draws upstream made. ``None``
+    (default) is inert.
 
     OPT-IN multi-device sharding. With ``mesh=None`` (DEFAULT) no sharding
     constraints are emitted and the path is bit-identical to before. When
@@ -847,7 +853,10 @@ def boltz2_trunk_forward(
     use_template = bool(use_template) and "template_module" in params
 
     def _recycle_step(
-        s: jnp.ndarray, z: jnp.ndarray, step_key: jnp.ndarray | None
+        s: jnp.ndarray,
+        z: jnp.ndarray,
+        step_key: jnp.ndarray | None,
+        step_rows: jnp.ndarray | None = None,
     ) -> tuple[jnp.ndarray, ...]:
         s = s_init + _linear(
             _layer_norm(
@@ -899,6 +908,7 @@ def boltz2_trunk_forward(
             subsample_msa=subsample_msa,
             num_subsampled_msa=num_subsampled_msa,
             msa_key=step_key,
+            msa_rows=step_rows,
         )
         s, z = pairformer_module_forward(
             params["pairformer_module"],
@@ -932,20 +942,35 @@ def boltz2_trunk_forward(
     step_keys = (
         jax.random.split(msa_key, recycling_steps + 1) if msa_key is not None else None
     )
+    step_rows = None
+    if msa_rows is not None:
+        step_rows = jnp.asarray(msa_rows, dtype=jnp.int32)
+        if step_rows.ndim != 2 or step_rows.shape[0] != recycling_steps + 1:
+            raise ValueError(
+                "msa_rows must have shape [recycling_steps + 1, "
+                f"num_subsampled_msa], got {step_rows.shape} for "
+                f"{recycling_steps + 1} passes"
+            )
     if use_scan:
 
-        def _scan_body(carry, step_key):
-            return _recycle_step(*carry, step_key), None
+        def _scan_body(carry, xs):
+            step_key, step_row = xs
+            return _recycle_step(*carry, step_key, step_row), None
 
         (s, z), _ = jax.lax.scan(
             _scan_body,
             (s, z),
-            xs=step_keys,
+            xs=(step_keys, step_rows),
             length=recycling_steps + 1,
         )
     else:
         for cycle in range(recycling_steps + 1):
-            s, z = _recycle_step(s, z, None if step_keys is None else step_keys[cycle])
+            s, z = _recycle_step(
+                s,
+                z,
+                None if step_keys is None else step_keys[cycle],
+                None if step_rows is None else step_rows[cycle],
+            )
 
     return {
         "s_inputs": s_inputs,

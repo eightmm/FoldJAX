@@ -130,6 +130,64 @@ def test_msa_subsample_with_a_key_draws_a_different_slice_per_key(
     assert not np.allclose(np.asarray(left), np.asarray(first_rows), atol=1e-6)
 
 
+def test_msa_subsample_with_explicit_rows_replays_that_exact_gather(
+    checkpoint_state: dict[str, torch.Tensor],
+) -> None:
+    """`msa_rows` is the matched-tape injection point, so it must be exact.
+
+    The parity harness records upstream's `torch.randperm(n_msa)[:k]` and hands
+    the indices back here. If this path selected anything but those rows the
+    two trunks would read different alignments, and no amount of matched
+    sampler noise could then make their coordinates agree -- the comparison
+    would silently measure the wrong thing. It also has to beat `msa_key`,
+    which the production path always supplies.
+    """
+
+    params = map_msa_module_state_dict(checkpoint_state, PREFIX, num_layers=2)
+    z, emb, feats_torch = _msa_inputs(msa_rows=24)
+    feats = _jax_feats(feats_torch)
+    z_jax, emb_jax = jnp.asarray(z.numpy()), jnp.asarray(emb.numpy())
+    rows = jnp.asarray([19, 3, 11, 0, 23, 7, 15, 2], dtype=jnp.int32)
+
+    actual = msa_module_forward(
+        params,
+        z_jax,
+        emb_jax,
+        feats,
+        subsample_msa=True,
+        num_subsampled_msa=int(rows.size),
+        msa_key=jax.random.PRNGKey(0),
+        msa_rows=rows,
+    )
+    gathered = dict(feats)
+    for key in ("msa", "has_deletion", "deletion_value", "msa_paired", "msa_mask"):
+        gathered[key] = jnp.take(feats[key], rows, axis=1)
+    expected = msa_module_forward(params, z_jax, emb_jax, gathered)
+
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=2e-5)
+
+
+def test_msa_rows_of_the_wrong_length_is_rejected(
+    checkpoint_state: dict[str, torch.Tensor],
+) -> None:
+    """A short row list would silently shrink the alignment; refuse it."""
+
+    params = map_msa_module_state_dict(checkpoint_state, PREFIX, num_layers=2)
+    z, emb, feats_torch = _msa_inputs(msa_rows=24)
+    feats = _jax_feats(feats_torch)
+
+    with pytest.raises(ValueError, match="msa_rows"):
+        msa_module_forward(
+            params,
+            jnp.asarray(z.numpy()),
+            jnp.asarray(emb.numpy()),
+            feats,
+            subsample_msa=True,
+            num_subsampled_msa=8,
+            msa_rows=jnp.arange(4, dtype=jnp.int32),
+        )
+
+
 def test_pair_weighted_averaging_preserves_bfloat16_activation_dtype() -> None:
     rng = np.random.default_rng(0)
     c_m, c_z, heads, c_h = 8, 12, 4, 3

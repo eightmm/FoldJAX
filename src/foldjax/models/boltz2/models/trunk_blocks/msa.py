@@ -41,6 +41,7 @@ def msa_module_forward(
     subsample_msa: bool = False,
     num_subsampled_msa: int = 1024,
     msa_key: jnp.ndarray | None = None,
+    msa_rows: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run Boltz MSAModule.
 
@@ -48,9 +49,10 @@ def msa_module_forward(
     latency). ``use_scan=True`` runs the stack via ``lax.scan`` (faster compile).
 
     ``subsample_msa`` caps the MSA depth at ``num_subsampled_msa`` (default
-    1024), which is what `boltz predict` does -- it overrides its own
-    ``MSAModuleArgs`` default and passes ``subsample_msa=True`` (``main.py``),
-    so upstream is subsampling on every run.
+    1024). ``MSAModuleArgs`` defaults it to False and `boltz predict` declares
+    ``--subsample_msa`` as a click flag, which defaults to False whatever the
+    Python signature says -- so upstream subsamples only when that flag is
+    given.
 
     ``msa_key`` selects *which* rows. Upstream draws a fresh
     ``torch.randperm(n_msa)[:1024]`` inside every forward pass
@@ -60,6 +62,12 @@ def msa_module_forward(
     ``num_subsampled_msa`` rows, which is deterministic and reproducible but is
     *not* what upstream computes -- with 2,372 rows and eleven passes it shows
     the model the same top 1,024 eleven times instead of most of the alignment.
+
+    ``msa_rows`` overrides the draw with explicit row indices and takes
+    precedence over ``msa_key``. It exists so a matched-tape parity harness can
+    hand this module the very permutation upstream drew: without it the two
+    trunks read different alignment rows and their coordinates cannot agree no
+    matter how well the sampler is matched. ``None`` (default) is inert.
     """
 
     # Equivalent to one_hot(msa, num_tokens) @ kernel[:num_tokens] but without
@@ -79,7 +87,14 @@ def msa_module_forward(
     msa_paired = feats["msa_paired"]
     msa_mask = feats["msa_mask"]
     if subsample_msa and msa_d.shape[1] > num_subsampled_msa:
-        if msa_key is None:
+        if msa_rows is not None:
+            rows = jnp.asarray(msa_rows, dtype=jnp.int32)
+            if rows.ndim != 1 or rows.shape[0] != num_subsampled_msa:
+                raise ValueError(
+                    f"msa_rows must be {num_subsampled_msa} row indices, got "
+                    f"shape {rows.shape}"
+                )
+        elif msa_key is None:
             rows = jnp.arange(num_subsampled_msa)
         else:
             rows = jax.random.permutation(msa_key, msa_d.shape[1])[:num_subsampled_msa]

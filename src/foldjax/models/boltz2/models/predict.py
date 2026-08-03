@@ -60,7 +60,14 @@ def boltz2_predict(
     affinity_params: Params | None = None,
     affinity_mw_correction: bool = False,
     eps: float = 1e-5,
-    subsample_msa: bool = True,
+    # `boltz predict` does NOT subsample. Its `--subsample_msa` is a click flag
+    # (`is_flag=True`, so `Option.default is False`), and click passes its own
+    # value regardless of the `= True` in the callback's Python signature --
+    # which is what an earlier reading of `main.py` took for the default.
+    # Verified at runtime: no `torch.randperm` reaches `MSAModule.forward` on
+    # the shipped CLI path. Upstream reads the whole alignment, so this does
+    # too.
+    subsample_msa: bool = False,
     num_subsampled_msa: int = 1024,
     **sample_kwargs: object,
 ) -> dict[str, object]:
