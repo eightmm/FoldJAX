@@ -29,6 +29,31 @@ COMPONENTS = ASSETS / "components.cif"
 RDKIT_CACHE = ASSETS / "components.cif.rdkit_mol.pkl"
 
 
+def _cuda_home(repo: Path) -> Path | None:
+    """The pip-installed CUDA toolkit inside ``repo``'s virtualenv, if any.
+
+    torch ships the CUDA *runtime* as `nvidia/cu13`, but not the compiler, so
+    an extension built on first use fails with "CUDA_HOME environment variable
+    is not set". Installing `nvidia-cuda-nvcc` and `nvidia-cuda-cccl` at the
+    same CUDA version into that virtualenv completes the toolkit in place,
+    without touching the system or the other environments.
+    """
+    for lib in sorted(repo.glob(".venv/lib/python3.*/site-packages/nvidia/cu13")):
+        if (lib / "bin" / "nvcc").is_file():
+            return lib
+    return None
+
+
+def _toolkit_env(repo: Path) -> dict[str, str]:
+    """CUDA_HOME and a PATH that finds nvcc, when the toolkit is present."""
+    home = _cuda_home(repo)
+    if home is None:
+        # No compiler: fall back to the pure-torch layer norm so the run
+        # happens at all, and let the report note it is not upstream's default.
+        return {"LAYERNORM_TYPE": "torch"}
+    return {"CUDA_HOME": str(home), "_BENCH_CUDA_BIN": str(home / "bin")}
+
+
 def _protenix_family(
     repo: Path, checkpoint_flag: list[str], job: Path, out: Path, schedule, seed
 ) -> list[str]:
@@ -108,14 +133,12 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
             ),
             repo,
             # Upstream's default layer norm is a CUDA extension compiled on
-            # first use, and this machine has CUDA runtime libraries but no
-            # `nvcc`, so it cannot be built: the run dies at import with
-            # "CUDA_HOME environment variable is not set". The pure-PyTorch
-            # fallback is the only way to get a number here, and it is slower
-            # than the fused kernel would be -- so Protenix's upstream time is
-            # an upper bound, and the report says so rather than quietly
-            # crediting FoldJAX for the difference.
-            {"PYTHONPATH": str(repo), "LAYERNORM_TYPE": "torch"},
+            # first use, so it needs a CUDA toolkit. There is no system one
+            # here, but a matching nvcc/CCCL can be installed into the same
+            # virtualenv as the CUDA runtime torch already ships -- see
+            # `_cuda_home`. With that, Protenix runs its own fused kernel and
+            # its time is a real measurement rather than a fallback's.
+            {"PYTHONPATH": str(repo), **_toolkit_env(repo)},
         )
     if model == "opendde":
         repo = ROOT / "OpenDDE"
@@ -241,7 +264,11 @@ def main() -> int:
     # run dies at import. Running upstream on its pure-torch fallback instead
     # would be measuring a different thing than upstream's own default.
     venv_bin = str(Path(argv[0]).parent)
-    environment["PATH"] = f"{venv_bin}:{environment.get('PATH', '')}"
+    # nvcc has to be found by name from inside the build, so its directory goes
+    # on PATH alongside the venv's own bin (which is where ninja lives).
+    cuda_bin = environment.pop("_BENCH_CUDA_BIN", None)
+    prefix = f"{cuda_bin}:{venv_bin}" if cuda_bin else venv_bin
+    environment["PATH"] = f"{prefix}:{environment.get('PATH', '')}"
 
     start = time.perf_counter()
     completed = subprocess.run(

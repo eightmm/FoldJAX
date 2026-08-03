@@ -184,19 +184,21 @@ held, on a 95 GiB card -- then catches the error, writes it to an `ERR/` file
 and exits 0. Taken at its word that was a 12-second run that beat everything
 else in the table.
 
-Two caveats, both of which flatter FoldJAX and neither of which is removable
-here without changing another project's environment:
+Every upstream runs on its own fast path. Two of them did not at first, and
+both differences were large enough to change the conclusions rather than shade
+them -- see `bench/upstream-environments.md`:
 
-* Upstream Protenix runs with `LAYERNORM_TYPE=torch`. Its default layer norm is
-  a CUDA extension built on first use, and this host has the CUDA runtime
-  libraries but no `nvcc`, so the build fails at import. Its upstream time is
-  an upper bound.
-* Upstream OpenDDE has no `cuequivariance` installed, so its `auto` triangle
-  kernels resolve to the plain-torch path, which materialises the triangle
-  tensors it would otherwise fuse. Its upstream *memory* is an upper bound, and
-  the OpenDDE memory ratio in particular should be read as "against an
-  unaccelerated upstream". Boltz-2 and Protenix upstream both have
-  cuEquivariance installed; Chai does not use it.
+* OpenDDE had no `cuequivariance`, so its `auto` triangle kernels fell back to
+  plain torch. Installing the cu13 build took its 490-token peak from 91,191
+  MiB to 18,580 and its time from 117 s to 71 s, and made 970 tokens run at all
+  where it had been an out-of-memory failure.
+* Protenix's fused layer norm is a CUDA extension built on first use, and this
+  host has the CUDA runtime but no compiler. Completing the toolkit inside its
+  own virtualenv, and adding sm_120 to an architecture list that stopped at
+  compute_100, took its 970-token time from 235 s to 94 s.
+
+Boltz-2 and Chai needed nothing: Boltz-2 already had cuEquivariance, and Chai
+does not use it.
 """.rstrip()
 
 

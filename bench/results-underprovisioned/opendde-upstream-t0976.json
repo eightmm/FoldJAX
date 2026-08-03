@@ -1,0 +1,1 @@
+{"case": "t0976", "impl": "upstream", "length": 970, "model": "opendde", "peak_mib": 60566.4, "returncode": 0, "samples": [], "schedule": {"num_recycles": 10, "num_samples": 5, "num_steps": 200}, "seed": 101, "wall_s": 11.97}

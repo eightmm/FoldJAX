@@ -50,19 +50,30 @@ MSA depth is deliberately not pinned: upstream Chai has no depth argument, so
 fixing one would mean FoldJAX doing something its own reference cannot. Both
 sides read the same alignment and apply the same default.
 
-## Caveats that favour FoldJAX
+## Every upstream runs on its own fast path
 
-Neither can be removed here without changing another project's environment, so
-both are stated rather than worked around:
+A comparison against an upstream that is missing its own accelerated paths is
+not a comparison, it is a handicap match. Two of the four arrived incomplete,
+and both differences were large enough to change conclusions rather than shade
+them:
 
-- Upstream Protenix runs with `LAYERNORM_TYPE=torch`. Its default layer norm is
-  a CUDA extension built on first use, and this host has the CUDA runtime
-  libraries but no `nvcc`, so the build fails at import. Its time is an upper
-  bound.
-- Upstream OpenDDE has no `cuequivariance` installed, so its `auto` triangle
-  kernels resolve to the plain-torch path and materialise tensors it would
-  otherwise fuse. Its memory is an upper bound. Boltz-2 and Protenix upstream
-  both have cuEquivariance installed; Chai does not use it.
+- OpenDDE had no `cuequivariance`, so its `auto` triangle kernels fell back to
+  plain torch. Installing the cu13 build took its 490-token peak from 91,191
+  MiB to 18,580 and its time from 117 s to 71 s, and made 970 tokens run at all
+  where it had been an out-of-memory failure that the runner reported as
+  success.
+- Protenix's fused layer norm is a CUDA extension built on first use, and this
+  host has the CUDA runtime but no compiler. Completing the toolkit inside its
+  own virtualenv — and adding sm_120 to an architecture list that stopped at
+  compute_100 — took its 970-token time from 235 s to 94 s.
+
+[`upstream-environments.md`](upstream-environments.md) has the exact commands
+and, more importantly, how to verify each one actually took effect. A kernel
+built for the wrong architecture fails *asynchronously*, so the call returns
+normally and the error surfaces somewhere else entirely.
+
+Boltz-2 and Chai needed nothing: Boltz-2 already had cuEquivariance, and Chai
+does not use it.
 
 ## Running it
 

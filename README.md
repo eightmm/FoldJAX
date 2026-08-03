@@ -146,7 +146,7 @@ schedule and one measurement, see
 OpenDDE is the example worth keeping: it would not run at all before this work,
 asking for 76 GiB on a 488-token job and dying. It now runs that job in about
 10 GiB, and at 490 residues under the released schedule it peaks at 10.5 GiB
-against upstream torch's 91.2 GiB.
+against upstream torch's 18.6 GiB.
 
 Each of the changes below came from reading XLA's buffer assignment for the
 peak and fixing whatever it named — a habit worth more than any individual fix
@@ -420,16 +420,15 @@ same of their upstream, which is what makes the comparison mean anything.
 |---|---|---|---|---|---|---|---|---|---|---|
 | 132 | boltz2 | 14 | 27 | 2,621 | 2,947 | 1.95x | 1.12x | complex_plddt | 0.5750 | 0.7084 |
 | 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
-| 132 | opendde | 70 | 15 | 3,655 | 4,943 | 0.22x | 1.35x | ranking_score | 0.0947 | 0.0958 |
-| 132 | protenix | 16 | 53 | 1,778 | 2,910 | 3.42x | 1.64x | ranking_score | 0.1237 | 0.0997 |
+| 132 | opendde | 70 | 18 | 3,655 | 3,784 | 0.25x | 1.04x | ranking_score | 0.0947 | 0.0957 |
+| 132 | protenix | 16 | 52 | 1,778 | 2,910 | 3.32x | 1.64x | ranking_score | 0.1237 | 0.0997 |
 | 490 | boltz2 | 40 | 53 | 4,585 | 8,128 | 1.34x | 1.77x | complex_plddt | 0.3594 | 0.3629 |
 | 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
-| 490 | opendde | 181 | 117 | 10,552 | 91,191 | 0.65x | 8.64x | ranking_score | 0.0973 | 0.0914 |
-| 490 | protenix | 33 | 62 | 4,647 | 4,481 | 1.88x | 0.96x | ranking_score | 0.1292 | 0.0659 |
+| 490 | opendde | 181 | 71 | 10,552 | 18,580 | 0.39x | 1.76x | ranking_score | 0.0973 | 0.0915 |
+| 490 | protenix | 33 | 60 | 4,647 | 4,481 | 1.83x | 0.96x | ranking_score | 0.1292 | 0.0659 |
 | 970 | boltz2 | 132 | 127 | 9,820 | 14,211 | 0.96x | 1.45x | complex_plddt | 0.5312 | 0.5408 |
 | 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
-| 970 | opendde | 537 | failed | 34,411 | failed | - | - | - | - | - |
-| 970 | protenix | 98 | 235 | 10,795 | 12,315 | 2.39x | 1.14x | ranking_score | 0.1749 | 0.0832 |
+| 970 | opendde | 537 | 265 | 34,411 | 59,755 | 0.49x | 1.74x | ranking_score | 0.0963 | 0.0966 |
 
 Read it with the method in mind:
 
@@ -451,46 +450,48 @@ Read it with the method in mind:
   numerical parity was established per port against a matched tape and is a
   separate exercise from this table.
 
-Two caveats flatter FoldJAX, and neither can be removed without changing
-another project's environment:
-
-- Upstream Protenix runs with `LAYERNORM_TYPE=torch`, because its default layer
-  norm is a CUDA extension built on first use and this host has the CUDA
-  runtime but no `nvcc`. Its time is an upper bound.
-- Upstream OpenDDE has no `cuequivariance` installed, so its `auto` triangle
-  kernels resolve to the plain-torch path and materialise tensors it would
-  otherwise fuse. Its memory is an upper bound, and the OpenDDE memory ratio
-  should be read as "against an unaccelerated upstream". Boltz-2 and Protenix
-  upstream both have it; Chai does not use it.
+**Every upstream runs on its own fast path.** Two of them did not at first, and
+the differences were large enough to change conclusions rather than shade them,
+so they were fixed rather than disclosed:
+[`bench/upstream-environments.md`](bench/upstream-environments.md) records what
+each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
 
 ### What the table says
 
-- **Boltz-2, Chai and Protenix are faster than their upstream everywhere except
-  Boltz-2 at 970 tokens**, where they are level (132 s against 127 s). Protenix
-  is 1.9x–3.4x faster.
-- **They use less memory everywhere except two cells**: Chai at 970 tokens
-  (17,185 against 15,080, so 14% more) and Protenix at 490 (4,647 against
-  4,481, 4% more). Everywhere else FoldJAX is between 1.1x and 2.8x lower.
-- **OpenDDE at 970 tokens runs in FoldJAX and does not run upstream at all.**
-  Upstream asks for 40.8 GiB of triangle-attention softmax on top of 58.5 GiB
-  already held on a 95 GiB card and dies; FoldJAX does the same job in 34.4
-  GiB. Where upstream does fit, it is still faster than FoldJAX (117 s against
-  181 s at 490 tokens).
-- **OpenDDE was the one model slower than its own upstream, and most of that is
-  now gone.** Its sampler ran a Python loop over the diffusion steps, so the
-  released 200-step schedule put 200 copies of the denoiser into one graph.
-  Rolling it into `lax.scan` took the 132-token job from 682 s to 70 s and from
-  5,922 MiB to 3,655 — a 9.7x speed-up found by this table and fixed because of
-  it.
-- **Confidence agrees for Boltz-2 and Chai.** Chai's aggregate score matches to
-  four decimals at all three sizes; Boltz-2 agrees within 2% at 490 and 970 and
-  differs at 132, which is the smallest and least converged job.
-- **Protenix's confidence does not agree and is not yet explained.** FoldJAX
-  reports pTM 0.61 / 0.64 / 0.87 where upstream reports 0.50 / 0.33 / 0.42, and
-  pLDDT moves in both directions. That is too consistent to be sample variance,
-  so the Protenix confidence columns should be read as an open question rather
-  than as agreement. It is being tracked; the timing and memory columns are
+- **FoldJAX uses less memory almost everywhere.** The exceptions are Chai at
+  970 tokens (17,185 against 15,080, 14% more) and Protenix at 490 (4,647
+  against 4,481, 4% more). Elsewhere it is 1.04x to 2.79x lower, and the
+  advantage grows with size for Boltz-2 and OpenDDE.
+- **On speed it wins at small and mid sizes and converges at large.** Boltz-2
+  and Protenix are 1.3x-3.3x faster at 132 and 490 tokens and level with
+  upstream at 970. Chai is faster at every size and pulls further ahead as the
+  job grows (1.46x at 970).
+- **OpenDDE is the one model slower than its upstream**, by 2x-4x at every
+  size, while using 1.7x less memory at 490 and 970. That is the remaining gap.
+- **Confidence agrees for Boltz-2, Chai and OpenDDE.** Chai matches to four
+  decimals at all three sizes, OpenDDE to within 1%, Boltz-2 within 2% at 490
+  and 970. **Protenix does not**: it reports pTM 0.61 / 0.64 / 0.87 where
+  upstream reports 0.50 / 0.33 / 0.42. Rebuilding upstream's fused layer norm
+  did not move it, so the layer norm is not the cause. Read the Protenix
+  confidence columns as an open question; the timing and memory columns are
   unaffected.
+
+### Two earlier claims retracted
+
+Both came from an upstream that was not running its own fast path, and both
+were corrected by fixing the environment rather than by reinterpreting the
+numbers. See [`bench/upstream-environments.md`](bench/upstream-environments.md).
+
+- **"OpenDDE at 970 tokens runs in FoldJAX and cannot run upstream at all."**
+  Not true. Upstream had no `cuequivariance`, so its `auto` triangle kernels
+  fell back to plain torch and it ran out of memory. With the cu13 build
+  installed it completes in 265 s at 59,755 MiB — its 490-token peak also fell
+  from 91,191 MiB to 18,580. FoldJAX still uses 1.7x less memory there, but the
+  "cannot run" claim was about the environment, not the model.
+- **"Protenix is 1.9x-3.4x faster."** At 970 tokens it is level. Upstream's
+  fused layer norm is a CUDA extension this host could not build, and its
+  architecture list stopped one generation before this GPU; with both fixed,
+  upstream's 970-token time went from 235 s to 94 s against FoldJAX's 98 s.
 
 `alphafold3` has no upstream column: FoldJAX drives the AlphaFold 3
 installation you provide rather than reimplementing the model, so both columns
