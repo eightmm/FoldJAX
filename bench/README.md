@@ -109,3 +109,34 @@ exit code.
 `t1531` row, because it is not the same measurement -- upstream has no bf16
 counterpart here, so that number belongs beside a stated dtype and not in a
 column that implies one.
+
+## OpenFold3 has no upstream column, and what it would take
+
+`spec.py` lists `openfold3` in `MODELS` but not in `REIMPLEMENTED`. The FoldJAX
+side can be measured today; the column that would make it a *comparison* cannot,
+and the reason is worth writing down because it is not the obvious one.
+
+Both ingredients are already on this machine: the upstream checkout at
+`../openfold3` and the released `of3_ft3_v1.pt`. What is missing:
+
+1. **No virtualenv.** Upstream installs torch, lightning, awscli, wandb, lmdb,
+   pdbeccdutils, `rdkit<2026` and the rest, and it is built around `pixi`
+   (`pixi.toml`) rather than uv. Every other upstream here is driven through
+   `<repo>/.venv/bin/...`, so this one needs the same shape.
+2. **`run_upstream.command` has no branch for it.**
+3. **The schedule is not expressible on the command line.** This is the part
+   that makes it more than provisioning. `run_openfold` exposes
+   `--num-diffusion-samples` and `--num-model-seeds`, but recycles and rollout
+   steps are not flags: they live in the `--runner-yaml` under `model_update` /
+   `presets`, and `model_config.py:176` defaults `num_recycles` to 3 -- not the
+   10 this directory's schedule requires.
+
+So a run that *looks* configured would quietly compare 10 recycles against 3.
+That is exactly the failure this repository has already retracted two claims
+over, and the reason `REIMPLEMENTED` is a separate list from `MODELS` rather
+than a convenience.
+
+Whoever picks this up: get the `model_update` key path right first and prove it
+took effect -- read the resolved config back out of the run, do not infer it
+from the YAML you passed -- then provision, then measure. A row that cannot be
+trusted is worse than the blank one it replaces.
