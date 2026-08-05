@@ -119,11 +119,13 @@ from foldjax.models.chai.models.msa import (
 )
 from foldjax.models.chai.models.pairformer import (
     _triangle_attention_backend,
+    _triangle_multiplication_backend,
     attention_pair_bias,
     fused_triangle_attention_bias,
     fused_triangle_attention_direction,
     fused_triangle_attention_direction_chunk,
     fused_triangle_attention_output,
+    fused_triangle_multiplication,
     fused_triangle_multiplication_direction,
     fused_triangle_multiplication_direction_chunk,
     fused_triangle_multiplication_output,
@@ -753,16 +755,27 @@ def _embed_and_initialize(
         else _compiled_embed_features
     )
     embedded = compiled_embed(features, components.feature_embedding)
-    token_pair_input, token_pair_structure = jnp.split(
-        embedded["TOKEN_PAIR"], 2, axis=-1
+    # Split and bond-add in one program rather than op by op. Written eagerly,
+    # every `jnp.split` and `+` was its own executable, so each result had to
+    # exist beside the operand it came from and the dict kept the originals
+    # alive underneath: measured at 14,353 MiB of live bytes appearing between
+    # the feature embedder and the token embedder, on a stage that owns 24,187
+    # MiB of a 1,531-token run. Traced together, XLA sizes the whole chain at
+    # once and the intermediates never coexist.
+    (
+        token_pair_input,
+        token_pair_structure,
+        atom_input,
+        atom_structure,
+        atom_pair_input,
+        atom_pair_structure,
+    ) = _compiled_split_and_bond(
+        embedded.pop("TOKEN_PAIR"),
+        embedded.pop("ATOM"),
+        embedded.pop("ATOM_PAIR"),
+        _token_bond_feature(prepared),
+        jnp.asarray(components.bond_loss_input_proj["weight"]),
     )
-    atom_input, atom_structure = jnp.split(embedded["ATOM"], 2, axis=-1)
-    atom_pair_input, atom_pair_structure = jnp.split(embedded["ATOM_PAIR"], 2, axis=-1)
-    bond_weight = jnp.asarray(components.bond_loss_input_proj["weight"])
-    bond = _token_bond_feature(prepared) @ jnp.swapaxes(bond_weight, -1, -2)
-    trunk_bond, structure_bond = jnp.split(bond, 2, axis=-1)
-    token_pair_input = token_pair_input + trunk_bond
-    token_pair_structure = token_pair_structure + structure_bond
 
     values = _model_padded_inputs(prepared)
     token_inputs = {
@@ -814,6 +827,36 @@ def _compiled_embed_features(
     features: Mapping[str, jax.Array], params: Mapping[str, jax.Array]
 ) -> Mapping[str, jax.Array]:
     return embed_features(features, params)
+
+
+@jax.jit
+def _compiled_split_and_bond(
+    token_pair: jax.Array,
+    atom: jax.Array,
+    atom_pair: jax.Array,
+    bond_feature: jax.Array,
+    bond_weight: jax.Array,
+) -> tuple[jax.Array, ...]:
+    """Halve the three packed embeddings and add the bond projection.
+
+    `_embed_and_initialize` pops the three out of the embedder's result before
+    calling, so the arguments are their last reference and they are released as
+    soon as this returns. Donating them instead buys nothing -- each output is
+    half its input, so XLA cannot alias, and it says so on every call.
+    """
+    bond = bond_feature @ jnp.swapaxes(bond_weight, -1, -2)
+    trunk_bond, structure_bond = jnp.split(bond, 2, axis=-1)
+    token_pair_input, token_pair_structure = jnp.split(token_pair, 2, axis=-1)
+    atom_input, atom_structure = jnp.split(atom, 2, axis=-1)
+    atom_pair_input, atom_pair_structure = jnp.split(atom_pair, 2, axis=-1)
+    return (
+        token_pair_input + trunk_bond,
+        token_pair_structure + structure_bond,
+        atom_input,
+        atom_structure,
+        atom_pair_input,
+        atom_pair_structure,
+    )
 
 
 @jax.jit
@@ -1017,7 +1060,20 @@ def _chunk_starts(pair, chunk_size):
     return range(0, pair.shape[-2], chunk_size)
 
 
+_compiled_triangle_multiplication = jax.jit(fused_triangle_multiplication)
+
+
 def _chunked_triangle_multiplication(pair, pair_mask, params, chunk_size):
+    # Tiling exists to bound the blocked path's seven pair-sized intermediates.
+    # The fused kernel holds two, so tiling it would only add host round-trips
+    # and concatenations -- and it would run a different arithmetic from the
+    # unchunked branch of the same job, which is how the two gate copies
+    # diverged before.
+    if _triangle_multiplication_backend() == "cueq":
+        output = _compiled_triangle_multiplication(pair, pair_mask, params)
+        jax.block_until_ready(output)
+        return output
+
     output_rows = []
     for start in _chunk_starts(pair, chunk_size):
         size = min(chunk_size, pair.shape[-2] - start)
@@ -1129,18 +1185,27 @@ def _run_msa_pair_block_low_memory(pair, pair_mask, params, *, subchunk_size=Non
         jax.block_until_ready(output)
         return output
 
-    outgoing = _compiled_msa_pair_triangle_outgoing(
-        pair, pair_mask, params.triangle_multiplication
-    )
-    jax.block_until_ready(outgoing)
-    incoming = _compiled_msa_pair_triangle_incoming(
-        pair, pair_mask, params.triangle_multiplication
-    )
-    jax.block_until_ready(incoming)
-    triangle_update = _compiled_msa_pair_triangle_output(
-        pair, outgoing, incoming, params.triangle_multiplication
-    )
-    jax.block_until_ready(triangle_update)
+    if _triangle_multiplication_backend() == "cueq":
+        triangle_update = _compiled_triangle_multiplication(
+            pair, pair_mask, params.triangle_multiplication
+        )
+        jax.block_until_ready(triangle_update)
+    else:
+        # Staging the two directions apart keeps one product alive at a time
+        # instead of both; the fused kernel above never builds either.
+        outgoing = _compiled_msa_pair_triangle_outgoing(
+            pair, pair_mask, params.triangle_multiplication
+        )
+        jax.block_until_ready(outgoing)
+        incoming = _compiled_msa_pair_triangle_incoming(
+            pair, pair_mask, params.triangle_multiplication
+        )
+        jax.block_until_ready(incoming)
+        triangle_update = _compiled_msa_pair_triangle_output(
+            pair, outgoing, incoming, params.triangle_multiplication
+        )
+        jax.block_until_ready(triangle_update)
+        del outgoing, incoming
     transition_first = _compiled_msa_pair_transition_first(pair, params.transition_pair)
     jax.block_until_ready(transition_first)
     transition_second = _compiled_msa_pair_transition_second(
@@ -1211,12 +1276,10 @@ def _run_pairformer_block_low_memory(
     return output
 
 
-def _msa_pair_subchunk_size(token_count: int) -> int | None:
-    if token_count >= 2048 or (
-        token_count >= 1536 and _triangle_attention_backend() == "xla"
-    ):
-        return 512
-    return None
+#: Rows per subchunk once the bounded MSA pair path is on. Wide enough that the
+#: tile loop stays short; narrow enough that the block's eleven pair-sized
+#: intermediates never coexist.
+_MSA_PAIR_SUBCHUNK_ROWS = 512
 
 
 # Chai's pair representation is quadratic in the padded token count, so a
@@ -1236,7 +1299,17 @@ def _pair_bytes(pair: jax.Array) -> int:
     return total
 
 
-def _use_low_memory_pairformer(pair: jax.Array | int) -> bool:
+def _pair_needs_low_memory(pair: jax.Array | int) -> bool:
+    """Whether this pair tensor is large enough to want the bounded paths.
+
+    One predicate for both the MSA pair block and the Pairformer, because they
+    were two and drifted. The byte rule was added here and not there, so on a
+    card with the `cueq` kernel -- the only card big enough to reach these
+    sizes -- a 1,531-token job left the MSA pair block on its unchunked branch,
+    which holds eleven pair-sized intermediates at once and raised the peak by
+    19,399 MiB of a 44,266 MiB run. The token-count clause below is kept for
+    the backend-selection tests, which pass a count rather than a tensor.
+    """
     if isinstance(pair, int):  # token count, kept for the backend-selection tests
         token_count = pair
     else:
@@ -1246,6 +1319,14 @@ def _use_low_memory_pairformer(pair: jax.Array | int) -> bool:
     return token_count >= 2048 or (
         token_count >= 1536 and _triangle_attention_backend() == "xla"
     )
+
+
+def _use_low_memory_pairformer(pair: jax.Array | int) -> bool:
+    return _pair_needs_low_memory(pair)
+
+
+def _msa_pair_subchunk_size(pair: jax.Array | int) -> int | None:
+    return _MSA_PAIR_SUBCHUNK_ROWS if _pair_needs_low_memory(pair) else None
 
 
 def _run_staged_trunk(
@@ -1321,7 +1402,7 @@ def _run_staged_trunk(
                 pair,
                 pair_mask,
                 block.pair,
-                subchunk_size=_msa_pair_subchunk_size(pair.shape[-2]),
+                subchunk_size=_msa_pair_subchunk_size(pair),
             )
         else:
             pair = _compiled_msa_pair(pair, pair_mask, block.pair)

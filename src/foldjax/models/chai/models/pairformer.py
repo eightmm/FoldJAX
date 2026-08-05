@@ -14,18 +14,28 @@ from foldjax.models.chai.models.primitives import layer_norm, linear_bf16
 TRIANGLE_ATTENTION_OUTER_CHUNK_SIZE = 128
 
 
-def _triangle_attention_backend() -> str:
-    configured = os.environ.get("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", "auto")
-    if configured not in {"auto", "xla", "cueq"}:
-        raise ValueError(
-            "CHAI_JAX_TRIANGLE_ATTENTION_BACKEND must be 'auto', 'xla', or 'cueq'"
-        )
-    if configured != "auto":
-        return configured
-    from foldjax.models.chai.models.triangle_cueq import cueq_available
+def _backend(variable: str) -> str:
+    """Resolve one triangle backend from the environment.
 
-    has_gpu = any(device.platform == "gpu" for device in jax.devices())
-    return "cueq" if has_gpu and cueq_available() else "xla"
+    There is deliberately no `auto`. This resolver used to probe for the wheel
+    and fall back to XLA when it could not load, which meant two machines ran
+    two different kernels under one configuration and the only symptom was a
+    number in a benchmark. If the kernel cannot load, the import raises and
+    says so; the blocked path stays reachable, but only by name.
+    """
+
+    configured = os.environ.get(variable, "cueq")
+    if configured not in {"xla", "cueq"}:
+        raise ValueError(f"{variable} must be 'xla' or 'cueq'")
+    return configured
+
+
+def _triangle_attention_backend() -> str:
+    return _backend("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND")
+
+
+def _triangle_multiplication_backend() -> str:
+    return _backend("CHAI_JAX_TRIANGLE_MULTIPLICATION_BACKEND")
 
 
 class PairformerTransitionParams(NamedTuple):
@@ -246,7 +256,27 @@ def fused_triangle_multiplication(
     *,
     lin: LinearFn = linear_bf16,
 ) -> jnp.ndarray:
-    """Return Chai's parallel outgoing+incoming triangle residual update."""
+    """Return Chai's parallel outgoing+incoming triangle residual update.
+
+    The blocked path below materializes seven `[N, N, c_z]` tensors -- four
+    gated projections, two products, and the normalized input -- where the
+    fused kernel keeps only the input and one output per direction. At 1,531
+    tokens with `c_z=256` each of those is 1.2 GiB, which is the whole of this
+    port's memory gap against upstream.
+    """
+
+    if _triangle_multiplication_backend() == "cueq":
+        from foldjax.models.chai.models.triangle_cueq import (
+            cueq_triangle_multiplication_direction,
+        )
+
+        kernel_dtype = jnp.bfloat16 if lin is linear_bf16 else jnp.float32
+        return cueq_triangle_multiplication_direction(
+            z, pair_mask, params, incoming=False, kernel_dtype=kernel_dtype
+        ) + cueq_triangle_multiplication_direction(
+            z, pair_mask, params, incoming=True, kernel_dtype=kernel_dtype
+        )
+
     c_z = z.shape[-1]
     normalized = layer_norm(
         z.astype(jnp.float32),

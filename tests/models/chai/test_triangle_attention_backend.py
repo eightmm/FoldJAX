@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -10,41 +9,63 @@ from foldjax.models.chai import inference
 from foldjax.models.chai.models import pairformer, triangle_cueq
 
 
-def test_triangle_attention_backend_auto_detects_cueq(monkeypatch) -> None:
-    monkeypatch.delenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", raising=False)
-    monkeypatch.setattr(triangle_cueq, "cueq_available", lambda: True)
-    monkeypatch.setattr(
-        pairformer.jax, "devices", lambda: [SimpleNamespace(platform="gpu")]
-    )
+@pytest.mark.parametrize(
+    "resolver, variable",
+    [
+        (pairformer._triangle_attention_backend, "CHAI_JAX_TRIANGLE_ATTENTION_BACKEND"),
+        (
+            pairformer._triangle_multiplication_backend,
+            "CHAI_JAX_TRIANGLE_MULTIPLICATION_BACKEND",
+        ),
+    ],
+)
+def test_both_triangle_backends_default_to_the_fused_kernel(
+    monkeypatch, resolver, variable: str
+) -> None:
+    """No probe, no `auto`, and no device query.
 
-    assert pairformer._triangle_attention_backend() == "cueq"
+    This resolver used to read `auto` and answer from `cueq_available()` plus a
+    device scan, which meant a machine missing the wheel silently ran a
+    different kernel under the same configuration -- two installs, two
+    numerics, one name, and the only symptom a number in a benchmark. The
+    kernel now either loads or raises with the variable to set.
+    """
+    monkeypatch.delenv(variable, raising=False)
+    assert resolver() == "cueq"
 
 
-def test_triangle_attention_backend_auto_falls_back_to_xla(monkeypatch) -> None:
-    monkeypatch.delenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", raising=False)
-    monkeypatch.setattr(triangle_cueq, "cueq_available", lambda: False)
-    monkeypatch.setattr(
-        pairformer.jax, "devices", lambda: [SimpleNamespace(platform="gpu")]
-    )
-
-    assert pairformer._triangle_attention_backend() == "xla"
-
-
-def test_triangle_attention_backend_auto_ignores_cueq_on_cpu(monkeypatch) -> None:
-    monkeypatch.delenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", raising=False)
-    monkeypatch.setattr(triangle_cueq, "cueq_available", lambda: True)
-    monkeypatch.setattr(
-        pairformer.jax, "devices", lambda: [SimpleNamespace(platform="cpu")]
-    )
-
-    assert pairformer._triangle_attention_backend() == "xla"
+@pytest.mark.parametrize(
+    "resolver, variable",
+    [
+        (pairformer._triangle_attention_backend, "CHAI_JAX_TRIANGLE_ATTENTION_BACKEND"),
+        (
+            pairformer._triangle_multiplication_backend,
+            "CHAI_JAX_TRIANGLE_MULTIPLICATION_BACKEND",
+        ),
+    ],
+)
+def test_the_blocked_path_is_still_reachable_by_name(
+    monkeypatch, resolver, variable: str
+) -> None:
+    """`cueq` is a default, not a lock -- a card that cannot fit it needs a way out."""
+    monkeypatch.setenv(variable, "xla")
+    assert resolver() == "xla"
 
 
 def test_triangle_attention_backend_rejects_invalid_value(monkeypatch) -> None:
     monkeypatch.setenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", "invalid")
 
-    with pytest.raises(ValueError, match="must be 'auto', 'xla', or 'cueq'"):
+    with pytest.raises(ValueError, match="must be 'xla' or 'cueq'"):
         pairformer._triangle_attention_backend()
+
+
+def test_no_availability_probe_survives_anywhere(monkeypatch) -> None:
+    """The probe is gone from the module, not merely unused by the resolver.
+
+    Leaving `cueq_available` importable is how the fallback comes back: the
+    next site that wants to be helpful calls it.
+    """
+    assert not hasattr(triangle_cueq, "cueq_available")
 
 
 def test_high_size_xla_host_chunk_is_bounded(monkeypatch) -> None:
@@ -56,9 +77,17 @@ def test_high_size_xla_host_chunk_is_bounded(monkeypatch) -> None:
 
 def test_high_size_cueq_keeps_requested_host_chunk(monkeypatch) -> None:
     monkeypatch.setenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", "cueq")
-    monkeypatch.setattr(triangle_cueq, "cueq_available", lambda: True)
 
     assert inference._triangle_attention_host_chunk_size(512) == 512
+
+
+def _pair_of(tokens: int, channels: int):
+    """A stand-in for a pair tensor, sized but never allocated.
+
+    Both gates read only `.shape` and `.dtype`, and the tensors in question run
+    to gigabytes, so a description of one is enough and a test can afford it.
+    """
+    return jax.ShapeDtypeStruct((1, tokens, tokens, channels), jnp.float32)
 
 
 def test_1536_xla_selects_fully_bounded_pair_paths(monkeypatch) -> None:
@@ -68,12 +97,48 @@ def test_1536_xla_selects_fully_bounded_pair_paths(monkeypatch) -> None:
     assert inference._use_low_memory_pairformer(1536)
 
 
-def test_1536_cueq_keeps_faster_full_pairformer(monkeypatch) -> None:
-    monkeypatch.setenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", "cueq")
-    monkeypatch.setattr(triangle_cueq, "cueq_available", lambda: True)
+def test_1536_cueq_still_bounds_both_paths_on_a_real_tensor(monkeypatch) -> None:
+    """A `cueq` card does not exempt a pair tensor from the byte rule.
 
-    assert inference._msa_pair_subchunk_size(1536) is None
-    assert not inference._use_low_memory_pairformer(1536)
+    These two assertions used to read `None` and `False` against a bare token
+    count, which is not what the trunk passes: it hands both gates the tensor,
+    and the byte rule decides. Only `_use_low_memory_pairformer` had that rule,
+    so on a cueq card -- the only kind big enough to reach 1,531 tokens -- the
+    MSA pair block ran whole, on the branch that holds eleven pair-sized
+    intermediates, and raised the peak by 19,399 MiB of 44,266. Written against
+    the count, this test went on passing throughout.
+    """
+    monkeypatch.setenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", "cueq")
+
+    big = _pair_of(1536, 32)  # 288 MiB, over the budget
+    assert inference._msa_pair_subchunk_size(big) == 512
+    assert inference._use_low_memory_pairformer(big)
+
+    # Below the budget the count rule still governs, and on cueq it declines.
+    small = _pair_of(1536, 4)  # 36 MiB
+    assert inference._msa_pair_subchunk_size(small) is None
+    assert not inference._use_low_memory_pairformer(small)
+
+
+def test_both_pair_gates_agree_on_every_probe(monkeypatch) -> None:
+    """They are one decision, and were two that disagreed.
+
+    Nothing asserted they matched, so the byte rule could be -- and was --
+    added to one of them alone.
+    """
+    monkeypatch.setenv("CHAI_JAX_TRIANGLE_ATTENTION_BACKEND", "cueq")
+
+    probes = [
+        1024,
+        1536,
+        2048,
+        _pair_of(1024, 32),
+        _pair_of(1536, 4),
+        _pair_of(2048, 64),
+    ]
+    for probe in probes:
+        chunked = inference._msa_pair_subchunk_size(probe) is not None
+        assert chunked is inference._use_low_memory_pairformer(probe), probe
 
 
 @pytest.mark.parametrize("direction", [0, 1])
