@@ -34,6 +34,45 @@ STRUCTURAL_TOKEN_ROLES = {
     "rna_base": 6,
 }
 
+#: Fields OpenDDE's shipped inference defaults discard, and the flag that does
+#: it. `use_template=False` and `use_rna_msa=False`
+#: (OpenDDE/opendde/config/inference_defaults.py:28-29) mean upstream's
+#: featurizer never reads these, so a job that carries one is predicted from the
+#: sequence alone. The Protenix featurizer this port shares does read them, so
+#: without this the two implementations quietly diverge on exactly the inputs a
+#: user went to the trouble of supplying -- different pair representation, and a
+#: template stack running every recycle. Dropped rather than refused, because
+#: the goal is upstream's answer; said out loud, because upstream's silence
+#: about it is the part worth not copying.
+_OPENDDE_IGNORED_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "proteinChain": (("templatesPath", "use_template=False"),),
+    "rnaSequence": (("unpairedMsaPath", "use_rna_msa=False"),),
+}
+
+#: One warning per field per document, not per chain.
+_warned_dropped: set[str] = set()
+
+
+def _drop_fields_opendde_ignores(kind: str, info: dict[str, Any]) -> None:
+    """Remove what upstream's defaults would have ignored, and say which."""
+    import warnings
+
+    for key, flag in _OPENDDE_IGNORED_FIELDS.get(kind, ()):
+        if not info.pop(key, None):
+            continue
+        if key in _warned_dropped:
+            continue
+        _warned_dropped.add(key)
+        warnings.warn(
+            f"OpenDDE ignores {key!r} on {kind}: its shipped inference default "
+            f"is {flag} (config/inference_defaults.py). Dropping it here so the "
+            "prediction matches upstream's; pass it to Protenix instead if you "
+            "want it used.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
 _NO_TWIN_TOKEN_IDX = -1
 _PROTEIN_BACKBONE_ATOMS = frozenset({"N", "CA", "C", "O", "OXT"})
 _NUCLEIC_BACKBONE_ATOMS = frozenset(
@@ -133,6 +172,7 @@ def _prepare_job(job: dict[str, Any], *, base_dir: str | Path | None) -> dict[st
     sequences = prepared.get("sequences")
     if not isinstance(sequences, list):
         return prepared
+    _warned_dropped.clear()
     for entry in sequences:
         if not isinstance(entry, dict) or len(entry) != 1:
             continue
@@ -151,6 +191,7 @@ def _prepare_job(job: dict[str, Any], *, base_dir: str | Path | None) -> dict[st
             value = info.get(key)
             if isinstance(value, (str, Path)) and str(value):
                 info[key] = str(_resolve_asset_path(value, base_dir=base_dir))
+        _drop_fields_opendde_ignores(kind, info)
         if kind == "proteinChain" and isinstance(info.get("msa"), dict):
             directory = info["msa"].get("precomputed_msa_dir")
             if isinstance(directory, (str, Path)) and str(directory):
