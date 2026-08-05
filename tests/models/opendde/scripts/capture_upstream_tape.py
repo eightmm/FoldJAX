@@ -71,6 +71,20 @@ def parse_args() -> argparse.Namespace:
         default=Path(__file__).resolve().parents[5] / "OpenDDE",
         help="upstream OpenDDE checkout; defaults to a sibling of this repo",
     )
+    parser.add_argument(
+        "--disable-tf32",
+        action="store_true",
+        help=(
+            "capture with `enable_tf32 false`, which upstream does NOT default "
+            "to (`opendde/config/inference_defaults.py:24`). This is a control, "
+            "not a mode: upstream's fp32 matmuls carry ten mantissa bits, worth "
+            "2.941e-04 relative on this card, and the port's residual against "
+            "it is a per-block ~3e-04 that raising the port's own precision to "
+            "HIGHEST does not remove. If that residual is upstream's own "
+            "rounding, turning it off is what makes it disappear -- and if it "
+            "does not disappear, the port has a real defect to find"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -287,6 +301,87 @@ class StageRecorder:
             handles.append(model.template_embedder.register_forward_hook(on_template))
         handles.append(model.msa_module.register_forward_hook(on_msa))
         handles.append(model.pairformer_stack.register_forward_hook(on_pairformer))
+
+        # Pairformer block 0, in and out. The stack-level stage says z lost
+        # four digits while the s beside it kept them, but not which block or
+        # which operation. Block 0 is where to start, and recording its INPUT
+        # as well as its output is what makes the reading interpretable: a
+        # probe whose input already differs measures nothing about the block.
+        block = model.pairformer_stack.blocks[0]
+
+        def on_block0(_module, inputs, output):
+            self.record("block0_input_z", inputs[1])
+            self.record("block0_out_s", output[0])
+            self.record("block0_out_z", output[1])
+
+        handles.append(block.register_forward_hook(on_block0))
+
+        # Inside the MSA module. `after_msa` is where the first digits go: every
+        # stage before it agrees to ten, and the Pairformer only amplifies what
+        # it is handed -- block 0 turns a 0.00081 relative error into 0.00087,
+        # and forty-eight of those reach 0.01299. So the MSA module's blocks are
+        # where a real difference can still enter.
+        #
+        # The module's input z is recorded too, for the reason block 0 recorded
+        # its own: a comparison whose starting points differ measures the
+        # starting points, which is how the previous probe returned correlations
+        # of 0.067 for operations that were fine.
+        for index, msa_block in enumerate(model.msa_module.blocks):
+
+            def on_msa_block(_module, inputs, output, index=index):
+                if index == 0 and len(inputs) > 1:
+                    self.record("msa_input_z", inputs[1])
+                pair = output[1] if isinstance(output, (tuple, list)) else output
+                self.record(f"msa_block{index}_z", pair)
+
+            handles.append(msa_block.register_forward_hook(on_msa_block))
+
+            # Inside each block. The block-level stage says z moved; it does
+            # not say through which of the two paths that can move it. OpenDDE
+            # runs `m = msa_stack(m, z)`, then `z = z + outer_product_mean(m)`,
+            # then `z = pair_stack(z)`, so recording m on both sides of the
+            # stack and z between the mean and the pair stack separates three
+            # possibilities that the block-level number cannot: m arrived
+            # wrong, the stack made it wrong, or the pair stack amplified z.
+            #
+            # `m` has never been measured on either side. Every stage recorded
+            # so far is z, and z enters this module agreeing to five digits at
+            # both 132 and 970 tokens -- so if the module is where the size
+            # dependence lives, the evidence is in m.
+            # A *pre*-hook for the input, because `MSAStack.inference_forward`
+            # writes through it: `m[start:end, :, :] += msa_update`, then
+            # returns the same tensor. A forward hook fires afterwards, so its
+            # `inputs[0]` is the mutated buffer -- the output under the name of
+            # the input. That is not a subtle failure: it reported the module's
+            # input as correlating 0.41 with the port's while the output it
+            # produced from that input correlated 0.99999999.
+            def on_msa_stack_in(_module, inputs, index=index):
+                self.record(f"msa_block{index}_m_in", inputs[0])
+
+            def on_msa_stack_out(_module, _inputs, output, index=index):
+                self.record(f"msa_block{index}_m_out", output)
+
+            handles.append(
+                msa_block.msa_stack.register_forward_pre_hook(on_msa_stack_in)
+            )
+            handles.append(
+                msa_block.msa_stack.register_forward_hook(on_msa_stack_out)
+            )
+
+            # `pair_stack` is called entirely by keyword, so a plain forward
+            # hook sees an empty `inputs` tuple and would record nothing.
+            def on_pair_stack(_module, args, kwargs, _output, index=index):
+                pair = kwargs.get("z")
+                if pair is None and len(args) > 1:
+                    pair = args[1]
+                if pair is not None:
+                    self.record(f"msa_block{index}_z_after_opm", pair)
+
+            handles.append(
+                msa_block.pair_stack.register_forward_hook(
+                    on_pair_stack, with_kwargs=True
+                )
+            )
         return handles
 
     def finish(self) -> dict[str, np.ndarray]:
@@ -391,7 +486,17 @@ def main() -> int:
     generator.sample_diffusion = sample_diffusion
     opendde_model.sample_diffusion = sample_diffusion
     try:
-        _run(args)
+        # Nothing here is trained, and a forward hook keeps its inputs
+        # reachable, so without this every intermediate the probes touch stays
+        # alive on the autograd graph. Upstream already peaks near 58 GiB on a
+        # 970-token job; adding per-block hooks then asked for another 40.8 GiB
+        # and the capture died before it reached the sampler.
+        #
+        # `inference_mode` rather than `no_grad`: it also drops version
+        # counters and view tracking, and nothing downstream ever
+        # differentiates or mutates these tensors in place.
+        with torch.inference_mode():
+            _run(args)
     finally:
         torch.randn = original_randn
         torch.randperm = original_randperm
@@ -555,6 +660,8 @@ def _run(args) -> None:
         "--load_checkpoint_path",
         str(args.checkpoint),
     ]
+    if args.disable_tf32:
+        argv += ["--enable_tf32", "false"]
     from runner.inference import run
 
     saved = sys.argv

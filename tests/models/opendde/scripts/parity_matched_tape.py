@@ -51,6 +51,32 @@ agree because FoldJAX's own alignment is row-for-row identical to upstream's
 (reported as `featurizer_msa_row_match_fraction`), so the gap was the draw, not
 the features.
 
+What the residual turned out to be
+---------------------------------
+
+Matching the rows leaves a residual that grows with length -- nothing at 132
+tokens, 1.57 A at 970 -- and it is not a defect. It is arithmetic precision, and
+specifically *upstream's*. Three runs on one tape at 970 tokens settle it:
+
+    ours        upstream      after_pairformer_z   all-atom RMSD
+    TF32        TF32               0.01299            1.5709 A
+    HIGHEST     TF32               0.01299            1.5162 A
+    HIGHEST     TF32 off           0.00000            0.00018 A
+
+Raising only this port's precision changes nothing, which rules this side out.
+Turning off upstream's collapses the difference by a factor of 8,600, with all
+27 trunk stages at correlation 1.00000000. `enable_tf32: True` is upstream's
+default (`opendde/config/inference_defaults.py:24`), so under default settings
+that ~1.5 A is irreducible rather than a quality gap.
+
+On this card JAX's own fp32 matmuls already run at TF32 -- 2.941e-04 relative
+against `Precision.HIGHEST`, which is exactly the per-block floor the stage
+table implies -- so `JAX_DEFAULT_MATMUL_PRECISION=tensorfloat32` is a no-op
+here and only `highest` moves anything.
+
+Reproduce the control with `capture_upstream_tape.py --disable-tf32` and this
+script under `JAX_DEFAULT_MATMUL_PRECISION=highest`.
+
 Exits non-zero if the coordinate RMSD or any trunk correlation falls short.
 """
 
@@ -74,6 +100,27 @@ STAGE_ORDER = (
     "after_recycle_z",
     "after_template",
     "after_msa",
+    "msa_input_z",
+    # Inside each MSA block, in execution order. `z` enters the module clean
+    # (6e-05, the same as at 132 tokens) and leaves at 8.1e-04, and block 0
+    # alone accounts for 4.8x of that 13.5x. The block has exactly two ways to
+    # move `z`: the outer product mean writes the MSA representation into it,
+    # and the pair stack works on it afterwards. Recording `m` on both sides of
+    # the MSA stack and `z` between the two says which -- and whether `m` was
+    # already wrong on the way in, which nothing has ever measured.
+    *(
+        stage
+        for index in range(4)
+        for stage in (
+            f"msa_block{index}_m_in",
+            f"msa_block{index}_m_out",
+            f"msa_block{index}_z_after_opm",
+            f"msa_block{index}_z",
+        )
+    ),
+    "block0_input_z",
+    "block0_out_z",
+    "block0_out_s",
     "after_pairformer_z",
     "after_pairformer_s",
 )
@@ -82,6 +129,18 @@ STAGE_ORDER = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tape-dir", type=Path, required=True)
+    parser.add_argument(
+        "--trunk-dtype",
+        choices=("float32", "bf16"),
+        default="float32",
+        help=(
+            "narrow the embedder and both trunks, as `--trunk-dtype bf16` does "
+            "on the prediction path. The fused triangle kernels take whole "
+            "tensors, so bfloat16 is the only lever left on OpenDDE's peak -- "
+            "58,722 MiB against 80,843 at 1,531 tokens. This measures what that "
+            "costs in coordinates"
+        ),
+    )
     parser.add_argument(
         "--input-json",
         type=Path,
@@ -305,8 +364,127 @@ def trunk_stages(
         stages["after_recycle_z"] = np.asarray(z)
         z = z + template_embedder(features, z, None, trunk.template)
         stages["after_template"] = np.asarray(z)
+        # The MSA module block by block. `after_msa` is the first stage that
+        # loses digits -- everything before it agrees to ten -- and the
+        # Pairformer only amplifies what it receives, so this is where a real
+        # difference can still enter. Run through `msa_block` itself, unrolled,
+        # rather than rebuilt: the previous probe hand-assembled operations and
+        # measured its own reconstruction.
+        from foldjax.models.protenix.models.primitives.primitives import linear
+        from foldjax.models.protenix.models.trunk_blocks.msa import msa_block
+
+        # `msa_module` builds `m` inline rather than exposing an embedder, so
+        # the same four lines are repeated here. They are one-hot, concatenate,
+        # project -- deterministic, and every stage feeding them already agrees
+        # to ten digits, so reproducing them cannot be what a difference hides
+        # behind.
+        stages["msa_input_z"] = np.asarray(z)
+        _msa = msa_features["msa"]
+        _one_hot = jnp.eye(32, dtype=s_inputs.dtype)[_msa]
+        _shape = _one_hot.shape[:-1]
+        _sample = jnp.concatenate(
+            [
+                _one_hot,
+                msa_features["has_deletion"].reshape(_shape + (1,)),
+                msa_features["deletion_value"].reshape(_shape + (1,)),
+            ],
+            axis=-1,
+        )
+        probe_m = linear(_sample, trunk.msa.linear_m)
+        probe_m = probe_m + linear(s_inputs, trunk.msa.linear_s)[..., None, :, :]
+        probe_z = z
+        # Each block is also run in pieces, because the block-level number says
+        # only that z changed. OpenDDE's ordering is MSA stack, then outer
+        # product mean into z, then pair stack -- so `m_in`, `m_out` and
+        # `z_after_opm` separate "the MSA representation arrived wrong" from
+        # "the MSA stack made it wrong" from "the pair stack amplified z".
+        #
+        # These call the same functions `msa_block` calls, in the same order,
+        # on the same inputs -- but so did the probe that measured its own
+        # reconstruction and reported correlations of 0.067 for operations that
+        # were fine. So the pieces are checked against the real block below
+        # rather than trusted, and a mismatch raises instead of printing.
+        from foldjax.models.protenix.models.primitives.primitives import (
+            transition as _transition,
+        )
+        from foldjax.models.protenix.models.trunk_blocks.msa import (
+            msa_pair_weighted_averaging as _weighted_averaging,
+        )
+        from foldjax.models.protenix.models.trunk_blocks.msa import (
+            outer_product_mean,
+        )
+        from foldjax.models.protenix.models.trunk_blocks.pairformer import (
+            pairformer_block as _pairformer_block,
+        )
+
+        for index in range(len(trunk.msa.blocks)):
+            block_params = trunk.msa.blocks[index]
+            stages[f"msa_block{index}_m_in"] = np.asarray(probe_m)
+            if block_params.msa_pair_weighted_averaging is None:
+                split_m = probe_m
+            else:
+                split_m = probe_m + _weighted_averaging(
+                    probe_m,
+                    probe_z,
+                    block_params.msa_pair_weighted_averaging,
+                )
+                split_m = split_m + _transition(split_m, block_params.msa_transition)
+                stages[f"msa_block{index}_m_out"] = np.asarray(split_m)
+            split_z = probe_z + outer_product_mean(
+                split_m, None, block_params.outer_product_mean
+            )
+            stages[f"msa_block{index}_z_after_opm"] = np.asarray(split_z)
+            _, split_z = _pairformer_block(None, split_z, None, block_params.pair_stack)
+
+            probe_m, probe_z = msa_block(
+                probe_m,
+                probe_z,
+                None,
+                block_params,
+                msa_stack_first=True,
+            )
+            stages[f"msa_block{index}_z"] = np.asarray(probe_z)
+            drift = float(
+                np.max(np.abs(np.asarray(split_z) - np.asarray(probe_z)))
+            )
+            if drift > 0:
+                msg = (
+                    f"MSA block {index}: the unrolled pieces diverge from "
+                    f"`msa_block` by {drift:g}, so the split stages describe "
+                    "the probe rather than the port"
+                )
+                raise AssertionError(msg)
+            del split_m, split_z
+        del probe_m, probe_z
+
         z = msa_module(msa_features, z, s_inputs, None, trunk.msa, msa_stack_first=True)
         stages["after_msa"] = np.asarray(z)
+        # Block 0's four z updates, run through the same `pairformer_block`
+        # the stack uses, one operation at a time.
+        #
+        # The first attempt rebuilt them by hand and compared each output
+        # against upstream's forward hook. Two of the four came back with
+        # correlations of 0.067 and -0.168 while the block they belong to
+        # emitted z at 0.99992 -- a combination no real defect produces. The
+        # hand-built version fed each operation a `z` that the real stack never
+        # held, so it measured the reconstruction, not the port.
+        #
+        # `after_msa` is the block's input on both sides and already agrees to
+        # seven digits, so a probe that starts there starts matched. That is
+        # asserted rather than assumed, because it is the assumption the last
+        # attempt got wrong.
+        from foldjax.models.protenix.models.trunk_blocks.pairformer import (
+            pairformer_block,
+        )
+
+        block0 = trunk.pairformer_stack.blocks[0]
+        probe_s, probe_z = s, z
+        stages["block0_input_z"] = np.asarray(probe_z)
+        stages["block0_out_z"], stages["block0_out_s"] = (
+            lambda pair: (np.asarray(pair[1]), np.asarray(pair[0]))
+        )(pairformer_block(probe_s, probe_z, None, block0))
+        del probe_s, probe_z
+
         s, z = pairformer_stack(s, z, None, trunk.pairformer_stack, use_scan=True)
         stages["after_pairformer_z"] = np.asarray(z)
         stages["after_pairformer_s"] = np.asarray(s)
@@ -353,6 +531,14 @@ def main() -> int:
     )
 
     params = load_native_weights(args.weights)
+    if args.trunk_dtype == "bf16":
+        import jax.numpy as jnp
+
+        from foldjax.models.opendde.models.model import cast_trunk_params
+
+        # Same call the CLI makes, so the harness narrows exactly what a real
+        # bf16 run narrows -- embedder and both trunks, heads left in float32.
+        params = cast_trunk_params(params, jnp.bfloat16)
     cycle_msa, agreement = build_cycle_msa(
         features, msa_archive, source=args.msa_source, n_cycle=n_cycle
     )

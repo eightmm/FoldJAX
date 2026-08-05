@@ -266,8 +266,15 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
 
     def fake_pairformer(*args, **kwargs):
         assert kwargs["pair_mask"] is residue_pair_mask
-        assert os.environ["PROTENIX_TRIANGLE_BACKEND"] == "xla_jit"
-        assert os.environ["PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"] == "xla"
+        # Both fused, which is what upstream runs: `auto` resolves to
+        # cuequivariance in config/model_base.py:31-32 and OpenDDE's
+        # c_hidden == c_z == 384 clears the kernel's guard. These were pinned to
+        # XLA on a 1,531-token OOM, which was one size generalised to every
+        # size -- the same job peaks at 10,552 MiB at 490 tokens and 34,408 at
+        # 970, with 60+ GiB spare. An explicit environment still wins, which is
+        # how the largest jobs ask for the blocked path.
+        assert os.environ["PROTENIX_TRIANGLE_BACKEND"] == "cueq_jit"
+        assert os.environ["PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"] == "cueq"
         return residue_s_inputs, residue_s, residue_z
 
     monkeypatch.setattr(

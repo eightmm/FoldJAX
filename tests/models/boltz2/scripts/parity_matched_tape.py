@@ -76,6 +76,18 @@ def parse_args() -> argparse.Namespace:
         "--attention-backend", choices=("xla", "xla_sdpa", "cudnn"), default="xla"
     )
     parser.add_argument(
+        "--compute-dtype",
+        choices=("float32", "bfloat16"),
+        default="float32",
+        help=(
+            "precision for the trunk and sampler. Upstream Boltz-2 runs "
+            "bf16-mixed (`precision='bf16-mixed'` in boltz/main.py), so the "
+            "float32 default here measures a port that is *more* precise than "
+            "the run it is compared against -- which is not the same question "
+            "as whether the port reproduces it"
+        ),
+    )
+    parser.add_argument(
         "--max-rmsd",
         type=float,
         default=0.5,
@@ -199,6 +211,8 @@ def main() -> int:
 
     from foldjax.models.boltz2.bridge.native import load_params
     from foldjax.models.boltz2.models.trunk_blocks.trunk import (
+        _cast_float_feats,
+        _cast_params,
         _sample_schedule,
         boltz2_sample_forward,
         boltz2_trunk_forward,
@@ -237,6 +251,7 @@ def main() -> int:
 
     params = load_params(args.weights)
     use_scan = not args.no_scan
+    compute_dtype = jnp.dtype(args.compute_dtype)
     shared = dict(
         chunk_size=128,
         matmul_precision="highest",
@@ -244,11 +259,19 @@ def main() -> int:
         triangle_backend=args.triangle_backend,
         glu_backend="xla",
     )
+    # `boltz2_trunk_forward` takes no dtype: `boltz2_predict` narrows the trunk
+    # by casting the weights and the float features before the call, and the
+    # comparison is only honest if this harness narrows it the same way.
+    trunk_params = params["trunk"]
+    trunk_features = features
+    if compute_dtype != jnp.float32:
+        trunk_params = _cast_params(trunk_params, compute_dtype)
+        trunk_features = _cast_float_feats(features, compute_dtype)
 
     started = time.perf_counter()
     trunk = boltz2_trunk_forward(
-        params["trunk"],
-        features,
+        trunk_params,
+        trunk_features,
         recycling_steps=int(meta["n_cycle"]),
         use_scan=use_scan,
         subsample_msa=subsample_msa,
@@ -302,6 +325,7 @@ def main() -> int:
             jnp.asarray(tape["translations"]),
         ),
         use_scan=use_scan,
+        compute_dtype=compute_dtype,
         **shared,
     )
     coordinate = np.asarray(
