@@ -221,7 +221,22 @@ markers = [
     # torch modules. Unregistered, it produced a PytestUnknownMarkWarning per
     # test -- 60 of them -- which is how a real warning goes unread.
     "torch_parity: compares against the upstream torch implementation",
+    # `tests/_foldbench` fetches depositions from RCSB. Registered for the same
+    # reason as the one above: an unknown mark is a warning per test, and a
+    # suite that prints warnings by default is a suite whose warnings go unread.
+    "network: reaches an external service (RCSB)",
 ]
 
 [tool.coverage.run]
-omit = ["*/foldjax/models/*"]
+# The 80% gate is on FoldJAX's own orchestration layer -- the request schema,
+# input translation, registry, backends, weight store and CLI. Vendored code is
+# excluded because it arrived with its own suite and its own standards, and
+# folding it in would make the number say something about the ports rather than
+# about the layer the gate exists to protect.
+#
+# `search/` is vendored on the same terms as `models/`: it was the standalone
+# `foldsearch` package and came with `tests/test_search_msa.py`. Without this
+# line its 367 statements took the total from 87% to 76.6% and failed CI --
+# which would have read as the orchestration layer regressing, when nothing
+# there had changed.
+omit = ["*/foldjax/models/*", "*/foldjax/search/*"]
