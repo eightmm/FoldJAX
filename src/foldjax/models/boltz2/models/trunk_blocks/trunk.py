@@ -836,6 +836,20 @@ def boltz2_trunk_forward(
 
     s_init = _shard_single(s_init, mesh, token_axis, shard_tokens)
     z_init = _shard_pair(z_init, mesh, token_axis, shard_tokens)
+    # The sequence track is Boltz's second fp32 island. `PairformerLayer` runs it
+    # under `autocast(enabled=False)` with `s.float()` and keeps the result in
+    # float32 for the rest of the stack (pairformer.py:105-110); only the pair
+    # track stays in the autocast dtype. Promoting `s` here rather than inside
+    # the block is what makes that expressible at all: the stack carries
+    # `(s, z)` through `lax.scan`, and a body that widened its own carry would
+    # fail the equal-types rule.
+    #
+    # Measured on the matched-tape harness at 1,531 tokens: with the whole trunk
+    # narrowed, all-atom RMSD against upstream was 0.5776 A against 0.0285 A in
+    # float32 -- a 20x loss that is not what upstream's bf16-mixed costs itself.
+    # Under the float32 default both casts are no-ops and the program is
+    # unchanged.
+    s_init = s_init.astype(jnp.float32)
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
     mask = feats["token_pad_mask"].astype(jnp.float32)

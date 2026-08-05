@@ -182,7 +182,12 @@ def pairformer_layer_forward(
     s = s + attention_pair_bias_forward(
         params["attention"],
         s=s_normed,
-        z=z,
+        # `z.float()`, as Boltz spells it at pairformer.py:107. The pair track
+        # itself stays in the autocast dtype -- this widening is for the bias
+        # this attention builds from it, and nothing downstream sees it. `s`
+        # arrives float32 already, promoted where the stack's scan carry is
+        # created so the carry types agree.
+        z=z.astype(jnp.float32),
         mask=mask.astype(jnp.float32),
         k_in=s_normed,
         eps=eps,
