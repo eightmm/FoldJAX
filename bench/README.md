@@ -93,3 +93,19 @@ completed, and `--skip-existing` resumes it.
 `alphafold3` has a FoldJAX column but no upstream one: FoldJAX drives the
 installation you provide rather than reimplementing the model, so both columns
 would be the same code.
+
+## A failed row is a result, not a gap
+
+`opendde` at 1,531 tokens does not run in fp32 on this card -- on either side.
+FoldJAX asks for a 66.84 GiB program arena (92.21 with the fused kernels) and
+upstream reaches 92,960 MiB before asking for 12.69 GiB more. Both rows carry
+`"failed": true`, and upstream's carries `"reason": "exited 0 but produced no
+structures"` -- its runner swallows the allocator error and exits zero, so the
+row exists only because the harness checks for structures rather than for an
+exit code.
+
+`opendde-foldjax-t1531-bf16.json` is the configuration that does complete:
+479.9 s at 58,747 MiB. It is stored under its own name rather than as the
+`t1531` row, because it is not the same measurement -- upstream has no bf16
+counterpart here, so that number belongs beside a stated dtype and not in a
+column that implies one.

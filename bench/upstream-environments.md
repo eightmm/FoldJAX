@@ -111,6 +111,28 @@ keep a module compiled for the old list.
 
 Neither needed anything.
 
+## What precision each upstream actually runs
+
+Not one answer for the family — the two Protenix-derived repos disagree, and
+assuming otherwise put a wrong premise into this project's task list ("opendde
+still fp32 vs upstream bf16", which is backwards).
+
+| upstream | storage dtype | TF32 matmuls | where |
+|---|---|---|---|
+| Protenix | `bf16` | on | `configs/configs_base.py:135`, `configs_inference.py:32` |
+| OpenDDE | `fp32` | on | `opendde/config/model_base.py:37`, `inference_defaults.py:24` |
+| Boltz-2 | `bf16-mixed` | — | its own default |
+
+The benchmark passes no dtype argument to any of them, so these defaults are
+what it measures against. Two consequences worth stating plainly:
+
+- A FoldJAX run at `fp32` against Protenix is not a matched comparison; it asks
+  more of this port than of its reference.
+- Against OpenDDE the *storage* dtypes match, so the only precision question
+  left is the matmul one — `enable_tf32: True` means upstream's fp32 matmuls
+  carry ten mantissa bits, and JAX's default on this card is a separate
+  question that has to be measured rather than assumed.
+
 ## A note on torch versions
 
 Both OpenDDE and Protenix pin torch versions in their `pyproject.toml`
