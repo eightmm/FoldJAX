@@ -50,6 +50,8 @@ def protenix_predict_static(
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
     trunk_triangle_attention_backend: str | None = None,
+    #: ``None`` follows the trunk backend; see model.py for why this exists.
+    confidence_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
     run_confidence_scores: bool = True,
@@ -127,6 +129,7 @@ def protenix_predict_static(
         diffusion_attention_backend=diffusion_attention_backend,
         trunk_single_attention_backend=trunk_single_attention_backend,
         trunk_triangle_attention_backend=trunk_triangle_attention_backend,
+        confidence_triangle_attention_backend=confidence_triangle_attention_backend,
         use_confidence_embedding=use_confidence_embedding,
         run_confidence=run_confidence,
         run_confidence_scores=run_confidence_scores,

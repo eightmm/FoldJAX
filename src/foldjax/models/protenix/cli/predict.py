@@ -171,6 +171,16 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
         # block rows and so does not bound the score tensor.
         default=None,
     )
+    parser.add_argument(
+        "--confidence-triangle-attention-backend",
+        choices=("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
+        # Unset means "whatever the trunk runs". The head reads the same pair
+        # tensor with the same head layout, so a different kernel there is a
+        # bug rather than a choice -- it was one, and it cost a 39 GiB temp
+        # arena at 2030 tokens. Overriding it separately is still allowed,
+        # because the head and the trunk do not have to fit at the same moment.
+        default=None,
+    )
     confidence_scan_group = parser.add_mutually_exclusive_group()
     confidence_scan_group.add_argument(
         "--confidence-scan", dest="confidence_scan", action="store_true"
@@ -584,6 +594,9 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                 diffusion_attention_backend=args.diffusion_attention_backend,
                 trunk_single_attention_backend=args.trunk_single_attention_backend,
                 trunk_triangle_attention_backend=args.trunk_triangle_attention_backend,
+                confidence_triangle_attention_backend=(
+                    args.confidence_triangle_attention_backend
+                ),
                 run_confidence=not args.no_confidence,
                 run_confidence_scores=not args.no_confidence_scores,
                 triangle_mul_chunk_size=chunk_config.triangle_mul_chunk_size,

@@ -24,6 +24,11 @@ _CLI_OPTIONS = {
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
     "trunk_triangle_attention_backend",
+    # Unset follows the trunk. It is separately settable because the head and
+    # the trunk do not have to fit at the same moment, but it must not default
+    # to a different kernel than the trunk -- it used to, and that was a 39 GiB
+    # temp arena at 2030 tokens.
+    "confidence_triangle_attention_backend",
     "chunk_policy",
     "triangle_mul_chunk_size",
     "triangle_att_q_chunk_size",
@@ -53,6 +58,7 @@ class ProtenixBackend(Backend):
         "diffusion_attention_backend",
         "trunk_single_attention_backend",
         "trunk_triangle_attention_backend",
+        "confidence_triangle_attention_backend",
         "chunk_policy",
         "triangle_mul_chunk_size",
         "triangle_att_q_chunk_size",

@@ -80,6 +80,44 @@ def test_no_triangle_site_pins_its_own_backend(files, parameter) -> None:
     )
 
 
+def test_protenix_hands_its_confidence_head_a_backend() -> None:
+    """Removing the private default was only half the fix.
+
+    `test_no_triangle_site_pins_its_own_backend` checks that no site *pins* a
+    backend, and the confidence head stopped pinning one. But `model.py` then
+    called `confidence_head(...)` without passing a backend at all, so the head
+    fell through to the module default while the trunk ran whatever was asked
+    for -- the same divergence, arrived at from the other direction, and
+    invisible to a test that only reads defaults.
+
+    It cost a `f32[2030, 4, 256, 2030]` score tensor: 15.72 GiB inside a
+    39.07 GiB temp arena, which killed a 2030-token target *after* the compute
+    had finished. Nothing failed earlier because both names resolve to the same
+    kernel under the default environment; they part company the moment
+    `PROTENIX_TRIANGLE_BACKEND` or a trunk override is set, which is exactly
+    when a large job is being rescued.
+
+    Asserted on the call site rather than by running the model, because the
+    shapes that make this matter need a GPU and 2000 tokens to reproduce.
+    """
+    path = MODELS / "protenix/models/model.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "confidence_head"
+    ]
+    assert calls, "confidence_head is no longer called here; update this test"
+    for call in calls:
+        passed = {keyword.arg for keyword in call.keywords}
+        assert "triangle_attention_backend" in passed, (
+            "model.py calls confidence_head without a triangle backend, so the "
+            "head takes the module default while the trunk takes the caller's"
+        )
+
+
 def test_opendde_runs_the_fused_kernels_like_upstream() -> None:
     """OpenDDE stopped being the exception.
 

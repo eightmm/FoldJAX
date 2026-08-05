@@ -92,6 +92,16 @@ def protenix_infer_static(
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
     trunk_triangle_attention_backend: str | None = None,
+    #: Backend for the confidence head's triangle attention. ``None`` follows the
+    #: trunk. The head runs on the same [n_token, n_token, c_z] pair tensor with
+    #: the same head layout, so it has no business defaulting to a different
+    #: kernel than the trunk -- but it did: this call site passed no backend, so
+    #: the head took the module default while the trunk ran whatever was asked
+    #: for. The XLA path materialises the [rows, heads, q_chunk, keys] scores; at
+    #: 2030 tokens that is a 15.72 GiB buffer inside a 39.07 GiB temp arena,
+    #: which is the allocation that killed the target after the compute had
+    #: already finished.
+    confidence_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
     run_confidence_scores: bool = True,
@@ -238,6 +248,11 @@ def protenix_infer_static(
             triangle_mul_chunk_size=triangle_mul_chunk_size,
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             single_att_q_chunk_size=single_att_q_chunk_size,
+            triangle_attention_backend=(
+                trunk_triangle_attention_backend
+                if confidence_triangle_attention_backend is None
+                else confidence_triangle_attention_backend
+            ),
         )
         output.update(confidence_logits)
         if run_confidence_scores:
@@ -270,6 +285,7 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_decoder_heads",
     "atom_encoder_heads",
     "centre_each_step",
+    "confidence_triangle_attention_backend",
     "diffusion_attention_backend",
     "diffusion_chunk_size",
     "gamma0",
