@@ -72,12 +72,82 @@ def test_alignment_paths_are_absolute(tmp_path: Path, job: dict) -> None:
     assert Path(paths[0]).name == "colabfold_main.a3m"
 
 
-def test_an_unrecognized_alignment_stem_is_refused(tmp_path: Path, job: dict) -> None:
-    """Upstream skips it and then dies inside the MSA parser with an IndexError."""
+def test_an_unrecognized_alignment_stem_is_linked_not_refused(
+    tmp_path: Path, job: dict
+) -> None:
+    """Upstream selects a source by stem and skips a name it does not know.
+
+    This used to raise, which is honest -- nothing was silently dropped -- but
+    it left the backend unable to take the one file users actually have, an
+    `.a3m` named after the target. Every other backend here accepts that name.
+    Linking it under a stem upstream reads keeps the guarantee and lets the run
+    happen; the stem also picks the row cap, so the choice is not cosmetic.
+    """
     (tmp_path / "msa.a3m").write_text(">q\nACD\n")
     job["entities"][0]["unpaired_msa"] = "msa.a3m"
-    with pytest.raises(ValueError, match="would be ignored"):
-        _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
+
+    document = _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
+
+    (main,) = document["queries"]["complex"]["chains"][0]["main_msa_file_paths"]
+    assert Path(main).stem == "colabfold_main"
+    assert Path(main).read_text() == ">q\nACD\n"
+
+
+def test_an_unpaired_alignment_never_lands_on_the_paired_stem(
+    tmp_path: Path, job: dict
+) -> None:
+    """`colabfold_paired` caps at 8,192 rows where `colabfold_main` caps at 16,384.
+
+    Written as `"paired" in field`, which is true of `"unpaired_msa"`, this
+    halved the depth of every renamed unpaired alignment and failed nothing.
+    """
+    (tmp_path / "msa.a3m").write_text(">q\nACD\n")
+    (tmp_path / "pair.a3m").write_text(">p\nACD\n")
+    job["entities"][0]["unpaired_msa"] = "msa.a3m"
+    job["entities"][0]["paired_msa"] = "pair.a3m"
+
+    chain = _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")[
+        "queries"
+    ]["complex"]["chains"][0]
+
+    (main,) = chain["main_msa_file_paths"]
+    (paired,) = chain["paired_msa_file_paths"]
+    assert Path(main).stem == "colabfold_main"
+    assert Path(paired).stem == "colabfold_paired"
+    assert Path(main).read_text() != Path(paired).read_text()
+
+
+def test_two_chains_do_not_overwrite_each_others_alignment(tmp_path: Path) -> None:
+    """Both want the name `colabfold_main`; only a per-chain directory saves them."""
+    (tmp_path / "one.a3m").write_text(">a\nACD\n")
+    (tmp_path / "two.a3m").write_text(">b\nWYF\n")
+    job = {
+        "name": "complex",
+        "entities": [
+            {
+                "type": "protein",
+                "id": ["A"],
+                "sequence": "ACD",
+                "unpaired_msa": "one.a3m",
+            },
+            {
+                "type": "protein",
+                "id": ["B"],
+                "sequence": "WYF",
+                "unpaired_msa": "two.a3m",
+            },
+        ],
+    }
+
+    chains = _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")[
+        "queries"
+    ]["complex"]["chains"]
+
+    (left,) = chains[0]["main_msa_file_paths"]
+    (right,) = chains[1]["main_msa_file_paths"]
+    assert left != right
+    assert Path(left).read_text() == ">a\nACD\n"
+    assert Path(right).read_text() == ">b\nWYF\n"
 
 
 def test_a_recognized_stem_in_any_directory_is_accepted(

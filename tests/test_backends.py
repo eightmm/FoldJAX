@@ -729,13 +729,26 @@ def test_chai_refuses_to_report_success_with_no_structures(
         ChaiBackend().predict(_request(tmp_path, "chai"))
 
 
-def test_openfold3_says_why_its_package_is_absent(tmp_path: Path) -> None:
+def test_openfold3_says_why_its_package_is_absent(
+    tmp_path: Path, monkeypatch
+) -> None:
     """It is on no index, so a bare import error explains nothing.
 
     The reader cannot tell from "No module named 'openfold3_jax'" whether that
     is a bug, a missing extra, or the intended state of an unfinished port.
+
+    The absence is simulated rather than assumed. This test used to depend on
+    `openfold3_jax` not being installed, so it stopped exercising the message
+    the moment someone installed the package -- which is exactly when the
+    message stops being checked and starts being able to rot.
     """
+    from foldjax.backends import openfold3 as backend_module
     from foldjax.backends.openfold3 import OpenFold3Backend
+
+    def absent(name: str, *args, **kwargs):
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(backend_module, "import_module", absent)
 
     with pytest.raises(ModuleNotFoundError, match="docs/openfold3.md"):
         OpenFold3Backend().predict(_request(tmp_path, "openfold3"))

@@ -10,6 +10,7 @@ changing the exit code.
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -436,17 +437,51 @@ _OPENFOLD3_MSA_STEMS = frozenset(
 )
 
 
-def _openfold3_msa(value: Any, base: Path, field: str) -> list[str]:
+#: The stem OpenFold3 reads a generic alignment under. It is not cosmetic: the
+#: stem selects the row cap in `max_seq_counts` (dataset_config_components.py:80)
+#: -- 16,384 for `colabfold_main` against 10,000 for `uniref90_hits` and 5,000
+#: for `mgnify_hits`. `colabfold_main` is the most permissive main-MSA source and
+#: the one whose format an `.a3m` from a colabfold-style search already is, so a
+#: file that arrives with no source of its own loses the fewest rows there.
+_OPENFOLD3_MAIN_STEM = "colabfold_main"
+_OPENFOLD3_PAIRED_STEM = "colabfold_paired"
+
+
+def _openfold3_msa(
+    value: Any, base: Path, field: str, destination: Path, chain: str
+) -> list[str]:
+    """The alignment, under a name OpenFold3 will actually read.
+
+    OpenFold3 identifies an alignment's source by the file's stem and ignores
+    anything it does not recognise. This used to raise on an unrecognised name,
+    which is honest but leaves the backend unable to take the one thing users
+    have -- an `.a3m` named after the target. Linking it under an accepted stem
+    keeps the refusal's real point (nothing is silently dropped) while letting
+    the run happen, and the link goes in a per-chain directory because two
+    chains with different alignments would otherwise both want the same name.
+    """
     path = Path(_path(value, base))
-    if path.suffix and path.stem not in _OPENFOLD3_MSA_STEMS:
-        raise ValueError(
-            f"{field} entry {path.name!r} would be ignored: OpenFold3 selects "
-            f"alignment files by stem and accepts only {sorted(_OPENFOLD3_MSA_STEMS)}"
-        )
-    return [str(path)]
+    if not path.suffix or path.stem in _OPENFOLD3_MSA_STEMS:
+        return [str(path)]
+
+    # Equality, not `"paired" in field`: the other caller passes "unpaired_msa",
+    # which contains it, and would have linked an unpaired alignment under the
+    # paired stem -- a silent halving of the row cap, 16,384 to 8,192.
+    stem = _OPENFOLD3_PAIRED_STEM if field == "paired_msa" else _OPENFOLD3_MAIN_STEM
+    directory = destination / "msa" / chain
+    directory.mkdir(parents=True, exist_ok=True)
+    linked = directory / f"{stem}{path.suffix}"
+    if linked.is_symlink() or linked.exists():
+        linked.unlink()
+    try:
+        linked.symlink_to(path.resolve())
+    except OSError:
+        # Windows without developer mode, or a filesystem that refuses links.
+        shutil.copyfile(path, linked)
+    return [str(linked)]
 
 
-def _openfold3(job: dict[str, Any], base: Path) -> dict[str, Any]:
+def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, Any]:
     """Build OpenFold3's inference query document."""
     chains: list[dict[str, Any]] = []
     known: set[str] = set()
@@ -464,11 +499,11 @@ def _openfold3(job: dict[str, Any], base: Path) -> dict[str, Any]:
             body["sequence"] = str(entity["sequence"])
             if entity.get("unpaired_msa"):
                 body["main_msa_file_paths"] = _openfold3_msa(
-                    entity["unpaired_msa"], base, "unpaired_msa"
+                    entity["unpaired_msa"], base, "unpaired_msa", destination, ids[0]
                 )
             if entity.get("paired_msa"):
                 body["paired_msa_file_paths"] = _openfold3_msa(
-                    entity["paired_msa"], base, "paired_msa"
+                    entity["paired_msa"], base, "paired_msa", destination, ids[0]
                 )
             modifications = _modifications(entity)
             if modifications:
@@ -526,6 +561,11 @@ def materialize_native_input(
     _validate(job, model, target, capabilities.entity_types)
 
     base = source.parent
+    # Created before the dialects are built: OpenFold3 and Chai both write
+    # alongside their document rather than only into it.
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     if model == "alphafold3":
         document: Any = _alphafold3(job, base, seed)
     elif model == "boltz2":
@@ -533,12 +573,10 @@ def materialize_native_input(
     elif model in {"opendde", "protenix"}:
         document = _protenix(job, base, seed)
     elif model == "openfold3":
-        document = _openfold3(job, base)
+        document = _openfold3(job, base, output_dir)
     else:
         document = None  # written after output_dir exists; Chai needs it
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     if document is None:
         document = _chai(job, base, output_dir)
     path = output_dir / f"{model}_input{target.suffix}"
