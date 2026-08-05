@@ -36,9 +36,19 @@ from pathlib import Path
 import numpy as np
 
 
-def ca_coords(path: Path) -> np.ndarray:
-    """CA coordinates in file order, parsed from an mmCIF atom_site loop."""
+def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
+    """CA coordinates and their residue keys, from an mmCIF atom_site loop.
+
+    The keys matter. Chai omits residues it did not resolve, and omits
+    different ones per sample -- at 1,531 residues its five structures carry
+    1,425 to 1,531 CA atoms. Comparing by position would then align residue i
+    of one structure against residue j of another, and requiring equal counts
+    (which this did at first) silently drops the pair instead, so a run that
+    compared 1 of 25 pairs reported a median over that 1 as though it were the
+    answer.
+    """
     rows: list[tuple[float, float, float]] = []
+    keys: list[str] = []
     header: list[str] = []
     in_loop = False
     for line in path.read_text().splitlines():
@@ -65,7 +75,25 @@ def ca_coords(path: Path) -> np.ndarray:
                 float(record["Cartn_z"]),
             )
         )
-    return np.asarray(rows, dtype=np.float64)
+        keys.append(
+            f"{record.get('label_asym_id', '?')}:"
+            f"{record.get('label_seq_id', record.get('auth_seq_id', len(keys)))}"
+        )
+    return np.asarray(rows, dtype=np.float64), keys
+
+
+def common_residues(
+    left: tuple[np.ndarray, list[str]], right: tuple[np.ndarray, list[str]]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The two coordinate sets restricted to the residues they share."""
+    left_index = {key: i for i, key in enumerate(left[1])}
+    shared = [key for key in right[1] if key in left_index]
+    if not shared:
+        return np.empty((0, 3)), np.empty((0, 3))
+    right_index = {key: i for i, key in enumerate(right[1])}
+    li = np.asarray([left_index[k] for k in shared])
+    ri = np.asarray([right_index[k] for k in shared])
+    return left[0][li], right[0][ri]
 
 
 def superpose(p: np.ndarray, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -172,15 +200,18 @@ def compare(left: list[np.ndarray], right: list[np.ndarray] | None) -> dict | No
         else itertools.product(range(len(left)), range(len(right)))
     )
     other = left if right is None else right
+    dropped = 0
     for i, j in combos:
-        if left[i].shape != other[j].shape:
+        a, b = common_residues(left[i], other[j])
+        if len(a) < 4:
+            dropped += 1
             continue
-        tm, rmsd = tm_and_rmsd(left[i], other[j])
+        tm, rmsd = tm_and_rmsd(a, b)
         tms.append(tm)
         rmsds.append(rmsd)
     if not tms:
         return None
-    return {"tm": _pairs(tms), "rmsd": _pairs(rmsds)}
+    return {"tm": _pairs(tms), "rmsd": _pairs(rmsds), "dropped": dropped}
 
 
 def main() -> int:
@@ -200,7 +231,7 @@ def main() -> int:
             continue
         model, impl, case = parts[0], parts[1], parts[-1]
         coords = [ca_coords(path) for path in structures(directory)]
-        coords = [c for c in coords if c.size]
+        coords = [c for c in coords if c[0].size]
         if coords:
             runs[(model, impl, case)] = coords
 
