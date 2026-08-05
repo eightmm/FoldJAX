@@ -1,0 +1,22 @@
+[
+  {
+    "name": "tiny_with_ccd",
+    "modelSeeds": [101],
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "ACD",
+          "count": 1,
+          "id": ["A"]
+        }
+      },
+      {
+        "ligand": {
+          "ligand": "CCD_P4G",
+          "count": 1,
+          "id": ["L"]
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "name": "2lwu_cyclic",
+    "modelSeeds": [101],
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "GHCIPTTSGPICLRD",
+          "count": 1,
+          "id": ["A"]
+        }
+      }
+    ],
+    "covalent_bonds": [
+      {
+        "entity1": 1,
+        "copy1": 1,
+        "position1": 3,
+        "atom1": "SG",
+        "entity2": 1,
+        "copy2": 1,
+        "position2": 12,
+        "atom2": "SG"
+      },
+      {
+        "entity1": 1,
+        "copy1": 1,
+        "position1": 15,
+        "atom1": "C",
+        "entity2": 1,
+        "copy2": 1,
+        "position2": 1,
+        "atom2": "N"
+      }
+    ]
+  }
+]

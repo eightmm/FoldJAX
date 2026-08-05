@@ -3,7 +3,7 @@ Copyright 2026 FoldJAX contributors
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
-This product carries JAX inference ports of four published structure-prediction
+This product carries JAX inference ports of five published structure-prediction
 models. Each port lives under `src/foldjax/models/<name>/`, keeps its upstream
 module layout, and carries that upstream's own LICENSE and NOTICE beside it.
 None of them is an official project of the organisation that published the
@@ -21,6 +21,12 @@ original, and no model weights are distributed with this software.
   OpenDDE      https://huggingface.co/aurekaresearch/OpenDDE
                Apache-2.0
                -> src/foldjax/models/opendde/{LICENSE,NOTICE}
+
+  OpenFold3    https://github.com/aqlaboratory/openfold-3
+               Apache-2.0, Copyright the OpenFold Team
+               -> src/foldjax/models/openfold3/{LICENSE,NOTICE}
+               Featurization delegates to upstream's own data pipeline, which
+               is a checkout rather than a package and is not carried here.
 
   Protenix     https://github.com/bytedance/Protenix
                Apache-2.0, Copyright 2024 ByteDance and/or its affiliates

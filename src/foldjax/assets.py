@@ -265,6 +265,26 @@ REGISTRY: dict[str, ModelAssets] = {
         requires=("opendde.jax",),
         convert=_convert_opendde,
     ),
+    "openfold3": ModelAssets(
+        model="openfold3",
+        source="https://github.com/aqlaboratory/openfold-3",
+        licence="Apache-2.0 for code and weights; the weight repository is gated",
+        # Empty on purpose, and for a different reason than AlphaFold 3's. These
+        # weights *are* redistributable -- Apache-2.0, with the training data
+        # published -- but the repository is access-gated: even its example
+        # config returns HTTP 401 unauthenticated. A download FoldJAX cannot
+        # authenticate would fail with a bare 401, which reads like a broken URL
+        # rather than an access request nobody has made yet.
+        downloads=(),
+        native="of3_ft3_v1.pt",
+        requires=("of3_ft3_v1.pt",),
+        convert=_bring_your_own,
+        notes="Request access at https://huggingface.co/OpenFold/OpenFold3, then "
+        "put of3_ft3_v1.pt in this directory. The port reads the released "
+        "checkpoint directly, so nothing is converted -- but a .pt is a torch "
+        "file, so loading it needs the torch-bridge extra. A safetensors export "
+        "loads without torch and can be given to --weights instead.",
+    ),
     "boltz2": ModelAssets(
         model="boltz2",
         source="https://github.com/jwohlwend/boltz",
@@ -465,12 +485,17 @@ def fetch(model: str, *, on_progress=None, convert: bool = True) -> Path:
         ]
         if not spec.downloads:
             # Nothing was downloaded because nothing can be: these are the
-            # models whose parameters their publisher releases only to
-            # applicants. Reporting it as a failed conversion describes a step
+            # models whose parameters their publisher hands out only on
+            # request. Reporting it as a failed conversion describes a step
             # that never runs and hides the one thing the user has to do.
+            #
+            # The reason differs per model and only `notes` knows it --
+            # AlphaFold 3's parameters may not be redistributed at all, while
+            # OpenFold3's are Apache-2.0 behind a gated repository. Asserting
+            # either one here would be wrong for the other.
             raise RuntimeError(
-                f"{spec.model} parameters are not redistributable, so FoldJAX "
-                f"cannot fetch them.\n{spec.notes}\n"
+                f"FoldJAX cannot fetch {spec.model}'s parameters; its publisher "
+                f"releases them only on request.\n{spec.notes}\n"
                 f"Expected here: {weights_dir(spec.model)}\n"
                 f"Still missing: {', '.join(missing)}"
             )

@@ -43,10 +43,14 @@ def foldjax_models() -> tuple[str, ...]:
 def test_registry_declares_what_each_model_needs() -> None:
     for name in assets.available():
         spec = assets.REGISTRY[name]
-        # AlphaFold 3 is the one model with nothing to download: DeepMind
-        # releases its parameters only to applicants who accept their terms, so
-        # the registry knows where they belong but never fetches them.
-        if name != "alphafold3":
+        # Two models have nothing to download, for two different reasons, and
+        # both still need a registry entry so the store knows where the files
+        # belong. AlphaFold 3's parameters go only to applicants who accept
+        # DeepMind's terms. OpenFold3's are Apache-2.0 and redistributable, but
+        # the HuggingFace repository is access-gated, so an unauthenticated
+        # fetch would 401 -- which reads like a broken URL rather than an
+        # access request nobody has made.
+        if name not in ("alphafold3", "openfold3"):
             assert spec.downloads, name
         assert spec.requires, name
         assert spec.licence and spec.source, name
@@ -183,7 +187,31 @@ def test_status_reports_progress_per_model(tmp_path: Path, monkeypatch) -> None:
     assert all(row["downloaded"].startswith("0/") for row in rows.values())
 
 
-def test_an_unmanaged_model_says_so() -> None:
+def test_every_registered_backend_has_managed_assets() -> None:
+    """`openfold3` used to be the counter-example, until it was vendored.
+
+    With an entry for every backend, "has no managed assets" is no longer
+    reachable through any real model name, so the invariant is what is worth
+    asserting -- a new backend without a weight-store entry is the regression.
+    """
+    assert set(assets.available()) >= set(foldjax_models())
+
+
+def test_an_unmanaged_model_says_so(monkeypatch) -> None:
+    """The two failure modes must stay distinguishable.
+
+    A name that is not a backend at all is an "unknown model"; a backend with no
+    weight-store entry is "has no managed assets", and only the second means
+    `--weights` would help. Since no real model now takes the second branch, it
+    is reached by removing an entry rather than by naming a model that lacks
+    one -- otherwise this test would have quietly stopped covering it.
+    """
+    with pytest.raises(ValueError, match="unknown model"):
+        assets.assets_for("not-a-model")
+
+    registry = dict(assets.REGISTRY)
+    registry.pop("openfold3")
+    monkeypatch.setattr(assets, "REGISTRY", registry)
     with pytest.raises(ValueError, match="has no managed assets"):
         assets.assets_for("openfold3")
 
@@ -212,11 +240,32 @@ def test_fetching_a_non_redistributable_model_explains_itself(
     the user has to do. It also reached the CLI as an unhandled traceback.
     """
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
-    with pytest.raises(RuntimeError, match="not redistributable") as error:
+    with pytest.raises(RuntimeError, match="releases them only on request") as error:
         assets.fetch("alphafold3")
     message = str(error.value)
     assert "Request the parameters from DeepMind" in message
     assert str(tmp_path) in message, "must say where to put the file"
+
+
+def test_fetching_a_gated_model_does_not_call_it_non_redistributable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same code path serves two models whose reasons are opposite.
+
+    `fetch` used to assert "parameters are not redistributable" for anything
+    with no downloads. That is true of AlphaFold 3 and false of OpenFold3, whose
+    code *and* weights are Apache-2.0 with published training data -- what stops
+    an automatic download there is a gated repository, not a licence. The shared
+    sentence now says only that the publisher releases them on request, and the
+    model's own `notes` carry the reason.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    with pytest.raises(RuntimeError) as error:
+        assets.fetch("openfold3")
+    message = str(error.value)
+    assert "not redistributable" not in message
+    assert "huggingface.co/OpenFold/OpenFold3" in message
+    assert "of3_ft3_v1.pt" in message
 
 
 def test_the_cli_reports_an_unfetchable_model_without_a_traceback(
@@ -226,7 +275,7 @@ def test_the_cli_reports_an_unfetchable_model_without_a_traceback(
 
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
     assert main(["weights", "fetch", "--model", "alphafold3"]) == 1
-    assert "not redistributable" in capsys.readouterr().err
+    assert "releases them only on request" in capsys.readouterr().err
 
 
 def test_a_truncated_download_is_not_accepted(tmp_path: Path, monkeypatch) -> None:

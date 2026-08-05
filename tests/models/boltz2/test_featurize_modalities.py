@@ -12,6 +12,12 @@ from foldjax.models.boltz2.data.types import StructureV2
 
 ROOT = Path(__file__).resolve().parents[4]
 MOLS = ROOT / "boltz/.cache/boltz/mols"
+# A 12-line job, kept here rather than read out of a sibling checkout's output
+# directory. It used to be `../boltz_jax/outputs/prep/affinity_no_msa.yaml`,
+# which made this test the one thing in the suite that still required a
+# repository FoldJAX no longer depends on -- and unlike the two paths below it
+# was not guarded, so it failed rather than skipped.
+AFFINITY_JOB = Path(__file__).parent / "fixtures/affinity_no_msa.yaml"
 TEMPLATE = (
     ROOT
     / "boltz/benchmark_results/real_pdb_eval_expanded_2026-06-04"
@@ -170,9 +176,8 @@ def test_template_and_affinity_inputs_reach_model_features(tmp_path) -> None:
         template_job, tmp_path / "template", MOLS
     )
 
-    affinity_job = ROOT / "boltz_jax/outputs/prep/affinity_no_msa.yaml"
     affinity_feats, affinity_manifest, affinity_struct_dir = featurize_yaml(
-        affinity_job, tmp_path / "affinity", MOLS
+        AFFINITY_JOB, tmp_path / "affinity", MOLS
     )
 
     assert float(template_feats["template_mask"].sum()) > 0

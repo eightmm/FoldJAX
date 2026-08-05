@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-07-31",
+  "opendde_source_revision": "f607bb3c9ff299c0627ac20f5ef8e25d716ed46f",
+  "template_policy": {
+    "max_template_date": "2021-09-30",
+    "release_dates_asset": "release_date_cache.json",
+    "obsolete_map_asset": "obsolete_to_successor.json",
+    "selected_hits": {
+      "9fm7": ["5ocm_A", "3zgy_A", "5a9s_B", "5a9r_A"],
+      "MGYP004658859411": ["2PE5_B", "3KJX_D", "1JFT_A", "1QPZ_A"]
+    },
+    "mapping_sha256": {
+      "5ocm_A": "5a08463e330ab8580b546796834a0e479a16a15106645e90cb9b3d2378510887",
+      "3zgy_A": "4b38fb72846e48eb35d7fc4ab2144939cd6c447a711ca4131ce174bdbad68544",
+      "5a9s_B": "deb8ab5bfcea5083df1e0e84f0275adfaafe4f40a8c1708998fdc0f1b0869d63",
+      "5a9r_A": "deb8ab5bfcea5083df1e0e84f0275adfaafe4f40a8c1708998fdc0f1b0869d63",
+      "2pe5_B": "5e16352570a290cdd9fda2873622d9f1722dd4eca5450d5e7503d5b2e0cf6f2e",
+      "3kjx_D": "ae118976e84e1b299670fb94f232229851aec69bdc0ab30bfd684ff10dce25e5",
+      "1jft_A": "665dc9548c79f53531af7e48032ca7c1b939da559c271abc9425bdbb1d7702fb",
+      "1qpz_A": "665dc9548c79f53531af7e48032ca7c1b939da559c271abc9425bdbb1d7702fb"
+    }
+  },
+  "assets": [
+    {
+      "name": "opendde.pt",
+      "kind": "official_checkpoint",
+      "url": "https://huggingface.co/aurekaresearch/OpenDDE/resolve/eddd563ce96571f784012edd8f045181c8f8627d/opendde.pt",
+      "bytes": 2625249069,
+      "sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+      "redistributed": false
+    },
+    {
+      "name": "components.cif",
+      "kind": "official_ccd_dictionary",
+      "url": "https://protenix.tos-cn-beijing.volces.com/common/components.cif",
+      "bytes": 490777362,
+      "sha256": "bb31ae5cf6c8bc669924313077cb4231ee5ffefd3a20118cd14f3ec89f8bb6a5",
+      "redistributed": false
+    },
+    {
+      "name": "components.cif.rdkit_mol.pkl",
+      "kind": "official_ccd_reference_cache",
+      "url": "https://protenix.tos-cn-beijing.volces.com/common/components.cif.rdkit_mol.pkl",
+      "bytes": 142498117,
+      "sha256": "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35",
+      "trusted_pickle": true,
+      "redistributed": false
+    },
+    {
+      "name": "release_date_cache.json",
+      "kind": "official_template_release_dates",
+      "url": "https://protenix.tos-cn-beijing.volces.com/common/release_date_cache.json",
+      "bytes": 12754898,
+      "sha256": "8b1ef12ddc01a0d5eb2d388c77ded91aa906eebce7440726c57b6f8d1a3ec142",
+      "redistributed": false
+    },
+    {
+      "name": "obsolete_to_successor.json",
+      "kind": "official_obsolete_template_map",
+      "url": "https://protenix.tos-cn-beijing.volces.com/common/obsolete_to_successor.json",
+      "bytes": 86882,
+      "sha256": "2bc08348d0efba438c109bb27be6fa25b611d371c60b8a8da3de387a4a0698ad",
+      "redistributed": false
+    },
+    {
+      "name": "kalign_3.3.5-1_amd64.deb",
+      "kind": "external_template_aligner",
+      "package": "kalign",
+      "package_version": "1:3.3.5-1",
+      "platform": "ubuntu_amd64",
+      "url": "http://kr.archive.ubuntu.com/ubuntu/pool/universe/k/kalign/kalign_3.3.5-1_amd64.deb",
+      "bytes": 147716,
+      "sha256": "126863c8ac6787e3918c3e00f796af4d5685d2752fc8fceddf22a3c00f34c560",
+      "license": "GPL-3+",
+      "redistributed": false
+    },
+    {
+      "name": "5ocm.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/5OCM.cif",
+      "bytes": 1517241,
+      "sha256": "1f6f6360a215cc4c5492002cc1da143fbf58ff53d4617aaac5ac357c495049cd",
+      "redistributed": false
+    },
+    {
+      "name": "3zgy.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/3ZGY.cif",
+      "bytes": 848133,
+      "sha256": "3eb57cb01021cdd00a060fe9e4212be0082eb85b363e70be7083fe003a15476c",
+      "redistributed": false
+    },
+    {
+      "name": "5a9s.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/5A9S.cif",
+      "bytes": 497150,
+      "sha256": "46f1e3b5bb768ead0ab5fb182a692f8e706b1ce2db153ad6f3a7c2b41bbefe1e",
+      "redistributed": false
+    },
+    {
+      "name": "5a9r.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/5A9R.cif",
+      "bytes": 272039,
+      "sha256": "7d13439f4dc987439e59b0a7be5d06f4f2ad9dfded66da90b800d8d429c5f087",
+      "redistributed": false
+    },
+    {
+      "name": "1jft.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/1JFT.cif",
+      "bytes": 393406,
+      "sha256": "241c7b42572e201fa0b84f3ddc927182bd046a93330f19ef8a8bcea9732101e2",
+      "redistributed": false
+    },
+    {
+      "name": "1qpz.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/1QPZ.cif",
+      "bytes": 385284,
+      "sha256": "50ccfe884923cc08e9eaad044663dfa1eaef5a5bed8a5362c301e79915cd78b2",
+      "redistributed": false
+    },
+    {
+      "name": "2pe5.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/2PE5.cif",
+      "bytes": 942240,
+      "sha256": "6333514c751de5c79bd9922bc721f15cd10efcde9b0372d01921fdcbeb30f8f7",
+      "redistributed": false
+    },
+    {
+      "name": "3kjx.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/3KJX.cif",
+      "bytes": 1097243,
+      "sha256": "e90b2bfa791c098e1d0bcd3fe89105b809ecd779fe1c818d770d30da8a6e1404",
+      "redistributed": false
+    },
+    {
+      "name": "4o5a.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/4O5A.cif",
+      "bytes": 478499,
+      "sha256": "22019f034033a4f7e88d408027b9d18ec3c6122ec8d609f1fb6c3ef2f8be423b",
+      "redistributed": false
+    },
+    {
+      "name": "5ufh.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/5UFH.cif",
+      "bytes": 511520,
+      "sha256": "23c29107321eafd794d39805725286ea14cb71803725c3c5cacc9d6c9a3998f1",
+      "redistributed": false
+    },
+    {
+      "name": "7wnn.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/7WNN.cif",
+      "bytes": 626651,
+      "sha256": "cedd58a1726ab4efbf5075e3e3095b2911bb149c77ff1847ffc5c4c6278d1d50",
+      "redistributed": false
+    },
+    {
+      "name": "7wnw.cif",
+      "kind": "pdb_template_coordinate",
+      "url": "https://files.rcsb.org/download/7WNW.cif",
+      "bytes": 585275,
+      "sha256": "56f3508efc7f4af22e8697073c137d2c6303e0371a7d3a5e411434fdb43798b3",
+      "redistributed": false
+    }
+  ],
+  "derived_local_artifacts": [
+    {
+      "name": "opendde.jax",
+      "source": "opendde.pt",
+      "bytes": 2623328025,
+      "sha256": "161801261e288f225c3250e0fd12ca36ced52fde78837eed9407606c5759d155"
+    }
+  ],
+  "licensing_note": "OpenDDE source is Apache-2.0. Kalign is an external GPL-3+ executable and is not linked into or redistributed by this project. Verify checkpoint and common-asset redistribution rights separately; this project records provenance but does not redistribute these files. PDB coordinate use remains subject to wwPDB/RCSB terms."
+}

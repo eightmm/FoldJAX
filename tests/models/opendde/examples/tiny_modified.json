@@ -1,0 +1,21 @@
+[
+  {
+    "name": "tiny_modified",
+    "modelSeeds": [101],
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "SA",
+          "count": 1,
+          "id": ["A"],
+          "modifications": [
+            {
+              "ptmType": "CCD_SEP",
+              "ptmPosition": 1
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

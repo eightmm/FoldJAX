@@ -1,9 +1,15 @@
 """OpenFold3-JAX adapter.
 
-Unlike the other backends this drives the Python API rather than a CLI, because
-OpenFold3 splits featurization from inference on purpose: featurization needs
-upstream's data stack, inference needs only JAX and a checkpoint. Shelling out
-would force both into one process for no benefit.
+Unlike the other vendored backends this drives the port's Python API rather
+than its CLI, because OpenFold3 splits featurization from inference on purpose:
+featurization delegates to upstream's data stack, inference needs only JAX and
+a checkpoint. Shelling out would force both into one process for no benefit.
+
+That split is also the one thing about this backend that is not self-contained.
+Prediction from a featurized batch needs nothing beyond FoldJAX's base
+dependencies, but building that batch needs the ``openfold3-preprocess`` extra
+and an upstream OpenFold3 checkout, which is a directory rather than a package.
+`foldjax.models.openfold3.data` raises with both remedies named.
 """
 
 from __future__ import annotations
@@ -51,24 +57,16 @@ class OpenFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
-        try:
-            data = import_module("openfold3_jax.data")
-            inference = import_module("openfold3_jax.inference")
-            output = import_module("openfold3_jax.output")
-            chemistry = import_module("openfold3_jax.bridge.chemistry")
-            checkpoint = import_module("openfold3_jax.bridge.checkpoint")
-            mapping = import_module("openfold3_jax.bridge.torch_mapping")
-        except ModuleNotFoundError as error:
-            # It is published on no index and cannot be a dependency, so a bare
-            # "No module named 'openfold3_jax'" leaves the reader with no way
-            # to find out whether that is a bug, a missing extra, or by design.
-            raise ModuleNotFoundError(
-                "the openfold3 backend drives an OpenFold3-JAX installation you "
-                "provide; it is on no package index, so `uv sync` cannot "
-                "install it. See docs/openfold3.md -- the port is also still "
-                f"incomplete and has never run end to end here (missing: "
-                f"{error.name})"
-            ) from error
+        # The port is vendored, so these are ordinary in-package imports. They
+        # stay inside `predict` only to keep `import foldjax` off JAX's import
+        # cost, which is the same reason the other vendored backends do it.
+        data = import_module("foldjax.models.openfold3.data")
+        inference = import_module("foldjax.models.openfold3.inference")
+        output = import_module("foldjax.models.openfold3.output")
+        chemistry = import_module("foldjax.models.openfold3.bridge.chemistry")
+        checkpoint = import_module("foldjax.models.openfold3.bridge.checkpoint")
+        mapping = import_module("foldjax.models.openfold3.bridge.torch_mapping")
+        compilation = import_module("foldjax.models.openfold3.compilation")
         jax = import_module("jax")
 
         spec = json.loads(Path(request.input).read_text(encoding="utf-8"))
@@ -99,6 +97,19 @@ class OpenFold3Backend(Backend):
         compile_it = not bool(options.pop("no_compile", False))
         if options:
             raise ValueError(f"unsupported OpenFold3 options: {', '.join(options)}")
+
+        # This backend was the only one that ignored the request's cache
+        # directory, which is the one it could least afford to: compiling the
+        # released architecture takes minutes and grows with token count, so
+        # without a persistent cache every process pays it again. `api.predict`
+        # has already namespaced the directory per model, weight identity and
+        # compile-relevant options.
+        #
+        # `enable_compilation_cache` rather than a bare `jax.config.update`,
+        # because it also lifts the minimum entry size -- XLA otherwise skips
+        # exactly the small-but-slow-to-compile graphs this port produces.
+        if compile_it and request.cache_dir is not None:
+            compilation.enable_compilation_cache(request.cache_dir)
 
         key = jax.random.key(request.seed)
         table = chemistry.representative_atom_table()

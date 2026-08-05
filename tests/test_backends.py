@@ -729,26 +729,56 @@ def test_chai_refuses_to_report_success_with_no_structures(
         ChaiBackend().predict(_request(tmp_path, "chai"))
 
 
-def test_openfold3_says_why_its_package_is_absent(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """It is on no index, so a bare import error explains nothing.
+def test_openfold3_predicts_from_the_vendored_package() -> None:
+    """Everything the backend imports is in-package, needing no extra.
 
-    The reader cannot tell from "No module named 'openfold3_jax'" whether that
-    is a bug, a missing extra, or the intended state of an unfinished port.
+    This test used to assert the opposite: the port was on no package index, so
+    the backend raised a ModuleNotFoundError explaining that you had to install
+    it yourself. Vendoring removed the condition, and the message with it.
 
-    The absence is simulated rather than assumed. This test used to depend on
-    `openfold3_jax` not being installed, so it stopped exercising the message
-    the moment someone installed the package -- which is exactly when the
-    message stops being checked and starts being able to rot.
+    What is worth pinning now is the property vendoring bought -- that a plain
+    `uv sync` is enough to predict with this model. Importing each module by the
+    name the backend uses is what would catch the package being moved or
+    renamed, which is the way this can regress.
     """
-    from foldjax.backends import openfold3 as backend_module
-    from foldjax.backends.openfold3 import OpenFold3Backend
+    from importlib import import_module
 
-    def absent(name: str, *args, **kwargs):
-        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+    for name in (
+        "foldjax.models.openfold3.data",
+        "foldjax.models.openfold3.inference",
+        "foldjax.models.openfold3.output",
+        "foldjax.models.openfold3.compilation",
+        "foldjax.models.openfold3.bridge.chemistry",
+        "foldjax.models.openfold3.bridge.checkpoint",
+        "foldjax.models.openfold3.bridge.torch_mapping",
+    ):
+        assert import_module(name) is not None, name
 
-    monkeypatch.setattr(backend_module, "import_module", absent)
 
-    with pytest.raises(ModuleNotFoundError, match="docs/openfold3.md"):
-        OpenFold3Backend().predict(_request(tmp_path, "openfold3"))
+def test_openfold3_featurization_names_what_it_needs(monkeypatch) -> None:
+    """Featurization is the one part that is still not self-contained.
+
+    It delegates to upstream OpenFold3's data pipeline, which needs an extra
+    *and* a checkout. A bare "No module named 'openfold3...'" cannot tell those
+    two apart, and neither is guessable, so the message names both remedies.
+
+    Simulated rather than assumed: setting the module to None in `sys.modules`
+    makes the import fail even where upstream is installed, so this keeps
+    checking the message on a machine that has the checkout -- which is exactly
+    where it would otherwise rot unnoticed.
+    """
+    import sys
+
+    from foldjax.models.openfold3.data import featurize_query
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openfold3.projects.of3_all_atom.config.inference_query_format",
+        None,
+    )
+    with pytest.raises(ImportError) as error:
+        featurize_query({"queries": {}})
+    message = str(error.value)
+    assert "openfold3-preprocess" in message
+    assert "checkout" in message
+    assert "docs/openfold3.md" in message

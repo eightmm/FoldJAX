@@ -43,10 +43,22 @@ DATA = Path(
     )
 )
 
-#: Every model FoldJAX can run. `alphafold3` has no "upstream" column: FoldJAX
-#: drives the user's own AlphaFold 3 installation rather than reimplementing
-#: it, so both columns would be the same code.
-MODELS = ("alphafold3", "boltz2", "chai", "opendde", "protenix")
+#: Every model FoldJAX can run.
+MODELS = ("alphafold3", "boltz2", "chai", "opendde", "openfold3", "protenix")
+
+#: The models with a meaningful "upstream" column, i.e. the ones `run_upstream`
+#: knows how to drive.
+#:
+#: `alphafold3` is absent because FoldJAX drives the user's own AlphaFold 3
+#: installation rather than reimplementing it, so both columns would run the
+#: same code.
+#:
+#: `openfold3` is absent for a different reason, and a temporary one: it *is* a
+#: reimplementation, but `run_upstream.command` has no branch for it and no
+#: upstream OpenFold3 virtualenv has been provisioned on this host. Until both
+#: exist, an "upstream" number would have to be borrowed from somewhere else,
+#: which is exactly what this directory refuses to do. It can be measured on
+#: the FoldJAX side today.
 REIMPLEMENTED = ("boltz2", "chai", "opendde", "protenix")
 
 

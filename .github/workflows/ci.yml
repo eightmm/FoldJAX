@@ -30,10 +30,15 @@ jobs:
           version: "0.10.3"
           enable-cache: true
 
-      # A clean runner has no sibling checkouts, which is the whole point: the
-      # `openfold3` extra used to resolve to `../openfold3_jax` and made this
-      # command fail for everyone but the machine it was written on. This job
-      # is that regression test.
+      # A clean runner has no sibling checkouts, which is the whole point: an
+      # `openfold3` extra once resolved to `../openfold3_jax` and made this
+      # command fail for everyone but the machine it was written on. That port
+      # is vendored now, along with the shared MSA search and the real-target
+      # loader, so nothing outside this repository is named here. AlphaFold 3
+      # is the one thing that still cannot be -- it is not redistributable and
+      # pins an incompatible CUDA generation. This job is the regression test
+      # for all of it: uv resolves every extra to build the lockfile, so a path
+      # dependency that exists on one machine breaks `uv sync` on every other.
       - name: Install
         run: uv sync --group dev --frozen
 

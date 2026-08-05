@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "foldjax"
 version = "0.3.0"
-description = "One standalone JAX package for Boltz-2, Chai-1, OpenDDE, and Protenix inference"
+description = "One standalone JAX package for Boltz-2, Chai-1, OpenDDE, OpenFold3, and Protenix inference"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
@@ -15,6 +15,7 @@ keywords = [
     "chai-1",
     "jax",
     "opendde",
+    "openfold3",
     "protein-structure",
     "protenix",
 ]
@@ -25,8 +26,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# Union of the four vendored ports' runtime requirements. FoldJAX itself adds
+# Union of the five vendored ports' runtime requirements. FoldJAX itself adds
 # no third-party dependency beyond what the vendored models already need.
+# OpenFold3 added none: its inference path needs only jax, numpy, safetensors
+# and gemmi, all of which were already here for the other four.
 dependencies = [
     # shared JAX runtime
     "jax==0.10.1",
@@ -81,6 +84,30 @@ boltz-preprocess = [
     "pytorch-lightning>=2.5.0",
     "torch>=2.2",
 ]
+# OpenFold3 featurization. Prediction needs none of this: the inference path
+# loads a featurized `.npz` and imports neither torch nor upstream. Building
+# that `.npz` delegates to upstream OpenFold3's own data pipeline, which is
+# exact where a reimplementation would be a guess, so these are upstream's
+# data-side requirements rather than ours.
+#
+# Upstream's own code is deliberately absent: it is a checkout, not a package,
+# so it is found by `models/openfold3/upstream.py` and $OPENFOLD3_SOURCE. This
+# extra supplies what that checkout imports, nothing more.
+openfold3-preprocess = [
+    "biotite",
+    "boto3",
+    "click",
+    "func-timeout",
+    "ijson",
+    "kalign-python",
+    "lmdb",
+    "memory-profiler",
+    "ml-collections>=0.1.1",
+    "pdbeccdutils",
+    "pydantic",
+    "pytorch-lightning>=2.1",
+    "torch>=2.2",
+]
 # One-time conversion of released torch checkpoints into the native JAX weight
 # files. Never needed on the prediction path.
 torch-bridge = [
@@ -88,20 +115,32 @@ torch-bridge = [
     "torch>=2.2",
 ]
 esm = ["fair-esm>=2.0.0", "torch>=2.2"]
+# AlphaFold 3's own dependencies, minus JAX. The `alphafold3` package itself
+# still cannot be listed here -- it is on no index and upstream pins
+# `jax[cuda12]` -- but everything else it imports resolves against this
+# environment, and naming them stops `uv sync` from uninstalling them on every
+# run. Install the package itself once with
+# `uv pip install --no-deps -e /path/to/alphafold3`, and use `uv sync --inexact`
+# afterwards so an exact sync does not remove it again.
+alphafold3 = [
+    "absl-py>=2.3.1",
+    "dm-haiku==0.0.16",
+    "etils[epath]",
+    "zstandard",
+]
 # Only needed to cross-check FoldJAX's own conformer reader against Chai's
 # adapters. Converting and predicting need neither.
 chai-crosscheck = ["antipickle==0.2.0", "beartype>=0.19", "torch>=2.2"]
-# Two extra backends cannot be vendored: AlphaFold 3 is not redistributable and
-# openfold3-jax is an in-progress port that is not published anywhere. Neither
-# is a resolvable dependency, and that is deliberate.
+# AlphaFold 3 is the one backend that cannot be vendored: its parameters are not
+# redistributable, and upstream pins `jax[cuda12]`, which cannot co-resolve with
+# a CUDA 13 cluster — the right JAX plugin differs per site. Naming it here, even
+# behind an extra, would make `uv sync` fail for everyone, because uv resolves
+# every extra to build the lockfile. Install it into the same environment
+# yourself (see docs/alphafold3.md); the backend finds it by import.
 #
-# AlphaFold 3 upstream pins `jax[cuda12]`, which cannot co-resolve with a CUDA
-# 13 cluster, and the right JAX plugin differs per site. OpenFold3-JAX has no
-# release on any index. Naming either one here — even behind an extra — makes
-# `uv sync` fail for everyone who does not already have that checkout, because
-# uv resolves every extra to build the lockfile. Install them into the same
-# environment yourself (see docs/alphafold3.md and docs/openfold3.md); both
-# backends find their package by import.
+# OpenFold3 used to be excluded for a different reason — it was published on no
+# index — which vendoring removed. The port now lives in
+# `foldjax.models.openfold3` and needs no extra to predict.
 
 [project.urls]
 Homepage = "https://github.com/eightmm/foldjax"
@@ -122,6 +161,10 @@ chai-jax-inspect-component = "foldjax.models.chai.cli.inspect_component:main"
 opendde-jax-export-weights = "foldjax.models.opendde.bridge.export_weights:main"
 opendde-jax-predict = "foldjax.models.opendde.cli.predict:main"
 opendde-jax-verify-inputs = "foldjax.models.opendde.cli.verify_inputs:main"
+openfold3-jax-featurize = "foldjax.models.openfold3.cli.featurize:entrypoint"
+openfold3-jax-inspect-checkpoint = "foldjax.models.openfold3.cli.inspect_checkpoint:entrypoint"
+openfold3-jax-predict = "foldjax.models.openfold3.cli.predict:entrypoint"
+openfold3-jax-verify-checkpoint = "foldjax.models.openfold3.cli.verify_checkpoint:entrypoint"
 protenix-jax-export-weights = "foldjax.models.protenix.bridge.export_weights:main"
 protenix-jax-featurize-json = "foldjax.models.protenix.data.featurize_json:main"
 protenix-jax-predict = "foldjax.models.protenix.cli.predict:main"
@@ -136,6 +179,7 @@ where = ["src"]
 "foldjax.models.protenix" = ["data/*.npz", "LICENSE", "NOTICE"]
 "foldjax.models.boltz2" = ["LICENSE", "NOTICE"]
 "foldjax.models.chai" = ["LICENSE", "NOTICE"]
+"foldjax.models.openfold3" = ["LICENSE", "NOTICE"]
 
 [dependency-groups]
 dev = [
@@ -173,6 +217,10 @@ addopts = ""
 markers = [
     "slow: end-to-end / checkpoint-heavy tests",
     "official_parity: requires official model assets or an upstream checkout",
+    # The OpenFold3 suite marks every test that compares against upstream's
+    # torch modules. Unregistered, it produced a PytestUnknownMarkWarning per
+    # test -- 60 of them -- which is how a real warning goes unread.
+    "torch_parity: compares against the upstream torch implementation",
 ]
 
 [tool.coverage.run]

@@ -6,19 +6,25 @@
 
 # FoldJAX
 
-Biomolecular structure prediction in JAX. Five models behind one interface —
-four carried complete inside the package:
+Biomolecular structure prediction in JAX. Six models behind one interface —
+five carried complete inside the package:
 
 | model | vendored at | licence | upstream |
 |---|---|---|---|
 | `boltz2` | `foldjax.models.boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
 | `chai` | `foldjax.models.chai` | Apache-2.0 | [chaidiscovery/chai-lab](https://github.com/chaidiscovery/chai-lab) |
 | `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
+| `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
 | `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
 
 — plus `alphafold3`, which FoldJAX drives rather than carries, because its
 parameters may not be redistributed. It takes the same job file as the rest
 once installed; see [docs/alphafold3.md](docs/alphafold3.md).
+
+OpenFold3 is the one port whose *featurization* is not self-contained: building
+its features delegates to upstream's own data pipeline, which is exact where a
+reimplementation would be a guess. Prediction needs none of it. See
+[docs/openfold3.md](docs/openfold3.md).
 
 Give it one job file and a model name. Weights, the input dialect, the output
 directory, and the XLA compile cache are all resolved for you.
@@ -106,14 +112,15 @@ uv run foldjax predict \
 `--num-samples`, `--num-steps`, and `--num-recycles` are model-neutral. Each
 backend calls them something different, and FoldJAX translates:
 
-| neutral | alphafold3 | boltz2 | chai | opendde / protenix |
-|---|---|---|---|---|
-| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_diffusion_samples` | `n_sample` |
-| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `num_diffusion_timesteps` | `n_step` |
-| `--num-recycles` | `num_recycles` | `recycling` | `num_trunk_recycles` | `n_cycle` |
-| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | `max_msa_depth` | `max_msa_rows` |
+| neutral | alphafold3 | boltz2 | chai | openfold3 | opendde / protenix |
+|---|---|---|---|---|---|
+| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_diffusion_samples` | `num_samples` | `n_sample` |
+| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `num_diffusion_timesteps` | `no_rollout_steps` | `n_step` |
+| `--num-recycles` | `num_recycles` | `recycling` | `num_trunk_recycles` | `num_cycles` | `n_cycle` |
+| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | `max_msa_depth` | *refused* | `max_msa_rows` |
 
-All four reach all five models. AlphaFold 3's step count and MSA depth are not
+The first three reach all six models. `--max-msa-depth` reaches five: OpenFold3
+exposes no MSA-depth argument, so it is refused rather than quietly ignored. AlphaFold 3's step count and MSA depth are not
 arguments of `make_model_config`, but the config it returns is an ordinary
 mutable object and upstream already sets the sample count on it by assignment;
 FoldJAX sets these the same way. That matters beyond convenience — a model that
@@ -145,14 +152,18 @@ schedule and one measurement, see
 
 OpenDDE is the example worth keeping: it would not run at all before this work,
 asking for 76 GiB on a 488-token job and dying. It now runs that job in about
-10 GiB, and at 490 residues under the released schedule it peaks at 10.5 GiB
-against upstream torch's 18.6 GiB.
+10 GiB, and at 490 residues under the released schedule it peaks at 13.3 GiB
+against upstream torch's 18.6 GiB. (That 13.3 is fp32, matching upstream's own
+default. The 10.5 GiB this line used to quote was a bfloat16 run being compared
+against an fp32 upstream, which is not the same measurement.)
 
 Each of the changes below came from reading XLA's buffer assignment for the
 peak and fixing whatever it named — a habit worth more than any individual fix
 in the list.
 
-**The transition was the largest buffer in three of the four ports.** It widens
+**The transition was the largest buffer in three of the four ports** carried at
+the time this was measured; OpenFold3 was vendored later and has not been
+through this pass. It widens
 its input before narrowing it again and holds three copies of the wide form at
 once — `a`, `b`, and `silu(a) * b`. On OpenDDE's structural pair representation
 those were three `f32[946, 946, 768]` buffers, 2,622 MiB apiece: 7,866 MiB of a
@@ -314,7 +325,8 @@ Confidence is flat across the whole sweep, because blocking the query axis is
 exact — the softmax still reduces over the entire key axis inside each block.
 Before any of this, OpenDDE asked for 76 GiB and died.
 
-OpenDDE is still the heaviest of the five, and some of that is the model rather
+OpenDDE is still the heaviest model in the table above, and some of that is the
+model rather
 than the implementation: its structural refiner runs on 946 sub-residue tokens
 for a 488-residue job, with a 384-channel pair representation. That tensor is
 1,311 MiB in float32 where AlphaFold 3's `[488, 488, 128]` bfloat16 pair is
@@ -421,16 +433,20 @@ same of their upstream, which is what makes the comparison mean anything.
 | 132 | alphafold3 | 256 | - | 1,588 | - | - | - | - | - | - |
 | 132 | boltz2 | 14 | 27 | 2,981 | 2,947 | 1.93x | 0.99x | complex_plddt | 0.7260 | 0.7084 |
 | 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
-| 132 | opendde | 15 | 18 | 3,654 | 3,784 | 1.18x | 1.04x | ranking_score | 0.0947 | 0.0957 |
+| 132 | opendde | 25 | 17 | 3,651 | 3,784 | 0.66x | 1.04x | ranking_score | 0.0947 | 0.0957 |
 | 132 | protenix | 15 | 52 | 1,777 | 2,910 | 3.39x | 1.64x | ranking_score | 0.0996 | 0.0997 |
 | 490 | boltz2 | 47 | 53 | 6,222 | 8,128 | 1.13x | 1.31x | complex_plddt | 0.3619 | 0.3629 |
 | 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
-| 490 | opendde | 81 | 71 | 10,552 | 18,580 | 0.88x | 1.76x | ranking_score | 0.0974 | 0.0915 |
+| 490 | opendde | 80 | 73 | 13,345 | 18,580 | 0.91x | 1.39x | ranking_score | 0.0967 | 0.0915 |
 | 490 | protenix | 33 | 60 | 4,668 | 4,481 | 1.82x | 0.96x | ranking_score | 0.0670 | 0.0659 |
 | 970 | boltz2 | 150 | 127 | 11,570 | 14,211 | 0.85x | 1.23x | complex_plddt | 0.5391 | 0.5408 |
 | 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
-| 970 | opendde | 366 | 265 | 34,418 | 59,755 | 0.72x | 1.74x | ranking_score | 0.0963 | 0.0966 |
+| 970 | opendde | 272 | 271 | 44,519 | 59,755 | 1.00x | 1.34x | ranking_score | 0.0964 | 0.0966 |
 | 970 | protenix | 98 | 94 | 10,807 | 12,315 | 0.96x | 1.14x | ranking_score | 0.0839 | 0.0834 |
+| 1531 | boltz2 | 382 | 302 | 21,174 | 26,491 | 0.79x | 1.25x | complex_plddt | 0.7172 | 0.7195 |
+| 1531 | chai | 387 | 591 | 36,566 | 24,227 | 1.53x | 0.66x | aggregate_score | 0.1307 | 0.1294 |
+| 1531 | opendde | failed | failed | failed | failed | - | - | - | - | - |
+| 1531 | protenix | 254 | 176 | 24,764 | 27,918 | 0.69x | 1.13x | ranking_score | 0.1200 | 0.1193 |
 
 Read it with the method in mind:
 
@@ -460,25 +476,39 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
 
 ### What the table says
 
-- **FoldJAX uses less memory almost everywhere.** The exceptions are Chai at
-  970 tokens (17,185 against 15,080, 14% more) and Protenix at 490 (4,647
-  against 4,481, 4% more). Elsewhere it is 1.04x to 2.79x lower, and the
-  advantage grows with size for Boltz-2 and OpenDDE.
-- **On speed it wins at small and mid sizes and converges at large.** Boltz-2
-  and Protenix are 1.3x-3.3x faster at 132 and 490 tokens and level with
-  upstream at 970. Chai is faster at every size and pulls further ahead as the
-  job grows (1.46x at 970).
-- **OpenDDE is the one model slower than its upstream**, by 2x-4x at every
-  size, while using 1.7x less memory at 490 and 970. That is the remaining gap,
-  and it is now located: at 132 tokens the whole job is 70 s, of which 31 s is
-  the nine extra trunk recycles (~3.4 s each) and just 1 s is the 199 extra
-  diffusion steps. Diffusion is effectively free since the sampler was rolled
-  into `lax.scan`; the pairformer is what is left. Unrolling that stack instead
-  is not the answer -- it does not finish compiling in ten minutes.
-- **Confidence agrees for every model.** Chai matches to four decimals at all
-  three sizes, OpenDDE and Protenix to within 1-2%, Boltz-2 to within 1-2% at
-  490 and 970 and 5.6% at 132. Two of those took real fixes, both found the
-  same way and both described below.
+- **FoldJAX uses less memory almost everywhere.** The exceptions are Chai at the
+  two largest sizes (17,185 against 15,080 at 970, and 36,566 against 24,227 at
+  1,531) and Protenix at 490 (4,668 against 4,481, 4% more). Elsewhere it is
+  1.04x to 2.79x lower.
+- **On speed it wins at small and mid sizes and loses at large.** Boltz-2 and
+  Protenix are 1.1x-3.4x faster at 132 and 490 tokens, level at 970, and
+  slower at 1,531. Chai is the exception in both directions: faster at every
+  size and pulling further ahead as the job grows (1.53x at 1,531), which it
+  pays for in memory.
+- **OpenDDE is the slowest relative to its upstream**, and the gap is smaller
+  than it looked. Earlier readings of 2x-4x were taken at bfloat16 against an
+  fp32 upstream and were not a matched comparison: upstream runs `dtype: fp32`
+  with `enable_tf32: True`, not bf16. Re-measured with the dtypes agreeing, it
+  is 0.66x at 132 tokens, 0.91x at 490 and level at 970, while using 1.04x to
+  1.39x less memory. What remains is the trunk: at 132 tokens the whole job is
+  70 s, of which 31 s is the nine extra recycles (~3.4 s each) and just 1 s is
+  the 199 extra diffusion steps. Diffusion is effectively free since the sampler
+  was rolled into `lax.scan`; the pairformer is what is left. Unrolling that
+  stack is not the answer -- it does not finish compiling in ten minutes.
+- **At 1,531 tokens OpenDDE runs out of memory on both sides**, in fp32 on a
+  96 GiB card. That row is recorded as a failure rather than dropped, and
+  upstream's carries `"exited 0 but produced no structures"` -- its runner
+  swallows the allocator error and exits zero, so the row exists only because
+  the harness checks for structures instead of an exit code. `trunk_dtype=bf16`
+  completes it in 479.9 s at 58,747 MiB, kept under its own name because
+  upstream has no bf16 counterpart to compare against.
+- **Confidence agrees for every model.** Chai matches to four decimals at every
+  size, OpenDDE and Protenix to within 1-2%, Boltz-2 to within 1-2% except at
+  132 tokens. Two of those took real fixes, both found the same way and both
+  described below.
+- **OpenFold3 has no row.** It is vendored and runnable, but no upstream
+  OpenFold3 environment has been provisioned here, so there is nothing to
+  compare a FoldJAX number against. See [docs/openfold3.md](docs/openfold3.md).
 
 ### What the Protenix confidence gap turned out to be
 
@@ -647,24 +677,31 @@ reproduces the torch featurizer exactly. `--extra boltz-preprocess` installs
 real torch so the two can be compared, which is what
 `tests/models/boltz2/test_featurize_torch_parity.py` does.
 
-Two further backends stay external because they cannot be vendored.
+One backend stays external because it cannot be vendored.
 
 **AlphaFold 3** is fully wired and runs from the same job file as the other
-four — `foldjax predict --model alphafold3 --input job.yaml` — but FoldJAX
+five — `foldjax predict --model alphafold3 --input job.yaml` — but FoldJAX
 drives an installation you provide rather than carrying one. Its parameters are
 not redistributable, and upstream pins `jax[cuda12]`, which cannot co-resolve
 with a CUDA 13 cluster; the right JAX plugin differs per site. It is therefore
 deliberately absent from the dependency set.
 [docs/alphafold3.md](docs/alphafold3.md) has the install for either CUDA
-generation, where the weights go, and what changes on a device whose shared
-memory the upstream Triton kernels do not fit.
+generation, where the weights go, what changes on a device whose shared memory
+the upstream Triton kernels do not fit — and why you want `uv sync --inexact`
+afterwards, since an exact sync removes the one package that cannot be locked.
 
-**OpenFold3** is registered the same way and for the same reason, but the port
-behind it (`openfold3-jax`) is still in progress and is published on no index.
-It is therefore not a dependency either — naming it would break `uv sync` for
-everyone without that checkout, since uv resolves every extra to build the
-lockfile. [docs/openfold3.md](docs/openfold3.md) has the install and the
-current state of the port.
+**OpenFold3 used to be the second**, for a reason vendoring removed: the port
+was published on no index, so naming it would have broken `uv sync` for everyone
+without that checkout. It is now carried at `foldjax.models.openfold3` and needs
+no extra to predict — it added no base dependency, because its inference path
+wanted only `jax`, `numpy`, `safetensors` and `gemmi`, all already here.
+
+Its *featurization* is the one thing in FoldJAX that is still not
+self-contained: it delegates to upstream OpenFold3's own data pipeline, which
+needs `--extra openfold3-preprocess` and an upstream checkout (a directory, not
+a package). Prediction needs neither.
+[docs/openfold3.md](docs/openfold3.md) has the detail and the current state of
+the port.
 
 ## Tests
 
@@ -681,13 +718,33 @@ JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q \
     --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 ```
 
-1,020 tests pass with the optional extras installed, 85% coverage on the
-orchestration layer. Each vendored port brought its own suite to
+1,669 tests pass with the optional extras installed, 88 skipped, 87% coverage on
+the orchestration layer. Each vendored port brought its own suite to
 `tests/models/<name>/`, including the torch-parity gates it was built against.
-Those are excluded from collection unless the extra they need is installed — so
-the torch-free environment runs the subset that does not need one — and
+
+Those gates need an extra the torch-free environment deliberately omits, and the
+suites handle it two different ways. Boltz-2's and Chai's import torch at module
+scope, so they have to be excluded at *collection* time;
 `tests/models/test_optional_suite_gate.py` keeps that exclusion list honest
-rather than letting a suite go quietly uncollected.
+rather than letting a suite go quietly uncollected. OpenFold3's import torch
+inside the test bodies instead, so they collect anywhere and skip at run time —
+the better arrangement of the two, since a skipped test is reported and an
+uncollected one is not.
+
+Two things the suite used to need from outside are now in the repository, so
+nothing skips for want of a package that is on no index. The shared ColabFold
+MMseqs2 client is `foldjax.search` — it has no third-party dependency, so
+carrying it costs nothing and `--msa-server` works out of the box. The real-PDB
+target loader is `tests/_foldbench`, kept under `tests/` rather than `src/`
+because it fetches entries from RCSB over the network, which the installed
+package has no business being able to do.
+
+The tests built on real depositions still skip without `biotite`, which parses
+them:
+
+```bash
+uv sync --extra cuda13 --extra openfold3-preprocess   # adds biotite
+```
 
 ## Provenance
 
@@ -696,6 +753,14 @@ data intake through model output. Each keeps its upstream module layout,
 `LICENSE`, and `NOTICE`, so it stays diffable against the repository it came
 from; the top-level `NOTICE` lists every upstream, its licence, and where its
 port lives.
+
+Every port began as its own repository, and each carried notes the code alone
+does not: an experiment log, a porting plan, the gates it had to pass, and the
+benchmarks those gates were argued from. Those are in
+[docs/ports/](docs/ports/), so nothing is left behind in a checkout that no
+longer exists. They are history rather than instructions — the module names and
+commands in them predate vendoring — but they are the only record of why a
+given default was chosen and what was tried and rejected first.
 
 Model weights are covered by their own licences and are never redistributed
 here. AlphaFold 3 goes further — its parameters may not be redistributed at

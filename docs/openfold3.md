@@ -1,92 +1,95 @@
 # OpenFold3
 
-OpenFold3 is registered as a FoldJAX backend but is **not** installed by
-`uv sync`, and its port is **not finished**. Read this before selecting it.
+OpenFold3 is carried inside FoldJAX, at `foldjax.models.openfold3`. `uv sync`
+installs it with everything else, and predicting needs no extra and no sibling
+checkout:
 
-## Why it is not a dependency
+```bash
+foldjax predict --model openfold3 --input job.yaml
+```
 
-`openfold3-jax` is published on no package index. Listing it in `pyproject.toml`
-— even behind an optional extra — makes `uv sync` fail for everyone who does not
-already have the checkout, because uv resolves every extra to build the
-lockfile. That is exactly what happened: the extra pointed at a sibling
-directory (`../openfold3_jax`) that existed only on the machine it was
-developed on, so the first documented command in the README failed on every
-fresh clone.
+It was external until it was vendored, and this file used to explain how to
+install it separately. That is no longer necessary — the reason it was excluded
+was that `openfold3-jax` is published on no package index, which vendoring
+removes. AlphaFold 3 stays external for a different reason that vendoring cannot
+remove: its parameters may not be redistributed, and upstream pins an
+incompatible CUDA generation. See [alphafold3.md](alphafold3.md).
 
-AlphaFold 3 is excluded for a related but different reason (see
-[alphafold3.md](alphafold3.md)): its parameters are not redistributable and
-upstream pins an incompatible CUDA generation.
+## What it costs to add
 
-## State of the port
-
-`openfold3_jax`'s own `PROJECT.md` says "milestones 1-5 of 9 ... nothing runs
-end to end yet, and no checkpoint has been loaded". That is out of date. What
-was verified here, by running it:
-
-| step | result |
-|---|---|
-| `openfold3_jax` imports | all six modules the adapter needs |
-| every symbol the adapter calls | present, with matching signatures |
-| `load_checkpoint(of3_ft3_v1.pt)` | 4,945 tensors |
-| `map_inference_params` | returns `InferenceParams` |
-| FoldJAX job -> OpenFold3 query | translated, alignment linked (see below) |
-| `featurize_query` | 132 tokens, 1,013 atoms, MSA `(1, 2373, 132, 32)` |
-| `foldjax.predict(model="openfold3")` | one `.cif` written, with confidence scores |
-
-So the port is far further along than its own notes claim: it runs end to end.
-
-What that does **not** establish is that it runs *correctly*. The first
-end-to-end run used a deliberately short schedule -- 1 recycle, 20 steps, 1
-sample -- and returned `mean_plddt 0.400`, `ptm 0.305`. That is low, and a
-schedule that short cannot distinguish a hard target from a wrong weight
-mapping: `t0128` is an unconverged membrane protein on which Boltz-2's own
-samples share TM 0.06. Nothing here has been compared against upstream
-OpenFold3, and the model is still absent from `bench/spec.py::MODELS`.
-
-Read the table as "the path is connected", not "the port is validated".
-
-OpenFold3 is the highest-value remaining port: Apache-2.0 for code *and*
-weights with published training data, on the same AF3 architecture already
-ported twice in this repository.
+Nothing, at the dependency level. The inference path needs `jax`, `numpy`,
+`safetensors` and `gemmi`, all of which the other four ports already required,
+so vendoring OpenFold3 added no base dependency.
 
 ## Weights
 
-The weight store has no OpenFold3 entry, so `foldjax weights fetch --model
-openfold3` reports that it has no managed assets. Pass the checkpoint
-explicitly with `--weights`; `bridge.checkpoint.load_checkpoint` reads the
-released `.pt` directly.
-
-## Installing it
-
-Two checkouts, because featurization and inference have different dependencies
-on purpose: inference needs only JAX and a checkpoint, while featurization runs
-on upstream OpenFold3's data stack.
+The published checkpoint is `of3_ft3_v1.pt`, and the code *and* weights are
+Apache-2.0 with the training data published — this is the most permissively
+licensed model FoldJAX carries. The **repository is access-gated**, though: even
+its example config returns HTTP 401 unauthenticated, so FoldJAX cannot fetch it
+for you.
 
 ```bash
-uv pip install --no-deps -e /path/to/openfold3_jax
+# Request access at https://huggingface.co/OpenFold/OpenFold3, then:
+foldjax home                                        # where FoldJAX keeps things
+mkdir -p ~/.cache/foldjax/weights/openfold3         # or $FOLDJAX_HOME/weights/...
+cp of3_ft3_v1.pt ~/.cache/foldjax/weights/openfold3/
+foldjax weights list                                # openfold3 now reads `ready`
 ```
 
-`--no-deps` matters: `openfold3-jax` pins its own JAX and cuEquivariance
-versions, and resolving them would fight the ones FoldJAX already has pinned.
+`foldjax weights fetch --model openfold3` reports that the parameters are
+released only on request and names the directory to put them in, rather than
+failing with a bare 401.
 
-Featurization additionally imports upstream `openfold3`, which pulls a chain of
-packages that are not FoldJAX dependencies:
+Nothing is converted: the port reads the released checkpoint directly. A `.pt`
+is a torch file, so loading one needs `--extra torch-bridge`. A `safetensors`
+export loads without torch and can be passed to `--weights` instead.
+
+## Featurization is the one part that is not self-contained
+
+Every other port in FoldJAX featurizes in-package. OpenFold3 delegates to
+upstream's own data pipeline, on purpose: it is exact where a reimplementation
+would be a guess, and it now serves as the reference a future torch-free
+featurizer would be gated against.
+
+That needs two things prediction does not:
 
 ```bash
-uv pip install --no-deps biotite lmdb func_timeout click pdbeccdutils \
-    memory_profiler boto3 botocore s3transfer jmespath kalign-python
+uv sync --extra cuda13 --extra openfold3-preprocess    # upstream's data-side deps
 ```
 
-`kalign-python` is the distribution that provides `import kalign`; installing
-`kalign` fails, since no such project exists on PyPI. Upstream's own
-`pyproject.toml` is the authority for any name not obvious from the import.
+and upstream's own code, which is a **checkout rather than a package** — it is
+on no index either, and unlike the port it cannot be vendored without carrying
+its whole data stack. `foldjax.models.openfold3.upstream` looks for it beside
+the FoldJAX repository and honours `$OPENFOLD3_SOURCE`:
 
-None of these are declared as a FoldJAX extra, for the same reason
-`openfold3-jax` is not: uv resolves every extra when building the lockfile, so
-naming a package that is only needed by one optional backend makes `uv sync`
-slower and more fragile for everyone else. The backend resolves its package by
-import, and selecting `--model openfold3` without it raises `ModuleNotFoundError`
-naming `openfold3_jax`.
+```bash
+git clone https://github.com/aqlaboratory/openfold-3 ../openfold3
+# or
+export OPENFOLD3_SOURCE=/path/to/openfold-3
+```
+
+Missing either one raises with both remedies named rather than a bare
+`ModuleNotFoundError`.
+
+## Sampling knobs
+
+`--num-samples`, `--num-steps` and `--num-recycles` all reach it, translated to
+`num_samples`, `no_rollout_steps` and `num_cycles`.
+
+**`--max-msa-depth` is refused**, and that is deliberate: OpenFold3 exposes no
+MSA-depth argument, so accepting the flag would mean silently ignoring it. It is
+the only sampling knob any backend refuses.
+
+Backend options: `query_id`, `ccd_file_path`, `pair_chunk_size`, `prefix`,
+`no_compile`, and the three native sampling spellings.
+
+`pair_chunk_size` is worth knowing about. Triangle attention's scores are
+`[rows, heads, N, N]` — cubic in token count — so one *unchunked* pair block
+needs 267 GiB of temporaries at 2076 tokens against 41 GiB at 256 rows.
+`released_config` picks a chunk from the token count, and because the chunk
+shrinks as the target grows, peak memory rises more slowly than the square of
+the token count: 966 to 1494 tokens is 1.55x the tokens and only 1.44x the peak.
 
 ## Alignments are selected by filename
 
@@ -97,13 +100,64 @@ a name it does not recognise, and the stem also chooses the row cap:
 
 A job that names its alignment after the target — `t0128.a3m`, which is what
 every other backend here accepts — would therefore be silently dropped. The
-translation links it into the generated inputs directory under an accepted
-stem instead, one directory per chain so two chains cannot claim the same name:
+translation links it into the generated inputs directory under an accepted stem
+instead, one directory per chain so two chains cannot claim the same name:
 
 ```
 <output>/inputs/msa/A/colabfold_main.a3m -> /path/to/t0128.a3m
 ```
 
-An alignment that already carries a recognised stem is passed through
-untouched, since upstream then knows its row cap. `tests/test_openfold3_input.py`
-covers both, plus the two-chain collision and the suffix.
+An alignment that already carries a recognised stem is passed through untouched,
+since upstream then knows its row cap. `tests/test_input_openfold3.py` covers
+both, plus the two-chain collision and the suffix.
+
+## The compile cache
+
+Compiling this architecture is the dominant cost and grows with length — minutes
+at a few hundred tokens, where XLA prints its own slow-compile warning. FoldJAX's
+persistent cache is on by default and namespaced per model, weight identity and
+compile-relevant options, so it is paid once per shape rather than once per
+process.
+
+The backend used to ignore that cache, which made it the one model least able to
+afford doing so. It no longer does.
+
+## State of the port
+
+The whole latent trunk — Pairformer stack (AF3 Alg. 17), MSA module stack
+(AF3 Alg. 8) and template pair stack (AF2 Alg. 16) — plus the diffusion sampler
+and confidence heads are ported and gated against the real upstream torch
+modules at `rtol=atol=1e-4`. Parity is checked at three levels: per layer,
+against upstream's own *composed* code (`run_trunk`, `DiffusionModule.forward`,
+`SampleDiffusion.forward`, `AuxiliaryHeadsAllAtom.forward`), and `predict()`
+against `OpenFold3.forward` as a single call. At the released settings the worst
+disagreement is 2.1e-5 on coordinates whose maximum is 35.0.
+
+Every parameter of the released model is read by the inference path — 416 of 416
+unique tensors — measured by a test that fails if any group goes unread, which is
+how three unwired subsystems were originally found.
+
+On real 1UBQ, from the query sequence alone with no alignment and no template,
+the five samples land 2.52–2.79 Å CA RMSD from the deposition. Real targets up
+to 2076 tokens run.
+
+### What is not established
+
+- **No comparison against upstream OpenFold3 as a program.** `bench/spec.py`
+  lists `openfold3` in `MODELS` but not in `REIMPLEMENTED`, because
+  `run_upstream.command` has no branch for it and no upstream virtualenv has
+  been provisioned here. The FoldJAX side can be measured today; the column that
+  would make it a comparison cannot.
+- **Structural accuracy beyond 1UBQ** is unmeasured — no RMSD or clash gate
+  across a target set.
+- **Precision** is fp32 with matmul precision pinned to `highest`. Upstream also
+  runs `bf16-mixed`, which is numerically different by design.
+- **Upstream's memory-optimization and kernel paths** (chunked forward,
+  `forward_offload`, DeepSpeed/cuEq/Triton/LMA) are not ported. Upstream asserts
+  they are numerically equivalent; that is upstream's claim, not a measurement
+  here.
+- **MSA row choice above 1024 rows** cannot be reproduced without an explicit
+  permutation, because upstream draws it with `torch.randperm`.
+- **Batch size** is always 1. Nothing assumes it; nothing measures it either.
+- **A torch-free featurizer**, which is what would make this port as
+  self-contained as the other four.

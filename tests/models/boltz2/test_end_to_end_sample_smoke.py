@@ -12,31 +12,36 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 
+from foldjax.models.boltz2.bridge.native import load_features_npz
 from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import map_boltz2_graph_state_dict
+from foldjax.paths import downloads_dir
 
-ROOT = Path(__file__).resolve().parents[4]
-CHECKPOINT = ROOT / "boltz/.cache/boltz/boltz2_conf.ckpt"
-FEATURES = ROOT / "boltz_jax/outputs/real_features/1UBQ_A.pt"
+# Both used to point into sibling checkouts -- the released checkpoint at
+# `../boltz/.cache/`, the features at `../boltz_jax/outputs/`. The checkpoint now
+# comes from the FoldJAX download store, which is where
+# `foldjax weights fetch --model boltz2` puts the same released file, and the
+# features are the fixture carried beside this test. The `.npz` holds the same
+# 1UBQ_A bundle the `.pt` did; it is read here rather than the torch file so the
+# fixture is one format the whole suite shares.
+CHECKPOINT = downloads_dir("boltz2") / "boltz2_conf.ckpt"
+FEATURES = Path(__file__).parent / "fixtures/1UBQ_A.npz"
 
 
 @pytest.fixture(scope="module")
 def graph_params():
     if not CHECKPOINT.exists():
-        pytest.skip(f"checkpoint not found: {CHECKPOINT}")
+        pytest.skip(
+            f"released checkpoint not found: {CHECKPOINT}. "
+            "Run `foldjax weights fetch --model boltz2`."
+        )
     state = load_checkpoint_state_dict(CHECKPOINT)
     return map_boltz2_graph_state_dict(state, token_transformer_heads=16)
 
 
 def _load_feats() -> dict[str, jnp.ndarray]:
-    obj = torch.load(FEATURES, map_location="cpu", weights_only=False)
-    return {
-        k: jnp.asarray(v.detach().cpu().numpy())
-        for k, v in obj.items()
-        if not k.startswith("_") and torch.is_tensor(v)
-    }
+    return load_features_npz(FEATURES)
 
 
 @pytest.mark.slow

@@ -1,0 +1,17 @@
+OpenFold3 JAX port
+Copyright 2026 FoldJAX contributors
+
+This product includes software derived from OpenFold3:
+https://github.com/aqlaboratory/openfold-3
+
+OpenFold3 is Copyright the OpenFold Team and is licensed under the Apache
+License, Version 2.0. A copy is in LICENSE beside this file.
+
+This is an independent community port and is not an official OpenFold project.
+OpenFold3 model weights are not distributed with this software; they are
+published separately at https://huggingface.co/OpenFold/OpenFold3 under that
+repository's own terms.
+
+Featurization delegates to upstream OpenFold3's own data pipeline, which is a
+checkout rather than a package and is not vendored here. The inference path
+imports neither upstream nor torch.

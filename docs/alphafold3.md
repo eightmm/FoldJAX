@@ -19,15 +19,29 @@ Earlier releases pinned `jax==0.4.34` and `triton==3.1.0` and do not.
 
 ```bash
 git clone https://github.com/google-deepmind/alphafold3
+uv sync --extra cuda13 --extra alphafold3    # its deps, minus JAX
 uv pip install --no-deps -e ./alphafold3     # --no-deps keeps your JAX plugin
-uv pip install 'absl-py>=2.3.1' 'dm-haiku==0.0.16' 'etils[epath]' \
-               'rdkit==2025.9.4' tqdm zstandard   # its own pins, minus JAX
 uv run build_data                            # builds the CCD tables, ~5 min
 ```
 
 `--no-deps` is the important part. AlphaFold 3 requires `jax[cuda12]`; letting
 that resolve would install a second JAX plugin next to the one your cluster
-actually uses. Everything else it needs is generation-independent.
+actually uses. Everything else it needs is generation-independent, which is what
+the `alphafold3` extra carries — `absl-py`, `dm-haiku`, `etils[epath]` and
+`zstandard`, with `rdkit` and `tqdm` already in the base set.
+
+**Afterwards, sync with `--inexact`:**
+
+```bash
+uv sync --inexact --extra cuda13 --extra alphafold3
+```
+
+`uv sync` is an *exact* sync by default: it removes anything not in the
+lockfile, and the `alphafold3` package itself cannot be in the lockfile, so a
+plain `uv sync` uninstalls it every time. The extra keeps its dependencies from
+being removed alongside it, but only `--inexact` keeps the package. This is the
+one manual step in the "one environment runs every model" story, and it exists
+because AlphaFold 3 is the one backend FoldJAX cannot carry.
 
 If you would rather keep it in its own environment, point FoldJAX at the
 checkout instead and the backend will load the runner from there:

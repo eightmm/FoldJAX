@@ -24,10 +24,15 @@ from foldjax.models.boltz2.models.trunk_blocks.trunk import (
     boltz2_sample_forward,
     boltz2_trunk_forward,
 )
+from foldjax.paths import weights_dir
 
-ROOT = Path(__file__).resolve().parents[4] / "boltz_jax"
-WEIGHTS = ROOT / "outputs/native_weights/boltz2_conf"
-FEATURES = ROOT / "outputs/real_features/1UBQ_A.npz"
+# Both used to be read out of `../boltz_jax/outputs/`, a sibling checkout's
+# output directory, which meant this test could only ever run on the machine
+# that produced them. The weights now come from the FoldJAX weight store, which
+# is where `foldjax weights fetch --model boltz2` puts exactly this file, and
+# the features are a 5 MB fixture carried here.
+WEIGHTS = weights_dir("boltz2") / "boltz2_conf"
+FEATURES = Path(__file__).parent / "fixtures/1UBQ_A.npz"
 
 RECYCLING = 0
 STEPS = 4

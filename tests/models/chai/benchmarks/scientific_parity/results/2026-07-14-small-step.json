@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-14",
+  "claim_boundary": "Harness validation only; no 200-step production parity claim.",
+  "config": {"recycles": 1, "timesteps": 2, "samples": 1, "seed": 0},
+  "runs": {
+    "protein": {
+      "status": "red_distribution_only_coordinates",
+      "prepared_features_matched": 32,
+      "all_atom_kabsch_rmsd": 542.7505385762303,
+      "ca_kabsch_rmsd": 407.9588220296078,
+      "pae_mae": 0.0818570077419281,
+      "pde_mae": 0.011467075347900391,
+      "plddt_mae": 0.019402384757995605,
+      "has_inter_chain_clashes_mae": 0.0
+    },
+    "protein_ligand": {
+      "status": "red_distribution_only_coordinates",
+      "prepared_features_matched": 32,
+      "all_atom_kabsch_rmsd": 524.3380956923135,
+      "ca_kabsch_rmsd": 391.45588491409103,
+      "pae_mae": 0.9270681982137718,
+      "pde_mae": 0.28502083493738756,
+      "plddt_mae": 0.020890704223087857,
+      "has_inter_chain_clashes_mae": 0.0
+    },
+    "nucleic_acid": {
+      "status": "red_distribution_only_coordinates",
+      "prepared_features_exact": 31,
+      "prepared_features_tolerance_matched": 1,
+      "distance_feature_mae": 1.6545759931234542e-11,
+      "distance_feature_max_abs": 1.1920928955078125e-7,
+      "distance_feature_values_above_1e-6": 0,
+      "all_atom_kabsch_rmsd": 586.111786227433,
+      "ca_kabsch_rmsd": null,
+      "pae_mae": 0.06485090404748917,
+      "pde_mae": 0.018493969924747944,
+      "plddt_mae": 0.012016773223876953,
+      "has_inter_chain_clashes_mae": 0.0
+    },
+    "component_noise_matched_sampler": {
+      "status": "diagnostic_only",
+      "coordinate_rmse": 0.2314251810312271,
+      "coordinate_mae": 0.12360136210918427,
+      "coordinate_max_abs": 3.55126953125,
+      "correlation": 0.9999997806684425
+    }
+  },
+  "unrun_gates": [
+    "msa",
+    "template",
+    "restraint",
+    "recycle_2",
+    "production_200_step",
+    "public_end_to_end_noise_replay"
+  ]
+}

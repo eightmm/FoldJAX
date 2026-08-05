@@ -8,15 +8,52 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-outputs/
-*.ckpt
-*.safetensors
 *.log
 .env
 .env.*
 
+# Prediction output. `outputs/` is also where the native Protenix CLI puts its
+# compile cache when no directory is given.
+outputs/
+foldjax-outputs/
+
+# Model weights, in every format the six backends publish or convert to.
+#
+# No weights are distributed with this software, and AlphaFold 3's parameters
+# may not be redistributed at all, so an accidental `git add -A` here is a
+# licence violation rather than a mistake to amend away. The store normally
+# lives outside the repository (`~/.cache/foldjax`, or `$FOLDJAX_HOME`), but
+# pointing FOLDJAX_HOME *into* the working tree is a supported thing to do and
+# these are the names it would write.
+#
+# Every pattern below was checked against `git ls-files` first: each matches
+# zero tracked files today. Adding a `.pt` test fixture later would need
+# `git add -f`, which is the intended trade.
+*.apkl
+*.bin
+*.ckpt
+*.jax
+*.pkl
+*.pt
+*.pth
+*.safetensors
+*.tar
+# The CCD dictionary and its RDKit cache, shared by protenix and opendde.
+# Named rather than blanket-ignoring `*.cif`, which is also the format every
+# prediction writes and a plausible test fixture.
+components.cif*
+
+# A weight store pointed at the working tree. Only a nested directory is
+# ignored: a FOLDJAX_HOME at the repository root would put its `assets/`
+# alongside the tracked one that holds this project's logos.
+.foldjax/
+
+# `*.npz` and `*.a3m` are deliberately absent. Four `data/*.npz` files are
+# package data the wheel must ship, two more are test fixtures, and
+# `examples/uniref90_hits.a3m` is a runnable example -- ignoring either
+# extension would hide tracked files. Store copies land under `.foldjax/`.
+
 # agent session state, not part of the project
 .omc/
 .oms/
-foldjax-outputs/
 _archive/

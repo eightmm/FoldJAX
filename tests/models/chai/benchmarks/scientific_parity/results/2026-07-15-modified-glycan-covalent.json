@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-15",
+  "fixture": "modified_glycan_covalent",
+  "entities": ["protein_with_SEP", "ligand", "NAG_glycan"],
+  "covalent_bond": "A:C2@SG-B:@S1",
+  "config": {"recycles": 1, "timesteps": 200, "samples": 1, "seed": 0},
+  "randomness": {
+    "reference_augmentation": "identical explicit 3-occurrence rigid-transform tape",
+    "reference_tape_seed": 19,
+    "reference_tape_sha256": "81ab828985a8e6848dac4a0e6ca7edfa68cf331996179289c75c3577a50752e3",
+    "sampler": "identical NumPy initial/churn/rotation/translation tape"
+  },
+  "prepared": {
+    "status": "pass",
+    "feature_count": 32,
+    "exact_feature_count": 30,
+    "atom_ref_pos_max_abs": 2.9802322387695312e-8,
+    "inverse_distance_max_abs": 1.1920928955078125e-7
+  },
+  "static": {
+    "mask_mismatch_count": 0,
+    "atom_token_index_mismatch_count": 0,
+    "single_initial_valid_nrmse": 0.003796599388290738,
+    "pair_initial_valid_nrmse": 0.0011267465177500523,
+    "single_trunk_valid_nrmse": 0.012065709533675062,
+    "pair_trunk_valid_nrmse": 0.017559028085968327
+  },
+  "matched_200_step": {
+    "status": "green_subangstrom_rmse",
+    "coordinate_rmse": 0.682259738445282,
+    "coordinate_mae": 0.5453343391418457,
+    "coordinate_max_abs": 2.064115047454834,
+    "correlation": 0.9744498182083257,
+    "torch_warm_seconds": 7.371403615048621,
+    "jax_warm_seconds": 2.505926526035182,
+    "jax_speedup": 2.941588086667282,
+    "shared_torch_static_control_rmse": 6.019524153089151e-5,
+    "shared_torch_static_control_max_abs": 1.944899559020996e-4
+  },
+  "covalent_branch_effect": {
+    "pair_initial": {
+      "torch_rms": 0.004874554004184491,
+      "jax_rms": 0.004867967310139308,
+      "cosine": 0.999913545741437,
+      "relative_l2_error": 0.013209872317220631
+    },
+    "single_trunk": {
+      "torch_rms": 8.863691830264692,
+      "jax_rms": 8.779082310995827,
+      "cosine": 0.9714538082473727,
+      "relative_l2_error": 0.23798848670276038
+    },
+    "pair_trunk": {
+      "torch_rms": 8.383920158269012,
+      "jax_rms": 8.318878982251245,
+      "cosine": 0.9842016095731966,
+      "relative_l2_error": 0.1772338625666518
+    }
+  },
+  "fixed_root_causes": [
+    "blocked reference-pair mask incorrectly used atom_exists_mask instead of atom_ref_mask for glycan leaving atoms",
+    "deterministic contiguous segment pooling assumed no masked atom token before later valid tokens"
+  ]
+}
