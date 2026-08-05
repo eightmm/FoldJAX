@@ -106,9 +106,29 @@ def _predict(
     # count and the head count are known. `--chunk-policy off` restores the
     # unbounded form.
     n_residue = int(features["restype"].shape[-2])
-    n_structural = int(features["parent_residue_idx"].shape[0])
+    # The residue count, as upstream feeds it: OpenDDE resolves the threshold
+    # table twice, once with `N_token` for the residue trunk and once with
+    # `len(parent_residue_idx)` for the structural branch (opendde.py:1481,
+    # 1500-1502). Feeding `max(...)` handed the trunk the structural count,
+    # and the structural token count is a near-constant 1.95x the residue one
+    # -- 257/132, 948/490, 1886/970, 2978/1531 -- so the trunk landed a whole
+    # threshold band or two too low:
+    #
+    #     tokens  ours(max)  upstream trunk
+    #        970        256            None
+    #       1531         32             512
+    #
+    # 32 rows at 1,531 tokens is 48 blocks where upstream runs 3, and the
+    # blocked contraction re-reads the whole of `b` once per block, so the
+    # traffic is `ceil(N/block) * N^2 * c`. That discontinuity -- None, then
+    # 256, then 32 -- is the shape of OpenDDE's time curve, which grows as
+    # N^2.71 against upstream's N^1.66.
+    #
+    # Passing the residue count loses nothing for the structural branch: every
+    # call site re-narrows the policy value from its own shape and head count
+    # (see the note above), and `_row_block` only ever narrows.
     chunks = resolve_chunk_config(
-        n_token=max(n_residue, n_structural),
+        n_token=n_residue,
         n_sample=n_sample,
         policy=chunk_policy,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},

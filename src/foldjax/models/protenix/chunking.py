@@ -7,9 +7,18 @@ from typing import Literal
 
 ChunkPolicyName = Literal["auto", "manual", "off"]
 
+#: Protenix's own `infer_setting.chunk_size_thresholds`, transcribed from
+#: `configs/configs_base.py`, where `-1` means "no chunking" and is written here
+#: as `None`. Upstream reads it in `Protenix._get_dynamic_chunk_size`.
+#:
+#: This table used to carry two extra rows -- `(768, None)` and `(1024, 256)` --
+#: that upstream does not have, so every job between 769 and 1024 tokens ran
+#: chunked here and unchunked there, buying memory that a job that size does not
+#: need. The rows had been here since the first commit and the test asserted
+#: them, so nothing could report the difference; only reading upstream's config
+#: found it.
 PROTENIX_CHUNK_SIZE_THRESHOLDS: tuple[tuple[int, int | None], ...] = (
-    (768, None),
-    (1024, 256),
+    (1024, None),
     (1536, 512),
     (2048, 256),
     (2560, 128),
