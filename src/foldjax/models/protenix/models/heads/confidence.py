@@ -1109,7 +1109,7 @@ def confidence_head_single_sample(
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
-    triangle_attention_backend: str | None = "xla_jit",
+    triangle_attention_backend: str | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Run the ConfidenceHead inference path for one predicted sample."""
 
@@ -1162,7 +1162,7 @@ def confidence_head(
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
-    triangle_attention_backend: str | None = "xla_jit",
+    triangle_attention_backend: str | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Run the Protenix confidence head over the sample axis.
 

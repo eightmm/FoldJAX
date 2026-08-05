@@ -91,14 +91,30 @@ def cast_trunk_params(
     )
 
 
-def _with_xla_triangle_defaults(function):
-    """Use dependency-free XLA triangle kernels without leaking process state."""
+def _with_cueq_triangle_defaults(function):
+    """Run OpenDDE's triangle kernels fused, like upstream does.
+
+    This used to pin both backends to XLA. The pin was measured -- at 1,531
+    tokens the fused path asks for a 92.21 GiB arena on a 97,887 MiB card and
+    dies -- but it was measured at one size and applied to every size, which is
+    the part that was wrong. OpenDDE peaks at 10,552 MiB on a 490-token job and
+    34,408 MiB on a 970-token one; there is 60+ GiB spare in both.
+
+    Upstream resolves `auto` to cuequivariance for both kernels
+    (config/model_base.py:31-32) and OpenDDE's `c_hidden == c_z == 384` clears
+    the kernel's guard, so fused is what upstream actually runs. Protenix, which
+    shares this triangle module, went 254.5 -> 167.1 s on the same switch.
+
+    `setdefault` with a restore: an explicit environment still wins, which is
+    how a job too large for the fused arena asks for the blocked path, and
+    nothing leaks into the process for the next model to inherit.
+    """
 
     @wraps(function)
     def wrapped(*args, **kwargs):
         defaults = {
-            "PROTENIX_TRIANGLE_BACKEND": "xla_jit",
-            "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "xla",
+            "PROTENIX_TRIANGLE_BACKEND": "cueq_jit",
+            "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "cueq",
         }
         inserted = []
         for name, value in defaults.items():
@@ -324,7 +340,7 @@ def prepare_structural_features(
     }
 
 
-@_with_xla_triangle_defaults
+@_with_cueq_triangle_defaults
 def opendde_infer_static(
     input_feature_dict: dict[str, Any],
     params: OpenDDEInferenceParams,
@@ -356,7 +372,11 @@ def opendde_infer_static(
     trunk_triangle_attention_backend: str | None = None,
     structural_single_attention_backend: str = "xla_jit",
     structural_triangle_attention_backend: str | None = None,
-    confidence_triangle_attention_backend: str | None = "xla_jit",
+    # `None`, like the trunk and structural branches above, so all three resolve
+    # through the one shared rule. It read "xla_jit" and so was the one place an
+    # env-var or default change could not reach -- on a stack that runs per
+    # sample over N^2, which is not a small corner to leave behind.
+    confidence_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
     triangle_mul_chunk_size: int | None = None,

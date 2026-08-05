@@ -23,14 +23,31 @@ from foldjax.models.protenix.models.primitives.primitives import (
 def _triangle_attention_backend() -> str:
     """Return the configured triangle-attention backend.
 
-    Defaults to the XLA path because it is the only one that blocks rows, and
-    blocking is what bounds the score tensor. The cuEquivariance kernel was the
-    default on the assumption that it fused the score away; measured, it does
-    not -- at 490 tokens it and the unblocked XLA path both peak at 6,048 MiB,
-    where the blocked XLA path peaks at 4,348. Set
-    ``PROTENIX_TRIANGLE_BACKEND=cueq_jit`` to go back.
+    cuEquivariance, which is what upstream Protenix runs
+    (`triangle_attention: "cuequivariance"`, configs_base.py:130).
+
+    This defaulted to the blocked XLA path for a while, on a 490-token
+    measurement: there cueq and unblocked XLA both peaked at 6,048 MiB against
+    4,348 for blocked XLA, so blocking looked like the memory-safe choice. That
+    does not survive a real length. At 1,531 tokens cueq is both faster and
+    smaller -- 172.6 s / 21,475 MiB against 254.5 s / 24,764 MiB -- because the
+    cost that grows is the `[rows, heads, N, N]` score tensor the blocked path
+    writes to HBM and the fused kernel never materialises. Blocking bounds that
+    tensor; it does not stop paying for it.
+
+    The 32% is bandwidth, not arithmetic: narrowing the same blocked path to
+    bfloat16 moved it 254.5 -> 255.6 s, and bfloat16 on top of cueq moves
+    nothing either (172.8 s).
+
+    There is no automatic fallback. An `auto` mode that quietly chose XLA when
+    the wheel was missing would mean two machines running two different kernels
+    under one default, and this repository has spent enough time on knobs that
+    look set and are not: if the fused kernel cannot load, the import raises and
+    says so. `PROTENIX_TRIANGLE_BACKEND=xla_jit` is the way to ask for the
+    blocked path -- on a card where the fused arena does not fit, and as the
+    only backend that honours a requested chunk size.
     """
-    backend = os.environ.get("PROTENIX_TRIANGLE_BACKEND", "xla_jit").lower()
+    backend = os.environ.get("PROTENIX_TRIANGLE_BACKEND", "cueq_jit").lower()
     if backend not in {"xla", "xla_jit", "tokamax", "cueq", "cueq_jit"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
     return backend
@@ -84,6 +101,10 @@ def triangle_multiplication(
     backend = os.environ.get(
         "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
     ).lower()
+    # Upstream carries the same guard and falls back the same way: the kernel
+    # requires the hidden width to equal the pair width (Protenix says so at
+    # triangular.py:491). The template stack has c_z=64, c_hidden=128, so both
+    # sides run the unfused path there -- that is a shape fact, not a policy.
     cueq_supported = (
         params.linear_a_p.weight.shape[0] == z.shape[-1]
         and z.shape[-1] % 32 == 0

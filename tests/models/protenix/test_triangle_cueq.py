@@ -74,6 +74,13 @@ def test_cueq_triangle_maps_upstream_torch_weights(monkeypatch) -> None:
 
 
 def test_triangle_multiplication_uses_cueq_by_default(monkeypatch) -> None:
+    """No `auto`, no probe: the default is the fused kernel, unconditionally.
+
+    This briefly resolved `auto` from a runtime availability probe, so a machine
+    without the wheel silently ran a different kernel under the same default --
+    two installs, two numerics, one configuration. If the kernel cannot load the
+    import raises; it does not quietly become XLA.
+    """
     import foldjax.models.protenix.models.triangle.triangle_cueq as cueq_module
 
     sentinel = jnp.full((1, 2, 2, 32), 7, dtype=jnp.bfloat16)
@@ -92,6 +99,57 @@ def test_triangle_multiplication_uses_cueq_by_default(monkeypatch) -> None:
     )
 
     assert output is sentinel
+
+
+def test_the_blocked_path_is_still_reachable_by_name(monkeypatch) -> None:
+    """A card the fused arena does not fit needs a way out, and it is explicit."""
+    import foldjax.models.protenix.models.triangle.triangle_cueq as cueq_module
+
+    sentinel = jnp.full((1, 2, 2, 32), 7, dtype=jnp.bfloat16)
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+    monkeypatch.setattr(
+        cueq_module,
+        "cueq_triangle_multiplication",
+        lambda *args, **kwargs: sentinel,
+    )
+
+    output = triangle_multiplication(
+        jnp.ones((1, 2, 2, 32), dtype=jnp.bfloat16),
+        jnp.ones((1, 2, 2), dtype=jnp.bfloat16),
+        _params(32, 32),
+        "outgoing",
+    )
+
+    assert output is not sentinel
+
+
+def test_an_unsupported_width_falls_back_even_when_cueq_is_available(
+    monkeypatch,
+) -> None:
+    """The kernel needs `c_hidden == c_z`; Protenix's template stack does not have it.
+
+    Upstream carries the same guard (`triangular.py:491`) and takes the same
+    fallback, so this is a shape fact both sides agree on rather than a policy
+    this port chose.
+    """
+    import foldjax.models.protenix.models.triangle.triangle_cueq as cueq_module
+
+    sentinel = jnp.full((1, 2, 2, 32), 7, dtype=jnp.bfloat16)
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    monkeypatch.setattr(
+        cueq_module,
+        "cueq_triangle_multiplication",
+        lambda *args, **kwargs: sentinel,
+    )
+
+    output = triangle_multiplication(
+        jnp.ones((1, 2, 2, 32), dtype=jnp.bfloat16),
+        jnp.ones((1, 2, 2), dtype=jnp.bfloat16),
+        _params(32, 64),  # c_z=32, c_hidden=64
+        "outgoing",
+    )
+
+    assert output is not sentinel
 
 
 def test_cueq_attention_maps_torch_mask_and_scale(monkeypatch) -> None:
@@ -127,18 +185,29 @@ def test_cueq_attention_maps_torch_mask_and_scale(monkeypatch) -> None:
     assert jnp.array_equal(captured["mask"], (mask_bias == 0)[None])
 
 
-def test_the_blocking_backend_is_the_default_triangle_attention_backend(
+def test_the_fused_kernel_is_the_default_triangle_attention_backend(
     monkeypatch,
 ) -> None:
-    """cuEquivariance was the default until its cost was actually measured.
+    """cuEquivariance, which is what upstream Protenix runs.
 
-    It takes the whole tensor, so the row block that bounds the score never
-    reaches it -- and it does not fuse the score away in exchange. At 490
-    tokens cuEquivariance and the unblocked XLA path peak identically (6,048
-    and 6,049 MiB) where the blocked XLA path peaks at 4,348, and at 976 the
-    gap is 12,893 against 8,974. The default is now the one that blocks.
+    This asserted `xla_jit`, on a 490-token measurement where the blocked XLA
+    path peaked at 4,348 MiB against cuEquivariance's 6,048. That reading does
+    not survive a real length: at 1,531 tokens the fused kernel is both faster
+    and smaller -- 167.1 s / 22,639 MiB against 254.5 s / 24,764 -- because what
+    grows is the `[rows, heads, N, N]` score tensor the blocked path writes to
+    HBM and the fused one never builds. Blocking bounds that tensor; it does not
+    stop paying for it. At 970 the same switch gives 98 -> 74.2 s.
+
+    There is deliberately no `auto`: a probe that fell back to XLA when the
+    wheel was missing would put two machines on two kernels under one default.
     """
     monkeypatch.delenv("PROTENIX_TRIANGLE_BACKEND", raising=False)
+    assert _triangle_attention_backend() == "cueq_jit"
+
+
+def test_the_blocked_attention_path_is_still_reachable_by_name(monkeypatch) -> None:
+    """The escape hatch for a card whose arena the fused kernel overflows."""
+    monkeypatch.setenv("PROTENIX_TRIANGLE_BACKEND", "xla_jit")
     assert _triangle_attention_backend() == "xla_jit"
 
 
