@@ -5,14 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "foldjax"
 version = "0.3.0"
-description = "One standalone JAX package for Boltz-2, Chai-1, OpenDDE, OpenFold3, and Protenix inference"
+description = "One standalone JAX package for Boltz-2, OpenDDE, OpenFold3, and Protenix inference"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 keywords = [
     "biomolecular-structure-prediction",
     "boltz-2",
-    "chai-1",
     "jax",
     "opendde",
     "openfold3",
@@ -26,10 +25,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# Union of the five vendored ports' runtime requirements. FoldJAX itself adds
+# Union of the four vendored ports' runtime requirements. FoldJAX itself adds
 # no third-party dependency beyond what the vendored models already need.
 # OpenFold3 added none: its inference path needs only jax, numpy, safetensors
-# and gemmi, all of which were already here for the other four.
+# and gemmi, all of which were already here. Removing the Chai port dropped
+# pyarrow (its `.aligned.pqt` reader) and antipickle (its conformer archive).
 dependencies = [
     # shared JAX runtime
     "jax==0.10.1",
@@ -43,11 +43,11 @@ dependencies = [
     "pyyaml>=6.0.2",
     "safetensors>=0.8.0",
     "tqdm>=4.66.0",
-    # chai (gemmi range is chai's <0.8 ceiling intersected with protenix's >=0.6)
+    # boltz2 writes mmCIF through modelcif; the gemmi ceiling is inherited from
+    # the Chai port that has since been removed and has not been re-derived.
     "gemmi>=0.7.5,<0.8",
     "modelcif>=1.0",
-    "pyarrow>=18.0",
-    # chai + protenix/opendde preprocessing. AlphaFold 3 pins rdkit==2025.9.4
+    # protenix/opendde preprocessing. AlphaFold 3 pins rdkit==2025.9.4
     # exactly, so the floor stays at that release for the optional af3 extra.
     "rdkit>=2025.9.4,<2026",
     # opendde
@@ -111,9 +111,11 @@ openfold3-preprocess = [
 # One-time conversion of released torch checkpoints into the native JAX weight
 # files. Never needed on the prediction path.
 torch-bridge = [
-    "antipickle==0.2.0",
     "torch>=2.2",
 ]
+# Protenix's optional ESM embeddings: `models/protenix/data/esm.py` runs the same
+# fair-esm checkpoint upstream does. It survived the Chai removal because it was
+# never Chai's.
 esm = ["fair-esm>=2.0.0", "torch>=2.2"]
 # AlphaFold 3's own dependencies, minus JAX. The `alphafold3` package itself
 # still cannot be listed here -- it is on no index and upstream pins
@@ -128,9 +130,6 @@ alphafold3 = [
     "etils[epath]",
     "zstandard",
 ]
-# Only needed to cross-check FoldJAX's own conformer reader against Chai's
-# adapters. Converting and predicting need neither.
-chai-crosscheck = ["antipickle==0.2.0", "beartype>=0.19", "torch>=2.2"]
 # AlphaFold 3 is the one backend that cannot be vendored: its parameters are not
 # redistributable, and upstream pins `jax[cuda12]`, which cannot co-resolve with
 # a CUDA 13 cluster — the right JAX plugin differs per site. Naming it here, even
@@ -152,12 +151,6 @@ foldjax = "foldjax.cli:entrypoint"
 # docs and error messages stay accurate.
 boltz-jax-export-weights = "foldjax.models.boltz2.bridge.export_weights:main"
 boltz-jax-inspect-checkpoint = "foldjax.models.boltz2.bridge.torch_checkpoint:main"
-chai-jax = "foldjax.models.chai.cli.main:main"
-chai-jax-export-bundle = "foldjax.models.chai.cli.assets:bundle_main"
-chai-jax-export-component = "foldjax.models.chai.cli.export_component:main"
-chai-jax-export-conformers = "foldjax.models.chai.cli.assets:conformers_main"
-chai-jax-export-esm2 = "foldjax.models.chai.cli.export_esm2:main"
-chai-jax-inspect-component = "foldjax.models.chai.cli.inspect_component:main"
 opendde-jax-export-weights = "foldjax.models.opendde.bridge.export_weights:main"
 opendde-jax-predict = "foldjax.models.opendde.cli.predict:main"
 opendde-jax-verify-inputs = "foldjax.models.opendde.cli.verify_inputs:main"
@@ -178,7 +171,6 @@ where = ["src"]
 "foldjax.models.opendde" = ["data/*.npz", "LICENSE", "NOTICE"]
 "foldjax.models.protenix" = ["data/*.npz", "LICENSE", "NOTICE"]
 "foldjax.models.boltz2" = ["LICENSE", "NOTICE"]
-"foldjax.models.chai" = ["LICENSE", "NOTICE"]
 "foldjax.models.openfold3" = ["LICENSE", "NOTICE"]
 
 [dependency-groups]

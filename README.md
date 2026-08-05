@@ -6,13 +6,12 @@
 
 # FoldJAX
 
-Biomolecular structure prediction in JAX. Six models behind one interface —
-five carried complete inside the package:
+Biomolecular structure prediction in JAX. Five models behind one interface —
+four carried complete inside the package:
 
 | model | vendored at | licence | upstream |
 |---|---|---|---|
 | `boltz2` | `foldjax.models.boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
-| `chai` | `foldjax.models.chai` | Apache-2.0 | [chaidiscovery/chai-lab](https://github.com/chaidiscovery/chai-lab) |
 | `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
 | `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
 | `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
@@ -77,25 +76,21 @@ bonds:
 
 `--input-format` defaults to `auto` and decides on content, not extension: only
 the common schema is a mapping with `entities`, and every native dialect is
-passed through untouched. So a Boltz YAML, a Protenix job list, or a Chai FASTA
-all work as-is.
+passed through untouched. So a Boltz YAML or a Protenix job list works as-is.
 
 Modifications and covalent bonds have one model-neutral spelling here and are
 translated into each backend's own names — Protenix and OpenDDE want
 `CCD_`-prefixed types and entity-indexed `covalent_bonds`, Boltz wants
 `{ccd, position}` and a `bond` constraint, AlphaFold 3 wants bare `ptmType`.
 
-**A field a backend cannot express is rejected, not dropped.** Neither Boltz nor
-Chai has a place for a separate `paired_msa`, and Chai addresses ligands by
-SMILES only. Silently discarding an MSA would change the science without
-changing the exit code.
+**A field a backend cannot express is rejected, not dropped.** Boltz has no place
+for a separate `paired_msa`, because it derives pairing from one per-chain a3m.
+Silently discarding an alignment would change the science without changing the
+exit code.
 
-`unpaired_msa` reaches every model, Chai included. Chai's own input is a FASTA
-with nowhere to put an alignment path, so FoldJAX converts the A3M into the
-`.aligned.pqt` form it reads and writes that beside the FASTA. That matters more
-than it sounds: otherwise a job that pins an alignment pins it everywhere except
-Chai, which quietly runs on a different one — and any comparison across models
-becomes a comparison of MSAs.
+`unpaired_msa` reaches every model. That matters more than it sounds: a job that
+pins an alignment must pin it everywhere, or any comparison across models becomes
+a comparison of MSAs.
 
 ## Choosing what to run
 
@@ -112,16 +107,15 @@ uv run foldjax predict \
 `--num-samples`, `--num-steps`, and `--num-recycles` are model-neutral. Each
 backend calls them something different, and FoldJAX translates:
 
-| neutral | alphafold3 | boltz2 | chai | openfold3 | opendde / protenix |
-|---|---|---|---|---|---|
-| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_diffusion_samples` | `num_samples` | `n_sample` |
-| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `num_diffusion_timesteps` | `no_rollout_steps` | `n_step` |
-| `--num-recycles` | `num_recycles` | `recycling` | `num_trunk_recycles` | `num_cycles` | `n_cycle` |
-| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | `max_msa_depth` | *refused* | `max_msa_rows` |
+| neutral | alphafold3 | boltz2 | openfold3 | opendde / protenix |
+|---|---|---|---|---|
+| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_samples` | `n_sample` |
+| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `no_rollout_steps` | `n_step` |
+| `--num-recycles` | `num_recycles` | `recycling` | `num_cycles` | `n_cycle` |
+| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | *refused* | `max_msa_rows` |
 
-The first three reach all six models. `--max-msa-depth` reaches five: OpenFold3
-exposes no MSA-depth argument, so it is refused rather than quietly ignored. AlphaFold 3's step count and MSA depth are not
-arguments of `make_model_config`, but the config it returns is an ordinary
+The first three reach all five models. AlphaFold 3's step count and MSA depth are
+not arguments of `make_model_config`, but the config it returns is an ordinary
 mutable object and upstream already sets the sample count on it by assignment;
 FoldJAX sets these the same way. That matters beyond convenience — a model that
 cannot be held to the same schedule as the others cannot be compared with them.
@@ -134,9 +128,9 @@ through.
 
 `--seeds 1 2 3` runs the job once per seed, into a `seed_<n>` directory each,
 and returns every structure together. The samples from one seed are correlated,
-so this is the usual way to get independent predictions. Three of the models
-take a seed list natively and three do not, so the loop lives in FoldJAX and
-every model gets it identically.
+so this is the usual way to get independent predictions. Only some backends take
+a seed list natively, so the loop lives in FoldJAX and every model gets it
+identically.
 
 Every run writes `foldjax_run.json` beside its structures: the model, the input
 and its SHA-256, the resolved weights, the seeds and knobs actually used, the
@@ -204,13 +198,14 @@ triangle-attention backend changed and the block rule was re-derived — so read
 [FoldJAX against upstream](#foldjax-against-upstream) for what they cost now.
 These figures are the size of each step, not a current reading.
 
-**Eager arithmetic between compiled blocks is not free.** Chai runs its trunk
-as many small programs on purpose, so XLA can release MSA intermediates between
-them — but the residual `a + b` joining those programs dispatches its own
-executable, with all three buffers live. On the MSA representation that is
-three copies of the largest tensor in the trunk, for an add. Routing them
-through a compiled add that donates its update buffer is the same arithmetic
-and took Chai from 8,637 to 7,576 MiB with scores unchanged to five decimals.
+**Eager arithmetic between compiled blocks is not free.** Measured on the Chai
+port, which has since been removed, but the shape generalises to any trunk run
+as many small programs so XLA can release MSA intermediates between them: the
+residual `a + b` joining those programs dispatches its own executable, with all
+three buffers live. On an MSA representation that is three copies of the largest
+tensor in the trunk, for an add. Routing them through a compiled add that donates
+its update buffer is the same arithmetic and took that port from 8,637 to
+7,576 MiB with scores unchanged to five decimals.
 
 ### A bfloat16 trunk (`--option trunk_dtype=bf16`)
 
@@ -278,27 +273,16 @@ Confidence moves with it and not monotonically, because which rows get sampled
 changes; that spread is the alignment's own variance, not evidence that a
 shallower MSA predicts better. The default keeps each port's own depth.
 
-**Chai has the same knob but not the same bargain.** It embeds the selected
-rows once into a `[1, depth, tokens, 64]` tensor — 2,048 MiB at its 16,384-row
-bucket — and the trunk reads that, so the cap has to act at the embedding, not
-at the per-recycle crop. It works, and it is the largest single lever there,
-but unlike Protenix it costs accuracy rather than trading noise:
+**Where the cap has to act is model-specific, and getting it wrong moves
+nothing.** The now-removed Chai port embedded the selected rows once into a
+`[1, depth, tokens, 64]` tensor and the trunk read *that*, so capping the
+per-recycle crop left the embedding at full depth and changed neither memory nor
+scores. The lever was the selection feeding the embedding, and it was worth a
+third of the peak for one point of pLDDT — a real accuracy cost, unlike
+Protenix, where the cap only trades noise.
 
-| chai, 488 tokens | peak | mean pLDDT | pTM |
-|---|---|---|---|
-| default | 7,576 MiB | 0.849 | 0.744 |
-| `--max-msa-depth 4096` | 5,126 MiB | 0.838 | 0.735 |
-| `--max-msa-depth 2048` | 4,856 MiB | 0.829 | 0.697 |
-| `--max-msa-depth 1024` | **4,707 MiB** | 0.830 | 0.705 |
-
-A third of the memory for one point of pLDDT. It stays off by default. Boltz-2
-is the least sensitive of the four — 4,766 → 4,688 MiB at 1024, for 0.891 →
-0.880 pLDDT — which is not worth spending, so it is off there too.
-
-Chai's cap has two crop sites and only one of them counts: the selection in
-`_embed_and_initialize` decides what gets embedded and therefore how big that
-tensor is. Capping the per-recycle crop alone leaves it at full depth and moves
-nothing — which is exactly what the first attempt did.
+Boltz-2 is the least sensitive — 4,766 → 4,688 MiB at 1024, for 0.891 → 0.880
+pLDDT — which is not worth spending, so the cap is off there too.
 
 **OpenDDE is the opposite case, and it is worth knowing why.** Capping its MSA
 changes nothing; blocking its attention changes everything. It is dual-branch,
@@ -386,11 +370,6 @@ No weights are redistributed. Each file is downloaded from its own publisher
 under that project's terms, and nothing is fetched implicitly during prediction —
 a missing model names the command that would get it.
 
-Chai's conformer archive is an `antipickle` file; upstream reads it by
-importing `chai_lab` for its private adapters, which needs torch and pins an
-rdkit this environment cannot hold. FoldJAX decodes the format directly
-instead, so `--model chai` is one command like the rest.
-
 Weight files exported before these ports were vendored recorded
 `protenix_jax.*` / `opendde_jax.*` as their module names. The loader maps those
 onto the vendored classes, so **existing weight files keep working**, and the
@@ -424,27 +403,23 @@ row, one process per measurement, results written as they land.
 
 **The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
 diffusion steps, 10 recycles, seed 101 — not a number chosen here.** Protenix's
-base model ships the same three. Chai and Boltz-2 default to 3 recycles rather
-than 10, so this asks more of them than their own default does; it asks the
-same of their upstream, which is what makes the comparison mean anything.
+base model ships the same three. Boltz-2 defaults to 3 recycles rather than 10,
+so this asks more of it than its own default does; it asks the same of its
+upstream, which is what makes the comparison mean anything.
 
 | tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 132 | alphafold3 | 256 | - | 1,588 | - | - | - | - | - | - |
 | 132 | boltz2 | 14 | 27 | 2,981 | 2,947 | 1.93x | 0.99x | complex_plddt | 0.7260 | 0.7084 |
-| 132 | chai | 41 | 51 | 2,322 | 6,486 | 1.25x | 2.79x | aggregate_score | 0.1233 | 0.1232 |
 | 132 | opendde | 25 | 17 | 3,651 | 3,784 | 0.66x | 1.04x | ranking_score | 0.0947 | 0.0957 |
 | 132 | protenix | 15 | 52 | 1,777 | 2,910 | 3.39x | 1.64x | ranking_score | 0.0996 | 0.0997 |
 | 490 | boltz2 | 47 | 53 | 6,222 | 8,128 | 1.13x | 1.31x | complex_plddt | 0.3619 | 0.3629 |
-| 490 | chai | 69 | 97 | 5,257 | 9,027 | 1.40x | 1.72x | aggregate_score | 0.0587 | 0.0584 |
 | 490 | opendde | 80 | 73 | 13,345 | 18,580 | 0.91x | 1.39x | ranking_score | 0.0967 | 0.0915 |
 | 490 | protenix | 33 | 60 | 4,668 | 4,481 | 1.82x | 0.96x | ranking_score | 0.0670 | 0.0659 |
 | 970 | boltz2 | 150 | 127 | 11,570 | 14,211 | 0.85x | 1.23x | complex_plddt | 0.5391 | 0.5408 |
-| 970 | chai | 180 | 262 | 17,185 | 15,080 | 1.46x | 0.88x | aggregate_score | 0.0790 | 0.0789 |
 | 970 | opendde | 272 | 271 | 44,519 | 59,755 | 1.00x | 1.34x | ranking_score | 0.0964 | 0.0966 |
 | 970 | protenix | 98 | 94 | 10,807 | 12,315 | 0.96x | 1.14x | ranking_score | 0.0839 | 0.0834 |
 | 1531 | boltz2 | 382 | 302 | 21,174 | 26,491 | 0.79x | 1.25x | complex_plddt | 0.7172 | 0.7195 |
-| 1531 | chai | 387 | 591 | 36,566 | 24,227 | 1.53x | 0.66x | aggregate_score | 0.1307 | 0.1294 |
 | 1531 | opendde | failed | failed | failed | failed | - | - | - | - | - |
 | 1531 | protenix | 254 | 176 | 24,764 | 27,918 | 0.69x | 1.13x | ranking_score | 0.1200 | 0.1193 |
 
@@ -472,19 +447,16 @@ Read it with the method in mind:
 the differences were large enough to change conclusions rather than shade them,
 so they were fixed rather than disclosed:
 [`bench/upstream-environments.md`](bench/upstream-environments.md) records what
-each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
+each virtualenv needed and how to verify it. Boltz-2 needed nothing.
 
 ### What the table says
 
-- **FoldJAX uses less memory almost everywhere.** The exceptions are Chai at the
-  two largest sizes (17,185 against 15,080 at 970, and 36,566 against 24,227 at
-  1,531) and Protenix at 490 (4,668 against 4,481, 4% more). Elsewhere it is
-  1.04x to 2.79x lower.
+- **FoldJAX uses less memory almost everywhere.** Two rows are level or slightly
+  worse: Boltz-2 at 132 tokens (2,981 against 2,947, 1% more) and Protenix at 490
+  (4,668 against 4,481, 4% more). Elsewhere it is 1.04x to 1.64x lower.
 - **On speed it wins at small and mid sizes and loses at large.** Boltz-2 and
-  Protenix are 1.1x-3.4x faster at 132 and 490 tokens, level at 970, and
-  slower at 1,531. Chai is the exception in both directions: faster at every
-  size and pulling further ahead as the job grows (1.53x at 1,531), which it
-  pays for in memory.
+  Protenix are 1.1x-3.4x faster at 132 and 490 tokens, level at 970, and slower
+  at 1,531.
 - **OpenDDE is the slowest relative to its upstream**, and the gap is smaller
   than it looked. Earlier readings of 2x-4x were taken at bfloat16 against an
   fp32 upstream and were not a matched comparison: upstream runs `dtype: fp32`
@@ -502,10 +474,9 @@ each virtualenv needed and how to verify it. Boltz-2 and Chai needed nothing.
   the harness checks for structures instead of an exit code. `trunk_dtype=bf16`
   completes it in 479.9 s at 58,747 MiB, kept under its own name because
   upstream has no bf16 counterpart to compare against.
-- **Confidence agrees for every model.** Chai matches to four decimals at every
-  size, OpenDDE and Protenix to within 1-2%, Boltz-2 to within 1-2% except at
-  132 tokens. Two of those took real fixes, both found the same way and both
-  described below.
+- **Confidence agrees for every model.** OpenDDE and Protenix match to within
+  1-2%, Boltz-2 to within 1-2% except at 132 tokens. Two of those took real
+  fixes, both found the same way and both described below.
 - **OpenFold3 has no row.** It is vendored and runnable, but no upstream
   OpenFold3 environment has been provisioned here, so there is nothing to
   compare a FoldJAX number against. See [docs/openfold3.md](docs/openfold3.md).
@@ -554,8 +525,7 @@ of the first cycle at std 428 against upstream's 44 and then oscillated between
 
 Fixed, the trunk tracks upstream cycle for cycle and the confidence lands on it
 at all three sizes, at unchanged time and memory. Boltz-2's own order is
-different and matches *its* upstream; Chai already matched; OpenDDE has no such
-module.
+different and matches *its* upstream; OpenDDE has no such module.
 
 Two things had to be wrong at once for this to survive:
 
@@ -567,9 +537,9 @@ Two things had to be wrong at once for this to survive:
   and *printed* the correlation without checking it. It now takes a threshold
   and exits non-zero.
 
-Protenix was also the only port with no torch-anchored test at all -- Boltz-2
-has a family of `*_checkpoint_parity.py` that load the real torch modules, and
-Chai has its own. `tests/models/protenix/scripts/trunk_stage_parity.py` is the
+Protenix was also the only port with no torch-anchored test at all, where
+Boltz-2 has a family of `*_checkpoint_parity.py` that load the real torch
+modules. `tests/models/protenix/scripts/trunk_stage_parity.py` is the
 attribution tool that found it, kept as a runnable check.
 
 ### What the Boltz-2 confidence gap turned out to be
@@ -643,7 +613,7 @@ from foldjax import PredictionRequest, predict
 
 result = predict(
     PredictionRequest(
-        model="chai",
+        model="protenix",
         input="job.yaml",
         num_samples=5,
         seed=42,
@@ -723,8 +693,8 @@ the orchestration layer. Each vendored port brought its own suite to
 `tests/models/<name>/`, including the torch-parity gates it was built against.
 
 Those gates need an extra the torch-free environment deliberately omits, and the
-suites handle it two different ways. Boltz-2's and Chai's import torch at module
-scope, so they have to be excluded at *collection* time;
+suites handle it two different ways. Boltz-2's import torch at module scope, so
+they have to be excluded at *collection* time;
 `tests/models/test_optional_suite_gate.py` keeps that exclusion list honest
 rather than letting a suite go quietly uncollected. OpenFold3's import torch
 inside the test bodies instead, so they collect anywhere and skip at run time —

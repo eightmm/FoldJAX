@@ -160,33 +160,6 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
             repo,
             {"PYTHONPATH": str(repo)},
         )
-    if model == "chai":
-        repo = ROOT / "chai"
-        script = Path(__file__).parent / "_chai_upstream.py"
-        return (
-            [
-                str(repo / ".venv/bin/python"),
-                str(script),
-                "--fasta",
-                str(job),
-                # FoldJAX's translator writes Chai's sha256-addressed
-                # `.aligned.pqt` here, from the same .a3m the other three read.
-                "--msa-dir",
-                str(job.parent / "chai_msa"),
-                "--out",
-                str(out),
-                "--recycles",
-                str(schedule["num_recycles"]),
-                "--steps",
-                str(schedule["num_steps"]),
-                "--samples",
-                str(schedule["num_samples"]),
-                "--seed",
-                str(seed),
-            ],
-            repo,
-            {"CHAI_DOWNLOADS_DIR": str(repo / "downloads")},
-        )
     raise ValueError(f"no upstream runner for {model}")
 
 
@@ -203,18 +176,6 @@ def scores(model: str, out: Path) -> list[dict]:
                     if isinstance(body.get(key), (int, float))
                 }
             )
-    elif model == "chai":
-        import numpy as np
-
-        for path in sorted(out.rglob("scores.model_idx_*.npz")):
-            with np.load(path) as data:
-                found.append(
-                    {
-                        key: float(np.asarray(data[key]).reshape(-1)[0])
-                        for key in ("aggregate_score", "ptm", "iptm")
-                        if key in data
-                    }
-                )
     else:
         for path in sorted(out.rglob("*_summary_confidence_sample_*.json")):
             body = json.loads(path.read_text())

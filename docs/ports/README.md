@@ -7,10 +7,14 @@ were argued from. The code moved into `src/foldjax/models/<name>/` and the test
 suites into `tests/models/<name>/`; this directory is where the *reasoning*
 moved, so the sibling checkouts can be deleted without losing it.
 
+Chai-1 is absent: the port was removed from FoldJAX on 2026-08-05, and its
+records went with it. They are in the archive beside its git history --
+`../../../_archive/2026-08-05-ports/` -- rather than here, because this directory
+documents ports the package still carries.
+
 | port | what is here |
 |---|---|
 | [`boltz2/`](boltz2/) | `EXPERIMENTS.jsonl` (30 KB), `RELEASE_GATES.md`, `PERFORMANCE_POLICY.md`, the original README |
-| [`chai/`](chai/) | `SCIENTIFIC_PARITY.md` (16 KB), `BENCHMARKS.md` (11 KB), `COMPLETION_GATES.md`, `PERFORMANCE_POLICY.md`, README and PROJECT notes |
 | [`opendde/`](opendde/) | `EXPERIMENTS.jsonl` (17 KB), `OFFICIAL_ASSETS.json`, README and PROJECT notes |
 | [`openfold3/`](openfold3/) | README and PROJECT notes |
 | [`protenix/`](protenix/) | `PORTING_PLAN.md` (29 KB), `EXPERIMENTS.jsonl` (66 KB), a parity benchmark, a performance profile, a production inference benchmark, the original README |

@@ -8,7 +8,7 @@ here can express all four values, so nothing is left at a different setting and
 quietly compared anyway.
 
 MSA depth is deliberately *not* in the schedule, even though it is the dominant
-term in peak memory. Upstream Chai has no depth argument at all, so pinning one
+term in peak memory. Not every upstream exposes a depth argument, so pinning one
 would mean FoldJAX doing something its own reference implementation cannot --
 which is the opposite of a controlled comparison. Both sides therefore read the
 same alignment file and apply each implementation's own default, which is
@@ -24,8 +24,8 @@ from pathlib import Path
 
 #: AlphaFold 3's released default (`run_alphafold.make_model_config` plus
 #: `Model.Config`): 5 diffusion samples, 200 diffusion steps, 10 recycles.
-#: Protenix's base model ships the same three. Chai and Boltz-2 default to 3
-#: recycles rather than 10, so this asks more of them than their own default
+#: Protenix's base model ships the same three. Boltz-2 defaults to 3
+#: recycles rather than 10, so this asks more of it than its own default
 #: does -- but it asks the same of their upstream, which is what makes the
 #: FoldJAX-vs-upstream column mean something.
 SCHEDULE = {
@@ -44,7 +44,7 @@ DATA = Path(
 )
 
 #: Every model FoldJAX can run.
-MODELS = ("alphafold3", "boltz2", "chai", "opendde", "openfold3", "protenix")
+MODELS = ("alphafold3", "boltz2", "opendde", "openfold3", "protenix")
 
 #: The models with a meaningful "upstream" column, i.e. the ones `run_upstream`
 #: knows how to drive.
@@ -59,7 +59,7 @@ MODELS = ("alphafold3", "boltz2", "chai", "opendde", "openfold3", "protenix")
 #: exist, an "upstream" number would have to be borrowed from somewhere else,
 #: which is exactly what this directory refuses to do. It can be measured on
 #: the FoldJAX side today.
-REIMPLEMENTED = ("boltz2", "chai", "opendde", "protenix")
+REIMPLEMENTED = ("boltz2", "opendde", "protenix")
 
 
 @dataclass(frozen=True)

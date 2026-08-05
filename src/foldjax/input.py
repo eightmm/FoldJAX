@@ -51,9 +51,7 @@ _ALL_FEATURES = frozenset(
 )
 
 # Boltz derives pairing from a single per-chain a3m, so a separate paired MSA has
-# nowhere to go. Chai takes a job-level MSA directory rather than per-chain
-# paths, addresses ligands by SMILES only, and expresses modifications through
-# bracketed residues inside the sequence itself.
+# nowhere to go.
 _TARGETS = {
     "alphafold3": _Target(".json", _ALL_FEATURES),
     # foldjax.models.boltz2 dispatches its parser on the file suffix and rejects .json
@@ -68,9 +66,6 @@ _TARGETS = {
     # *stem* and only database names are parsed, and a paired MSA that cannot
     # actually be paired collapses the MSA to the query sequence alone.
     "openfold3": _Target(".json", _ALL_FEATURES),
-    # Chai's FASTA carries no alignment path, so `unpaired_msa` is expressed by
-    # writing Chai's own `.aligned.pqt` files beside it. See `_chai`.
-    "chai": _Target(".fasta", frozenset({"ligand_smiles", "unpaired_msa"})),
 }
 
 
@@ -372,49 +367,6 @@ def _protenix(job: dict[str, Any], base: Path, seed: int) -> list[dict[str, Any]
     return [native]
 
 
-#: Chai reads user-supplied alignments from a directory of ``.aligned.pqt``
-#: files rather than from its input file, so the materialized job writes them
-#: beside the FASTA under this name and the backend looks for it there.
-CHAI_MSA_DIRNAME = "chai_msa"
-
-
-def _chai(job: dict[str, Any], base: Path, output_dir: Path) -> str:
-    """Render Chai's public FASTA contract, one record per chain.
-
-    Chai's native input is a FASTA, which has nowhere to put an alignment
-    path. Any ``unpaired_msa`` in the job is therefore converted to the
-    ``.aligned.pqt`` form Chai reads and written to a sibling directory, so a
-    job that pins an alignment pins it for Chai too instead of quietly leaving
-    Chai on a different one.
-    """
-    records = []
-    alignments: list[tuple[str, Path]] = []
-    for entity in job["entities"]:
-        kind = entity["type"]
-        sequence = (
-            str(entity["smiles"]) if kind == "ligand" else str(entity["sequence"])
-        )
-        if kind != "ligand" and entity.get("unpaired_msa"):
-            alignments.append((sequence, Path(_path(entity["unpaired_msa"], base))))
-        for chain_id in _ids(entity):
-            records.append(f">{kind}|name={chain_id}\n{sequence}")
-
-    if alignments:
-        from foldjax.models.chai.data.msa import write_aligned_pqt_from_a3m
-
-        destination = Path(output_dir) / CHAI_MSA_DIRNAME
-        for sequence, alignment in alignments:
-            # The job's sequence names the file, because that is what Chai will
-            # look it up by. Deriving the name from the A3M instead let the two
-            # disagree and silently cost the alignment.
-            write_aligned_pqt_from_a3m(
-                alignment.read_text(encoding="utf-8"),
-                destination,
-                query_sequence=sequence,
-            )
-    return "\n".join(records) + "\n"
-
-
 # Upstream parses alignment files by stem and skips every other name in silence,
 # so an unrecognized one has to be refused here rather than discovered as an
 # IndexError inside the MSA parser.
@@ -561,8 +513,8 @@ def materialize_native_input(
     _validate(job, model, target, capabilities.entity_types)
 
     base = source.parent
-    # Created before the dialects are built: OpenFold3 and Chai both write
-    # alongside their document rather than only into it.
+    # Created before the dialects are built: OpenFold3 writes alongside its
+    # document rather than only into it.
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -572,13 +524,8 @@ def materialize_native_input(
         document = _boltz(job, base)
     elif model in {"opendde", "protenix"}:
         document = _protenix(job, base, seed)
-    elif model == "openfold3":
-        document = _openfold3(job, base, output_dir)
     else:
-        document = None  # written after output_dir exists; Chai needs it
-
-    if document is None:
-        document = _chai(job, base, output_dir)
+        document = _openfold3(job, base, output_dir)
     path = output_dir / f"{model}_input{target.suffix}"
     text = document if isinstance(document, str) else json.dumps(document, indent=2)
     path.write_text(text, encoding="utf-8")

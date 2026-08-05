@@ -1,7 +1,7 @@
 """Every triangle site resolves through one rule, and none opts out privately.
 
 Three separate bugs in this repo had the same shape: a knob that looked set and
-did not reach. The chai MSA pair block kept its own copy of a threshold that
+did not reach. A removed port's MSA pair block kept its own copy of a threshold that
 gained a byte rule only on the other copy; protenix's confidence head carried
 `triangle_attention_backend="xla_jit"` as a parameter default, so changing the
 module default moved everything except it; OpenDDE forced both backends to XLA

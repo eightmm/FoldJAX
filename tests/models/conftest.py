@@ -44,9 +44,6 @@ _OPTIONAL_SUITES: dict[str, tuple[str, tuple[str, ...]]] = {
             "boltz2/test_triangle_checkpoint_parity.py",
             "boltz2/test_trunk_checkpoint_parity.py",
             "boltz2/test_weighted_rigid_align_parity.py",
-            "chai/test_esm2_model.py",
-            "chai/test_sampler_parity_geometry.py",
-            "chai/test_scientific_parity_harness.py",
         ),
     ),
 }

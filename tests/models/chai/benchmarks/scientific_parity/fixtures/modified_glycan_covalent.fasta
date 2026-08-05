@@ -1,6 +1,0 @@
->protein|name=protein
-AC(SEP)
->ligand|name=ligand
-CS
->glycan|name=glycan
-NAG(4-1 NAG)

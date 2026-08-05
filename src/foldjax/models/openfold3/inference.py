@@ -241,9 +241,9 @@ def openfold3_precision(function):
     This used to be a `jax.config.update` at import time, which is
     process-global: importing this port would re-specify the numerics of every
     other model sharing the process, and of every non-OpenFold3 test collected
-    after it. `foldjax.models.chai` hit exactly this and was fixed the same
-    way. Scoping it to the port's own entry point keeps the guarantee where it
-    belongs.
+    after it. The Chai port, since removed, hit exactly this and was fixed the
+    same way. Scoping it to the port's own entry point keeps the guarantee where
+    it belongs.
 
     Decorating :func:`predict` is sufficient for both paths. The setting has to
     be active during *tracing*, not just execution, and the port's single

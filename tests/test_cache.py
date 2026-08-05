@@ -54,7 +54,7 @@ def test_cache_namespace_is_backend_and_profile_specific(tmp_path: Path) -> None
 
 
 def test_cache_namespace_falls_back_to_a_usable_directory_name(tmp_path: Path) -> None:
-    path = cache_namespace(tmp_path, model="chai", weight_id="///", profile={})
+    path = cache_namespace(tmp_path, model="protenix", weight_id="///", profile={})
     assert path.parent.name == "weights"
 
 

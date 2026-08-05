@@ -24,11 +24,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     """Register the opt-in parity flag where pytest will actually parse it.
 
     Only conftests on the rootdir chain (and in `test*` directories named as
-    args) are consulted for options. This file is one; `tests/models/chai/` is
-    not, because it is reached through `models/`. Registering it there meant
-    `pytest --run-official-parity` from the repository root -- the documented
-    command -- failed with "unrecognized arguments", so the flag worked only
-    when that one directory was named explicitly.
+    args) are consulted for options. This file is one; a `tests/models/<name>/`
+    conftest is not, because it is reached through `models/`. Registering it in
+    one of those meant `pytest --run-official-parity` from the repository root --
+    the documented command -- failed with "unrecognized arguments", so the flag
+    worked only when that one directory was named explicitly.
     """
     parser.addoption(
         "--run-official-parity",

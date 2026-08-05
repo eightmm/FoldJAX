@@ -57,7 +57,7 @@ class ModelAssets:
     # the model takes an asset directory rather than a single file.
     native: str
     # Every relative path that must exist before the model can predict. A
-    # single-file model repeats `native`; Chai needs a bundle and an archive.
+    # single-file model repeats `native`; AlphaFold 3 takes a directory.
     requires: tuple[str, ...]
     convert: Callable[[str, Path], Path]
     needs_torch: bool = True
@@ -145,42 +145,6 @@ def _unpack_boltz_mols(archive: Path, destination: Path) -> None:
             shutil.move(str(item), destination / item.name)
         inner.rmdir()
 
-
-def _convert_chai(model: str, source: Path) -> Path:
-    from foldjax.models.chai.bridge.bundle_io import (
-        COMPONENT_TENSOR_COUNTS,
-        export_native_bundle,
-    )
-    from foldjax.models.chai.bridge.conformer_export import export_native_conformers
-
-    out_dir = weights_dir(model)
-    bundle = out_dir / "models" / "chai1"
-    if not bundle.exists():
-        export_native_bundle(
-            {
-                component: source / "models_v2" / f"{component}.pt"
-                for component in COMPONENT_TENSOR_COUNTS
-            },
-            bundle,
-            chai_source=CHAI_COMPONENT_SOURCE,
-            chai_release=CHAI_RELEASE,
-        )
-    conformers = out_dir / "conformers.npz"
-    if not conformers.exists():
-        export_native_conformers(source / "conformers_v1.apkl", conformers)
-    return conformers
-
-
-CHAI_COMPONENT_SOURCE = "https://github.com/chaidiscovery/chai-lab"
-CHAI_RELEASE = "v0.6.1"
-_CHAI_COMPONENTS = (
-    "bond_loss_input_proj.pt",
-    "confidence_head.pt",
-    "diffusion_module.pt",
-    "feature_embedding.pt",
-    "token_embedder.pt",
-    "trunk.pt",
-)
 
 # Shared Protenix-family chemistry assets. Protenix and OpenDDE both read them,
 # so they live in assets/ rather than under one model.
@@ -318,37 +282,6 @@ REGISTRY: dict[str, ModelAssets] = {
         extras=("boltz-preprocess",),
         notes="mols.tar is unpacked to weights/boltz2/mols and is passed as the "
         "`mols` option automatically.",
-    ),
-    "chai": ModelAssets(
-        model="chai",
-        source=CHAI_COMPONENT_SOURCE,
-        licence="Apache-2.0",
-        downloads=(
-            Download(
-                name="conformers_v1.apkl",
-                url=(
-                    "https://chaiassets.com/chai1-inference-depencencies/"
-                    "conformers_v1.apkl"
-                ),
-            ),
-            *(
-                Download(
-                    name=f"models_v2/{component}",
-                    url=(
-                        "https://chaiassets.com/chai1-inference-depencencies/"
-                        f"models_v2/{component}"
-                    ),
-                )
-                for component in _CHAI_COMPONENTS
-            ),
-        ),
-        # Chai takes an asset root: a native model bundle plus a conformer
-        # archive, which is why this one is a directory.
-        native=".",
-        requires=("models/chai1", "conformers.npz"),
-        convert=_convert_chai,
-        notes="The conformer archive is decoded directly, so this needs no "
-        "chai-lab checkout.",
     ),
 }
 

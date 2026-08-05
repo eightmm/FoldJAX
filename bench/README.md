@@ -41,14 +41,14 @@ job can otherwise fail an allocation that would have fit.
 ## The schedule
 
 AlphaFold 3's released inference default — 5 diffusion samples, 200 diffusion
-steps, 10 recycles, seed 101 — which Protenix's base model also ships. Chai and
-Boltz-2 default to 3 recycles rather than 10, so this asks more of them than
-their own default does; it asks the same of their upstream, which is what makes
-the comparison mean anything. See `spec.py`.
+steps, 10 recycles, seed 101 — which Protenix's base model also ships. Boltz-2
+defaults to 3 recycles rather than 10, so this asks more of it than its own
+default does; it asks the same of its upstream, which is what makes the
+comparison mean anything. See `spec.py`.
 
-MSA depth is deliberately not pinned: upstream Chai has no depth argument, so
-fixing one would mean FoldJAX doing something its own reference cannot. Both
-sides read the same alignment and apply the same default.
+MSA depth is deliberately not pinned: not every upstream exposes a depth
+argument, so fixing one would mean FoldJAX doing something its own reference
+cannot. Both sides read the same alignment and apply the same default.
 
 ## Every upstream runs on its own fast path
 
@@ -72,8 +72,7 @@ and, more importantly, how to verify each one actually took effect. A kernel
 built for the wrong architecture fails *asynchronously*, so the call returns
 normally and the error surfaces somewhere else entirely.
 
-Boltz-2 and Chai needed nothing: Boltz-2 already had cuEquivariance, and Chai
-does not use it.
+Boltz-2 needed nothing: it already had cuEquivariance.
 
 ## Running it
 
@@ -81,7 +80,7 @@ Data (alignments, jobs, sequences) lives outside the repository; point
 `FOLDJAX_BENCH_DATA` at it.
 
 ```bash
-python -m bench.drive --models boltz2 chai opendde protenix \
+python -m bench.drive --models boltz2 opendde protenix \
     --impls foldjax upstream --cases t0128 t0488 t0976 \
     --results results/ --work /tmp/bench --skip-existing
 python -m bench.report --results results/

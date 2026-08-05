@@ -57,7 +57,6 @@ def test_registry_exposes_every_model_and_its_aliases() -> None:
     assert foldjax.available_models() == (
         "alphafold3",
         "boltz2",
-        "chai",
         "opendde",
         "openfold3",
         "protenix",
@@ -65,8 +64,6 @@ def test_registry_exposes_every_model_and_its_aliases() -> None:
     assert foldjax.normalize_model_name("af3") == "alphafold3"
     assert foldjax.normalize_model_name("boltz") == "boltz2"
     assert foldjax.normalize_model_name("protenix-jax") == "protenix"
-    assert foldjax.normalize_model_name("chai-1") == "chai"
-    assert foldjax.normalize_model_name("chai-jax") == "chai"
     assert foldjax.normalize_model_name("opendde-jax") == "opendde"
     assert foldjax.normalize_model_name("open-dde") == "opendde"
     assert foldjax.normalize_model_name("of3") == "openfold3"

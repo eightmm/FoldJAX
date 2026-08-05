@@ -70,29 +70,41 @@ def test_published_hashes_are_well_formed() -> None:
             assert set(item.sha256) <= set("0123456789abcdef"), (name, item.name)
 
 
-def test_chai_resolves_to_an_asset_root_not_a_single_file(
+def test_a_directory_model_resolves_to_its_asset_root_not_a_single_file(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Chai takes a directory; returning one file would fail only at inference."""
-    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
-    root = paths.weights_dir("chai")
-    (root / "models" / "chai1").mkdir(parents=True)
-    (root / "conformers.npz").touch()
+    """`native = "."` means the model reads a directory.
 
-    assert assets.resolve_weights("chai") == root
-    assert assets.assets_for("chai").ready()
+    AlphaFold 3 is the one that does: it loads its own parameter file from a
+    directory it is handed, so returning a single path from `resolve_weights`
+    would fail only at inference.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("alphafold3")
+    root.mkdir(parents=True)
+    (root / "af3.bin").touch()
+
+    assert assets.resolve_weights("alphafold3") == root
+    assert assets.assets_for("alphafold3").ready()
 
 
 def test_a_partially_converted_model_is_not_reported_ready(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
-    root = paths.weights_dir("chai")
-    (root / "models" / "chai1").mkdir(parents=True)  # conformers still missing
+    """One of several required artifacts is not a usable installation.
 
-    assert not assets.assets_for("chai").ready()
+    The next test covers what `ready()` reports; what this one adds is that
+    `resolve_weights` refuses rather than handing back a path to a half-built
+    directory, and names the command that finishes the job.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    root = paths.weights_dir("boltz2")
+    root.mkdir(parents=True)
+    (root / "boltz2_conf.safetensors").touch()  # mols/ still missing
+
+    assert not assets.assets_for("boltz2").ready()
     with pytest.raises(FileNotFoundError, match="foldjax weights fetch"):
-        assets.resolve_weights("chai")
+        assets.resolve_weights("boltz2")
 
 
 def test_boltz_is_not_ready_without_its_molecule_directory(

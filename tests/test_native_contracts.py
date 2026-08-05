@@ -7,7 +7,6 @@ native rename or signature change fails here instead of at inference time.
 
 from __future__ import annotations
 
-import dataclasses
 import inspect
 import json
 from pathlib import Path
@@ -15,26 +14,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from foldjax.backends.chai import ChaiBackend, _config
 from foldjax.input import materialize_native_input
 from foldjax.registry import capabilities
 from foldjax.schema import PredictionRequest
-
-
-def _request(tmp_path: Path, **options) -> PredictionRequest:
-    input_path = tmp_path / "job.fasta"
-    input_path.write_text(">protein|name=A\nACD\n")
-    weights = tmp_path / "weights"
-    weights.mkdir(exist_ok=True)
-    return PredictionRequest(
-        model="chai",
-        input=input_path,
-        weights=weights,
-        output_dir=tmp_path / "out",
-        seed=11,
-        cache_dir=tmp_path / "cache",
-        options=options,
-    )
 
 
 def _materialize(job: dict, model: str, tmp_path: Path) -> Path:
@@ -43,31 +25,6 @@ def _materialize(job: dict, model: str, tmp_path: Path) -> Path:
     return materialize_native_input(
         source, capabilities(model), tmp_path / model, seed=1
     )
-
-
-def test_materialized_chai_fasta_parses_with_chai_own_parser(tmp_path: Path) -> None:
-    from foldjax.models.chai.data.input import EntityType, read_inputs
-
-    path = _materialize(
-        {
-            "entities": [
-                {"type": "protein", "id": ["A", "B"], "sequence": "ACDEF"},
-                {"type": "rna", "id": ["R"], "sequence": "ACGU"},
-                {"type": "ligand", "id": ["L"], "smiles": "CCO"},
-            ]
-        },
-        "chai",
-        tmp_path,
-    )
-    inputs = read_inputs(path)
-    assert [item.entity_name for item in inputs] == ["A", "B", "R", "L"]
-    assert [item.entity_type for item in inputs] == [
-        EntityType.PROTEIN.value,
-        EntityType.PROTEIN.value,
-        EntityType.RNA.value,
-        EntityType.LIGAND.value,
-    ]
-    assert inputs[3].sequence == "CCO"
 
 
 def test_materialized_boltz_job_has_a_suffix_boltz_accepts(tmp_path: Path) -> None:
@@ -92,56 +49,6 @@ def _boltz_jax_root() -> Path:
     import foldjax.models.boltz2
 
     return Path(foldjax.models.boltz2.__file__).parent
-
-
-def test_chai_config_builds_from_the_real_inference_config(tmp_path: Path) -> None:
-    import foldjax.models.chai
-
-    config = _config(
-        foldjax.models.chai.InferenceConfig,
-        {"num_diffusion_timesteps": 8, "num_diffusion_samples": 2},
-        _request(tmp_path),
-    )
-    assert isinstance(config, foldjax.models.chai.InferenceConfig)
-    assert config.seed == 11
-    assert config.compilation_cache_dir == tmp_path / "cache"
-    assert config.num_diffusion_timesteps == 8
-    config.validate()
-
-
-def test_chai_config_coerces_path_and_bool_options(tmp_path: Path) -> None:
-    import foldjax.models.chai
-
-    msa_dir = tmp_path / "msas"
-    msa_dir.mkdir()
-    config = _config(
-        foldjax.models.chai.InferenceConfig,
-        {"msa_directory": str(msa_dir), "use_esm_embeddings": False},
-        _request(tmp_path),
-    )
-    assert config.msa_directory == msa_dir
-    assert config.use_esm_embeddings is False
-    config.validate()
-
-
-def test_chai_compile_options_are_real_inference_config_fields() -> None:
-    import foldjax.models.chai
-
-    config_type = foldjax.models.chai.InferenceConfig
-    fields = {field.name for field in dataclasses.fields(config_type)}
-    assert set(ChaiBackend.compile_options) <= fields
-
-
-def test_chai_config_surfaces_native_validation_errors(tmp_path: Path) -> None:
-    import foldjax.models.chai
-
-    config = _config(
-        foldjax.models.chai.InferenceConfig,
-        {"use_msa_server": True, "msa_directory": str(tmp_path)},
-        _request(tmp_path),
-    )
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        config.validate()
 
 
 def test_protenix_cli_accepts_the_flags_the_adapter_emits() -> None:
@@ -212,14 +119,6 @@ def _write_yaml(tmp_path: Path) -> Path:
     path = tmp_path / "job.yaml"
     path.write_text("version: 1\n")
     return path
-
-
-def test_chai_run_inference_accepts_the_keywords_the_adapter_passes() -> None:
-    import foldjax.models.chai
-
-    parameters = inspect.signature(foldjax.models.chai.run_inference).parameters
-    for keyword in ("output_dir", "bundle_path", "conformer_path", "config"):
-        assert keyword in parameters, keyword
 
 
 def test_native_weight_files_from_before_vendoring_still_load() -> None:

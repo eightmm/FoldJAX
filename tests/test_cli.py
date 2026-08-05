@@ -11,7 +11,6 @@ def test_models_cli_lists_backends(capsys) -> None:
     assert capsys.readouterr().out.splitlines() == [
         "alphafold3",
         "boltz2",
-        "chai",
         "opendde",
         "openfold3",
         "protenix",
@@ -19,9 +18,10 @@ def test_models_cli_lists_backends(capsys) -> None:
 
 
 def test_capabilities_cli_reports_one_backend(capsys) -> None:
-    assert main(["capabilities", "--model", "chai-1"]) == 0
+    """Asked by an alias, so the CLI's name resolution is covered too."""
+    assert main(["capabilities", "--model", "protenix-jax"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["model"] == "chai"
+    assert payload["model"] == "protenix"
     assert "foldjax" in payload["input_formats"]
 
 

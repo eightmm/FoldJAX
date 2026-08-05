@@ -3,9 +3,9 @@
 ``predict`` returns arrays. Everything downstream of a prediction -- looking at it,
 scoring it, comparing it to a deposition -- needs a structure file and a summary,
 which is what the other ports in this package emit
-(``foldjax.models.protenix.data.output``, ``foldjax.models.chai.output``). This
-brings OpenFold3 to the same level: one mmCIF per diffusion sample, one
-confidence JSON, and the raw arrays.
+(``foldjax.models.protenix.data.output`` and the rest). This brings OpenFold3 to
+the same level: one mmCIF per diffusion sample, one confidence JSON, and the raw
+arrays.
 
 The atom-level metadata comes back out of the features rather than being tracked
 alongside them. That is deliberate: the features are the only thing guaranteed to

@@ -18,10 +18,6 @@ _ALIASES = {
     "boltz": "boltz2",
     "boltz2": "boltz2",
     "boltz-jax": "boltz2",
-    "chai": "chai",
-    "chai1": "chai",
-    "chai-1": "chai",
-    "chai-jax": "chai",
     "open-dde": "opendde",
     "opendde": "opendde",
     "opendde-jax": "opendde",
@@ -35,7 +31,6 @@ _ALIASES = {
 _IMPORTS = {
     "alphafold3": ("foldjax.backends.alphafold3", "AlphaFold3Backend"),
     "boltz2": ("foldjax.backends.boltz2", "Boltz2Backend"),
-    "chai": ("foldjax.backends.chai", "ChaiBackend"),
     "opendde": ("foldjax.backends.opendde", "OpenDDEBackend"),
     "protenix": ("foldjax.backends.protenix", "ProtenixBackend"),
     "openfold3": ("foldjax.backends.openfold3", "OpenFold3Backend"),

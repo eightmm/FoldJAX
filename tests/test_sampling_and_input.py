@@ -10,7 +10,6 @@ import pytest
 import foldjax
 from foldjax.api import detect_input_format
 from foldjax.backends.boltz2 import Boltz2Backend
-from foldjax.backends.chai import ChaiBackend
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.protenix import ProtenixBackend
 from foldjax.input import read_job_document
@@ -44,8 +43,8 @@ def test_common_schema_is_detected_in_both_json_and_yaml(tmp_path: Path) -> None
 def test_native_dialects_are_not_mistaken_for_the_common_schema(
     tmp_path: Path,
 ) -> None:
-    # Protenix-family native input is a list of jobs, Boltz native is a mapping
-    # with `sequences`, and Chai native is a FASTA. None has `entities`.
+    # Protenix-family native input is a list of jobs, and Boltz native is either
+    # a mapping with `sequences` or a FASTA. None has `entities`.
     protenix = tmp_path / "native.json"
     protenix.write_text(json.dumps([{"name": "x", "sequences": []}]))
     boltz = tmp_path / "native.yaml"
@@ -91,18 +90,10 @@ def test_yaml_common_input_materializes_like_its_json_twin(tmp_path: Path) -> No
             Boltz2Backend(),
             {"diffusion_samples": 3, "steps": 40, "recycling": 2},
         ),
-        (
-            ChaiBackend(),
-            {
-                "num_diffusion_samples": 3,
-                "num_diffusion_timesteps": 40,
-                "num_trunk_recycles": 2,
-            },
-        ),
         (OpenDDEBackend(), {"n_sample": 3, "n_step": 40, "n_cycle": 2}),
         (ProtenixBackend(), {"n_sample": 3, "n_step": 40, "n_cycle": 2}),
     ],
-    ids=["boltz2", "chai", "opendde", "protenix"],
+    ids=["boltz2", "opendde", "protenix"],
 )
 def test_neutral_knobs_become_each_backends_own_option_names(
     tmp_path: Path, backend, expected
@@ -127,8 +118,8 @@ def test_every_translated_option_is_one_the_backend_really_accepts() -> None:
             opendde._CLI_OPTIONS if backend.name == "opendde" else protenix._CLI_OPTIONS
         )
         assert set(backend.sampling_options.values()) <= accepted, backend.name
-    for backend in (Boltz2Backend(), ChaiBackend()):
-        assert set(backend.sampling_options.values()) <= set(backend.compile_options)
+    boltz = Boltz2Backend()
+    assert set(boltz.sampling_options.values()) <= set(boltz.compile_options)
 
 
 def test_setting_a_knob_and_its_native_name_together_is_rejected(
@@ -179,7 +170,7 @@ def test_capabilities_report_the_knobs_each_backend_honours() -> None:
     unsupported made AlphaFold 3 the one model that could not be held to the
     same schedule as the others -- which is exactly what comparing them needs.
     """
-    for name in ("alphafold3", "boltz2", "chai", "opendde", "protenix"):
+    for name in ("alphafold3", "boltz2", "opendde", "protenix"):
         sampling = foldjax.capabilities(name).sampling
         assert {
             "num_samples",
@@ -229,9 +220,11 @@ def test_missing_weights_name_the_command_that_fetches_them(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "empty"))
-    with pytest.raises(FileNotFoundError, match="foldjax weights fetch --model chai"):
+    with pytest.raises(
+        FileNotFoundError, match="foldjax weights fetch --model protenix"
+    ):
         foldjax.resolve_request(
-            PredictionRequest(model="chai", input=_job_file(tmp_path))
+            PredictionRequest(model="protenix", input=_job_file(tmp_path))
         )
 
 
@@ -280,7 +273,7 @@ def test_sampling_knobs_survive_the_whole_predict_path(tmp_path: Path) -> None:
 def test_seeds_run_the_job_once_each_and_return_every_structure(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Three of the six models take a seed list natively and three do not.
+    """Three of the five models take a seed list natively and two do not.
 
     A knob that works on half the models is not a neutral knob, so the loop
     lives in `predict` and every backend gets it identically. Each seed writes
