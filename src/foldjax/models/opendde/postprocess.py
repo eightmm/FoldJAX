@@ -37,6 +37,15 @@ _OPENDDE_SCORE_KEYS = frozenset(
         "summary_ranking_score",
         "ranking_score",
         "final_score",
+        # Cross-chain shape complementarity. Reported, never ranked -- upstream
+        # builds `ranking_score` from iptm, ptm, disorder and clash alone.
+        "shape_comp_token_pred",
+        "shape_comp_token_mask",
+        "shape_comp_global_pred",
+        "shape_comp_pair_mean_pred",
+        "shape_comp_pair_topk_mean_pred",
+        "shape_comp_valid_pair_frac_pred",
+        "shape_comp_uses_structural_tokens",
     }
 )
 
@@ -153,7 +162,67 @@ def opendde_confidence_scores(
             token_asym_id,
         )
     )
+    scores.update(
+        _shape_complementarity_scores(output, features, n_token=n_token)
+    )
     return {key: value for key, value in scores.items() if key in _OPENDDE_SCORE_KEYS}
+
+
+def _shape_complementarity_scores(
+    output: Mapping[str, Any],
+    features: Mapping[str, Any],
+    *,
+    n_token: int,
+) -> dict[str, jnp.ndarray]:
+    """Upstream's six cross-chain shape-complementarity fields, per sample.
+
+    Upstream computes these on every prediction -- `alpha_shape_comp` is 3e-2
+    and the three sub-weights are non-zero, so `_should_compute_shape_comp()` is
+    true by default -- and this port reported none of them.
+
+    Mapped over the sample axis rather than batched: the pair map is
+    `[N_token, N_token]` and stacking five samples of it is the largest array
+    postprocessing would hold. Skipped rather than raised when the features it
+    needs are absent, because the trunk-only and component tests build partial
+    dicts and this is a reported field, not a structural one -- it never enters
+    `ranking_score`, which upstream builds from iptm, ptm, disorder and clash
+    alone (`sample_confidence.py:163`).
+    """
+    from foldjax.models.opendde.models.shape_complementarity import (
+        compute_shape_complementarity,
+    )
+
+    needed = {"token_index", "atom_to_token_idx", "asym_id"}
+    if not needed <= features.keys():
+        return {}
+    if not ({"distogram_rep_atom_mask", "structural_distogram_rep_atom_mask"}
+            & features.keys()):
+        return {}
+
+    coordinate = jnp.asarray(output["coordinate"])
+    atom_mask = features.get("atom_exists_mask")
+    atom_mask = (
+        jnp.ones(coordinate.shape[-2], dtype=bool)
+        if atom_mask is None
+        else jnp.asarray(atom_mask).astype(bool).reshape(-1)
+    )
+
+    samples = [coordinate] if coordinate.ndim == 2 else list(coordinate)
+    per_sample = [
+        compute_shape_complementarity(sample, features, atom_mask)
+        for sample in samples
+    ]
+    stacked = {
+        key: jnp.stack([entry[key] for entry in per_sample])
+        for key in per_sample[0]
+    }
+    if coordinate.ndim == 2:
+        stacked = {key: value[0] for key, value in stacked.items()}
+    stacked["shape_comp_uses_structural_tokens"] = jnp.asarray(
+        "subtoken_role_id" in features
+        and jnp.asarray(features["subtoken_role_id"]).reshape(-1).shape[0] == n_token
+    )
+    return stacked
 
 
 __all__ = ["compute_contact_prob", "opendde_confidence_scores"]
