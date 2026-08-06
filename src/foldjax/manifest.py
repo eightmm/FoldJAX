@@ -61,6 +61,7 @@ def describe_run(
     """
     from foldjax import __version__
     from foldjax.cache import runtime_profile, weight_identity
+    from foldjax.output import best_sample
 
     weights = request.weights
     label = identity = None
@@ -84,6 +85,11 @@ def describe_run(
         "options": {key: str(value) for key, value in request.options.items()},
         "runtime": runtime_profile(),
         "samples": [sample.summary() for sample in result.samples],
+        # Which sample this model ranks first, by the score it ranks with. A
+        # pointer rather than a second copy of the coordinates: the top-ranked
+        # structure used to be written twice, and two files with one content
+        # invite the question of which is authoritative.
+        "best": best_sample(result),
     }
 
 

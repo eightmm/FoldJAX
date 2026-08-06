@@ -17,6 +17,7 @@ from foldjax.backends.base import Backend
 from foldjax.cache import cache_namespace, runtime_profile, weight_identity
 from foldjax.input import materialize_native_input, read_job_document
 from foldjax.manifest import write as write_manifest
+from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
 from foldjax.registry import get_backend
 from foldjax.schema import PredictionRequest, PredictionResult
@@ -82,7 +83,12 @@ def predict(request: PredictionRequest) -> PredictionResult:
         return _predict_once(request, seeds[0], request.output_dir)
 
     results = [
-        _predict_once(request, seed, request.output_dir / f"seed_{seed}")
+        _predict_once(
+            request,
+            seed,
+            request.output_dir / f"seed_{seed}",
+            layout_root=request.output_dir,
+        )
         for seed in seeds
     ]
     combined = PredictionResult(
@@ -96,10 +102,38 @@ def predict(request: PredictionRequest) -> PredictionResult:
     return combined
 
 
+def _job_name(request: PredictionRequest) -> str:
+    """What to call this target in file names: the job's own name, or the file's.
+
+    A common-schema document names itself, and that name is what the person
+    running it recognizes. Native dialects are not all required to carry one, so
+    the input's stem is the fallback -- never the model, which is already in the
+    manifest and would make every run's files look alike.
+    """
+    try:
+        document = read_job_document(request.input)
+    except (ValueError, OSError):
+        document = None
+    if isinstance(document, dict):
+        name = str(document.get("name") or "").strip()
+        if name:
+            return name
+    return request.input.stem
+
+
 def _predict_once(
-    request: PredictionRequest, seed: int, output_dir: Path
+    request: PredictionRequest,
+    seed: int,
+    output_dir: Path,
+    *,
+    layout_root: Path | None = None,
 ) -> PredictionResult:
-    """Run the job under exactly one seed, writing into ``output_dir``."""
+    """Run the job under exactly one seed, writing into ``output_dir``.
+
+    ``layout_root`` is where the canonical per-sample directories go when that
+    is not ``output_dir`` itself -- a multi-seed run keeps each seed's native
+    files apart but gathers every structure under one root.
+    """
     request = dataclasses.replace(
         request, seed=seed, seeds=None, output_dir=output_dir
     )
@@ -131,6 +165,9 @@ def _predict_once(
         )
     request.output_dir.mkdir(parents=True, exist_ok=True)
     result = backend.predict(request)
+    # Five backends wrote five layouts; this puts every structure in the same
+    # place under the same name, and leaves everything else where it was.
+    result = normalize_output(result, job=_job_name(asked), root=layout_root)
     # Written after the run, so its presence also says the run finished.
     write_manifest(
         asked,
