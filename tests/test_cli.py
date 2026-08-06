@@ -17,6 +17,49 @@ def test_models_cli_lists_backends(capsys) -> None:
     ]
 
 
+def test_setup_fetches_what_is_public_and_instructs_for_the_rest(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """One command, and an honest account of what it could not do.
+
+    The two models whose publishers release parameters on request cannot be
+    fetched by anyone, so `setup` must not fail on them -- it reports the step
+    the user has to take. Its exit status is about the public downloads only.
+    """
+    from foldjax import assets
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    monkeypatch.delenv("PROTENIX_TEMPLATE_MMCIF_DIR", raising=False)
+    fetched = []
+    monkeypatch.setattr(
+        assets, "fetch", lambda name, **kw: fetched.append(name) or tmp_path / name
+    )
+
+    assert main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert fetched == ["boltz2", "opendde", "protenix"], "only the public ones"
+    assert "alphafold3  manual" in out and "Request the parameters" in out
+    assert "openfold3   manual" in out and "huggingface.co/OpenFold" in out
+    # The two modalities that need no weights still need an answer.
+    assert "msa" in out and "ColabFold" in out
+    assert "PROTENIX_TEMPLATE_MMCIF_DIR" in out
+
+
+def test_setup_exit_status_follows_the_public_downloads(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax import assets
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+
+    def explode(name, **kwargs):
+        raise RuntimeError(f"{name} download failed")
+
+    monkeypatch.setattr(assets, "fetch", explode)
+    assert main(["setup"]) == 1
+    assert "download failed" in capsys.readouterr().err
+
+
 def test_capabilities_cli_reports_one_backend(capsys) -> None:
     """Asked by an alias, so the CLI's name resolution is covered too."""
     assert main(["capabilities", "--model", "protenix-jax"]) == 0

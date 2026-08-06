@@ -548,10 +548,18 @@ def _template_chain_sequence(
 def _resolve_kalign_binary(kalign_binary: str | Path | None) -> str:
     configured = kalign_binary or os.environ.get(_KALIGN_BINARY_ENV)
     if configured is None:
-        raise ValueError(
-            "template search realignment requires an explicit Kalign 3.3.5 "
-            f"binary; pass kalign_binary or set {_KALIGN_BINARY_ENV}"
-        )
+        # A `kalign` on PATH is accepted, and then held to the same version
+        # check as a configured one -- which is what the pin actually protects.
+        # Requiring the variable as well meant that installing the right
+        # version was not enough, and refusing to look was the difference
+        # between templates working and not on a machine that already had it.
+        found = shutil.which("kalign")
+        if found is None:
+            raise ValueError(
+                f"template search realignment requires Kalign {_KALIGN_VERSION}; "
+                f"install it (`apt install kalign`) or set {_KALIGN_BINARY_ENV}"
+            )
+        configured = found
     executable = shutil.which(os.fspath(configured))
     if executable is None:
         raise FileNotFoundError(
@@ -657,14 +665,26 @@ def _align_query_to_template(
 
 
 def _metadata_path(
-    configured: str | Path | None, *, environment: str, label: str
+    configured: str | Path | None, *, environment: str, label: str, managed: str
 ) -> Path:
+    """Caller, then environment, then the file `foldjax weights fetch` put down.
+
+    The managed fallback is what makes a fetched asset reachable without also
+    exporting a variable: both JSONs are published by the same project as the
+    CCD, land in the same shared `assets/` directory, and are read here for the
+    same reason -- so requiring the path twice would be a trap, not a policy.
+    """
     value = configured or os.environ.get(environment)
     if value is None:
+        from foldjax.paths import assets_dir
+
+        fetched = assets_dir() / managed
+        if fetched.is_file():
+            return fetched
         raise ValueError(
             f"template {label} metadata is required for the "
-            f"{_MAX_TEMPLATE_DATE.isoformat()} cutoff; pass its path or set "
-            f"{environment}"
+            f"{_MAX_TEMPLATE_DATE.isoformat()} cutoff; run `foldjax weights "
+            f"fetch --model protenix`, pass its path, or set {environment}"
         )
     path = Path(value)
     if not path.is_file():
@@ -793,11 +813,13 @@ def resolve_template_search_hits(
         release_dates_path,
         environment=_RELEASE_DATES_ENV,
         label="release-date",
+        managed="release_date_cache.json",
     )
     obsolete_pdbs_file = _metadata_path(
         obsolete_pdbs_path,
         environment=_OBSOLETE_PDBS_ENV,
         label="obsolete-PDB",
+        managed="obsolete_to_successor.json",
     )
     search = load_template_search_artifact(artifact, query_sequence=query_sequence)
     candidates = _prefilter_template_hits(

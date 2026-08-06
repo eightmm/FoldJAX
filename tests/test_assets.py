@@ -8,6 +8,7 @@ would only surface after someone waited on a 2.6 GB download.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from pathlib import Path
 
@@ -325,6 +326,50 @@ def test_the_cli_reports_an_unfetchable_model_without_a_traceback(
     assert "releases them only on request" in capsys.readouterr().err
 
 
+def test_a_converted_model_still_fetches_a_file_added_later(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A registry that gains a file must reach machines that already fetched.
+
+    `fetch` returned early on `ready()` alone, so when the shared template
+    metadata was added, every existing installation reported success and never
+    downloaded it. Converting again is still skipped -- that costs minutes and
+    the torch-bridge extra to rebuild what is on disk.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    spec = assets.REGISTRY["opendde"]
+    weights = paths.weights_dir("opendde")
+    weights.mkdir(parents=True)
+    (weights / "opendde.jax").touch()
+    assert spec.ready()
+
+    payload = b"published later"
+    added = assets.Download(name="added.json", url="unused://", shared=True)
+    patched = dataclasses.replace(
+        spec,
+        downloads=(*spec.downloads, added),
+        convert=lambda *a, **k: pytest.fail(
+            "must not re-convert an existing installation"
+        ),
+    )
+    monkeypatch.setattr(assets, "REGISTRY", {**assets.REGISTRY, "opendde": patched})
+    fetched = []
+
+    def fake_download(item, model, *, on_progress=None):
+        fetched.append(item.name)
+        target = item.target(model)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        return target
+
+    monkeypatch.setattr(assets, "download", fake_download)
+
+    result = assets.fetch("opendde")
+    assert result == weights / "opendde.jax"
+    assert "added.json" in fetched
+    assert (paths.assets_dir() / "added.json").read_bytes() == payload
+
+
 def test_a_truncated_download_is_not_accepted(tmp_path: Path, monkeypatch) -> None:
     """A short read is a truncation, not a finished download.
 
@@ -339,9 +384,9 @@ def test_a_truncated_download_is_not_accepted(tmp_path: Path, monkeypatch) -> No
         headers = {"Content-Length": "100"}
 
         def read(self, _size):
-            payload, self._sent = (b"x" * 40, True) if not getattr(
-                self, "_sent", False
-            ) else (b"", True)
+            payload, self._sent = (
+                (b"x" * 40, True) if not getattr(self, "_sent", False) else (b"", True)
+            )
             return payload
 
         def __enter__(self):

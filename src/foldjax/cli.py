@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -97,6 +98,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_predict_arguments(plan)
 
+    setup = commands.add_parser(
+        "setup", help="fetch everything public in one go, and report the rest"
+    )
+    setup.add_argument(
+        "--download-only",
+        action="store_true",
+        help="fetch the released files but skip the JAX conversions",
+    )
+
     weights = commands.add_parser(
         "weights", help="download released checkpoints and convert them for JAX"
     )
@@ -157,6 +167,71 @@ def _report(name: str, done: int, total: int | None) -> None:
     print(f"\r  {name:<34s} {share}", end="", file=sys.stderr, flush=True)
 
 
+def _template_report() -> list[str]:
+    """What the template modality still needs, in the order it needs it."""
+    from foldjax.models.protenix.data.search import templates
+    from foldjax.paths import assets_dir
+
+    lines = []
+    metadata = ["release_date_cache.json", "obsolete_to_successor.json"]
+    missing = [name for name in metadata if not (assets_dir() / name).is_file()]
+    lines.append(
+        "metadata      missing: " + ", ".join(missing)
+        if missing
+        else "metadata      ready"
+    )
+
+    try:
+        binary = templates._resolve_kalign_binary(None)
+        lines.append(f"kalign        ready  {binary}")
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        lines.append(f"kalign        {error}")
+
+    directory = os.environ.get("PROTENIX_TEMPLATE_MMCIF_DIR")
+    if directory and Path(directory).is_dir():
+        lines.append(f"coordinates   ready  {directory}")
+    else:
+        lines.append(
+            "coordinates   set PROTENIX_TEMPLATE_MMCIF_DIR to a directory of "
+            "mmCIF files (flat or PDB-divided, .cif or .cif.gz)"
+        )
+    return lines
+
+
+def _run_setup(args: argparse.Namespace) -> int:
+    """Fetch every public asset, and say exactly what is left to do by hand."""
+    print(f"store: {paths.foldjax_home()}\n")
+    print("weights")
+    failed = False
+    for name in assets.available():
+        spec = assets.assets_for(name)
+        if not spec.downloads:
+            # Gated or non-redistributable: there is nothing to fetch, and the
+            # instruction differs per model, so `notes` is the only honest text.
+            state = "ready" if spec.ready() else "manual"
+            print(f"  {name:<11s} {state}")
+            if not spec.ready():
+                print(f"    {spec.notes}")
+                print(f"    goes in: {assets.weights_dir(name)}")
+            continue
+        try:
+            result = assets.fetch(
+                name, on_progress=_report, convert=not args.download_only
+            )
+        except (RuntimeError, OSError, ValueError) as error:
+            print(file=sys.stderr)
+            print(f"  {name:<11s} failed: {error}", file=sys.stderr)
+            failed = True
+            continue
+        print(f"\r  {name:<11s} ready  {result}" + " " * 20)
+
+    print("\nmsa           ready  remote MMseqs2 (ColabFold); no local database")
+    print("\ntemplates")
+    for line in _template_report():
+        print(f"  {line}")
+    return 1 if failed else 0
+
+
 def _run_weights(args: argparse.Namespace) -> int:
     if args.weights_command == "list":
         for row in assets.status():
@@ -205,6 +280,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "setup":
+        return _run_setup(args)
     if args.command == "weights":
         return _run_weights(args)
     if args.command == "plan":

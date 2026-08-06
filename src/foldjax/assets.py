@@ -162,6 +162,25 @@ _CCD_RDKIT = Download(
     size=142498117,
     shared=True,
 )
+# Template metadata. `resolve_template_search_hits` needs both to decide which
+# hits a query may see: when each candidate was released, and which obsolete
+# entries were superseded by what. Same publisher and terms as the CCD above,
+# and shared for the same reason -- Protenix and OpenDDE read one copy.
+_TEMPLATE_RELEASE_DATES = Download(
+    name="release_date_cache.json",
+    url="https://protenix.tos-cn-beijing.volces.com/common/release_date_cache.json",
+    sha256="8b1ef12ddc01a0d5eb2d388c77ded91aa906eebce7440726c57b6f8d1a3ec142",
+    size=12754898,
+    shared=True,
+)
+_TEMPLATE_OBSOLETE = Download(
+    name="obsolete_to_successor.json",
+    url="https://protenix.tos-cn-beijing.volces.com/common/obsolete_to_successor.json",
+    sha256="2bc08348d0efba438c109bb27be6fa25b611d371c60b8a8da3de387a4a0698ad",
+    size=86882,
+    shared=True,
+)
+
 
 def _bring_your_own(model: str, source: Path) -> Path:
     """No conversion: the published file is already what the model loads."""
@@ -199,12 +218,15 @@ REGISTRY: dict[str, ModelAssets] = {
             ),
             _CCD_COMPONENTS,
             _CCD_RDKIT,
+            _TEMPLATE_RELEASE_DATES,
+            _TEMPLATE_OBSOLETE,
         ),
         native="protenix_base_default_v1.0.0.jax",
         requires=("protenix_base_default_v1.0.0.jax",),
         convert=_convert_protenix,
         notes="CCD assets are shared with OpenDDE and only needed for ligands "
-        "and modified residues.",
+        "and modified residues; the two template JSONs likewise, and only when "
+        "predicting with templates.",
     ),
     "opendde": ModelAssets(
         model="opendde",
@@ -224,6 +246,8 @@ REGISTRY: dict[str, ModelAssets] = {
             ),
             _CCD_COMPONENTS,
             _CCD_RDKIT,
+            _TEMPLATE_RELEASE_DATES,
+            _TEMPLATE_OBSOLETE,
         ),
         native="opendde.jax",
         requires=("opendde.jax",),
@@ -401,13 +425,25 @@ def fetch(model: str, *, on_progress=None, convert: bool = True) -> Path:
     downloads and an existing conversion are both skipped.
     """
     spec = assets_for(model)
+    # Converted already *and* holding every published file: nothing to do. The
+    # second half matters when the registry gains a file a machine fetched
+    # before it existed -- the shared template metadata did exactly that, and a
+    # `ready()`-only check would have returned success while never fetching it.
+    # Existence, not verification, because re-hashing several GB to decide
+    # whether to skip is the cost this early return exists to avoid.
     if convert and spec.ready():
-        return spec.native_path()
+        if all(item.target(spec.model).is_file() for item in spec.downloads):
+            return spec.native_path()
 
     for item in spec.downloads:
         download(item, spec.model, on_progress=on_progress)
     if not convert:
         return downloads_dir(spec.model)
+    if spec.ready():
+        # Here only because a published file was missing above; converting again
+        # would spend minutes and the torch-bridge extra to rebuild what is
+        # already on disk.
+        return spec.native_path()
 
     spec.convert(spec.model, downloads_dir(spec.model))
     if not spec.ready():

@@ -442,6 +442,14 @@ def test_template_resolution_honors_max_four_and_missing_coordinate_errors(
 def test_template_resolution_requires_cutoff_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Neither JSON can be skipped, and both are looked for in the store.
+
+    `FOLDJAX_HOME` is pinned at an empty directory on purpose: the fallback
+    below is by existence, so on a machine that has run `foldjax weights fetch`
+    these calls would read the fetched copies and the test would pass or fail on
+    whose machine it ran.
+    """
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "empty-store"))
     database = tmp_path / "mmcif"
     database.mkdir()
     artifact = tmp_path / "hits.a3m"
@@ -465,6 +473,48 @@ def test_template_resolution_requires_cutoff_metadata(
             mmcif_dir=database,
             release_dates_path=release_dates,
         )
+
+
+def test_fetched_cutoff_metadata_is_found_without_being_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`foldjax weights fetch` puts both JSONs in the store; that is enough.
+
+    They are published by the same project as the CCD, land in the same shared
+    `assets/`, and are read for the same reason, so demanding two environment
+    variables on top of having fetched them was a trap rather than a policy.
+    """
+    from foldjax.models.protenix.data.search import templates as templates_module
+    from foldjax.paths import assets_dir
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "store"))
+    monkeypatch.delenv("PROTENIX_TEMPLATE_RELEASE_DATES_FILE", raising=False)
+    monkeypatch.delenv("PROTENIX_TEMPLATE_OBSOLETE_FILE", raising=False)
+    assets_dir().mkdir(parents=True)
+    release_dates = assets_dir() / "release_date_cache.json"
+    release_dates.write_text(json.dumps({"1abc": {"release_date": "2020-01-01"}}))
+    obsolete = assets_dir() / "obsolete_to_successor.json"
+    obsolete.write_text("{}")
+
+    resolved = templates_module._metadata_path(
+        None,
+        environment="PROTENIX_TEMPLATE_RELEASE_DATES_FILE",
+        label="release-date",
+        managed="release_date_cache.json",
+    )
+    assert resolved == release_dates
+
+    # And the whole call gets past both, whatever it decides about the hit.
+    database = tmp_path / "mmcif"
+    database.mkdir()
+    query = "ACDEFGHIKLMN"
+    _write_seqres_mmcif(database / "1abc.cif", chain_id="A", sequence=query)
+    artifact = tmp_path / "hits.a3m"
+    artifact.write_text(f">query\n{query}\n>1abc_A mol:protein 1-12 hit\n{query}\n")
+    try:
+        resolve_template_search_hits(artifact, query_sequence=query, mmcif_dir=database)
+    except (ValueError, RuntimeError, FileNotFoundError) as error:
+        assert "PROTENIX_TEMPLATE" not in str(error), error
 
 
 def test_template_resolution_requires_explicit_kalign_binary(
