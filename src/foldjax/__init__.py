@@ -15,6 +15,7 @@ resolved for you. See ``foldjax.assets`` for the weight store and
 
 from foldjax import assets, paths
 from foldjax.api import detect_input_format, predict, resolve_request
+from foldjax.job import Bond, Dna, Job, Ligand, Modification, Protein, Rna
 from foldjax.registry import available_models, capabilities, normalize_model_name
 from foldjax.schema import (
     ModelCapabilities,
@@ -24,10 +25,17 @@ from foldjax.schema import (
 )
 
 __all__ = [
+    "Bond",
+    "Dna",
+    "Job",
+    "Ligand",
     "ModelCapabilities",
+    "Modification",
     "PredictionRequest",
     "PredictionResult",
     "PredictionSample",
+    "Protein",
+    "Rna",
     "assets",
     "available_models",
     "capabilities",
