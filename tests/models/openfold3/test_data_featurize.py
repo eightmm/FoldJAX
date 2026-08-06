@@ -233,3 +233,41 @@ def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -
     assert float(np.asarray(prediction.coordinates).std()) > 1.0
     assert prediction.plddt.shape == (1, n_atom)
     assert bool(np.isfinite(np.asarray(prediction.plddt)).all())
+
+
+def test_the_msa_depth_cap_cuts_rows_and_leaves_the_profile(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    """`--max-msa-depth` is a feature cut here, since OpenFold3 has no argument.
+
+    It was refused for this model, which made OpenFold3 the one backend that
+    could not be held to the same MSA budget as the others -- and that budget is
+    the dominant memory knob. What has to be true is that the cut lands on the
+    alignment axis and nowhere else: `profile` and `deletion_mean` summarise the
+    whole alignment per token, and slicing them would silently change what the
+    model reads about the alignment it was not shown.
+    """
+    from foldjax.backends.openfold3 import _MSA_ROW_FEATURES, _cap_msa_depth
+
+    a3m = tmp_path / "colabfold_main.a3m"
+    a3m.write_text(
+        f">query\n{UBIQUITIN}\n"
+        f">hit1\n{UBIQUITIN[:-1]}A\n"
+        f">hit2\n{'A' * len(UBIQUITIN)}\n"
+    )
+    features = featurize_query(_spec(main_msa_file_paths=[str(a3m)]))
+
+    rows = features["msa"].shape[1]
+    assert rows > 1, "a single-row alignment cannot show a cap working"
+    depth = rows - 1
+    capped = _cap_msa_depth(features, depth)
+
+    for name in _MSA_ROW_FEATURES:
+        assert capped[name].shape[1] == depth, name
+        # Same rows, in the same order, not a resample.
+        np.testing.assert_array_equal(capped[name], features[name][:, :depth])
+    for name in ("profile", "deletion_mean", "token_mask", "restype"):
+        np.testing.assert_array_equal(capped[name], features[name])
+
+    assert _cap_msa_depth(features, rows) is features, "a cap at the depth is a no-op"
+    assert _cap_msa_depth(features, rows + 10) is features

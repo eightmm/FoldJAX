@@ -137,11 +137,42 @@ def test_setting_a_knob_and_its_native_name_together_is_rejected(
 
 
 def test_a_knob_the_backend_cannot_express_is_rejected(tmp_path: Path) -> None:
-    """OpenFold3 exposes no MSA-depth argument, so asking for one is an error.
+    """A knob with nowhere to go is an error, not a silent no-op.
 
-    Quietly ignoring it would return a prediction at the model's own depth while
-    the caller believed the cap had been applied -- and the cap is the dominant
-    memory knob, so they would also be comparing peaks that are not comparable.
+    Every shipped backend now honours all four, so the rule is exercised against
+    a backend that declares fewer. It is worth keeping: quietly ignoring a cap
+    would return a prediction at the model's own depth while the caller believed
+    theirs had been applied -- and MSA depth is the dominant memory knob, so they
+    would also be comparing peaks that are not comparable.
+    """
+    from foldjax.backends.base import Backend
+
+    class OneKnobBackend(Backend):
+        name = "one-knob"
+        sampling_options = {"num_samples": "n_sample"}
+
+        def capabilities(self):  # pragma: no cover - not what this checks
+            raise NotImplementedError
+
+        def predict(self, request):  # pragma: no cover - not what this checks
+            raise NotImplementedError
+
+    request = PredictionRequest(
+        model="opendde",
+        input=_job_file(tmp_path),
+        weights=_weights(tmp_path),
+        max_msa_depth=1024,
+    )
+    with pytest.raises(ValueError, match="does not support max_msa_depth"):
+        OneKnobBackend().apply_sampling(request)
+
+
+def test_openfold3_now_honours_the_msa_cap_it_used_to_refuse(tmp_path: Path) -> None:
+    """It has no native argument for it, so the cap is applied to the features.
+
+    Refusing it left OpenFold3 as the one model that could not be held to the
+    same MSA budget as the others, which is the budget that decides whether a
+    job fits in memory at all.
     """
     from foldjax.backends.openfold3 import OpenFold3Backend
 
@@ -151,8 +182,7 @@ def test_a_knob_the_backend_cannot_express_is_rejected(tmp_path: Path) -> None:
         weights=_weights(tmp_path),
         max_msa_depth=1024,
     )
-    with pytest.raises(ValueError, match="does not support max_msa_depth"):
-        OpenFold3Backend().apply_sampling(request)
+    assert OpenFold3Backend().apply_sampling(request)["max_msa_depth"] == 1024
 
 
 def test_knobs_must_be_positive(tmp_path: Path) -> None:
@@ -170,7 +200,10 @@ def test_capabilities_report_the_knobs_each_backend_honours() -> None:
     unsupported made AlphaFold 3 the one model that could not be held to the
     same schedule as the others -- which is exactly what comparing them needs.
     """
-    for name in ("alphafold3", "boltz2", "opendde", "protenix"):
+    # Including OpenFold3, which has no MSA-depth argument at all: the cap is
+    # applied to its features instead, so the knob means one thing everywhere
+    # rather than being refused on the one model.
+    for name in ("alphafold3", "boltz2", "opendde", "openfold3", "protenix"):
         sampling = foldjax.capabilities(name).sampling
         assert {
             "num_samples",
@@ -178,12 +211,6 @@ def test_capabilities_report_the_knobs_each_backend_honours() -> None:
             "num_recycles",
             "max_msa_depth",
         } == set(sampling), name
-    # OpenFold3 has no MSA-depth argument, and the port is unfinished.
-    assert set(foldjax.capabilities("openfold3").sampling) == {
-        "num_samples",
-        "num_steps",
-        "num_recycles",
-    }
 
 
 # --------------------------------------------------------------------------

@@ -41,6 +41,10 @@ class PredictionRequest:
     # seed are correlated. `seeds` runs the job once per entry and returns every
     # structure together; leave it unset to run the single `seed`.
     seeds: tuple[int, ...] | None = None
+    # `--num-seeds 5` is the same request as `--seeds 0 1 2 3 4`, and is what
+    # people actually want when they say "run it five times": the seed values
+    # themselves carry no meaning, only that they differ.
+    num_seeds: int | None = None
     # Model-neutral sampling knobs. None means "keep this backend's default".
     num_samples: int | None = None
     num_steps: int | None = None
@@ -82,6 +86,11 @@ class PredictionRequest:
             object.__setattr__(self, "seeds", seeds)
         if self.seed < 0:
             raise ValueError("seed must be non-negative")
+        if self.num_seeds is not None:
+            if self.num_seeds < 1:
+                raise ValueError("num_seeds must be at least 1")
+            if self.seeds is not None:
+                raise ValueError("seeds and num_seeds were both set; pass one of them")
         for name in ("num_samples", "num_steps", "num_recycles", "max_msa_depth"):
             value = getattr(self, name)
             if value is not None and value < 1:
@@ -89,8 +98,16 @@ class PredictionRequest:
 
     @property
     def resolved_seeds(self) -> tuple[int, ...]:
-        """Every seed this request runs, whichever field was used to say so."""
-        return self.seeds if self.seeds is not None else (self.seed,)
+        """Every seed this request runs, whichever field was used to say so.
+
+        `num_seeds` counts up from `seed`, so `--seed 7 --num-seeds 3` is seeds
+        7, 8 and 9: a run stays reproducible by naming its first seed.
+        """
+        if self.seeds is not None:
+            return self.seeds
+        if self.num_seeds is not None:
+            return tuple(range(self.seed, self.seed + self.num_seeds))
+        return (self.seed,)
 
     @property
     def sampling(self) -> dict[str, int]:

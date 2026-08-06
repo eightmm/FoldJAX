@@ -46,6 +46,12 @@ def _add_predict_arguments(parser: argparse.ArgumentParser) -> None:
         "Mutually exclusive with --seed",
     )
     parser.add_argument(
+        "--num-seeds",
+        type=int,
+        help="how many seeds to run, counting up from --seed. --num-seeds 3 is "
+        "--seeds 0 1 2; mutually exclusive with --seeds",
+    )
+    parser.add_argument(
         "--num-samples", type=int, help="how many structures to generate"
     )
     parser.add_argument("--num-steps", type=int, help="diffusion steps per structure")
@@ -149,6 +155,7 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         input_format=args.input_format,
         seed=args.seed,
         seeds=tuple(args.seeds) if args.seeds else None,
+        num_seeds=args.num_seeds,
         num_samples=args.num_samples,
         num_steps=args.num_steps,
         num_recycles=args.num_recycles,
