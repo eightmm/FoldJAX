@@ -15,6 +15,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from foldjax.paths import weights_dir
+
 pytestmark = pytest.mark.slow
 
 _JOB = {
@@ -51,7 +53,7 @@ def _featurize(job: Path, out: Path, backend: str, mols: Path) -> dict:
 
 def test_the_numpy_layer_reproduces_the_torch_featurizer(tmp_path: Path) -> None:
     pytest.importorskip("torch")
-    mols = Path.home() / ".cache/foldjax/weights/boltz2/mols"
+    mols = weights_dir("boltz2") / "mols"
     if not mols.is_dir():
         pytest.skip("boltz2 molecule directory not fetched")
 
@@ -82,7 +84,7 @@ def test_the_augmentation_that_is_excluded_really_is_nondeterministic(
 ) -> None:
     """Excluding ref_pos is only honest if torch does not reproduce it either."""
     pytest.importorskip("torch")
-    mols = Path.home() / ".cache/foldjax/weights/boltz2/mols"
+    mols = weights_dir("boltz2") / "mols"
     if not mols.is_dir():
         pytest.skip("boltz2 molecule directory not fetched")
 

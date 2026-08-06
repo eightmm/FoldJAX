@@ -127,6 +127,8 @@ def test_the_released_checkpoint_really_stores_a_column_vector(
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
 
     candidates = [
+        # Inside the checkout since 2026-08-06; the sibling layout came first.
+        openfold3_source / "openfold3_weights" / "checkpoints" / "of3_ft3_v1.pt",
         openfold3_source.parent
         / "openfold3_weights"
         / "checkpoints"

@@ -17,6 +17,10 @@ from foldjax import assets, paths
 
 
 def test_home_follows_its_environment(tmp_path: Path, monkeypatch) -> None:
+    # This checkout has a `.foldjax/` store, which would otherwise outrank both
+    # fallbacks below; the case where it does is the next test.
+    monkeypatch.setattr(paths, "_repository_store", lambda: None)
+
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "explicit"))
     assert paths.foldjax_home() == tmp_path / "explicit"
 
@@ -27,6 +31,37 @@ def test_home_follows_its_environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("XDG_CACHE_HOME")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     assert paths.foldjax_home() == tmp_path / "home" / ".cache" / "foldjax"
+
+
+def test_a_checkout_store_outranks_the_cache(tmp_path: Path, monkeypatch) -> None:
+    """`.foldjax/` in the working tree wins, and only when it is really there.
+
+    Keeping weights beside the source is what makes a checkout self-contained,
+    so it has to beat `~/.cache`; an explicit `FOLDJAX_HOME` still beats it,
+    which is how the bench harness points at its own store.
+    """
+    store = tmp_path / "checkout" / ".foldjax"
+    store.mkdir(parents=True)
+    monkeypatch.delenv("FOLDJAX_HOME", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+
+    monkeypatch.setattr(paths, "_repository_store", lambda: store)
+    assert paths.foldjax_home() == store
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "explicit"))
+    assert paths.foldjax_home() == tmp_path / "explicit"
+
+    monkeypatch.delenv("FOLDJAX_HOME")
+    monkeypatch.setattr(paths, "_repository_store", lambda: None)
+    assert paths.foldjax_home() == tmp_path / "xdg" / "foldjax"
+
+
+def test_the_checkout_store_is_found_next_to_the_source(monkeypatch) -> None:
+    """`_repository_store` resolves from this module, not the process's cwd."""
+    root = Path(paths.__file__).resolve().parents[2]
+    expected = root / ".foldjax"
+    monkeypatch.chdir(Path(__file__).parent)
+    assert paths._repository_store() == (expected if expected.is_dir() else None)
 
 
 def test_every_registered_model_is_a_real_backend() -> None:

@@ -72,6 +72,30 @@ def parse_args() -> argparse.Namespace:
         help="upstream OpenDDE checkout; defaults to a sibling of this repo",
     )
     parser.add_argument(
+        "--dtype",
+        choices=("fp32", "bf16"),
+        default="fp32",
+        help=(
+            "upstream's inference precision. `fp32` is its own default "
+            "(`opendde/config/model_base.py:37`); `bf16` exists so the port's "
+            "bf16 trunk can be compared against a bf16 reference rather than "
+            "against an fp32 one, which is the mismatched comparison this "
+            "project reported for a while"
+        ),
+    )
+    parser.add_argument(
+        "--skip-trunk-stages",
+        action="store_true",
+        help=(
+            "record the sampler tape and the structure, but not the residue "
+            "trunk's per-stage tensors. Those are ~26 GiB and go through "
+            "`savez_compressed` on one core, which costs over an hour; a "
+            "coordinate comparison does not read them. The replay skips any "
+            "stage absent from the tape, so this yields the RMSD and an empty "
+            "stage table rather than an error"
+        ),
+    )
+    parser.add_argument(
         "--disable-tf32",
         action="store_true",
         help=(
@@ -544,7 +568,14 @@ def main() -> int:
     stages = stage_recorder.finish()
     if not stages:
         raise RuntimeError("no trunk stages were recorded")
-    np.savez_compressed(args.out_dir / "trunk.npz", **stages)
+    if args.skip_trunk_stages:
+        # `savez_compressed` on ~26 GiB of stage tensors runs zlib on a single
+        # core and takes over an hour -- an hour spent on arrays that only the
+        # stage table reads. A coordinate comparison needs the sampler tape
+        # (1.8 MiB) and the structure (85 KiB), both already written above.
+        stages = {}
+    else:
+        np.savez_compressed(args.out_dir / "trunk.npz", **stages)
 
     (args.out_dir / "tape.json").write_text(
         json.dumps(
@@ -638,7 +669,9 @@ def _run(args) -> None:
 
     import sys
 
-    home = Path.home()
+    from foldjax.paths import assets_dir
+
+    assets = assets_dir()
     argv = [
         "runner.inference",
         "--input_json_path",
@@ -654,12 +687,14 @@ def _run(args) -> None:
         "--sample_diffusion.N_sample",
         str(args.n_sample),
         "--data.ccd_components_file",
-        str(home / ".cache/foldjax/assets/components.cif"),
+        str(assets / "components.cif"),
         "--data.ccd_components_rdkit_mol_file",
-        str(home / ".cache/foldjax/assets/components.cif.rdkit_mol.pkl"),
+        str(assets / "components.cif.rdkit_mol.pkl"),
         "--load_checkpoint_path",
         str(args.checkpoint),
     ]
+    if args.dtype != "fp32":
+        argv += ["--dtype", args.dtype]
     if args.disable_tf32:
         argv += ["--enable_tf32", "false"]
     from runner.inference import run

@@ -21,10 +21,10 @@ foldjax-outputs/
 #
 # No weights are distributed with this software, and AlphaFold 3's parameters
 # may not be redistributed at all, so an accidental `git add -A` here is a
-# licence violation rather than a mistake to amend away. The store normally
-# lives outside the repository (`~/.cache/foldjax`, or `$FOLDJAX_HOME`), but
-# pointing FOLDJAX_HOME *into* the working tree is a supported thing to do and
-# these are the names it would write.
+# licence violation rather than a mistake to amend away. A checkout with a
+# `.foldjax/` directory keeps its store there (`~/.cache/foldjax` otherwise, and
+# `$FOLDJAX_HOME` over both), so the store is inside the working tree by default
+# on a development machine, and these are the names it writes.
 #
 # Every pattern below was checked against `git ls-files` first: each matches
 # zero tracked files today. Adding a `.pt` test fixture later would need
@@ -43,9 +43,10 @@ foldjax-outputs/
 # prediction writes and a plausible test fixture.
 components.cif*
 
-# A weight store pointed at the working tree. Only a nested directory is
-# ignored: a FOLDJAX_HOME at the repository root would put its `assets/`
-# alongside the tracked one that holds this project's logos.
+# The store itself: `paths.foldjax_home()` returns this directory when it
+# exists. Only the nested directory is ignored -- a FOLDJAX_HOME at the
+# repository root would put its `assets/` alongside the tracked one that holds
+# this project's logos.
 .foldjax/
 
 # `*.npz` and `*.a3m` are deliberately absent. Four `data/*.npz` files are

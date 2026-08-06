@@ -77,7 +77,11 @@ def test_default_directory_honours_the_environment(monkeypatch, tmp_path) -> Non
     has ``~/.cache/openfold3_jax/jit`` these assertions would read the legacy
     path and the test would pass or fail on whose machine it ran.
     """
+    from foldjax import paths
+
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nobody"))
+    # Same reason: this checkout's `.foldjax/` outranks the two fallbacks.
+    monkeypatch.setattr(paths, "_repository_store", lambda: None)
     monkeypatch.delenv("FOLDJAX_HOME", raising=False)
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
 

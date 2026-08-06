@@ -49,6 +49,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.paths import weights_dir
+
 #: ``tests/models/boltz2/scripts/`` -> the FoldJAX checkout root.
 REPOSITORY = Path(__file__).resolve().parents[4]
 
@@ -63,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weights",
         type=Path,
-        default=Path.home() / ".cache/foldjax/weights/boltz2/boltz2_conf",
+        default=weights_dir("boltz2") / "boltz2_conf",
         help="native Boltz-2 weights exported by `foldjax weights fetch`",
     )
     parser.add_argument("--out-dir", type=Path, default=REPOSITORY / "outputs/parity")

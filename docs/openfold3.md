@@ -31,9 +31,9 @@ for you.
 
 ```bash
 # Request access at https://huggingface.co/OpenFold/OpenFold3, then:
-foldjax home                                        # where FoldJAX keeps things
-mkdir -p ~/.cache/foldjax/weights/openfold3         # or $FOLDJAX_HOME/weights/...
-cp of3_ft3_v1.pt ~/.cache/foldjax/weights/openfold3/
+store=$(foldjax home | python -c 'import json,sys; print(json.load(sys.stdin)["weights"])')
+mkdir -p "$store/openfold3"                         # `foldjax home` prints the rest
+cp of3_ft3_v1.pt "$store/openfold3/"
 foldjax weights list                                # openfold3 now reads `ready`
 ```
 

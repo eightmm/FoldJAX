@@ -1,7 +1,8 @@
 """Where FoldJAX keeps downloads, converted weights, and compile caches.
 
 One root so a machine has a single place to look, size, and clear. Override it
-with ``FOLDJAX_HOME``; otherwise it follows ``XDG_CACHE_HOME`` and falls back to
+with ``FOLDJAX_HOME``; a source checkout that has a ``.foldjax/`` directory keeps
+its store there; otherwise it follows ``XDG_CACHE_HOME`` and falls back to
 ``~/.cache/foldjax``.
 """
 
@@ -12,12 +13,30 @@ from pathlib import Path
 
 _ENV = "FOLDJAX_HOME"
 
+#: A store inside the working tree. `.gitignore` already covers this name.
+_LOCAL_DIR = ".foldjax"
+
+
+def _repository_store() -> Path | None:
+    """A ``.foldjax/`` store in the checkout this module was imported from.
+
+    Only when it already exists: creating it is the user's decision, made by
+    making the directory. This file is ``<repository>/src/foldjax/paths.py``, so
+    the root is three levels up; an installed wheel has no such directory next to
+    it and falls through to the cache.
+    """
+    candidate = Path(__file__).resolve().parents[2] / _LOCAL_DIR
+    return candidate if candidate.is_dir() else None
+
 
 def foldjax_home() -> Path:
     """Return the FoldJAX root directory. Not created as a side effect."""
     override = os.environ.get(_ENV)
     if override:
         return Path(override).expanduser()
+    local = _repository_store()
+    if local is not None:
+        return local
     xdg = os.environ.get("XDG_CACHE_HOME")
     root = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
     return root / "foldjax"

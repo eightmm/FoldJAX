@@ -89,6 +89,8 @@ from pathlib import Path
 
 import numpy as np
 
+from foldjax.paths import weights_dir
+
 #: ``tests/models/opendde/scripts/`` -> the FoldJAX checkout root.
 REPOSITORY = Path(__file__).resolve().parents[4]
 
@@ -151,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weights",
         type=Path,
-        default=Path.home() / ".cache/foldjax/weights/opendde/opendde.jax",
+        default=weights_dir("opendde") / "opendde.jax",
         help="native OpenDDE weights exported by `foldjax weights fetch`",
     )
     parser.add_argument(
@@ -513,13 +515,23 @@ def main() -> int:
 
     with np.load(args.tape_dir / "msa.npz", allow_pickle=False) as archive:
         msa_archive = {name: archive[name] for name in archive.files}
-    with np.load(args.tape_dir / "trunk.npz", allow_pickle=False) as archive:
-        upstream_stages = {
-            name: _squeeze_batch(np.asarray(archive[name], np.float64), 3)
-            if archive[name].ndim > 3
-            else np.asarray(archive[name], np.float64)
-            for name in archive.files
-        }
+    trunk_path = args.tape_dir / "trunk.npz"
+    stages_deliberately_absent = False
+    if trunk_path.exists():
+        with np.load(trunk_path, allow_pickle=False) as archive:
+            upstream_stages = {
+                name: _squeeze_batch(np.asarray(archive[name], np.float64), 3)
+                if archive[name].ndim > 3
+                else np.asarray(archive[name], np.float64)
+                for name in archive.files
+            }
+    else:
+        # `capture_upstream_tape.py --skip-trunk-stages`. The stage table is
+        # then empty and the coordinate comparison is the whole result, which
+        # is the right trade when the question is "how far apart are the two
+        # structures" rather than "which module first disagrees".
+        upstream_stages = {}
+        stages_deliberately_absent = True
     with np.load(args.tape_dir / "coordinate.npz", allow_pickle=False) as archive:
         upstream_coordinate = np.asarray(archive["coordinate"], np.float64)
 
@@ -560,6 +572,7 @@ def main() -> int:
         "recycles": n_cycle,
         "diffusion_steps": n_step,
         "samples": int(meta["n_sample"]),
+        "stages_deliberately_absent": stages_deliberately_absent,
         "atoms": n_atom,
         "tokens": int(features["restype"].shape[-2]),
         "trunk_seconds": trunk_seconds,
@@ -632,7 +645,7 @@ def _verdict(metrics: dict, *, max_rmsd: float, min_correlation: float) -> list[
     survived a whole release here.
     """
     failures = []
-    if not metrics["stages"]:
+    if not metrics["stages"] and not metrics.get("stages_deliberately_absent"):
         failures.append("  no trunk stage was compared; the capture named none")
     for name, row in metrics["stages"].items():
         if not row["correlation"] >= min_correlation:
