@@ -1,4 +1,10 @@
-"""AlphaFold 3 in-process adapter for the cloned upstream runner."""
+"""AlphaFold 3 in-process adapter for upstream's own runner.
+
+The runner is `run_alphafold.py`, which upstream keeps at its repository root
+instead of inside the `alphafold3` package, so installing the package does not
+bring it along. A copy is vendored beside this module for that reason; a
+checkout still wins when there is one.
+"""
 
 from __future__ import annotations
 
@@ -18,21 +24,28 @@ from foldjax.schema import (
 )
 from foldjax.scores import scalar_scores
 
+#: Upstream's runner, carried because its wheel does not install it. See the
+#: NOTICE beside it.
+VENDORED_RUNNER = Path(__file__).with_name("_alphafold3_upstream") / "run_alphafold.py"
+
 
 def _runner_path(options: dict) -> Path:
+    """Where to load `run_alphafold.py` from: told, found, or vendored."""
     explicit = options.pop("source", None) or os.environ.get("ALPHAFOLD3_SOURCE")
     if explicit:
         path = Path(explicit) / "run_alphafold.py"
-    else:
-        spec = importlib.util.find_spec("alphafold3")
-        if spec is None or spec.origin is None:
-            raise ImportError("alphafold3 is not installed")
-        path = Path(spec.origin).resolve().parents[2] / "run_alphafold.py"
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"AlphaFold 3 runner not found: {path}; set ALPHAFOLD3_SOURCE"
-        )
-    return path
+        if not path.is_file():
+            raise FileNotFoundError(f"AlphaFold 3 runner not found: {path}")
+        return path
+    spec = importlib.util.find_spec("alphafold3")
+    if spec is None or spec.origin is None:
+        raise ImportError("alphafold3 is not installed")
+    # An editable install points into a checkout, whose root has the runner that
+    # matches the package being imported. Prefer it: a checkout is the thing
+    # someone edits or updates, and the vendored copy would silently be a
+    # different revision of it.
+    checkout = Path(spec.origin).resolve().parents[2] / "run_alphafold.py"
+    return checkout if checkout.is_file() else VENDORED_RUNNER
 
 
 def _load_runner(path: Path):

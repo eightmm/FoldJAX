@@ -1,0 +1,19 @@
+AlphaFold 3 runner, vendored
+Copyright 2026 FoldJAX contributors
+
+This directory contains an unmodified copy of `run_alphafold.py` from
+AlphaFold 3: https://github.com/google-deepmind/alphafold3
+
+AlphaFold 3 source code is Copyright 2024 DeepMind Technologies Limited and is
+licensed under the Apache License, Version 2.0. A copy is in LICENSE beside this
+file, and the file keeps its own copyright header.
+
+Vendored at commit 85c4d20505fd5cef05eac22b534d4e793971ae69 (2026-07-28). It is
+carried because AlphaFold 3 ships this program at its repository root rather
+than inside the `alphafold3` package, so an installed copy of the package does
+not include it.
+
+This is not an official AlphaFold project. AlphaFold 3 model parameters are NOT
+distributed with this software and may not be redistributed: request them from
+Google at the address above and use them under
+https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md

@@ -20,9 +20,17 @@ Earlier releases pinned `jax==0.4.34` and `triton==3.1.0` and do not.
 ```bash
 git clone https://github.com/google-deepmind/alphafold3
 uv sync --extra cuda13 --extra alphafold3    # its deps, minus JAX
-uv pip install --no-deps -e ./alphafold3     # --no-deps keeps your JAX plugin
 uv run build_data                            # builds the CCD tables, ~5 min
+uv pip install --no-deps ./alphafold3        # --no-deps keeps your JAX plugin
 ```
+
+Install it **non-editable**, and build the CCD tables first. `build_data` writes
+a 512 MB `ccd.pickle` next to the source it is run against, and AlphaFold 3 reads
+it back from its own package directory — there is no environment variable for it.
+An editable install therefore leaves that half-gigabyte in the checkout and needs
+it at run time; a plain install copies it into the environment, and the checkout
+becomes disposable. The runner does not come along either, which is why FoldJAX
+carries a copy: see `backends/_alphafold3_upstream/`.
 
 `--no-deps` is the important part. AlphaFold 3 requires `jax[cuda12]`; letting
 that resolve would install a second JAX plugin next to the one your cluster
@@ -49,6 +57,10 @@ checkout instead and the backend will load the runner from there:
 ```bash
 export ALPHAFOLD3_SOURCE=/path/to/alphafold3
 ```
+
+Without that variable the backend looks for `run_alphafold.py` beside the
+imported package — which is what an editable install gives you — and otherwise
+uses its vendored copy.
 
 ## Weights
 

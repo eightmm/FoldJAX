@@ -7,7 +7,11 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-from foldjax.backends.alphafold3 import AlphaFold3Backend, _runner_path
+from foldjax.backends.alphafold3 import (
+    VENDORED_RUNNER,
+    AlphaFold3Backend,
+    _runner_path,
+)
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.protenix import ProtenixBackend
@@ -533,6 +537,65 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
 def test_alphafold3_source_path_validation(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="runner not found"):
         _runner_path({"source": tmp_path})
+
+
+def test_an_installed_alphafold3_falls_back_to_the_vendored_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`pip install alphafold3` leaves `run_alphafold.py` behind; we carry it.
+
+    Upstream keeps that program at its repository root rather than in the
+    package, so resolving it from the import location finds nothing once the
+    package is installed normally -- which used to mean the backend only worked
+    next to a checkout.
+    """
+    import importlib.util
+
+    installed = tmp_path / "site-packages" / "alphafold3" / "__init__.py"
+    installed.parent.mkdir(parents=True)
+    installed.touch()
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: SimpleNamespace(origin=str(installed)),
+    )
+
+    assert _runner_path({}) == VENDORED_RUNNER
+    assert VENDORED_RUNNER.is_file()
+
+
+def test_a_checkout_outranks_the_vendored_alphafold3_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The vendored copy is a snapshot; a checkout is the live thing."""
+    import importlib.util
+
+    checkout = tmp_path / "AlphaFold3"
+    origin = checkout / "src" / "alphafold3" / "__init__.py"
+    origin.parent.mkdir(parents=True)
+    origin.touch()
+    runner = checkout / "run_alphafold.py"
+    runner.touch()
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: SimpleNamespace(origin=str(origin))
+    )
+
+    assert _runner_path({}) == runner
+
+
+def test_the_vendored_alphafold3_runner_matches_upstream() -> None:
+    """Drift guard: an AF3 update must not leave the carried copy behind.
+
+    Skipped without a checkout, like the other upstream comparisons -- the point
+    is to notice a divergence on the machine that does the updating.
+    """
+    checkout = Path(__file__).resolve().parents[2] / "AlphaFold3" / "run_alphafold.py"
+    if not checkout.is_file():
+        pytest.skip(f"no AlphaFold 3 checkout at {checkout}")
+    assert VENDORED_RUNNER.read_bytes() == checkout.read_bytes(), (
+        "vendored run_alphafold.py differs from the checkout; re-copy it and "
+        "update the commit in _alphafold3_upstream/NOTICE"
+    )
 
 
 def test_openfold3_predicts_from_the_vendored_package() -> None:
