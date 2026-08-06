@@ -94,6 +94,27 @@ exit code.
 pins an alignment must pin it everywhere, or any comparison across models becomes
 a comparison of MSAs.
 
+The same document can be built in Python instead of written by hand:
+
+```python
+from foldjax import Job, Ligand, Modification, Protein
+
+job = Job(
+    "example",
+    [
+        Protein("A", "ACDEFG", unpaired_msa="msa.a3m",
+                modifications=[Modification("SEP", 3)]),
+        Ligand("L", ccd="ATP"),
+    ],
+)
+request = PredictionRequest(model="protenix", input=job.write("job.json"))
+```
+
+`Job` is a constructor, not a second schema: `to_document()` returns exactly the
+mapping above, and every rule about what a document may say stays where the
+model is known, so the class cannot drift from what the CLI accepts. `Job.read`
+takes either file format back the other way.
+
 ## Choosing what to run
 
 ```bash
@@ -114,19 +135,27 @@ backend calls them something different, and FoldJAX translates:
 | `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_samples` | `n_sample` |
 | `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `no_rollout_steps` | `n_step` |
 | `--num-recycles` | `num_recycles` | `recycling` | `num_cycles` | `n_cycle` |
-| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | *refused* | `max_msa_rows` |
+| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | *feature cut* | `max_msa_rows` |
 
-The first three reach all five models. AlphaFold 3's step count and MSA depth are
+All four reach all five models. AlphaFold 3's step count and MSA depth are
 not arguments of `make_model_config`, but the config it returns is an ordinary
 mutable object and upstream already sets the sample count on it by assignment;
 FoldJAX sets these the same way. That matters beyond convenience — a model that
 cannot be held to the same schedule as the others cannot be compared with them.
 
 Setting both a neutral knob and its native name is an error rather than a silent
-preference, and so is asking for a knob a backend does not have: OpenFold3
-exposes no MSA-depth argument, so `--max-msa-depth` is refused for it rather
-than quietly ignored. `--option KEY=VALUE` still passes anything native straight
-through.
+preference. OpenFold3 has no MSA-depth argument at all, so there the knob is
+applied to the features: the first *n* alignment rows are kept, in order, and
+the per-token `profile` and `deletion_mean` are left as computed over the whole
+alignment — which is what the other backends' native caps also do. It used to be
+refused, which left the one model that could not be held to the same MSA budget
+as the rest, and that budget is the dominant memory knob.
+`--option KEY=VALUE` still passes anything native straight through.
+
+Seeds work the same way. `--seed` runs one, `--seeds 0 1 2` runs those three,
+and `--num-seeds 3` is the same as the latter — counting up from `--seed`, so
+`--seed 7 --num-seeds 3` is 7, 8 and 9. Each seed runs the whole job and every
+structure comes back in one result.
 
 `--seeds 1 2 3` runs the job once per seed, into a `seed_<n>` directory each,
 and returns every structure together. The samples from one seed are correlated,
@@ -351,19 +380,31 @@ publisher, verifies against the published hash where one exists, converts once,
 and stores the result under the FoldJAX home.
 
 ```bash
+uv run foldjax setup                            # everything public, in one go
 uv run foldjax weights list                     # what is downloaded and converted
 uv run foldjax weights fetch --model opendde    # download, verify, convert
 uv run foldjax weights path --model opendde     # where it landed
 uv run foldjax home                             # every location FoldJAX uses
 ```
 
+`setup` is the one to run on a new machine. It fetches and converts every model
+whose weights are published — Boltz-2, OpenDDE, Protenix — along with the CCD
+assets and the template metadata they share, and then reports what it could not
+do for you: AlphaFold 3 and OpenFold3, whose publishers release parameters on
+request, and whatever the template modality is still missing. MSA needs nothing
+installed; it searches against the ColabFold MMseqs2 server.
+
 ```
-~/.cache/foldjax/          # or $FOLDJAX_HOME, or $XDG_CACHE_HOME/foldjax
-├── downloads/<model>/     # released files, exactly as published
+~/.cache/foldjax/          # or $FOLDJAX_HOME, or a .foldjax/ in the checkout,
+├── downloads/<model>/     #   or $XDG_CACHE_HOME/foldjax — `foldjax home` says
 ├── assets/                # CCD dictionaries shared by protenix and opendde
 ├── weights/<model>/       # converted JAX weights — what prediction loads
 └── compile/               # XLA persistent compilation cache
 ```
+
+`mkdir .foldjax` in a checkout and everything above lands there instead, which
+keeps weights, assets and caches beside the source they belong to. `.gitignore`
+already covers the directory, and `$FOLDJAX_HOME` still outranks it.
 
 Conversion needs torch, which is why it is a separate step behind
 `--extra torch-bridge`. Prediction never imports it.
