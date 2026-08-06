@@ -20,9 +20,11 @@ four carried complete inside the package:
 parameters may not be redistributed. It takes the same job file as the rest
 once installed; see [docs/alphafold3.md](docs/alphafold3.md).
 
-OpenFold3 is the one port whose *featurization* is not self-contained: building
-its features delegates to upstream's own data pipeline, which is exact where a
-reimplementation would be a guess. Prediction needs none of it. See
+OpenFold3 is carried twice over: the JAX port is a reimplementation, and
+upstream's own *data pipeline* is vendored beside it, so featurization is exact
+rather than approximately right and still needs nothing outside this repository.
+Building features needs `--extra openfold3-preprocess`, because that pipeline is
+upstream's torch code; predicting needs neither it nor torch. See
 [docs/openfold3.md](docs/openfold3.md).
 
 Give it one job file and a model name. Weights, the input dialect, the output
@@ -666,10 +668,13 @@ without that checkout. It is now carried at `foldjax.models.openfold3` and needs
 no extra to predict — it added no base dependency, because its inference path
 wanted only `jax`, `numpy`, `safetensors` and `gemmi`, all already here.
 
-Its *featurization* is the one thing in FoldJAX that is still not
-self-contained: it delegates to upstream OpenFold3's own data pipeline, which
-needs `--extra openfold3-preprocess` and an upstream checkout (a directory, not
-a package). Prediction needs neither.
+Its *featurization* used to be the one thing in FoldJAX that was not
+self-contained: it delegated to upstream OpenFold3's data pipeline through a
+sibling checkout, so building features required a second repository. That
+pipeline is vendored now, at `models/openfold3/_upstream/` — upstream's own code,
+verbatim, under its own licence and in its own style. Featurization needs
+`--extra openfold3-preprocess` for the torch and lightning it imports;
+prediction needs neither.
 [docs/openfold3.md](docs/openfold3.md) has the detail and the current state of
 the port.
 

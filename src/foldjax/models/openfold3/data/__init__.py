@@ -6,13 +6,15 @@ conformer generation, tokenization and template preprocessing -- thousands of
 lines of chemistry that upstream already implements and that would be a second
 porting project to reproduce.
 
-So this module *delegates* to upstream's own ``InferenceDataset`` behind the
-``openfold3-preprocess`` extra, and converts its output into what
-:func:`~foldjax.models.openfold3.inference.predict` consumes. That keeps
-featurization exact rather than approximately right, and keeps torch out of the
-inference path:
-features are produced once, and can be written to ``.npz`` and loaded later with
-no torch present at all.
+So this module runs upstream's own ``InferenceDataset`` and converts its output
+into what :func:`~foldjax.models.openfold3.inference.predict` consumes. That
+keeps featurization exact rather than approximately right, and keeps torch out of
+the inference path: features are produced once, and can be written to ``.npz``
+and loaded later with no torch present at all.
+
+That pipeline is *vendored*, at :mod:`foldjax.models.openfold3._upstream`, so
+this needs no second checkout -- only the ``openfold3-preprocess`` extra, for the
+torch and lightning upstream's code imports.
 
 The other ports in this package use the same shape of interface
 (``foldjax.models.boltz2.data.featurize_yaml`` returns a numpy feature dict from a

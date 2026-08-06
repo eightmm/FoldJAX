@@ -85,15 +85,21 @@ boltz-preprocess = [
     "torch>=2.2",
 ]
 # OpenFold3 featurization. Prediction needs none of this: the inference path
-# loads a featurized `.npz` and imports neither torch nor upstream. Building
-# that `.npz` delegates to upstream OpenFold3's own data pipeline, which is
-# exact where a reimplementation would be a guess, so these are upstream's
-# data-side requirements rather than ours.
+# loads a featurized `.npz` and imports neither torch nor this extra.
 #
-# Upstream's own code is deliberately absent: it is a checkout, not a package,
-# so it is found by `models/openfold3/upstream.py` and $OPENFOLD3_SOURCE. This
-# extra supplies what that checkout imports, nothing more.
+# Upstream's data pipeline is *vendored* at
+# `models/openfold3/_upstream/`, so no checkout is needed any more -- but the
+# pipeline is upstream's own torch/lightning code, and this is what it imports.
+# Everything here is a direct import of that tree, checked against it rather
+# than guessed; `numpy`, `pandas`, `scipy`, `requests`, `tqdm`, `pyyaml`,
+# `gemmi`, `rdkit` and `biopython` are already in the base set.
+#
+# `deepspeed` is deliberately absent: upstream guards it with `find_spec` and
+# only uses it to disable a Triton autotune, so its absence is a supported
+# configuration.
 openfold3-preprocess = [
+    "absl-py>=2.3.1",
+    "awscrt",
     "biotite",
     "boto3",
     "click",
@@ -103,10 +109,12 @@ openfold3-preprocess = [
     "lmdb",
     "memory-profiler",
     "ml-collections>=0.1.1",
+    "networkx",
     "pdbeccdutils",
     "pydantic",
     "pytorch-lightning>=2.1",
     "torch>=2.2",
+    "torchmetrics",
 ]
 # One-time conversion of released torch checkpoints into the native JAX weight
 # files. Never needed on the prediction path.
@@ -172,6 +180,16 @@ where = ["src"]
 "foldjax.models.protenix" = ["data/*.npz", "LICENSE", "NOTICE"]
 "foldjax.models.boltz2" = ["LICENSE", "NOTICE"]
 "foldjax.models.openfold3" = ["LICENSE", "NOTICE"]
+# The vendored upstream data pipeline reads its own reference chemistry from
+# disk: per-residue SDF conformers, the canonical protein/RNA tables, and the
+# model-setting presets. Without these the wheel imports and then fails at the
+# first featurization, which is the worst place to find out.
+"foldjax.models.openfold3._upstream.openfold3.core.data.resources" = [
+    "canonical_protein_data/*.json",
+    "canonical_protein_data/reference_mols/*.sdf",
+    "canonical_RNA_data/*.json",
+]
+"foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom.config" = ["*.yml"]
 
 [dependency-groups]
 dev = [
@@ -187,8 +205,14 @@ dev = [
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-# Vendored verbatim from upstream Boltz (MIT); keep upstream style.
-extend-exclude = ["src/foldjax/models/boltz2/data"]
+# Vendored verbatim from upstream, so upstream's style is kept: reformatting it
+# would destroy the property that makes vendoring defensible, which is that the
+# tree stays diffable against the repository it came from. Both are Apache-2.0 or
+# MIT and carry their LICENSE/NOTICE.
+extend-exclude = [
+    "src/foldjax/models/boltz2/data",
+    "src/foldjax/models/openfold3/_upstream",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "W"]

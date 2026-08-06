@@ -45,32 +45,71 @@ Nothing is converted: the port reads the released checkpoint directly. A `.pt`
 is a torch file, so loading one needs `--extra torch-bridge`. A `safetensors`
 export loads without torch and can be passed to `--weights` instead.
 
-## Featurization is the one part that is not self-contained
+## Featurization runs upstream's own pipeline, vendored
 
-Every other port in FoldJAX featurizes in-package. OpenFold3 delegates to
-upstream's own data pipeline, on purpose: it is exact where a reimplementation
-would be a guess, and it now serves as the reference a future torch-free
-featurizer would be gated against.
+Every other port in FoldJAX featurizes with code written here. OpenFold3 runs
+upstream's own data pipeline instead, on purpose: it is exact where a
+reimplementation would be a guess, and porting it is a separate exercise that
+this now serves as the reference for.
 
-That needs two things prediction does not:
+Until 2026-08-06 that meant a second repository — `upstream.ensure_importable()`
+put a sibling checkout on `sys.path`, so building features required a clone that
+`uv sync` could not provide. The pipeline is vendored now:
 
-```bash
-uv sync --extra cuda13 --extra openfold3-preprocess    # upstream's data-side deps
+```
+src/foldjax/models/openfold3/_upstream/openfold3/
+├── core/data/        # the pipeline: 100 modules
+├── core/utils/       # geometry, atomize, logging
+├── core/config/
+└── projects/of3_all_atom/config/
 ```
 
-and upstream's own code, which is a **checkout rather than a package** — it is
-on no index either, and unlike the port it cannot be vendored without carrying
-its whole data stack. `foldjax.models.openfold3.upstream` looks for it beside
-the FoldJAX repository and honours `$OPENFOLD3_SOURCE`:
+~46k lines of upstream code, verbatim, under upstream's Apache-2.0 and in
+upstream's style — `ruff` skips it for the same reason it skips Boltz-2's
+vendored featurizer: reformatting would destroy the property that makes
+vendoring defensible, which is that the tree stays diffable against the
+repository it came from.
 
-```bash
-git clone https://github.com/aqlaboratory/openfold-3 ../openfold3
-# or
-export OPENFOLD3_SOURCE=/path/to/openfold-3
+**One edit was necessary**, and it is marked in the file.
+`core/data/framework/__init__.py` imported its sibling modules by rebuilding each
+name out of *path components*:
+
+```python
+__import__(".".join(list(path.parts[-6:-1]) + [stem]))
 ```
 
-Missing either one raises with both remedies named rather than a bare
-`ModuleNotFoundError`.
+That reconstructs `openfold3.core.data.framework.single_datasets.<mod>` only
+while the package sits exactly six components deep. Vendored, the last six
+components are unchanged but the prefix is not, so every name it built pointed at
+a top-level `openfold3` that does not exist here. It now derives the name from
+`__package__`, which is equivalent upstream and correct anywhere.
+
+Featurization still needs one thing prediction does not — the extra, because
+this is upstream's torch code:
+
+```bash
+uv sync --extra cuda13 --extra openfold3-preprocess
+```
+
+Everything listed in that extra is a *direct* import of the vendored tree,
+checked against it rather than guessed. `deepspeed` is deliberately absent:
+upstream guards it with `find_spec` and only uses it to disable a Triton
+autotune.
+
+### What the vendoring was checked against
+
+Featurizing 1UBQ both ways — through the vendored tree and through the upstream
+checkout, in one process — agrees on **33 of 34 features bit-for-bit**. The
+thirty-fourth is `ref_pos`, and the control that matters is that running the
+*vendored* pipeline twice disagrees with itself by the same order (8.7 Å against
+8.9 Å): the reference conformers are generated per run, so that difference is
+nondeterminism inside one implementation rather than a difference between two.
+
+`models/openfold3/upstream.py` survives, but only for the torch-parity gates,
+which compare this port against upstream's own *model* modules. Those are the
+thing being ported, so carrying a copy would mean diffing the port against a copy
+of its own source. Boltz-2, Protenix and OpenDDE make the same trade, and their
+parity suites skip without their checkouts too.
 
 ## Sampling knobs
 
@@ -159,5 +198,8 @@ to 2076 tokens run.
 - **MSA row choice above 1024 rows** cannot be reproduced without an explicit
   permutation, because upstream draws it with `torch.randperm`.
 - **Batch size** is always 1. Nothing assumes it; nothing measures it either.
-- **A torch-free featurizer**, which is what would make this port as
-  self-contained as the other four.
+- **A torch-free featurizer.** The pipeline is in-repository now, so the port is
+  as self-contained as the other three; what it is not is torch-free on the
+  featurization side, because the vendored pipeline is upstream's torch code.
+  Porting it would drop the `openfold3-preprocess` extra entirely, and the
+  vendored tree is the reference such a port would be gated against.

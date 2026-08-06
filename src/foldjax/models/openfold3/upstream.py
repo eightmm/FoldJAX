@@ -1,13 +1,20 @@
-"""Locate the upstream OpenFold3 checkout for the reference-only code paths.
+"""Locate an upstream OpenFold3 checkout, for the torch-parity gates only.
 
-Upstream is not published to PyPI, so the ``data-reference`` extra cannot depend
-on it the way it depends on rdkit; it has to be a checkout sitting next to this
-one. The parity tests handle that in ``conftest.py``, which left featurization --
-the other consumer -- needing ``PYTHONPATH`` set by hand. This puts the search in
-one place both can use.
+**Nothing FoldJAX ships needs this.** Featurization used to: it delegated to
+upstream's data pipeline through `ensure_importable()`, which made a sibling
+checkout a requirement for anyone building features. That pipeline is vendored at
+`.._upstream` now, so both prediction and featurization run with nothing outside
+this repository.
 
-Only the reference paths call this. Inference must keep working with no upstream
-checkout, no torch, and nothing here on ``sys.path``.
+What is left is the parity suite, which compares this port against upstream's own
+*torch modules* -- `OpenFold3.forward`, `run_trunk`, `DiffusionModule` -- and
+those are the thing being ported, so carrying a copy of them here would mean
+diffing the port against a copy of its own source. The other three ports make the
+same trade: their `*_checkpoint_parity` tests need `../boltz`, `../protenix` and
+`../OpenDDE`, and skip without them.
+
+So: a missing checkout skips a development gate. It does not affect using the
+package.
 """
 
 from __future__ import annotations

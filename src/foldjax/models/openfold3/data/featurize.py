@@ -54,24 +54,20 @@ _NON_FEATURES = frozenset(
 )
 
 _MISSING = (
-    "featurization needs the 'openfold3-preprocess' extra, which installs "
-    "upstream's data pipeline (rdkit, pdbeccdutils, lmdb, lightning). Install "
-    "it with `uv sync --extra openfold3-preprocess`, or featurize elsewhere "
-    "and load the resulting .npz -- the inference path itself needs none of "
-    "it. Upstream's own code is a checkout rather than a package, so it is "
-    "found separately; see docs/openfold3.md."
+    "featurization needs the 'openfold3-preprocess' extra, which installs what "
+    "the vendored data pipeline imports (torch, lightning, rdkit, pdbeccdutils, "
+    "lmdb, biotite). Install it with `uv sync --extra openfold3-preprocess`, or "
+    "featurize elsewhere and load the resulting .npz -- the inference path "
+    "itself needs none of it."
 )
 
 
 def _query_set(spec: Mapping[str, Any] | str | Path):
-    # Upstream is a sibling checkout rather than an installed package, so it has to
-    # be put on the path before any of its modules can be imported. Doing it here
-    # is what lets the CLI run without a hand-set PYTHONPATH.
-    from foldjax.models.openfold3.upstream import ensure_importable
-
-    ensure_importable()
+    # The pipeline is vendored at `.._upstream`, so this is an in-package import.
+    # It still fails without the `openfold3-preprocess` extra, because that code
+    # imports torch and lightning -- which is why the guard stays.
     try:
-        from openfold3.projects.of3_all_atom.config.inference_query_format import (
+        from foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom.config.inference_query_format import (  # noqa: E501
             InferenceQuerySet,
         )
     except ImportError as error:  # pragma: no cover - depends on the environment
@@ -107,18 +103,18 @@ def featurize_query(
         Features as numpy arrays with a leading batch axis of 1.
 
     Raises:
-        ImportError: the ``data-reference`` extra is not installed.
+        ImportError: the ``openfold3-preprocess`` extra is not installed.
         KeyError: ``query_id`` is not in the specification.
     """
     query_set = _query_set(spec)
 
-    from openfold3.core.data.framework.single_datasets.inference import (
+    from foldjax.models.openfold3._upstream.openfold3.core.data.framework.single_datasets.inference import (  # noqa: E501
         InferenceDataset,
     )
-    from openfold3.core.data.pipelines.preprocessing.template import (
+    from foldjax.models.openfold3._upstream.openfold3.core.data.pipelines.preprocessing.template import (  # noqa: E501
         TemplatePreprocessorSettings,
     )
-    from openfold3.projects.of3_all_atom.config.dataset_configs import (
+    from foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom.config.dataset_configs import (  # noqa: E501
         InferenceJobConfig,
         MSASettings,
         TemplateSettings,

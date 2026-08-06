@@ -1,0 +1,34 @@
+train:
+  settings:
+    blocks_per_ckpt: 1
+    ckpt_intermediate_steps: true
+  architecture:
+    loss_module:
+      diffusion:
+        chunk_size: 4
+
+predict:
+  settings:
+    memory:
+      eval:
+        # When chunk-size tuning is enabled (the default), this is the maximum
+        # tried; the tuner chooses the largest power of 2 up to this (plus the
+        # value itself if not a power of 2) that doesn't OOM. When tuning is
+        # disabled, this value is used as-is.
+        chunk_size: 1024
+        offload_inference:
+          confidence_heads: true
+          token_cutoff: 2800
+
+low_mem:
+  settings:
+    clear_cache_between_steps: True
+    memory:
+      eval:
+        per_sample_token_cutoff: 0
+        per_sample_atom_cutoff: 0
+        offload_inference:
+          template_module: true
+          msa_module: true
+          confidence_heads: true
+          token_cutoff: 0

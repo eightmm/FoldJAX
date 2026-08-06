@@ -13,15 +13,19 @@ from foldjax.models.openfold3.models.representative_atoms import RepresentativeA
 
 
 def representative_atom_table() -> RepresentativeAtomTable:
-    """Read the lookups out of upstream's own tables."""
-    from foldjax.models.openfold3.upstream import ensure_importable
+    """Read the lookups out of upstream's own tables, vendored at `.._upstream`.
 
-    ensure_importable()
-    from openfold3.core.data.resources.residues import (
+    These are constants rather than a pipeline -- residue order and the atom-name
+    index -- so reading them from upstream's own definition is what keeps them
+    from drifting into a second, hand-copied truth.
+    """
+    from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
         STANDARD_PROTEIN_RESIDUES_ORDER,
         STANDARD_RESIDUES_WITH_GAP_3,
     )
-    from openfold3.core.utils.atomize_utils import atom_name_to_index_by_restype
+    from foldjax.models.openfold3._upstream.openfold3.core.utils.atomize_utils import (  # noqa: E501
+        atom_name_to_index_by_restype,
+    )
 
     n_restype = len(STANDARD_RESIDUES_WITH_GAP_3)
 

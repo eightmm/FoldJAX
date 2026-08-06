@@ -21,8 +21,14 @@ original, and no model weights are distributed with this software.
   OpenFold3    https://github.com/aqlaboratory/openfold-3
                Apache-2.0, Copyright the OpenFold Team
                -> src/foldjax/models/openfold3/{LICENSE,NOTICE}
-               Featurization delegates to upstream's own data pipeline, which
-               is a checkout rather than a package and is not carried here.
+               Two things are carried under this one upstream. The JAX port is
+               a reimplementation; `models/openfold3/_upstream/` additionally
+               contains upstream's own *data pipeline*, vendored verbatim
+               (~46k lines) so featurization needs no separate checkout. That
+               tree is upstream's code under upstream's licence, kept in
+               upstream's style so it stays diffable against the repository it
+               came from; the single edit is marked in
+               `core/data/framework/__init__.py`.
 
   Protenix     https://github.com/bytedance/Protenix
                Apache-2.0, Copyright 2024 ByteDance and/or its affiliates

@@ -561,17 +561,20 @@ def test_openfold3_predicts_from_the_vendored_package() -> None:
         assert import_module(name) is not None, name
 
 
-def test_openfold3_featurization_names_what_it_needs(monkeypatch) -> None:
-    """Featurization is the one part that is still not self-contained.
+def test_openfold3_featurization_names_the_extra_it_needs(monkeypatch) -> None:
+    """Featurization runs upstream's pipeline, which needs the torch extra.
 
-    It delegates to upstream OpenFold3's data pipeline, which needs an extra
-    *and* a checkout. A bare "No module named 'openfold3...'" cannot tell those
-    two apart, and neither is guessable, so the message names both remedies.
+    The pipeline is vendored, so this no longer fails for want of a checkout --
+    but it is still upstream's torch and lightning code, and a bare
+    "No module named ..." would not say which extra supplies that. The message
+    names it.
 
     Simulated rather than assumed: setting the module to None in `sys.modules`
-    makes the import fail even where upstream is installed, so this keeps
-    checking the message on a machine that has the checkout -- which is exactly
-    where it would otherwise rot unnoticed.
+    makes the import fail even in an environment that has the extra, so this
+    keeps checking the message here rather than only on a machine that happens
+    to lack it. The patched name is the *vendored* path, which is what caught
+    this test when the pipeline moved -- the old name no longer participates, so
+    the patch stopped biting and the assertion stopped meaning anything.
     """
     import sys
 
@@ -579,12 +582,12 @@ def test_openfold3_featurization_names_what_it_needs(monkeypatch) -> None:
 
     monkeypatch.setitem(
         sys.modules,
-        "openfold3.projects.of3_all_atom.config.inference_query_format",
+        "foldjax.models.openfold3._upstream.openfold3.projects.of3_all_atom"
+        ".config.inference_query_format",
         None,
     )
     with pytest.raises(ImportError) as error:
         featurize_query({"queries": {}})
     message = str(error.value)
     assert "openfold3-preprocess" in message
-    assert "checkout" in message
-    assert "docs/openfold3.md" in message
+    assert "inference path itself needs none of it" in message

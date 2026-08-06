@@ -108,6 +108,28 @@ wheels = [
 ]
 
 [[package]]
+name = "awscrt"
+version = "0.36.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/38/c9945730e522610c2ebf1b38483f1575226e998ab27e8c553dd33fc64e4b/awscrt-0.36.1.tar.gz", hash = "sha256:bd1f86b092b57a9ec1f95138224007946eecdf944df1e08fd99f75b64fe2ad20", size = 37073487, upload-time = "2026-07-22T22:36:10.051Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/a4/7f36ac129f6ee3763a8e21b5200079dc4385cf991e12c68dad523b678acb/awscrt-0.36.1-cp311-abi3-macosx_10_15_universal2.whl", hash = "sha256:acf65d3f8475d7ff515f073f4a328ba6e8750b743d8c35c84f386f4e67b4e895", size = 5150126, upload-time = "2026-07-22T22:35:06.832Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/fc/32662533172aa8b5b58df99393b8e8e7cf4ffaf2c1c3a2f07956b6d7d95e/awscrt-0.36.1-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e1869970cf4901cb2fba3fdd8d0b562b4589df2592461d475cd3d9ba6df033b5", size = 3973971, upload-time = "2026-07-22T22:35:08.393Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/51/01b6e0f744e4903593725adab8cfc2cbef27b4cddf391f16ef3f23082201/awscrt-0.36.1-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ae816d7823bd3f5c28a696b257a369478d05c113aab95efc0d8e82c9636d4da1", size = 4265713, upload-time = "2026-07-22T22:35:09.973Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/90/ce7ce791deb63299e77cb05eb11e4e431b9ef065d5797567372fcec349e9/awscrt-0.36.1-cp311-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:323240f4af170870cc205b8fda46fbe631349602dc7f4cfe8e3c128829f6e1aa", size = 3880791, upload-time = "2026-07-22T22:35:11.722Z" },
+    { url = "https://files.pythonhosted.org/packages/41/20/81be812c8dcc69e5cf026a44414d04aecb5dcdbd06556d6fa61c4e7559dc/awscrt-0.36.1-cp311-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:5c586b610a1bbaf30b258f1e3a6e350733dc6463243f3b05fb92865c300d66f0", size = 4122237, upload-time = "2026-07-22T22:35:13.293Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/32/215fd53c4ec006c5099dd2eb6dfca4d9969776ceb8eb0765c4ea2ee5c7b5/awscrt-0.36.1-cp311-abi3-win32.whl", hash = "sha256:1964ad779a7d7100c25819b7eaac830ff6660f785abb1c3763d2c9e80631418b", size = 4165455, upload-time = "2026-07-22T22:35:15.087Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/63/2bf078838d337cfd65bf04b595764ad96e6a846add46640918602f5043fb/awscrt-0.36.1-cp311-abi3-win_amd64.whl", hash = "sha256:0c268cd5f8b851a85d8f59c74cd4dd37a24d6040e102f13fb53d35f6d818e2ff", size = 4337628, upload-time = "2026-07-22T22:35:16.788Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/6f/9803918104b6efeee3b8db2d90c15b48f55e893893985e64a0fda879867d/awscrt-0.36.1-cp313-abi3-macosx_10_15_universal2.whl", hash = "sha256:783a58c3e81f20ed5ff70a9aa1ec6c25e56ce7937c020da5fb588ebbd03ff8f1", size = 5148377, upload-time = "2026-07-22T22:35:18.432Z" },
+    { url = "https://files.pythonhosted.org/packages/11/5b/f9cd9140b72cb6140422bdd682aa004ac6e886be08ded42460164d377152/awscrt-0.36.1-cp313-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e38c9556bbcd7a645522768c9401b1573c8ac9ffe8835e4db66b97ace00d081e", size = 3963967, upload-time = "2026-07-22T22:35:20.574Z" },
+    { url = "https://files.pythonhosted.org/packages/98/9d/6746f592b3164b2cadb50d0be967eb1cb996a934f7351104868b9b027f5c/awscrt-0.36.1-cp313-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a681912cca49b70d9e3ff3c9968884eabbbbe2761b67d010e6e9f10a06918a03", size = 4258939, upload-time = "2026-07-22T22:35:21.933Z" },
+    { url = "https://files.pythonhosted.org/packages/70/d8/21f7740106889eb1a4eb93ef1f4e4270bb887239eaabb98ef7f0137614e4/awscrt-0.36.1-cp313-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:674a346cfa5f57afd55ebeaa692bc093a694fd7bc184ddc911a77c7f01983b68", size = 3872987, upload-time = "2026-07-22T22:35:23.226Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/48/6cfddce18e068bd95f72ec3987bbc3c8f7dd9bcd3ec56427ccbe1e42182f/awscrt-0.36.1-cp313-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:6fee2c1ab52656b2122661dc983d651fad0b70bc10f859e3e917c66b494ab4e4", size = 4117425, upload-time = "2026-07-22T22:35:24.572Z" },
+    { url = "https://files.pythonhosted.org/packages/26/74/8a9394c137c9f679a5c4d01f19efdecd80208267ad31e654cdb5d58006f5/awscrt-0.36.1-cp313-abi3-win32.whl", hash = "sha256:5bbf2c9d8d9c60e0eff80601b0223600d6c6c4b02ff03e62e73534f1d752298b", size = 4162313, upload-time = "2026-07-22T22:35:25.929Z" },
+    { url = "https://files.pythonhosted.org/packages/98/b9/52dee3a377b3e692b93564a5aa8b7ed54a2221bf7d3f3ea36859fa9bb031/awscrt-0.36.1-cp313-abi3-win_amd64.whl", hash = "sha256:df013e9f333f65716eec397802597daa9f03173a73247e14370fb4bd3551c859", size = 4334485, upload-time = "2026-07-22T22:35:27.427Z" },
+]
+
+[[package]]
 name = "biopython"
 version = "1.87"
 source = { registry = "https://pypi.org/simple" }
@@ -581,6 +603,8 @@ esm = [
     { name = "torch" },
 ]
 openfold3-preprocess = [
+    { name = "absl-py" },
+    { name = "awscrt" },
     { name = "biotite" },
     { name = "boto3" },
     { name = "click" },
@@ -590,10 +614,12 @@ openfold3-preprocess = [
     { name = "lmdb" },
     { name = "memory-profiler" },
     { name = "ml-collections" },
+    { name = "networkx" },
     { name = "pdbeccdutils" },
     { name = "pydantic" },
     { name = "pytorch-lightning" },
     { name = "torch" },
+    { name = "torchmetrics" },
 ]
 torch-bridge = [
     { name = "torch" },
@@ -611,6 +637,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "absl-py", marker = "extra == 'alphafold3'", specifier = ">=2.3.1" },
+    { name = "absl-py", marker = "extra == 'openfold3-preprocess'", specifier = ">=2.3.1" },
+    { name = "awscrt", marker = "extra == 'openfold3-preprocess'" },
     { name = "biopython", specifier = ">=1.83" },
     { name = "biotite", marker = "extra == 'openfold3-preprocess'" },
     { name = "boto3", marker = "extra == 'openfold3-preprocess'" },
@@ -637,6 +665,7 @@ requires-dist = [
     { name = "memory-profiler", marker = "extra == 'openfold3-preprocess'" },
     { name = "ml-collections", marker = "extra == 'openfold3-preprocess'", specifier = ">=0.1.1" },
     { name = "modelcif", specifier = ">=1.0" },
+    { name = "networkx", marker = "extra == 'openfold3-preprocess'" },
     { name = "numba", specifier = ">=0.61" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=2.0" },
@@ -655,6 +684,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'esm'", specifier = ">=2.2" },
     { name = "torch", marker = "extra == 'openfold3-preprocess'", specifier = ">=2.2" },
     { name = "torch", marker = "extra == 'torch-bridge'", specifier = ">=2.2" },
+    { name = "torchmetrics", marker = "extra == 'openfold3-preprocess'" },
     { name = "tqdm", specifier = ">=4.66.0" },
     { name = "triton", marker = "extra == 'cuda13'", specifier = ">=3.0" },
     { name = "zstandard", marker = "extra == 'alphafold3'" },
