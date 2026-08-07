@@ -85,21 +85,37 @@ def cueq_attention_core(
 
     ``scale`` is applied inside the kernel, so the caller must *not* pre-divide
     the queries the way the XLA path does.
+
+    Leading axes beyond those are folded into ``B`` and restored afterwards. The
+    kernel takes exactly five dimensions and unpacks them positionally, so a
+    sixth -- which the confidence head produces, one pair representation per
+    diffusion sample -- reaches it as ``too many values to unpack`` rather than
+    as anything that names the problem.
     """
 
     cuex = load_cueq()
-    unbatched = q.ndim == 4
-    if unbatched:
-        q, k, v = q[None], k[None], v[None]
-        triangle_bias = triangle_bias[None]
-        mask_bias = mask_bias[None]
+    # Everything before the (N_row, H, N_col, D) suffix is batch. The three
+    # operands carry it in different amounts (the bias has a 1 where q has rows),
+    # so broadcast the leads to a common shape before folding them together.
+    lead = jnp.broadcast_shapes(
+        q.shape[:-4], triangle_bias.shape[:-4], mask_bias.shape[:-4]
+    )
+    q, k, v = (
+        jnp.broadcast_to(t, (*lead, *t.shape[-4:])) for t in (q, k, v)
+    )
+    triangle_bias = jnp.broadcast_to(
+        triangle_bias, (*lead, *triangle_bias.shape[-4:])
+    )
+    mask_bias = jnp.broadcast_to(mask_bias, (*lead, *mask_bias.shape[-4:]))
+
+    flat = lambda t: t.reshape((-1, *t.shape[-4:]))  # noqa: E731
     output, _, _ = cuex.triangle_attention(
-        q=q,
-        k=k,
-        v=v,
-        bias=triangle_bias,
-        mask=mask_bias == 0,
+        q=flat(q),
+        k=flat(k),
+        v=flat(v),
+        bias=flat(triangle_bias),
+        mask=flat(mask_bias) == 0,
         scale=scale,
         precision=lax.Precision.DEFAULT,
     )
-    return output[0] if unbatched else output
+    return output.reshape((*lead, *output.shape[-4:]))

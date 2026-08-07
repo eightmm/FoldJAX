@@ -34,17 +34,41 @@ from foldjax.models.openfold3.models.triangle import permute_final_dims
 def _default_backend() -> str:
     """Which kernel to use, from ``OPENFOLD3_TRIANGLE_BACKEND``.
 
-    Defaults to ``xla`` because that is upstream's default too:
-    ``Attention.__init__`` takes ``use_cueq_triangle_kernels`` and it is ``False``.
-    The fused path is available for the sizes where the score tensor is the
-    problem, and it is opt-in for the same reason the OpenDDE bf16 trunk is --
-    a port should run what its upstream runs unless asked otherwise.
+    Defaults to the fused cuEquivariance kernel, which is what the other three
+    AF3-family ports here already run. This is a deliberate step away from
+    upstream's *default* -- ``Attention.__init__`` takes
+    ``use_cueq_triangle_kernels`` and ships it ``False`` -- but not away from
+    upstream's code: it is one of the three fused paths upstream offers. Measured
+    on this port, one sample, warm cache:
+
+    ============  ==================  =================
+    tokens        peak                time
+    ============  ==================  =================
+    1003          22.13 -> 10.17 GiB  80.8 -> 58.0 s
+    3012          62.47 -> 62.49 GiB  1134 -> 934 s
+    ============  ==================  =================
+
+    The memory win is size-dependent and disappears at 3012, where the XLA path
+    already blocks the score tensor to 58 rows and the peak is set by a dozen
+    pair-sized buffers instead. The time win holds at both. Nothing measured
+    worse.
+
+    Confidence moves by about +0.0014 mean pLDDT and +0.0012 pTM, consistent with
+    the kernel's accumulation order and its TF32 matmuls -- and TF32 is what
+    upstream runs too (``set_float32_matmul_precision("high")``), so the fused
+    path is arguably the closer match on that axis rather than the further one.
+
+    ``OPENFOLD3_TRIANGLE_BACKEND=xla`` restores the blocked path -- on a machine
+    without the cuEquivariance wheel, or to reproduce a number taken before this
+    changed. There is no automatic fallback, for the reason the Protenix port
+    gives: a backend that silently changes kernel when a wheel is missing means
+    two machines running two different programs under one setting.
 
     Read here rather than threaded through the config so the switch reaches every
     triangle attention in the model, including the ones inside the template stack
     and the confidence head, without six signatures growing an argument.
     """
-    return os.environ.get("OPENFOLD3_TRIANGLE_BACKEND", "xla").lower()
+    return os.environ.get("OPENFOLD3_TRIANGLE_BACKEND", "cueq").lower()
 
 
 class TriangleAttentionParams(NamedTuple):

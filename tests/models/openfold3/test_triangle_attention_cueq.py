@@ -67,16 +67,18 @@ def captured(monkeypatch):
     return seen
 
 
-def test_the_default_backend_is_upstream_s(monkeypatch) -> None:
-    """Upstream's ``use_cueq_triangle_kernels`` is ``False``, so this is ``xla``.
+def test_the_default_backend_is_the_fused_kernel(monkeypatch) -> None:
+    """Pinned because it is a deliberate step away from upstream's default.
 
-    A port that silently ran a different kernel than its upstream's default would
-    be reporting numbers for a configuration upstream never runs.
+    Upstream ships ``use_cueq_triangle_kernels=False``; this port defaults it on,
+    on measurements recorded in ``_default_backend``'s docstring, and to match the
+    three sibling ports whose own upstreams default it on. A change back should be
+    a decision someone makes, not a merge artefact.
     """
     monkeypatch.delenv("OPENFOLD3_TRIANGLE_BACKEND", raising=False)
-    assert _default_backend() == "xla"
-    monkeypatch.setenv("OPENFOLD3_TRIANGLE_BACKEND", "CUEQ")
-    assert _default_backend() == "cueq", "the value is case-insensitive"
+    assert _default_backend() == "cueq"
+    monkeypatch.setenv("OPENFOLD3_TRIANGLE_BACKEND", "XLA")
+    assert _default_backend() == "xla", "the value is case-insensitive"
 
 
 def test_an_unknown_backend_is_refused() -> None:
