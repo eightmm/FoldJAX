@@ -117,3 +117,47 @@ def test_an_empty_response_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(SearchError, match="is missing"):
         MsaSearchPipeline(cache_dir=tmp_path, backend=_Empty()).search([SEQUENCE])
+
+
+def test_a_rate_limited_server_is_waited_out_not_failed(monkeypatch) -> None:
+    """HTTP 429 is this API saying "at capacity", which is a wait, not an error.
+
+    A public MMseqs2 server is at capacity often. Failing on it ended the search
+    for a condition whose whole meaning is that it is temporary, and took the
+    queue position of every sequence behind it with it.
+    """
+    from foldjax.search.msa import HttpResponse, RemoteMMseqs2Client
+
+    slept: list[float] = []
+    monkeypatch.setattr("foldjax.search.msa.time.sleep", slept.append)
+    responses = iter(
+        [
+            HttpResponse(429, b""),
+            HttpResponse(429, b""),
+            HttpResponse(200, b'{"status":"COMPLETE","id":"u-1"}'),
+        ]
+    )
+    client = RemoteMMseqs2Client(
+        "https://msa.invalid",
+        version="api-v1",
+        poll_interval=2.0,
+        transport=lambda *_: next(responses),
+    )
+
+    assert client._json("POST", "ticket/msa")["status"] == "COMPLETE"
+    assert slept == [2.0, 4.0], "the wait has to back off, not hammer"
+
+
+def test_a_server_that_never_recovers_still_ends_the_search(monkeypatch) -> None:
+    from foldjax.search.msa import HttpResponse, RemoteMMseqs2Client
+
+    monkeypatch.setattr("foldjax.search.msa.time.sleep", lambda _: None)
+    client = RemoteMMseqs2Client(
+        "https://msa.invalid",
+        version="api-v1",
+        poll_interval=1.0,
+        max_wait_seconds=3.0,
+        transport=lambda *_: HttpResponse(429, b""),
+    )
+    with pytest.raises(SearchError, match="rate-limited for the whole"):
+        client._json("POST", "ticket/msa")

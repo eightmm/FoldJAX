@@ -582,13 +582,29 @@ class RemoteMMseqs2Client:
             self.headers["Authorization"] = f"Basic {token}"
 
     def _request(self, method: str, path: str, data: bytes | None = None) -> bytes:
-        response = self.transport(
-            method,
-            f"{self.host_url}/{path.lstrip('/')}",
-            data,
-            self.headers,
-            self.timeout,
-        )
+        """Send one request, waiting out a busy server rather than failing on it.
+
+        HTTP 429 is how this API says "at capacity, come back", and a public
+        MMseqs2 server is at capacity often. Treating it as an error made a
+        search fail on a condition whose entire meaning is that it is temporary,
+        and lost the queue position of every sequence after it. The wait is
+        bounded by ``max_wait_seconds``, the same budget the poll loop uses, so
+        a server that never recovers still ends the search.
+        """
+        url = f"{self.host_url}/{path.lstrip('/')}"
+        deadline = time.monotonic() + self.max_wait_seconds
+        delay = max(self.poll_interval, 1.0)
+        while True:
+            response = self.transport(method, url, data, self.headers, self.timeout)
+            if response.status != 429:
+                break
+            if time.monotonic() + delay >= deadline:
+                raise SearchError(
+                    f"remote MSA request {path!r} was rate-limited for the whole "
+                    f"{self.max_wait_seconds:.0f}s budget"
+                )
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
         if response.status < 200 or response.status >= 300:
             raise SearchError(
                 f"remote MSA request {path!r} failed with HTTP {response.status}"
