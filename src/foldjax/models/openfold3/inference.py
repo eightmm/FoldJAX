@@ -96,6 +96,14 @@ class InferenceConfig(NamedTuple):
     # at a time. 750 is upstream's own default (``per_sample_token_cutoff`` in
     # ``model_config.py``); ``None`` always batches the samples.
     per_sample_token_cutoff: int | None = 750
+    # Alignment rows the trunk sees. Upstream subsamples inside the network, in
+    # ``MSAModuleEmbedder.forward``, with ``subsample_all_msa=True`` and
+    # ``min_subsampled_all_msa == max_subsampled_all_msa == 1024`` -- a draw from
+    # ``randint(1024, 1025)``, so the count is fixed -- and with no ``self.training``
+    # guard, so it applies at inference. Running the full alignment is therefore not
+    # a more faithful choice than 1024; it is a different model. ``None`` keeps every
+    # row, which is only useful for comparing against this divergence.
+    msa_depth: int | None = 1024
 
 
 class InferenceParams(NamedTuple):
@@ -568,6 +576,7 @@ def released_config(
     no_rollout_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
     per_sample_token_cutoff: int | None = 750,
+    msa_depth: int | None = 1024,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -616,6 +625,7 @@ def released_config(
         step_scale=1.5,
         pair_chunk_size=resolved_chunk,
         per_sample_token_cutoff=per_sample_token_cutoff,
+        msa_depth=msa_depth,
     )
 
 

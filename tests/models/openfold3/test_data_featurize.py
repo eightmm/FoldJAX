@@ -235,39 +235,100 @@ def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -
     assert bool(np.isfinite(np.asarray(prediction.plddt)).all())
 
 
-def test_the_msa_depth_cap_cuts_rows_and_leaves_the_profile(
-    openfold3_source: Path, tmp_path: Path
-) -> None:
-    """`--max-msa-depth` is a feature cut here, since OpenFold3 has no argument.
-
-    It was refused for this model, which made OpenFold3 the one backend that
-    could not be held to the same MSA budget as the others -- and that budget is
-    the dominant memory knob. What has to be true is that the cut lands on the
-    alignment axis and nowhere else: `profile` and `deletion_mean` summarise the
-    whole alignment per token, and slicing them would silently change what the
-    model reads about the alignment it was not shown.
-    """
-    from foldjax.backends.openfold3 import _MSA_ROW_FEATURES, _cap_msa_depth
-
+def _msa_features(tmp_path: Path):
     a3m = tmp_path / "colabfold_main.a3m"
     a3m.write_text(
         f">query\n{UBIQUITIN}\n"
         f">hit1\n{UBIQUITIN[:-1]}A\n"
         f">hit2\n{'A' * len(UBIQUITIN)}\n"
     )
-    features = featurize_query(_spec(main_msa_file_paths=[str(a3m)]))
+    return featurize_query(_spec(main_msa_file_paths=[str(a3m)]))
 
+
+def test_subsampling_cuts_rows_and_leaves_the_profile(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    """The cut must land on the alignment axis and nowhere else.
+
+    `profile` and `deletion_mean` summarise the whole alignment per token, so
+    slicing them would silently change what the model reads about the alignment it
+    was not shown. Upstream leaves them alone for the same reason -- it subsamples
+    inside the network, long after those two are computed.
+    """
+    from foldjax.models.openfold3.data import MSA_ROW_FEATURES, subsample_msa_rows
+
+    features = _msa_features(tmp_path)
     rows = features["msa"].shape[1]
-    assert rows > 1, "a single-row alignment cannot show a cap working"
+    assert rows > 1, "a single-row alignment cannot show subsampling working"
     depth = rows - 1
-    capped = _cap_msa_depth(features, depth)
+    capped = subsample_msa_rows(features, depth)
 
-    for name in _MSA_ROW_FEATURES:
+    for name in MSA_ROW_FEATURES:
         assert capped[name].shape[1] == depth, name
-        # Same rows, in the same order, not a resample.
-        np.testing.assert_array_equal(capped[name], features[name][:, :depth])
     for name in ("profile", "deletion_mean", "token_mask", "restype"):
         np.testing.assert_array_equal(capped[name], features[name])
 
-    assert _cap_msa_depth(features, rows) is features, "a cap at the depth is a no-op"
-    assert _cap_msa_depth(features, rows + 10) is features
+    for depth in (rows, rows + 10, None):
+        kept = subsample_msa_rows(features, depth)
+        for name in MSA_ROW_FEATURES:
+            np.testing.assert_array_equal(kept[name], features[name])
+
+
+def test_subsampling_keeps_valid_rows_before_all_masked_filler(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    """Upstream's rule ranks rows by validity, not by position.
+
+    A prefix cut is only the same thing when every row is valid. Alignments are
+    padded to a shared depth across chains, so all-masked rows appear in the middle
+    of the stack, and a prefix cut would spend the budget on rows that contribute
+    nothing while dropping real hits.
+    """
+    from foldjax.models.openfold3.data import subsample_msa_rows
+
+    features = dict(_msa_features(tmp_path))
+    rows = features["msa"].shape[1]
+    assert rows >= 3, "need at least three rows to place filler between two hits"
+    # Blank out row 0, so a prefix cut and upstream's rule disagree observably.
+    mask = np.array(features["msa_mask"])
+    mask[:, 0] = 0.0
+    features["msa_mask"] = mask
+    marker = np.array(features["deletion_value"])
+    marker[:, :, 0] = np.arange(rows, dtype=marker.dtype)[None, :]
+    features["deletion_value"] = marker
+
+    kept = subsample_msa_rows(features, rows - 1)
+    # Row 0 is the invalid one, so it is the one dropped -- not the last row, which
+    # is what a prefix cut would have kept it over.
+    np.testing.assert_array_equal(
+        kept["deletion_value"][0, :, 0], np.arange(1, rows, dtype=marker.dtype)
+    )
+    assert float(kept["msa_mask"].sum()) == float(mask.sum())
+
+
+def test_subsampling_agrees_with_the_model_side_selection(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    """The host-side rule and the port's jnp ``subsample_msa`` must select alike.
+
+    Two implementations of one rule is the arrangement that rots. This pins them
+    together; the host one exists only so the full alignment never reaches the
+    device.
+    """
+    from foldjax.models.openfold3.data import MSA_ROW_FEATURES, subsample_msa_rows
+    from foldjax.models.openfold3.models.input_embedders import subsample_msa
+
+    features = dict(_msa_features(tmp_path))
+    rows = features["msa"].shape[1]
+    mask = np.array(features["msa_mask"])
+    mask[:, 0] = 0.0
+    features["msa_mask"] = mask
+
+    depth = rows - 1
+    host = subsample_msa_rows(features, depth)
+    unbatched = {name: features[name][0] for name in MSA_ROW_FEATURES}
+    model = subsample_msa(unbatched, depth)
+    for name in MSA_ROW_FEATURES:
+        np.testing.assert_array_equal(
+            np.asarray(host[name][0]), np.asarray(model[name]), err_msg=name
+        )

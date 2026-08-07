@@ -37,34 +37,6 @@ _COMPILE_OPTIONS = (
     "max_msa_depth",
 )
 
-#: Features whose axis 1 is the alignment row, and which a depth cap therefore
-#: truncates. `profile` and `deletion_mean` are per-token summaries of the whole
-#: alignment and are left as computed -- the other backends' native caps do the
-#: same, so capping here means the same thing it means there.
-_MSA_ROW_FEATURES = ("msa", "msa_mask", "has_deletion", "deletion_value")
-
-
-def _cap_msa_depth(features: dict[str, Any], depth: int) -> dict[str, Any]:
-    """Keep the first ``depth`` alignment rows.
-
-    OpenFold3 takes no MSA-depth argument, so this is a cut in the features
-    rather than a setting: the rows are ordered by the search that produced
-    them, and every other backend's native knob keeps the same prefix. It is
-    the dominant memory knob -- the trunk holds a [depth, tokens, channels]
-    representation -- which is why refusing it here left OpenFold3 as the one
-    model that could not be held to a comparable budget.
-    """
-    rows = features["msa"].shape[1]
-    if depth >= rows:
-        return features
-    capped = dict(features)
-    for name in _MSA_ROW_FEATURES:
-        array = capped.get(name)
-        if array is not None:
-            capped[name] = array[:, :depth]
-    return capped
-
-
 class OpenFold3Backend(Backend):
     name = "openfold3"
     # OpenFold3 spells these `no_rollout_steps` and `num_cycles`, which is what
@@ -72,9 +44,9 @@ class OpenFold3Backend(Backend):
     # their own neutral names put `num_steps` and `num_recycles` into the option
     # dict, where nothing consumed them, so both knobs raised "unsupported
     # OpenFold3 options" -- capabilities advertised two knobs that could only
-    # ever fail. `max_msa_depth` has no native spelling either; it is applied to
-    # the features by `_cap_msa_depth`, so the knob means the same thing on all
-    # five models rather than being refused on this one.
+    # ever fail. `max_msa_depth` overrides `released_config`'s `msa_depth`, which
+    # already carries upstream's own 1024; the knob narrows a setting the model
+    # has rather than imposing one it lacks.
     sampling_options = {
         "num_samples": "num_samples",
         "num_steps": "no_rollout_steps",
@@ -112,9 +84,6 @@ class OpenFold3Backend(Backend):
             seed=request.seed,
             ccd_file_path=options.pop("ccd_file_path", None),
         )
-        depth = options.pop("max_msa_depth", None)
-        if depth is not None:
-            features = _cap_msa_depth(features, int(depth))
         n_token = features["token_mask"].shape[-1]
         n_atom = features["atom_mask"].shape[-1]
 
@@ -126,7 +95,14 @@ class OpenFold3Backend(Backend):
         chunk = options.pop("pair_chunk_size", None)
         if chunk is not None:
             overrides["pair_chunk_size"] = int(chunk)
+        depth = options.pop("max_msa_depth", None)
+        if depth is not None:
+            overrides["msa_depth"] = int(depth)
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
+        # Upstream subsamples inside `MSAModuleEmbedder.forward`; this port does it
+        # on the host, before the alignment reaches the device. Unconditional, so
+        # the default path is the released one rather than a full-depth divergence.
+        features = data.subsample_msa_rows(features, config.msa_depth)
 
         params = mapping.map_inference_params(
             checkpoint.load_checkpoint(request.weights),

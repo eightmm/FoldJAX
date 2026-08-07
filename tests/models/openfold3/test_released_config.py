@@ -31,6 +31,23 @@ def upstream(openfold3_source: Path):
     return model_config
 
 
+def _released_msa_depth(embedder) -> int:
+    """Upstream's fixed subsample depth, or ``None`` if it does not subsample."""
+    assert not embedder.subsample_main_msa, (
+        "upstream switched to per-chain main-MSA subsampling; the port's single "
+        "depth no longer describes it"
+    )
+    if not embedder.subsample_all_msa:
+        return None
+    low = embedder.min_subsampled_all_msa
+    high = embedder.max_subsampled_all_msa
+    assert low == high, (
+        f"upstream now draws the depth from a range ({low}..{high}); the port "
+        "assumes a fixed count"
+    )
+    return low
+
+
 def _expected(config) -> dict:
     architecture = config.architecture
     encoder = architecture.input_embedder.atom_attn_enc
@@ -74,6 +91,12 @@ def _expected(config) -> dict:
         # running a different configuration from the released one at any realistic
         # target size, so it belongs in this comparison.
         "per_sample_token_cutoff": heads.per_sample_token_cutoff,
+        # Alignment rows the trunk sees. Upstream draws this from
+        # ``randint(min_subsampled_all_msa, max_subsampled_all_msa + 1)``, and the
+        # released config sets both to 1024, so the count is fixed even though the
+        # mechanism is a draw. Checking ``max`` alone would pass a config that had
+        # widened the range downward, so assert they are equal first.
+        "msa_depth": _released_msa_depth(architecture.msa.msa_module_embedder),
     }
     for name in ("gamma_0", "gamma_min", "noise_scale", "step_scale"):
         expected[name] = architecture.sample_diffusion[name]

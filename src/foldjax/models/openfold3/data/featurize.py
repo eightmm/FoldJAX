@@ -345,3 +345,58 @@ def split_chemistry(
     return features, RepresentativeAtomTable(
         **{name: stored[name] for name in RepresentativeAtomTable._fields}
     )
+
+
+#: The four features carrying one row per alignment. ``msa`` is
+#: ``[batch, rows, tokens, 32]``; the other three are ``[batch, rows, tokens]``.
+MSA_ROW_FEATURES = ("msa", "msa_mask", "has_deletion", "deletion_value")
+
+
+def subsample_msa_rows(
+    features: Mapping[str, np.ndarray], no_subsampled: int | None
+) -> dict[str, np.ndarray]:
+    """Keep ``no_subsampled`` alignment rows, choosing them as upstream does.
+
+    Upstream applies this inside the network -- ``MSAModuleEmbedder._subsample_all_msa``
+    -- but selecting rows is a data-pipeline decision, so it happens here, on the host,
+    before the features ever reach the device. At 3012 tokens a full 16384-row
+    alignment is several GiB; subsampling on device would commit all of it to the
+    memory pool first, which is the thing being avoided.
+
+    Rows whose mask is entirely zero are "invalid" and serve only as filler. Upstream
+    keeps a *random* subset of the valid rows when there are more than
+    ``no_subsampled`` of them, which no PRNG choice here can reproduce -- upstream is
+    not reproducible against itself either, since it draws a fresh ``randperm`` per
+    call. This keeps the first ``no_subsampled`` valid rows in the order the search
+    produced them, which implements the same rule deterministically. Below the
+    threshold the two agree exactly: upstream keeps every valid row and pads with
+    all-masked rows, and appending an all-masked row changes nothing.
+
+    Args:
+        features: batched model features. Needs the four in ``MSA_ROW_FEATURES``.
+        no_subsampled: rows to keep. ``None``, or a value at or above the row count,
+            returns the features unchanged.
+
+    Returns:
+        A new mapping with the four MSA features subsampled; other keys are shared.
+    """
+    if no_subsampled is None:
+        return dict(features)
+    if no_subsampled < 1:
+        raise ValueError(f"msa_depth must be at least 1; got {no_subsampled}")
+    mask = features["msa_mask"]
+    rows = mask.shape[1]
+    if rows <= no_subsampled:
+        return dict(features)
+
+    # Rank valid rows before invalid ones, preserving the search's order within each
+    # group; a stable sort of the negated flag does exactly that.
+    valid = np.asarray(mask).sum(axis=-1)[0] > 0
+    order = np.argsort(~valid, kind="stable")[:no_subsampled]
+
+    out = dict(features)
+    for name in MSA_ROW_FEATURES:
+        array = out.get(name)
+        if array is not None:
+            out[name] = array[:, order]
+    return out

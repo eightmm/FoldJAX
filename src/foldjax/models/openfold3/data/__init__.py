@@ -23,20 +23,24 @@ YAML), so this matches the local convention rather than inventing one.
 
 from foldjax.models.openfold3.data.featurize import (
     MODEL_FEATURES,
+    MSA_ROW_FEATURES,
     featurize_query,
     pad_features,
     save_features,
     split_chemistry,
+    subsample_msa_rows,
 )
 from foldjax.models.openfold3.data.msa import MAIN_STEM, PAIRED_STEM, attach_msas
 
 __all__ = [
     "MAIN_STEM",
     "MODEL_FEATURES",
+    "MSA_ROW_FEATURES",
     "PAIRED_STEM",
     "attach_msas",
     "featurize_query",
     "pad_features",
     "save_features",
     "split_chemistry",
+    "subsample_msa_rows",
 ]
