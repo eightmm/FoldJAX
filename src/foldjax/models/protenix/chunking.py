@@ -35,6 +35,11 @@ class ChunkConfig:
     triangle_att_q_chunk_size: int | None = None
     single_att_q_chunk_size: int | None = None
     token_q_chunk_size: int | None = None
+    # The outer product mean gets the same token chunk size as everything else,
+    # because upstream's `MSABlock.forward` passes it the one `chunk_size` it was
+    # given. Leaving it out let the `[N, N, C, C]` outer product exist at full
+    # width, which is eight times the pair update it becomes.
+    opm_chunk_size: int | None = None
     diffusion_chunk_size: int | None = None
 
 
@@ -58,6 +63,7 @@ def resolve_chunk_config(
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     token_q_chunk_size: int | None = None,
+    opm_chunk_size: int | None = None,
     diffusion_chunk_size: int | None = None,
 ) -> ChunkConfig:
     """Resolve static inference chunk knobs from policy and explicit overrides."""
@@ -72,6 +78,7 @@ def resolve_chunk_config(
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             single_att_q_chunk_size=single_att_q_chunk_size,
             token_q_chunk_size=token_q_chunk_size,
+            opm_chunk_size=opm_chunk_size,
             diffusion_chunk_size=diffusion_chunk_size,
         )
     if policy != "auto":
@@ -97,6 +104,7 @@ def resolve_chunk_config(
             token_chunk_size,
         ),
         token_q_chunk_size=_override_or_auto(token_q_chunk_size, token_chunk_size),
+        opm_chunk_size=_override_or_auto(opm_chunk_size, token_chunk_size),
         diffusion_chunk_size=_override_or_auto(
             diffusion_chunk_size,
             auto_diffusion_chunk_size,

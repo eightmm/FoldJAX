@@ -44,6 +44,66 @@ def test_outer_product_mean_matches_reference_formula() -> None:
     np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-5, atol=1e-5)
 
 
+def test_outer_product_mean_chunking_changes_nothing() -> None:
+    """Chunking the token axis is a memory transformation, not an approximation.
+
+    Upstream passes the same dynamic ``chunk_size`` to ``outer_product_mean_msa``
+    that it passes to the pair stack; this port dropped it, so the
+    ``[N, N, C, C]`` outer product was built whole. The sum runs over MSA rows,
+    which the blocks never split, so every output element sees the same
+    reduction. Sizes that do not divide the token count exercise the short last
+    block, and one larger than the count exercises the bypass.
+    """
+    rng = np.random.default_rng(4)
+    n_token = 7
+    state = _outer_product_mean_state(rng, "opm", c_m=3, c_hidden=2, c_z=4)
+    params = map_outer_product_mean_state_dict(state, "opm")
+    m = jnp.asarray(rng.normal(size=(2, n_token, 3)).astype(np.float32))
+    mask = jnp.asarray((rng.random((2, n_token)) > 0.25).astype(np.float32))
+
+    reference = outer_product_mean(m, mask, params)
+    for chunk_size in (1, 2, 3, n_token - 1, n_token, n_token + 4, None):
+        chunked = outer_product_mean(m, mask, params, chunk_size=chunk_size)
+        assert chunked.shape == reference.shape
+        np.testing.assert_allclose(
+            np.asarray(chunked), np.asarray(reference), rtol=1e-6, atol=1e-6,
+            err_msg=f"chunk_size={chunk_size}",
+        )
+
+
+def test_msa_block_gives_the_outer_product_mean_its_chunk_size(monkeypatch) -> None:
+    """The knob has to reach the layer, not just exist on the config.
+
+    This is the failure that produced the bug: the chunk size was resolved and
+    handed to four other consumers, and the one call that needed it most was
+    written without it.
+    """
+    seen = {}
+
+    def fake_outer_product_mean(m, mask, params, **kwargs):
+        seen.update(kwargs)
+        return jnp.zeros(m.shape[-2:-1] * 2 + (1,), dtype=m.dtype)
+
+    monkeypatch.setattr(msa_blocks, "outer_product_mean", fake_outer_product_mean)
+    monkeypatch.setattr(
+        msa_blocks, "pairformer_block", lambda s, z, *a, **k: (s, z)
+    )
+    params = MSABlockParams(
+        outer_product_mean=object(),
+        msa_pair_weighted_averaging=None,
+        msa_transition=None,
+        pair_stack=object(),
+    )
+    msa_blocks.msa_block(
+        jnp.zeros((2, 3, 1)),
+        jnp.zeros((3, 3, 1)),
+        None,
+        params,
+        opm_chunk_size=128,
+    )
+    assert seen.get("chunk_size") == 128
+
+
 def test_msa_pair_weighted_averaging_matches_reference_formula() -> None:
     rng = np.random.default_rng(22)
     state = _msa_pair_weighted_state(rng, "mpwa", c_m=4, c_z=3, heads=2, c=2)

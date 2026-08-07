@@ -34,6 +34,7 @@ _CLI_OPTIONS = {
     "triangle_att_q_chunk_size",
     "single_att_q_chunk_size",
     "token_q_chunk_size",
+    "opm_chunk_size",
     "diffusion_chunk_size",
 }
 # Protenix writes "<name>_sample_<rank>.cif" next to
@@ -64,6 +65,7 @@ class ProtenixBackend(Backend):
         "triangle_att_q_chunk_size",
         "single_att_q_chunk_size",
         "token_q_chunk_size",
+        "opm_chunk_size",
         "diffusion_chunk_size",
         "cli_args",
     )

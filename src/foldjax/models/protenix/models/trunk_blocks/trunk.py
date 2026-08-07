@@ -125,6 +125,7 @@ def pairformer_output_from_s_inputs(
     use_pairformer_scan: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
+    opm_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
@@ -230,6 +231,7 @@ def pairformer_output_from_s_inputs(
             msa_stack_first=msa_stack_first,
             triangle_mul_chunk_size=triangle_mul_chunk_size,
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+            opm_chunk_size=opm_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
         )
         if params.pairformer_stack.blocks:

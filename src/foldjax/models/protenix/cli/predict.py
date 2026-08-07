@@ -118,6 +118,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     parser.add_argument("--triangle-att-q-chunk-size", type=int)
     parser.add_argument("--single-att-q-chunk-size", type=int)
     parser.add_argument("--token-q-chunk-size", type=int)
+    parser.add_argument("--opm-chunk-size", type=int)
     parser.add_argument("--diffusion-chunk-size", type=int)
     parser.add_argument(
         "--trunk-dtype",
@@ -558,6 +559,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
             triangle_att_q_chunk_size=args.triangle_att_q_chunk_size,
             single_att_q_chunk_size=args.single_att_q_chunk_size,
             token_q_chunk_size=args.token_q_chunk_size,
+            opm_chunk_size=args.opm_chunk_size,
             diffusion_chunk_size=args.diffusion_chunk_size,
         )
         for seed in seeds:
@@ -603,6 +605,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                 triangle_att_q_chunk_size=chunk_config.triangle_att_q_chunk_size,
                 single_att_q_chunk_size=chunk_config.single_att_q_chunk_size,
                 token_q_chunk_size=chunk_config.token_q_chunk_size,
+                opm_chunk_size=chunk_config.opm_chunk_size,
                 diffusion_chunk_size=chunk_config.diffusion_chunk_size,
                 trunk_dtype=trunk_dtype,
                 cycle_msa_features=cycle_msa_features,

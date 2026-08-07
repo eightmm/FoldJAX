@@ -156,8 +156,18 @@ def outer_product_mean(
     params: OuterProductMeanParams,
     *,
     eps: float = 1e-3,
+    chunk_size: int | None = None,
 ) -> jnp.ndarray:
-    """Apply Protenix ``OuterProductMean`` in dense inference mode."""
+    """Apply Protenix ``OuterProductMean`` in dense inference mode.
+
+    ``chunk_size`` blocks the first token axis, which is what upstream does:
+    ``MSABlock.forward`` hands ``outer_product_mean_msa`` the same dynamic chunk
+    size it hands the pair stack. Without it the ``[N, N, C, C]`` outer product
+    exists at full width before ``linear_out`` narrows it to ``C_z``, which is
+    ``C ** 2 / C_z`` times the size of the result -- eight times over at the
+    released widths. Projecting inside the block is the part that matters; a
+    chunked einsum whose projection stays outside saves nothing.
+    """
 
     if mask is None:
         mask = jnp.ones(m.shape[:-1], dtype=m.dtype)
@@ -166,9 +176,26 @@ def outer_product_mean(
     m_norm = layer_norm(m, params.layer_norm)
     a = linear(m_norm, params.linear_1) * mask[..., None]
     b = linear(m_norm, params.linear_2) * mask[..., None]
-    outer = jnp.einsum("...mic,...mjd->...ijcd", a, b)
-    outer = outer.reshape(outer.shape[:-2] + (-1,))
-    outer = linear(outer, params.linear_out)
+
+    def project(rows: jnp.ndarray) -> jnp.ndarray:
+        outer = jnp.einsum("...mic,...mjd->...ijcd", rows, b)
+        outer = outer.reshape(outer.shape[:-2] + (-1,))
+        return linear(outer, params.linear_out)
+
+    n_token = a.shape[-2]
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= n_token:
+        outer = project(a)
+    else:
+        # Blocked the same way the triangle contractions above are: an explicit
+        # loop over dynamic slices. The token axis is a pure batch axis of the
+        # output -- the sum runs over the MSA rows -- so the blocks are
+        # independent and concatenating them reproduces the dense result.
+        blocks = [
+            project(jax.lax.dynamic_slice_in_dim(a, start, min(chunk_size, n_token - start), axis=-2))
+            for start in range(0, n_token, chunk_size)
+        ]
+        outer = jnp.concatenate(blocks, axis=-3)
+
     norm = jnp.einsum("...mi,...mj->...ij", mask, mask)[..., None] + eps
     return outer / norm
 
@@ -203,6 +230,7 @@ def msa_block(
     msa_stack_first: bool = False,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
+    opm_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
 ) -> tuple[jnp.ndarray | None, jnp.ndarray]:
     """Apply one inference-mode MSA block of the Protenix family.
@@ -240,9 +268,13 @@ def msa_block(
 
     if msa_stack_first:
         m = msa_stack(m, z)
-        z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
+        z = z + outer_product_mean(
+            m, msa_mask, params.outer_product_mean, chunk_size=opm_chunk_size
+        )
     else:
-        z = z + outer_product_mean(m, msa_mask, params.outer_product_mean)
+        z = z + outer_product_mean(
+            m, msa_mask, params.outer_product_mean, chunk_size=opm_chunk_size
+        )
         m = msa_stack(m, z)
     _, z = pairformer_block(
         None,
@@ -267,6 +299,7 @@ def msa_module(
     *,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
+    opm_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
     use_scan: bool = True,
     msa_stack_first: bool = False,
@@ -304,6 +337,7 @@ def msa_module(
         msa_stack_first=msa_stack_first,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+        opm_chunk_size=opm_chunk_size,
         triangle_attention_backend=triangle_attention_backend,
     )
     # Protenix drops the MSA path from its *last* block, so the stack is uniform
