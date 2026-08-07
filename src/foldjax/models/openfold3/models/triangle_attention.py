@@ -9,19 +9,42 @@ faithfulness to the standalone module rather than for the Pairformer path.
 
 from __future__ import annotations
 
+import os
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from foldjax.models.openfold3.models.attention import AttentionParams, attention
+from foldjax.models.openfold3.models.attention import (
+    AttentionParams,
+    attention,
+    flatten_heads,
+    split_heads,
+)
 from foldjax.models.openfold3.models.primitives import (
     LayerNormParams,
     LinearParams,
+    jax_sigmoid,
     layer_norm,
     linear,
 )
 from foldjax.models.openfold3.models.triangle import permute_final_dims
+
+
+def _default_backend() -> str:
+    """Which kernel to use, from ``OPENFOLD3_TRIANGLE_BACKEND``.
+
+    Defaults to ``xla`` because that is upstream's default too:
+    ``Attention.__init__`` takes ``use_cueq_triangle_kernels`` and it is ``False``.
+    The fused path is available for the sizes where the score tensor is the
+    problem, and it is opt-in for the same reason the OpenDDE bf16 trunk is --
+    a port should run what its upstream runs unless asked otherwise.
+
+    Read here rather than threaded through the config so the switch reaches every
+    triangle attention in the model, including the ones inside the template stack
+    and the confidence head, without six signatures growing an argument.
+    """
+    return os.environ.get("OPENFOLD3_TRIANGLE_BACKEND", "xla").lower()
 
 
 class TriangleAttentionParams(NamedTuple):
@@ -46,6 +69,7 @@ def triangle_attention(
     inf: float = 1e9,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    backend: str | None = None,
 ) -> jnp.ndarray:
     """Apply one triangle attention layer.
 
@@ -59,10 +83,20 @@ def triangle_attention(
         eps: layer norm epsilon.
         chunk_size: rows of ``I`` to attend at a time. ``None`` does it in one
             go. See :func:`_chunked_attention` for why this is exact.
+        backend: ``"xla"`` builds the score tensor and blocks it by ``chunk_size``;
+            ``"cueq"`` calls the fused cuEquivariance kernel, which never forms it
+            and therefore ignores ``chunk_size``. Upstream has the same choice --
+            ``Attention`` takes ``use_cueq_triangle_kernels`` -- and defaults it off,
+            which is why this does too.
 
     Returns:
         ``[..., I, J, C_in]`` update. Upstream returns the update only.
     """
+    if backend is None:
+        backend = _default_backend()
+    if backend not in {"xla", "cueq"}:
+        raise ValueError(f"unsupported triangle attention backend: {backend!r}")
+
     if mask is None:
         mask = jnp.ones(x.shape[:-1], dtype=x.dtype)
 
@@ -79,7 +113,11 @@ def triangle_attention(
     triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
 
-    if chunk_size is None:
+    if backend == "cueq":
+        out = _cueq_attention(
+            x, mask_bias, triangle_bias, params.mha, no_heads=no_heads
+        )
+    elif chunk_size is None:
         out = attention(
             x, x, params.mha, no_heads=no_heads, biases=(mask_bias, triangle_bias)
         )
@@ -96,6 +134,47 @@ def triangle_attention(
     if not starting:
         out = jnp.swapaxes(out, -2, -3)
     return out
+
+
+def _cueq_attention(
+    x: jnp.ndarray,
+    mask_bias: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+    params: AttentionParams,
+    *,
+    no_heads: int,
+) -> jnp.ndarray:
+    """Attend with the fused kernel, which never materialises the scores.
+
+    The two biases are already in the layouts the kernel wants -- ``mask_bias`` is
+    ``[..., I, 1, 1, J]`` and ``triangle_bias`` is ``[..., 1, H, I, J]`` -- because
+    the XLA path needs the same broadcast shapes. The row axis of the triangle bias
+    is 1, so the kernel broadcasts one copy across all rows instead of holding one
+    per row; that is the whole saving, and passing a per-row bias here would undo it.
+
+    Scaling moves into the kernel: :func:`attention` divides the queries by
+    ``sqrt(D)`` itself, and doing both would scale twice.
+    """
+    from foldjax.models._cueq import cueq_attention_core
+
+    # [..., I, H, J, D] -- head axis before the attended axis, as the kernel wants.
+    query = jnp.swapaxes(split_heads(linear(x, params.linear_q), no_heads), -2, -3)
+    key = jnp.swapaxes(split_heads(linear(x, params.linear_k), no_heads), -2, -3)
+    value = jnp.swapaxes(split_heads(linear(x, params.linear_v), no_heads), -2, -3)
+
+    out = cueq_attention_core(
+        query,
+        key,
+        value,
+        triangle_bias,
+        mask_bias,
+        scale=float(query.shape[-1]) ** -0.5,
+    )
+    # [..., I, J, H, D], which is what the gate and the output projection expect.
+    out = jnp.swapaxes(out, -2, -3)
+    if params.linear_g is not None:
+        out = out * split_heads(jax_sigmoid(linear(x, params.linear_g)), no_heads)
+    return linear(flatten_heads(out), params.linear_o)
 
 
 def _chunked_attention(

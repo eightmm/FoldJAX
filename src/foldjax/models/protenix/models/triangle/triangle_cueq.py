@@ -2,46 +2,13 @@
 
 from __future__ import annotations
 
-import ctypes
-import importlib.util
-import sys
-from pathlib import Path
-
 import jax.numpy as jnp
-from jax import lax
 
+from foldjax.models._cueq import cueq_attention_core, load_cueq
 from foldjax.models.protenix.models.triangle.triangle import (
     TriangleDirection,
     TriangleMultiplicationParams,
 )
-
-
-def _preload_bundled_nvrtc() -> None:
-    """Expose the CUDA 13 wheel's NVRTC library to cuEquivariance."""
-
-    if "cuequivariance_jax" in sys.modules:
-        return
-    spec = importlib.util.find_spec("nvidia")
-    if spec is None or spec.submodule_search_locations is None:
-        return
-    for root in spec.submodule_search_locations:
-        library = Path(root) / "cu13" / "lib" / "libnvrtc.so.13"
-        if library.is_file():
-            ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
-            return
-
-
-def _load_cueq():
-    _preload_bundled_nvrtc()
-    try:
-        import cuequivariance_jax as cuex
-    except (ImportError, OSError) as error:
-        msg = (
-            "cuEquivariance JAX is required by the CUDA 13 default; "
-            "install protenix-jax[cuda13] or explicitly select the XLA backend"
-        )
-        raise RuntimeError(msg) from error
-    return cuex
 
 
 def cueq_triangle_multiplication(
@@ -54,7 +21,7 @@ def cueq_triangle_multiplication(
 ) -> jnp.ndarray:
     """Apply the same fused parameterization used by upstream Protenix Torch."""
 
-    cuex = _load_cueq()
+    cuex = load_cueq()
     unbatched = z.ndim == 3
     kernel_z = z[None] if unbatched else z
     kernel_mask = mask[None] if unbatched else mask
@@ -80,30 +47,6 @@ def cueq_triangle_multiplication(
     return output[0] if unbatched else output
 
 
-def cueq_attention_core(
-    q: jnp.ndarray,
-    k: jnp.ndarray,
-    v: jnp.ndarray,
-    triangle_bias: jnp.ndarray,
-    mask_bias: jnp.ndarray,
-    *,
-    scale: float,
-) -> jnp.ndarray:
-    """Apply cuEq attention with upstream Torch mask and scaling semantics."""
-
-    cuex = _load_cueq()
-    unbatched = q.ndim == 4
-    if unbatched:
-        q, k, v = q[None], k[None], v[None]
-        triangle_bias = triangle_bias[None]
-        mask_bias = mask_bias[None]
-    output, _, _ = cuex.triangle_attention(
-        q=q,
-        k=k,
-        v=v,
-        bias=triangle_bias,
-        mask=mask_bias == 0,
-        scale=scale,
-        precision=lax.Precision.DEFAULT,
-    )
-    return output[0] if unbatched else output
+# Re-exported: the kernel wrapper moved to `models/_cueq.py` when OpenFold3
+# needed it too. Kept importable from here so existing call sites do not move.
+__all__ = ["cueq_triangle_multiplication", "cueq_attention_core"]
