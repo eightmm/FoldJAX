@@ -233,11 +233,19 @@ _WARNED_UNCHUNKABLE = False
 def _warn_unchunkable_backend(q_chunk_size: int) -> None:
     """Say that a requested chunk size is not used, once.
 
-    The cuEquivariance kernel takes the whole thing, so a chunk size does not
-    reach it -- and it does not make up for that by fusing the score tensor
-    away. Measured at 490 tokens, cuEquivariance and the *unblocked* XLA path
-    peak identically (6,048 and 6,049 MiB) where the blocked XLA path peaks at
-    4,348, so choosing it costs the memory the chunk size would have saved.
+    The cuEquivariance kernel takes the whole row axis, so a chunk size does not
+    reach it. That is not a loss: the kernel never forms the
+    ``[rows, heads, N, N]`` score tensor the chunk size exists to bound, so there
+    is nothing left to block.
+
+    This used to say the opposite -- that cuEquivariance "does not make up for it
+    by fusing the score tensor away" -- on a 490-token measurement where cueq and
+    the unblocked XLA path peaked identically (6,048 and 6,049 MiB) against 4,348
+    blocked. That size is too small to separate the two: the score tensor is not
+    yet what dominates. At 1531 tokens cueq is both faster and smaller (172.6 s /
+    21,475 MiB against 254.5 s / 24,764 MiB), which is the measurement the module
+    docstring records and the reason cueq is the default. The warning text was
+    left behind when the default changed.
 
     Not an exception, because the automatic chunk policy legitimately emits a
     size without knowing which backend will run.
@@ -248,9 +256,9 @@ def _warn_unchunkable_backend(q_chunk_size: int) -> None:
     _WARNED_UNCHUNKABLE = True
     warnings.warn(
         f"triangle attention q_chunk_size={q_chunk_size} is not used by the "
-        "'cueq' backend, which still materialises the score tensor the chunk "
-        "size exists to bound. The default 'xla' backend blocks it instead, "
-        "and measured lower on every size tried.",
+        "'cueq' backend, which never forms the score tensor the chunk size "
+        "exists to bound. Nothing is lost; set PROTENIX_TRIANGLE_BACKEND=xla_jit "
+        "to get the blocked path that honours it.",
         RuntimeWarning,
         stacklevel=2,
     )
