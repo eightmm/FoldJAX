@@ -110,6 +110,29 @@ def test_outer_product_mean_normalization_epsilon_matters(
     _assert_close(actual, expected, "OuterProductMean(mostly masked)")
 
 
+def test_outer_product_mean_chunking_matches_torch_chunking(
+    openfold3_source: Path, randomized
+) -> None:
+    """Both sides take ``chunk_size`` to mean the same axis.
+
+    ``test_outer_product_mean_chunking`` already proves our chunked result equals
+    our unchunked one, which is the correctness argument. This proves the argument
+    means what upstream means by it -- a rank-1 chunk over the first token axis of
+    the transposed ``a``, not over the MSA rows the sum runs across.
+    """
+    torch = _torch()
+    module = randomized(_opm())
+    m = torch.randn(1, N_SEQ, N_TOKEN, C_M)
+    with torch.no_grad():
+        expected = module(m, chunk_size=2)
+    actual = outer_product_mean(
+        jnp.asarray(m.numpy()),
+        map_outer_product_mean(dict(module.state_dict())),
+        chunk_size=2,
+    )
+    _assert_close(actual, expected, "OuterProductMean(chunked)")
+
+
 def test_msa_pair_weighted_averaging_matches_torch(
     openfold3_source: Path, randomized
 ) -> None:

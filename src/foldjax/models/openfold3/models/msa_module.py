@@ -94,6 +94,7 @@ def msa_module_block(
             mask=msa_mask,
             eps=opm_eps,
             layer_norm_eps=eps,
+            chunk_size=chunk_size,
         )
 
     if params.msa_att_row is not None:
@@ -123,6 +124,7 @@ def msa_module_block(
                 mask=msa_mask,
                 eps=opm_eps,
                 layer_norm_eps=eps,
+                chunk_size=chunk_size,
             )
 
     z = pair_block(

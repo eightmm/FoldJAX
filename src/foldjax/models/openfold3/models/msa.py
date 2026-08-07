@@ -21,6 +21,7 @@ from foldjax.models.openfold3.models.primitives import (
     layer_norm,
     linear,
 )
+from foldjax.models.openfold3.models.row_chunking import map_row_chunks
 from foldjax.models.openfold3.models.triangle import permute_final_dims
 
 
@@ -55,6 +56,7 @@ def outer_product_mean(
     mask: jnp.ndarray | None = None,
     eps: float = 1e-3,
     layer_norm_eps: float = 1e-5,
+    chunk_size: int | None = None,
 ) -> jnp.ndarray:
     """Project the MSA to a pair update.
 
@@ -64,6 +66,13 @@ def outer_product_mean(
         mask: ``[..., N_seq, N_token]`` MSA mask; ``None`` means all ones.
         eps: normalization epsilon; upstream's ``OuterProductMean.eps``.
         layer_norm_eps: layer norm epsilon.
+        chunk_size: rows of the first token axis to project at a time. ``None``
+            builds the whole outer product first, which is the largest single
+            buffer this model allocates: ``[N_token, N_token, C, C]`` is
+            ``C ** 2 / C_z`` times the pair update it becomes, eight times over
+            at the released widths, and 34.6 GiB at 3012 tokens against 4.6 GiB
+            for the result. Upstream chunks it by the same ``chunk_size`` it
+            gives the pair stack.
 
     Returns:
         ``[..., N_token, N_token, C_z]`` pair update.
@@ -81,11 +90,17 @@ def outer_product_mean(
     a = jnp.swapaxes(a, -2, -3)
     b = jnp.swapaxes(b, -2, -3)
 
-    # [..., N_token, N_token, C, C] -> flattened -> C_z
-    outer = jnp.einsum("...bac,...dae->...bdce", a, b)
-    outer = outer.reshape(outer.shape[:-2] + (-1,))
-    outer = linear(outer, params.linear_out)
+    def project(rows: jnp.ndarray) -> jnp.ndarray:
+        # [..., rows, N_token, C, C] -> flattened -> C_z. Projecting inside the
+        # block is the whole point: it is what keeps the C * C tensor from ever
+        # existing at full width.
+        outer = jnp.einsum("...bac,...dae->...bdce", rows, b)
+        outer = outer.reshape(outer.shape[:-2] + (-1,))
+        return linear(outer, params.linear_out)
 
+    outer = map_row_chunks(project, a, chunk_size=chunk_size, row_axes=-3)
+
+    # [..., N_token, N_token, 1], too small to be worth chunking alongside.
     norm = jnp.einsum("...abc,...adc->...bdc", mask, mask) + eps
     return outer / norm
 
