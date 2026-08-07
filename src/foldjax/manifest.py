@@ -26,6 +26,32 @@ from foldjax.schema import PredictionRequest, PredictionResult
 MANIFEST_NAME = "foldjax_run.json"
 
 
+def device_peak_bytes() -> int | None:
+    """The device allocator's high-water mark, or None when there is no device.
+
+    `peak_bytes_in_use` and not the pool: JAX preallocates most of the card by
+    default, so anything read from `nvidia-smi` reports the reservation and is
+    the same number for a 250-token job and a 3000-token one. This is the bytes
+    actually in use at the worst moment.
+
+    It is cumulative for the process and JAX exposes no reset, so a run that does
+    several passes reports the largest of them -- which is what a memory figure
+    for the whole run should say anyway. It is not comparable across processes
+    that did unrelated work first.
+    """
+    try:
+        import jax
+
+        devices = jax.devices()
+    except Exception:  # noqa: BLE001 - a CPU-only or broken runtime is not an error
+        return None
+    if not devices:
+        return None
+    stats = devices[0].memory_stats() or {}
+    peak = stats.get("peak_bytes_in_use")
+    return int(peak) if peak is not None else None
+
+
 def _digest(path: Path) -> str | None:
     """SHA-256 of a file, or None if it is not one.
 
@@ -50,6 +76,7 @@ def describe_run(
     result: PredictionResult,
     *,
     native_input: Path | None = None,
+    cost: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest for one finished prediction.
 
@@ -84,6 +111,10 @@ def describe_run(
         "sampling": request.sampling,
         "options": {key: str(value) for key, value in request.options.items()},
         "runtime": runtime_profile(),
+        # What the run cost. Recorded here because the alternative is measuring
+        # it from outside, and from outside the only visible memory number is
+        # JAX's preallocated pool -- the same figure whatever the job.
+        "cost": dict(cost) if cost else None,
         "samples": [sample.summary() for sample in result.samples],
         # Which sample this model ranks first, by the score it ranks with. A
         # pointer rather than a second copy of the coordinates: the top-ranked
@@ -99,6 +130,7 @@ def write(
     directory: Path,
     *,
     native_input: Path | None = None,
+    cost: dict[str, Any] | None = None,
 ) -> Path | None:
     """Write the manifest, or return None if the directory cannot take it.
 
@@ -110,7 +142,7 @@ def write(
         path = directory / MANIFEST_NAME
         path.write_text(
             json.dumps(
-                describe_run(request, result, native_input=native_input),
+                describe_run(request, result, native_input=native_input, cost=cost),
                 indent=2,
                 sort_keys=True,
             )

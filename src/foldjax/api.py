@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import time
 from pathlib import Path
 from typing import Any
 
 from foldjax.backends.base import Backend
 from foldjax.cache import cache_namespace, runtime_profile, weight_identity
 from foldjax.input import materialize_native_input, read_job_document
+from foldjax.manifest import device_peak_bytes
 from foldjax.manifest import write as write_manifest
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
@@ -82,6 +84,7 @@ def predict(request: PredictionRequest) -> PredictionResult:
     if len(seeds) == 1:
         return _predict_once(request, seeds[0], request.output_dir)
 
+    started = time.perf_counter()
     results = [
         _predict_once(
             request,
@@ -97,8 +100,18 @@ def predict(request: PredictionRequest) -> PredictionResult:
         output_dir=request.output_dir,
         raw=[result.raw for result in results],
     )
-    # Each seed already recorded its own; this one covers the whole request.
-    write_manifest(request, combined, request.output_dir)
+    # Each seed already recorded its own; this one covers the whole request. The
+    # peak is the process high-water mark, so it already spans every seed --
+    # summing the per-seed peaks would report memory that was never held at once.
+    write_manifest(
+        request,
+        combined,
+        request.output_dir,
+        cost={
+            "seconds": round(time.perf_counter() - started, 2),
+            "peak_bytes": device_peak_bytes(),
+        },
+    )
     return combined
 
 
@@ -164,7 +177,12 @@ def _predict_once(
             request, cache_dir=resolve_cache_dir(request, backend)
         )
     request.output_dir.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
     result = backend.predict(request)
+    cost = {
+        "seconds": round(time.perf_counter() - started, 2),
+        "peak_bytes": device_peak_bytes(),
+    }
     # Five backends wrote five layouts; this puts every structure in the same
     # place under the same name, and leaves everything else where it was.
     result = normalize_output(result, job=_job_name(asked), root=layout_root)
@@ -174,6 +192,7 @@ def _predict_once(
         result,
         request.output_dir,
         native_input=request.input if request.input != asked.input else None,
+        cost=cost,
     )
     return result
 

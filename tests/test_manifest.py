@@ -81,8 +81,12 @@ def test_editing_the_job_changes_the_recorded_digest(tmp_path: Path) -> None:
 
     def run() -> str:
         request = PredictionRequest(
-            model="opendde", input=job, weights=_weights(tmp_path),
-            output_dir=out, seed=1, use_compile_cache=False,
+            model="opendde",
+            input=job,
+            weights=_weights(tmp_path),
+            output_dir=out,
+            seed=1,
+            use_compile_cache=False,
         )
         with backend_override("opendde", _Recorder):
             foldjax.predict(request)
@@ -125,8 +129,12 @@ def test_a_manifest_that_cannot_be_written_does_not_fail_the_run(
     job = _job(tmp_path)
     weights = _weights(tmp_path)
     request = PredictionRequest(
-        model="opendde", input=job, weights=weights,
-        output_dir=tmp_path / "out", seed=1, use_compile_cache=False,
+        model="opendde",
+        input=job,
+        weights=weights,
+        output_dir=tmp_path / "out",
+        seed=1,
+        use_compile_cache=False,
     )
 
     def refuse(*args, **kwargs):
@@ -168,3 +176,51 @@ def _sha256(path: Path) -> str:
     import hashlib
 
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_the_manifest_records_what_the_run_cost(tmp_path: Path, monkeypatch) -> None:
+    """Time and peak device memory, because from outside neither is visible.
+
+    JAX preallocates most of the card, so a peak read with `nvidia-smi` is the
+    size of the reservation and reports the same number for a 250-token job and
+    a 3000-token one. `peak_bytes_in_use` is the bytes actually held.
+    """
+    from foldjax import manifest
+
+    monkeypatch.setattr(manifest, "device_peak_bytes", lambda: 12_884_901_888)
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=tmp_path,
+        use_compile_cache=False,
+    )
+    result = PredictionResult(
+        model=request.model, samples=(), output_dir=tmp_path, raw={}
+    )
+    payload = manifest.describe_run(
+        request,
+        result,
+        cost={"seconds": 41.5, "peak_bytes": manifest.device_peak_bytes()},
+    )
+    assert payload["cost"] == {"seconds": 41.5, "peak_bytes": 12_884_901_888}
+
+
+def test_a_run_without_a_device_still_records_its_time(tmp_path: Path) -> None:
+    """A CPU-only runtime has no peak to report, and that is not a failure."""
+    from foldjax import manifest
+
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=tmp_path,
+        use_compile_cache=False,
+    )
+    payload = manifest.describe_run(
+        request,
+        PredictionResult(model="opendde", samples=(), output_dir=tmp_path, raw={}),
+        cost={"seconds": 1.0, "peak_bytes": None},
+    )
+    assert payload["cost"]["peak_bytes"] is None
+    assert payload["cost"]["seconds"] == 1.0
