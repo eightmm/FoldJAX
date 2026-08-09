@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from foldjax import assets, paths
+from foldjax import assets, oom, paths
 from foldjax.api import predict, resolve_request
 from foldjax.registry import available_models, capabilities
 from foldjax.schema import PredictionRequest
@@ -63,6 +63,15 @@ def _add_predict_arguments(parser: argparse.ArgumentParser) -> None:
         "[depth, tokens, channels] representation, so this is the dominant "
         "memory knob: capping a 13k-row alignment to 1024 halved Protenix's "
         "peak at 488 tokens. Omit to keep each backend's own default",
+    )
+    parser.add_argument(
+        "--mem-fraction",
+        type=float,
+        help="fraction of the device JAX may preallocate. Defaults to "
+        f"{oom.PREDICT_MEM_FRACTION} rather than JAX's {oom.DEFAULT_MEM_FRACTION}, "
+        "because one prediction owns the process and a quarter of the card held "
+        "in reserve is what stops jobs that would otherwise fit. Lower it to "
+        "share the device with another process",
     )
     parser.add_argument(
         "--cache-dir",
@@ -272,8 +281,25 @@ def _run_weights(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_mem_fraction(requested: float | None) -> None:
+    """Set the pool fraction before anything imports JAX.
+
+    Only here, and only for the CLI: this is a process-wide setting, and a
+    library that changed it on import would be deciding for a host application
+    that may be sharing the device. An explicit environment variable always wins
+    -- someone who set it has a reason.
+    """
+    if requested is not None and not 0.0 < requested <= 1.0:
+        raise ValueError(f"--mem-fraction must be in (0, 1]; got {requested}")
+    if requested is not None:
+        os.environ[oom.FRACTION_ENV] = str(requested)
+    elif oom.FRACTION_ENV not in os.environ:
+        os.environ[oom.FRACTION_ENV] = str(oom.PREDICT_MEM_FRACTION)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    _apply_mem_fraction(getattr(args, "mem_fraction", None))
     if args.command == "models":
         print(*available_models(), sep="\n")
         return 0

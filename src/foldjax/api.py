@@ -19,6 +19,7 @@ from foldjax.cache import cache_namespace, runtime_profile, weight_identity
 from foldjax.input import materialize_native_input, read_job_document
 from foldjax.manifest import device_peak_bytes
 from foldjax.manifest import write as write_manifest
+from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
 from foldjax.registry import get_backend
@@ -178,7 +179,13 @@ def _predict_once(
         )
     request.output_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
-    result = backend.predict(request)
+    try:
+        result = backend.predict(request)
+    except Exception as error:  # noqa: BLE001 - re-raised, only the message grows
+        explanation = diagnose_oom(error)
+        if explanation is None:
+            raise
+        raise MemoryError(f"{backend.name} ran out of memory: {explanation}") from error
     cost = {
         "seconds": round(time.perf_counter() - started, 2),
         "peak_bytes": device_peak_bytes(),
