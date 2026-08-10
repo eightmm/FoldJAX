@@ -66,7 +66,17 @@ def protenix_predict_static(
     noise_scale_lambda: float = 1.003,
     step_scale_eta: float = 1.5,
     centre_each_step: bool = True,
-    matmul_precision: str = "highest",
+    # TF32, which is what upstream's released inference config turns on:
+    # `configs_inference.py:32` sets `enable_tf32: True`, and
+    # `protenix/model/protenix.py:99` applies it as
+    # `torch.backends.cuda.matmul.allow_tf32`. This was "highest" -- true
+    # float32 -- which made the port strictly more precise than the model it
+    # ports, and paid ~17% of its runtime for the privilege. Measured at 1,003
+    # tokens over five samples: 49.9 -> 41.5 s warm, peak unchanged, and the
+    # structures move less than running the same program twice does (CA RMSD
+    # 0.12 A median against a 0.55 A rerun floor; this model's own sample spread
+    # is 0.9-6.3 A). Pass "highest" for a float32 reference tape.
+    matmul_precision: str = "high",
     trunk_dtype: jnp.dtype | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     guidance_config: Mapping[str, Any] | None = None,
@@ -81,72 +91,80 @@ def protenix_predict_static(
     so a guided run falls back to the eager path on its own.
     """
 
-    # Pin f32 matmul/einsum precision (default JAX on GPU uses TF32 for f32,
-    # which diverges from the torch fp32 reference; the Boltz-2 port pins this too).
-    jax.config.update("jax_default_matmul_precision", matmul_precision)
-
-    noise_schedule = inference_noise_schedule(
-        n_step=num_sampling_steps,
-        s_max=s_max,
-        s_min=s_min,
-        rho=rho,
-        sigma_data=sigma_data,
-    )
-    guided = guidance_config is not None and guidance_config.get("enable")
-    if graph_jit and not guided:
-        infer = protenix_infer_compiled
-        # Rolling the repeated stacks into `lax.scan` only pays once the whole
-        # graph is traced: unrolled, every block becomes its own copy in one
-        # executable, which is what makes the consolidated program slow to
-        # build and slow to load back from the compile cache.
-        use_pairformer_scan = True
-        use_confidence_scan = True
-        use_diffusion_scan = True
-    else:
-        infer = protenix_infer_static
-    return infer(
-        dict(features),
-        params,
-        noise_schedule,
-        key=key,
-        n_sample=n_sample,
-        init_noise=init_noise,
-        step_noises=step_noises,
-        n_cycle=recycling_steps,
-        pair_mask=pair_mask,
-        input_atom_heads=input_atom_heads,
-        atom_encoder_heads=atom_encoder_heads,
-        token_heads=token_heads,
-        atom_decoder_heads=atom_decoder_heads,
-        n_queries=n_queries,
-        n_keys=n_keys,
-        sigma_data=sigma_data,
-        use_pairformer_scan=use_pairformer_scan,
-        use_confidence_scan=use_confidence_scan,
-        use_diffusion_scan=use_diffusion_scan,
-        use_sampler_scan=use_sampler_scan,
-        use_denoiser_jit=use_denoiser_jit,
-        use_diffusion_efficient_fusion=use_diffusion_efficient_fusion,
-        diffusion_attention_backend=diffusion_attention_backend,
-        trunk_single_attention_backend=trunk_single_attention_backend,
-        trunk_triangle_attention_backend=trunk_triangle_attention_backend,
-        confidence_triangle_attention_backend=confidence_triangle_attention_backend,
-        use_confidence_embedding=use_confidence_embedding,
-        run_confidence=run_confidence,
-        run_confidence_scores=run_confidence_scores,
-        triangle_mul_chunk_size=triangle_mul_chunk_size,
-        triangle_att_q_chunk_size=triangle_att_q_chunk_size,
-        single_att_q_chunk_size=single_att_q_chunk_size,
-        token_q_chunk_size=token_q_chunk_size,
-        opm_chunk_size=opm_chunk_size,
-        diffusion_chunk_size=diffusion_chunk_size,
-        gamma0=gamma0,
-        gamma_min=gamma_min,
-        noise_scale_lambda=noise_scale_lambda,
-        step_scale_eta=step_scale_eta,
-        centre_each_step=centre_each_step,
-        trunk_dtype=trunk_dtype,
-        cycle_msa_features=cycle_msa_features,
-        guidance_config=guidance_config,
-        guidance_features=guidance_features,
-    )
+    # Pin the f32 matmul/einsum precision rather than inheriting it: the setting
+    # is process-global in JAX, so without a pin this port runs at whatever
+    # another model left behind, and it is invisible on CPU where the parity gate
+    # runs. Pinned to what upstream selects for itself -- see the argument's
+    # default. Islands needing more ask for it explicitly, which is why
+    # `heads/confidence.py` pins `Precision.HIGHEST` on the pTM contraction.
+    #
+    # A scope, not a latch. This was `jax.config.update`, which left the setting
+    # behind for everything later in the process -- another port, a notebook
+    # cell, a test collected after this one. It went unnoticed while every port
+    # pinned the same value; they no longer do.
+    with jax.default_matmul_precision(matmul_precision):
+        noise_schedule = inference_noise_schedule(
+            n_step=num_sampling_steps,
+            s_max=s_max,
+            s_min=s_min,
+            rho=rho,
+            sigma_data=sigma_data,
+        )
+        guided = guidance_config is not None and guidance_config.get("enable")
+        if graph_jit and not guided:
+            infer = protenix_infer_compiled
+            # Rolling the repeated stacks into `lax.scan` only pays once the whole
+            # graph is traced: unrolled, every block becomes its own copy in one
+            # executable, which is what makes the consolidated program slow to
+            # build and slow to load back from the compile cache.
+            use_pairformer_scan = True
+            use_confidence_scan = True
+            use_diffusion_scan = True
+        else:
+            infer = protenix_infer_static
+        return infer(
+            dict(features),
+            params,
+            noise_schedule,
+            key=key,
+            n_sample=n_sample,
+            init_noise=init_noise,
+            step_noises=step_noises,
+            n_cycle=recycling_steps,
+            pair_mask=pair_mask,
+            input_atom_heads=input_atom_heads,
+            atom_encoder_heads=atom_encoder_heads,
+            token_heads=token_heads,
+            atom_decoder_heads=atom_decoder_heads,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            sigma_data=sigma_data,
+            use_pairformer_scan=use_pairformer_scan,
+            use_confidence_scan=use_confidence_scan,
+            use_diffusion_scan=use_diffusion_scan,
+            use_sampler_scan=use_sampler_scan,
+            use_denoiser_jit=use_denoiser_jit,
+            use_diffusion_efficient_fusion=use_diffusion_efficient_fusion,
+            diffusion_attention_backend=diffusion_attention_backend,
+            trunk_single_attention_backend=trunk_single_attention_backend,
+            trunk_triangle_attention_backend=trunk_triangle_attention_backend,
+            confidence_triangle_attention_backend=confidence_triangle_attention_backend,
+            use_confidence_embedding=use_confidence_embedding,
+            run_confidence=run_confidence,
+            run_confidence_scores=run_confidence_scores,
+            triangle_mul_chunk_size=triangle_mul_chunk_size,
+            triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+            single_att_q_chunk_size=single_att_q_chunk_size,
+            token_q_chunk_size=token_q_chunk_size,
+            opm_chunk_size=opm_chunk_size,
+            diffusion_chunk_size=diffusion_chunk_size,
+            gamma0=gamma0,
+            gamma_min=gamma_min,
+            noise_scale_lambda=noise_scale_lambda,
+            step_scale_eta=step_scale_eta,
+            centre_each_step=centre_each_step,
+            trunk_dtype=trunk_dtype,
+            cycle_msa_features=cycle_msa_features,
+            guidance_config=guidance_config,
+            guidance_features=guidance_features,
+        )

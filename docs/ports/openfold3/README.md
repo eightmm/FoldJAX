@@ -35,9 +35,17 @@ metrics, and tooling that an inference port does not need.
 
 Importing `openfold3_jax` sets two things, matching the sibling ports here:
 
-- `jax_default_matmul_precision = "highest"` — JAX would otherwise use TF32 on
-  NVIDIA GPUs. Measured on an RTX PRO 6000 Blackwell, max |error| against torch is
-  `1.9e-6` with this setting and `7.8e-3` without — 78x past the 1e-4 gate.
+- `jax_default_matmul_precision = "high"` — TF32, which is what upstream sets for
+  itself (`entry_points/import_utils.py:33`,
+  `torch.set_float32_matmul_precision("high")`). This was `"highest"` until
+  2026-08-10 on the strength of a GPU comparison against torch — max |error|
+  `1.9e-6` pinned against `7.8e-3` unpinned, 78x past the 1e-4 gate — but that
+  reference torch ran at *its* default, not at the "high" upstream selects at
+  inference, so the two sides were being held to different settings and the port
+  was paying for the stricter one. Re-measured end to end at 1,003 tokens: -15%
+  warm, no memory change, CA RMSD 0.011 A against a 0.005 A run-twice floor, and
+  TM 0.9937 against the deposited structure either way. Re-running that torch
+  comparison needs the reference captured under `"high"` on both sides.
 - `XLA_PYTHON_CLIENT_PREALLOCATE=false` and `MEM_FRACTION=0.90` via `setdefault`,
   so an operator's explicit choice survives.
 

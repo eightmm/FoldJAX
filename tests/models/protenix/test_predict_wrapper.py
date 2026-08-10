@@ -76,3 +76,32 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
             err_msg=f"consolidated graph diverged on {key}",
         )
 
+
+
+def test_the_matmul_precision_pin_is_a_scope_not_a_latch() -> None:
+    """The pin must not follow the caller out of `protenix_predict_static`.
+
+    JAX's matmul precision is process-global. This was a `jax.config.update`,
+    so a process that ran Protenix left everything after it in TF32 -- another
+    port, a notebook cell, a test collected later. It went unnoticed while every
+    port pinned the same value; Boltz-2 now pins `"highest"` because its own
+    upstream does, so the difference is observable.
+
+    The default is checked here too: upstream's released inference config sets
+    `enable_tf32: True` (`configs_inference.py:32`), and a port that ran full
+    float32 there was more precise than the model it ports, at ~17% of its
+    runtime.
+    """
+    import inspect
+
+    import jax
+
+    default = inspect.signature(protenix_predict_static).parameters[
+        "matmul_precision"
+    ].default
+    assert default == "high"
+
+    before = jax.config.jax_default_matmul_precision
+    with jax.default_matmul_precision(default):
+        assert jax.config.jax_default_matmul_precision == default
+    assert jax.config.jax_default_matmul_precision == before

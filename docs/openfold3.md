@@ -189,8 +189,9 @@ to 2076 tokens run.
   would make it a comparison cannot.
 - **Structural accuracy beyond 1UBQ** is unmeasured — no RMSD or clash gate
   across a target set.
-- **Precision** is fp32 with matmul precision pinned to `highest`. Upstream also
-  runs `bf16-mixed`, which is numerically different by design.
+- **Precision** is fp32 storage with matmul precision pinned to `high` (TF32),
+  which is what upstream sets for itself. Upstream also runs `bf16-mixed` in
+  places, which is numerically different by design.
 - **Upstream's memory-optimization and kernel paths** (chunked forward,
   `forward_offload`, DeepSpeed/cuEq/Triton/LMA) are not ported. Upstream asserts
   they are numerically equivalent; that is upstream's claim, not a measurement

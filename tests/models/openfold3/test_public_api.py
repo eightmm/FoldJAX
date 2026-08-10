@@ -47,13 +47,15 @@ def test_importing_does_not_change_global_matmul_precision() -> None:
     assert before == after == "None"
 
 
-def test_predict_runs_under_highest_precision() -> None:
-    """TF32 is invisible on CPU and drifts on GPU; diffusion amplifies it.
+def test_predict_runs_under_the_precision_upstream_ships() -> None:
+    """Upstream sets `set_float32_matmul_precision("high")`; so does the port.
 
-    The guarantee moved from import time to `predict`, so this checks that the
-    decorator is actually on it rather than that a global was set. It has to
-    hold during *tracing*, which is where `compile_predict`'s `jax.jit` reads
-    it.
+    JAX's matmul precision is process-global and invisible on CPU, where the
+    parity gate runs, so it has to be pinned rather than inherited -- but pinned
+    to what upstream runs, not to something stricter. The guarantee moved from
+    import time to `predict`, so this checks the decorator is actually on it
+    rather than that a global was set, and it has to hold during *tracing*,
+    which is where `compile_predict`'s `jax.jit` reads it.
     """
     import jax
 
@@ -69,7 +71,7 @@ def test_predict_runs_under_highest_precision() -> None:
 
     outside_before = jax.config.jax_default_matmul_precision
     record()
-    assert seen == ["highest"]
+    assert seen == ["high"]
     # And it is a scope, not a latch: leaving it puts back whatever the rest of
     # the session was using, which is the whole reason it is not a global.
     assert jax.config.jax_default_matmul_precision == outside_before

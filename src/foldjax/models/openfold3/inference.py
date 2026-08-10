@@ -238,13 +238,33 @@ def _expand_samples(value: jnp.ndarray, num_samples: int) -> jnp.ndarray:
     return jnp.broadcast_to(value, (num_samples, *jnp.shape(value)[1:]))
 
 
-def openfold3_precision(function):
-    """Run `function` with JAX's matmul precision pinned to "highest".
+#: Matmul precision the port runs under, matching what upstream sets for itself:
+#: ``torch.set_float32_matmul_precision("high")`` in
+#: ``openfold3/entry_points/import_utils.py:33``. Torch's "high" is TF32 on
+#: NVIDIA, and JAX spells the same thing "high".
+#:
+#: This was ``"highest"`` -- true float32 -- until 2026-08-10, on the reasoning
+#: that TF32 "silently costs ~3 decimal digits per matmul". It does, and it costs
+#: upstream the same, which is the part the reasoning missed: a port that is more
+#: precise than the model it ports is not more faithful, it is running a
+#: different configuration and paying for the privilege. Measured at 1,003 tokens
+#: over the released schedule, TF32 against the float32 pin: **-15% warm** (96.9
+#: -> 82.0 s), no change in peak memory, CA RMSD 0.011 A against a 0.005 A floor
+#: from running the same program twice, confidence inside that same rerun spread
+#: on both pLDDT and pTM, and TM 0.9937 against the deposited structure either
+#: way.
+#:
+#: Deliberate ``Precision.HIGHEST`` pins elsewhere are unaffected; they exist
+#: precisely because this is not HIGHEST.
+_MATMUL_PRECISION = "high"
 
-    OpenFold3's torch modules compute FP32 products unless a tensor was
-    explicitly cast to BF16. JAX otherwise permits TF32 on NVIDIA GPUs, which
-    silently costs ~3 decimal digits per matmul -- invisible on CPU, where the
-    parity gate runs, and amplified by the diffusion rollout.
+
+def openfold3_precision(function):
+    """Run `function` with JAX's matmul precision pinned to upstream's.
+
+    Pinning it at all is the point: the setting is process-global in JAX, so
+    without a scope the port would inherit whatever another model left behind,
+    and the parity gate runs on CPU where TF32 is invisible.
 
     This used to be a `jax.config.update` at import time, which is
     process-global: importing this port would re-specify the numerics of every
@@ -262,7 +282,7 @@ def openfold3_precision(function):
 
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
-        with jax.default_matmul_precision("highest"):
+        with jax.default_matmul_precision(_MATMUL_PRECISION):
             return function(*args, **kwargs)
 
     return wrapper
