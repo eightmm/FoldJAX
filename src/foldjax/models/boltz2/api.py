@@ -18,6 +18,7 @@ and ``foldjax.models.boltz2.load_params`` directly.
 
 from __future__ import annotations
 
+import functools
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -28,6 +29,41 @@ import numpy as np
 
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
+
+#: Trunk dtypes `predict` accepts, as names rather than `jnp` dtypes so that
+#: importing this module does not pull in JAX. fp16 is absent deliberately: the
+#: sampler's `inf` constants saturate in half precision and a fully-masked
+#: softmax row then gives NaN.
+COMPUTE_DTYPES = ("bfloat16", "float32")
+
+#: Matmul precision this port runs under. Boltz-2 is the one model here whose
+#: upstream asks for true float32 -- `main.py:1096` is
+#: `torch.set_float32_matmul_precision("highest")`, where OpenFold3, Protenix and
+#: OpenDDE all select TF32 -- so "highest" is upstream parity, not caution.
+MATMUL_PRECISION = "highest"
+
+
+def _pinned_matmul_precision(function):
+    """Run `function` with the matmul precision scoped, not latched.
+
+    This used to be a `jax.config.update` inside `predict`, which is
+    process-global and stayed set after the call returned: a notebook that ran
+    Boltz-2 and then anything else left that other thing in float32. It went
+    unnoticed while every port pinned the same value; they no longer do.
+
+    JAX is imported inside the wrapper rather than at module scope, because
+    importing this module has to stay cheap and torch-free -- `test_import`
+    asserts it.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        import jax
+
+        with jax.default_matmul_precision(MATMUL_PRECISION):
+            return function(*args, **kwargs)
+
+    return wrapper
 
 
 def featurize(
@@ -92,6 +128,7 @@ def featurize(
     return feats, record_id, struct_dir
 
 
+@_pinned_matmul_precision
 def predict(
     *,
     input: str | Path | None = None,
@@ -111,7 +148,16 @@ def predict(
     affinity_diffusion_samples: int = 5,
     affinity_mw_correction: bool = False,
     seed: int = 0,
-    compute_dtype: str = "float32",
+    # Upstream's predict path is `Trainer(..., precision="bf16-mixed")`
+    # (`main.py:1262`), so float32 was this port inventing a setting Boltz-2
+    # does not ship. The trunk runs in this dtype; the diffusion and confidence
+    # modules stay float32 either way, which is the same split upstream's
+    # autocast draws. Measured at 1,003 tokens over an 8,192-row alignment,
+    # five samples of the released schedule: 87.3 s -> 65.0 s warm, 13,035 ->
+    # 10,218 MiB peak, and against the deposited structure TM 0.9932 -> 0.9931,
+    # the two crossing in both directions per sample. Passing "float32"
+    # restores the previous behaviour exactly.
+    compute_dtype: str = "bfloat16",
     attention_backend: str = "xla",
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
@@ -160,13 +206,16 @@ def predict(
         max_msa_depth=max_msa_depth,
     )
 
-    jax.config.update("jax_default_matmul_precision", "highest")
     if compile_cache is not None:
         cache = Path(compile_cache).expanduser().resolve()
         cache.mkdir(parents=True, exist_ok=True)
         jax.config.update("jax_compilation_cache_dir", str(cache))
         jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
 
+    if compute_dtype not in COMPUTE_DTYPES:
+        raise ValueError(
+            f"compute_dtype must be one of {COMPUTE_DTYPES}, got {compute_dtype!r}"
+        )
     dtype = {"float32": jnp.float32, "bfloat16": jnp.bfloat16}[compute_dtype]
     confidence_weights = Path(weights)
     params = load_params(confidence_weights)
