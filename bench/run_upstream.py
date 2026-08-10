@@ -24,7 +24,24 @@ import time
 from pathlib import Path
 
 ROOT = Path("/home/jaemin/non-project/optimizing")
-ASSETS = Path.home() / ".cache/foldjax/assets"
+
+
+def _store() -> Path:
+    """The FoldJAX store, wherever it currently is.
+
+    These paths were `~/.cache/foldjax/...`, which is where the store lived
+    until it moved inside the checkout on 2026-08-06. The assets happened to
+    survive at the old location, so only the OpenDDE checkpoint went missing --
+    and the harness reported that as a completed row with a peak of 0.0 MiB
+    rather than as a failure, which reads in a table as "the model is free".
+    Ask the package where its store is instead of naming it here.
+    """
+    from foldjax.paths import foldjax_home
+
+    return foldjax_home()
+
+
+ASSETS = _store() / "assets"
 COMPONENTS = ASSETS / "components.cif"
 RDKIT_CACHE = ASSETS / "components.cif.rdkit_mol.pkl"
 
@@ -147,10 +164,7 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
                 repo,
                 [
                     "--load_checkpoint_path",
-                    str(
-                        Path.home()
-                        / ".cache/foldjax/downloads/opendde/opendde.pt"
-                    ),
+                    str(_store() / "downloads/opendde/opendde.pt"),
                 ],
                 job,
                 out,
