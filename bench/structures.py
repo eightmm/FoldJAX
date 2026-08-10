@@ -46,6 +46,14 @@ def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
     (which this did at first) silently drops the pair instead, so a run that
     compared 1 of 25 pairs reported a median over that 1 as though it were the
     answer.
+
+    A key also has to survive a writer that fills a column with a placeholder
+    rather than omitting it. OpenFold3 writes `label_seq_id` as `.` and names
+    every chain `Axp`, so a `.get(..., fallback)` -- which only fires when the
+    column is *absent* -- gave all 1,003 residues the key `Axp:.`. They collapsed
+    into one bucket and every OpenFold3 CA RMSD came out as exactly 0.000,
+    between structures whose backbones demonstrably differ. Read the value, then
+    fall back on the placeholder.
     """
     rows: list[tuple[float, float, float]] = []
     keys: list[str] = []
@@ -75,11 +83,19 @@ def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
                 float(record["Cartn_z"]),
             )
         )
-        keys.append(
-            f"{record.get('label_asym_id', '?')}:"
-            f"{record.get('label_seq_id', record.get('auth_seq_id', len(keys)))}"
-        )
+        chain = _first_real(record, ("label_asym_id", "auth_asym_id"), "?")
+        number = _first_real(record, ("label_seq_id", "auth_seq_id"), str(len(keys)))
+        keys.append(f"{chain}:{number}")
     return np.asarray(rows, dtype=np.float64), keys
+
+
+def _first_real(record: dict[str, str], names: tuple[str, ...], default: str) -> str:
+    """First field that is present and is not an mmCIF placeholder."""
+    for name in names:
+        value = record.get(name)
+        if value not in (None, ".", "?"):
+            return value
+    return default
 
 
 def common_residues(
