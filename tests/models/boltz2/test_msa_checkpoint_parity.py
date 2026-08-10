@@ -10,15 +10,16 @@ import torch
 from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import map_msa_module_state_dict
 from foldjax.models.boltz2.models.trunk_blocks.msa import (
+    _OPM_BUDGET_BYTES,
     _PWA_BUDGET_BYTES,
+    _auto_outer_product_chunk,
     _auto_pair_averaging_chunk,
     msa_module_forward,
+    outer_product_mean_forward,
     pair_weighted_averaging_forward,
 )
 
-CHECKPOINT = (
-    Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
-)
+CHECKPOINT = Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
 BOLTZ_SRC = Path(__file__).resolve().parents[4] / "boltz/src"
 PREFIX = "msa_module"
 
@@ -231,9 +232,7 @@ def _pair_averaging_case(n_msa: int, n_token: int, c_m: int = 8):
         "proj_o": {"kernel": w(heads * c_h, c_m)},
     }
     m = jnp.asarray(rng.standard_normal((1, n_msa, n_token, c_m)), dtype=jnp.float32)
-    z = jnp.asarray(
-        rng.standard_normal((1, n_token, n_token, c_z)), dtype=jnp.float32
-    )
+    z = jnp.asarray(rng.standard_normal((1, n_token, n_token, c_z)), dtype=jnp.float32)
     mask = jnp.ones((1, n_token, n_token), dtype=jnp.float32)
     return params, m, z, mask
 
@@ -312,6 +311,138 @@ def test_pair_averaging_chunk_splits_a_deep_alignment_under_the_budget() -> None
     assert rows is not None
     assert 0 < rows < 7917
     assert rows * 490 * 256 * 4 <= _PWA_BUDGET_BYTES
+
+
+def _outer_product_case(n_msa: int, n_token: int, dtype=jnp.float32):
+    """Small OuterProductMean inputs with a fixed, partly-zero mask."""
+    rng = np.random.default_rng(11)
+    c_m, c_hidden, c_z = 64, 32, 128
+
+    def w(*shape, scale=0.1):
+        return jnp.asarray(rng.standard_normal(shape) * scale, dtype=dtype)
+
+    params = {
+        "norm": {"scale": w(c_m, scale=1.0), "bias": w(c_m)},
+        "proj_a": {"kernel": w(c_m, c_hidden)},
+        "proj_b": {"kernel": w(c_m, c_hidden)},
+        "proj_o": {"kernel": w(c_hidden * c_hidden, c_z), "bias": w(c_z)},
+    }
+    m = w(1, n_msa, n_token, c_m, scale=1.0)
+    mask = jnp.asarray(
+        (rng.random((1, n_msa, n_token)) > 0.2).astype(np.float32), dtype=dtype
+    )
+    return params, m, mask
+
+
+def _shipped_outer_product_mean(params, m, mask, eps=1e-5, chunk_size=128):
+    """OuterProductMean as it stood before the float32 operands came out.
+
+    Kept here rather than described, because the claim under test is that the
+    rework computes the same numbers -- and the only way to check that is to
+    still have the thing it replaced.
+    """
+    from foldjax.models.boltz2.models.primitives._common import layer_norm, linear
+
+    mask = mask[..., None].astype(m.dtype)
+    m = layer_norm(m, params["norm"]["scale"], params["norm"]["bias"], eps)
+    a = (linear(m, params["proj_a"]["kernel"]) * mask).astype(jnp.float32)
+    b = (linear(m, params["proj_b"]["kernel"]) * mask).astype(jnp.float32)
+    pair_mask = mask[:, :, None, :] * mask[:, :, :, None]
+    num_mask = jnp.maximum(jnp.sum(pair_mask, axis=1), 1.0)
+
+    proj_o = params["proj_o"]
+    n = a.shape[2]
+    out = jnp.zeros((a.shape[0], n, n, proj_o["kernel"].shape[-1]), dtype=m.dtype)
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        z = jnp.einsum("bsic,bsjd->bijcd", a[:, :, start:end], b)
+        z = jnp.reshape(z, (*z.shape[:3], -1)) / num_mask[:, start:end]
+        out = out.at[:, start:end].set(
+            linear(z.astype(m.dtype), proj_o["kernel"], proj_o["bias"])
+        )
+    return out
+
+
+def test_outer_product_mean_matches_the_widened_operand_form() -> None:
+    """Feeding the float32 accumulator narrow operands is the same arithmetic.
+
+    Upstream writes ``torch.einsum(..., a.float(), b.float())``. Both operands
+    come out of a linear in the compute dtype, so widening them changes no
+    value that enters the product -- only whether a second, wider copy of each
+    is materialised, which at 8,192 alignment rows is f32[8192,32096], 1,003
+    MiB. Under the float32 default there is nothing to widen and the result has
+    to be identical bit for bit.
+    """
+    params, m, mask = _outer_product_case(n_msa=37, n_token=132)
+
+    reworked = outer_product_mean_forward(params, m, mask)
+    shipped = _shipped_outer_product_mean(params, m, mask)
+
+    assert reworked.dtype == shipped.dtype == jnp.float32
+    assert jnp.array_equal(reworked, shipped)
+
+
+def test_outer_product_mean_num_mask_contraction_is_exact() -> None:
+    """The pair count is a contraction, not a [b, s, i, j] broadcast product.
+
+    Written as a broadcast the intermediate is one float per (row, token,
+    token): 16.5 GiB of elementwise work at 8,192 rows, fused away by XLA but
+    still computed. The mask is 0/1, so summing it as a dot in float32 is exact
+    at any depth this model can be given -- which is the only reason the
+    rewrite is allowed to be a rewrite rather than an approximation.
+    """
+    for depth in (7, 512, 8192):
+        _, _, mask = _outer_product_case(n_msa=depth, n_token=9)
+        broadcast = jnp.sum(
+            mask[..., None][:, :, None, :] * mask[..., None][:, :, :, None], axis=1
+        )
+        contracted = jnp.einsum(
+            "bsi,bsj->bij", mask, mask, preferred_element_type=jnp.float32
+        )[..., None]
+
+        assert jnp.array_equal(broadcast, contracted)
+
+
+def test_outer_product_chunk_leaves_the_parity_job_on_its_own_program() -> None:
+    """The budget must only ever tighten the chunk the caller asked for.
+
+    At 132 tokens the widened float32 product is 132 * 1024 * 4 bytes a row,
+    so the budget would allow far more rows than the 128 the trunk passes --
+    and raising it there would take the matched-tape job off the two-block
+    program it already runs. Below the budget the lowered HLO has to be the one
+    that shipped, character for character.
+    """
+    assert _auto_outer_product_chunk(132, 32 * 32, 128) == 128
+
+    params, m, mask = _outer_product_case(n_msa=37, n_token=132)
+
+    def lower(chunk_size):
+        return (
+            jax.jit(outer_product_mean_forward, static_argnames=("chunk_size",))
+            .lower(params, m, mask, chunk_size=chunk_size)
+            .as_text()
+        )
+
+    assert lower(128) == lower(_auto_outer_product_chunk(132, 32 * 32, 128))
+
+
+def test_outer_product_chunk_splits_a_long_sequence_under_the_budget() -> None:
+    """Above the budget the block has to be small enough to have been worth it."""
+    for tokens in (1003, 3012):
+        chunk = _auto_outer_product_chunk(tokens, 32 * 32, 128)
+
+        assert 0 < chunk < 128
+        assert chunk * tokens * 32 * 32 * 4 <= _OPM_BUDGET_BYTES
+
+
+def test_outer_product_chunking_changes_nothing_it_should_not() -> None:
+    """Row blocks are independent: no sum is split, so the values must agree."""
+    params, m, mask = _outer_product_case(n_msa=13, n_token=64)
+
+    whole = outer_product_mean_forward(params, m, mask, chunk_size=64)
+    for chunk_size in (1, 7, 16, 63):
+        blocked = outer_product_mean_forward(params, m, mask, chunk_size=chunk_size)
+        np.testing.assert_allclose(blocked, whole, rtol=1e-6, atol=1e-6)
 
 
 def _load_torch_msa_module(

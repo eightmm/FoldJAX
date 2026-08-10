@@ -366,6 +366,46 @@ def _pair_weighted_averaging_chunked(
     )
 
 
+#: Byte budget for one block of OuterProductMean's ``[b, i, j, c, d]`` product.
+#:
+#: This block widens 32 channels to 32*32 before the output projection narrows
+#: them to 128, and it computes that product in float32 -- ``a.float(),
+#: b.float()`` is what upstream writes, and it is the largest float32 left in an
+#: otherwise bfloat16 trunk. At 1,003 tokens one 128-row block is
+#: ``f32[1,128,1003,32,32]``, 502 MiB; the row loop is unrolled, so several of
+#: them are live at once. Narrowing the block took the trunk's temp arena from
+#: 6,116 MiB to 3,860 MiB at that size -- measured with ``memory_analysis`` on
+#: the trunk compiled by itself, since the full prediction program shares its
+#: arena with the diffusion and confidence modules, which are float32 by design.
+#:
+#: 256 MiB rather than a derivation, because the response is not monotonic and
+#: only measurement finds the shelf. Swept at 1,003 tokens over an 8,192-row
+#: alignment, temp arena against budget: 384 MiB -> 5.93, 320 -> 3.74,
+#: 256 -> 3.86, 192 -> 3.86, 128 -> 3.86, 96 -> 5.79, 64 -> 5.80 GiB. Four
+#: consecutive settings share the floor and both edges fall off it, so this sits
+#: in the middle of the shelf rather than on a lucky point -- but it is a
+#: scheduling shelf, so re-sweep it after an XLA upgrade rather than trusting
+#: the constant.
+#:
+#: The budget only ever *tightens* the chunk the caller asked for. Raising it
+#: would move the 132-token matched-tape job off the two-block program it
+#: already runs, which is the one thing the transition and pair-averaging
+#: budgets above are also written to avoid. Below 513 tokens the budget does
+#: not engage at all and the float32 default lowers to the program it shipped
+#: with; above it the chunk narrows in both dtypes, which is exact but not
+#: bit-identical -- XLA tiles the smaller GEMMs differently -- exactly as for
+#: the two budgets above.
+_OPM_BUDGET_BYTES = 256 * 1024**2
+
+
+def _auto_outer_product_chunk(n_token: int, widened: int, chunk_size: int) -> int:
+    """Token rows whose widened float32 product fits the budget."""
+    per_row = n_token * widened * 4
+    if per_row <= 0:
+        return chunk_size
+    return max(1, min(chunk_size, _OPM_BUDGET_BYTES // per_row))
+
+
 def outer_product_mean_forward(
     params: Params,
     m: jnp.ndarray,
@@ -377,26 +417,45 @@ def outer_product_mean_forward(
 
     Computes the result in chunks over the i (token) axis so the full
     [b, i, j, c, d] fp32 intermediate is never materialized at once. Peak
-    intermediate goes from [N, N, c*d] to [chunk_size, N, c*d].
+    intermediate goes from [N, N, c*d] to [chunk, N, c*d], where ``chunk`` is
+    ``chunk_size`` narrowed by ``_OPM_BUDGET_BYTES``.
     """
 
-    mask = mask[..., None].astype(m.dtype)
+    mask = mask.astype(m.dtype)
     m = _layer_norm(m, params["norm"]["scale"], params["norm"]["bias"], eps)
-    a = _linear(m, params["proj_a"]["kernel"]) * mask
-    b = _linear(m, params["proj_b"]["kernel"]) * mask
-    a = a.astype(jnp.float32)
-    b = b.astype(jnp.float32)
-    pair_mask = mask[:, :, None, :] * mask[:, :, :, None]
-    num_mask = jnp.maximum(jnp.sum(pair_mask, axis=1), 1.0)
+    a = _linear(m, params["proj_a"]["kernel"]) * mask[..., None]
+    b = _linear(m, params["proj_b"]["kernel"]) * mask[..., None]
+    # Upstream writes `torch.einsum(..., a.float(), b.float())`. Both operands
+    # are already exactly representable in the compute dtype, so a float32
+    # accumulator fed from the narrow operands computes the same products from
+    # the same values -- without the widened copies, which are f32[8192,32096]
+    # (1,003 MiB) at this job's alignment depth. Measured on an isolated dot,
+    # the two forms agree to 1e-6 relative, which is reduction order and
+    # nothing else. Under the float32 default the casts were no-ops and
+    # `preferred_element_type` is the output dtype the dot already had, so
+    # neither line changes that path at all.
+    #
+    # `num_mask` is the same sum written as a contraction: it counts, for each
+    # token pair, the alignment rows where both are present. As a broadcast
+    # product it is a [b, s, i, j] tensor -- 16.5 GiB of elementwise work at
+    # 8,192 rows, fused away by XLA but still computed -- and the mask is 0/1,
+    # so summing it in float32 is exact whatever the order.
+    num_mask = jnp.maximum(
+        jnp.einsum(
+            "bsi,bsj->bij", mask, mask, preferred_element_type=jnp.float32
+        ).astype(m.dtype)[..., None],
+        1.0,
+    )
 
     proj_o = params["proj_o"]
     n = a.shape[2]
     out_dtype = m.dtype
+    chunk = _auto_outer_product_chunk(n, a.shape[-1] * b.shape[-1], chunk_size)
     out = jnp.zeros((a.shape[0], n, n, proj_o["kernel"].shape[-1]), dtype=out_dtype)
-    for start in range(0, n, chunk_size):
-        end = min(start + chunk_size, n)
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
         a_blk = a[:, :, start:end]
-        z = jnp.einsum("bsic,bsjd->bijcd", a_blk, b)
+        z = jnp.einsum("bsic,bsjd->bijcd", a_blk, b, preferred_element_type=jnp.float32)
         z = jnp.reshape(z, (*z.shape[:3], -1)) / num_mask[:, start:end]
         out = out.at[:, start:end].set(
             _linear(z.astype(out_dtype), proj_o["kernel"], proj_o["bias"])
