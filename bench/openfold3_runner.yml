@@ -18,12 +18,13 @@ model_update:
     settings:
       memory:
         eval:
-          # The fast path this card can actually run. Upstream's own default
-          # pairs DS4Sci evoformer_attn with cueq off; that kernel's cutlass
-          # build refuses sm_120 outright, so the attainable configuration is
-          # its cuequivariance triangle kernels (upstream's shipped
-          # cuequivariance.yml example) with deepspeed's kernel disabled.
-          use_cueq_triangle_kernels: true
+          # Plain torch attention: the only path 0.3.1 can complete on this
+          # card. Its default DS4Sci evoformer_attn refuses to build for
+          # sm_120 (cutlass generation), and its experimental cueq flag dies
+          # in the confidence stack at num_samples>1 (bias batched over
+          # samples where the kernel wants (B, 1, H, S, S)). Recorded in
+          # upstream-environments.md; the timing column carries this caveat.
+          use_cueq_triangle_kernels: false
           use_deepspeed_evo_attention: false
 experiment_settings:
   seeds:
