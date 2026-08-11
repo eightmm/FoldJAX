@@ -7,6 +7,10 @@
 model_update:
   presets:
     - predict
+    # of3_ft3_v1.pt carries the PAE aux head; 0.3.1 builds it only under this
+    # preset, and a strict load rejects the checkpoint without it. (0.4.x
+    # deprecates the preset -- the head became unconditional there.)
+    - pae_enabled
   custom:
     architecture:
       shared:
