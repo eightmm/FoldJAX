@@ -155,3 +155,22 @@ host path exactly (L500: ranking 0.1946111 vs 0.1946113, peak 13,216 ->
 12,649 MiB), but L3000 still dies on the same single 16.11 GiB allocation --
 the structural branch's ~2x-token pair buffer, which is model shape
 (`foldjax-remaining-memory-bottleneck`), not the logits.
+
+## Sequential confidence scoring, verified (protenix, 3012)
+
+    outputs-gated          argument 12.404  output 0.374  temp 54.109  peak 68,558 MiB
+    + per-sample scoring   argument 12.404  output 0.374  temp 46.483  peak 60,759 MiB
+
+Wall 804 s (unchanged), ranking 0.955322 vs 0.955337, plddt 94.296 vs 94.285
+-- inside the rerun floor. Cumulative from the start of this audit: 84,106 ->
+60,759 MiB, -28%, at zero time or score cost (commit 60f1e08; equivalence test
+pins sequential == batched per key, including sample-axis-free contact_probs).
+
+The new arena's top is no longer confidence: four bf16[128, 4*N^2] operands
+(8.86 GiB each, ~35 GiB) around the recycle loop's triangle-multiplication
+dot_generals, plus f32[N,N,256] cueq staging. The remaining 13.9 GiB to
+boltz2 (60.8 vs 46.9) is ~12.4 GiB of entry arguments (the 16,384-row MSA
+feature stack rides in the args) plus that tri-mul working set -- model and
+feature shape, no longer an unread output or a redundant stack. Next lever if
+ever needed: bf16-native cueq bindings or narrower tri-mul staging; expect
+diminishing returns.
