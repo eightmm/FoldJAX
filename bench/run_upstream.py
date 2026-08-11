@@ -158,7 +158,13 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
             {"PYTHONPATH": str(repo), **_toolkit_env(repo)},
         )
     if model == "openfold3":
-        repo = ROOT / "openfold3"
+        # The 0.3.1 worktree, not the main checkout: `of3_ft3_v1.pt` -- the
+        # weights the FoldJAX port runs -- is the legacy p1 checkpoint with
+        # `version_compatibility="<0.4"` (entry_points/parameters.py). The
+        # current 0.4.4 code refuses it (layer_norm_z / fourier_emb drift),
+        # and running the >=0.4 default p2 weights instead would put two
+        # different models in one table row.
+        repo = ROOT / "openfold3-v031"
         return (
             [
                 str(repo / ".venv/bin/run_openfold"),
@@ -166,7 +172,7 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
                 "--query-json",
                 str(job),
                 "--inference-ckpt-path",
-                str(repo / "openfold3_weights/checkpoints/of3_ft3_v1.pt"),
+                str(ROOT / "openfold3/openfold3_weights/checkpoints/of3_ft3_v1.pt"),
                 "--num-diffusion-samples",
                 str(schedule["num_samples"]),
                 "--num-model-seeds",
