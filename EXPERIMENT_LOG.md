@@ -174,3 +174,12 @@ feature stack rides in the args) plus that tri-mul working set -- model and
 feature shape, no longer an unread output or a redundant stack. Next lever if
 ever needed: bf16-native cueq bindings or narrower tri-mul staging; expect
 diminishing returns.
+
+## Small-cell re-measurement after the logits fixes (tsp 29-32)
+
+    boltz2   499: 5,090 -> 4,781 MiB (1.77x)   1003: 10,027 -> 7,402 (2.19x)
+    protenix 499: 5,706 -> 5,058 MiB (1.01x)   1003: 10,531 -> 8,711 (1.50x)
+
+Protenix 499 flips from the table's only losing memory cell (0.90x) to parity;
+boltz2 1003 more than doubles its lead. Scores unchanged. Every FoldJAX cell
+in the table is now post-fix and >= 0.94x memory against its upstream.
