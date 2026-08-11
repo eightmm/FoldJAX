@@ -104,6 +104,16 @@ class InferenceConfig(NamedTuple):
     # a more faithful choice than 1024; it is a different model. ``None`` keeps every
     # row, which is only useful for comparing against this divergence.
     msa_depth: int | None = 1024
+    #: Which of the [.., N, N, bins] logits the program returns. Decided ahead
+    #: of the run by `output.plan_returned_pair_logits` (released_config does
+    #: this), so arrays the npz writer's budget would discard are never hauled
+    #: out of the graph. The writer stays the final authority on what is
+    #: written; this only controls what exists as an entry output.
+    returned_pair_logits: tuple[str, ...] = (
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+    )
 
 
 class InferenceParams(NamedTuple):
@@ -128,9 +138,13 @@ class Prediction(NamedTuple):
     ptm: jnp.ndarray
     iptm: jnp.ndarray | None
     chain_pair_iptm: jnp.ndarray | None
-    pae_logits: jnp.ndarray
-    pde_logits: jnp.ndarray
-    distogram_logits: jnp.ndarray
+    #: None when the config's ``returned_pair_logits`` excludes them: these are
+    #: [n_sample, N, N, bins] entry outputs that stay resident for the whole
+    #: run, and above `output.DEFAULT_ARRAY_BUDGET_BYTES` the npz writer drops
+    #: them unwritten anyway. `write_arrays` already skips None fields.
+    pae_logits: jnp.ndarray | None
+    pde_logits: jnp.ndarray | None
+    distogram_logits: jnp.ndarray | None
     experimentally_resolved_logits: jnp.ndarray | None = None
 
 
@@ -573,15 +587,16 @@ def predict(
             **ptm_kwargs,
         )
 
+    returned = set(config.returned_pair_logits)
     return Prediction(
         coordinates=coordinates,
         plddt=compute_plddt(plddt_logits),
         ptm=ptm,
         iptm=iptm,
         chain_pair_iptm=chain_pair,
-        pae_logits=pae_logits,
-        pde_logits=pde_logits,
-        distogram_logits=disto_logits,
+        pae_logits=pae_logits if "pae_logits" in returned else None,
+        pde_logits=pde_logits if "pde_logits" in returned else None,
+        distogram_logits=disto_logits if "distogram_logits" in returned else None,
         experimentally_resolved_logits=experimentally_resolved_logits,
     )
 
@@ -616,9 +631,14 @@ def released_config(
         if isinstance(pair_chunk_size, str)
         else pair_chunk_size
     )
+    from foldjax.models.openfold3.output import plan_returned_pair_logits
+
     return InferenceConfig(
         n_token=n_token,
         n_atom=n_atom,
+        returned_pair_logits=plan_returned_pair_logits(
+            n_token=n_token, num_samples=num_samples
+        ),
         n_query=32,
         n_key=128,
         atom_heads=4,

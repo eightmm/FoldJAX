@@ -283,6 +283,48 @@ DEFAULT_ARRAY_BUDGET_BYTES = 4 * 2**30
 _PAIR_LOGIT_NAMES = ("pae_logits", "pde_logits", "distogram_logits")
 
 
+def plan_returned_pair_logits(
+    *,
+    n_token: int,
+    num_samples: int,
+    pae_bins: int = 64,
+    pde_bins: int = 64,
+    distogram_bins: int = 64,
+    max_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
+) -> tuple[str, ...]:
+    """Which pair logits `write_arrays` would keep, decided before the run.
+
+    Same rule as `write_arrays` -- drop largest-first until the total fits --
+    with a 64 MiB allowance standing in for the small arrays it also counts,
+    so this plan is strictly more conservative than the writer. The writer
+    still applies its own budget to whatever arrives, so a prediction built
+    from this plan never writes an array the old behaviour would have dropped;
+    the only divergence is inside that 64 MiB band, where an array narrowly
+    inside the budget is not returned at all.
+
+    The point is where the decision lands: an excluded array is never an entry
+    output of the compiled program, instead of being hauled out -- 21.6 GiB at
+    3,012 tokens and five samples -- and then discarded unwritten.
+    """
+    if max_bytes is None:
+        return _PAIR_LOGIT_NAMES
+    element = 4  # float32
+    pair = n_token * n_token
+    sizes = {
+        "pae_logits": num_samples * pair * pae_bins * element,
+        "pde_logits": num_samples * pair * pde_bins * element,
+        "distogram_logits": pair * distogram_bins * element,
+    }
+    budget = max_bytes - 64 * 2**20
+    total = sum(sizes.values())
+    kept = dict(sizes)
+    for name in sorted(sizes, key=sizes.__getitem__, reverse=True):
+        if total <= budget:
+            break
+        total -= kept.pop(name)
+    return tuple(name for name in _PAIR_LOGIT_NAMES if name in kept)
+
+
 def write_arrays(
     prediction: Any,
     path: str | os.PathLike[str],
