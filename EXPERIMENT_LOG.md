@@ -88,3 +88,23 @@ reduces per-sample and frees, plus f32 staging around the fused kernels that
 torch's bf16-native cueq never allocates. Cheapest fix, in order: stop
 returning pae/pde (and distogram/z/s unless asked) once scores are computed
 in-graph -- that alone is ~21.6 GiB and closes most of the gap.
+
+## Output-gating fix, verified compile-only (protenix, 3012)
+
+Same probe, program after `return_confidence_logits`/`return_trunk` gating:
+
+    before  argument 12.404  output 26.357  temp 43.282  total 82.04 GiB
+    after   argument 12.404  output  0.374  temp 54.109  total 66.89 GiB
+
+Outputs collapsed 26.36 -> 0.37 GiB. Temp grew 43.28 -> 54.11: the pae/pde
+logits are still computed for the in-graph summaries, and one logits-sized
+buffer (10.8 GiB) that used to be written straight into an entry output now
+needs temp arena space instead. Net -15.2 GiB. The remaining gap to upstream
+(66.9 vs 57.3) is the f32 staging around the float32-only cueq kernels plus
+that one in-flight logits buffer; halving the latter means reducing the
+confidence head sample-sequentially with in-scan summarization (what boltz2's
+`confidence_sequentially` and AF3's `sharded_map(shard_size=1)` do).
+
+Boltz2 got the same gating (`0484e4f`): backend reads six scalars + plddt +
+coords; pae/pde/plddt/resolved logits and pdistogram are now opt-in
+(`return_confidence_logits=True`).
