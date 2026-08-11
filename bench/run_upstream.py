@@ -167,21 +167,26 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
         repo = ROOT / "openfold3-v031"
         return (
             [
-                str(repo / ".venv/bin/run_openfold"),
+                # `python -m`: 0.3.1's console script trips over a cutlass
+                # import shim and presents the wrong argparse; the module
+                # entry is the same `cli`. Underscore flags only in 0.3.1.
+                str(repo / ".venv/bin/python"),
+                "-m",
+                "openfold3.run_openfold",
                 "predict",
-                "--query-json",
+                "--query_json",
                 str(job),
-                "--inference-ckpt-path",
+                "--inference_ckpt_path",
                 str(ROOT / "openfold3/openfold3_weights/checkpoints/of3_ft3_v1.pt"),
-                "--num-diffusion-samples",
+                "--num_diffusion_samples",
                 str(schedule["num_samples"]),
-                "--num-model-seeds",
+                "--num_model_seeds",
                 "1",
-                "--runner-yaml",
+                "--runner_yaml",
                 str(Path(__file__).parent / "openfold3_runner.yml"),
-                "--use-msa-server",
+                "--use_msa_server",
                 "false",
-                "--output-dir",
+                "--output_dir",
                 str(out),
             ],
             repo,
