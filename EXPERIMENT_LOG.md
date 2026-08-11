@@ -58,3 +58,33 @@ Stale comment found on the way: `cli/predict.py:167-171` still claims the
 unset triangle default "picks the blocked XLA path"; `triangle.py:50` has
 defaulted to cueq_jit since the kernel-default commit. Fix when touching that
 file next.
+
+## Protenix 3012 gap, attributed (compile-only probe + buffer assignment)
+
+`memory_analysis()` of the exact bench program: arguments 12.40 + outputs
+26.36 + temp 43.28 = 82.04 GiB, against the measured 84,106 MiB peak. XLA's
+own rematerializer agrees it cannot get below 83.0 GiB (hlo_rematerialization
+warning in the probe log).
+
+**Outputs, 26.36 GiB.** Allocations 0 and 1 are 11,612,344,320 B each =
+5 x 3012^2 x 64 x 4 B: the full-bin **PAE and PDE logits, f32[5,N,N,64]**.
+`model.py:259` does `output.update(confidence_logits)` -- and then *also*
+computes the summaries in-graph at `model.py:262` (`confidence_scores_from_
+logits`). The raw logits ride along as program outputs the CLI's cif/JSON path
+never needs, and XLA entry outputs are live for the whole execution, on top of
+the temp arena. pae+pde alone are 21.6 GiB; z_trunk/s_trunk/distogram make up
+most of the rest.
+
+**Temp arena, 43.28 GiB.** Top buffers are five distinct **f32 pair-sized
+[N^2,128] buffers (4.43 GiB each, ~22 GiB)** around `triton_kernel_call` /
+`jit(triangle_attention)` inside the recycle/pairformer scan, plus f32
+triangle-attention operands (~13 GiB): the cueq kernels take float32, so the
+bf16 trunk pays f32 up-casts of the pair tensor several times over per block,
+and buffer assignment keeps several alive at once. The bf16[16384,3012,64] MSA
+stack (6.3 GiB x2) shares the arena.
+
+So the 84.1-vs-57.3 split vs upstream torch: ~22 GiB of returned logits torch
+reduces per-sample and frees, plus f32 staging around the fused kernels that
+torch's bf16-native cueq never allocates. Cheapest fix, in order: stop
+returning pae/pde (and distogram/z/s unless asked) once scores are computed
+in-graph -- that alone is ~21.6 GiB and closes most of the gap.
