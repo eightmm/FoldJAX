@@ -132,3 +132,26 @@ move `confidence_scores_from_logits` inside the graph behind a
 summaries, then gate the logits. Note opendde is the port that OOMs at 3,012:
 21.6 GiB of logits as entry outputs is plausibly part of why, so this fix is
 also the next lever on that failed cell.
+
+## Why protenix still holds 21.6 GiB more than boltz2 at 3012 (68.6 vs 46.9)
+
+Attributed from the post-fix probe dump (arena 54.1 GiB): the top three
+buffers are **f32[5,3012,3012,64] at three distinct offsets -- 10.8 GiB each,
+32.2 GiB live at once**: the pae and pde logits stacked over all five samples
+(two `stack` fusions) plus a third consumed by the in-graph scores. The
+confidence stack processes the whole sample batch at once.
+
+Boltz-2 runs the same-shaped heads one sample at a time
+(`confidence_sequentially`, lax.map -- upstream production behaviour), so its
+in-flight logits are [1,N,N,64] = 2.2 GiB; AF3 does the same with
+`sharded_map(shard_size=1)`. So the gap is not model shape: it is protenix's
+confidence sample batching, and the fix is the same shape as boltz2's --
+per-sample head + per-sample `confidence_scores_from_logits` inside the loop,
+never materializing the [5, N, N, 64] stacks. Expected landing: near boltz2's
+46.9.
+
+Also verified this round: opendde in-graph scores now trace and reproduce the
+host path exactly (L500: ranking 0.1946111 vs 0.1946113, peak 13,216 ->
+12,649 MiB), but L3000 still dies on the same single 16.11 GiB allocation --
+the structural branch's ~2x-token pair buffer, which is model shape
+(`foldjax-remaining-memory-bottleneck`), not the logits.
