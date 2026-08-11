@@ -162,7 +162,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     )
     parser.add_argument(
         "--trunk-triangle-attention-backend",
-        choices=("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
+        choices=("xla", "xla_jit", "cueq", "cueq_jit"),
         # Left unset so the backend is resolved in one place, by
         # `_triangle_attention_backend()`, which honours
         # PROTENIX_TRIANGLE_BACKEND and otherwise picks the blocked XLA path.
@@ -174,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     )
     parser.add_argument(
         "--confidence-triangle-attention-backend",
-        choices=("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
+        choices=("xla", "xla_jit", "cueq", "cueq_jit"),
         # Unset means "whatever the trunk runs". The head reads the same pair
         # tensor with the same head layout, so a different kernel there is a
         # bug rather than a choice -- it was one, and it cost a 39 GiB temp

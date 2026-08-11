@@ -81,9 +81,10 @@ def triangle_attention_forward(
 ) -> jnp.ndarray:
     """Run Boltz TriangleAttention starting or ending node.
 
-    ``triangle_backend``: ``"xla"`` (default, bit-exact dense/chunked path),
-    ``"pallas"`` (opt-in GPU flash kernel), or ``"cueq"`` (Torch-compatible
-    cuEquivariance CUDA kernel).
+    ``triangle_backend``: ``"cueq"`` (the fused cuEquivariance kernel, which is
+    what every port here runs) or ``"xla"`` (the blocked reference path, kept
+    because it is the only independent check on the kernel's numerics and the
+    way to reproduce a number taken before the kernel existed).
     """
 
     precision = resolve_matmul_precision(matmul_precision)
@@ -184,19 +185,7 @@ def _attention(
         q_scale = jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
         q = q / q_scale
 
-    if triangle_backend == "pallas":
-        from foldjax.models.boltz2.models.triangle.triangle_attention_pallas import (
-            pallas_attention_core,
-        )
-
-        out = pallas_attention_core(q, k, v, tri_bias, mask_bias)
-    elif triangle_backend == "tokamax":
-        from foldjax.models.boltz2.models.triangle.triangle_attention_tokamax import (
-            tokamax_attention_core,
-        )
-
-        out = tokamax_attention_core(q, k, v, tri_bias, mask_bias)
-    elif triangle_backend == "xla":
+    if triangle_backend == "xla":
         out = _attention_core(q, k, v, tri_bias, mask_bias, chunk_size, q_chunk_size)
     elif triangle_backend != "cueq":
         msg = f"Unsupported triangle_backend: {triangle_backend!r}"

@@ -114,8 +114,8 @@ def pairformer_layer_forward(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Run one Boltz PairformerLayer in eval mode without dropout.
 
-    ``triangle_backend`` selects the triangle-attention path: ``"xla"``
-    (default, bit-exact) or ``"pallas"`` (opt-in GPU flash kernel).
+    ``triangle_backend`` selects the triangle-attention path: ``"cueq"`` (the
+    fused kernel) or ``"xla"`` (the blocked reference).
     """
 
     tri_att_chunk = resolve_triangle_attention_chunk(
