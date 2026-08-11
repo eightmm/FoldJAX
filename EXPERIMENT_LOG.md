@@ -31,3 +31,30 @@ So the 1.47x is structural, not a knob left unset. Next, in order:
 Also landed while checking: **opendde foldjax L3000 OOM'd** after 3597 s (16.11 GiB
 allocation refused), so the 3012 opendde row is now both-implementations-fail, not
 "foldjax still running".
+
+## Protenix 3012 gap, continued: the runner config is symmetric too
+
+Checked the one remaining knob asymmetry (upstream's *runner* filling chunk
+sizes its generator defaults leave None). It does fill them -- and the port
+already mirrors it:
+
+- Upstream `infer_setting`: `chunk_size` 256 with `dynamic_chunk_size: True`,
+  thresholds {1024:-1, 1536:512, 2048:256, 2560:128}, beyond -> 32
+  (`protenix.py:443-468`), and `sample_diffusion_chunk_size: 5`.
+- Port: `chunking.py:20-27` transcribes the same table (`PROTENIX_EXTREME_CHUNK
+  _SIZE = 32`, diffusion chunk 5), `chunk_policy=auto` is the CLI default, and
+  the bench row ran `options: {}`.
+
+At 3012 tokens both sides therefore run the whole trunk chunked at 32 and one
+5-sample diffusion batch. Nothing configurable is left; the 84.1 vs 57.3 GiB
+is the program itself. `foldjax-bench/protenix_arena_probe.py` now intercepts
+`_compiled_protenix_infer` at the CLI's own call (same features, same bf16
+cast, same resolved chunks), `lower().compile()`s it and writes
+`memory_analysis()` to `protenix3012-arena.json`, with an XLA dump for
+`arena_attr.py`. Queued behind the opendde L3000 retry currently holding the
+card.
+
+Stale comment found on the way: `cli/predict.py:167-171` still claims the
+unset triangle default "picks the blocked XLA path"; `triangle.py:50` has
+defaulted to cueq_jit since the kernel-default commit. Fix when touching that
+file next.
