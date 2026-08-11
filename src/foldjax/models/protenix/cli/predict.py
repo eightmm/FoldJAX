@@ -539,6 +539,11 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     # structure written now from one left by an earlier run into the same
     # directory.
     written: list[Path] = []
+    # Only the raw-npz path reads the trunk representations or the full-bin
+    # logits; the protenix cif+JSON path consumes the in-graph summaries alone.
+    # Keeping unread [n_sample, N, N, 64] logits as program outputs held 21.6
+    # GiB at 3,012 tokens (EXPERIMENT_LOG: the 84.1 vs 57.3 attribution).
+    wants_raw = args.output_format in ("npz", "both")
     for job, seeds in zip(jobs, job_seeds, strict=True):
         features = job["features"]
         guidance_features = None
@@ -601,6 +606,8 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                 ),
                 run_confidence=not args.no_confidence,
                 run_confidence_scores=not args.no_confidence_scores,
+                return_trunk=wants_raw and args.include_trunk,
+                return_confidence_logits=wants_raw,
                 triangle_mul_chunk_size=chunk_config.triangle_mul_chunk_size,
                 triangle_att_q_chunk_size=chunk_config.triangle_att_q_chunk_size,
                 single_att_q_chunk_size=chunk_config.single_att_q_chunk_size,

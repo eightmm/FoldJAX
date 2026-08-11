@@ -105,6 +105,16 @@ def protenix_infer_static(
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
     run_confidence_scores: bool = True,
+    #: Whether the raw representations and full-bin logits are program outputs.
+    #: XLA entry outputs stay resident for the whole execution, alongside the
+    #: temp arena -- and at 3,012 tokens the PAE and PDE logits are
+    #: f32[n_sample, N, N, 64] = 10.8 GiB *each*, returned right next to the
+    #: summaries computed from them in-graph. A caller writing cif + confidence
+    #: JSON reads none of it; only the raw-npz path does. Defaults stay True so
+    #: the library API keeps its shape; the CLI passes what its output format
+    #: actually consumes.
+    return_trunk: bool = True,
+    return_confidence_logits: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
@@ -229,13 +239,14 @@ def protenix_infer_static(
             input_feature_dict if guidance_features is None else guidance_features
         ),
     )
-    output = {
-        "s_inputs": s_inputs,
-        "s_trunk": s_trunk,
-        "z_trunk": z_trunk,
-        "coordinate": coordinates,
-        "distogram_logits": distogram_head(diffusion_z_trunk, params.distogram),
-    }
+    distogram_logits = distogram_head(diffusion_z_trunk, params.distogram)
+    output = {"coordinate": coordinates}
+    if return_trunk:
+        output["s_inputs"] = s_inputs
+        output["s_trunk"] = s_trunk
+        output["z_trunk"] = z_trunk
+    if return_confidence_logits:
+        output["distogram_logits"] = distogram_logits
     if run_confidence:
         confidence_logits = confidence_head(
             input_feature_dict,
@@ -256,14 +267,15 @@ def protenix_infer_static(
                 else confidence_triangle_attention_backend
             ),
         )
-        output.update(confidence_logits)
+        if return_confidence_logits:
+            output.update(confidence_logits)
         if run_confidence_scores:
             output.update(
                 confidence_scores_from_logits(
                     plddt_logits=confidence_logits["plddt"],
                     pae_logits=confidence_logits["pae"],
                     pde_logits=confidence_logits["pde"],
-                    distogram_logits=output["distogram_logits"],
+                    distogram_logits=distogram_logits,
                     token_has_frame=input_feature_dict.get("has_frame"),
                     token_asym_id=input_feature_dict.get("asym_id"),
                     atom_to_token_idx=input_feature_dict.get("atom_to_token_idx"),
@@ -300,6 +312,8 @@ GRAPH_STATIC_ARGNAMES = (
     "noise_scale_lambda",
     "run_confidence",
     "run_confidence_scores",
+    "return_trunk",
+    "return_confidence_logits",
     "sigma_data",
     "opm_chunk_size",
     "single_att_q_chunk_size",
