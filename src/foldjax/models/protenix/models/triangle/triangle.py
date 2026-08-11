@@ -48,7 +48,7 @@ def _triangle_attention_backend() -> str:
     only backend that honours a requested chunk size.
     """
     backend = os.environ.get("PROTENIX_TRIANGLE_BACKEND", "cueq_jit").lower()
-    if backend not in {"xla", "xla_jit", "cueq", "cueq_jit"}:
+    if backend not in {"xla", "xla_jit", "tokamax", "cueq", "cueq_jit"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
     return backend
 
@@ -293,7 +293,7 @@ def triangle_attention(
             q_chunk_size=q_chunk_size,
             attention_backend=backend.removesuffix("_jit"),
         )
-    if backend not in {"xla", "cueq"}:
+    if backend not in {"xla", "tokamax", "cueq"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
     if mask is None:
         mask = jnp.ones(x.shape[:-1], dtype=x.dtype)
@@ -404,7 +404,7 @@ def _triangle_attention_dense(
     # Blocking the query axis instead, which is what this did, bounds only the
     # scores and `q`; `k` and `v` stay whole, at 1,311 MiB apiece on OpenDDE's
     # structural branch.
-    if attention_backend not in {"cueq"}:
+    if attention_backend not in {"cueq", "tokamax"}:
         q_chunk_size = _score_rows(
             rows=x.shape[-3],
             cols=x.shape[-2],
@@ -413,7 +413,7 @@ def _triangle_attention_dense(
         )
     chunked = (
         q_chunk_size is not None
-        and attention_backend != "cueq"
+        and attention_backend not in {"cueq", "tokamax"}
         and 0 < q_chunk_size < x.shape[-3]
     )
     scale = float(params.attention.linear_k.weight.shape[0] // num_heads) ** -0.5
@@ -447,7 +447,16 @@ def _triangle_attention_dense(
         # The chunked path scales each block as it is projected instead.
         q = q * jnp.asarray(scale, dtype=q.dtype)
 
-    if attention_backend == "cueq" and x.shape[-2] > 16:
+    if attention_backend == "tokamax":
+        # q/k/v are [..., N_row, h, j, d], triangle_bias [..., 1, h, N, N],
+        # mask_bias [..., N, 1, 1, N] — already the layout tokamax expects; q is
+        # pre-scaled (scale=1.0 inside). Returns [..., h, i, d] like the block.
+        from foldjax.models.protenix.models.triangle.triangle_attention_tokamax import (
+            tokamax_attention_core,
+        )
+
+        out = tokamax_attention_core(q, k, v, triangle_bias, mask_bias)
+    elif attention_backend == "cueq" and x.shape[-2] > 16:
         pass
     elif not chunked:
         out = _triangle_attention_block(q, k, v, mask_bias, triangle_bias)
