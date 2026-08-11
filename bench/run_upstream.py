@@ -157,6 +157,30 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
             # its time is a real measurement rather than a fallback's.
             {"PYTHONPATH": str(repo), **_toolkit_env(repo)},
         )
+    if model == "openfold3":
+        repo = ROOT / "openfold3"
+        return (
+            [
+                str(repo / ".venv/bin/run_openfold"),
+                "predict",
+                "--query-json",
+                str(job),
+                "--inference-ckpt-path",
+                str(repo / "openfold3_weights/checkpoints/of3_ft3_v1.pt"),
+                "--num-diffusion-samples",
+                str(schedule["num_samples"]),
+                "--num-model-seeds",
+                "1",
+                "--runner-yaml",
+                str(Path(__file__).parent / "openfold3_runner.yml"),
+                "--use-msa-server",
+                "false",
+                "--output-dir",
+                str(out),
+            ],
+            repo,
+            {},
+        )
     if model == "opendde":
         repo = ROOT / "OpenDDE"
         return (

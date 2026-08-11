@@ -1,0 +1,16 @@
+# Runner for the bench's upstream OpenFold3 column.
+#
+# The released prediction defaults already match the bench schedule for steps
+# and samples (`no_full_rollout_steps: 200`, `no_full_rollout_samples: 5`,
+# model_config.py:184-185); the two things the defaults do not carry are the
+# bench's 10 recycles (upstream default 3) and its fixed seed.
+model_update:
+  presets:
+    - predict
+  custom:
+    architecture:
+      shared:
+        num_recycles: 10
+experiment_settings:
+  seeds:
+    - 101
