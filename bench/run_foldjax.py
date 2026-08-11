@@ -20,10 +20,36 @@ import os
 import time
 from pathlib import Path
 
-# Must precede the first JAX import: with preallocation on, the allocator grabs
-# a fixed fraction of the card and `peak_bytes_in_use` still reports live bytes,
-# but an OOM would be reported against the pool rather than the need.
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+# Preallocation is left at JAX's default -- on -- because that is what `foldjax
+# predict` runs, and a benchmark that turns it off is not measuring the product.
+#
+# This used to force it off, for a better OOM message: with the pool
+# preallocated, a failure is reported against the pool rather than against what
+# the program needed. That reason was real and the cost was not worth it. Off,
+# the allocator grows on demand and a single large contiguous request can fail
+# against a carved-up address space even when the total is there: Boltz-2 at
+# 3,012 tokens dies asking for its 41.67 GiB arena, and completes with
+# preallocation on at a 73.5 GiB peak. The benchmark was reporting a size the
+# product runs as one it cannot.
+#
+# The peak is unaffected, which is what made the old choice look free. Measured
+# at 1,003 tokens: 10,214 MiB off against 10,024 MiB on, both `peak_bytes_in_use`
+# and neither anywhere near the 85.5 GiB pool -- so this reports live bytes
+# either way.
+
+# And the same pool fraction `foldjax predict` gives itself. This harness calls
+# the Python API, and `PREDICT_MEM_FRACTION` is applied by `foldjax/cli.py`
+# alone -- deliberately, since a library must not resize a host application's
+# pool on import. The consequence for a benchmark is that it was measuring the
+# port at JAX's 0.75 default while the shipped command runs at 0.9: a quarter of
+# the card reserved and unused. At 3,012 tokens that is the difference between
+# `jit_run_model`'s 73.5 GiB fitting and missing a 71.2 GiB pool by 0.6, and it
+# was reported as OOM in a table next to an upstream that had the whole card.
+# `oom.py` had already recorded this exact case; the benchmark had not.
+os.environ.setdefault(
+    "XLA_PYTHON_CLIENT_MEM_FRACTION",
+    str(__import__("foldjax.oom", fromlist=["oom"]).PREDICT_MEM_FRACTION),
+)
 
 
 def main() -> int:
