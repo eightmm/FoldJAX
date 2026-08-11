@@ -195,3 +195,20 @@ bf16 'all', flash attention, shard_size=1 confidence, summaries-only outputs,
 i.e. every practice the ports adopted this session. OpenFold3 at 3,012 runs
 66.3 GiB *with* the pair-logit gate; the ungated program would have carried
 21.6 GiB more entry outputs, 87.9 GiB against an 85.5 GiB pool -- over it.
+
+## Open: OF3-vs-protenix memory comparison + OpenFold3 upstream column
+
+Goal (2026-08-12): (1) explain OF3's curve against protenix's -- 10.4 vs 5.1
+GiB at 499, 66.3 vs 60.8 at 3012, despite protenix carrying a 16k-row MSA;
+(2) fill the OpenFold3 upstream cells, the only fillable blanks (AF3's column
+is the same code by design; boltz2/opendde 3012 upstreams are real OOMs).
+
+In flight: tsp 39 runs `probe_memory.py --model openfold3 --tokens 499 1003
+3012` (memory_analysis splits -> of3_probe.log in the session scratchpad);
+a background `uv pip install -e .` provisions `openfold3/.venv` (log:
+of3_venv.log). Next after those land: compare the OF3 splits against
+protenix's (12.404 args / 0.374 out / 46.483 temp at 3012), attribute the
+fattest OF3 buffers via an XLA dump if the split alone does not answer, then
+add an `openfold3` branch to `bench/run_upstream.py` (checkpoint is in the
+foldjax store; upstream CLI entry needs reading) and run the three cells
+through tsp.
