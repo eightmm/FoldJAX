@@ -379,6 +379,16 @@ def opendde_infer_static(
     confidence_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
+    #: Compute the released confidence summaries inside the graph. Off, the
+    #: caller must reduce the raw logits on the host -- which forces the
+    #: program to return plddt/pae/pde at [n_sample, N, N, bins] full width:
+    #: 21.6 GiB of entry outputs at 3,012 tokens, resident next to the temp
+    #: arena. Same finding and same shape of fix as Protenix and Boltz-2.
+    run_confidence_scores: bool = False,
+    #: With the summaries computed in-graph nothing downstream reads the raw
+    #: logits unless a raw dump was asked for; False drops them from the
+    #: program outputs.
+    return_confidence_logits: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
@@ -636,6 +646,21 @@ def opendde_infer_static(
                 triangle_attention_backend=confidence_triangle_attention_backend,
             )
         )
+        if run_confidence_scores:
+            from foldjax.models.opendde.postprocess import (
+                opendde_confidence_scores,
+            )
+
+            output.update(
+                opendde_confidence_scores(
+                    output,
+                    input_feature_dict,
+                    num_recycles=n_cycle,
+                )
+            )
+        if not return_confidence_logits:
+            for name in ("plddt", "pae", "pde", "distogram_logits"):
+                output.pop(name, None)
     return output
 
 
@@ -646,6 +671,8 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_decoder_heads",
     "atom_encoder_heads",
     "confidence_triangle_attention_backend",
+    "run_confidence_scores",
+    "return_confidence_logits",
     "diffusion_attention_backend",
     "gamma0",
     "gamma_min",

@@ -46,6 +46,10 @@ def _predict(
     chunk_overrides: Mapping[str, int | None] | None = None,
     graph_jit: bool = True,
     trunk_dtype: Any = None,
+    # The summaries come out of the graph; the raw logits only when a raw dump
+    # was asked for. `_score` passes precomputed summaries straight through.
+    run_confidence_scores: bool = True,
+    return_confidence_logits: bool = False,
 ) -> dict[str, Any]:
     import jax
 
@@ -151,6 +155,8 @@ def _predict(
         token_q_chunk_size=chunks.token_q_chunk_size,
         cycle_msa_features=sampled or None,
         trunk_dtype=trunk_dtype,
+        run_confidence_scores=run_confidence_scores,
+        return_confidence_logits=return_confidence_logits,
         **scans,
     )
 
@@ -396,6 +402,7 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                         "token_q_chunk_size": args.token_q_chunk_size,
                     },
                     graph_jit=not args.no_graph_jit,
+                    return_confidence_logits=args.include_raw,
                 )
                 scored = _score(output, features, num_recycles=args.n_cycle)
                 paths = _write(

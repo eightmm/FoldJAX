@@ -85,7 +85,20 @@ def opendde_confidence_scores(
     *,
     num_recycles: int,
 ) -> dict[str, jnp.ndarray]:
-    """Convert raw OpenDDE logits to released confidence summaries."""
+    """Convert raw OpenDDE logits to released confidence summaries.
+
+    When the program already computed them in-graph (`run_confidence_scores`
+    in `opendde_infer_static`), pass its output straight through: recomputing
+    on the host would need the raw logits, which that path deliberately no
+    longer returns.
+    """
+
+    if "summary_ranking_score" in output:
+        return {
+            key: jnp.asarray(value)
+            for key, value in output.items()
+            if key in _OPENDDE_SCORE_KEYS
+        }
 
     required_output = {"coordinate", "plddt", "pae", "pde", "distogram_logits"}
     missing_output = sorted(required_output - output.keys())
