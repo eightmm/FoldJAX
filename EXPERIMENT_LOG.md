@@ -108,3 +108,27 @@ confidence head sample-sequentially with in-scan summarization (what boltz2's
 Boltz2 got the same gating (`0484e4f`): backend reads six scalars + plddt +
 coords; pae/pde/plddt/resolved logits and pdistogram are now opt-in
 (`return_confidence_logits=True`).
+
+## Same output-logits audit: openfold3 and opendde
+
+**openfold3 -- same disease, no consumer at all above 4 GiB.** The jitted
+`Prediction` (inference.py:576-586) always carries `pae_logits`/`pde_logits`
+f32[n_sample,N,N,64] plus distogram/resolved logits. The only reader is
+`output.write_arrays`, which has a 4 GiB budget (output.py:279-328) and drops
+exactly these arrays largest-first when they exceed it -- at 3,012 tokens the
+program hauls ~22 GiB out as entry outputs so the writer can throw them away.
+ptm/iptm/plddt are already computed in-graph. Fix: decide the writer's keep-set
+*before* the program runs (same budget rule, helper next to write_arrays so
+they cannot drift), request only the survivors from the jit; npz content is
+then bit-identical at every size while the large-N peak drops.
+
+**opendde -- same tensors, but a real host consumer.** `return_representations`
+is already gated off (model.py:605), but `run_confidence` returns the raw
+plddt/pae/pde logits, and `postprocess.py:88-124` computes the released
+summaries on the *host* from them (`confidence_scores_from_logits` outside the
+graph). So the logits cannot just be dropped: the fix is protenix's shape --
+move `confidence_scores_from_logits` inside the graph behind a
+`run_confidence_scores` static flag, teach postprocess to accept precomputed
+summaries, then gate the logits. Note opendde is the port that OOMs at 3,012:
+21.6 GiB of logits as entry outputs is plausibly part of why, so this fix is
+also the next lever on that failed cell.
