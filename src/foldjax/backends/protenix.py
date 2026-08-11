@@ -50,6 +50,19 @@ class ProtenixBackend(Backend):
         "num_recycles": "n_cycle",
         "max_msa_depth": "max_msa_rows",
     }
+    # Protenix spells both the names and the values its own way: `bf16` for the
+    # dtype, and `_jit` suffixes on the kernels for the traced variants.
+    execution_options = {
+        "dtype": ("trunk_dtype", {"float32": "fp32", "bfloat16": "bf16"}),
+        "triangle_kernel": (
+            "trunk_triangle_attention_backend",
+            {"auto": "cueq_jit", "cueq": "cueq_jit", "xla": "xla_jit"},
+        ),
+        "attention_kernel": (
+            "trunk_single_attention_backend",
+            {"auto": "xla_jit", "xla": "xla_jit"},
+        ),
+    }
     compile_options = (
         "n_sample",
         "n_step",

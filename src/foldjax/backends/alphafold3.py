@@ -146,6 +146,14 @@ class AlphaFold3Backend(Backend):
         "num_recycles": "recycles",
         "max_msa_depth": "max_msa_depth",
     }
+    # AlphaFold 3 runs `bfloat16: 'all'` inside the model it ships, so there is
+    # no dtype for a caller to choose here; the knob would be a lie.
+    execution_options = {
+        "attention_kernel": (
+            "attention_backend",
+            {"auto": "triton", "xla": "xla"},
+        ),
+    }
     compile_options = (
         "diffusion_samples",
         "diffusion_steps",

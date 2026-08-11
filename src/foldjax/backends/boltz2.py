@@ -111,6 +111,19 @@ class Boltz2Backend(Backend):
         "num_recycles": "recycling",
         "max_msa_depth": "max_msa_depth",
     }
+    # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
+    # already spells the values the neutral way; the names are its own.
+    execution_options = {
+        "dtype": ("compute_dtype", {"float32": "float32", "bfloat16": "bfloat16"}),
+        "triangle_kernel": (
+            "triangle_backend",
+            {"auto": "cueq", "cueq": "cueq", "xla": "xla"},
+        ),
+        "attention_kernel": (
+            "attention_backend",
+            {"auto": "xla", "tokamax": "tokamax", "xla": "xla"},
+        ),
+    }
     compile_options = (
         "steps",
         "recycling",

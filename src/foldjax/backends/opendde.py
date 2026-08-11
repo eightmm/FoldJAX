@@ -62,6 +62,16 @@ class OpenDDEBackend(Backend):
         "num_recycles": "n_cycle",
         "max_msa_depth": "max_msa_rows",
     }
+    # OpenDDE has no triangle-kernel option of its own -- it drives Protenix's
+    # trunk but exposes only the chunk sizes -- so `triangle_kernel` is absent
+    # here and asking for it is an error rather than a silent no-op.
+    execution_options = {
+        "dtype": ("trunk_dtype", {"float32": "fp32", "bfloat16": "bf16"}),
+        "attention_kernel": (
+            "trunk_single_attention_backend",
+            {"auto": "xla_jit", "xla": "xla_jit"},
+        ),
+    }
     compile_options = tuple(sorted(_CLI_OPTIONS))
 
     def capabilities(self) -> ModelCapabilities:

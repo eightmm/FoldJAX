@@ -5,7 +5,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from foldjax.schema import ModelCapabilities, PredictionRequest, PredictionResult
+from foldjax import execution
+from foldjax.schema import (
+    ModelCapabilities,
+    PredictionRequest,
+    PredictionResult,
+)
 
 
 class Backend(ABC):
@@ -21,14 +26,27 @@ class Backend(ABC):
     #: carries one spelling and the adapter translates it.
     sampling_options: dict[str, str] = {}
 
+    #: The same idea one level down, for the knobs that were left native:
+    #: neutral knob -> (this backend's name, {neutral value: its value}).
+    #: See `foldjax.execution` for the vocabulary and why `auto` never falls
+    #: back silently.
+    execution_options: dict[str, tuple[str, dict[str, str]]] = {}
+
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
-        """Merge the request's sampling knobs into this backend's options.
+        """Merge the request's sampling and execution knobs into native options.
 
         A knob the backend cannot express is an error, and so is setting both
         the neutral knob and its native spelling: silently preferring one would
         change how many structures come back without changing the exit code.
         """
-        options = dict(request.options)
+        options = execution.translate(
+            execution.normalize(
+                dict(request.options),
+                native={name for name, _ in self.execution_options.values()},
+            ),
+            self.execution_options,
+            model=self.name,
+        )
         for knob, value in request.sampling.items():
             native = self.sampling_options.get(knob)
             if native is None:

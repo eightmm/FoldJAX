@@ -15,6 +15,7 @@ and an upstream OpenFold3 checkout, which is a directory rather than a package.
 from __future__ import annotations
 
 import json
+import os
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,19 @@ class OpenFold3Backend(Backend):
         "num_steps": "no_rollout_steps",
         "num_recycles": "num_cycles",
         "max_msa_depth": "max_msa_depth",
+    }
+    # OpenFold3 selects its triangle kernel from an environment variable rather
+    # than an argument, because the switch has to reach every triangle attention
+    # in the model -- the template stack and the confidence head included --
+    # without six signatures growing a parameter. The neutral knob is translated
+    # into that variable in `predict` below, so a caller says the same thing here
+    # as anywhere else. There is no `dtype`: upstream runs `precision="32-true"`,
+    # a whole-trunk bfloat16 cast destroys the prediction (pLDDT 0.858 -> 0.466),
+    # and the partial profile that does work is one upstream never validated.
+    execution_options = {
+        "triangle_kernel": (
+            "triangle_kernel", {"auto": "cueq", "cueq": "cueq", "xla": "xla"}
+        ),
     }
     compile_options = _COMPILE_OPTIONS
 
@@ -108,6 +122,12 @@ class OpenFold3Backend(Backend):
             checkpoint.load_checkpoint(request.weights),
             options.pop("prefix", None),
         )
+        kernel = options.pop("triangle_kernel", None)
+        if kernel is not None:
+            # Set before the model modules read it; `_default_backend()` looks
+            # it up per call, so this reaches the template stack and the
+            # confidence head as well as the trunk.
+            os.environ["OPENFOLD3_TRIANGLE_BACKEND"] = kernel
         compile_it = not bool(options.pop("no_compile", False))
         if options:
             raise ValueError(f"unsupported OpenFold3 options: {', '.join(options)}")
