@@ -231,3 +231,32 @@ through tsp.
 - Probes: per-size `probe_memory.py` runs queued (of3p-499/1003/3012); the
   first attempt taught it the neutral->native translation and that it pads up
   only, so each size probes from its own job.
+
+## OF3 vs protenix memory, compared on the real bench configs (msa 1024)
+
+    tokens   openfold3 (args/out/temp = total | measured)   protenix
+    499      1.60/0.18/ 2.83 =  4.60 | 10,442 MiB           5,058 MiB
+    1003     2.15/0.72/ 7.28 = 10.16 | 12,043               8,711
+    3012     7.52/2.16/53.09 = 62.77 | 66,264               12.40/0.37/46.48 = 59.26 | 60,759
+
+(First probe run measured a different program: `probe_memory.py --msa-depth`
+default None overrode the released 1024-row subsample -- 26 GiB at 499. The
+flag now must be passed; the numbers above are the bench configuration.)
+
+Where OF3's extra weight actually is:
+
+- **Trunk dtype, the structural one.** OF3's upstream contract is
+  `precision="32-true"`: every pair activation in the trunk is f32 where
+  protenix's is bf16 ([[openfold3-bf16-embedder-island]] -- bf16 destroys the
+  prediction, so this is not a knob). temp 53.1 vs 46.5 at 3012 despite
+  protenix hauling a 16k-row MSA stack.
+- **Outputs 2.16 GiB = distogram_logits [N,N,64] f32.** Not waste: at 3012 it
+  fits the npz budget and is written; protenix's format never writes it.
+- **args 7.5 vs 12.4** favours OF3 (1024-row MSA features, but f32 weights
+  against protenix's bf16 cast).
+- The 499 measured-vs-analysis gap (10.4 vs 4.6 GiB) is process-lifetime
+  high-water: checkpoint-load staging dominates when the program itself is
+  small.
+
+Verdict: no protenix-style redundancy left in OF3; the curve difference is the
+fp32 trunk contract plus a consumer-backed distogram output.
