@@ -183,3 +183,15 @@ diminishing returns.
 Protenix 499 flips from the table's only losing memory cell (0.90x) to parity;
 boltz2 1003 more than doubles its lead. Scores unchanged. Every FoldJAX cell
 in the table is now post-fix and >= 0.94x memory against its upstream.
+
+## AF3 and OpenFold3 columns filled (tsp 33-38, 2026-08-12)
+
+    alphafold3  499: 285s/3,036   1003: 368s/6,901    3012: 1,013s/42,277 MiB
+    openfold3   499:  39s/10,442  1003: 126s/12,043   3012: 1,374s/66,264 MiB
+
+Upstream columns stay empty by spec: AF3's would be the same code, OpenFold3's
+venv is not provisioned. AF3 has the flattest memory curve in the table --
+bf16 'all', flash attention, shard_size=1 confidence, summaries-only outputs,
+i.e. every practice the ports adopted this session. OpenFold3 at 3,012 runs
+66.3 GiB *with* the pair-logit gate; the ungated program would have carried
+21.6 GiB more entry outputs, 87.9 GiB against an 85.5 GiB pool -- over it.
