@@ -158,6 +158,13 @@ def predict(
     # the two crossing in both directions per sample. Passing "float32"
     # restores the previous behaviour exactly.
     compute_dtype: str = "bfloat16",
+    # False by default: the full-bin pae/pde/plddt logits and the distogram are
+    # program outputs nothing in the cif/JSON path reads, and XLA keeps entry
+    # outputs resident alongside the temp arena for the whole run -- at 3,012
+    # tokens and 5 samples that is >20 GiB of peak for arrays that were thrown
+    # away. The summaries (plddt, pae, ptm/iptm, complex_*) are unaffected.
+    # Pass True to get the raw logits and pdistogram back in `raw`.
+    return_confidence_logits: bool = False,
     attention_backend: str = "xla",
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
@@ -256,7 +263,8 @@ def predict(
         "augmentation": False,
         "steering_args": steering_args,
         "run_confidence": True,
-        "run_distogram": True,
+        "run_distogram": return_confidence_logits,
+        "return_confidence_logits": return_confidence_logits,
         "run_bfactor": True,
         "compute_dtype": dtype,
         "use_scan": True,
