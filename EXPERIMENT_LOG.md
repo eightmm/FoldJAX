@@ -212,3 +212,22 @@ fattest OF3 buffers via an XLA dump if the split alone does not answer, then
 add an `openfold3` branch to `bench/run_upstream.py` (checkpoint is in the
 foldjax store; upstream CLI entry needs reading) and run the three cells
 through tsp.
+
+## OpenFold3 upstream wiring, state so far (2026-08-12)
+
+- venv: `openfold3/.venv` provisioned clean (`uv pip install -e .`, exit 0).
+- CLI: `run_openfold predict --query-json Q --inference-ckpt-path CKPT
+  --num-diffusion-samples N --num-model-seeds K --runner-yaml Y --output-dir O`;
+  checkpoints live in `openfold3/openfold3_weights/checkpoints/`.
+- Input: the bench job is FoldJAX-neutral; `foldjax.input.materialize_native_input`
+  with the openfold3 capabilities emits upstream's own query-set JSON (the
+  backend already uses it, and the fixed `probe_memory.py` now does too).
+- Schedule: CLI covers samples/seeds only. Recycles (`num_recycles: 3` default,
+  `projects/of3_all_atom/config/model_config.py:177`) and the rollout step
+  count must be pinned to 10/200 through the runner yaml's `model_update`
+  presets/overrides -- exact override paths still to be read from how
+  `model_update` is applied. MSA server must stay off (a3m paths ride in the
+  query json).
+- Probes: per-size `probe_memory.py` runs queued (of3p-499/1003/3012); the
+  first attempt taught it the neutral->native translation and that it pads up
+  only, so each size probes from its own job.
