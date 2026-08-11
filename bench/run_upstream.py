@@ -225,6 +225,29 @@ def scores(model: str, out: Path) -> list[dict]:
                     if isinstance(body.get(key), (int, float))
                 }
             )
+    elif model == "openfold3":
+        # `<case>/seed_<derived>/<case>_seed_<n>_sample_<k>_confidences_aggregated.json`;
+        # the derived seed is a deterministic hash of the requested 101.
+        # `ptm` is the key the FoldJAX column also writes, so the report can
+        # compare like with like; `avg_plddt` is 0-100 where FoldJAX's
+        # `mean_plddt` is 0-1, so both ride along unrenamed rather than
+        # pretending to be the same number.
+        for path in sorted(out.rglob("*_confidences_aggregated.json")):
+            body = json.loads(path.read_text())
+            found.append(
+                {
+                    key: float(body[key])
+                    for key in (
+                        "ptm",
+                        "iptm",
+                        "avg_plddt",
+                        "gpde",
+                        "disorder",
+                        "sample_ranking_score",
+                    )
+                    if isinstance(body.get(key), (int, float))
+                }
+            )
     else:
         for path in sorted(out.rglob("*_summary_confidence_sample_*.json")):
             body = json.loads(path.read_text())
