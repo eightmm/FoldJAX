@@ -84,6 +84,8 @@ def opendde_confidence_scores(
     features: Mapping[str, Any],
     *,
     num_recycles: int,
+    n_chain: int | None = None,
+    include_shape_complementarity: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """Convert raw OpenDDE logits to released confidence summaries.
 
@@ -94,9 +96,24 @@ def opendde_confidence_scores(
     """
 
     if "summary_ranking_score" in output:
-        return {
+        scores = {
             key: jnp.asarray(value)
             for key, value in output.items()
+            if key in _OPENDDE_SCORE_KEYS
+        }
+        # Shape complementarity is numpy-based and cannot trace, so the
+        # in-graph path leaves it out and it is finished here, on concrete
+        # arrays. It is a reported field only -- never part of ranking_score.
+        scores.update(
+            _shape_complementarity_scores(
+                output,
+                features,
+                n_token=int(jnp.asarray(features["asym_id"]).shape[0]),
+            )
+        )
+        return {
+            key: value
+            for key, value in scores.items()
             if key in _OPENDDE_SCORE_KEYS
         }
 
@@ -158,6 +175,7 @@ def opendde_confidence_scores(
         mol_id=None,
         token_is_ligand=token_is_ligand,
         num_recycles=num_recycles,
+        n_chain=n_chain,
         include_chain_pair_pae=False,
     )
 
@@ -173,11 +191,13 @@ def opendde_confidence_scores(
             token_pair_pde,
             contact_probs,
             token_asym_id,
+            n_chain=n_chain,
         )
     )
-    scores.update(
-        _shape_complementarity_scores(output, features, n_token=n_token)
-    )
+    if include_shape_complementarity:
+        scores.update(
+            _shape_complementarity_scores(output, features, n_token=n_token)
+        )
     return {key: value for key, value in scores.items() if key in _OPENDDE_SCORE_KEYS}
 
 

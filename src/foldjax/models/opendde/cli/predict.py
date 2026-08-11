@@ -50,6 +50,7 @@ def _predict(
     # was asked for. `_score` passes precomputed summaries straight through.
     run_confidence_scores: bool = True,
     return_confidence_logits: bool = False,
+    n_chain: int | None = None,
 ) -> dict[str, Any]:
     import jax
 
@@ -157,6 +158,7 @@ def _predict(
         trunk_dtype=trunk_dtype,
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
+        n_chain=n_chain,
         **scans,
     )
 
@@ -402,7 +404,18 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                         "token_q_chunk_size": args.token_q_chunk_size,
                     },
                     graph_jit=not args.no_graph_jit,
-                    return_confidence_logits=args.include_raw,
+                    # Without asym_id the per-chain loops cannot be sized on
+                    # the host, and the in-graph summaries need exactly that;
+                    # fall back to raw logits + host scoring, the old contract.
+                    run_confidence_scores="asym_id" in features,
+                    return_confidence_logits=(
+                        args.include_raw or "asym_id" not in features
+                    ),
+                    n_chain=(
+                        int(__import__("numpy").max(features["asym_id"])) + 1
+                        if "asym_id" in features
+                        else None
+                    ),
                 )
                 scored = _score(output, features, num_recycles=args.n_cycle)
                 paths = _write(

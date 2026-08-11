@@ -389,6 +389,10 @@ def opendde_infer_static(
     #: logits unless a raw dump was asked for; False drops them from the
     #: program outputs.
     return_confidence_logits: bool = True,
+    #: Chains in the job, resolved on the host: the per-chain score loops need
+    #: a Python int, and reading it off `asym_id` inside jit is a tracer.
+    #: Same contract as Protenix's `n_chain`.
+    n_chain: int | None = None,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
@@ -656,6 +660,10 @@ def opendde_infer_static(
                     output,
                     input_feature_dict,
                     num_recycles=n_cycle,
+                    n_chain=n_chain,
+                    # numpy-based, untraceable; finished on the host by the
+                    # postprocess passthrough.
+                    include_shape_complementarity=False,
                 )
             )
         if not return_confidence_logits:
@@ -672,6 +680,7 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_encoder_heads",
     "confidence_triangle_attention_backend",
     "run_confidence_scores",
+    "n_chain",
     "return_confidence_logits",
     "diffusion_attention_backend",
     "gamma0",
