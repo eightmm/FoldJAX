@@ -131,3 +131,50 @@ def test_the_matmul_precision_pin_is_a_scope_not_a_latch() -> None:
     )
 
     assert jax.config.jax_default_matmul_precision == before
+
+
+def test_confidence_sample_sequential_matches_batched() -> None:
+    """Scoring inside the per-sample loop must change memory, not numbers.
+
+    The sequential path is the default; the batched path is the reference it
+    replaced. Same toy model, three samples, every output key equal in shape
+    and value -- including `contact_probs`, which has no sample axis and is
+    the case the leading-axis collapse gets wrong first.
+    """
+    from foldjax.models.protenix.models.model import protenix_infer_static
+
+    params = _toy_params()
+    features = _toy_features()
+    init_noise = jnp.ones((3, 3, 3), dtype=jnp.float32)
+    step_noise = jnp.zeros_like(init_noise)
+
+    def run(sequential: bool):
+        return protenix_infer_static(
+            features,
+            params,
+            inference_noise_schedule(n_step=1, sigma_data=4.0),
+            key=None,
+            n_sample=3,
+            init_noise=init_noise,
+            step_noises=(step_noise,),
+            n_cycle=1,
+            input_atom_heads=1,
+            atom_encoder_heads=1,
+            token_heads=1,
+            atom_decoder_heads=1,
+            n_queries=2,
+            n_keys=4,
+            sigma_data=4.0,
+            centre_each_step=False,
+            confidence_sample_sequential=sequential,
+        )
+
+    sequential = run(True)
+    batched = run(False)
+    assert set(sequential) == set(batched)
+    for name, value in batched.items():
+        got = sequential[name]
+        assert got.shape == value.shape, name
+        np.testing.assert_allclose(
+            np.asarray(got), np.asarray(value), atol=1e-5, err_msg=name
+        )

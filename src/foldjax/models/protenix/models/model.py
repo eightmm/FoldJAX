@@ -115,6 +115,10 @@ def protenix_infer_static(
     #: actually consumes.
     return_trunk: bool = True,
     return_confidence_logits: bool = True,
+    #: Score each sample's logits inside the per-sample confidence loop instead
+    #: of stacking [n_sample, N, N, 64] first. Bit-identical outputs; the False
+    #: path exists as the reference the equivalence test compares against.
+    confidence_sample_sequential: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
@@ -248,48 +252,93 @@ def protenix_infer_static(
     if return_confidence_logits:
         output["distogram_logits"] = distogram_logits
     if run_confidence:
-        confidence_logits = confidence_head(
-            input_feature_dict,
-            diffusion_s_inputs,
-            diffusion_s_trunk,
-            diffusion_z_trunk,
-            pair_mask,
-            coordinates,
-            params.confidence,
-            use_embedding=use_confidence_embedding,
-            use_scan=use_confidence_scan,
-            triangle_mul_chunk_size=triangle_mul_chunk_size,
-            triangle_att_q_chunk_size=triangle_att_q_chunk_size,
-            single_att_q_chunk_size=single_att_q_chunk_size,
-            triangle_attention_backend=(
-                trunk_triangle_attention_backend
-                if confidence_triangle_attention_backend is None
-                else confidence_triangle_attention_backend
-            ),
-        )
-        if return_confidence_logits:
-            output.update(confidence_logits)
-        if run_confidence_scores:
-            output.update(
-                confidence_scores_from_logits(
-                    plddt_logits=confidence_logits["plddt"],
-                    pae_logits=confidence_logits["pae"],
-                    pde_logits=confidence_logits["pde"],
-                    distogram_logits=distogram_logits,
-                    token_has_frame=input_feature_dict.get("has_frame"),
-                    token_asym_id=input_feature_dict.get("asym_id"),
-                    atom_to_token_idx=input_feature_dict.get("atom_to_token_idx"),
-                    atom_coordinate=coordinates,
-                    elements_one_hot=input_feature_dict.get("ref_element"),
-                    mol_id=input_feature_dict.get("mol_id"),
-                    token_is_ligand=input_feature_dict.get(
-                        "token_is_ligand",
-                        jnp.argmax(input_feature_dict["restype"], axis=-1) == 20,
-                    ),
-                    num_recycles=n_cycle,
-                    n_chain=n_chain,
-                )
+        if run_confidence_scores and n_chain is None:
+            # The per-chain loops need a Python int. Resolve it once, outside
+            # the per-sample loop: inside `lax.map` even a constant `asym_id`
+            # reaches the fallback as a tracer. On the consolidated-graph path
+            # the caller has already passed it (see the docstring).
+            asym_id = input_feature_dict.get("asym_id")
+            if asym_id is not None and not isinstance(asym_id, jax.core.Tracer):
+                n_chain = int(jnp.max(jnp.asarray(asym_id))) + 1
+
+        def _confidence(sample_coordinates):
+            """Head and summaries for one sample's coordinates.
+
+            The head already loops samples one at a time -- what kept three
+            f32[n_sample, N, N, 64] stacks (32 GiB at 3,012 tokens) live at
+            once was stacking every sample's logits and only then reducing
+            them. Scoring inside the per-sample loop reduces each sample's
+            logits while they are [1, N, N, 64], the same shape of fix as
+            Boltz-2's `confidence_sequentially` and AF3's shard_size=1.
+            """
+            logits = confidence_head(
+                input_feature_dict,
+                diffusion_s_inputs,
+                diffusion_s_trunk,
+                diffusion_z_trunk,
+                pair_mask,
+                sample_coordinates,
+                params.confidence,
+                use_embedding=use_confidence_embedding,
+                use_scan=use_confidence_scan,
+                triangle_mul_chunk_size=triangle_mul_chunk_size,
+                triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+                single_att_q_chunk_size=single_att_q_chunk_size,
+                triangle_attention_backend=(
+                    trunk_triangle_attention_backend
+                    if confidence_triangle_attention_backend is None
+                    else confidence_triangle_attention_backend
+                ),
             )
+            piece = dict(logits) if return_confidence_logits else {}
+            if run_confidence_scores:
+                piece.update(
+                    confidence_scores_from_logits(
+                        plddt_logits=logits["plddt"],
+                        pae_logits=logits["pae"],
+                        pde_logits=logits["pde"],
+                        distogram_logits=distogram_logits,
+                        token_has_frame=input_feature_dict.get("has_frame"),
+                        token_asym_id=input_feature_dict.get("asym_id"),
+                        atom_to_token_idx=input_feature_dict.get(
+                            "atom_to_token_idx"
+                        ),
+                        atom_coordinate=sample_coordinates,
+                        elements_one_hot=input_feature_dict.get("ref_element"),
+                        mol_id=input_feature_dict.get("mol_id"),
+                        token_is_ligand=input_feature_dict.get(
+                            "token_is_ligand",
+                            jnp.argmax(input_feature_dict["restype"], axis=-1)
+                            == 20,
+                        ),
+                        num_recycles=n_cycle,
+                        n_chain=n_chain,
+                    )
+                )
+            return piece
+
+        n_conf_sample = int(coordinates.shape[-3])
+        if confidence_sample_sequential and n_conf_sample > 1:
+            conf = jax.lax.map(
+                _confidence,
+                jnp.moveaxis(coordinates, -3, 0)[..., None, :, :],
+            )
+            # Every leaf gains a leading map axis over its single-sample shape.
+            # A leaf whose next axis is the size-1 sample axis is collapsed
+            # back onto it; a sample-independent leaf (contact_probs is
+            # [N, N] whichever sample scored it) keeps one copy, as the
+            # batched call produced.
+            conf = {
+                name: (
+                    jnp.squeeze(value, axis=1)
+                    if value.ndim > 1 and value.shape[1] == 1
+                    else value[0]
+                )
+                for name, value in conf.items()
+            }
+        else:
+            conf = _confidence(coordinates)
+        output.update(conf)
     return output
 
 
@@ -312,6 +361,7 @@ GRAPH_STATIC_ARGNAMES = (
     "noise_scale_lambda",
     "run_confidence",
     "run_confidence_scores",
+    "confidence_sample_sequential",
     "return_trunk",
     "return_confidence_logits",
     "sigma_data",
