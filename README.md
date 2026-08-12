@@ -147,10 +147,8 @@ Setting both a neutral knob and its native name is an error rather than a silent
 preference. OpenFold3 has no MSA-depth argument at all, so there the knob is
 applied to the features: the first *n* alignment rows are kept, in order, and
 the per-token `profile` and `deletion_mean` are left as computed over the whole
-alignment — which is what the other backends' native caps also do. It used to be
-refused, which left the one model that could not be held to the same MSA budget
-as the rest, and that budget is the dominant memory knob.
-`--option KEY=VALUE` still passes anything native straight through.
+alignment — which is what the other backends' native caps also do.
+`--option KEY=VALUE` passes anything native straight through.
 
 Seeds work the same way. `--seed` runs one, `--seeds 0 1 2` runs those three,
 and `--num-seeds 3` is the same as the latter — counting up from `--seed`, so
@@ -170,23 +168,19 @@ otherwise cannot say what produced it.
 
 ### Memory
 
-Every peak here came from reading XLA's buffer assignment and fixing what it
-named. The levers that mattered, each mathematically exact:
+The peaks in the [benchmark](#foldjax-against-upstream) are the defaults at
+work; nothing below needs to be set to reach them.
 
-- **Row-block the pair transition and triangle attention** -- both are
-  row-independent, so blocking bounds the widened intermediates and the cubic
-  score tensor at identical arithmetic. The block is a row count (25 at the
-  sweet spot), not a byte budget.
-- **Keep triangle-mul projections in the trunk's dtype** and accumulate via
-  `preferred_element_type` -- float32 results, half the operand bytes.
-- **Return summaries, not logits**: the full-bin PAE/PDE logits are
-  `[samples, N, N, 64]` entry outputs that stay resident all run; every port
-  now scores in-graph and returns what its writer reads.
+- **Row-blocked pair stack.** The pair transition and triangle attention are
+  evaluated a block of rows at a time -- mathematically exact, so there is no
+  flag and no accuracy trade. Block sizes resolve from the token count.
+- **Native-dtype triangle projections**, accumulating in float32 through
+  `preferred_element_type`: float32 results at half the operand bytes.
+- **Summaries, not logits.** Confidence is reduced in-graph; the full-bin
+  PAE/PDE logits (`[samples, N, N, 64]` -- tens of GiB at long sequences) are
+  returned only on request.
 
-Representative: OpenDDE went from failing a 488-token job at 76 GiB to running
-it in ~10; the current cross-model numbers live in
-[FoldJAX against upstream](#foldjax-against-upstream), the full narrative in
-[docs/engineering-notes.md](docs/engineering-notes.md).
+Design notes: [docs/engineering-notes.md](docs/engineering-notes.md).
 
 ### A bfloat16 trunk (`--option trunk_dtype=bf16`)
 
@@ -328,22 +322,19 @@ Read it with the method in mind:
   numerical parity was established per port against a matched tape and is a
   separate exercise from this table.
 
-**Every upstream runs on the fastest path this card lets it reach.** Three of
-the four needed provisioning or could not reach their kernels at all, and each
-difference was large enough to change conclusions rather than shade them:
-[`bench/upstream-environments.md`](bench/upstream-environments.md) records what
-each virtualenv needed, what could not be fixed, and how to verify both.
-Boltz-2 needed nothing.
+**Every upstream runs on the fastest path this hardware lets it reach.**
+[`bench/upstream-environments.md`](bench/upstream-environments.md) records each
+virtualenv's provisioning, the kernels that cannot run on this card, and how to
+verify both.
 
 ### What the table says
 
 - **FoldJAX never uses more memory than the repository it reimplements.** The
-  closest rows are Protenix at 499 tokens (1.02x) and at 3,012 (1.08x, a row
-  that favoured upstream until the tri-mul scan landed); everywhere else the
-  margin is 1.22x to 2.19x.
+  closest rows are Protenix at 499 tokens (1.02x) and 3,012 (1.08x); everywhere
+  else the margin is 1.22x to 2.19x.
 - **At 3,012 tokens, four FoldJAX implementations run; one upstream does.**
-  Boltz-2's upstream was retried with `expandable_segments` and reached
-  96.2 GiB of the 97.9 GiB card before dying -- a capacity failure, not
+  Boltz-2's upstream reaches 96.2 GiB of the 97.9 GiB card even with
+  `expandable_segments` and still cannot allocate -- a capacity limit, not
   fragmentation -- at a size FoldJAX completes in 46.9 GiB. OpenDDE fails on
   both sides: its structural branch wants a single 16.11 GiB buffer at ~2x
   the token count, which is model shape, not implementation.
@@ -364,19 +355,6 @@ Boltz-2 needed nothing.
   pTM within 0.005, FoldJAX marginally higher as often as lower. Two of those
   agreements took real fixes, both found the same way and both described
   below.
-
-### The two confidence gaps, in one line each
-
-Both ports that disagreed with their upstream's confidence did so for real,
-found the same way -- stage-by-stage trunk comparison on shared features --
-and both are fixed: Protenix ran its MSA block's two sub-updates in the wrong
-order (identical shapes, compounding through recycling), and Boltz-2 fed a
-fixed top-1,024 MSA slice where upstream redraws the subsample on every
-recycle, ensembling over the whole alignment. The full investigations,
-including why the tests of the time could not catch either, are in
-[docs/engineering-notes.md](docs/engineering-notes.md), with two earlier
-benchmark claims retracted in
-[`bench/upstream-environments.md`](bench/upstream-environments.md).
 
 ## Python API
 
@@ -492,19 +470,12 @@ generation, where the weights go, what changes on a device whose shared memory
 the upstream Triton kernels do not fit — and why you want `uv sync --inexact`
 afterwards, since an exact sync removes the one package that cannot be locked.
 
-**OpenFold3 used to be the second**, for a reason vendoring removed: the port
-was published on no index, so naming it would have broken `uv sync` for everyone
-without that checkout. It is now carried at `foldjax.models.openfold3` and needs
-no extra to predict — it added no base dependency, because its inference path
-wanted only `jax`, `numpy`, `safetensors` and `gemmi`, all already here.
-
-Its *featurization* used to be the one thing in FoldJAX that was not
-self-contained: it delegated to upstream OpenFold3's data pipeline through a
-sibling checkout, so building features required a second repository. That
-pipeline is vendored now, at `models/openfold3/_upstream/` — upstream's own code,
-verbatim, under its own licence and in its own style. Featurization needs
-`--extra openfold3-preprocess` for the torch and lightning it imports;
-prediction needs neither.
+**OpenFold3** is carried at `foldjax.models.openfold3` and predicts with no
+extra: its inference path wants only `jax`, `numpy`, `safetensors` and `gemmi`,
+all already in the base set. Its featurization is vendored beside it at
+`models/openfold3/_upstream/` — upstream's own data pipeline, verbatim, under
+its own licence — and needs `--extra openfold3-preprocess` for the torch and
+lightning it imports; prediction needs neither.
 [docs/openfold3.md](docs/openfold3.md) has the detail and the current state of
 the port.
 
@@ -536,8 +507,7 @@ inside the test bodies instead, so they collect anywhere and skip at run time �
 the better arrangement of the two, since a skipped test is reported and an
 uncollected one is not.
 
-Two things the suite used to need from outside are now in the repository, so
-nothing skips for want of a package that is on no index. The shared ColabFold
+Nothing in the suite needs a package that is on no index. The shared ColabFold
 MMseqs2 client is `foldjax.search` — it has no third-party dependency, so
 carrying it costs nothing and `--msa-server` works out of the box. The real-PDB
 target loader is `tests/_foldbench`, kept under `tests/` rather than `src/`
