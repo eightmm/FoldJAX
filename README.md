@@ -31,7 +31,7 @@ Give it one job file and a model name. Weights, the input dialect, the output
 directory, and the XLA compile cache are all resolved for you.
 
 ```bash
-uv sync --extra cuda13 --extra torch-bridge --group dev
+uv sync --extra cuda13 --group dev
 uv run foldjax weights fetch --model boltz2      # download, verify, convert once
 uv run foldjax predict --model boltz2 --input job.yaml
 ```
@@ -237,8 +237,8 @@ installed; it searches against the ColabFold MMseqs2 server.
 keeps weights, assets and caches beside the source they belong to. `.gitignore`
 already covers the directory, and `$FOLDJAX_HOME` still outranks it.
 
-Conversion needs torch, which is why it is a separate step behind
-`--extra torch-bridge`. Prediction never imports it.
+Conversion reads the torch archives with FoldJAX's own deserializer, so it
+needs no torch either; the whole flow runs in the base environment.
 
 No weights are redistributed. Each file is downloaded from its own publisher
 under that project's terms, and nothing is fetched implicitly during prediction —
@@ -460,7 +460,7 @@ nothing under `~/.foldjax` is CUDA-generation-specific.
 
 ```bash
 uv sync --extra cuda13 --group dev                       # predict with any model
-uv sync --extra cuda13 --extra torch-bridge --group dev  # + convert checkpoints
+uv sync --extra cuda13 --extra alphafold3 --group dev    # + AlphaFold 3's runtime
 ```
 
 **The prediction environment is torch-free for every model.** Boltz-2's
