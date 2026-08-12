@@ -321,3 +321,16 @@ Plan, ranked by GiB per risk, for the next session:
   P4  u8-narrow the remaining one-hot args, cast back in-graph (bit-identical,
       ~-2 GiB on top of P1/P3).
   P5  Template python loop -> fori_loop carrying u (complementary bound).
+
+## P1' (in-graph zero template features) reverted -- it traded 5.95 for +28
+
+Measured, P2+P1' together: args 12.404 -> 6.456 exactly as planned, but temp
+39.10 -> 67.54 GiB and the real peak 60.8 -> 77.9 GiB (wall 804 -> 1,178 s).
+The folding assumption failed: the template feature concat mixes the rebuilt
+zeros with nonzero aatype one-hots, so `linear(at)` cannot fold, and the
+[N,N,108] per-template tensors that used to be read out of resident entry
+parameters through slice fusions now materialize in the temp arena instead.
+Entry-args bytes are cheaper than temp bytes here. Reverted (1349409); P2 (the
+tri-mul scan, -7.4 GiB real) stays. Same caveat now attached to P3: rebuilding
+`relp` in-graph must be the weight-split gather form that never materializes
+[N,N,139], or it will repeat this failure.
