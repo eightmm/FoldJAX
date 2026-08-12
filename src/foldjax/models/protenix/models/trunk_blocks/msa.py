@@ -191,7 +191,11 @@ def outer_product_mean(
         # output -- the sum runs over the MSA rows -- so the blocks are
         # independent and concatenating them reproduces the dense result.
         blocks = [
-            project(jax.lax.dynamic_slice_in_dim(a, start, min(chunk_size, n_token - start), axis=-2))
+            project(
+                jax.lax.dynamic_slice_in_dim(
+                    a, start, min(chunk_size, n_token - start), axis=-2
+                )
+            )
             for start in range(0, n_token, chunk_size)
         ]
         outer = jnp.concatenate(blocks, axis=-3)

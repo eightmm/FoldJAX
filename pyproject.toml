@@ -224,6 +224,7 @@ target-version = "py312"
 extend-exclude = [
     "src/foldjax/models/boltz2/data",
     "src/foldjax/models/openfold3/_upstream",
+    "src/foldjax/models/alphafold3/_upstream",
     # Byte-identical to upstream's `run_alphafold.py`, which a test asserts.
     "src/foldjax/backends/_alphafold3_upstream/run_alphafold.py",
 ]

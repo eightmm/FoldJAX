@@ -56,7 +56,7 @@ class _Stub:
         self.args = args
         self.kwargs = kwargs
 
-    def __call__(self, *args: Any, **kwargs: Any) -> "_Stub":
+    def __call__(self, *args: Any, **kwargs: Any) -> _Stub:
         return _Stub(*args, **kwargs)
 
     def __setstate__(self, state: Any) -> None:

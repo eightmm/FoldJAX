@@ -226,7 +226,8 @@ def scores(model: str, out: Path) -> list[dict]:
                 }
             )
     elif model == "openfold3":
-        # `<case>/seed_<derived>/<case>_seed_<n>_sample_<k>_confidences_aggregated.json`;
+        # `<case>/seed_<derived>/
+        #    <case>_seed_<n>_sample_<k>_confidences_aggregated.json`;
         # the derived seed is a deterministic hash of the requested 101.
         # `ptm` is the key the FoldJAX column also writes, so the report can
         # compare like with like; `avg_plddt` is 0-100 where FoldJAX's

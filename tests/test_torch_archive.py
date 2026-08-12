@@ -16,9 +16,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import ml_dtypes
+import ml_dtypes  # noqa: E402  (after the torch gate, on purpose)
 
-from foldjax import torch_archive
+from foldjax import torch_archive  # noqa: E402
 
 
 class _Hyper:
@@ -28,7 +28,7 @@ class _Hyper:
         self.learning_rate = 1e-3
 
 
-def _reference(tensor: "torch.Tensor") -> np.ndarray:
+def _reference(tensor: torch.Tensor) -> np.ndarray:
     tensor = tensor.detach().contiguous()
     if tensor.dtype == torch.bfloat16:
         return tensor.view(torch.uint16).numpy().view(ml_dtypes.bfloat16)
