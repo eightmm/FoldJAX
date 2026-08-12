@@ -122,7 +122,10 @@ def render(records: dict, out: Path, *, dark: bool) -> Path:
             )
             axis.set_xlim(0, 104)
         else:
-            axis.set_xlim(0, limit * 1.12)
+            # 28 s to 6,722 s in one panel: only a log axis keeps the small
+            # cells readable next to the kernel-less upstream hours.
+            axis.set_xscale("log")
+            axis.set_xlim(10, limit * 1.6)
         axis.set_title(title, color=fg, fontsize=11)
         axis.set_xlabel(unit, color=fg, fontsize=9)
         axis.tick_params(colors=fg, labelsize=9)
