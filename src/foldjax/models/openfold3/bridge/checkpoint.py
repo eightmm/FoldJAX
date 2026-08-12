@@ -76,12 +76,12 @@ def load_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
         raw: Mapping[str, Any] = load_file(str(path))
     else:
         try:
+            import torch
+        except ImportError:
             from foldjax import torch_archive
 
             loaded = torch_archive.load(path)
-        except Exception:
-            import torch
-
+        else:
             loaded = torch.load(str(path), map_location="cpu", weights_only=False)
         raw = unwrap_state_dict(loaded)
 

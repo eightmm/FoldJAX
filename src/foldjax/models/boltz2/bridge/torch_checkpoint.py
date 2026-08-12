@@ -8,17 +8,17 @@ from typing import Any
 
 
 def _load_torch_checkpoint(path: Path) -> dict[str, Any]:
+    # Real torch when it is importable, FoldJAX's own reader when it is not.
+    # The two are bit-identical on every tensor (tests/test_torch_archive.py),
+    # but the parity suites feed this state into *torch modules*, which want
+    # torch tensors -- so torch keeps priority wherever it exists.
     try:
+        import torch
+    except ImportError:
         from foldjax import torch_archive
 
         checkpoint = torch_archive.load(path)
-    except Exception:
-        try:
-            import torch
-        except ImportError as exc:  # pragma: no cover - optional extra
-            msg = "This checkpoint needs real torch; install the torch-bridge extra."
-            raise SystemExit(msg) from exc
-
+    else:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, dict):
         msg = f"Expected checkpoint dict, got {type(checkpoint).__name__}"

@@ -27,12 +27,12 @@ def load_torch_checkpoint(path: str | Path) -> Any:
         raise FileNotFoundError(f"missing checkpoint: {checkpoint_path}")
 
     try:
+        import torch
+    except ImportError:
         from foldjax import torch_archive
 
         checkpoint = torch_archive.load(checkpoint_path)
-    except Exception:
-        import torch
-
+    else:
         checkpoint = torch.load(
             str(checkpoint_path),
             map_location="cpu",

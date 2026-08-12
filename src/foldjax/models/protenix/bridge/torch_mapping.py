@@ -1176,17 +1176,16 @@ def load_torch_checkpoint(path: str | Path) -> ProtenixInferenceParams:
     Protenix saves them. Never point this at an untrusted file.
     """
 
-    from foldjax import torch_archive
-
+    # Real torch when importable (the parity suites feed torch modules from
+    # this state), FoldJAX's own reader otherwise -- bit-identical either way
+    # (tests/test_torch_archive.py), so conversion needs no torch installed.
     try:
-        # Torch-free by default: the archive reader returns NumPy tensors and
-        # stubs everything it does not know, so it is stricter than
-        # `weights_only=False` while needing no torch at all. Verified
-        # bit-identical against torch.load on the released checkpoint.
-        obj = torch_archive.load(path)
-    except Exception:
         import torch
+    except ImportError:
+        from foldjax import torch_archive
 
+        obj = torch_archive.load(path)
+    else:
         obj = torch.load(str(path), map_location="cpu", weights_only=False)
     if isinstance(obj, Mapping) and "model" in obj:
         state_dict = obj["model"]
