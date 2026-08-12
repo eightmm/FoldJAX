@@ -651,20 +651,44 @@ trunk that is bfloat16 throughout costs.
 
 ## Python API
 
+One request type, every model. The knobs a request carries are model-neutral:
+the same spelling means the same thing whichever backend runs it, and a knob a
+backend cannot honour raises instead of silently doing something else.
+
 ```python
 from foldjax import PredictionRequest, predict
 
 result = predict(
     PredictionRequest(
-        model="protenix",
-        input="job.yaml",
-        num_samples=5,
+        model="protenix",          # boltz2 / opendde / openfold3 / alphafold3
+        input="job.yaml",          # FoldJAX job, or the model's native format
+        output_dir="out/",
         seed=42,
+        # Sampling, in one vocabulary. None keeps that backend's default.
+        num_samples=5,
+        num_steps=200,
+        num_recycles=10,
+        max_msa_depth=8192,
+        # Execution, likewise: dtype, matmul_precision, triangle_kernel,
+        # attention_kernel. "auto" is the fastest path this build can run --
+        # never a silent fallback to a slower one.
+        options={"dtype": "bfloat16", "triangle_kernel": "auto"},
     )
 )
 for sample in result.samples:
     print(sample.structure_path, sample.scores)
 ```
+
+`sample.scores` carries that model's released confidence summaries (pLDDT,
+pTM/ipTM, ranking) per structure. The native option spellings each port grew
+up with (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and warn once;
+`foldjax.execution.KNOBS` lists the neutral vocabulary.
+
+Programs return summaries, not raw tensors, by default: the full-bin PAE/PDE
+logits are `[n_samples, N, N, 64]` -- tens of GiB at long sequences -- so they
+stay out of the outputs unless asked for (`return_confidence_logits=True` on
+the Boltz-2 library API, `--include-raw` on the Protenix/OpenDDE CLIs, the raw
+`.npz` formats elsewhere).
 
 `foldjax.resolve_request` applies every default without running anything, and
 `foldjax.capabilities(model)` reports the input formats, entity types, and
