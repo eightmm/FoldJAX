@@ -194,28 +194,49 @@ def _triangle_contract(
     # destination has to be float32 too or every block would be rounded back
     # down on the way in.
     axis = -3 if direction == "outgoing" else -2
-    # Written into a preallocated destination rather than concatenated.
-    # `jnp.concatenate(blocks)` handed XLA a concat-of-gemm-outputs, which it
-    # rewrote back into whole-tensor gemms over a concat of the inputs -- at
-    # 3,012 tokens the template stack's a-side projections came back as four
-    # simultaneous bf16[128, 4*N^2] operands, 34.6 GiB of temp arena, and the
-    # chunking bought nothing. The Boltz-2 port's `.at[].set()` form
-    # (boltz2/models/triangle/triangle_attention.py) is the shape XLA leaves
-    # alone; verified on the compiled 3,012-token program's buffer assignment.
-    out: jnp.ndarray | None = None
-    for start in range(0, n, chunk_size):
-        size = min(chunk_size, n - start)
+    # A real `lax.scan` over the row blocks, not an unrolled Python loop. The
+    # unrolled form -- whether it concatenated the block outputs or wrote them
+    # into a preallocated destination -- left XLA free to merge the per-block
+    # `project_a` gemms horizontally: same weights, slices of the same tensor,
+    # so it reassembled the operand and ran whole-width gemms. At 3,012 tokens
+    # the template stack's a-side projections came back as four simultaneous
+    # bf16[128, 4*N^2] operands, 34.6 GiB of temp arena, and the chunking
+    # bought nothing (verified twice on the compiled program's buffer
+    # assignment, once per form). Iterations of one loop body cannot be
+    # merged, so inside a scan the projection exists one block at a time by
+    # construction. The row axis is padded to a whole number of blocks (mask
+    # is zero-padded, so the padded rows project to zeros) and the result is
+    # sliced back.
+    pad = (-n) % chunk_size
+    z_blocked = z_norm
+    mask_blocked = mask
+    if pad:
+        widths = [(0, 0)] * z_norm.ndim
+        widths[axis % z_norm.ndim] = (0, pad)
+        z_blocked = jnp.pad(z_norm, widths)
+        mask_blocked = jnp.pad(mask, widths)
+
+    def body(out: jnp.ndarray, start: jnp.ndarray):
         a_block = project_a(
-            jax.lax.dynamic_slice_in_dim(z_norm, start, size, axis=axis),
-            jax.lax.dynamic_slice_in_dim(mask, start, size, axis=axis),
+            jax.lax.dynamic_slice_in_dim(z_blocked, start, chunk_size, axis=axis),
+            jax.lax.dynamic_slice_in_dim(mask_blocked, start, chunk_size, axis=axis),
         )
         block = _triangle_contract_block(a_block, b, direction).astype(jnp.float32)
-        if out is None:
-            shape = list(block.shape)
-            shape[-3] = n
-            out = jnp.zeros(shape, dtype=jnp.float32)
-        out = jax.lax.dynamic_update_slice_in_dim(out, block, start, axis=-3)
-    assert out is not None
+        return (
+            jax.lax.dynamic_update_slice_in_dim(out, block, start, axis=-3),
+            None,
+        )
+
+    shape = list(z_norm.shape)
+    shape[-3] = n + pad
+    shape[-1] = b.shape[-1]
+    out, _ = jax.lax.scan(
+        body,
+        jnp.zeros(shape, dtype=jnp.float32),
+        jnp.arange(0, n + pad, chunk_size),
+    )
+    if pad:
+        out = jax.lax.slice_in_dim(out, 0, n, axis=-3)
     return out
 
 
