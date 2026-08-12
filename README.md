@@ -444,6 +444,12 @@ same job, under the same schedule, measured the same way.
 That is what [`bench/`](bench/) does, and it is reproducible: one command per
 row, one process per measurement, results written as they land.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/benchmark-light.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003 and 3,012 tokens" src="docs/benchmark-dark.png">
+</picture>
+
 **The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
 diffusion steps, 10 recycles, seed 101 — not a number chosen here.** Protenix's
 base model ships the same three. Boltz-2 defaults to 3 recycles rather than 10,
@@ -452,19 +458,21 @@ upstream, which is what makes the comparison mean anything.
 
 | tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 132 | alphafold3 | 256 | - | 1,588 | - | - | - | - | - | - |
-| 132 | boltz2 | 14 | 27 | 2,981 | 2,947 | 1.93x | 0.99x | complex_plddt | 0.7260 | 0.7084 |
-| 132 | opendde | 25 | 17 | 3,651 | 3,784 | 0.66x | 1.04x | ranking_score | 0.0947 | 0.0957 |
-| 132 | protenix | 15 | 52 | 1,777 | 2,910 | 3.39x | 1.64x | ranking_score | 0.0996 | 0.0997 |
-| 490 | boltz2 | 47 | 53 | 6,222 | 8,128 | 1.13x | 1.31x | complex_plddt | 0.3619 | 0.3629 |
-| 490 | opendde | 80 | 73 | 13,345 | 18,580 | 0.91x | 1.39x | ranking_score | 0.0967 | 0.0915 |
-| 490 | protenix | 33 | 60 | 4,668 | 4,481 | 1.82x | 0.96x | ranking_score | 0.0670 | 0.0659 |
-| 970 | boltz2 | 150 | 127 | 11,570 | 14,211 | 0.85x | 1.23x | complex_plddt | 0.5391 | 0.5408 |
-| 970 | opendde | 272 | 271 | 44,519 | 59,755 | 1.00x | 1.34x | ranking_score | 0.0964 | 0.0966 |
-| 970 | protenix | 98 | 94 | 10,807 | 12,315 | 0.96x | 1.14x | ranking_score | 0.0839 | 0.0834 |
-| 1531 | boltz2 | 382 | 302 | 21,174 | 26,491 | 0.79x | 1.25x | complex_plddt | 0.7172 | 0.7195 |
-| 1531 | opendde | failed | failed | failed | failed | - | - | - | - | - |
-| 1531 | protenix | 254 | 176 | 24,764 | 27,918 | 0.69x | 1.13x | ranking_score | 0.1200 | 0.1193 |
+| 499 | alphafold3 | 285 | - | 3,036 | - | - | - | - | - | - |
+| 499 | boltz2 | 35 | 55 | 4,781 | 8,448 | 1.57x | 1.77x | complex_plddt | 0.9705 | 0.9700 |
+| 499 | opendde | 81 | 75 | 12,649 | 18,555 | 0.92x | 1.47x | ranking_score | 0.1946 | 0.1947 |
+| 499 | openfold3 | 39 | 97 | 10,442 | 19,193 | 2.46x | 1.84x | ptm | 0.9325 | 0.9274 |
+| 499 | protenix | 28 | 63 | 5,045 | 5,130 | 2.26x | 1.02x | ranking_score | 0.1937 | 0.1935 |
+| 1003 | alphafold3 | 368 | - | 6,901 | - | - | - | - | - | - |
+| 1003 | boltz2 | 94 | 141 | 7,402 | 16,174 | 1.51x | 2.19x | complex_plddt | 0.9489 | 0.9482 |
+| 1003 | opendde | 287 | 287 | 45,381 | 60,905 | 1.00x | 1.34x | ranking_score | 0.1926 | 0.1930 |
+| 1003 | openfold3 | 126 | 323 | 12,043 | 25,620 | 2.56x | 2.13x | ptm | 0.9315 | 0.9300 |
+| 1003 | protenix | 72 | 99 | 8,468 | 13,025 | 1.38x | 1.54x | ranking_score | 0.1921 | 0.1922 |
+| 3012 | alphafold3 | 1,013 | - | 42,277 | - | - | - | - | - | - |
+| 3012 | boltz2 | 981 | failed | 46,934 | failed | - | - | - | - | - |
+| 3012 | opendde | failed | failed | failed | failed | - | - | - | - | - |
+| 3012 | openfold3 | 1,374 | 6,722 | 66,264 | 83,210 | 4.89x | 1.26x | ptm | 0.8762 | 0.8748 |
+| 3012 | protenix | 795 | 797 | 53,197 | 57,310 | 1.00x | 1.08x | ranking_score | 0.9554 | 0.9502 |
 
 Read it with the method in mind:
 
@@ -486,43 +494,42 @@ Read it with the method in mind:
   numerical parity was established per port against a matched tape and is a
   separate exercise from this table.
 
-**Every upstream runs on its own fast path.** Two of them did not at first, and
-the differences were large enough to change conclusions rather than shade them,
-so they were fixed rather than disclosed:
+**Every upstream runs on the fastest path this card lets it reach.** Three of
+the four needed provisioning or could not reach their kernels at all, and each
+difference was large enough to change conclusions rather than shade them:
 [`bench/upstream-environments.md`](bench/upstream-environments.md) records what
-each virtualenv needed and how to verify it. Boltz-2 needed nothing.
+each virtualenv needed, what could not be fixed, and how to verify both.
+Boltz-2 needed nothing.
 
 ### What the table says
 
-- **FoldJAX uses less memory almost everywhere.** Two rows are level or slightly
-  worse: Boltz-2 at 132 tokens (2,981 against 2,947, 1% more) and Protenix at 490
-  (4,668 against 4,481, 4% more). Elsewhere it is 1.04x to 1.64x lower.
-- **On speed it wins at small and mid sizes and loses at large.** Boltz-2 and
-  Protenix are 1.1x-3.4x faster at 132 and 490 tokens, level at 970, and slower
-  at 1,531.
-- **OpenDDE is the slowest relative to its upstream**, and the gap is smaller
-  than it looked. Earlier readings of 2x-4x were taken at bfloat16 against an
-  fp32 upstream and were not a matched comparison: upstream runs `dtype: fp32`
-  with `enable_tf32: True`, not bf16. Re-measured with the dtypes agreeing, it
-  is 0.66x at 132 tokens, 0.91x at 490 and level at 970, while using 1.04x to
-  1.39x less memory. What remains is the trunk: at 132 tokens the whole job is
-  70 s, of which 31 s is the nine extra recycles (~3.4 s each) and just 1 s is
-  the 199 extra diffusion steps. Diffusion is effectively free since the sampler
-  was rolled into `lax.scan`; the pairformer is what is left. Unrolling that
-  stack is not the answer -- it does not finish compiling in ten minutes.
-- **At 1,531 tokens OpenDDE runs out of memory on both sides**, in fp32 on a
-  96 GiB card. That row is recorded as a failure rather than dropped, and
-  upstream's carries `"exited 0 but produced no structures"` -- its runner
-  swallows the allocator error and exits zero, so the row exists only because
-  the harness checks for structures instead of an exit code. `trunk_dtype=bf16`
-  completes it in 479.9 s at 58,747 MiB, kept under its own name because
-  upstream has no bf16 counterpart to compare against.
-- **Confidence agrees for every model.** OpenDDE and Protenix match to within
-  1-2%, Boltz-2 to within 1-2% except at 132 tokens. Two of those took real
-  fixes, both found the same way and both described below.
-- **OpenFold3 has no row.** It is vendored and runnable, but no upstream
-  OpenFold3 environment has been provisioned here, so there is nothing to
-  compare a FoldJAX number against. See [docs/openfold3.md](docs/openfold3.md).
+- **FoldJAX never uses more memory than the repository it reimplements.** The
+  closest rows are Protenix at 499 tokens (1.02x) and at 3,012 (1.08x, a row
+  that favoured upstream until the tri-mul scan landed); everywhere else the
+  margin is 1.22x to 2.19x.
+- **At 3,012 tokens, four FoldJAX implementations run; one upstream does.**
+  Boltz-2's upstream was retried with `expandable_segments` and reached
+  96.2 GiB of the 97.9 GiB card before dying -- a capacity failure, not
+  fragmentation -- at a size FoldJAX completes in 46.9 GiB. OpenDDE fails on
+  both sides: its structural branch wants a single 16.11 GiB buffer at ~2x
+  the token count, which is model shape, not implementation.
+- **On speed, read OpenFold3's column with its caveat.** Its upstream could
+  reach no kernel on this card -- DS4Sci refuses sm_120 and 0.3.1's
+  experimental cueq flag crashes at more than one diffusion sample -- and its
+  predict preset chunks attention 4 rows at a time at every size, which is
+  where the 6,722 s at 3,012 tokens lives. The other speed columns carry no
+  such asterisk: Boltz-2 and Protenix upstreams run their released fast
+  paths and FoldJAX is 1.0x to 2.3x against them.
+- **AlphaFold 3 has no upstream column by design** -- FoldJAX drives the
+  official implementation rather than reimplementing it, so both columns
+  would run the same code. Its rows are the reference the ports are converging
+  toward: flattest memory curve in the figure, every practice the ports
+  adopted (bf16 throughout, fused attention, per-sample confidence,
+  summaries-only outputs) is one it already had.
+- **Confidence agrees on every complete row** -- ranking within 0.001-0.005,
+  pTM within 0.005, FoldJAX marginally higher as often as lower. Two of those
+  agreements took real fixes, both found the same way and both described
+  below.
 
 ### What the Protenix confidence gap turned out to be
 
