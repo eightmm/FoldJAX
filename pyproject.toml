@@ -270,4 +270,11 @@ markers = [
 # line its 367 statements took the total from 87% to 76.6% and failed CI --
 # which would have read as the orchestration layer regressing, when nothing
 # there had changed.
-omit = ["*/foldjax/models/*", "*/foldjax/search/*"]
+# `_alphafold3_upstream/run_alphafold.py` is DeepMind's runner, verbatim -- a
+# test asserts byte identity with upstream -- so measuring its lines would put
+# 320 vendored statements (16% of the denominator) on the orchestration gate.
+omit = [
+    "*/foldjax/models/*",
+    "*/foldjax/search/*",
+    "*/foldjax/backends/_alphafold3_upstream/*",
+]

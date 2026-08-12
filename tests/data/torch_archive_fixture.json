@@ -1,0 +1,51 @@
+{
+ "w": {
+  "dtype": "float32",
+  "shape": [
+   3,
+   5
+  ],
+  "bytes": "1bfcb1bf70b350bf6910a4be6edc3c3f336ee0bf6d711a3f5f0081be18e8dfbe57a112bf39f24cc06632103f97785c3e178e0cc036d45dbebae539bf"
+ },
+ "h": {
+  "dtype": "float16",
+  "shape": [
+   4,
+   2
+  ],
+  "bytes": "633ff5337234793e7ab35bbdeeab4fb4"
+ },
+ "b": {
+  "dtype": "bfloat16",
+  "shape": [
+   2,
+   3
+  ],
+  "bytes": "663f4d3f03bfd6be593ffe3f"
+ },
+ "i": {
+  "dtype": "int64",
+  "shape": [
+   7
+  ],
+  "bytes": "0000000000000000010000000000000002000000000000000300000000000000040000000000000005000000000000000600000000000000"
+ },
+ "flag": {
+  "dtype": "bool",
+  "shape": [],
+  "bytes": "01"
+ },
+ "scalar": {
+  "dtype": "float32",
+  "shape": [],
+  "bytes": "0000003f"
+ },
+ "view": {
+  "dtype": "float32",
+  "shape": [
+   3,
+   3
+  ],
+  "bytes": "0000c0400000004100002041000040410000604100008041000090410000a0410000b041"
+ }
+}

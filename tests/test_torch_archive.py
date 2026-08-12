@@ -11,14 +11,38 @@ without it -- which is exactly the environment the reader exists for.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import ml_dtypes
 import numpy as np
 import pytest
 
+from foldjax import torch_archive
+
+_FIXTURE = Path(__file__).parent / "data" / "torch_archive_fixture.pt"
+
+
+def test_reads_the_checked_in_archive_without_torch() -> None:
+    """The reader's home environment has no torch, so neither does this test.
+
+    The fixture was written once by `torch.save` (seed 101) and committed with
+    its expected bytes beside it; the assertion is bitwise, dtype for dtype --
+    bfloat16 included, which NumPy alone cannot even spell without ml_dtypes.
+    """
+    expected = json.loads(_FIXTURE.with_suffix(".json").read_text())
+    loaded = torch_archive.load(_FIXTURE)
+    assert loaded["epoch"] == 3
+    state = loaded["state_dict"]
+    assert set(state) == set(expected)
+    for key, spec in expected.items():
+        got = state[key]
+        assert str(got.dtype) == spec["dtype"], key
+        assert list(got.shape) == spec["shape"], key
+        assert got.tobytes() == bytes.fromhex(spec["bytes"]), key
+
+
 torch = pytest.importorskip("torch")
-
-import ml_dtypes  # noqa: E402  (after the torch gate, on purpose)
-
-from foldjax import torch_archive  # noqa: E402
 
 
 class _Hyper:
