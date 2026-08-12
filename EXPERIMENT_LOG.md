@@ -260,3 +260,17 @@ Where OF3's extra weight actually is:
 
 Verdict: no protenix-style redundancy left in OF3; the curve difference is the
 fp32 trunk contract plus a consumer-backed distogram output.
+
+## OpenFold3 upstream column filled; table complete (2026-08-12)
+
+    tokens  FoldJAX          upstream (0.3.1, plain torch)   speed  memory
+    499     39 s / 10,442    97 s / 19,193                   2.46x  1.84x
+    1003    126 / 12,043     323 / 25,620                    2.56x  2.13x
+    3012    1,374 / 66,264   6,782 / 81,011                  4.94x  1.22x
+
+ptm agrees per row (0.9325/0.9274, 0.9315/0.9300, 0.8762/0.8749): same model,
+same weights, both sides. Caveat recorded in upstream-environments.md: this
+upstream ran kernel-less (DS4Sci refuses sm_120; its cueq flag is broken at
+n_samples>1), so the speed column is generous to FoldJAX here in a way the
+other rows are not. The remaining blanks are all structural: AF3's column is
+the same code by design, boltz2/opendde 3012 upstreams are real OOMs.

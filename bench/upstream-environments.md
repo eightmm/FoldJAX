@@ -141,3 +141,18 @@ kernels and fail with "no kernel image is available" — OpenDDE's runner
 reporting success while doing so. Both virtualenvs were already upgraded to
 `2.12.0+cu130` before this work; that is a deviation from their pins and is the
 only way either runs on this card.
+
+## OpenFold3 (added 2026-08-12)
+
+Runs from the `openfold3-v031` worktree (tag 0.3.1): `of3_ft3_v1.pt` -- the
+weights the FoldJAX port runs -- is the legacy p1 checkpoint with
+`version_compatibility="<0.4"`, and the 0.4.4 checkout refuses it. The
+`pae_enabled` preset must be on (the checkpoint carries the PAE head; 0.3.1
+builds it only under that preset).
+
+Kernels: none. The default DS4Sci `evoformer_attn` fails its cutlass JIT on
+sm_120, and the experimental `use_cueq_triangle_kernels` path crashes in the
+confidence stack at `num_diffusion_samples > 1` (bias batched over samples
+where the kernel demands (B, 1, H, S, S)). Plain torch attention is the only
+configuration 0.3.1 completes on this card, so its timing column carries that
+caveat -- unlike the other upstreams, which all reached their fast paths.
