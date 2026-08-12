@@ -544,6 +544,30 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     # Keeping unread [n_sample, N, N, 64] logits as program outputs held 21.6
     # GiB at 3,012 tokens (EXPERIMENT_LOG: the 84.1 vs 57.3 attribution).
     wants_raw = args.output_format in ("npz", "both")
+    # An all-zero template pair feature is 5.95 GiB of literal zeros at 3,012
+    # tokens, held resident as entry parameters for the whole run. The values
+    # are rebuilt in-graph (template.py `pair_feature`), so dropping them here
+    # is value-identical; the check is on the array itself, not on how the job
+    # was written.
+    for job in jobs:
+        features = job["features"]
+        dropped = {
+            name
+            for name in (
+                "template_distogram",
+                "template_unit_vector",
+                "template_pseudo_beta_mask",
+                "template_backbone_frame_mask",
+            )
+            if name in features and not features[name].any()
+        }
+        if dropped:
+            job["features"] = {
+                name: value
+                for name, value in features.items()
+                if name not in dropped
+            }
+
     for job, seeds in zip(jobs, job_seeds, strict=True):
         features = job["features"]
         guidance_features = None
