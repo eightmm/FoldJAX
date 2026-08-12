@@ -349,3 +349,27 @@ What was tried and reverted with reasons recorded: the zero-template arg drop
 (P1', traded 5.95 args for +28 temp). Deferred with a design constraint: relp
 gather (P3) and u8 args (P4). The table now has no FoldJAX memory cell below
 1.0x anywhere.
+
+## AlphaFold 3 vendoring, phase 1 (2026-08-12)
+
+Upstream AF3 source is Apache-2.0 (weights terms are separate), so it now
+lives verbatim at `models/alphafold3/_upstream/alphafold3` -- 1.7 MB: 86 .py,
+19 .cc, CMakeLists, LICENSE, NOTICE; excluded: test_data, the two 513 MB CCD
+pickles (store-bound), compiled artifacts. Imports resolve through a
+`sys.modules` shim (`ensure_registered`) rather than the OpenFold3-style
+rewrite, because the pybind modules are compiled as `alphafold3.*` and a
+rewritten tree would strand them; an installed distribution still wins.
+The `alphafold3` extra now carries its runtime (haiku/absl/etils/tqdm/zstd);
+jax/rdkit/tokamax were already compatible, and upstream's jax[cuda12] pin
+never applies to vendored source.
+
+Verified: the model stack imports from the vendored tree up to the compiled
+boundary -- `constants/chemical_components -> alphafold3.cpp.cif_dict` is the
+first pybind touch. Remaining phases: (2) fetch-time extension build (CMake
+FetchContents abseil/pybind11/libcifpp/dssp; same class of one-time install
+step as a weight download) with artifacts in the store; (3) CCD pickles into
+the store; (4) backend in-process path through the vendored code, replacing
+the external-install requirement.
+
+Also learned the hard way: `uv sync` without `--inexact` removes the manually
+installed external alphafold3 -- it did, mid-session; a rebuild is running.
