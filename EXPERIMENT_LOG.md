@@ -274,3 +274,50 @@ upstream ran kernel-less (DS4Sci refuses sm_120; its cueq flag is broken at
 n_samples>1), so the speed column is generous to FoldJAX here in a way the
 other rows are not. The remaining blanks are all structural: AF3's column is
 the same code by design, boltz2/opendde 3012 upstreams are real OOMs.
+
+## Protenix 3012 gap: multi-agent + two-family peer synthesis (2026-08-12)
+
+Consulted codex (gpt-5.6-sol) and antigravity via `oms peer-ask`, cross-checked
+by three local read-only agents against the on-disk buffer assignment. Ground
+truth overturned both peers' top guesses:
+
+1. **The four 8.65-GiB bf16[128, 4*N^2] buffers are the TEMPLATE stack's
+   tri-mul a-side projections** (gate+value x2; K=64=template c_z identifies
+   it -- triangle.py:104-117's cueq guard rejects exactly this stack). XLA
+   merged the 32-row chunked gemms back into whole-tensor gemms across all 95
+   blocks and all 4 unrolled templates (concat-of-gemms -> gemm-of-concat),
+   so the chunk knob demonstrably reaches the code and buys nothing there.
+   ~34.6 GiB of the 46.5 GiB arena, live at once.
+2. **The bench job has NO templates.** Args hold 5.98 GiB of literal zeros
+   (template_distogram 5.27 all-zero, masks, token_bonds), and the template
+   stack burns its 34.6 GiB computing on those zeros. MAX_TEMPLATES=4 shapes
+   everything.
+3. **The args story was misattributed in this log**: MSA is 0.551 GiB (4.4%),
+   not the 12.4; `relp` (4.70 GiB) is a one-hot reconstructible in-graph from
+   60 KB of metadata (consumers are bias-free linears = embedding gathers);
+   cycle_msa_features contribute zero (bench runs full-depth MSA) and would
+   ADD ~6.7 GiB as implemented.
+4. **bf16-native cueq FFI is a phantom lever**: the binding is already
+   dtype-polymorphic (verified bf16-in/bf16-out on this card); the only f32
+   residual is the vendor's bias promotion, forced on cc 12.0 (no sm100f) and
+   unreachable from FoldJAX. `_cueq.py:16`'s "takes float32" comment misleads.
+5. Donation: alias 0.0 today, outputs (0.37) cannot absorb 5-GiB args, and
+   the CLI reuses `features` across seeds -- not a lever (codex agreed).
+
+Plan, ranked by GiB per risk, for the next session:
+  P1  Host-side template gate (boltz2's `use_template` pattern, api.py:275):
+      skip the template stack and its zero features when no template is real.
+      First verify what upstream torch does with zero templates -- if its
+      masked template reduction yields an exactly-zero pair update, skipping
+      is numerics-identical; if upstream always runs the stack, match
+      upstream instead and rely on P2. Expected for template-free jobs:
+      arena -34.6, args -5.98.
+  P2  Make `_triangle_contract`'s block loop a real loop (fori/scan writing
+      via .at[].set, boltz2 triangle.py:120-123 shape) so XLA cannot invert
+      the chunking; bounds the a-side operand at [32,N,128] ~ 25 MiB even
+      with real templates. Watch the 3012 = 94*32+4 remainder.
+  P3  Reconstruct `relp` in-graph from the five s32[3012] vectors (-4.70 GiB,
+      ~1 ulp; JAX prunes the dead argument automatically).
+  P4  u8-narrow the remaining one-hot args, cast back in-graph (bit-identical,
+      ~-2 GiB on top of P1/P3).
+  P5  Template python loop -> fori_loop carrying u (complementary bound).
