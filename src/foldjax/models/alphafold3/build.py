@@ -106,6 +106,15 @@ def ensure_extensions() -> Path:
                     target = _PACKAGE / Path(name).name
                     with archive.open(name) as src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst)
+                # The pybind module statically links libcifpp, which reads its
+                # component dictionaries from a data directory at import; the
+                # wheel carries them under share/. They land beside the source
+                # and the shim points LIBCIFPP_DATA_DIR at them.
+                elif name.startswith("share/libcifpp/"):
+                    target = _UPSTREAM / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(name) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
     built = compiled_module()
     if built is None:
         raise RuntimeError("the AlphaFold 3 extension build produced no cpp*.so")

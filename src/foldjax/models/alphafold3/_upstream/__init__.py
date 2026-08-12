@@ -24,5 +24,14 @@ def ensure_registered() -> None:
         return
     if importlib.util.find_spec("alphafold3") is not None:
         return
+    import os
+    from pathlib import Path
+
+    data = Path(__file__).parent / "share" / "libcifpp"
+    if data.is_dir():
+        # The compiled half statically links libcifpp and resolves its
+        # component dictionaries through this variable when nothing is
+        # installed system-wide.
+        os.environ.setdefault("LIBCIFPP_DATA_DIR", str(data))
     module = importlib.import_module(f"{__name__}.alphafold3")
     sys.modules["alphafold3"] = module
