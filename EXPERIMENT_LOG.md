@@ -334,3 +334,18 @@ Entry-args bytes are cheaper than temp bytes here. Reverted (1349409); P2 (the
 tri-mul scan, -7.4 GiB real) stays. Same caveat now attached to P3: rebuilding
 `relp` in-graph must be the weight-split gather form that never materializes
 [N,N,139], or it will repeat this failure.
+
+## Protenix memory fight: won at every size (final, 2026-08-12)
+
+    tokens  FoldJAX (this session's start -> end)   upstream   memory ratio
+    499     5,058 -> 5,045 MiB                      5,130      1.02x
+    1003    8,711 -> 8,468                          13,025     1.54x
+    3012    60,759 -> 53,197  (wall 804 -> 795 s)   57,310     0.94x -> 1.08x
+
+Cumulative at 3,012 across the whole audit: 84,106 -> 53,197 MiB (-37%), zero
+wall cost, ranking_score 0.9554 vs upstream 0.9502 throughout. What landed:
+output gating, per-sample confidence scoring, and the tri-mul block scan (P2).
+What was tried and reverted with reasons recorded: the zero-template arg drop
+(P1', traded 5.95 args for +28 temp). Deferred with a design constraint: relp
+gather (P3) and u8 args (P4). The table now has no FoldJAX memory cell below
+1.0x anywhere.
