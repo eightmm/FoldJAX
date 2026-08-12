@@ -105,7 +105,7 @@ request = PredictionRequest(model="protenix", input=job.write("job.json"))
 `Job.write` emits exactly the document above; `Job.read` takes either format
 back.
 
-## Choosing what to run
+## CLI
 
 ```bash
 uv run foldjax predict \
@@ -169,7 +169,7 @@ harmful on some Chai-style stacks -- so FoldJAX translates the knob but never
 imposes it. Per-model semantics and the measurements:
 [docs/engineering-notes.md](docs/engineering-notes.md).
 
-## Weights
+### Weights and setup
 
 Every upstream project publishes torch checkpoints; FoldJAX predicts from
 torch-free JAX weights. `foldjax weights` owns that gap — it downloads from each
@@ -203,7 +203,7 @@ runs in the base environment. No weights are redistributed — each file comes
 from its own publisher under that project's terms, and nothing is fetched
 implicitly during prediction.
 
-## GPU and the compile cache
+### GPU and the compile cache
 
 These graphs take minutes to compile and seconds to replay, so the persistent
 XLA cache is on by default and namespaced per model, weight identity, runtime
@@ -211,14 +211,85 @@ profile, and the options that actually change the compiled program. Different
 models and weight sets never share a cache entry, and options that only affect
 output formatting never fragment one.
 
-The old comparison that lived here -- a 35-residue job at one sample and
-20 steps, with three of its four upstream memory figures read off
-`nvidia-smi` -- has been replaced by
-[FoldJAX against upstream](#foldjax-against-upstream), which runs a real
-schedule at three sizes and measures both sides the same way.
-
 `--no-cache` turns it off for benchmark or ephemeral runs; `--cache-dir` moves
 the root. Every model also runs on CPU, slowly.
+
+## Python API
+
+Everything the CLI does, as one request type — and the same neutral
+vocabulary, so nothing below has a CLI-only or API-only spelling.
+
+```python
+from foldjax import PredictionRequest, predict
+
+result = predict(
+    PredictionRequest(
+        model="protenix",          # boltz2 / opendde / openfold3 / alphafold3
+        input="job.yaml",          # FoldJAX job, or the model's native format
+        output_dir="out/",
+        seed=42,
+        # Sampling, in one vocabulary. None keeps that backend's default.
+        num_samples=5,
+        num_steps=200,
+        num_recycles=10,
+        max_msa_depth=8192,
+        # Execution, likewise: dtype, matmul_precision, triangle_kernel,
+        # attention_kernel. "auto" is the fastest path this build can run --
+        # never a silent fallback to a slower one.
+        options={"dtype": "bfloat16", "triangle_kernel": "auto"},
+    )
+)
+for sample in result.samples:
+    print(sample.structure_path, sample.scores)
+```
+
+**One declaration, several runs.** Every axis that can name one thing can name
+several -- the plural spelling fans out, nothing else changes. `models` x
+`inputs` runs the cross product, each prediction into its own
+`output_dir/<model>/<input stem>` subtree; `seeds` reruns each under every
+seed. One result comes back per run, in declaration order:
+
+```python
+results = predict(
+    PredictionRequest(
+        models=("boltz2", "protenix", "openfold3"),
+        inputs=("kinase.yaml", "complex.yaml"),
+        seeds=(101, 102, 103),
+        num_samples=5,
+    )
+)  # 3 models x 2 inputs -> 6 results, each holding 3 seeds x 5 samples
+```
+
+The CLI spells it the same way: `foldjax predict --model boltz2 protenix
+--input kinase.yaml complex.yaml`.
+
+`sample.scores` carries that model's released confidence summaries. Native
+option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
+warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary. Predictions
+return summaries, not raw tensors -- the full-bin PAE/PDE logits are tens of
+GiB at long sequences and come back only on request
+(`return_confidence_logits=True`, `--include-raw`, or the raw `.npz` formats).
+
+Leave a sampling knob unset and each backend runs its own upstream's released
+default -- which differ, deliberately: matching each upstream is the whole
+point of the ports. What `None` means per model:
+
+| model | samples | steps | recycles | MSA depth |
+|---|---|---|---|---|
+| `alphafold3` | 5 | 200 | 10 | 1,024 rows (`evoformer.num_msa`) |
+| `boltz2` | **1** | 200 | **3** | uncapped -- the whole alignment |
+| `opendde` | 5 | 200 | 10 | 16,384 rows |
+| `openfold3` | 5 | 200 | **3** | 1,024 rows, subsampled |
+| `protenix` | 5 | 200 | 10 | 16,384 rows |
+
+The bench table below pins all five to one schedule (5 / 200 / 10) precisely
+because these defaults differ; set `num_recycles=10` on Boltz-2 and you are
+asking more of it than `boltz predict` does.
+
+`foldjax.resolve_request` applies every default without running anything, and
+`foldjax.capabilities(model)` reports the input formats, entity types, and
+sampling knobs a backend honours. Backend-specific output stays on
+`PredictionResult.raw`.
 
 ## FoldJAX against upstream
 
@@ -300,84 +371,6 @@ verify both.
   pTM within 0.005, FoldJAX marginally higher as often as lower. Two of those
   agreements took real fixes, both found the same way and both described
   below.
-
-## Python API
-
-One request type, every model. The knobs a request carries are model-neutral:
-the same spelling means the same thing whichever backend runs it, and a knob a
-backend cannot honour raises instead of silently doing something else.
-
-```python
-from foldjax import PredictionRequest, predict
-
-result = predict(
-    PredictionRequest(
-        model="protenix",          # boltz2 / opendde / openfold3 / alphafold3
-        input="job.yaml",          # FoldJAX job, or the model's native format
-        output_dir="out/",
-        seed=42,
-        # Sampling, in one vocabulary. None keeps that backend's default.
-        num_samples=5,
-        num_steps=200,
-        num_recycles=10,
-        max_msa_depth=8192,
-        # Execution, likewise: dtype, matmul_precision, triangle_kernel,
-        # attention_kernel. "auto" is the fastest path this build can run --
-        # never a silent fallback to a slower one.
-        options={"dtype": "bfloat16", "triangle_kernel": "auto"},
-    )
-)
-for sample in result.samples:
-    print(sample.structure_path, sample.scores)
-```
-
-**One declaration, several runs.** Every axis that can name one thing can name
-several -- the plural spelling fans out, nothing else changes. `models` x
-`inputs` runs the cross product, each prediction into its own
-`output_dir/<model>/<input stem>` subtree; `seeds` reruns each under every
-seed. One result comes back per run, in declaration order:
-
-```python
-results = predict(
-    PredictionRequest(
-        models=("boltz2", "protenix", "openfold3"),
-        inputs=("kinase.yaml", "complex.yaml"),
-        seeds=(101, 102, 103),
-        num_samples=5,
-    )
-)  # 3 models x 2 inputs -> 6 results, each holding 3 seeds x 5 samples
-```
-
-The CLI spells it the same way: `foldjax predict --model boltz2 protenix
---input kinase.yaml complex.yaml`.
-
-`sample.scores` carries that model's released confidence summaries. Native
-option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
-warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary. Predictions
-return summaries, not raw tensors -- the full-bin PAE/PDE logits are tens of
-GiB at long sequences and come back only on request
-(`return_confidence_logits=True`, `--include-raw`, or the raw `.npz` formats).
-
-Leave a sampling knob unset and each backend runs its own upstream's released
-default -- which differ, deliberately: matching each upstream is the whole
-point of the ports. What `None` means per model:
-
-| model | samples | steps | recycles | MSA depth |
-|---|---|---|---|---|
-| `alphafold3` | 5 | 200 | 10 | 1,024 rows (`evoformer.num_msa`) |
-| `boltz2` | **1** | 200 | **3** | uncapped -- the whole alignment |
-| `opendde` | 5 | 200 | 10 | 16,384 rows |
-| `openfold3` | 5 | 200 | **3** | 1,024 rows, subsampled |
-| `protenix` | 5 | 200 | 10 | 16,384 rows |
-
-The bench table below pins all five to one schedule (5 / 200 / 10) precisely
-because these defaults differ; set `num_recycles=10` on Boltz-2 and you are
-asking more of it than `boltz predict` does.
-
-`foldjax.resolve_request` applies every default without running anything, and
-`foldjax.capabilities(model)` reports the input formats, entity types, and
-sampling knobs a backend honours. Backend-specific output stays on
-`PredictionResult.raw`.
 
 ## Environment
 
