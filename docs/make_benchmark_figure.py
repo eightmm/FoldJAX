@@ -111,7 +111,14 @@ def render(records: dict, out: Path, *, dark: bool) -> Path:
             # this line, and FoldJAX's tallest bar clears it with room.
             axis.axvline(97.9, color=fg, linewidth=0.9, linestyle="--", zorder=1)
             axis.text(
-                97.9, -1.15, "97.9 GiB card", ha="center", fontsize=8, color=fg
+                96.6,
+                max(positions) + 0.55,
+                "97.9 GiB card",
+                rotation=90,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color=fg,
             )
             axis.set_xlim(0, 104)
         else:
