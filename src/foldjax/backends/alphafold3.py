@@ -39,7 +39,16 @@ def _runner_path(options: dict) -> Path:
         return path
     spec = importlib.util.find_spec("alphafold3")
     if spec is None or spec.origin is None:
-        raise ImportError("alphafold3 is not installed")
+        # No installed distribution: run the vendored copy. `ensure_ready`
+        # builds the pybind module and materializes the CCD pickles once --
+        # the same class of one-time step as fetching weights -- and the shim
+        # makes `import alphafold3` resolve to the vendored tree for this
+        # process. The vendored runner matches that revision by construction.
+        from foldjax.models.alphafold3 import _upstream, build
+
+        build.ensure_ready()
+        _upstream.ensure_registered()
+        return VENDORED_RUNNER
     # An editable install points into a checkout, whose root has the runner that
     # matches the package being imported. Prefer it: a checkout is the thing
     # someone edits or updates, and the vendored copy would silently be a
