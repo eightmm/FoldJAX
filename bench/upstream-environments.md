@@ -156,3 +156,18 @@ confidence stack at `num_diffusion_samples > 1` (bias batched over samples
 where the kernel demands (B, 1, H, S, S)). Plain torch attention is the only
 configuration 0.3.1 completes on this card, so its timing column carries that
 caveat -- unlike the other upstreams, which all reached their fast paths.
+
+### The two 3,012-token questions, answered by measurement (2026-08-12)
+
+**Boltz-2's OOM is capacity, not fragmentation.** With
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` the run reached 96.2 GiB of
+the 97.9 GiB card -- 15 GiB beyond its earlier fragmented peak -- and still
+died. The setting stays (it is how near-capacity torch should run) but the
+verdict stands: this model does not fit this card at 3,012 tokens upstream.
+
+**OpenFold3's 1.9-hour cell is its own shipped default, not our harness.**
+Disabling the confidence-head host offload (predict preset, token_cutoff
+2,800) moved 6,782 s to 6,722 s -- sixty seconds. The time lives in
+`chunk_size: 4`, which the predict preset applies at every size; 0.3.1 ships
+no larger-card preset. The offload stays off (peak 81.0 -> 83.2 GiB, still
+fits), and the wall-clock column simply is what upstream does here.
