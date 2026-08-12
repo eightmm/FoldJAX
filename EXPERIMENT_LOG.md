@@ -373,3 +373,12 @@ the external-install requirement.
 
 Also learned the hard way: `uv sync` without `--inexact` removes the manually
 installed external alphafold3 -- it did, mid-session; a rebuild is running.
+
+## OF3 pair-chunk sweep at 3,012: closed, no gain
+
+    auto(58): 1,374 s / 66,264 MiB    96: 1,370 / 66,309    128: 1,372 / 66,324
+    (ptm 0.8762 / 0.8743 / 0.8747 -- inside the rerun floor)
+
+The freed logits headroom bought nothing here: wall and peak are flat across a
+2.2x chunk range, so the 3,012-token cost is the fp32 trunk's arithmetic, not
+score-tensor traffic. `auto_pair_chunk_size` stays as is.
