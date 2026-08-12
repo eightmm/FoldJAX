@@ -117,6 +117,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     loaded = np.load(args.features, allow_pickle=False)
     raw, table = split_chemistry({name: loaded[name] for name in loaded.files})
     features = {name: jnp.asarray(value) for name, value in raw.items()}
+    # Completeness first: an incomplete file must fail here, before the
+    # chemistry rebuild below -- which imports the vendored upstream pipeline
+    # (torch) on a cold store and would turn a clear refusal into a
+    # ModuleNotFoundError.
+    missing = [name for name in MODEL_FEATURES if name not in features]
+    if missing:
+        print(f"features are incomplete; missing {missing}")
+        return 1
     if table is None:
         # Written before the table travelled with the features; rebuilding it needs
         # upstream, which is exactly what this path is meant to avoid.
@@ -127,10 +135,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from foldjax.models.openfold3.bridge.chemistry import representative_atom_table
 
         table = representative_atom_table()
-    missing = [name for name in MODEL_FEATURES if name not in features]
-    if missing:
-        print(f"features are incomplete; missing {missing}")
-        return 1
 
     n_token = features["token_mask"].shape[-1]
     n_atom = features["atom_mask"].shape[-1]

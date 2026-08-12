@@ -14,6 +14,8 @@ from tests._foldbench import TARGETS, by_size, load_target, parse_target
 from tests._foldbench.rcsb import UnsupportedEntityError
 from tests._foldbench.specs import openfold3_query
 
+pytest.importorskip("biotite", reason="real-deposition tests parse mmCIF with biotite")
+
 pytestmark = pytest.mark.network
 
 
