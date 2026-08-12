@@ -457,18 +457,17 @@ reproduces the torch featurizer exactly. `--extra boltz-preprocess` installs
 real torch so the two can be compared, which is what
 `tests/models/boltz2/test_featurize_torch_parity.py` does.
 
-One backend stays external because it cannot be vendored.
-
-**AlphaFold 3** is fully wired and runs from the same job file as the other
-five — `foldjax predict --model alphafold3 --input job.yaml` — but FoldJAX
-drives an installation you provide rather than carrying one. Its parameters are
-not redistributable, and upstream pins `jax[cuda12]`, which cannot co-resolve
-with a CUDA 13 cluster; the right JAX plugin differs per site. It is therefore
-deliberately absent from the dependency set.
-[docs/alphafold3.md](docs/alphafold3.md) has the install for either CUDA
-generation, where the weights go, what changes on a device whose shared memory
-the upstream Triton kernels do not fit — and why you want `uv sync --inexact`
-afterwards, since an exact sync removes the one package that cannot be locked.
+**AlphaFold 3** is carried at `foldjax.models.alphafold3` — upstream's source,
+vendored verbatim under its Apache-2.0 licence, imported under its own name —
+and runs from the same job file as the rest:
+`foldjax predict --model alphafold3 --input job.yaml` with
+`--extra alphafold3` installed. Its compiled half (one pybind module and the
+chemical-component tables) is built in place on first use, a one-time step of
+the same kind as fetching weights. The parameters are the one thing that
+cannot ship: request them from Google under their own terms and place them in
+the weight store — [docs/alphafold3.md](docs/alphafold3.md). An installed
+`alphafold3` distribution, if you have one, is used instead of the vendored
+copy.
 
 **OpenFold3** is carried at `foldjax.models.openfold3` and predicts with no
 extra: its inference path wants only `jax`, `numpy`, `safetensors` and `gemmi`,

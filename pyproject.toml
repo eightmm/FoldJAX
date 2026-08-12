@@ -136,16 +136,12 @@ alphafold3 = [
     "tqdm",
     "zstandard",
 ]
-# AlphaFold 3 is the one backend that cannot be vendored: its parameters are not
-# redistributable, and upstream pins `jax[cuda12]`, which cannot co-resolve with
-# a CUDA 13 cluster — the right JAX plugin differs per site. Naming it here, even
-# behind an extra, would make `uv sync` fail for everyone, because uv resolves
-# every extra to build the lockfile. Install it into the same environment
-# yourself (see docs/alphafold3.md); the backend finds it by import.
-#
-# OpenFold3 used to be excluded for a different reason — it was published on no
-# index — which vendoring removed. The port now lives in
-# `foldjax.models.openfold3` and needs no extra to predict.
+# No backend needs a package from outside this file. AlphaFold 3's source is
+# vendored at `foldjax.models.alphafold3._upstream` (its compiled half is built
+# in place on first use); an installed `alphafold3` distribution is honoured
+# when one exists but is never required. Parameters for every model come
+# through `foldjax weights fetch` — AlphaFold 3's from Google, under their own
+# terms.
 
 [project.urls]
 Homepage = "https://github.com/eightmm/foldjax"
