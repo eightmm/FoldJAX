@@ -36,49 +36,32 @@ def template_pair_features(
 ) -> jnp.ndarray:
     """Build one Protenix template pair-feature tensor."""
 
-    asym_id = input_feature_dict["asym_id"]
-    n_token = asym_id.shape[-1]
-    dtype = input_feature_dict["template_aatype"].dtype
-    dtype = jnp.float32 if not jnp.issubdtype(dtype, jnp.floating) else dtype
-    if pair_mask is not None:
-        dtype = pair_mask.dtype
-
-    def pair_feature(name: str, *trailing: int) -> jnp.ndarray:
-        """One template's slice of a pair feature, or in-graph zeros.
-
-        The CLI drops a template array whose every value is zero -- the common
-        no-template job ships 5.95 GiB of literal zeros as entry parameters
-        otherwise, and XLA keeps entry parameters resident for the whole run.
-        Rebuilt here as broadcast zeros, the values are identical and the
-        algebraic simplifier folds them straight through the linears
-        (dot(0, W) = 0, x + 0 = x) instead of storing them.
-        """
-        value = input_feature_dict.get(name)
-        if value is not None:
-            return value[template_id]
-        return jnp.zeros((n_token, n_token, *trailing), dtype)
-
-    dgram = pair_feature("template_distogram", 39)
+    dgram = input_feature_dict["template_distogram"][template_id]
+    n_token = dgram.shape[-3]
+    dtype = dgram.dtype
     if pair_mask is None:
         pair_mask = jnp.ones(dgram.shape[:-1], dtype=dtype)
     else:
         pair_mask = pair_mask.astype(dtype)
+    asym_id = input_feature_dict["asym_id"]
     multichain_mask = (asym_id[..., :, None] == asym_id[..., None, :]).astype(dtype)
     pair_mask = pair_mask * multichain_mask
 
     pseudo_beta_mask = (
-        pair_feature("template_pseudo_beta_mask").astype(dtype) * pair_mask
+        input_feature_dict["template_pseudo_beta_mask"][template_id].astype(dtype)
+        * pair_mask
     )
     aatype = input_feature_dict["template_aatype"][template_id]
     aatype = jnp.eye(32, dtype=dtype)[aatype]
     aatype_i = jnp.broadcast_to(aatype[..., None, :, :], dgram.shape[:-1] + (32,))
     aatype_j = jnp.broadcast_to(aatype[..., :, None, :], dgram.shape[:-1] + (32,))
     unit_vector = (
-        pair_feature("template_unit_vector", 3).astype(dtype)
+        input_feature_dict["template_unit_vector"][template_id].astype(dtype)
         * pair_mask[..., None]
     )
     backbone_mask = (
-        pair_feature("template_backbone_frame_mask").astype(dtype) * pair_mask
+        input_feature_dict["template_backbone_frame_mask"][template_id].astype(dtype)
+        * pair_mask
     )
 
     return jnp.concatenate(
