@@ -36,9 +36,12 @@ uv run foldjax weights fetch --model boltz2      # download, verify, convert onc
 uv run foldjax predict --model boltz2 --input job.yaml
 ```
 
-`torch-bridge` is only for that one conversion step: the upstream checkpoints
-are torch files. **Prediction never imports torch for any model**, so once the
-weights exist, `--extra cuda13` is the whole runtime.
+**Neither prediction nor weight conversion imports torch.** Upstream
+checkpoints are torch archives, and FoldJAX reads them with its own
+deserializer (`foldjax.torch_archive`, verified bit-identical against
+`torch.load` tensor for tensor), so `--extra cuda13` is the whole runtime from
+download to structure. The `torch-bridge` extra remains only for the parity
+suites that compare ports against real torch modules.
 
 ```json
 {
