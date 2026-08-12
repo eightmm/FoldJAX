@@ -1176,14 +1176,17 @@ def load_torch_checkpoint(path: str | Path) -> ProtenixInferenceParams:
     Protenix saves them. Never point this at an untrusted file.
     """
 
-    import torch
+    from foldjax import torch_archive
 
     try:
-        obj = torch.load(str(path), map_location="cpu", weights_only=True)
+        # Torch-free by default: the archive reader returns NumPy tensors and
+        # stubs everything it does not know, so it is stricter than
+        # `weights_only=False` while needing no torch at all. Verified
+        # bit-identical against torch.load on the released checkpoint.
+        obj = torch_archive.load(path)
     except Exception:
-        # Legacy Protenix checkpoints bundle optimizer/scheduler/step objects
-        # that the safe loader rejects; fall back to full unpickling. Trusted
-        # local file only (see docstring).
+        import torch
+
         obj = torch.load(str(path), map_location="cpu", weights_only=False)
     if isinstance(obj, Mapping) and "model" in obj:
         state_dict = obj["model"]

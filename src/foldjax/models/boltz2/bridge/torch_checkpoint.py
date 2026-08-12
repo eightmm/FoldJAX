@@ -9,12 +9,17 @@ from typing import Any
 
 def _load_torch_checkpoint(path: Path) -> dict[str, Any]:
     try:
-        import torch
-    except ImportError as exc:  # pragma: no cover - depends on optional extra
-        msg = "Install the torch-bridge extra to inspect PyTorch checkpoints."
-        raise SystemExit(msg) from exc
+        from foldjax import torch_archive
 
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        checkpoint = torch_archive.load(path)
+    except Exception:
+        try:
+            import torch
+        except ImportError as exc:  # pragma: no cover - optional extra
+            msg = "This checkpoint needs real torch; install the torch-bridge extra."
+            raise SystemExit(msg) from exc
+
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, dict):
         msg = f"Expected checkpoint dict, got {type(checkpoint).__name__}"
         raise SystemExit(msg)

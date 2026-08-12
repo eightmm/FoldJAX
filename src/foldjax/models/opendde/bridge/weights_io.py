@@ -26,14 +26,19 @@ def load_torch_checkpoint(path: str | Path) -> Any:
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"missing checkpoint: {checkpoint_path}")
 
-    import torch
+    try:
+        from foldjax import torch_archive
 
-    checkpoint = torch.load(
-        str(checkpoint_path),
-        map_location="cpu",
-        weights_only=True,
-        mmap=True,
-    )
+        checkpoint = torch_archive.load(checkpoint_path)
+    except Exception:
+        import torch
+
+        checkpoint = torch.load(
+            str(checkpoint_path),
+            map_location="cpu",
+            weights_only=True,
+            mmap=True,
+        )
     return map_opendde_inference_state_dict(unwrap_state_dict(checkpoint))
 
 
