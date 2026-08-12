@@ -6,29 +6,32 @@
 
 # FoldJAX
 
-Biomolecular structure prediction in JAX. Five models behind one interface —
-four carried complete inside the package:
+Biomolecular structure prediction in JAX. Five models behind one interface,
+all carried inside the package:
 
 | model | vendored at | licence | upstream |
 |---|---|---|---|
+| `alphafold3` | `foldjax.models.alphafold3` | Apache-2.0 | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
 | `boltz2` | `foldjax.models.boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
 | `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
 | `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
 | `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
 
-— plus `alphafold3`, which FoldJAX drives rather than carries, because its
-parameters may not be redistributed. It takes the same job file as the rest
-once installed; see [docs/alphafold3.md](docs/alphafold3.md).
+Boltz-2, OpenDDE, Protenix and OpenFold3 are JAX reimplementations that match
+their upstream's results; AlphaFold 3 is upstream's own source, vendored.
+Weights are never redistributed — `foldjax weights fetch` gets each from its
+publisher (AlphaFold 3's on request from Google).
 
-OpenFold3 is carried twice over: the JAX port is a reimplementation, and
-upstream's own *data pipeline* is vendored beside it, so featurization is exact
-rather than approximately right and still needs nothing outside this repository.
-Building features needs `--extra openfold3-preprocess`, because that pipeline is
-upstream's torch code; predicting needs neither it nor torch. See
-[docs/openfold3.md](docs/openfold3.md).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/benchmark-light.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003 and 3,012 tokens" src="docs/benchmark-dark.png">
+</picture>
 
-Give it one job file and a model name. Weights, the input dialect, the output
-directory, and the XLA compile cache are all resolved for you.
+*Each port against the repository it came from — same job, same schedule, same
+measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md).*
+
+## Installation
 
 ```bash
 uv sync --extra cuda13 --group dev
@@ -36,30 +39,26 @@ uv run foldjax weights fetch --model boltz2      # download, verify, convert onc
 uv run foldjax predict --model boltz2 --input job.yaml
 ```
 
-**Neither prediction nor weight conversion imports torch.** Upstream
-checkpoints are torch archives, and FoldJAX reads them with its own
-deserializer (`foldjax.torch_archive`, verified bit-identical against
-`torch.load` tensor for tensor), so `--extra cuda13` is the whole runtime from
-download to structure. The `torch-bridge` extra remains only for the parity
-suites that compare ports against real torch modules.
+Mixed clusters pick a CUDA generation per node from the same checkout and
+lockfile — the extras conflict by construction, so each node type syncs its
+own venv; weights, caches and sources are shared:
 
-```json
-{
-  "model": "boltz2",
-  "output_dir": "foldjax-outputs/job",
-  "samples": [
-    {
-      "seed": 0,
-      "structure_path": "foldjax-outputs/job/boltz2_input.cif",
-      "scores": {"mean_plddt": 0.9589, "iptm": 0.0}
-    }
-  ]
-}
+```bash
+uv sync --extra cuda13 --group dev                                    # CUDA 13 nodes
+UV_PROJECT_ENVIRONMENT=.venv-cu12 uv sync --extra cuda12 --group dev  # CUDA 12 nodes
 ```
 
-Every port keeps its own featurizer, sampler, checkpoint format, defaults, and
-output writer, so results match running that project directly. FoldJAX supplies
-the common request, the translation, and the plumbing.
+**Neither prediction nor weight conversion imports torch** — checkpoints are
+read by FoldJAX's own deserializer (`foldjax.torch_archive`, bit-identical
+against `torch.load`). The extras that carry torch exist for featurization
+parity suites (`boltz-preprocess`, `torch-bridge`) and OpenFold3's vendored
+upstream data pipeline (`openfold3-preprocess`); prediction never needs them.
+
+**AlphaFold 3** needs `--extra alphafold3`; its compiled half is built in
+place on first use — a one-time step like fetching weights — and an installed
+`alphafold3` distribution wins if present: [docs/alphafold3.md](docs/alphafold3.md).
+**OpenFold3** predicts with no extra; building features needs
+`--extra openfold3-preprocess`: [docs/openfold3.md](docs/openfold3.md).
 
 ## Input
 
@@ -137,7 +136,7 @@ structure's confidence.
 
 ### Memory
 
-The peaks in the [benchmark](#foldjax-against-upstream) are the defaults at
+The peaks in the [benchmark](docs/benchmark.md) are the defaults at
 work; nothing below needs to be set to reach them.
 
 - **Row-blocked pair stack.** The pair transition and triangle attention are
@@ -291,115 +290,6 @@ asking more of it than `boltz predict` does.
 sampling knobs a backend honours. Backend-specific output stays on
 `PredictionResult.raw`.
 
-## FoldJAX against upstream
-
-Every model here is a JAX reimplementation of a published torch model, so the
-only comparison worth making is against the repository it came from, on the
-same job, under the same schedule, measured the same way.
-
-That is what [`bench/`](bench/) does, and it is reproducible: one command per
-row, one process per measurement, results written as they land.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003 and 3,012 tokens" src="docs/benchmark-dark.png">
-</picture>
-
-**The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
-diffusion steps, 10 recycles, seed 101 — not a number chosen here.** Protenix's
-base model ships the same three. Boltz-2 defaults to 3 recycles rather than 10,
-so this asks more of it than its own default does; it asks the same of its
-upstream, which is what makes the comparison mean anything.
-
-| tokens | model | FoldJAX s | upstream s | FoldJAX GiB | upstream GiB | speed | memory | confidence | FoldJAX | upstream |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 499 | alphafold3 | 285 | - | 3.0 | - | - | - | - | - | - |
-| 499 | boltz2 | 35 | 55 | 4.7 | 8.2 | 1.57x | 1.77x | complex_plddt | 0.9705 | 0.9700 |
-| 499 | opendde | 81 | 75 | 12.4 | 18.1 | 0.92x | 1.47x | ranking_score | 0.1946 | 0.1947 |
-| 499 | openfold3 | 39 | 97 | 10.2 | 18.7 | 2.46x | 1.84x | ptm | 0.9325 | 0.9274 |
-| 499 | protenix | 28 | 63 | 4.9 | 5.0 | 2.26x | 1.02x | ranking_score | 0.1937 | 0.1935 |
-| 1003 | alphafold3 | 368 | - | 6.7 | - | - | - | - | - | - |
-| 1003 | boltz2 | 94 | 141 | 7.2 | 15.8 | 1.51x | 2.19x | complex_plddt | 0.9489 | 0.9482 |
-| 1003 | opendde | 287 | 287 | 44.3 | 59.5 | 1.00x | 1.34x | ranking_score | 0.1926 | 0.1930 |
-| 1003 | openfold3 | 126 | 323 | 11.8 | 25.0 | 2.56x | 2.13x | ptm | 0.9315 | 0.9300 |
-| 1003 | protenix | 72 | 99 | 8.3 | 12.7 | 1.38x | 1.54x | ranking_score | 0.1921 | 0.1922 |
-| 3012 | alphafold3 | 1,013 | - | 41.3 | - | - | - | - | - | - |
-| 3012 | boltz2 | 981 | failed | 45.8 | failed | - | - | - | - | - |
-| 3012 | opendde | failed | failed | failed | failed | - | - | - | - | - |
-| 3012 | openfold3 | 1,374 | 6,722 | 64.7 | 81.3 | 4.89x | 1.26x | ptm | 0.8762 | 0.8748 |
-| 3012 | protenix | 795 | 797 | 52.0 | 56.0 | 1.00x | 1.08x | ranking_score | 0.9554 | 0.9502 |
-
-Method: **same job** (the upstream input is generated by FoldJAX's own
-translator, both sides name the same alignment), **same measurement**
-(live-bytes high-water mark on both sides, never `nvidia-smi`'s reserved
-pool), **FoldJAX timed warm** (compilation is paid once per shape and replayed
-from disk; the discarded first run is what fills the cache), and **the same
-confidence field on both sides** — different samples, since the PRNG streams
-differ; same-seed parity is a separate, per-port exercise.
-
-**Every upstream runs on the fastest path this hardware lets it reach.**
-[`bench/upstream-environments.md`](bench/upstream-environments.md) records each
-virtualenv's provisioning, the kernels that cannot run on this card, and how to
-verify both.
-
-### What the table says
-
-- **FoldJAX never uses more memory than the repository it reimplements.** The
-  closest rows are Protenix at 499 tokens (1.02x) and 3,012 (1.08x); everywhere
-  else the margin is 1.22x to 2.19x.
-- **At 3,012 tokens, four FoldJAX implementations run; one upstream does.**
-  Boltz-2's upstream reaches 96.2 GiB of the 97.9 GiB card even with
-  `expandable_segments` and still cannot allocate -- a capacity limit, not
-  fragmentation -- at a size FoldJAX completes in 46.9 GiB. OpenDDE fails on
-  both sides: its structural branch wants a single 16.11 GiB buffer at ~2x
-  the token count, which is model shape, not implementation.
-- **On speed, read OpenFold3's column with its caveat.** Its upstream could
-  reach no kernel on this card -- DS4Sci refuses sm_120 and 0.3.1's
-  experimental cueq flag crashes at more than one diffusion sample -- and its
-  predict preset chunks attention 4 rows at a time at every size, which is
-  where the 6,722 s at 3,012 tokens lives. The other speed columns carry no
-  such asterisk: Boltz-2 and Protenix upstreams run their released fast
-  paths and FoldJAX is 1.0x to 2.3x against them.
-- **AlphaFold 3 has no upstream column by design** -- FoldJAX drives the
-  official implementation rather than reimplementing it, so both columns
-  would run the same code. Its rows are the reference the ports are converging
-  toward: flattest memory curve in the figure, every practice the ports
-  adopted (bf16 throughout, fused attention, per-sample confidence,
-  summaries-only outputs) is one it already had.
-- **Confidence agrees on every complete row** -- ranking within 0.001-0.005,
-  pTM within 0.005, FoldJAX marginally higher as often as lower. Two of those
-  agreements took real fixes, both found the same way and both described
-  below.
-
-## Environment
-
-One Python 3.12 environment, no sibling checkouts. Mixed clusters pick a CUDA
-generation per node from the same checkout and lockfile — the extras conflict
-by construction, so each node type syncs its own venv:
-
-```bash
-uv sync --extra cuda13 --group dev                                  # CUDA 13 nodes
-UV_PROJECT_ENVIRONMENT=.venv-cu12 uv sync --extra cuda12 --group dev  # CUDA 12 nodes
-```
-
-Weights, the compile cache, and every vendored source are shared between
-them; nothing under `~/.foldjax` is CUDA-generation-specific.
-
-**Prediction is torch-free for every model**; conversion too. The extras that
-carry torch exist for two things only: featurization parity suites
-(`boltz-preprocess`, `torch-bridge`) and OpenFold3's vendored upstream data
-pipeline (`openfold3-preprocess`) — prediction never needs them.
-
-**AlphaFold 3** is vendored at `foldjax.models.alphafold3` (Apache-2.0,
-imported under its own name; an installed distribution wins if present). Its
-compiled half is built in place on first use — a one-time step like fetching
-weights — and its parameters must be requested from Google under their own
-terms: [docs/alphafold3.md](docs/alphafold3.md). **OpenFold3** predicts with
-no extra; its featurization pipeline is vendored beside it and needs
-`--extra openfold3-preprocess` for the torch it imports:
-[docs/openfold3.md](docs/openfold3.md).
-
 ## Tests
 
 ```bash
@@ -434,4 +324,3 @@ Each port's original experiment log, porting plan and gates live in
 [docs/ports/](docs/ports/) — history rather than instructions, but the only
 record of why each default was chosen. Model weights are covered by their own
 licences and never redistributed here; AlphaFold 3's must be requested from
-Google ([docs/alphafold3.md](docs/alphafold3.md)).
