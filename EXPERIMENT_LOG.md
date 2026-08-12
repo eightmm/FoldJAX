@@ -382,3 +382,15 @@ installed external alphafold3 -- it did, mid-session; a rebuild is running.
 The freed logits headroom bought nothing here: wall and peak are flat across a
 2.2x chunk range, so the 3,012-token cost is the fp32 trunk's arithmetic, not
 score-tensor traffic. `auto_pair_chunk_size` stays as is.
+
+## AlphaFold 3 standalone: proven end-to-end (2026-08-12)
+
+With no `alphafold3` distribution installed, `foldjax predict --model
+alphafold3` completed the 499-token bench case on the vendored tree alone:
+296.8 s / 3,033 MiB / ptm 0.97 / ranking 0.9671, against 285 s / 3,036 MiB on
+the previously-installed distribution -- wall inside run noise, memory
+identical. The path exercised everything vendoring added: the sys.modules
+shim, the in-place-built `alphafold3.cpp` (uv build staging: static version,
+LICENSE/README/terms files, libcifpp dictionaries beside the tree), the
+store-copied CCD pickles, and the terms documents inside the package where
+post-processing ships them from.
