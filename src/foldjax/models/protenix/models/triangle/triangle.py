@@ -194,17 +194,29 @@ def _triangle_contract(
     # destination has to be float32 too or every block would be rounded back
     # down on the way in.
     axis = -3 if direction == "outgoing" else -2
-    blocks = []
+    # Written into a preallocated destination rather than concatenated.
+    # `jnp.concatenate(blocks)` handed XLA a concat-of-gemm-outputs, which it
+    # rewrote back into whole-tensor gemms over a concat of the inputs -- at
+    # 3,012 tokens the template stack's a-side projections came back as four
+    # simultaneous bf16[128, 4*N^2] operands, 34.6 GiB of temp arena, and the
+    # chunking bought nothing. The Boltz-2 port's `.at[].set()` form
+    # (boltz2/models/triangle/triangle_attention.py) is the shape XLA leaves
+    # alone; verified on the compiled 3,012-token program's buffer assignment.
+    out: jnp.ndarray | None = None
     for start in range(0, n, chunk_size):
         size = min(chunk_size, n - start)
         a_block = project_a(
             jax.lax.dynamic_slice_in_dim(z_norm, start, size, axis=axis),
             jax.lax.dynamic_slice_in_dim(mask, start, size, axis=axis),
         )
-        blocks.append(
-            _triangle_contract_block(a_block, b, direction).astype(jnp.float32)
-        )
-    return jnp.concatenate(blocks, axis=-3)
+        block = _triangle_contract_block(a_block, b, direction).astype(jnp.float32)
+        if out is None:
+            shape = list(block.shape)
+            shape[-3] = n
+            out = jnp.zeros(shape, dtype=jnp.float32)
+        out = jax.lax.dynamic_update_slice_in_dim(out, block, start, axis=-3)
+    assert out is not None
+    return out
 
 
 def _triangle_contract_block(
