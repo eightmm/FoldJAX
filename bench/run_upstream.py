@@ -282,6 +282,14 @@ def main() -> int:
     )
     environment = dict(os.environ)
     environment.update(extra)
+    # Near-capacity torch runs die on fragmentation, not on totals: Boltz-2 at
+    # 3,012 tokens filled 81.3 GiB of a 97.9 GiB card and then failed a batch
+    # allocation the free total easily covered. Expandable segments let the
+    # caching allocator grow regions instead of hunting for contiguous blocks;
+    # an allocator setting, not an upstream code change.
+    environment.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+    )
     environment["BENCH_PEAK_FILE"] = str(peak_file)
     # A directory holding nothing but `sitecustomize.py`, so putting it first
     # installs the peak-memory hook without shadowing anything the upstream
