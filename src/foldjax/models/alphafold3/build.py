@@ -48,7 +48,35 @@ def ensure_extensions() -> Path:
     with tempfile.TemporaryDirectory(prefix="foldjax-af3-build-") as scratch:
         stage = Path(scratch) / "project"
         (stage / "src").mkdir(parents=True)
-        shutil.copy2(_UPSTREAM / "pyproject.toml", stage / "pyproject.toml")
+        pyproject = (_UPSTREAM / "pyproject.toml").read_text()
+        # The staged copy is not a git checkout, so setuptools_scm has no
+        # version to derive; pin the vendored revision's own. LICENSE rides
+        # along for the same reason: metadata validation wants the file.
+        pyproject = pyproject.replace(
+            'dynamic = ["version"]', 'version = "3.0.4"'
+        ).replace(
+            'metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"',
+            "",
+        ).replace(
+            'sdist.include = ["src/alphafold3/_version.py"]', ""
+        )
+        pyproject = "\n".join(
+            line
+            for line in pyproject.splitlines()
+            if "setuptools_scm" not in line
+            and "setuptools-scm" not in line
+            and "fallback_version" not in line
+        )
+        (stage / "pyproject.toml").write_text(pyproject)
+        # Metadata validation wants the files pyproject names, not their prose.
+        (stage / "README.md").write_text("Vendored AlphaFold 3 build stage.\n")
+        shutil.copy2(_UPSTREAM / "LICENSE", stage / "LICENSE")
+        for name in (
+            "OUTPUT_TERMS_OF_USE.md",
+            "WEIGHTS_PROHIBITED_USE_POLICY.md",
+            "WEIGHTS_TERMS_OF_USE.md",
+        ):
+            shutil.copy2(_UPSTREAM / name, stage / name)
         shutil.copy2(_UPSTREAM / "CMakeLists.txt", stage / "CMakeLists.txt")
         (stage / "src" / "alphafold3").symlink_to(_PACKAGE)
         wheels = Path(scratch) / "wheels"
