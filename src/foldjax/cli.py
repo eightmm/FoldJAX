@@ -18,8 +18,19 @@ from foldjax.schema import PredictionRequest
 
 
 def _add_predict_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", required=True, help=", ".join(available_models()))
-    parser.add_argument("--input", type=Path, required=True, help="job JSON or YAML")
+    parser.add_argument(
+        "--model",
+        required=True,
+        nargs="+",
+        help=", ".join(available_models()) + "; several run each in turn",
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        nargs="+",
+        help="job JSON or YAML; several run every model on every input",
+    )
     parser.add_argument(
         "--weights",
         type=Path,
@@ -156,9 +167,13 @@ def _options(items: list[str]) -> dict[str, Any]:
 
 
 def _request(args: argparse.Namespace) -> PredictionRequest:
+    single_model = len(args.model) == 1
+    single_input = len(args.input) == 1
     return PredictionRequest(
-        model=args.model,
-        input=args.input,
+        model=args.model[0] if single_model else None,
+        models=None if single_model else tuple(args.model),
+        input=args.input[0] if single_input else None,
+        inputs=None if single_input else tuple(args.input),
         weights=args.weights,
         output_dir=args.output_dir,
         input_format=args.input_format,

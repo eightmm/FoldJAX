@@ -53,6 +53,11 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
     Exposed separately so callers (and `foldjax plan`) can see exactly what a
     bare request turns into before any weights load.
     """
+    if request.models is not None or request.inputs is not None:
+        raise ValueError(
+            "resolve_request takes one model and one input; "
+            "predict() is what fans the plural spellings out"
+        )
     backend = get_backend(request.model)
     updates: dict[str, Any] = {}
 
@@ -69,8 +74,15 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
     return dataclasses.replace(request, **updates) if updates else request
 
 
-def predict(request: PredictionRequest) -> PredictionResult:
+def predict(
+    request: PredictionRequest,
+) -> PredictionResult | tuple[PredictionResult, ...]:
     """Dispatch one request to its selected native backend.
+
+    A request naming several ``models`` or ``inputs`` runs every combination,
+    each into ``output_dir/<model>/<input stem>``, and returns one result per
+    run, in declaration order. A scalar request returns a single result, as it
+    always has.
 
     A request naming several seeds runs the job once per seed, into a
     ``seed_<n>`` subdirectory each, and returns every structure in one result.
@@ -80,6 +92,30 @@ def predict(request: PredictionRequest) -> PredictionResult:
     program is read back from the cache, so the repeat cost is the load, not
     the compile.
     """
+    fan = [
+        (model, path)
+        for model in request.resolved_models
+        for path in request.resolved_inputs
+    ]
+    if len(fan) > 1:
+        # The cross product, one full prediction each, namespaced the way the
+        # seed loop namespaces below: the fanned axes appear in the path, so
+        # two models never write over each other's structures. Sequential on
+        # purpose -- these share one GPU.
+        root = request.output_dir or Path("foldjax-outputs")
+        return tuple(
+            predict(
+                dataclasses.replace(
+                    request,
+                    model=model,
+                    models=None,
+                    input=path,
+                    inputs=None,
+                    output_dir=root / model / path.stem,
+                )
+            )
+            for model, path in fan
+        )
     request = resolve_request(request)
     seeds = request.resolved_seeds
     if len(seeds) == 1:

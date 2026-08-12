@@ -30,8 +30,17 @@ class PredictionRequest:
     one input file plus a model name.
     """
 
-    model: str
-    input: Path
+    model: str | None = None
+    input: Path | None = None
+    # The plural spellings, following `seeds`: one declaration, several runs.
+    # `models=("boltz2", "protenix")` with `inputs=("a.yaml", "b.yaml")` runs
+    # every model on every input -- the cross product -- each into its own
+    # `output_dir/<model>/<input stem>` subtree, and `predict` returns one
+    # result per run. Exactly one of `model`/`models` must be set, and one of
+    # `input`/`inputs`; naming both spellings of either is an error, the same
+    # rule every other knob follows.
+    models: tuple[str, ...] | None = None
+    inputs: tuple[Path, ...] | None = None
     weights: Path | None = None
     output_dir: Path | None = None
     input_format: str = "auto"
@@ -66,8 +75,25 @@ class PredictionRequest:
             value = getattr(self, name)
             if value is not None and not isinstance(value, Path):
                 object.__setattr__(self, name, Path(value))
-        if not self.input.exists():
-            raise FileNotFoundError(f"input does not exist: {self.input}")
+        if (self.model is None) == (self.models is None):
+            raise ValueError("set exactly one of model and models")
+        if (self.input is None) == (self.inputs is None):
+            raise ValueError("set exactly one of input and inputs")
+        if self.models is not None:
+            models = tuple(str(value) for value in self.models)
+            if not models:
+                raise ValueError("models must not be empty")
+            if len(set(models)) != len(models):
+                raise ValueError("models must be unique")
+            object.__setattr__(self, "models", models)
+        if self.inputs is not None:
+            inputs = tuple(Path(value) for value in self.inputs)
+            if not inputs:
+                raise ValueError("inputs must not be empty")
+            object.__setattr__(self, "inputs", inputs)
+        for path in self.resolved_inputs:
+            if not path.exists():
+                raise FileNotFoundError(f"input does not exist: {path}")
         if self.weights is not None and not self.weights.exists():
             raise FileNotFoundError(f"weights do not exist: {self.weights}")
         if self.seeds is not None:
@@ -95,6 +121,16 @@ class PredictionRequest:
             value = getattr(self, name)
             if value is not None and value < 1:
                 raise ValueError(f"{name} must be at least 1")
+
+    @property
+    def resolved_models(self) -> tuple[str, ...]:
+        """Every model this request names, whichever spelling was used."""
+        return self.models if self.models is not None else (self.model,)
+
+    @property
+    def resolved_inputs(self) -> tuple[Path, ...]:
+        """Every input this request names, whichever spelling was used."""
+        return self.inputs if self.inputs is not None else (self.input,)
 
     @property
     def resolved_seeds(self) -> tuple[int, ...]:

@@ -200,3 +200,40 @@ def test_result_summary_is_json_serializable(tmp_path: Path) -> None:
         ],
     }
     assert json.loads(json.dumps(result.summary()))["model"] == "alphafold3"
+
+
+def test_one_declaration_runs_every_model_on_every_input(tmp_path: Path) -> None:
+    """The plural spellings fan out the cross product, namespaced by both axes.
+
+    Two inputs through one backend: two full predictions, each into
+    `out/<model>/<input stem>`, returned in declaration order. The scalar
+    request keeps returning a single result -- fanning is something the caller
+    asks for by spelling the field in the plural, never a surprise.
+    """
+    first = tmp_path / "alpha.yaml"
+    second = tmp_path / "beta.yaml"
+    first.write_text("version: 1\n")
+    second.write_text("version: 1\n")
+
+    backend = DummyBackend()
+    with backend_override("boltz2", lambda: backend):
+        results = foldjax.predict(
+            _request(
+                tmp_path,
+                model=None,
+                models=("boltz",),
+                input=None,
+                inputs=(first, second),
+            )
+        )
+
+    assert isinstance(results, tuple) and len(results) == 2
+    assert [r.output_dir.name for r in results] == ["alpha", "beta"]
+    assert all(r.output_dir.parent.name == "boltz" for r in results)
+
+
+def test_both_spellings_of_the_same_axis_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="model"):
+        _request(tmp_path, models=("boltz",))
+    with pytest.raises(ValueError, match="input"):
+        _request(tmp_path, inputs=(tmp_path / "job.yaml",))

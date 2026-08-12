@@ -679,6 +679,26 @@ for sample in result.samples:
     print(sample.structure_path, sample.scores)
 ```
 
+**One declaration, several runs.** Every axis that can name one thing can name
+several -- the plural spelling fans out, nothing else changes. `models` x
+`inputs` runs the cross product, each prediction into its own
+`output_dir/<model>/<input stem>` subtree; `seeds` reruns each under every
+seed. One result comes back per run, in declaration order:
+
+```python
+results = predict(
+    PredictionRequest(
+        models=("boltz2", "protenix", "openfold3"),
+        inputs=("kinase.yaml", "complex.yaml"),
+        seeds=(101, 102, 103),
+        num_samples=5,
+    )
+)  # 3 models x 2 inputs -> 6 results, each holding 3 seeds x 5 samples
+```
+
+The CLI spells it the same way: `foldjax predict --model boltz2 protenix
+--input kinase.yaml complex.yaml`.
+
 `sample.scores` carries that model's released confidence summaries (pLDDT,
 pTM/ipTM, ranking) per structure. The native option spellings each port grew
 up with (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and warn once;
@@ -689,6 +709,22 @@ logits are `[n_samples, N, N, 64]` -- tens of GiB at long sequences -- so they
 stay out of the outputs unless asked for (`return_confidence_logits=True` on
 the Boltz-2 library API, `--include-raw` on the Protenix/OpenDDE CLIs, the raw
 `.npz` formats elsewhere).
+
+Leave a sampling knob unset and each backend runs its own upstream's released
+default -- which differ, deliberately: matching each upstream is the whole
+point of the ports. What `None` means per model:
+
+| model | samples | steps | recycles | MSA depth |
+|---|---|---|---|---|
+| `alphafold3` | 5 | 200 | 10 | 1,024 rows (`evoformer.num_msa`) |
+| `boltz2` | **1** | 200 | **3** | uncapped -- the whole alignment |
+| `opendde` | 5 | 200 | 10 | 16,384 rows |
+| `openfold3` | 5 | 200 | **3** | 1,024 rows, subsampled |
+| `protenix` | 5 | 200 | 10 | 16,384 rows |
+
+The bench table below pins all five to one schedule (5 / 200 / 10) precisely
+because these defaults differ; set `num_recycles=10` on Boltz-2 and you are
+asking more of it than `boltz predict` does.
 
 `foldjax.resolve_request` applies every default without running anything, and
 `foldjax.capabilities(model)` reports the input formats, entity types, and
