@@ -440,7 +440,17 @@ sampling knobs a backend honours. Backend-specific output stays on
 
 ## Environment
 
-One Python 3.12 environment, no sibling checkouts:
+One Python 3.12 environment, no sibling checkouts. Mixed clusters pick a CUDA
+generation per node from the same checkout and lockfile — the extras conflict
+by construction, so each node type syncs its own venv:
+
+```bash
+uv sync --extra cuda13 --group dev                                  # CUDA 13 nodes
+UV_PROJECT_ENVIRONMENT=.venv-cu12 uv sync --extra cuda12 --group dev  # CUDA 12 nodes
+```
+
+Weights, the compile cache, and every vendored source are shared between them;
+nothing under `~/.foldjax` is CUDA-generation-specific.
 
 - JAX / CUDA 13 plugin 0.10.1, cuequivariance-jax 0.10.0 with CUDA 13 ops 0.9.0,
   Tokamax 0.0.12

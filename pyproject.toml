@@ -68,6 +68,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The CUDA-12 twin of `cuda13`, for clusters whose driver generation differs
+# per node: one checkout, one lockfile, one environment per node type
+# (`UV_PROJECT_ENVIRONMENT=.venv-cu12 uv sync --extra cuda12 ...`). The two
+# extras conflict by construction -- see [tool.uv] -- and everything else
+# (vendored sources, the CPU-only AlphaFold 3 pybind module, the weight store,
+# compile caches) is CUDA-generation-agnostic and shared.
+cuda12 = [
+    "cuequivariance-ops-jax-cu12==0.9.0",
+    "jax[cuda12]==0.10.1",
+    "triton>=3.0",
+]
 cuda13 = [
     "cuequivariance-ops-jax-cu13==0.9.0",
     "jax[cuda13]==0.10.1",
@@ -142,6 +153,9 @@ alphafold3 = [
 # when one exists but is never required. Parameters for every model come
 # through `foldjax weights fetch` — AlphaFold 3's from Google, under their own
 # terms.
+
+[tool.uv]
+conflicts = [[{ extra = "cuda12" }, { extra = "cuda13" }]]
 
 [project.urls]
 Homepage = "https://github.com/eightmm/foldjax"
