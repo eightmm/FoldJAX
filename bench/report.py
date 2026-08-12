@@ -99,7 +99,7 @@ def main() -> int:
     models = sorted({row["model"] for row in rows})
 
     header = (
-        "| tokens | model | FoldJAX s | upstream s | FoldJAX MiB | upstream MiB "
+        "| tokens | model | FoldJAX s | upstream s | FoldJAX GiB | upstream GiB "
         "| speed | memory | confidence | FoldJAX | upstream |"
     )
     print(header)
@@ -124,7 +124,10 @@ def main() -> int:
                     return "-"
                 if broken(row):
                     return "failed"
-                return f"{row[field]:,.0f}{suffix}"
+                value = row[field]
+                if field == "peak_mib":
+                    return f"{value / 1024:.1f}{suffix}"
+                return f"{value:,.0f}{suffix}"
 
             ratio_time = ratio_mem = "-"
             usable = fj is not None and up is not None and not (
