@@ -125,17 +125,15 @@ torch-bridge = [
 # fair-esm checkpoint upstream does. It survived the Chai removal because it was
 # never Chai's.
 esm = ["fair-esm>=2.0.0", "torch>=2.2"]
-# AlphaFold 3's own dependencies, minus JAX. The `alphafold3` package itself
-# still cannot be listed here -- it is on no index and upstream pins
-# `jax[cuda12]` -- but everything else it imports resolves against this
-# environment, and naming them stops `uv sync` from uninstalling them on every
-# run. Install the package itself once with
-# `uv pip install --no-deps -e /path/to/alphafold3`, and use `uv sync --inexact`
-# afterwards so an exact sync does not remove it again.
+# The vendored AlphaFold 3's runtime, beyond what the base set carries: its
+# source lives at `foldjax.models.alphafold3._upstream` and imports resolve
+# against this environment, so upstream's `jax[cuda12]` pin never applies.
+# jax, numpy, rdkit and tokamax are already here at compatible versions.
 alphafold3 = [
     "absl-py>=2.3.1",
     "dm-haiku==0.0.16",
     "etils[epath]",
+    "tqdm",
     "zstandard",
 ]
 # AlphaFold 3 is the one backend that cannot be vendored: its parameters are not

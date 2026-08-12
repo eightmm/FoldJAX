@@ -1,0 +1,11 @@
+This directory vendors the AlphaFold 3 source code, unmodified, from
+https://github.com/google-deepmind/alphafold3 (DeepMind Technologies Limited),
+licensed under the Apache License, Version 2.0 -- see LICENSE beside this file.
+
+Model parameters are not included and are not redistributable: they are
+licensed separately by Google under the terms at
+https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
+and must be requested there, then placed in the FoldJAX weight store.
+
+Excluded from the vendored tree: test data, the generated chemical-component
+pickles (built into the FoldJAX store instead), and compiled artifacts.
