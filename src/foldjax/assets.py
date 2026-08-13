@@ -205,11 +205,16 @@ def _stage_esmfold2(model: str, source: Path) -> Path:
     """
     out = weights_dir(model)
     out.mkdir(parents=True, exist_ok=True)
-    for name in ("model.safetensors", "config.json", "ccd.pkl"):
+    names = ["model.safetensors", "config.json", "ccd.pkl"]
+    # The language model's six shards and its two JSONs, which the download
+    # step kept under `downloads/esmfold2/esmc/`.
+    names += [f"esmc/{item.name}" for item in sorted((source / "esmc").glob("*"))]
+    for name in names:
         origin = source / name
         target = out / name
         if not origin.is_file() or target.exists():
             continue
+        target.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.link(origin, target)
         except OSError:
@@ -324,19 +329,117 @@ REGISTRY: dict[str, ModelAssets] = {
                 ),
                 size=417306584,
             ),
+            # ESMC-6B, the language model the trunk folds representations from.
+            # Upstream distributes it as its own repository and the store
+            # keeps it in the `esmc/` subdirectory the loader looks in. It is
+            # 25.4 GB and it is not optional -- without it the trunk runs with
+            # its language-model branch absent, which is a different model.
+            Download(
+                name="esmc/config.json",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/config.json"
+                ),
+                sha256=(
+                    "c5566fab6a17fd674141331fe75de917b7904d99fb7a410d2b1593c21e576913"
+                ),
+                size=341,
+            ),
+            Download(
+                name="esmc/model.safetensors.index.json",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model.safetensors.index.json"
+                ),
+                sha256=(
+                    "6846456e20e6ee2c37461f7bfc21d316d69bdaf165b925691afcb39e583244da"
+                ),
+                size=97349,
+            ),
+            Download(
+                name="esmc/model-00001-of-00006.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model-00001-of-00006.safetensors"
+                ),
+                sha256=(
+                    "bd90149ff223e6ac1a0cac6147a5ae0df20d3a21df4f65356a1f19cd14f4aa8a"
+                ),
+                size=4864457920,
+            ),
+            Download(
+                name="esmc/model-00002-of-00006.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model-00002-of-00006.safetensors"
+                ),
+                sha256=(
+                    "f75e2144d8269fe2eb4b3e0823fb089b94f176d8024153e85b8fb573a42294fa"
+                ),
+                size=4971211344,
+            ),
+            Download(
+                name="esmc/model-00003-of-00006.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model-00003-of-00006.safetensors"
+                ),
+                sha256=(
+                    "f699f01ecc9691d9c6470492765fe54b8b5d2e9f277c139e89427433ffdfe0b2"
+                ),
+                size=4863752992,
+            ),
+            Download(
+                name="esmc/model-00004-of-00006.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model-00004-of-00006.safetensors"
+                ),
+                sha256=(
+                    "46add1b7be098bbfdc3073884851ba3057f1b33ea23a158b650a37007dabd13d"
+                ),
+                size=4971211344,
+            ),
+            Download(
+                name="esmc/model-00005-of-00006.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model-00005-of-00006.safetensors"
+                ),
+                sha256=(
+                    "1e1cb62f060a34e18f54a31a76683ef888b8cec59e73315f5b31d25d45a1f88c"
+                ),
+                size=4863752992,
+            ),
+            Download(
+                name="esmc/model-00006-of-00006.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMC-6B/resolve/"
+                    "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a/model-00006-of-00006.safetensors"
+                ),
+                sha256=(
+                    "56c73e13ae96e777ce65eee99364056069ef93b646470f352f83c5f1037b1b18"
+                ),
+                size=873762296,
+            ),
         ),
         native="model.safetensors",
-        requires=("model.safetensors", "config.json"),
+        requires=(
+            "model.safetensors",
+            "config.json",
+            "esmc/config.json",
+            "esmc/model-00006-of-00006.safetensors",
+        ),
         convert=_stage_esmfold2,
         in_default_setup=False,
         notes="Loaded as published -- the JAX port names its parameters the "
-        "way upstream's state_dict does, so nothing is converted. These 940 MB "
-        "are the structure network only. ESMC-6B, the 6B language model it "
-        "folds representations from, is a separate ~12 GB download upstream "
-        "distributes apart from it (huggingface.co/biohub/ESMC-6B); put its "
-        "safetensors and config.json in <weights>/esmc. Without it the trunk "
-        "runs with its language-model branch absent, which is not the released "
-        "model, so that has to be asked for with no_language_model=true.",
+        "way upstream's state_dict does, so nothing is converted. Two "
+        "checkpoints: the 940 MB structure network, and ESMC-6B, the 6B "
+        "language model it folds representations from, which upstream "
+        "distributes as its own repository and which this fetches into "
+        "<weights>/esmc. Budget 26 GB and an hour. Folding without the "
+        "language model is possible and is a different model, so it has to be "
+        "asked for with no_language_model=true.",
     ),
     "openfold3": ModelAssets(
         model="openfold3",
