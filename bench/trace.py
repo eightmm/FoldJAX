@@ -195,8 +195,19 @@ def plot(grouped: dict, out: Path, case: str) -> None:
                     # Left-aligned: every curve here starts at the floor and
                     # climbs, so the upper left is the one region of the panel
                     # a peak rule's label cannot land on top of the data.
+                    # Above its own rule, and nudged clear of the other
+                    # series' label when the two peaks are close enough to
+                    # collide -- which they are wherever the port is near its
+                    # upstream, i.e. exactly the panels worth reading.
+                    other = grouped[model].get(
+                        "upstream" if impl == "foldjax" else "foldjax", {}
+                    ).get("peak_gib", 0)
+                    clash = other and abs(other - side["peak_gib"]) < ceiling * 0.07
                     axis.text(
-                        0.012, side["peak_gib"] + ceiling * 0.015,
+                        0.012,
+                        side["peak_gib"] + ceiling * (0.055 if clash and
+                                                      side["peak_gib"] > other
+                                                      else 0.015),
                         f"{side['peak_gib']:.1f} GiB peak",
                         transform=axis.get_yaxis_transform(),
                         ha="left", va="bottom", fontsize=8, color=fg, zorder=4,
