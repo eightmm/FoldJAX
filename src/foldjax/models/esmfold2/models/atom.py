@@ -290,32 +290,25 @@ def scatter_atom_to_token(
     return jnp.where(counts > 0, totals / jnp.maximum(counts, 1e-12), 0.0)
 
 
-def atom_encoder(
+def atom_conditioning(
     ref_pos: jnp.ndarray,
     atom_mask: jnp.ndarray,
     ref_space_uid: jnp.ndarray,
     ref_charge: jnp.ndarray,
     ref_element_one_hot: jnp.ndarray,
     ref_atom_name_chars_one_hot: jnp.ndarray,
-    atom_to_token: jnp.ndarray,
     params: Params,
     prefix: str = "",
     *,
-    n_blocks: int,
     n_heads: int,
-    half_window: int,
-    coords: jnp.ndarray | None = None,
-    eps: float = FLOAT32_EPS,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...]]:
-    """`ESMFold2AtomEncoder`.
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """The step-invariant half of the atom encoder: conditioning and rotary tables.
 
-    Returns the token representation, the atom queries the decoder resumes
-    from, the conditioning it reuses, and the rotary tables -- which are
-    step-invariant, and which upstream caches for exactly that reason.
-
-    `coords` is the noisy structure in the diffusion path and absent in the
-    inputs embedder; upstream concatenates a zero `pred_r1` beside it, so the
-    projection's last three columns never see a non-zero value.
+    Everything here is a function of the *reference* conformer, so a diffusion
+    sampler that recomputes it once per denoiser call is rebuilding the same
+    389-wide feature tensor forty-eight times. Upstream caches it under
+    `inference_cache["atomencoder"]`; this port hands it back so the caller can
+    hold it outside the loop.
     """
     dot = f"{prefix}." if prefix else ""
     features = atom_features(
@@ -330,8 +323,62 @@ def atom_encoder(
         params[f"{dot}atom_norm.weight"],
         params[f"{dot}atom_norm.bias"],
     )
-    head_dim = conditioning.shape[-1] // n_heads
-    cos, sin = build_3d_rope(ref_pos, ref_space_uid, head_dim=head_dim)
+    cos, sin = build_3d_rope(
+        ref_pos, ref_space_uid, head_dim=conditioning.shape[-1] // n_heads
+    )
+    return conditioning, cos, sin
+
+
+def atom_encoder(
+    ref_pos: jnp.ndarray | None,
+    atom_mask: jnp.ndarray,
+    ref_space_uid: jnp.ndarray | None,
+    ref_charge: jnp.ndarray | None,
+    ref_element_one_hot: jnp.ndarray | None,
+    ref_atom_name_chars_one_hot: jnp.ndarray | None,
+    atom_to_token: jnp.ndarray,
+    params: Params,
+    prefix: str = "",
+    *,
+    n_blocks: int,
+    n_heads: int,
+    half_window: int,
+    coords: jnp.ndarray | None = None,
+    precomputed: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
+    n_tokens: int | None = None,
+    eps: float = FLOAT32_EPS,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...]]:
+    """`ESMFold2AtomEncoder`.
+
+    Returns the token representation, the atom queries the decoder resumes
+    from, the conditioning it reuses, and the rotary tables -- which are
+    step-invariant, and which upstream caches for exactly that reason.
+
+    `coords` is the noisy structure in the diffusion path and absent in the
+    inputs embedder; upstream concatenates a zero `pred_r1` beside it, so the
+    projection's last three columns never see a non-zero value.
+
+    `precomputed` is `atom_conditioning`'s result, already broadcast to
+    however many diffusion samples the caller is running; the reference
+    features are then unread and may be `None`. `n_tokens` must be given
+    whenever `atom_to_token` is a tracer, since its maximum is otherwise read
+    on the host.
+    """
+    dot = f"{prefix}." if prefix else ""
+    if precomputed is None:
+        conditioning, cos, sin = atom_conditioning(
+            ref_pos,
+            atom_mask,
+            ref_space_uid,
+            ref_charge,
+            ref_element_one_hot,
+            ref_atom_name_chars_one_hot,
+            params,
+            prefix,
+            n_heads=n_heads,
+        )
+    else:
+        conditioning, cos, sin = precomputed
 
     queries = conditioning
     if coords is not None:
@@ -351,7 +398,8 @@ def atom_encoder(
         half_window=half_window,
         eps=eps,
     )
-    n_tokens = int(atom_to_token.max()) + 1
+    if n_tokens is None:
+        n_tokens = int(atom_to_token.max()) + 1
     projected = jax.nn.relu(linear(queries, params, f"{dot}atom_to_token_linear"))
     tokens = scatter_atom_to_token(projected, atom_to_token, n_tokens, atom_mask)
     return tokens, queries, conditioning, (cos, sin)
