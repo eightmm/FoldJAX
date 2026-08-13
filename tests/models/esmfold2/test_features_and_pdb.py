@@ -10,6 +10,7 @@ handed.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from foldjax.models.esmfold2.data import chemistry, features, pdb
 
@@ -89,3 +90,19 @@ def test_several_samples_become_numbered_models() -> None:
     assert text.count("MODEL ") == 3
     assert text.count("ENDMDL") == 3
     assert text.count("\nEND\n") == 1
+
+
+def test_the_mmcif_route_parses_and_keeps_the_b_factors() -> None:
+    """What the backend actually writes -- `foldjax.output` names files `.cif`."""
+    gemmi = pytest.importorskip("gemmi")
+    built = features.build_features([(PEPTIDE, "A", 0, 0), (PEPTIDE, "B", 0, 1)])
+    n_atoms = built["ref_pos"].shape[1]
+    coords = np.arange(n_atoms * 3, dtype=np.float32).reshape(n_atoms, 3) / 10
+    plddt = np.full(n_atoms, 0.87, dtype=np.float32)
+
+    text = pdb.to_mmcif(coords, built, plddt, name="job_sample_0")
+    structure = gemmi.read_structure_string(text)
+    atoms = [atom for chain in structure[0] for res in chain for atom in res]
+    assert len(atoms) == int(built["atom_attention_mask"].sum())
+    assert {chain.name for chain in structure[0]} == {"A", "B"}
+    assert atoms[0].b_iso == pytest.approx(87.0, abs=0.01)

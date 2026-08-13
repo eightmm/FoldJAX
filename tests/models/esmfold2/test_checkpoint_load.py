@@ -138,11 +138,13 @@ def test_a_job_folds_from_sequence_to_pdb(tmp_path) -> None:
         prediction, features, tmp_path, name="job"
     )
 
+    import gemmi
+
     assert len(written["structures"]) == 1
-    text = written["structures"][0].read_text()
-    atoms = [line for line in text.splitlines() if line.startswith("ATOM")]
+    assert written["structures"][0].suffix == ".cif"
+    structure = gemmi.read_structure(str(written["structures"][0]))
+    atoms = [atom for chain in structure[0] for res in chain for atom in res]
     assert len(atoms) == int(features["atom_attention_mask"].sum())
-    # Every residue of the peptide is named, and the coordinates are real.
-    assert {line[21] for line in atoms} == {"A"}
-    assert all(np.isfinite(float(line[30:38])) for line in atoms)
+    assert {chain.name for chain in structure[0]} == {"A"}
+    assert all(np.isfinite([a.pos.x, a.pos.y, a.pos.z]).all() for a in atoms)
     assert 0.0 <= written["summary"][0]["plddt"] <= 1.0

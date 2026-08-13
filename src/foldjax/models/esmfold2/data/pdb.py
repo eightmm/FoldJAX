@@ -123,6 +123,35 @@ def to_pdb(
     return "\n".join(lines) + "\n"
 
 
+def to_mmcif(
+    coords: np.ndarray,
+    features: Mapping[str, np.ndarray],
+    plddt_per_atom: np.ndarray | None = None,
+    *,
+    plddt_scale: float = 100.0,
+    name: str = "prediction",
+) -> str:
+    """The same structure as mmCIF, which is what the rest of FoldJAX writes.
+
+    Routed through the PDB writer and gemmi rather than emitting `atom_site`
+    directly: the atom naming, chain identity and b-factor handling are already
+    tested there, and a second serialiser would be a second place for them to
+    disagree. PDB's own limits do not bite here -- ESMFold2 is protein-only, so
+    there are no four-character atom names and no five-digit serials at the
+    lengths it folds.
+    """
+    import gemmi
+
+    structure = gemmi.read_pdb_string(
+        to_pdb(coords, features, plddt_per_atom, plddt_scale=plddt_scale)
+    )
+    structure.setup_entities()
+    structure.name = name
+    document = structure.make_mmcif_document()
+    document.sole_block().name = name
+    return document.as_string()
+
+
 def to_pdb_models(
     coords: np.ndarray,
     features: Mapping[str, np.ndarray],

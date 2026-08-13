@@ -71,13 +71,17 @@ def write_prediction_outputs(
 
     structures: list[Path] = []
     for index in range(coords.shape[0]):
-        path = directory / f"{name}_sample_{index}.pdb"
+        # mmCIF, because `foldjax.output.normalize` names every structure
+        # `.cif` and edits its data block. A PDB file under that name would be
+        # a file whose extension lies about its contents.
+        path = directory / f"{name}_sample_{index}.cif"
         path.write_text(
-            pdb.to_pdb(
+            pdb.to_mmcif(
                 coords[index],
                 features,
                 None if per_atom is None else per_atom[index],
                 plddt_scale=plddt_scale,
+                name=f"{name}_sample_{index}",
             ),
             encoding="utf-8",
         )
