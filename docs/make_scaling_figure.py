@@ -86,7 +86,7 @@ MARKERS = {"boltz2": "o", "protenix": "s", "openfold3": "^", "opendde": "D"}
 def load(results: list[Path]) -> dict:
     """{model: {impl: {"ok": [(tokens, wall, peak)], "failed": [tokens]}}}."""
     grouped: dict = {}
-    for directory in results:
+    for rank, directory in enumerate(results):
         for path in sorted(directory.glob("*.json")):
             body = json.loads(path.read_text())
             model, impl = body.get("model"), body.get("impl")
@@ -103,43 +103,41 @@ def load(results: list[Path]) -> dict:
             ):
                 side["failed"].append(length)
             else:
-                side["ok"].append((length, body["wall_s"], body["peak_mib"]))
+                side["ok"].append(
+                    (length, body["wall_s"], body["peak_mib"], rank)
+                )
     for entry in grouped.values():
         for side in entry.values():
             # A size measured in both sweeps keeps the later run, and a size
             # that failed once and completed later is not a failure.
-            side["ok"] = sorted({value[0]: value for value in side["ok"]}.values())
+            side["ok"] = _one_run_per_size(side["ok"])
             completed = {value[0] for value in side["ok"]}
             side["failed"] = sorted(set(side["failed"]) - completed)
     return grouped
 
 
-def replicates(points: list[tuple], tolerance: float = 0.06) -> list[list[tuple]]:
-    """Measurements at effectively the same length, grouped together.
+def _one_run_per_size(points: list[tuple], tolerance: float = 0.06) -> list[tuple]:
+    """One point per size, and every point a single real run.
 
-    The two sweeps used different sequences, and two of their sizes land within
-    a few percent of each other: 490 against 499, and 970 against 1,003. On a
-    log axis that is a couple of pixels, so drawn separately they smear into
-    one fat marker and the segment joining them becomes a near-vertical kink
-    that reads as a rendering glitch -- when what it actually shows is two
-    different proteins of the same length disagreeing by up to 14%.
+    The two sweeps used different proteins, and two of their sizes land within
+    a few percent of each other -- 490 against 499, and 970 against 1,003. Drawn
+    as separate points they overlap into one smeared marker; averaged they
+    become a statistic this benchmark never measured, since nothing here is run
+    more than once and a bar between two different proteins is not a standard
+    deviation.
 
-    Grouping them says that instead: one point per length, with the spread
-    drawn as a bar. That spread is worth keeping visible, because it is the
-    floor on how precisely any single point can be read.
+    So neither. Where the sweeps overlap in size the length sweep wins, and the
+    earlier sweep contributes only the sizes the length sweep does not have --
+    132 and 1,531 tokens. Every plotted point stays one run of one sequence.
     """
-    groups: list[list[tuple]] = []
-    for point in sorted(points):
-        if groups and point[0] <= groups[-1][0][0] * (1 + tolerance):
-            groups[-1].append(point)
-        else:
-            groups.append([point])
-    return groups
-
-
-def _geometric_mean(values) -> float:
-    values = list(values)
-    return math.exp(sum(math.log(value) for value in values) / len(values))
+    kept: list[tuple] = []
+    for point in sorted(points, key=lambda value: (value[0], value[3])):
+        if kept and point[0] <= kept[-1][0] * (1 + tolerance):
+            if point[3] < kept[-1][3]:
+                kept[-1] = point
+            continue
+        kept.append(point)
+    return kept
 
 
 def growth(fitted: float) -> str:
@@ -353,11 +351,11 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         del column
         # The failures live in a band of their own above the data, so a reader
         # never has to decide whether a marker up there is a measurement.
-        floor, ceiling = top * 1.7, top * 3.4
+        floor, ceiling = top * 1.06, top * 1.25
         axis.axhspan(floor, ceiling, color=grid, alpha=0.55, zorder=0, lw=0)
         axis.axhline(floor, color=grid, linewidth=1.0, zorder=1)
         axis.text(
-            123, (floor * ceiling) ** 0.5, "did not complete", color=fg,
+            60, (floor + ceiling) / 2, "did not complete", color=fg,
             fontsize=9, fontweight="bold", va="center", ha="left", zorder=5,
         )
 
@@ -370,32 +368,15 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
             # One point per length, not per run: two sequences of the same
             # length are replicates of it, and drawing them as separate points
             # a couple of pixels apart made the curve look broken.
-            binned = [
-                (
-                    _geometric_mean(value[0] for value in group),
-                    _geometric_mean(value[index] for value in group),
-                    min(value[index] for value in group),
-                    max(value[index] for value in group),
-                )
-                for group in replicates(side["ok"])
-            ]
-            if binned:
-                line = axis.errorbar(
-                    [size for size, *_ in binned],
-                    [centre * scale for _, centre, *_ in binned],
-                    # Clamped: a group of one has centre == low == high, and
-                    # exp(log(x)) can land a float below x, which matplotlib
-                    # rejects as a negative error bar.
-                    yerr=[
-                        [max(0.0, centre - low) * scale
-                         for _, centre, low, _ in binned],
-                        [max(0.0, high - centre) * scale
-                         for _, centre, _, high in binned],
-                    ],
+            points = [(value[0], value[index]) for value in side["ok"]]
+            if points:
+                line, = axis.plot(
+                    [size for size, _ in points],
+                    [value * scale for _, value in points],
                     color=color, linewidth=1.8, marker=MARKERS[model],
-                    markersize=5, zorder=3, elinewidth=1.4, capsize=3.5,
+                    markersize=5.5, zorder=3,
                 )
-                fitted = exponent([(size, centre) for size, centre, *_ in binned])
+                fitted = exponent(points)
                 handles.append(line)
                 labels.append(
                     f"{model}" + (f"   {growth(fitted)} / 2x tokens" if fitted else "")
@@ -406,20 +387,22 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
                 # the figure would report one failure where there were two.
                 axis.plot(
                     [tokens],
-                    [floor * (ceiling / floor) ** ((order + 0.5) / len(models))],
+                    [floor + (ceiling - floor) * (order + 0.5) / len(models)],
                     marker=MARKERS[model], markersize=6.5,
                     markerfacecolor="none", markeredgecolor=color,
                     markeredgewidth=1.4, zorder=4,
                 )
                 del slot
 
-        axis.set_xscale("log")
-        axis.set_yscale("log")
-        axis.set_xlim(115, 3800)
-        axis.set_ylim(None, ceiling)
-        axis.set_xticks([132, 250, 500, 1000, 2000, 3000])
-        axis.set_xticklabels(["132", "250", "500", "1k", "2k", "3k"])
-        axis.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        # Linear, not log-log. Log axes are for reading an exponent off a
+        # slope; they turn "the cost explodes" into four tidy straight lines,
+        # which is the opposite of what a growth plot is for. On linear axes
+        # OpenFold3's upstream visibly runs away from the other three, which is
+        # the finding.
+        axis.set_xlim(0, 3250)
+        axis.set_ylim(0, ceiling)
+        axis.set_xticks([500, 1000, 1500, 2000, 2500, 3000])
+        axis.set_xticklabels(["500", "1,000", "1,500", "2,000", "2,500", "3,000"])
         axis.set_xlabel("tokens", color=fg, fontsize=10)
         axis.set_ylabel(ylabel, color=fg, fontsize=10)
         axis.grid(color=grid, linewidth=0.6, zorder=0)
@@ -429,14 +412,16 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         if metric == "peak_mib":
             axis.axhline(97.9, color=fg, linewidth=0.9, linestyle="--", zorder=1)
             axis.text(
-                122, 101, "97.9 GiB card", color=fg, fontsize=9, va="bottom",
+                3200, 96.4, "97.9 GiB card", color=fg, fontsize=9,
+                va="top", ha="right",
             )
-        # Lower right: the only quadrant both panels leave empty, since every
-        # curve climbs left to right. Upper left is the failure band.
+        # Upper left, tucked under the failure band: on linear axes every
+        # curve leaves that corner empty, and the lower right -- free when
+        # these were log-log -- is now where three of the four lines run.
         legend = axis.legend(
-            handles, labels, loc="lower right", frameon=False, fontsize=9.5,
+            handles, labels, loc="upper left", frameon=False, fontsize=9.5,
             labelcolor="linecolor", handlelength=1.6, borderpad=0.2,
-            labelspacing=0.35,
+            labelspacing=0.35, bbox_to_anchor=(0.015, 0.83),
         )
         for text in legend.get_texts():
             text.set_fontweight("bold")

@@ -106,14 +106,17 @@ faceted one does not: those runs measured the *same unmodified upstream
 repositories*, so their points belong on the same curve, while FoldJAX's own
 code changed between the two sweeps and its points would not.
 
-Every point is a different sequence. Two lengths were measured twice, by the
-two sweeps, on different proteins a few percent apart in size -- 490 against
-499, and 970 against 1,003. Those are drawn as one point per length with the
-two measurements as a bar, because a couple of pixels apart they smeared into a
-single fat marker and the segment joining them read as a broken curve. The bar
-is worth keeping: two proteins of the same length differ by up to 14% here
-(Protenix, 4.4 against 5.0 GiB), which is the floor on how precisely any single
-point can be read.
+**Linear axes, deliberately.** A log-log plot is for reading an exponent off a
+slope; it renders every one of these as a tidy straight line, which is the
+opposite of what a growth plot is for. On linear axes OpenFold3's upstream
+visibly runs away from the other three, and that is the finding.
+
+Every point is one run of one sequence. Nothing here is measured more than
+once, so there are no error bars -- where the two sweeps both covered a size
+(490 against 499, 970 against 1,003, different proteins a few percent apart)
+the length sweep's point is kept and the earlier sweep contributes only the
+sizes it alone has, 132 and 1,531. Averaging those pairs would have invented a
+statistic this benchmark never measured.
 
 - **OpenFold3's upstream is the steepest thing here, 5.2x per doubling**, and
   part of that steepness is why its memory curve bends down. Upstream tunes its
