@@ -1,14 +1,21 @@
-"""Reading the ESMC-6B checkpoint, which is sharded and carries TE leftovers.
+"""Reading the ESMC-6B checkpoint, which is sharded, prefixed and TE-flavoured.
 
-Two differences from the structure weights. It ships as several safetensors
-files behind a `model.safetensors.index.json`, and -- because upstream builds
-it out of Transformer Engine modules when they are available -- it carries
-`_extra_state` entries that are serialised Python objects rather than tensors.
-Upstream drops them on load with a `_load_state_dict_pre_hook`; so does this.
+Three differences from the structure weights, all of them in the file rather
+than the model:
 
-At 6B parameters in bfloat16 the file is about 12 GB and in float32 about 24.
-`dtype="bfloat16"` is the sensible default for a model whose output is fed
-through a softmax over 81 layers and then a layer norm.
+* it ships as six safetensors behind a `model.safetensors.index.json`;
+* it is published as `ESMCForMaskedLM`, so every key carries an `esmc.`
+  prefix that the encoder itself does not use. Stripped on load, because the
+  alternative is spelling the prefix at 1,048 call sites;
+* because upstream builds it out of Transformer Engine modules when they are
+  available, it carries `_extra_state` entries that are pickled Python objects
+  rather than tensors. Upstream drops them with a `_load_state_dict_pre_hook`;
+  so does this.
+
+The published file is float32 and 25.4 GB. `dtype="bfloat16"` is the default
+here and halves what it occupies: the output is fed through a softmax over 81
+layers and then a layer norm, which is not a place where the last eight bits
+of mantissa decide anything.
 """
 
 from __future__ import annotations
@@ -24,6 +31,8 @@ from foldjax.models.esmfold2.models.esmc import ESMCSettings, settings_from_conf
 INDEX_NAME = "model.safetensors.index.json"
 WEIGHTS_NAME = "model.safetensors"
 CONFIG_NAME = "config.json"
+#: The masked-LM wrapper's submodule name, which the encoder does not use.
+CHECKPOINT_PREFIX = "esmc."
 
 
 def shard_paths(directory: str | Path) -> list[Path]:
@@ -54,9 +63,10 @@ def load_parameters(
 ) -> dict[str, jnp.ndarray]:
     """Every tensor in the checkpoint, keyed the way `esmc.encode` asks.
 
-    `_extra_state` entries are skipped: Transformer Engine writes its
-    quantisation bookkeeping there, it is not a tensor, and nothing in this
-    port reads it.
+    The `esmc.` prefix of the masked-LM wrapper is stripped, and the masked-LM
+    head itself -- which the structure model never reads -- is dropped with it.
+    `_extra_state` entries go too: Transformer Engine writes its quantisation
+    bookkeeping there, it is not a tensor, and nothing here reads it.
     """
     parameters: dict[str, jnp.ndarray] = {}
     for shard in shard_paths(directory):
@@ -64,11 +74,14 @@ def load_parameters(
             for name in handle.keys():  # noqa: SIM118 -- safetensors has no __iter__
                 if name.endswith("_extra_state"):
                     continue
+                key = name.removeprefix(CHECKPOINT_PREFIX)
+                if not (key.startswith("transformer.") or key == "embed.weight"):
+                    continue
                 array = handle.get_tensor(name)
                 value = jnp.asarray(array) if to_device else array
                 if dtype is not None:
                     value = value.astype(jnp.dtype(dtype))
-                parameters[name] = value
+                parameters[key] = value
     return parameters
 
 
