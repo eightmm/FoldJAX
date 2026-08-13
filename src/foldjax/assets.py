@@ -62,6 +62,11 @@ class ModelAssets:
     convert: Callable[[str, Path], Path]
     needs_torch: bool = True
     notes: str = ""
+    #: Whether `foldjax setup` fetches this without being asked. False for a
+    #: model whose runtime is not in the default install: downloading gigabytes
+    #: for a backend the environment cannot run is not a service to anyone.
+    #: `foldjax weights fetch --model <name>` still gets it.
+    in_default_setup: bool = True
     extras: tuple[str, ...] = field(default_factory=tuple)
 
     def native_path(self) -> Path:
@@ -252,6 +257,53 @@ REGISTRY: dict[str, ModelAssets] = {
         native="opendde.jax",
         requires=("opendde.jax",),
         convert=_convert_opendde,
+    ),
+    "esmfold2": ModelAssets(
+        model="esmfold2",
+        source="https://huggingface.co/biohub/ESMFold2",
+        licence="MIT for the structure weights; ESMC-6B is MIT plus its own terms",
+        downloads=(
+            Download(
+                name="model.safetensors",
+                url=(
+                    "https://huggingface.co/biohub/ESMFold2/resolve/"
+                    "8fc3ff471022fdce52c77030685eb775de0c00a3/model.safetensors"
+                ),
+                sha256=(
+                    "138fd4350d6892b81ce6be7ff9bf5a93ae9d4d3751f46a27438a3f9f0dcefa0e"
+                ),
+                size=939505228,
+            ),
+            Download(
+                name="config.json",
+                url=(
+                    "https://huggingface.co/biohub/ESMFold2/resolve/"
+                    "8fc3ff471022fdce52c77030685eb775de0c00a3/config.json"
+                ),
+                sha256=None,
+                size=None,
+            ),
+            Download(
+                name="ccd.pkl",
+                url=(
+                    "https://huggingface.co/biohub/ESMFold2/resolve/"
+                    "8fc3ff471022fdce52c77030685eb775de0c00a3/ccd.pkl"
+                ),
+                sha256=(
+                    "9ff44b1927c6b9198e38ffe0928706827a09a350c15530beeeabebfa88038fc5"
+                ),
+                size=417306584,
+            ),
+        ),
+        native="model.safetensors",
+        requires=("model.safetensors", "config.json"),
+        convert=_bring_your_own,
+        in_default_setup=False,
+        notes="Torch weights, loaded as they ship -- nothing is converted, "
+        "because this backend drives upstream's model rather than porting it. "
+        "Loading also pulls ESMC-6B (~24 GB) from Hugging Face on first use: "
+        "it is the language model ESMFold2 reads its representations from, and "
+        "upstream distributes it separately. Needs the esmfold2 extra.",
     ),
     "openfold3": ModelAssets(
         model="openfold3",

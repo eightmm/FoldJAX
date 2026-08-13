@@ -236,7 +236,7 @@ def _run_setup(args: argparse.Namespace) -> int:
     failed = False
     for name in assets.available():
         spec = assets.assets_for(name)
-        if not spec.downloads:
+        if not spec.downloads or not spec.in_default_setup:
             # Gated or non-redistributable: there is nothing to fetch, and the
             # instruction differs per model, so `notes` is the only honest text.
             state = "ready" if spec.ready() else "manual"

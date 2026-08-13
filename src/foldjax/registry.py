@@ -23,6 +23,9 @@ _ALIASES = {
     "opendde-jax": "opendde",
     "protenix": "protenix",
     "protenix-jax": "protenix",
+    "esmfold2": "esmfold2",
+    "esm-fold2": "esmfold2",
+    "esmfold-2": "esmfold2",
     "openfold3": "openfold3",
     "of3": "openfold3",
     "openfold-3": "openfold3",
@@ -34,6 +37,7 @@ _IMPORTS = {
     "opendde": ("foldjax.backends.opendde", "OpenDDEBackend"),
     "protenix": ("foldjax.backends.protenix", "ProtenixBackend"),
     "openfold3": ("foldjax.backends.openfold3", "OpenFold3Backend"),
+    "esmfold2": ("foldjax.backends.esmfold2", "ESMFold2Backend"),
 }
 _OVERRIDES: dict[str, BackendFactory] = {}
 

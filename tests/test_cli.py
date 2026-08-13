@@ -11,6 +11,7 @@ def test_models_cli_lists_backends(capsys) -> None:
     assert capsys.readouterr().out.splitlines() == [
         "alphafold3",
         "boltz2",
+        "esmfold2",
         "opendde",
         "openfold3",
         "protenix",

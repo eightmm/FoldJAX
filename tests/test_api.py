@@ -57,6 +57,7 @@ def test_registry_exposes_every_model_and_its_aliases() -> None:
     assert foldjax.available_models() == (
         "alphafold3",
         "boltz2",
+        "esmfold2",
         "opendde",
         "openfold3",
         "protenix",
@@ -66,6 +67,7 @@ def test_registry_exposes_every_model_and_its_aliases() -> None:
     assert foldjax.normalize_model_name("protenix-jax") == "protenix"
     assert foldjax.normalize_model_name("opendde-jax") == "opendde"
     assert foldjax.normalize_model_name("open-dde") == "opendde"
+    assert foldjax.normalize_model_name("esmfold-2") == "esmfold2"
     assert foldjax.normalize_model_name("of3") == "openfold3"
     assert foldjax.normalize_model_name("openfold3-jax") == "openfold3"
     with pytest.raises(ValueError, match="unknown model"):
@@ -77,6 +79,13 @@ def test_every_backend_declares_its_own_capabilities() -> None:
         capabilities = foldjax.capabilities(model)
         assert capabilities.model == model
         assert "foldjax" in capabilities.input_formats
+        if model == "esmfold2":
+            # The one backend with no native dialect to accept: upstream's
+            # entry point takes a sequence string (or its SDK's objects), not
+            # a job file, so "native" here would name a format that does not
+            # exist. Every other backend has a published input format and must
+            # keep taking it.
+            continue
         assert "native" in capabilities.input_formats
 
 
