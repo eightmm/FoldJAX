@@ -38,6 +38,40 @@ one's number is unknowable. The card is allowed to go idle between runs, since
 a process exiting does not return its device memory synchronously and the next
 job can otherwise fail an allocation that would have fit.
 
+## Memory over time, not just its maximum
+
+A peak is one number off a curve that has a shape: weights loading, a trunk that
+climbs and holds, a sampler that spikes once per diffusion step. Two models with
+the same peak can spend very different fractions of the run near it, and that is
+what decides whether a job fits beside anything else on a card.
+
+`trace.py` records that curve, and it records **the same quantity the table
+does** — live bytes, sampled inside the measured process by
+`peakhook/benchtrace.py`. Sampling `nvidia-smi` instead would have been wrong
+twice over: it is the reserved pool this directory already refuses for peaks,
+and it is *monotone over a run*, because neither allocator returns memory to the
+driver mid-prediction. The shape a trace exists to show is not in that signal.
+Measured on a torch probe that frees two thirds of what it allocated, live bytes
+fall 1,536 → 768 MiB where the driver's counter stays at 1,536.
+
+Sampling live bytes also means nothing has to be switched off: the trace is
+taken under the same XLA preallocation the shipped command runs.
+
+```bash
+python -m bench.drive --models boltz2 protenix --impls foldjax upstream \
+    --cases L1000_3og2 --results results/ --work /tmp/bench --traces traces/
+python -m bench.trace plot --out ../docs/memory-trace.png \
+    --case "1,003 tokens" traces/*.jsonl
+```
+
+`--traces` wraps each measurement and changes nothing about it, so a curve and
+its table row are always of the same run. The warm-up is deliberately not
+traced: it is discarded work, and its curve is compile-bound.
+
+The 4 Hz sampler is an observer, so its largest sample is a *lower bound*; the
+allocator's own high-water mark is written as a footer and drawn as the peak
+rule in the figure, so the plot cannot understate what a run held.
+
 ## The schedule
 
 AlphaFold 3's released inference default — 5 diffusion samples, 200 diffusion

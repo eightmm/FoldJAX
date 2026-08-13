@@ -1,4 +1,4 @@
-"""Report a torch process's peak device memory without editing that project.
+"""Report a torch process's device memory without editing that project.
 
 Every upstream here ships its own virtualenv and its own entry point, so the
 measurement cannot live inside the call. Putting this directory on PYTHONPATH
@@ -10,6 +10,9 @@ code runs; it registers an atexit hook that writes
 quantity `peak_bytes_in_use` reports on the JAX side. `nvidia-smi` is not: it
 shows the caching allocator's reserved pool, which grows by doubling and
 therefore tracks the allocator's schedule rather than the model's need.
+
+With BENCH_TRACE_DIR set, the same process also samples that quantity over
+time, so a trace and a table row measure one thing. See `benchtrace.py`.
 """
 
 from __future__ import annotations
@@ -41,4 +44,19 @@ def _install() -> None:
     atexit.register(report)
 
 
+def _install_trace() -> None:
+    """Start the memory-over-time sampler, if this run asked for one.
+
+    Guarded because it is an observer: an upstream prediction must not fail
+    because the instrument did.
+    """
+    try:
+        import benchtrace  # same directory, already on sys.path via PYTHONPATH
+
+        benchtrace.start_when_torch_ready()
+    except Exception:
+        pass
+
+
 _install()
+_install_trace()
