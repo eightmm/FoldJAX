@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from foldjax.api import detect_input_format
-from foldjax.input import materialize_native_input
+from foldjax.input import materialize_native_input, read_job_document
 from foldjax.registry import available_models, capabilities
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -37,7 +37,23 @@ def test_every_example_is_common_schema(job: Path) -> None:
 def test_every_example_translates_to_every_backend(
     job: Path, model: str, tmp_path: Path
 ) -> None:
-    """The common schema's promise is that one file runs anywhere."""
+    """The common schema's promise: one file runs on every backend that can
+    express what it names, and is refused by name on every backend that cannot.
+
+    Only ESMFold2 currently refuses anything -- its adapter folds protein
+    chains and does not build ligand or nucleic-acid features yet. The refusal
+    is the point being tested: dropping the ligand and folding the protein
+    would answer a different question than the file asks.
+    """
+    document = read_job_document(job)
+    named = {entity.get("type") for entity in document.get("entities", [])}
+    supported = set(capabilities(model).entity_types)
+    if not named <= supported:
+        with pytest.raises(ValueError):
+            materialize_native_input(
+                job, capabilities(model), tmp_path / model / job.stem, seed=101
+            )
+        return
     written = materialize_native_input(
         job, capabilities(model), tmp_path / model / job.stem, seed=101
     )

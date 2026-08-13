@@ -66,6 +66,11 @@ _TARGETS = {
     # *stem* and only database names are parsed, and a paired MSA that cannot
     # actually be paired collapses the MSA to the query sequence alone.
     "openfold3": _Target(".json", _ALL_FEATURES),
+    # ESMFold2's entry point takes a sequence, not a job file, so its adapter
+    # reads the FoldJAX document itself. The document is still written out and
+    # still validated -- against a backend that declares protein only, so a
+    # ligand job is refused here rather than folded as its protein half.
+    "esmfold2": _Target(".json", {"unpaired_msa"}),
 }
 
 
@@ -518,8 +523,11 @@ def materialize_native_input(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if model == "alphafold3":
-        document: Any = _alphafold3(job, base, seed)
+    if model == "esmfold2":
+        # No dialect to translate into: the adapter consumes this schema.
+        document: Any = job
+    elif model == "alphafold3":
+        document = _alphafold3(job, base, seed)
     elif model == "boltz2":
         document = _boltz(job, base)
     elif model in {"opendde", "protenix"}:

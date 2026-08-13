@@ -15,12 +15,14 @@ same dictionary the vendored ports already build, and its knobs
 (`num_sampling_steps`, `num_loops`, `num_diffusion_samples`, `msa_max_depth`)
 are FoldJAX's neutral vocabulary under different names.
 
-This first adapter drives the single-sequence path (`infer_protein`), which is
-what upstream documents and what the released weights are evaluated on for
-monomers. Complexes, ligands and nucleic acids go through the same `forward`
-and need our featurizer's output mapped onto its argument names; that mapping
-is the next increment, and `capabilities()` reports protein-only until it
-exists rather than accepting a job it would silently fold as a monomer.
+Upstream ships `prepare_protein_features` for one chain with no alignment and
+leaves the rest of that dictionary to the caller; `_esmfold2_features` is that
+assembly -- several chains, their symmetry, and their alignments -- and is
+checked against upstream's own builder for the case both cover. Ligands and
+nucleic acids are what remains: `forward` expresses them, but their features
+need reference conformers out of upstream's 400 MB CCD pickle, so
+`capabilities()` reports protein until that is wired rather than accepting a
+job it would fold without its ligand.
 
 Torch is required here and only here. The prediction path for every other
 model is torch-free, so this adapter is behind the `esmfold2` extra and its
@@ -92,15 +94,13 @@ class ESMFold2Backend(Backend):
         options = self.apply_sampling(request)
         import torch
         from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
+        from transformers.models.esmfold2.protein_utils import (
+            OUTPUT_TO_PDB_FEATURE_KEYS,
+        )
 
-        sequences = _protein_sequences(request.input)
-        if len(sequences) != 1:
-            raise ValueError(
-                "this ESMFold2 adapter folds one protein chain; the job names "
-                f"{len(sequences)}. Complexes need the full feature path, which "
-                "is not wired yet"
-            )
+        from foldjax.backends._esmfold2_features import build_features
 
+        chains, alignments = _job_chains(request.input)
         kernel = options.pop("kernel_backend", "fused")
         forward_kwargs = {
             name: int(options.pop(name))
@@ -109,16 +109,24 @@ class ESMFold2Backend(Backend):
         }
         depth = options.pop("msa_max_depth", None)
         if depth is not None:
+            # Upstream resubsamples this many rows every trunk loop rather than
+            # cutting the alignment once, so the cap is passed through instead
+            # of being applied while building the features.
             forward_kwargs["msa_max_depth"] = int(depth)
         if options:
             raise ValueError(f"unsupported ESMFold2 options: {', '.join(options)}")
 
         model = ESMFold2Model.from_pretrained(str(request.weights))
-        model = model.to("cuda" if torch.cuda.is_available() else "cpu").eval()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device).eval()
         model.set_kernel_backend(None if kernel == "reference" else kernel)
 
+        features = build_features(chains, alignments)
+        features = {name: value.to(device) for name, value in features.items()}
         with torch.no_grad():
-            output = model.infer_protein(sequences[0], **forward_kwargs)
+            output = model(**features, **forward_kwargs)
+            for key in OUTPUT_TO_PDB_FEATURE_KEYS:
+                output[key] = features[key]
             structure = model.output_to_pdb(output)
 
         request.output_dir.mkdir(parents=True, exist_ok=True)
@@ -142,18 +150,37 @@ class ESMFold2Backend(Backend):
         )
 
 
-def _protein_sequences(path: Path) -> list[str]:
-    """The protein sequences a FoldJAX job names, one entry per chain copy."""
+def _job_chains(
+    path: Path,
+) -> tuple[list[tuple[str, str, int, int]], dict[int, Path]]:
+    """One entry per chain copy, and the alignment each entity pins.
+
+    A FoldJAX entity is a sequence and the chains that carry it, which is
+    exactly ESMFold2's entity/symmetry split: every copy becomes its own chain
+    with its own `asym_id`, sharing an `entity_id` and counting up `sym_id`.
+    Alignment paths are resolved against the job file, as everywhere else.
+    """
     document: Any = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(document, dict) or "entities" not in document:
         raise ValueError(
             "ESMFold2 takes a FoldJAX job document; it has no native dialect"
         )
-    sequences: list[str] = []
-    for entity in document["entities"]:
+    chains: list[tuple[str, str, int, int]] = []
+    alignments: dict[int, Path] = {}
+    base = Path(path).parent
+    for entity_index, entity in enumerate(document["entities"]):
         if entity.get("type") != "protein":
             continue
         ids = entity.get("id", ["A"])
-        copies = len(ids) if isinstance(ids, list) else 1
-        sequences.extend([entity["sequence"]] * copies)
-    return sequences
+        ids = ids if isinstance(ids, list) else [ids]
+        for symmetry, chain_id in enumerate(ids):
+            chains.append((entity["sequence"], str(chain_id), entity_index, symmetry))
+        msa = entity.get("unpaired_msa")
+        if msa:
+            candidate = Path(msa)
+            alignments[entity_index] = (
+                candidate if candidate.is_absolute() else base / candidate
+            )
+    if not chains:
+        raise ValueError("the job names no protein chains")
+    return chains, alignments
