@@ -50,6 +50,49 @@ differ; same-seed parity is a separate, per-port exercise.
 virtualenv's provisioning, the kernels that cannot run on this card, and how to
 verify both.
 
+## How the cost grows
+
+The table is three sizes. The question that decides whether a sequence is
+affordable is a different one -- how steeply the cost climbs -- and its answer
+is a slope, not a number.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="scaling-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="scaling-light.png">
+  <img alt="wall time and peak memory against token count, log-log, one panel per model" src="scaling-dark.png">
+</picture>
+
+Both axes are logarithmic, so a power law is a straight line and the printed
+exponent is its slope. Two are printed where they disagree: the fit over every
+completed size, and the local slope between the two largest. They disagree
+because a per-run cost that does not grow with `n` -- weight loading, XLA
+compilation -- is a constant added to a power law, and it flattens the fitted
+slope at the small end.
+
+- **Nothing here is quadratic across the whole range, and everything is
+  steeper than quadratic at the top.** FoldJAX time fits n^1.8-2.0 over
+  499-3,012 tokens but runs n^2.5-2.8 between 2,096 and 3,012. Extrapolating a
+  small-size measurement to a large sequence underestimates it, in every column.
+- **AlphaFold 3's n^0.68 is the clearest case of that constant.** Its 285 s at
+  499 tokens is mostly fixed cost, which is why its fitted slope is the
+  flattest here and its local slope (n^1.47) more than doubles it. It is not
+  scaling better than the ports; it is starting from a bigger floor.
+- **Memory grows slower than time, roughly n^1.0-1.8, and that is what runs
+  out first anyway.** OpenDDE is the exception and it is the one that fails
+  earliest: n^1.83 on two surviving points, 45.4 GiB already at 1,003 tokens.
+- **OpenFold3 upstream's memory falls from 93.4 GiB at 2,096 tokens to 83.2 at
+  3,012** -- a negative local slope, drawn as measured. A peak that drops as
+  the input grows is a size-triggered path change, not a saving; it is
+  unexplained here and should not be read as one until someone reads that
+  code.
+
+Hollow markers are sizes a run reached and did not finish. They are drawn
+rather than dropped: omitting them would bend a curve into a claim that the
+model kept scaling.
+
+    uv run --with matplotlib python docs/make_scaling_figure.py \
+        --results ../foldjax-bench/results-lengths
+
 ## What the table says
 
 - **FoldJAX never uses more memory than the repository it reimplements.** The
