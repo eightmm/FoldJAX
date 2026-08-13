@@ -394,3 +394,38 @@ shim, the in-place-built `alphafold3.cpp` (uv build staging: static version,
 LICENSE/README/terms files, libcifpp dictionaries beside the tree), the
 store-copied CCD pickles, and the terms documents inside the package where
 post-processing ships them from.
+
+## ESMFold2 JAX port: started (2026-08-13)
+
+The torch backend landed first and is honest about what it is -- upstream's
+PyTorch model, a forked transformers, and a 24 GB ESMC-6B download -- which
+makes it the only backend here that is not JAX, not torch-free and not
+standalone. The port replaces it.
+
+Sizing: the structure model is **234.8M parameters** (safetensors, measured),
+smaller than Protenix's 368M: structure_head 131.5M, folding_trunk 75.6M,
+msa_encoder 8.2M, confidence_head 7.8M, lm_encoder 6.3M, rest 5.0M. The wall
+is ESMC-6B, a 6B transformer LM -- large, but an ordinary encoder, and MIT.
+
+Landed:
+* `models/esmfold2/models/primitives.py` -- linear, layer_norm, swiglu,
+  transition_layer, adaptive_layer_norm, fourier_embedding
+* `models/esmfold2/models/trunk.py` -- triangle multiplicative (both flows),
+  transition (both residual conventions), pair update block, folding trunk,
+  outer product mean, MSA pair-weighted averaging
+* `tests/models/esmfold2/parity.py` -- written before any module, because
+  that is what made the other four ports trustworthy
+* 14 parity tests, all matching torch at 2e-5
+
+Specs, read off the vendored source and kept because the source lives in a
+fork that will move: `docs/ports/esmfold2/{trunk,diffusion}-spec.md`. The two
+findings that change how the port is written: the trunk is a **linear
+recurrence** (`z = a*z + inject @ b_mat.T`, 21 iterations, only z carried),
+not AF2 recycling; and **inference is stochastic by design** -- random initial
+pair state, LM dropout forced `training=True` at p=0.25, MSA rows resubsampled
+every iteration.
+
+Next, in order: the atom encoder/decoder and 3D-RoPE sliding-window attention;
+the diffusion transformer and its EDM preconditioning; the sampler (Euler with
+a Kabsch realignment, 48 real steps from 68 nominal); the confidence head; the
+checkpoint mapper; then ESMC-6B. Each lands only with parity against torch.
