@@ -82,9 +82,13 @@ def run(argv: dict, command: list[str], out: Path, interval: float) -> int:
         if samples:
             written.append((rows, samples))
     if not written:
+        # The command's own exit status, not a failure of our own: a trace is
+        # an observer, and a prediction that succeeded must not be recorded as
+        # a failed row because the instrument found nothing to watch. The
+        # missing file is the report.
         print(f"[trace] no samples: {command[0]} never initialized a device")
         shutil.rmtree(shards, ignore_errors=True)
-        return completed.returncode or 1
+        return completed.returncode
     if len(written) > 1:
         # One measurement per process is this directory's invariant; two
         # sampling processes means the wrapper was pointed at a driver that
