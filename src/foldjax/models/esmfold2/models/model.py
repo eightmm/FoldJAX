@@ -347,6 +347,7 @@ def predict(
     settings: ModelSettings,
     lm_hidden_states: jnp.ndarray | None = None,
     initial_pair_state: jnp.ndarray | None = None,
+    n_chains: int | None = None,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -359,6 +360,10 @@ def predict(
     from. Supplying it makes the trunk -- and so the distogram -- reproducible,
     which is the only way to compare this path against torch's at all; the
     diffusion sampler stays stochastic either way.
+
+    `n_chains` sizes the confidence head's per-chain ipTM matrix. It is read
+    off `asym_id` when omitted, which is a host read of a traced value and so
+    the one thing that would stop this function being jitted; pass it to jit.
     """
     token_mask = features["token_attention_mask"]
     atom_mask = features["atom_attention_mask"]
@@ -543,7 +548,8 @@ def predict(
         num_samples=n_samples,
     )
 
-    n_chains = int(features["asym_id"].max()) + 1
+    if n_chains is None:
+        n_chains = int(features["asym_id"].max()) + 1
     output = {
         "distogram_logits": distogram_logits,
         "sample_atom_coords": coords,

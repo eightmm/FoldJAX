@@ -91,9 +91,12 @@ cuda13 = [
 # NumPy array layer. The extra remains so the vendored featurizer can be run on
 # real torch — which is how the parity test checks the NumPy layer — and so
 # upstream Boltz's Lightning DataModule stays available.
-# ESMFold2 is torch, and its transformers support lives in Biohub's fork rather
-# than upstream transformers -- so this extra is opt-in and deliberately not in
-# the default set: installing it replaces `transformers` in the environment.
+# ESMFold2 prediction no longer needs this either: both halves of the model --
+# the structure network and ESMC-6B -- are ported, and the featurizer runs on
+# NumPy. The extra remains because upstream's torch modules are what the port's
+# parity tests compare against, module by module, and because its transformers
+# support lives in Biohub's fork. Opt-in and deliberately not in the default
+# set: installing it replaces `transformers` in the environment.
 esmfold2 = [
     "esm @ git+https://github.com/Biohub/esm.git@main",
     "transformers @ git+https://github.com/Biohub/transformers.git@main",

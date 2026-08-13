@@ -13,8 +13,9 @@ Nothing here imports torch.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import jax
@@ -114,8 +115,15 @@ def predict(
     num_samples: int | None = None,
     num_steps: int | None = None,
     msa_max_depth: int | None = None,
+    compile_it: bool = True,
 ) -> dict[str, jnp.ndarray]:
-    """One forward over already-built features."""
+    """One forward over already-built features.
+
+    Compiled by default. Eager JAX dispatches this model an operation at a
+    time -- forty-eight trunk layers, four loops, twelve diffusion blocks per
+    sampling step -- so the difference is not a tuning detail; `compile_it` is
+    there for debugging, where a traced error message is worth the wait.
+    """
     settings = structure_model.with_overrides(
         model.settings,
         num_loops=num_loops,
@@ -123,13 +131,46 @@ def predict(
         num_steps=num_steps,
         msa_max_depth=msa_max_depth,
     )
+    arrays = {name: jnp.asarray(value) for name, value in features.items()}
+    hidden = language_model_states(features, model)
+    # Read on the host: it sizes the confidence head's per-chain matrix, and a
+    # traced maximum cannot size anything.
+    n_chains = int(np.asarray(features["asym_id"]).max()) + 1
+
+    runner = compiled_predict(settings, n_chains) if compile_it else _run
+    return runner(key, arrays, model.parameters, hidden, settings, n_chains)
+
+
+def _run(
+    key: jnp.ndarray,
+    features: Mapping[str, jnp.ndarray],
+    parameters: Mapping[str, jnp.ndarray],
+    lm_hidden_states: jnp.ndarray | None,
+    settings: structure_model.ModelSettings,
+    n_chains: int,
+) -> dict[str, jnp.ndarray]:
     return structure_model.predict(
         key,
-        {name: jnp.asarray(value) for name, value in features.items()},
-        model.parameters,
+        features,
+        parameters,
         settings=settings,
-        lm_hidden_states=language_model_states(features, model),
+        lm_hidden_states=lm_hidden_states,
+        n_chains=n_chains,
     )
+
+
+@lru_cache(maxsize=8)
+def compiled_predict(
+    settings: structure_model.ModelSettings, n_chains: int
+) -> Callable[..., dict[str, jnp.ndarray]]:
+    """`predict` as one jitted program, cached per settings and chain count.
+
+    Both are static: the settings decide how many layers get traced and
+    `n_chains` sizes an output. Everything else -- the features, the weights,
+    the key -- is an argument, so a second job of the same shape reuses the
+    compilation.
+    """
+    return jax.jit(_run, static_argnums=(4, 5))
 
 
 def predict_job(
