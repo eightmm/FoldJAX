@@ -84,9 +84,8 @@ the average at the small end.
   what runs out first anyway.** OpenDDE is the exception and fails earliest:
   3.6x per doubling on two surviving points, 45.4 GiB already at 1,003 tokens.
 - **OpenFold3 upstream's memory falls from 93.4 GiB at 2,096 tokens to 83.2 at
-  3,012** -- drawn as measured. A peak that drops as the input grows is a
-  size-triggered path change, not a saving; it is unexplained here and should
-  not be read as one until someone reads that code.
+  3,012, and that is not a saving** -- see below. It is the one series here
+  whose memory panel cannot be read without its time panel.
 
 Hollow markers are sizes a run reached and did not finish. They are drawn
 rather than dropped: omitting them would bend a curve into a claim that the
@@ -112,12 +111,22 @@ Each point is a different sequence, so the near-equal pairs (490/499,
 can differ, which is the noise floor for reading any single point.
 
 - **OpenFold3's upstream is the steepest thing here, 5.2x per doubling**, and
-  its caveat is below: it reaches no fused kernel on this card and chunks
-  attention four rows at a time at every size.
+  part of that steepness is why its memory curve bends down. Upstream tunes its
+  attention chunk size at runtime, binary-searching the largest chunk that does
+  not raise (`chunk_utils.py`, `tune_chunk_size` defaults to `True` in
+  `model_config.py:47`). At 2,096 tokens a large chunk fits: 93.4 GiB, 2,410 s.
+  At 3,012 it does not, so the search falls back to a smaller one: 83.2 GiB,
+  6,722 s. **The peak came down because the time went up** -- memory traded for
+  time by the implementation itself, at a size it chose. Reading either panel
+  alone gets this backwards, which is also why that point is drawn where it was
+  measured rather than interpolated to somewhere more plausible.
 - **Protenix's upstream has the flattest curve (1.8x) and the highest floor** --
   52 s at 132 tokens, where OpenDDE's takes 17. Below ~500 tokens it is the
-  slowest of the four and above ~1,000 it is the fastest.
-- **OpenDDE's upstream stops at 1,003 tokens.** Everything past it is hollow.
+  slowest of the four and above ~1,000 it is the fastest. That crossing is only
+  visible because the small sizes are plotted; a sweep starting at 499 tokens
+  would have said "Protenix is faster" without qualification.
+- **OpenDDE's upstream stops at 1,003 tokens.** Everything past it is in the
+  band.
 
 <!-- -->
 

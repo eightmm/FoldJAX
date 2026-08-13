@@ -285,7 +285,21 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
 
 
 def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
-    """The four upstream implementations against each other, on one axes."""
+    """The four upstream implementations against each other, on one axes.
+
+    No prose on the canvas: the figure is meant to be read beside the text that
+    explains it, not to carry that text. Names go in a legend, each with what
+    doubling the token count multiplies that panel's cost by.
+
+    OpenFold3's memory falling from 2,096 to 3,012 tokens is not a bad point.
+    Upstream tunes its attention chunk size at runtime by binary-searching the
+    largest chunk that does not raise (`chunk_utils.py:_determine_favorable_
+    chunk_size`), so at 3,012 the large chunks it used at 2,096 no longer fit,
+    it drops to a smaller one, and the peak comes down while the wall time goes
+    from 2,410 s to 6,722 s. Memory traded for time, visible only if both
+    panels are read together -- which is why interpolating that point to
+    somewhere more plausible would delete the finding.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -297,81 +311,89 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
     models = [name for name in MODELS if name in palette and name in grouped]
 
     figure, axes = plt.subplots(
-        1, len(METRICS), figsize=(13.5, 5.6), dpi=200, facecolor=bg, squeeze=False
+        1, len(METRICS), figsize=(12.5, 5.4), dpi=200, facecolor=bg, squeeze=False
     )
 
     for column, (metric, ylabel, scale) in enumerate(METRICS):
         axis = axes[0][column]
         axis.set_facecolor(bg)
-        top = 1.0
-        for model in models:
+        index = 1 if metric == "wall_s" else 2
+        top = max(
+            (value[index] * scale for model in models
+             for value in grouped[model].get("upstream", {}).get("ok", [])),
+            default=1.0,
+        )
+        # The failures live in a band of their own above the data, so a reader
+        # never has to decide whether a marker up there is a measurement.
+        floor, ceiling = top * 1.7, top * 3.4
+        axis.axhspan(floor, ceiling, color=grid, alpha=0.55, zorder=0, lw=0)
+        axis.axhline(floor, color=grid, linewidth=1.0, zorder=1)
+        axis.text(
+            123, (floor * ceiling) ** 0.5, "did not complete", color=fg,
+            fontsize=9, fontweight="bold", va="center", ha="left", zorder=5,
+        )
+
+        handles, labels = [], []
+        for order, model in enumerate(models):
             side = grouped[model].get("upstream")
             if side is None:
                 continue
             color = palette[model]
-            index = 1 if metric == "wall_s" else 2
             points = [(value[0], value[index] * scale) for value in side["ok"]]
-            if not points:
-                continue
-            top = max(top, max(y for _, y in points))
-            axis.plot(
-                [x for x, _ in points], [y for _, y in points], color=color,
-                linewidth=1.8, marker=MARKERS[model], markersize=5, zorder=3,
-            )
-            fitted = exponent([(value[0], value[index]) for value in side["ok"]])
-            # The label at the line's end, not a legend: four lines that cross
-            # cannot be traced back to a box in the corner, and this is also
-            # the relief the light surface needs where a hue falls below 3:1.
-            tail = f"  {model}" + (f"  {growth(fitted)}" if fitted else "")
-            axis.annotate(
-                tail, xy=points[-1], xytext=(6, 0),
-                textcoords="offset points", color=color, fontsize=9.5,
-                va="center", ha="left", zorder=5, fontweight="bold",
-            )
-        for index, model in enumerate(models):
-            side = grouped[model].get("upstream")
-            for tokens in (side or {}).get("failed", []):
+            if points:
+                line, = axis.plot(
+                    [x for x, _ in points], [y for _, y in points], color=color,
+                    linewidth=1.8, marker=MARKERS[model], markersize=5, zorder=3,
+                )
+                fitted = exponent(
+                    [(value[0], value[index]) for value in side["ok"]]
+                )
+                handles.append(line)
+                labels.append(
+                    f"{model}" + (f"   {growth(fitted)} / 2x tokens" if fitted else "")
+                )
+            for slot, tokens in enumerate(side["failed"]):
                 # Staggered by model: two implementations failing at the same
                 # size would otherwise draw one marker on top of another, and
                 # the figure would report one failure where there were two.
                 axis.plot(
-                    [tokens], [top * (1.55 + 0.30 * index)], marker=MARKERS[model],
-                    markersize=6.5, markerfacecolor="none",
-                    markeredgecolor=palette[model], markeredgewidth=1.4,
-                    zorder=4, clip_on=False,
+                    [tokens],
+                    [floor * (ceiling / floor) ** ((order + 0.5) / len(models))],
+                    marker=MARKERS[model], markersize=6.5,
+                    markerfacecolor="none", markeredgecolor=color,
+                    markeredgewidth=1.4, zorder=4,
                 )
+                del slot
 
         axis.set_xscale("log")
         axis.set_yscale("log")
-        axis.set_xlim(115, 9000)
-        axis.set_ylim(None, top * 2.6)
+        axis.set_xlim(115, 3800)
+        axis.set_ylim(None, ceiling)
         axis.set_xticks([132, 250, 500, 1000, 2000, 3000])
         axis.set_xticklabels(["132", "250", "500", "1k", "2k", "3k"])
         axis.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
-        axis.set_xlabel("tokens", color=fg, fontsize=9.5)
-        axis.set_ylabel(ylabel, color=fg, fontsize=9.5)
+        axis.set_xlabel("tokens", color=fg, fontsize=10)
+        axis.set_ylabel(ylabel, color=fg, fontsize=10)
         axis.grid(color=grid, linewidth=0.6, zorder=0)
-        axis.tick_params(colors=fg, labelsize=9)
+        axis.tick_params(colors=fg, labelsize=9.5)
         for spine in axis.spines.values():
             spine.set_color(grid)
         if metric == "peak_mib":
             axis.axhline(97.9, color=fg, linewidth=0.9, linestyle="--", zorder=1)
             axis.text(
-                130, 101, "97.9 GiB card", color=fg, fontsize=8.5, va="bottom",
+                122, 101, "97.9 GiB card", color=fg, fontsize=9, va="bottom",
             )
+        # Lower right: the only quadrant both panels leave empty, since every
+        # curve climbs left to right. Upper left is the failure band.
+        legend = axis.legend(
+            handles, labels, loc="lower right", frameon=False, fontsize=9.5,
+            labelcolor="linecolor", handlelength=1.6, borderpad=0.2,
+            labelspacing=0.35,
+        )
+        for text in legend.get_texts():
+            text.set_fontweight("bold")
 
-    figure.suptitle(
-        "upstream implementations against each other · 5 samples · 200 steps · "
-        "10 recycles · one RTX PRO 6000\n"
-        "log-log. After each name: what doubling the token count multiplies "
-        "that cost by — averaged over the whole plotted range, and every curve "
-        "is steeper than that at its top end.\n"
-        "Hollow markers reached a size and did not finish it. Each point is a "
-        "different sequence, so the near-equal pairs (490/499, 970/1,003) show "
-        "the spread between sequences of one length.",
-        color=fg, fontsize=10.5, x=0.006, ha="left", va="top", y=0.995,
-    )
-    figure.tight_layout(rect=(0, 0, 1, 0.875))
+    figure.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(out, facecolor=bg, bbox_inches="tight")
     plt.close(figure)
