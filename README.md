@@ -6,21 +6,32 @@
 
 # FoldJAX
 
-Biomolecular structure prediction in JAX. Five models behind one interface,
+Biomolecular structure prediction in JAX. Six models behind one interface,
 all carried inside the package:
 
 | model | vendored at | licence | upstream |
 |---|---|---|---|
 | `alphafold3` | `foldjax.models.alphafold3` | Apache-2.0 | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
 | `boltz2` | `foldjax.models.boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
+| `esmfold2` | `foldjax.models.esmfold2` | MIT | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
 | `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
 | `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
 | `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
 
-Boltz-2, OpenDDE, Protenix and OpenFold3 are JAX reimplementations that match
-their upstream's results; AlphaFold 3 is upstream's own source, vendored.
-Weights are never redistributed — `foldjax weights fetch` gets each from its
-publisher (AlphaFold 3's on request from Google).
+Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations
+that match their upstream's results; AlphaFold 3 is upstream's own source,
+vendored. Weights are never redistributed — `foldjax weights fetch` gets each
+from its publisher (AlphaFold 3's on request from Google).
+
+ESMFold2 is the odd one out and worth knowing about before you use it. It has
+no evolutionary trunk: it is a diffusion structure head on a linear-recurrence
+pair trunk, folding the representations of **ESMC-6B**, a 25 GB protein
+language model that upstream distributes separately (`scripts/fetch_esmc6b.sh`
+puts it where the loader looks). It is also *random at inference by design* —
+random initial pair state, per-loop language-model dropout, sampler noise — so
+two seeds give genuinely different structures rather than the same structure
+twice. Protein only for now; ligands and nucleic acids need reference
+conformers this adapter does not build yet.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
@@ -119,14 +130,14 @@ uv run foldjax predict \
 `--num-samples`, `--num-steps`, and `--num-recycles` are model-neutral. Each
 backend calls them something different, and FoldJAX translates:
 
-| neutral | alphafold3 | boltz2 | openfold3 | opendde / protenix |
-|---|---|---|---|---|
-| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_samples` | `n_sample` |
-| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `no_rollout_steps` | `n_step` |
-| `--num-recycles` | `num_recycles` | `recycling` | `num_cycles` | `n_cycle` |
-| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | *feature cut* | `max_msa_rows` |
+| neutral | alphafold3 | boltz2 | esmfold2 | openfold3 | opendde / protenix |
+|---|---|---|---|---|---|
+| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_samples` | `num_samples` | `n_sample` |
+| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `num_steps` | `no_rollout_steps` | `n_step` |
+| `--num-recycles` | `num_recycles` | `recycling` | `num_loops` | `num_cycles` | `n_cycle` |
+| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | `msa_max_depth` | *feature cut* | `max_msa_rows` |
 
-All four reach all five models; setting both a neutral knob and its native
+All four reach all six models; setting both a neutral knob and its native
 name is an error, and `--option KEY=VALUE` passes anything native straight
 through. Seeds fan out the same way — `--seeds 0 1 2` (or `--num-seeds 3`)
 runs the job once per seed into `seed_<n>` directories and returns every
@@ -277,13 +288,21 @@ point of the ports. What `None` means per model:
 |---|---|---|---|---|
 | `alphafold3` | 5 | 200 | 10 | 1,024 rows (`evoformer.num_msa`) |
 | `boltz2` | **1** | 200 | **3** | uncapped -- the whole alignment |
+| `esmfold2` | **32** | **14** | **3** | 1,024 rows, resubsampled per loop |
 | `opendde` | 5 | 200 | 10 | 16,384 rows |
 | `openfold3` | 5 | 200 | **3** | 1,024 rows, subsampled |
 | `protenix` | 5 | 200 | 10 | 16,384 rows |
 
-The bench table below pins all five to one schedule (5 / 200 / 10) precisely
-because these defaults differ; set `num_recycles=10` on Boltz-2 and you are
-asking more of it than `boltz predict` does.
+ESMFold2's row is not a typo: its released `config.json` asks for 32 samples
+off a 14-step schedule, and the schedule is then clipped at `sigma = 256`, so
+it runs fewer denoiser calls than the number suggests. Its own source's
+dataclass defaults say 68 steps and 20 loops; the file wins.
+
+The benchmark pins the five AlphaFold-3-shaped models to one schedule
+(5 / 200 / 10) precisely because these defaults differ; set `num_recycles=10`
+on Boltz-2 and you are asking more of it than `boltz predict` does. ESMFold2 is
+not on that chart: it has no evolutionary trunk and no comparable schedule, so
+putting it on the same axes would compare two different questions.
 
 `foldjax.resolve_request` applies every default without running anything, and
 `foldjax.capabilities(model)` reports the input formats, entity types, and
