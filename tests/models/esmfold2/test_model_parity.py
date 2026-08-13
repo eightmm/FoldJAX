@@ -9,6 +9,8 @@ what this file gates -- the longest reproducible path the model has.
 
 from __future__ import annotations
 
+import dataclasses
+
 import jax
 import numpy as np
 import pytest
@@ -196,9 +198,26 @@ def test_the_trunk_and_distogram_match(monkeypatch: pytest.MonkeyPatch) -> None:
         jax.random.key(0),
         data,
         params,
-        settings=jax_model.settings_from_config(config.to_dict()),
+        # float32 on both sides: torch's autocast is CUDA-only and this runs on
+        # CPU, so a bfloat16 trunk here would compare two different models.
+        # `test_the_released_trunk_is_bfloat16` is what pins the real default.
+        settings=dataclasses.replace(
+            jax_model.settings_from_config(config.to_dict()), trunk_dtype="float32"
+        ),
         initial_pair_state=state,
     )["distogram_logits"]
     np.testing.assert_allclose(
         np.asarray(got), expected.numpy(), atol=2e-3, rtol=2e-3
     )
+
+
+def test_the_released_trunk_is_bfloat16() -> None:
+    """Upstream wraps four regions in `torch.amp.autocast(bfloat16)` on CUDA.
+
+    The trunk from the inputs embedder to the parcae coda, the confidence
+    head's folding trunk, the diffusion conditioning's pair transitions, and
+    the language model. A port that ran the trunk in float32 would not be
+    safer, it would be a different model from every published number.
+    """
+    settings = jax_model.settings_from_config(_config().to_dict())
+    assert settings.trunk_dtype == "bfloat16"

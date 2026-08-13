@@ -43,15 +43,22 @@ def layer_norm(
     Upstream calls this three ways -- with both terms, with a weight alone
     (`AdaptiveLayerNorm`'s conditioning path), and with neither (its activation
     path) -- so both are optional rather than there being three functions.
+
+    The statistics are always taken in float32 and the result cast back. That
+    is what torch's autocast does -- layer norm is on its float32 list -- and a
+    bfloat16 trunk that computed the variance in bfloat16 would differ from
+    upstream everywhere at once, in a way no shape or key check can see.
     """
+    dtype = x.dtype
+    x = x.astype(jnp.float32)
     mean = jnp.mean(x, axis=-1, keepdims=True)
     variance = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
     out = (x - mean) * jax.lax.rsqrt(variance + eps)
     if weight is not None:
-        out = out * weight
+        out = out * weight.astype(jnp.float32)
     if bias is not None:
-        out = out + bias
-    return out
+        out = out + bias.astype(jnp.float32)
+    return out.astype(dtype)
 
 
 def swiglu(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:

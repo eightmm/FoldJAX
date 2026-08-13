@@ -84,6 +84,14 @@ class ModelSettings:
     msa_column_mask_rate: float = 0.1
     num_loops: int = 20
     num_samples: int = 8
+    #: What upstream's `torch.amp.autocast` makes the trunk on CUDA. Four
+    #: regions run in bfloat16 there -- the whole trunk from the inputs
+    #: embedder to the parcae coda, the confidence head's folding trunk, the
+    #: diffusion conditioning's pair transitions, and the language model --
+    #: and everything else is float32. Running the trunk in float32 is not a
+    #: safer choice, it is a different model from the one that was trained
+    #: and the one every published number describes.
+    trunk_dtype: str = "bfloat16"
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings
     )
@@ -150,6 +158,44 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
         num_samples=int(number(config, "num_diffusion_samples", base.num_samples)),
         diffusion=diffusion.settings_from_config(config),
     )
+
+
+#: The parameters inside upstream's trunk-wide `autocast` at
+#: `modeling_esmfold2.py:936`. Everything else -- the distogram head, the
+#: structure head, the confidence head -- is float32 there, and the two
+#: sub-regions that reopen bfloat16 for themselves are handled where they are.
+TRUNK_PREFIXES = (
+    "inputs_embedder.",
+    "z_init_1.",
+    "z_init_2.",
+    "rel_pos.",
+    "token_bonds.",
+    "language_model.",
+    "lm_encoder.",
+    "msa_encoder.",
+    "folding_trunk.",
+    "parcae_",
+)
+
+
+def _cast(params: Params, prefixes: tuple[str, ...], dtype) -> dict:
+    """The named sub-trees at `dtype`, everything else untouched.
+
+    Casting weights is how a bfloat16 region is expressed here, rather than
+    wrapping ops the way torch's autocast does. For matmuls the two agree; for
+    normalisations they agree because `layer_norm` takes its statistics in
+    float32 whatever dtype it is handed, which is also torch's rule.
+    """
+    if jnp.dtype(dtype) == jnp.float32:
+        return dict(params)
+    return {
+        name: (
+            value.astype(dtype)
+            if name.startswith(prefixes) and value.dtype == jnp.float32
+            else value
+        )
+        for name, value in params.items()
+    }
 
 
 def inputs_embedding(
@@ -406,25 +452,33 @@ def predict(
         features["atom_to_token"] * atom_mask.astype(features["atom_to_token"].dtype)
     )
 
+    # Upstream opens its bfloat16 autocast here and closes it after the coda;
+    # `trunk_dtype` is that region and nothing else. Weights are cast rather
+    # than ops wrapped, which is the same arithmetic for matmuls and -- because
+    # `layer_norm` takes its statistics in float32 whatever it is handed -- the
+    # same for normalisations too.
+    compute = jnp.dtype(settings.trunk_dtype)
+    trunk_params = _cast(params, TRUNK_PREFIXES, compute)
+
     x_inputs = inputs_embedding(
-        res_type_one_hot,
-        profile.astype(jnp.float32),
-        deletion_mean.astype(jnp.float32),
-        features["ref_pos"],
+        res_type_one_hot.astype(compute),
+        profile.astype(compute),
+        deletion_mean.astype(compute),
+        features["ref_pos"].astype(compute),
         atom_mask,
         features["ref_space_uid"],
-        features["ref_charge"],
-        element_one_hot,
-        chars_one_hot,
+        features["ref_charge"].astype(compute),
+        element_one_hot.astype(compute),
+        chars_one_hot.astype(compute),
         atom_to_token,
-        params,
+        trunk_params,
         settings=settings,
         n_tokens=n_tokens,
     )
 
     z_init = (
-        linear(x_inputs, params, "z_init_1")[:, :, None, :]
-        + linear(x_inputs, params, "z_init_2")[:, None, :, :]
+        linear(x_inputs, trunk_params, "z_init_1")[:, :, None, :]
+        + linear(x_inputs, trunk_params, "z_init_2")[:, None, :, :]
     )
     rel_pos = relative_position_encoding(
         features["residue_index"],
@@ -432,7 +486,7 @@ def predict(
         features["sym_id"],
         features["entity_id"],
         features["token_index"],
-        params,
+        trunk_params,
         "rel_pos",
         n_residue_bins=settings.n_residue_bins,
         n_chain_bins=settings.n_chain_bins,
@@ -441,14 +495,14 @@ def predict(
         features["token_bonds"].astype(jnp.float32)[..., None]
         if features["token_bonds"].ndim == 3
         else features["token_bonds"].astype(jnp.float32),
-        params,
+        trunk_params,
         "token_bonds",
     )
     z_init = z_init + rel_pos + token_bonds_encoding
 
     lm_pair = None
     if lm_hidden_states is not None:
-        lm_pair = language_model_pair(lm_hidden_states, params)
+        lm_pair = language_model_pair(lm_hidden_states.astype(compute), trunk_params)
 
     pair_mask = (
         token_mask[:, :, None].astype(jnp.float32)
@@ -460,7 +514,9 @@ def predict(
     # zeros, and two runs of the same code therefore differ.
     if initial_pair_state is None:
         std = (2.0 / (5.0 * z_init.shape[-1])) ** 0.5
-        z = std * jax.random.truncated_normal(state_key, -3.0, 3.0, z_init.shape)
+        z = std * jax.random.truncated_normal(
+            state_key, -3.0, 3.0, z_init.shape, dtype=jnp.float32
+        )
     else:
         z = initial_pair_state
     z = z.astype(z_init.dtype)
@@ -481,8 +537,10 @@ def predict(
         ).astype(jnp.float32)
         # The MSA encoder works token-major; upstream permutes on the way in
         # and zeroes the padding, because its embedding has no bias.
-        one_hot = jax.nn.one_hot(msa.astype(jnp.int32), NUM_RES_TYPES)
-        one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(mask, 1, 2)[..., None]
+        one_hot = jax.nn.one_hot(msa.astype(jnp.int32), NUM_RES_TYPES, dtype=compute)
+        one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(mask, 1, 2)[
+            ..., None
+        ].astype(compute)
         zeros = jnp.zeros(one_hot.shape[:3], dtype=jnp.float32)
         msa_inputs = {
             "msa_one_hot": one_hot,
@@ -507,15 +565,21 @@ def predict(
         lm_pair,
         msa_inputs,
         pair_mask,
-        params,
+        trunk_params,
         settings=settings,
         total_steps=max(1, settings.num_loops + 1),
     )
-    z = linear(z, params, "parcae_readout")
+    z = linear(z, trunk_params, "parcae_readout")
     z = folding_trunk(
-        z, params, "parcae_coda", n_layers=settings.coda_n_layers, mask=pair_mask
+        z, trunk_params, "parcae_coda", n_layers=settings.coda_n_layers, mask=pair_mask
     )
+    # Upstream's `z = z.float()`, which closes the autocast region. Everything
+    # after this -- the distogram head, the sampler, the confidence head -- is
+    # float32, bar the two sub-regions that open their own bfloat16 block.
     z = z.astype(jnp.float32)
+    x_inputs = x_inputs.astype(jnp.float32)
+    rel_pos = rel_pos.astype(jnp.float32)
+    token_bonds_encoding = token_bonds_encoding.astype(jnp.float32)
 
     distogram_logits = linear(
         z + jnp.swapaxes(z, -2, -3), params, "distogram_head"
@@ -536,6 +600,7 @@ def predict(
         settings=settings.diffusion,
         num_samples=n_samples,
         n_tokens=n_tokens,
+        trunk_dtype=compute,
     )
     coords, _ = diffusion.sample(
         sample_key,
@@ -572,6 +637,7 @@ def predict(
             mol_type=features["mol_type"],
             n_layers=settings.confidence_n_layers,
             n_chains=n_chains,
+            trunk_dtype=compute,
             num_samples=n_samples,
             relative_position_encoding=rel_pos,
             token_bonds_encoding=token_bonds_encoding,

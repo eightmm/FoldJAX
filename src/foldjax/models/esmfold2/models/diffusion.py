@@ -257,6 +257,8 @@ def condition_pair(
     relative_position_encoding: jnp.ndarray,
     params: Params,
     prefix: str = "",
+    *,
+    trunk_dtype: object = jnp.float32,
 ) -> jnp.ndarray:
     """`DiffusionConditioning`'s pair half, which no timestep enters.
 
@@ -280,8 +282,20 @@ def condition_pair(
         params,
         f"{dot}z_proj",
     )
+    # Upstream reopens a bfloat16 autocast around these two transitions alone.
+    # The residual is float32 either way: `z + block(z)` promotes.
     for index in range(2):
-        z = z + transition_layer(z, params, f"{dot}z_transitions.{index}")
+        block = {
+            name: (
+                value.astype(trunk_dtype)
+                if name.startswith(f"{dot}z_transitions") and value.dtype == jnp.float32
+                else value
+            )
+            for name, value in params.items()
+        }
+        z = z + transition_layer(
+            z.astype(trunk_dtype), block, f"{dot}z_transitions.{index}"
+        ).astype(jnp.float32)
     return z
 
 
@@ -348,6 +362,7 @@ def build_cache(
     settings: DiffusionSettings,
     num_samples: int = 1,
     n_tokens: int | None = None,
+    trunk_dtype: object = jnp.float32,
 ) -> DiffusionCache:
     """Everything a sampling run can compute before its first denoiser call."""
     dot = f"{prefix}." if prefix else ""
@@ -373,7 +388,11 @@ def build_cache(
         cos=spread(cos),
         sin=spread(sin),
         pair=condition_pair(
-            z_trunk, relative_position_encoding, params, f"{dot}conditioning"
+            z_trunk,
+            relative_position_encoding,
+            params,
+            f"{dot}conditioning",
+            trunk_dtype=trunk_dtype,
         ),
         atom_to_token=spread(atom_to_token),
         atom_mask=spread(ref_mask),

@@ -107,6 +107,7 @@ def confidence_head(
     n_layers: int,
     n_chains: int,
     num_samples: int = 1,
+    trunk_dtype: object = jnp.float32,
     relative_position_encoding: jnp.ndarray | None = None,
     token_bonds_encoding: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
@@ -160,10 +161,24 @@ def confidence_head(
 
     pair_mask = mask[:, :, None] * mask[:, None, :]
     # The trunk's own output already contains `pair`; adding it again is
-    # upstream's arithmetic, not a missing assignment.
+    # upstream's arithmetic, not a missing assignment. The trunk itself runs
+    # under its own bfloat16 autocast there, and the delta comes back to
+    # float32 before the add -- `pair.add_(pair_delta.float())`.
+    trunk_params = {
+        name: (
+            value.astype(trunk_dtype)
+            if name.startswith(f"{dot}folding_trunk") and value.dtype == jnp.float32
+            else value
+        )
+        for name, value in params.items()
+    }
     pair = pair + folding_trunk(
-        pair, params, f"{dot}folding_trunk", n_layers=n_layers, mask=pair_mask
-    )
+        pair.astype(trunk_dtype),
+        trunk_params,
+        f"{dot}folding_trunk",
+        n_layers=n_layers,
+        mask=pair_mask,
+    ).astype(jnp.float32)
     single = row_attention_pooling(
         pair, mask, params, f"{dot}row_attention_pooling"
     )
