@@ -55,9 +55,15 @@ class DiffusionSettings:
     """Every width and constant the structure head reads, in one place.
 
     The sampler alone takes fifteen of them, which is past the point where
-    keyword arguments stop being readable. Defaults are the released
-    checkpoint's -- `ESMFold2Config`'s `structure_head` block -- so a caller
-    that only wants a shorter schedule overrides `num_steps` and nothing else.
+    keyword arguments stop being readable.
+
+    The defaults here are upstream's *dataclass* defaults, and the released
+    checkpoint does not use them: its `config.json` asks for fourteen steps
+    rather than sixty-eight, `p = 7` rather than 8, `gamma_0 = 0.8`,
+    `step_scale = 1.5`, and a churn of `noise_scale = 1.003` where the
+    dataclass says zero. Anything that means to reproduce the release must go
+    through `settings_from_config`; constructing this bare gives a model that
+    runs and is not the released one.
     """
 
     sigma_data: float = 16.0
@@ -728,34 +734,47 @@ def sample(
     return carry[0], carry[3]
 
 
-def settings_from_config(config: object) -> DiffusionSettings:
-    """Read a `DiffusionSettings` off an upstream `ESMFold2Config`.
+def settings_from_config(config: Mapping[str, object]) -> DiffusionSettings:
+    """Read a `DiffusionSettings` out of upstream's `config.json`.
 
-    Only the fields upstream actually varies between checkpoints; anything it
-    does not name keeps this port's default, which is the released value.
+    A mapping rather than an `ESMFold2Config`, so the loader needs neither
+    torch nor transformers; `ESMFold2Config.to_dict()` produces exactly this
+    shape for anyone who has one.
+
+    The released checkpoint departs from the dataclass defaults in most of
+    these fields -- fourteen steps rather than sixty-eight, `p = 7`, and a
+    churn of `1.003` where the dataclass says zero -- which is why nothing here
+    is assumed and every field is read.
     """
-    head = config.structure_head  # type: ignore[attr-defined]
-    module = head.diffusion_module
-    atom = config.inputs.atom_encoder  # type: ignore[attr-defined]
+    head: Mapping[str, object] = config.get("structure_head", {})  # type: ignore[assignment]
+    module: Mapping[str, object] = head.get("diffusion_module", {})  # type: ignore[assignment]
+    inputs: Mapping[str, object] = config.get("inputs", {})  # type: ignore[assignment]
+    atom: Mapping[str, object] = inputs.get("atom_encoder", {})  # type: ignore[assignment]
+    base = DiffusionSettings()
+
+    def read(source: Mapping[str, object], name: str, fallback: object) -> object:
+        value = source.get(name, fallback)
+        return fallback if value is None else value
+
     return replace(
-        DiffusionSettings(),
-        sigma_data=float(module.sigma_data),
-        c_atom=int(module.c_atom),
-        c_token=int(module.c_token),
-        c_z=int(module.c_z),
-        atom_n_blocks=int(module.atom_num_blocks),
-        atom_n_heads=int(module.atom_num_heads),
-        token_n_blocks=int(module.token_num_blocks),
-        token_n_heads=int(module.token_num_heads),
-        half_window=int(atom.swa_window_size) // 2,
-        gamma_0=float(head.gamma_0),
-        gamma_min=float(head.gamma_min),
-        noise_scale=float(head.noise_scale),
-        step_scale=float(head.step_scale),
-        s_max=float(head.inference_s_max),
-        s_min=float(head.inference_s_min),
-        p=float(head.inference_p),
-        num_steps=int(head.inference_num_steps),
+        base,
+        sigma_data=float(read(module, "sigma_data", base.sigma_data)),  # type: ignore[arg-type]
+        c_atom=int(read(module, "c_atom", base.c_atom)),  # type: ignore[call-overload]
+        c_token=int(read(module, "c_token", base.c_token)),  # type: ignore[call-overload]
+        c_z=int(read(module, "c_z", base.c_z)),  # type: ignore[call-overload]
+        atom_n_blocks=int(read(module, "atom_num_blocks", base.atom_n_blocks)),  # type: ignore[call-overload]
+        atom_n_heads=int(read(module, "atom_num_heads", base.atom_n_heads)),  # type: ignore[call-overload]
+        token_n_blocks=int(read(module, "token_num_blocks", base.token_n_blocks)),  # type: ignore[call-overload]
+        token_n_heads=int(read(module, "token_num_heads", base.token_n_heads)),  # type: ignore[call-overload]
+        half_window=int(read(atom, "swa_window_size", base.half_window * 2)) // 2,  # type: ignore[call-overload]
+        gamma_0=float(read(head, "gamma_0", base.gamma_0)),  # type: ignore[arg-type]
+        gamma_min=float(read(head, "gamma_min", base.gamma_min)),  # type: ignore[arg-type]
+        noise_scale=float(read(head, "noise_scale", base.noise_scale)),  # type: ignore[arg-type]
+        step_scale=float(read(head, "step_scale", base.step_scale)),  # type: ignore[arg-type]
+        s_max=float(read(head, "inference_s_max", base.s_max)),  # type: ignore[arg-type]
+        s_min=float(read(head, "inference_s_min", base.s_min)),  # type: ignore[arg-type]
+        p=float(read(head, "inference_p", base.p)),  # type: ignore[arg-type]
+        num_steps=int(read(head, "inference_num_steps", base.num_steps)),  # type: ignore[call-overload]
     )
 
 

@@ -55,9 +55,12 @@ CHAR_VOCAB_SIZE = 64
 class ModelSettings:
     """Widths and layer counts for the whole model.
 
-    Defaults are the released checkpoint's. `settings_from_config` reads them
-    off an upstream `ESMFold2Config` instead, which is what the loader uses --
-    a port that invents its own defaults runs a model nobody trained.
+    As with `DiffusionSettings`, these are upstream's *dataclass* defaults and
+    not the released checkpoint's: the release runs a 48-layer trunk against
+    this 24, three loops against twenty, and has its MSA encoder enabled.
+    `settings_from_config` reads the real values out of `config.json`, and the
+    loader always goes through it -- a port that invents its own defaults runs
+    a model nobody trained.
     """
 
     d_pair: int = 256
@@ -86,31 +89,65 @@ class ModelSettings:
     )
 
 
-def settings_from_config(config: object) -> ModelSettings:
-    """Read a `ModelSettings` off an upstream `ESMFold2Config`."""
-    atom = config.inputs.atom_encoder  # type: ignore[attr-defined]
-    lm = config.lm_encoder  # type: ignore[attr-defined]
-    msa = config.msa_encoder  # type: ignore[attr-defined]
+def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
+    """Read a `ModelSettings` out of upstream's `config.json`.
+
+    A mapping, not an `ESMFold2Config`, so nothing on the loading path imports
+    torch or transformers; `ESMFold2Config.to_dict()` produces this shape.
+    """
+
+    def block(source: Mapping[str, object], name: str) -> Mapping[str, object]:
+        value = source.get(name)
+        return value if isinstance(value, Mapping) else {}
+
+    base = ModelSettings()
+    inputs = block(config, "inputs")
+    atom = block(inputs, "atom_encoder")
+    lm = block(config, "lm_encoder")
+    msa = block(config, "msa_encoder")
+    trunk = block(config, "folding_trunk")
+    parcae = block(config, "parcae")
+    confidence = block(config, "confidence_head")
+
+    def number(source: Mapping[str, object], name: str, fallback: float) -> float:
+        value = source.get(name, fallback)
+        return fallback if value is None else float(value)  # type: ignore[arg-type]
+
     return ModelSettings(
-        d_pair=int(config.d_pair),  # type: ignore[attr-defined]
-        d_inputs=int(config.inputs.d_inputs),  # type: ignore[attr-defined]
-        n_residue_bins=int(config.n_relative_residx_bins),  # type: ignore[attr-defined]
-        n_chain_bins=int(config.n_relative_chain_bins),  # type: ignore[attr-defined]
-        inputs_atom_n_blocks=int(atom.n_blocks),
-        inputs_atom_n_heads=int(atom.n_heads),
-        inputs_half_window=int(atom.swa_window_size) // 2,
-        trunk_n_layers=int(config.folding_trunk.n_layers),  # type: ignore[attr-defined]
-        lm_encoder_n_layers=int(lm.n_layers) if lm.enabled else None,
-        lm_dropout=float(lm.lm_dropout),
-        per_loop_lm_dropout=bool(lm.per_loop_lm_dropout),
-        coda_n_layers=int(config.parcae.coda_n_layers),  # type: ignore[attr-defined]
-        confidence_n_layers=int(
-            config.confidence_head.folding_trunk.n_layers  # type: ignore[attr-defined]
+        d_pair=int(number(config, "d_pair", base.d_pair)),
+        d_inputs=int(number(inputs, "d_inputs", base.d_inputs)),
+        n_residue_bins=int(
+            number(config, "n_relative_residx_bins", base.n_residue_bins)
         ),
-        msa_n_layers=int(msa.n_layers) if msa.enabled else None,
-        msa_encoder_overwrite=bool(config.msa_encoder_overwrite),  # type: ignore[attr-defined]
-        num_loops=int(config.num_loops),  # type: ignore[attr-defined]
-        num_samples=int(config.num_diffusion_samples),  # type: ignore[attr-defined]
+        n_chain_bins=int(number(config, "n_relative_chain_bins", base.n_chain_bins)),
+        inputs_atom_n_blocks=int(
+            number(atom, "n_blocks", base.inputs_atom_n_blocks)
+        ),
+        inputs_atom_n_heads=int(number(atom, "n_heads", base.inputs_atom_n_heads)),
+        inputs_half_window=int(
+            number(atom, "swa_window_size", base.inputs_half_window * 2)
+        )
+        // 2,
+        trunk_n_layers=int(number(trunk, "n_layers", base.trunk_n_layers)),
+        lm_encoder_n_layers=(
+            int(number(lm, "n_layers", 4)) if lm.get("enabled", True) else None
+        ),
+        lm_dropout=number(lm, "lm_dropout", base.lm_dropout),
+        per_loop_lm_dropout=bool(lm.get("per_loop_lm_dropout", True)),
+        coda_n_layers=int(number(parcae, "coda_n_layers", base.coda_n_layers)),
+        confidence_n_layers=int(
+            number(
+                block(confidence, "folding_trunk"),
+                "n_layers",
+                base.confidence_n_layers,
+            )
+        ),
+        msa_n_layers=(
+            int(number(msa, "n_layers", 4)) if msa.get("enabled", False) else None
+        ),
+        msa_encoder_overwrite=bool(config.get("msa_encoder_overwrite", True)),
+        num_loops=int(number(config, "num_loops", base.num_loops)),
+        num_samples=int(number(config, "num_diffusion_samples", base.num_samples)),
         diffusion=diffusion.settings_from_config(config),
     )
 
