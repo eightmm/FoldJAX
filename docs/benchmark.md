@@ -139,6 +139,65 @@ point can be read.
         --results ../foldjax-bench/results-lengths \
         --upstream-extra bench/results
 
+## Where the memory goes during a run
+
+A peak is one number off a curve. `bench/trace.py` samples the same live-bytes
+quantity the peak reports, from inside the measured process, four times a
+second.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="memory-trace-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="memory-trace-light.png">
+  <img alt="live device memory through one 1,003-token prediction, FoldJAX against upstream, one panel per model" src="memory-trace-dark.png">
+</picture>
+
+**FoldJAX holds a plateau; upstream churns.** That is the whole figure, and it
+qualifies the headline the table gives.
+
+| model | FoldJAX mean | peak | of run near peak | upstream mean | peak | of run near peak |
+|---|---|---|---|---|---|---|
+| boltz2 | 6.3 GiB | 7.2 | 85% | 6.6 GiB | 15.8 | 9% |
+| protenix | 6.4 | 8.3 | 75% | 2.9 | 12.6 | 0% |
+| openfold3 | 9.9 | 11.8 | 83% | 5.4 | 25.0 | 0% |
+| opendde | 38.4 | 42.1 | 91% | 14.6 | 59.4 | 0% |
+| alphafold3 | 2.7 | 6.7 | 12% | - | - | - |
+
+"Near peak" is the share of samples within 10% of it.
+
+- **FoldJAX sits within 10% of its peak for 75-91% of the run. Upstream does
+  for 0-9%.** One traced JAX program allocates its arena once and holds it;
+  torch's caching allocator builds and releases per layer, so its curve is a
+  sawtooth that touches its maximum briefly and spends the rest well below it.
+- **So FoldJAX wins on peak and loses on average.** OpenDDE is the sharpest
+  case: FoldJAX peaks 1.4x lower (42.1 against 59.4 GiB) while averaging 2.6x
+  higher (38.4 against 14.6). If the question is "will this job fit", the peak
+  is the answer and FoldJAX is ahead everywhere. If it is "can I run something
+  else on this card at the same time", the average is the answer and FoldJAX is
+  behind everywhere except Boltz-2.
+- **AlphaFold 3 is the one that behaves differently**: a staircase that reaches
+  its peak only at the end, 12% of the run near it, averaging 41% of peak.
+
+Two things to know before reading the x axis. The JAX traces start at process
+start; the torch ones start when that process first touches CUDA, so their
+spans are short of their wall times by the featurization and weight loading
+that precede it -- OpenFold3's upstream traces 280 s of a 321 s run. And the
+sampler is a 4 Hz observer, so its largest sample is a lower bound; the dashed
+rule in each panel is the allocator's own high-water mark, which is the number
+in the table.
+
+These runs also re-measured the 1,003-token column, and eight of nine rows
+reproduce the table within noise. The ninth does not: **OpenDDE's FoldJAX peak
+is 42.1 GiB here against 44.3 in the table.** The port's code changed between
+the two sweeps and 2.2 GiB is far outside the agreement of the other eight, so
+that is a real improvement rather than run-to-run spread -- and the table's
+sweep is due a re-run, which this figure does not substitute for.
+
+    python -m bench.drive --models boltz2 protenix openfold3 opendde \
+        --impls foldjax upstream --cases L1000_3og2 \
+        --results results-trace/ --work /tmp/bench-trace --traces traces-1003/
+    python -m bench.trace plot --out docs/memory-trace.png \
+        --case "1,003 tokens (L1000_3og2)" traces-1003/*.jsonl
+
 ## What the table says
 
 - **FoldJAX never uses more memory than the repository it reimplements.** The
