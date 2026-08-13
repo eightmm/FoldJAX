@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 #: Cheapest first, matching the benchmark figure's row order.
@@ -113,6 +114,34 @@ def load(results: list[Path]) -> dict:
     return grouped
 
 
+def replicates(points: list[tuple], tolerance: float = 0.06) -> list[list[tuple]]:
+    """Measurements at effectively the same length, grouped together.
+
+    The two sweeps used different sequences, and two of their sizes land within
+    a few percent of each other: 490 against 499, and 970 against 1,003. On a
+    log axis that is a couple of pixels, so drawn separately they smear into
+    one fat marker and the segment joining them becomes a near-vertical kink
+    that reads as a rendering glitch -- when what it actually shows is two
+    different proteins of the same length disagreeing by up to 14%.
+
+    Grouping them says that instead: one point per length, with the spread
+    drawn as a bar. That spread is worth keeping visible, because it is the
+    floor on how precisely any single point can be read.
+    """
+    groups: list[list[tuple]] = []
+    for point in sorted(points):
+        if groups and point[0] <= groups[-1][0][0] * (1 + tolerance):
+            groups[-1].append(point)
+        else:
+            groups.append([point])
+    return groups
+
+
+def _geometric_mean(values) -> float:
+    values = list(values)
+    return math.exp(sum(math.log(value) for value in values) / len(values))
+
+
 def growth(fitted: float) -> str:
     """The exponent as what it costs to double the input.
 
@@ -126,8 +155,6 @@ def exponent(points: list[tuple[float, float]]) -> float | None:
     """The least-squares slope of log(y) against log(x): the scaling exponent."""
     if len(points) < 2:
         return None
-    import math
-
     xs = [math.log(x) for x, _ in points]
     ys = [math.log(y) for _, y in points]
     n = len(xs)
@@ -323,6 +350,7 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
              for value in grouped[model].get("upstream", {}).get("ok", [])),
             default=1.0,
         )
+        del column
         # The failures live in a band of their own above the data, so a reader
         # never has to decide whether a marker up there is a measurement.
         floor, ceiling = top * 1.7, top * 3.4
@@ -339,15 +367,35 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
             if side is None:
                 continue
             color = palette[model]
-            points = [(value[0], value[index] * scale) for value in side["ok"]]
-            if points:
-                line, = axis.plot(
-                    [x for x, _ in points], [y for _, y in points], color=color,
-                    linewidth=1.8, marker=MARKERS[model], markersize=5, zorder=3,
+            # One point per length, not per run: two sequences of the same
+            # length are replicates of it, and drawing them as separate points
+            # a couple of pixels apart made the curve look broken.
+            binned = [
+                (
+                    _geometric_mean(value[0] for value in group),
+                    _geometric_mean(value[index] for value in group),
+                    min(value[index] for value in group),
+                    max(value[index] for value in group),
                 )
-                fitted = exponent(
-                    [(value[0], value[index]) for value in side["ok"]]
+                for group in replicates(side["ok"])
+            ]
+            if binned:
+                line = axis.errorbar(
+                    [size for size, *_ in binned],
+                    [centre * scale for _, centre, *_ in binned],
+                    # Clamped: a group of one has centre == low == high, and
+                    # exp(log(x)) can land a float below x, which matplotlib
+                    # rejects as a negative error bar.
+                    yerr=[
+                        [max(0.0, centre - low) * scale
+                         for _, centre, low, _ in binned],
+                        [max(0.0, high - centre) * scale
+                         for _, centre, _, high in binned],
+                    ],
+                    color=color, linewidth=1.8, marker=MARKERS[model],
+                    markersize=5, zorder=3, elinewidth=1.4, capsize=3.5,
                 )
+                fitted = exponent([(size, centre) for size, centre, *_ in binned])
                 handles.append(line)
                 labels.append(
                     f"{model}" + (f"   {growth(fitted)} / 2x tokens" if fitted else "")
