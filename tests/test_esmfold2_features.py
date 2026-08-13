@@ -18,7 +18,7 @@ from transformers.models.esmfold2.protein_utils import (  # noqa: E402
     prepare_protein_features,
 )
 
-from foldjax.backends._esmfold2_features import build_features  # noqa: E402
+from foldjax.models.esmfold2.data.torch_features import build_features  # noqa: E402
 
 UBIQUITIN = (
     "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"

@@ -16,8 +16,9 @@ same dictionary the vendored ports already build, and its knobs
 are FoldJAX's neutral vocabulary under different names.
 
 Upstream ships `prepare_protein_features` for one chain with no alignment and
-leaves the rest of that dictionary to the caller; `_esmfold2_features` is that
-assembly -- several chains, their symmetry, and their alignments -- and is
+leaves the rest of that dictionary to the caller;
+`models/esmfold2/data/torch_features` is that assembly -- several chains,
+their symmetry, and their alignments -- and is
 checked against upstream's own builder for the case both cover. Ligands and
 nucleic acids are what remains: `forward` expresses them, but their features
 need reference conformers out of upstream's 400 MB CCD pickle, so
@@ -98,7 +99,7 @@ class ESMFold2Backend(Backend):
             OUTPUT_TO_PDB_FEATURE_KEYS,
         )
 
-        from foldjax.backends._esmfold2_features import build_features
+        from foldjax.models.esmfold2.data.torch_features import build_features
 
         chains, alignments = _job_chains(request.input)
         kernel = options.pop("kernel_backend", "fused")

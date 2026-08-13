@@ -1,5 +1,12 @@
 """Build ESMFold2's feature dictionary for a whole job, not one sequence.
 
+Torch tensors, because it feeds upstream's torch model through
+`foldjax.backends.esmfold2`. It lives under `models/` rather than beside that
+backend because it is model featurization -- upstream's residue table, atom
+order and reference conformers -- and not the request plumbing the backend
+layer holds. The JAX port growing in `../models/` will want the same
+assembly against `jnp`, and this is the file it starts from.
+
 Upstream ships `prepare_protein_features`, which covers a single protein chain
 with no alignment -- everything else its `forward` accepts (several chains, a
 real MSA, symmetry) is documented by that function's own shapes and by the
