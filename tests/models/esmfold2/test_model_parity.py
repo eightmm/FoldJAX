@@ -103,7 +103,7 @@ def test_the_inputs_embedder_matches() -> None:
     config = _config()
     module = common.InputsEmbedder(config).eval()
     data = _features(1)
-    settings = jax_model.settings_from_config(config)
+    settings = jax_model.settings_from_config(config.to_dict())
     element = np.eye(128, dtype=np.float32)[data["ref_element"]]
     chars = np.eye(64, dtype=np.float32)[data["ref_atom_name_chars"]]
     res_type = np.eye(33, dtype=np.float32)[data["res_type"]]
@@ -196,7 +196,7 @@ def test_the_trunk_and_distogram_match(monkeypatch: pytest.MonkeyPatch) -> None:
         jax.random.key(0),
         data,
         params,
-        settings=jax_model.settings_from_config(config),
+        settings=jax_model.settings_from_config(config.to_dict()),
         initial_pair_state=state,
     )["distogram_logits"]
     np.testing.assert_allclose(
