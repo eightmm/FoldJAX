@@ -12,6 +12,7 @@ downloaded from its own publisher under that project's terms.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import urllib.request
 from collections.abc import Callable, Iterator
@@ -187,6 +188,29 @@ _TEMPLATE_OBSOLETE = Download(
 )
 
 
+def _stage_esmfold2(model: str, source: Path) -> Path:
+    """Put the published files where `from_pretrained` expects a model.
+
+    Nothing is converted -- this backend drives upstream's torch model and
+    loads its safetensors as they ship -- but the loader takes a *directory*
+    holding `config.json` beside the weights, and the download step keeps
+    files under `downloads/`. Hard-linked where the filesystem allows it, so
+    the 1.3 GB is not stored twice.
+    """
+    out = weights_dir(model)
+    out.mkdir(parents=True, exist_ok=True)
+    for name in ("model.safetensors", "config.json", "ccd.pkl"):
+        origin = source / name
+        target = out / name
+        if not origin.is_file() or target.exists():
+            continue
+        try:
+            os.link(origin, target)
+        except OSError:
+            shutil.copy2(origin, target)
+    return out
+
+
 def _bring_your_own(model: str, source: Path) -> Path:
     """No conversion: the published file is already what the model loads."""
     return weights_dir(model)
@@ -297,7 +321,7 @@ REGISTRY: dict[str, ModelAssets] = {
         ),
         native="model.safetensors",
         requires=("model.safetensors", "config.json"),
-        convert=_bring_your_own,
+        convert=_stage_esmfold2,
         in_default_setup=False,
         notes="Torch weights, loaded as they ship -- nothing is converted, "
         "because this backend drives upstream's model rather than porting it. "

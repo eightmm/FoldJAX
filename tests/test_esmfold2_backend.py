@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from foldjax.backends.esmfold2 import ESMFold2Backend, _protein_sequences
+from foldjax.backends.esmfold2 import ESMFold2Backend, _job_chains
 from foldjax.schema import PredictionRequest
 
 
@@ -54,10 +54,30 @@ def test_a_ligand_job_is_refused_rather_than_folded_as_protein(tmp_path) -> None
     assert "ligand" not in ESMFold2Backend().capabilities().entity_types
 
 
-def test_chain_copies_are_counted_not_collapsed(tmp_path) -> None:
-    """A homodimer names one sequence twice, which is two chains to fold."""
+def test_chain_copies_become_separate_chains_of_one_entity(tmp_path) -> None:
+    """A homodimer names one sequence twice: two chains, one entity, two copies."""
     job = _job(tmp_path, [{"type": "protein", "id": ["A", "B"], "sequence": "ACDEF"}])
-    assert _protein_sequences(job) == ["ACDEF", "ACDEF"]
+    chains, alignments = _job_chains(job)
+    assert chains == [("ACDEF", "A", 0, 0), ("ACDEF", "B", 0, 1)]
+    assert alignments == {}
+
+
+def test_an_alignment_is_resolved_against_the_job_file(tmp_path) -> None:
+    """A job names its a3m the way it names any path: relative to itself."""
+    (tmp_path / "chain.a3m").write_text(">q\nACDEF\n")
+    job = _job(
+        tmp_path,
+        [
+            {
+                "type": "protein",
+                "id": ["A"],
+                "sequence": "ACDEF",
+                "unpaired_msa": "chain.a3m",
+            }
+        ],
+    )
+    _, alignments = _job_chains(job)
+    assert alignments == {0: tmp_path / "chain.a3m"}
 
 
 def test_a_native_dialect_is_not_invented(tmp_path) -> None:
@@ -69,4 +89,4 @@ def test_a_non_foldjax_document_says_so(tmp_path) -> None:
     path = tmp_path / "other.json"
     path.write_text(json.dumps({"sequences": ["ACDEF"]}))
     with pytest.raises(ValueError, match="FoldJAX job document"):
-        _protein_sequences(path)
+        _job_chains(path)

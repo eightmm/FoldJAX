@@ -20,7 +20,9 @@ from transformers.models.esmfold2.protein_utils import (  # noqa: E402
 
 from foldjax.backends._esmfold2_features import build_features  # noqa: E402
 
-UBIQUITIN = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+UBIQUITIN = (
+    "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+)
 
 
 def test_one_chain_matches_upstreams_own_builder() -> None:
