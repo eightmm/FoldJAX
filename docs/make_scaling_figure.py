@@ -101,8 +101,9 @@ REFERENCE_IMPL = {
 }
 
 #: Series that could not reach their own released fast path on this card, drawn
-#: dashed so the figure does not present a handicapped run as a like-for-like
-#: one. OpenFold3's upstream is the only one: DS4Sci's evoformer attention
+#: dashed -- and only dashed. The caveat is a paragraph in `docs/benchmark.md`,
+#: not a caption: a figure that has to explain itself on the canvas is one that
+#: will be read without its explanation anyway. OpenFold3's upstream is the only one: DS4Sci's evoformer attention
 #: refuses to build for sm_120 and 0.3.1's experimental cuEquivariance flag
 #: crashes at more than one diffusion sample, so it runs plain torch attention
 #: chunked four rows at a time at every size. That is where its 6,722 s lives.
@@ -317,7 +318,7 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
                    markersize=6, markerfacecolor="none", markeredgewidth=1.3)
     )
     figure.legend(
-        handles, ["FoldJAX", "upstream", "did not complete"],
+        handles, ["FoldJAX", "upstream", "OOM"],
         loc="upper right", frameon=False, labelcolor=fg, fontsize=9.5,
         ncol=3, bbox_to_anchor=(0.995, 1.0),
     )
@@ -385,7 +386,7 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         axis.axhspan(floor, ceiling, color=grid, alpha=0.55, zorder=0, lw=0)
         axis.axhline(floor, color=grid, linewidth=1.0, zorder=1)
         axis.text(
-            60, (floor + ceiling) / 2, "did not complete", color=fg,
+            60, (floor + ceiling) / 2, "OOM", color=fg,
             fontsize=9, fontweight="bold", va="center", ha="left", zorder=5,
         )
 
@@ -412,7 +413,7 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
                 labels.append(
                     f"{model}"
                     + (f"   {growth(fitted)} / 2x tokens" if fitted else "")
-                    + ("  · no fused kernel" if model in HANDICAPPED else "")
+
                 )
             for slot, tokens in enumerate(side["failed"]):
                 # Staggered by model: two implementations failing at the same
