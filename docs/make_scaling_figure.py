@@ -1,4 +1,15 @@
-"""How wall time and peak memory scale with token count, per model.
+"""How wall time and peak memory scale with token count.
+
+Two figures, because they answer two questions.
+
+`scaling-*.png` is one panel per model, FoldJAX against upstream, from the
+length sweep alone. `upstream-scaling-*.png` puts the four upstream
+implementations on one pair of axes, where they can be read against each other,
+and there it is safe to pool the earlier sweep's sizes as well: those runs
+measured the *same unmodified upstream repositories*, so their points belong on
+the same curve. The FoldJAX column has no such licence -- its own code changed
+between the two sweeps -- which is why the faceted figure does not pool them.
+
 
 The benchmark table answers "what did this cost" at three sizes. The question
 this figure answers is a different one -- *how fast does the cost grow* -- and
@@ -52,28 +63,63 @@ METRICS = (
     ("peak_mib", "peak GPU memory (GiB)", 1 / 1024),
 )
 
+#: One hue per upstream implementation, assigned in the palette's fixed order
+#: and never cycled. Four series on one pair of axes clear the colour-vision
+#: gates on the adjacent pairlist, which is the one that governs line charts --
+#: but lines cross, so identity is carried three times over: hue, marker shape,
+#: and a direct label at the end of every line. That also supplies the relief
+#: the light surface needs, where aqua sits below 3:1 contrast.
+UPSTREAM_COLORS = {
+    "light": {
+        "boltz2": "#2a78d6", "protenix": "#eb6834",
+        "openfold3": "#1baf7a", "opendde": "#4a3aa7",
+    },
+    "dark": {
+        "boltz2": "#3987e5", "protenix": "#d95926",
+        "openfold3": "#199e70", "opendde": "#9085e9",
+    },
+}
+MARKERS = {"boltz2": "o", "protenix": "s", "openfold3": "^", "opendde": "D"}
 
-def load(results: Path) -> dict:
+
+def load(results: list[Path]) -> dict:
     """{model: {impl: {"ok": [(tokens, wall, peak)], "failed": [tokens]}}}."""
     grouped: dict = {}
-    for path in sorted(results.glob("*.json")):
-        body = json.loads(path.read_text())
-        model, impl = body.get("model"), body.get("impl")
-        length = body.get("length")
-        if model is None or impl is None or length is None:
-            continue
-        side = grouped.setdefault(model, {}).setdefault(
-            impl, {"ok": [], "failed": []}
-        )
-        if body.get("failed") or not body.get("wall_s") or not body.get("peak_mib"):
-            side["failed"].append(length)
-        else:
-            side["ok"].append((length, body["wall_s"], body["peak_mib"]))
+    for directory in results:
+        for path in sorted(directory.glob("*.json")):
+            body = json.loads(path.read_text())
+            model, impl = body.get("model"), body.get("impl")
+            length = body.get("length")
+            if model is None or impl is None or length is None:
+                continue
+            side = grouped.setdefault(model, {}).setdefault(
+                impl, {"ok": [], "failed": []}
+            )
+            if (
+                body.get("failed")
+                or not body.get("wall_s")
+                or not body.get("peak_mib")
+            ):
+                side["failed"].append(length)
+            else:
+                side["ok"].append((length, body["wall_s"], body["peak_mib"]))
     for entry in grouped.values():
         for side in entry.values():
-            side["ok"].sort()
-            side["failed"].sort()
+            # A size measured in both sweeps keeps the later run, and a size
+            # that failed once and completed later is not a failure.
+            side["ok"] = sorted({value[0]: value for value in side["ok"]}.values())
+            completed = {value[0] for value in side["ok"]}
+            side["failed"] = sorted(set(side["failed"]) - completed)
     return grouped
+
+
+def growth(fitted: float) -> str:
+    """The exponent as what it costs to double the input.
+
+    `n^1.83` is the same fact as "2x the tokens costs 3.6x", and only one of
+    them can be read without stopping to compute it.
+    """
+    return f"{2 ** fitted:.1f}x"
 
 
 def exponent(points: list[tuple[float, float]]) -> float | None:
@@ -187,7 +233,7 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
                 if fitted is None:
                     continue
                 caveat = "*" if len(series) == 2 else ""
-                text = f"n^{fitted:.2f}{caveat}"
+                text = f"{growth(fitted)}{caveat}"
                 # A fit over the whole range is a bad summary of a curve that
                 # bends, and these bend for a real reason: a per-run cost that
                 # does not grow with n -- weight loading, compilation -- is a
@@ -200,7 +246,7 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
                 # which.
                 local = exponent(series[-2:])
                 if local is not None and abs(local - fitted) > 0.25:
-                    text += f" → {local:.2f}"
+                    text += f" → {growth(local)}"
                 axis.text(
                     0.04, 0.955 - offset, text,
                     transform=axis.transAxes, color=COLORS[theme][impl],
@@ -226,8 +272,8 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
     figure.suptitle(
         "cost against sequence length · 5 samples · 200 steps · 10 recycles · "
         "one RTX PRO 6000 (97.9 GiB)\n"
-        "log-log, so the printed exponent is the slope: fitted over every "
-        "completed size, → the local slope at the top end where it differs; "
+        "printed: what doubling the token count multiplies the cost by, over "
+        "every completed size → at the top end where it differs; "
         "* marks a fit over two surviving points",
         color=fg, fontsize=10.5, x=0.006, ha="left", va="top", y=0.995,
     )
@@ -238,14 +284,122 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
     return out
 
 
+def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
+    """The four upstream implementations against each other, on one axes."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    style = THEMES[theme]
+    fg, bg, grid = style["fg"], style["bg"], style["grid"]
+    palette = UPSTREAM_COLORS[theme]
+    models = [name for name in MODELS if name in palette and name in grouped]
+
+    figure, axes = plt.subplots(
+        1, len(METRICS), figsize=(13.5, 5.6), dpi=200, facecolor=bg, squeeze=False
+    )
+
+    for column, (metric, ylabel, scale) in enumerate(METRICS):
+        axis = axes[0][column]
+        axis.set_facecolor(bg)
+        top = 1.0
+        for model in models:
+            side = grouped[model].get("upstream")
+            if side is None:
+                continue
+            color = palette[model]
+            index = 1 if metric == "wall_s" else 2
+            points = [(value[0], value[index] * scale) for value in side["ok"]]
+            if not points:
+                continue
+            top = max(top, max(y for _, y in points))
+            axis.plot(
+                [x for x, _ in points], [y for _, y in points], color=color,
+                linewidth=1.8, marker=MARKERS[model], markersize=5, zorder=3,
+            )
+            fitted = exponent([(value[0], value[index]) for value in side["ok"]])
+            # The label at the line's end, not a legend: four lines that cross
+            # cannot be traced back to a box in the corner, and this is also
+            # the relief the light surface needs where a hue falls below 3:1.
+            tail = f"  {model}" + (f"  {growth(fitted)}" if fitted else "")
+            axis.annotate(
+                tail, xy=points[-1], xytext=(6, 0),
+                textcoords="offset points", color=color, fontsize=9.5,
+                va="center", ha="left", zorder=5, fontweight="bold",
+            )
+        for index, model in enumerate(models):
+            side = grouped[model].get("upstream")
+            for tokens in (side or {}).get("failed", []):
+                # Staggered by model: two implementations failing at the same
+                # size would otherwise draw one marker on top of another, and
+                # the figure would report one failure where there were two.
+                axis.plot(
+                    [tokens], [top * (1.55 + 0.30 * index)], marker=MARKERS[model],
+                    markersize=6.5, markerfacecolor="none",
+                    markeredgecolor=palette[model], markeredgewidth=1.4,
+                    zorder=4, clip_on=False,
+                )
+
+        axis.set_xscale("log")
+        axis.set_yscale("log")
+        axis.set_xlim(115, 9000)
+        axis.set_ylim(None, top * 2.6)
+        axis.set_xticks([132, 250, 500, 1000, 2000, 3000])
+        axis.set_xticklabels(["132", "250", "500", "1k", "2k", "3k"])
+        axis.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        axis.set_xlabel("tokens", color=fg, fontsize=9.5)
+        axis.set_ylabel(ylabel, color=fg, fontsize=9.5)
+        axis.grid(color=grid, linewidth=0.6, zorder=0)
+        axis.tick_params(colors=fg, labelsize=9)
+        for spine in axis.spines.values():
+            spine.set_color(grid)
+        if metric == "peak_mib":
+            axis.axhline(97.9, color=fg, linewidth=0.9, linestyle="--", zorder=1)
+            axis.text(
+                130, 101, "97.9 GiB card", color=fg, fontsize=8.5, va="bottom",
+            )
+
+    figure.suptitle(
+        "upstream implementations against each other · 5 samples · 200 steps · "
+        "10 recycles · one RTX PRO 6000\n"
+        "log-log. After each name: what doubling the token count multiplies "
+        "that cost by — averaged over the whole plotted range, and every curve "
+        "is steeper than that at its top end.\n"
+        "Hollow markers reached a size and did not finish it. Each point is a "
+        "different sequence, so the near-equal pairs (490/499, 970/1,003) show "
+        "the spread between sequences of one length.",
+        color=fg, fontsize=10.5, x=0.006, ha="left", va="top", y=0.995,
+    )
+    figure.tight_layout(rect=(0, 0, 1, 0.875))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(out, facecolor=bg, bbox_inches="tight")
+    plt.close(figure)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument(
+        "--results", type=Path, nargs="+", required=True,
+        help="the length sweep; both figures read it",
+    )
+    parser.add_argument(
+        "--upstream-extra", type=Path, nargs="*", default=[],
+        help="further result directories, pooled into the upstream-only figure "
+        "only. Safe there and not in the faceted one: these runs measured the "
+        "same unmodified upstream repositories, while FoldJAX's own code "
+        "changed between sweeps.",
+    )
     args = parser.parse_args()
-    grouped = load(args.results)
     here = Path(__file__).parent
+    faceted = load(args.results)
+    pooled = load([*args.results, *args.upstream_extra])
     for theme in THEMES:
-        print(render(grouped, here / f"scaling-{theme}.png", theme=theme))
+        print(render(faceted, here / f"scaling-{theme}.png", theme=theme))
+        print(render_upstream(
+            pooled, here / f"upstream-scaling-{theme}.png", theme=theme
+        ))
     return 0
 
 

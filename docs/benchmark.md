@@ -62,36 +62,68 @@ is a slope, not a number.
   <img alt="wall time and peak memory against token count, log-log, one panel per model" src="scaling-dark.png">
 </picture>
 
-Both axes are logarithmic, so a power law is a straight line and the printed
-exponent is its slope. Two are printed where they disagree: the fit over every
-completed size, and the local slope between the two largest. They disagree
-because a per-run cost that does not grow with `n` -- weight loading, XLA
-compilation -- is a constant added to a power law, and it flattens the fitted
-slope at the small end.
+Both axes are logarithmic, so a power law is a straight line. The figure
+printed against each series is what **doubling the token count multiplies that
+cost by** -- the same fact as an exponent, in the unit the decision is actually
+made in. Two are printed where they disagree: over every completed size, then
+at the top end.
 
-- **Nothing here is quadratic across the whole range, and everything is
-  steeper than quadratic at the top.** FoldJAX time fits n^1.8-2.0 over
-  499-3,012 tokens but runs n^2.5-2.8 between 2,096 and 3,012. Extrapolating a
-  small-size measurement to a large sequence underestimates it, in every column.
-- **AlphaFold 3's n^0.68 is the clearest case of that constant.** Its 285 s at
-  499 tokens is mostly fixed cost, which is why its fitted slope is the
-  flattest here and its local slope (n^1.47) more than doubles it. It is not
-  scaling better than the ports; it is starting from a bigger floor.
-- **Memory grows slower than time, roughly n^1.0-1.8, and that is what runs
-  out first anyway.** OpenDDE is the exception and it is the one that fails
-  earliest: n^1.83 on two surviving points, 45.4 GiB already at 1,003 tokens.
+They disagree because a per-run cost that does not grow with `n` -- weight
+loading, XLA compilation -- is a constant added to a power law, and it flattens
+the average at the small end.
+
+- **Nothing here doubles cheaply, and everything gets worse as it grows.**
+  FoldJAX time multiplies 3.5-3.9x per doubling across 499-3,012 tokens, but
+  5.8-6.8x between 2,096 and 3,012. Extrapolating a small-size measurement to a
+  large sequence underestimates it, in every column.
+- **AlphaFold 3's 1.6x per doubling is the clearest case of that constant.**
+  Its 285 s at 499 tokens is mostly fixed cost, which is why its average is the
+  flattest here while its top end (2.8x) nearly doubles it. It is not scaling
+  better than the ports; it is starting from a bigger floor.
+- **Memory grows slower than time -- about 2.1-2.7x per doubling -- and it is
+  what runs out first anyway.** OpenDDE is the exception and fails earliest:
+  3.6x per doubling on two surviving points, 45.4 GiB already at 1,003 tokens.
 - **OpenFold3 upstream's memory falls from 93.4 GiB at 2,096 tokens to 83.2 at
-  3,012** -- a negative local slope, drawn as measured. A peak that drops as
-  the input grows is a size-triggered path change, not a saving; it is
-  unexplained here and should not be read as one until someone reads that
-  code.
+  3,012** -- drawn as measured. A peak that drops as the input grows is a
+  size-triggered path change, not a saving; it is unexplained here and should
+  not be read as one until someone reads that code.
 
 Hollow markers are sizes a run reached and did not finish. They are drawn
 rather than dropped: omitting them would bend a curve into a claim that the
 model kept scaling.
 
+### The four upstreams against each other
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="upstream-scaling-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="upstream-scaling-light.png">
+  <img alt="wall time and peak memory against token count for the four upstream implementations" src="upstream-scaling-dark.png">
+</picture>
+
+The same measurements with the FoldJAX column dropped and the four upstreams on
+one pair of axes, where the question is which reference implementation costs
+what. This figure pools the earlier 132-1,531 token sweep as well, which the
+faceted one does not: those runs measured the *same unmodified upstream
+repositories*, so their points belong on the same curve, while FoldJAX's own
+code changed between the two sweeps and its points would not.
+
+Each point is a different sequence, so the near-equal pairs (490/499,
+970/1,003) are not repeats -- they show how much two sequences of one length
+can differ, which is the noise floor for reading any single point.
+
+- **OpenFold3's upstream is the steepest thing here, 5.2x per doubling**, and
+  its caveat is below: it reaches no fused kernel on this card and chunks
+  attention four rows at a time at every size.
+- **Protenix's upstream has the flattest curve (1.8x) and the highest floor** --
+  52 s at 132 tokens, where OpenDDE's takes 17. Below ~500 tokens it is the
+  slowest of the four and above ~1,000 it is the fastest.
+- **OpenDDE's upstream stops at 1,003 tokens.** Everything past it is hollow.
+
+<!-- -->
+
     uv run --with matplotlib python docs/make_scaling_figure.py \
-        --results ../foldjax-bench/results-lengths
+        --results ../foldjax-bench/results-lengths \
+        --upstream-extra bench/results
 
 ## What the table says
 
