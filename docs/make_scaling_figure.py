@@ -72,15 +72,42 @@ METRICS = (
 #: the light surface needs, where aqua sits below 3:1 contrast.
 UPSTREAM_COLORS = {
     "light": {
-        "boltz2": "#2a78d6", "protenix": "#eb6834",
-        "openfold3": "#1baf7a", "opendde": "#4a3aa7",
+        "boltz2": "#2a78d6", "protenix": "#eb6834", "openfold3": "#1baf7a",
+        "opendde": "#4a3aa7", "alphafold3": "#e34948",
     },
     "dark": {
-        "boltz2": "#3987e5", "protenix": "#d95926",
-        "openfold3": "#199e70", "opendde": "#9085e9",
+        "boltz2": "#3987e5", "protenix": "#d95926", "openfold3": "#199e70",
+        "opendde": "#9085e9", "alphafold3": "#e66767",
     },
 }
-MARKERS = {"boltz2": "o", "protenix": "s", "openfold3": "^", "opendde": "D"}
+MARKERS = {
+    "boltz2": "o", "protenix": "s", "openfold3": "^", "opendde": "D",
+    "alphafold3": "v",
+}
+
+#: Which column holds each model's own reference implementation.
+#:
+#: AlphaFold 3's is the `foldjax` one, and that is not a shortcut: FoldJAX
+#: drives the official installation rather than reimplementing it, so that row
+#: *is* upstream AlphaFold 3 running its own code. It is the same fact that
+#: leaves AlphaFold 3's upstream column blank in the table -- both columns would
+#: be the same program -- read from the other side.
+REFERENCE_IMPL = {
+    "boltz2": "upstream",
+    "protenix": "upstream",
+    "openfold3": "upstream",
+    "opendde": "upstream",
+    "alphafold3": "foldjax",
+}
+
+#: Series that could not reach their own released fast path on this card, drawn
+#: dashed so the figure does not present a handicapped run as a like-for-like
+#: one. OpenFold3's upstream is the only one: DS4Sci's evoformer attention
+#: refuses to build for sm_120 and 0.3.1's experimental cuEquivariance flag
+#: crashes at more than one diffusion sample, so it runs plain torch attention
+#: chunked four rows at a time at every size. That is where its 6,722 s lives.
+#: See `bench/upstream-environments.md`.
+HANDICAPPED = {"openfold3"}
 
 
 def load(results: list[Path]) -> dict:
@@ -335,6 +362,9 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
     palette = UPSTREAM_COLORS[theme]
     models = [name for name in MODELS if name in palette and name in grouped]
 
+    def reference(model):
+        return grouped[model].get(REFERENCE_IMPL[model])
+
     figure, axes = plt.subplots(
         1, len(METRICS), figsize=(12.5, 5.4), dpi=200, facecolor=bg, squeeze=False
     )
@@ -345,7 +375,7 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         index = 1 if metric == "wall_s" else 2
         top = max(
             (value[index] * scale for model in models
-             for value in grouped[model].get("upstream", {}).get("ok", [])),
+             for value in (reference(model) or {}).get("ok", [])),
             default=1.0,
         )
         del column
@@ -361,7 +391,7 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
 
         handles, labels = [], []
         for order, model in enumerate(models):
-            side = grouped[model].get("upstream")
+            side = reference(model)
             if side is None:
                 continue
             color = palette[model]
@@ -375,11 +405,14 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
                     [value * scale for _, value in points],
                     color=color, linewidth=1.8, marker=MARKERS[model],
                     markersize=5.5, zorder=3,
+                    linestyle=(0, (5, 2)) if model in HANDICAPPED else "-",
                 )
                 fitted = exponent(points)
                 handles.append(line)
                 labels.append(
-                    f"{model}" + (f"   {growth(fitted)} / 2x tokens" if fitted else "")
+                    f"{model}"
+                    + (f"   {growth(fitted)} / 2x tokens" if fitted else "")
+                    + ("  · no fused kernel" if model in HANDICAPPED else "")
                 )
             for slot, tokens in enumerate(side["failed"]):
                 # Staggered by model: two implementations failing at the same
@@ -412,8 +445,8 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         if metric == "peak_mib":
             axis.axhline(97.9, color=fg, linewidth=0.9, linestyle="--", zorder=1)
             axis.text(
-                3200, 96.4, "97.9 GiB card", color=fg, fontsize=9,
-                va="top", ha="right",
+                60, 96.4, "97.9 GiB card", color=fg, fontsize=9,
+                va="top", ha="left",
             )
         # Upper left, tucked under the failure band: on linear axes every
         # curve leaves that corner empty, and the lower right -- free when

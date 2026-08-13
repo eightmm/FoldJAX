@@ -99,9 +99,21 @@ model kept scaling.
   <img alt="wall time and peak memory against token count for the four upstream implementations" src="upstream-scaling-dark.png">
 </picture>
 
-The same measurements with the FoldJAX column dropped and the four upstreams on
-one pair of axes, where the question is which reference implementation costs
-what. This figure pools the earlier 132-1,531 token sweep as well, which the
+The same measurements with the FoldJAX column dropped and every model's own
+reference implementation on one pair of axes, where the question is which one
+costs what. **AlphaFold 3 is in this figure from its `foldjax` rows**, and that
+is not a substitution: FoldJAX drives the official installation rather than
+reimplementing it, so those rows *are* upstream AlphaFold 3 running its own
+code. It is the same fact that leaves its upstream column blank in the table.
+
+**OpenFold3 is drawn dashed because it is not a like-for-like run.** It is the
+one series that could not reach its own released fast path on this card --
+DS4Sci's evoformer attention refuses to build for sm_120 and 0.3.1's
+experimental cuEquivariance flag crashes above one diffusion sample -- so it
+runs plain torch attention chunked four rows at a time at every size. Its
+6,722 s at 3,012 tokens is that, not OpenFold3 as published. It stays in the
+figure because a size no implementation here reaches on this hardware is a
+result; the dashes stop it being read as a fair comparison. This figure pools the earlier 132-1,531 token sweep as well, which the
 faceted one does not: those runs measured the *same unmodified upstream
 repositories*, so their points belong on the same curve, while FoldJAX's own
 code changed between the two sweeps and its points would not.
