@@ -10,7 +10,7 @@ at prediction time.
 Two things about it differ from the rest of the fleet and reach the interface:
 
 * **The weights are two checkpoints.** The structure network is 940 MB; the
-  language model it reads from is a separate ~12 GB download that upstream
+  language model it reads from is a separate 25.4 GB download that upstream
   distributes apart from it, staged at `<weights>/esmc`. Without it the trunk
   still runs with its language-model branch absent, which is what upstream does
   when no PLM is loaded, and which is not the released model -- so it is opt-in
@@ -69,8 +69,8 @@ class ESMFold2Backend(Backend):
     # No `attention_kernel`: the port's attention is XLA's, and the fused and
     # cuEquivariance paths the torch model selected between do not exist here.
     # `no_language_model` is not a performance knob -- it changes which model
-    # runs -- but it is the only way to fold without the 12 GB download, so it
-    # is exposed and named for what it does.
+    # runs -- but it is the only way to fold without the 25.4 GB download, so
+    # it is exposed and named for what it does.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {}
     compile_options = (
         "num_samples",
@@ -111,7 +111,7 @@ class ESMFold2Backend(Backend):
             raise ValueError(f"unsupported ESMFold2 options: {', '.join(options)}")
 
         model = inference.load(
-            request.weights, esmc=esmc, require_esmc=not without_lm
+            request.weights, esmc=esmc, language_model=not without_lm
         )
         prediction, features = inference.predict_job(
             inference.seed_key(request.seed),

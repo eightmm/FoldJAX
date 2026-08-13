@@ -202,8 +202,14 @@ def _predict_once(
             request.output_dir / "inputs",
             seed=request.seed,
         )
+        # Most backends have a dialect of their own and the materialised file
+        # is in it. ESMFold2 does not -- its adapter reads the common schema
+        # directly -- so for it the written file is still FoldJAX's, and
+        # relabelling it "native" made every `foldjax predict --model esmfold2`
+        # fail the capability check below on a format it had just invented.
+        materialized = "native" if "native" in capabilities.input_formats else "foldjax"
         request = dataclasses.replace(
-            request, input=native_input, input_format="native"
+            request, input=native_input, input_format=materialized
         )
     if request.input_format not in capabilities.input_formats:
         raise ValueError(

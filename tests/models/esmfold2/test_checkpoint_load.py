@@ -97,13 +97,19 @@ def test_the_whole_model_runs_on_the_released_weights() -> None:
     assert plddt.min() >= 0.0 and plddt.max() <= 1.0
 
 
-def test_a_missing_language_model_is_refused_by_name(tmp_path) -> None:
-    """Folding without ESMC is legitimate to ask for and not to get by accident."""
+def test_the_weights_file_resolves_to_its_directory() -> None:
+    """The store's `native=` entry names the file; the loader needs the folder.
+
+    A caller has no reason to know the difference, and `foldjax predict` hands
+    over whichever the store resolved.
+    """
     from foldjax.models.esmfold2 import inference
 
     directory = _weights()
-    with pytest.raises(FileNotFoundError, match="ESMC-6B"):
-        inference.load(directory)
+    model = inference.load(
+        directory / checkpoint.WEIGHTS_NAME, language_model=False, dtype="bfloat16"
+    )
+    assert model.settings.trunk_n_layers == 48
 
 
 @pytest.mark.slow
@@ -115,7 +121,7 @@ def test_a_job_folds_from_sequence_to_pdb(tmp_path) -> None:
     """
     from foldjax.models.esmfold2 import inference, output
 
-    model = inference.load(_weights(), require_esmc=False)
+    model = inference.load(_weights(), language_model=False)
     assert not model.has_language_model
 
     peptide = "MQIFVKTLTGKTITLE"

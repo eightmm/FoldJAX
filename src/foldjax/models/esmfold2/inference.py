@@ -55,31 +55,43 @@ def load(
     weights: str | Path,
     *,
     esmc: str | Path | None = None,
-    require_esmc: bool = True,
+    language_model: bool = True,
     dtype: str | None = None,
     esmc_dtype: str | None = "bfloat16",
 ) -> LoadedModel:
     """Read the checkpoint, and the language model beside it.
 
-    `require_esmc` is on by default and refuses rather than quietly folding a
-    different model: a run without ESMC is a legitimate thing to ask for and
-    not a thing to get by accident.
+    `weights` is the *directory* holding `model.safetensors`, `config.json` and
+    `esmc/` -- the configuration is not optional here, since the released one
+    departs from upstream's dataclass defaults in most fields. A path to the
+    weights file itself is accepted too, because that is what the store's
+    `native=` entry resolves to and a caller has no reason to know the
+    difference.
+
+    `language_model` is on by default and, when the checkpoint is missing,
+    refuses rather than quietly folding a different model: a run without ESMC
+    is a legitimate thing to ask for and not a thing to get by accident.
+    Turning it off skips the load entirely -- it does not merely tolerate an
+    absence, which would make the flag mean different things on two machines.
     """
     weights = Path(weights)
+    if weights.is_file():
+        weights = weights.parent
     parameters = structure_checkpoint.load_parameters(weights, dtype=dtype)
     settings = structure_checkpoint.load_settings(weights)
 
+    if not language_model:
+        return LoadedModel(parameters=parameters, settings=settings)
+
     directory = Path(esmc) if esmc is not None else esmc_directory(weights)
     if not directory.exists():
-        if require_esmc:
-            raise FileNotFoundError(
-                f"ESMC-6B is not at {directory}. ESMFold2 folds the "
-                "representations of a 6B protein language model that upstream "
-                "distributes separately (~12 GB); download it into that "
-                "directory, or pass require_esmc=False to run the structure "
-                "network without it -- which is not the released model."
-            )
-        return LoadedModel(parameters=parameters, settings=settings)
+        raise FileNotFoundError(
+            f"ESMC-6B is not at {directory}. ESMFold2 folds the "
+            "representations of a 6B protein language model that upstream "
+            "distributes separately (25.4 GB); fetch it with "
+            "scripts/fetch_esmc6b.sh, or pass language_model=False to run the "
+            "structure network without it -- which is not the released model."
+        )
 
     return LoadedModel(
         parameters=parameters,

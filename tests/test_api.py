@@ -148,6 +148,29 @@ def test_predict_converts_common_input_before_dispatch(tmp_path: Path) -> None:
     assert backend.seen.input == tmp_path / "out" / "inputs" / "boltz2_input.yaml"
 
 
+def test_a_backend_without_a_dialect_keeps_the_common_format(tmp_path: Path) -> None:
+    """ESMFold2 reads the common schema itself, so there is no `native` to claim.
+
+    Relabelling the materialized file `native` for such a backend made it fail
+    the capability check on a format the conversion had just invented, which
+    is how `foldjax predict --model esmfold2` came to be impossible.
+    """
+    source = tmp_path / "common.json"
+    source.write_text(
+        json.dumps({"entities": [{"type": "protein", "id": "A", "sequence": "ACD"}]})
+    )
+    backend = DummyBackend(input_formats=("foldjax",))
+    backend.name = "esmfold2"
+    with backend_override("esmfold2", lambda: backend):
+        foldjax.predict(
+            _request(tmp_path, model="esmfold2", input=source, input_format="foldjax")
+        )
+
+    assert backend.seen is not None
+    assert backend.seen.input_format == "foldjax"
+    assert backend.seen.input == tmp_path / "out" / "inputs" / "esmfold2_input.json"
+
+
 def test_predict_rejects_an_unsupported_input_format(tmp_path: Path) -> None:
     with backend_override("boltz2", lambda: DummyBackend()):
         with pytest.raises(ValueError, match="does not support input format"):
