@@ -189,13 +189,19 @@ _TEMPLATE_OBSOLETE = Download(
 
 
 def _stage_esmfold2(model: str, source: Path) -> Path:
-    """Put the published files where `from_pretrained` expects a model.
+    """Put the published files where the loader expects a model.
 
-    Nothing is converted -- this backend drives upstream's torch model and
-    loads its safetensors as they ship -- but the loader takes a *directory*
-    holding `config.json` beside the weights, and the download step keeps
-    files under `downloads/`. Hard-linked where the filesystem allows it, so
-    the 1.3 GB is not stored twice.
+    Nothing is converted: the port names its parameters the way upstream's
+    `state_dict` does, so the published safetensors loads as it ships. What the
+    loader does need is a *directory* holding `config.json` beside the weights
+    -- the released configuration differs from upstream's dataclass defaults in
+    most of the fields that matter -- and the download step keeps files under
+    `downloads/`. Hard-linked where the filesystem allows it, so the 1.3 GB is
+    not stored twice.
+
+    ESMC-6B, the language model the trunk folds representations from, is a
+    separate ~12 GB checkpoint that upstream distributes apart from this one;
+    it belongs in `<weights>/esmc` and is not fetched here.
     """
     out = weights_dir(model)
     out.mkdir(parents=True, exist_ok=True)
@@ -323,11 +329,14 @@ REGISTRY: dict[str, ModelAssets] = {
         requires=("model.safetensors", "config.json"),
         convert=_stage_esmfold2,
         in_default_setup=False,
-        notes="Torch weights, loaded as they ship -- nothing is converted, "
-        "because this backend drives upstream's model rather than porting it. "
-        "Loading also pulls ESMC-6B (~24 GB) from Hugging Face on first use: "
-        "it is the language model ESMFold2 reads its representations from, and "
-        "upstream distributes it separately. Needs the esmfold2 extra.",
+        notes="Loaded as published -- the JAX port names its parameters the "
+        "way upstream's state_dict does, so nothing is converted. These 940 MB "
+        "are the structure network only. ESMC-6B, the 6B language model it "
+        "folds representations from, is a separate ~12 GB download upstream "
+        "distributes apart from it (huggingface.co/biohub/ESMC-6B); put its "
+        "safetensors and config.json in <weights>/esmc. Without it the trunk "
+        "runs with its language-model branch absent, which is not the released "
+        "model, so that has to be asked for with no_language_model=true.",
     ),
     "openfold3": ModelAssets(
         model="openfold3",

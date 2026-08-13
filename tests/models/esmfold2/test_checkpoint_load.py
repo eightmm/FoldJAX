@@ -95,3 +95,48 @@ def test_the_whole_model_runs_on_the_released_weights() -> None:
     # pLDDT is a probability-weighted mean over bins spanning 0 to 1.
     plddt = np.asarray(output["plddt"])
     assert plddt.min() >= 0.0 and plddt.max() <= 1.0
+
+
+def test_a_missing_language_model_is_refused_by_name(tmp_path) -> None:
+    """Folding without ESMC is legitimate to ask for and not to get by accident."""
+    from foldjax.models.esmfold2 import inference
+
+    directory = _weights()
+    with pytest.raises(FileNotFoundError, match="ESMC-6B"):
+        inference.load(directory)
+
+
+@pytest.mark.slow
+def test_a_job_folds_from_sequence_to_pdb(tmp_path) -> None:
+    """Featurise, fold, write -- the whole backend path, without ESMC.
+
+    The structure alone is not the released model; what this checks is that the
+    path holds together from a sequence to a file, not that the fold is good.
+    """
+    from foldjax.models.esmfold2 import inference, output
+
+    model = inference.load(_weights(), require_esmc=False)
+    assert not model.has_language_model
+
+    peptide = "MQIFVKTLTGKTITLE"
+    prediction, features = inference.predict_job(
+        inference.seed_key(0),
+        [(peptide, "A", 0, 0)],
+        None,
+        model,
+        num_loops=0,
+        num_samples=1,
+        num_steps=2,
+    )
+    written = output.write_prediction_outputs(
+        prediction, features, tmp_path, name="job"
+    )
+
+    assert len(written["structures"]) == 1
+    text = written["structures"][0].read_text()
+    atoms = [line for line in text.splitlines() if line.startswith("ATOM")]
+    assert len(atoms) == int(features["atom_attention_mask"].sum())
+    # Every residue of the peptide is named, and the coordinates are real.
+    assert {line[21] for line in atoms} == {"A"}
+    assert all(np.isfinite(float(line[30:38])) for line in atoms)
+    assert 0.0 <= written["summary"][0]["plddt"] <= 1.0

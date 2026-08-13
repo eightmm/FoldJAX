@@ -1,38 +1,36 @@
-"""ESMFold2 adapter, driving Biohub's released torch model.
+"""ESMFold2 adapter, driving FoldJAX's own JAX port.
 
-ESMFold2 is the one backend FoldJAX drives rather than reimplements, and for a
-reason none of the others share: it is not an AlphaFold-3 reimplementation with
-an evolutionary trunk, it is a diffusion structure head on top of a 6B protein
-language model (`ESMC-6B`, loaded alongside the 1.3 GB structure weights). The
-part worth porting would be the smaller half; the part doing the work is a
-language model this project has no story for.
+ESMFold2 is not an AlphaFold-3 reimplementation with an evolutionary trunk: it
+is a diffusion structure head on a linear-recurrence pair trunk, folding the
+representations of `ESMC-6B`. Both halves are ported here --
+`models/esmfold2/models/` for the 235M-parameter structure network and `esmc`
+for the language model -- so this backend, like every other one, needs no torch
+at prediction time.
 
-What makes it fit here anyway is its interface. `ESMFold2Model.forward` takes
-the AlphaFold-3 feature contract verbatim -- `asym_id`, `sym_id`, `entity_id`,
-`mol_type`, `res_type`, `token_bonds`, `ref_pos`, `ref_element`,
-`ref_atom_name_chars`, `atom_to_token`, `msa`, `deletion_value` -- which is the
-same dictionary the vendored ports already build, and its knobs
-(`num_sampling_steps`, `num_loops`, `num_diffusion_samples`, `msa_max_depth`)
-are FoldJAX's neutral vocabulary under different names.
+Two things about it differ from the rest of the fleet and reach the interface:
 
-Upstream ships `prepare_protein_features` for one chain with no alignment and
-leaves the rest of that dictionary to the caller;
-`models/esmfold2/data/torch_features` is that assembly -- several chains,
-their symmetry, and their alignments -- and is
-checked against upstream's own builder for the case both cover. Ligands and
-nucleic acids are what remains: `forward` expresses them, but their features
-need reference conformers out of upstream's 400 MB CCD pickle, so
-`capabilities()` reports protein until that is wired rather than accepting a
-job it would fold without its ligand.
+* **The weights are two checkpoints.** The structure network is 940 MB; the
+  language model it reads from is a separate ~12 GB download that upstream
+  distributes apart from it, staged at `<weights>/esmc`. Without it the trunk
+  still runs with its language-model branch absent, which is what upstream does
+  when no PLM is loaded, and which is not the released model -- so it is opt-in
+  through `no_language_model` rather than a silent fallback.
+* **The model is stochastic by construction.** The trunk starts from a random
+  pair state, the language-model pair embedding is dropped out at `p = 0.25`
+  *per loop* with training-mode semantics that upstream's release path enables,
+  and the sampler adds noise. Two runs at the same seed agree; two seeds do not,
+  and that is the model rather than the port.
 
-Torch is required here and only here. The prediction path for every other
-model is torch-free, so this adapter is behind the `esmfold2` extra and its
-imports stay inside `predict`.
+Ligands and nucleic acids are what remains: the model expresses them, but their
+features need reference conformers out of upstream's 417 MB CCD pickle, so
+`capabilities()` reports protein rather than accepting a job it would fold
+without its ligand.
 """
 
 from __future__ import annotations
 
 import json
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -44,40 +42,42 @@ from foldjax.schema import (
     PredictionSample,
 )
 
-#: Upstream's own defaults, from `ESMFold2Model.forward` and the model card:
-#: 20 trunk loops and 100 ODE steps for the full model. They are named here
-#: because `capabilities()` reports them and the README table quotes them.
-DEFAULTS = {"num_loops": 20, "num_sampling_steps": 100, "num_diffusion_samples": 1}
+#: Upstream's released `config.json`, which is what the port reads at load
+#: time. These are named here because `capabilities()` reports them and the
+#: README table quotes them -- and because they are *not* the dataclass
+#: defaults in upstream's source, which say 20 loops and 68 steps.
+DEFAULTS = {
+    "num_loops": 3,
+    "num_sampling_steps": 14,
+    "num_diffusion_samples": 32,
+    "msa_max_depth": 1024,
+}
 
 
 class ESMFold2Backend(Backend):
     name = "esmfold2"
-    # The neutral names, against upstream's. `msa_max_depth` is the one that is
-    # not simply a rename: upstream subsamples that many MSA rows *per trunk
+    # The neutral names, against the port's. `max_msa_depth` is the one that is
+    # not simply a rename: the model resubsamples that many MSA rows *per trunk
     # loop* rather than cutting the alignment once, which is the same policy
     # Boltz-2 uses and the opposite of a head-of-file cut.
     sampling_options = {
-        "num_samples": "num_diffusion_samples",
-        "num_steps": "num_sampling_steps",
+        "num_samples": "num_samples",
+        "num_steps": "num_steps",
         "num_recycles": "num_loops",
         "max_msa_depth": "msa_max_depth",
     }
-    # `set_kernel_backend` takes None (reference python), "fused" (upstream's
-    # Triton kernels) or "cuequivariance" -- the same library FoldJAX's own
-    # triangle paths use. `auto` is the fused kernel, consistent with every
-    # other backend here: the fastest path this build can actually run.
-    execution_options = {
-        "attention_kernel": (
-            "kernel_backend",
-            {"auto": "fused", "cueq": "cuequivariance", "xla": "reference"},
-        ),
-    }
+    # No `attention_kernel`: the port's attention is XLA's, and the fused and
+    # cuEquivariance paths the torch model selected between do not exist here.
+    # `no_language_model` is not a performance knob -- it changes which model
+    # runs -- but it is the only way to fold without the 12 GB download, so it
+    # is exposed and named for what it does.
+    execution_options: dict[str, tuple[str, dict[str, Any]]] = {}
     compile_options = (
-        "num_diffusion_samples",
-        "num_sampling_steps",
+        "num_samples",
+        "num_steps",
         "num_loops",
         "msa_max_depth",
-        "kernel_backend",
+        "no_language_model",
     )
 
     def capabilities(self) -> ModelCapabilities:
@@ -85,7 +85,7 @@ class ESMFold2Backend(Backend):
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("foldjax",),
-            # Deliberately narrow: `forward` expresses ligands and nucleic
+            # Deliberately narrow: the model expresses ligands and nucleic
             # acids, but this adapter does not build their features yet, and a
             # job that named them would otherwise be folded as protein alone.
             entity_types=("protein",),
@@ -93,61 +93,58 @@ class ESMFold2Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
-        import torch
-        from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
-        from transformers.models.esmfold2.protein_utils import (
-            OUTPUT_TO_PDB_FEATURE_KEYS,
-        )
-
-        from foldjax.models.esmfold2.data.torch_features import build_features
+        # In-package imports, kept inside `predict` for the same reason every
+        # other vendored backend does it: to keep `import foldjax` off JAX's
+        # import cost.
+        inference = import_module("foldjax.models.esmfold2.inference")
+        output_module = import_module("foldjax.models.esmfold2.output")
 
         chains, alignments = _job_chains(request.input)
-        kernel = options.pop("kernel_backend", "fused")
-        forward_kwargs = {
+        overrides = {
             name: int(options.pop(name))
-            for name in ("num_loops", "num_sampling_steps", "num_diffusion_samples")
+            for name in ("num_loops", "num_steps", "num_samples", "msa_max_depth")
             if name in options
         }
-        depth = options.pop("msa_max_depth", None)
-        if depth is not None:
-            # Upstream resubsamples this many rows every trunk loop rather than
-            # cutting the alignment once, so the cap is passed through instead
-            # of being applied while building the features.
-            forward_kwargs["msa_max_depth"] = int(depth)
+        without_lm = bool(options.pop("no_language_model", False))
+        esmc = options.pop("esmc_weights", None)
         if options:
             raise ValueError(f"unsupported ESMFold2 options: {', '.join(options)}")
 
-        model = ESMFold2Model.from_pretrained(str(request.weights))
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = model.to(device).eval()
-        model.set_kernel_backend(None if kernel == "reference" else kernel)
+        model = inference.load(
+            request.weights, esmc=esmc, require_esmc=not without_lm
+        )
+        prediction, features = inference.predict_job(
+            inference.seed_key(request.seed),
+            chains,
+            alignments,
+            model,
+            **overrides,
+        )
 
-        features = build_features(chains, alignments)
-        features = {name: value.to(device) for name, value in features.items()}
-        with torch.no_grad():
-            output = model(**features, **forward_kwargs)
-            for key in OUTPUT_TO_PDB_FEATURE_KEYS:
-                output[key] = features[key]
-            structure = model.output_to_pdb(output)
-
-        request.output_dir.mkdir(parents=True, exist_ok=True)
         name = Path(request.input).stem
-        path = request.output_dir / f"{name}.pdb"
-        path.write_text(structure, encoding="utf-8")
-        scores = {
-            key: float(output[key].mean())
-            for key in ("plddt", "ptm", "iptm")
-            if key in output
-        }
+        written = output_module.write_prediction_outputs(
+            prediction, features, request.output_dir, name=name
+        )
+        scores = {entry["sample"]: entry for entry in written["summary"]}
         return PredictionResult(
             model=self.name,
-            samples=(
+            samples=tuple(
                 PredictionSample(
-                    seed=request.seed, structure_path=path, scores=scores
-                ),
+                    seed=request.seed,
+                    structure_path=path,
+                    scores={
+                        key: float(value)
+                        for key, value in scores.get(index, {}).items()
+                        if key != "sample"
+                    },
+                )
+                for index, path in enumerate(written["structures"])
             ),
             output_dir=request.output_dir,
-            raw={"forward_kwargs": forward_kwargs, "kernel_backend": kernel},
+            raw={
+                "overrides": overrides,
+                "language_model": model.has_language_model,
+            },
         )
 
 

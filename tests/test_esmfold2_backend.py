@@ -22,8 +22,8 @@ def _job(tmp_path, entities) -> str:
     return path
 
 
-def test_the_neutral_schedule_reaches_upstreams_own_names(tmp_path) -> None:
-    """`num_steps` is `num_sampling_steps` there, and so on for all four."""
+def test_the_neutral_schedule_reaches_the_ports_own_names(tmp_path) -> None:
+    """`num_recycles` is `num_loops` here; the other three keep their names."""
     job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACDEF"}])
     options = ESMFold2Backend().apply_sampling(
         PredictionRequest(
@@ -33,16 +33,29 @@ def test_the_neutral_schedule_reaches_upstreams_own_names(tmp_path) -> None:
             num_steps=200,
             num_recycles=10,
             max_msa_depth=1024,
-            options={"attention_kernel": "auto"},
         )
     )
     assert options == {
-        "num_diffusion_samples": 5,
-        "num_sampling_steps": 200,
+        "num_samples": 5,
+        "num_steps": 200,
         "num_loops": 10,
         "msa_max_depth": 1024,
-        "kernel_backend": "fused",
     }
+
+
+def test_the_torch_kernel_knob_is_gone_rather_than_ignored(tmp_path) -> None:
+    """The port's attention is XLA's; `fused` and `cueq` no longer exist here.
+
+    Accepting the knob and doing nothing with it would report a kernel choice
+    that never happened, which is worse than refusing it.
+    """
+    job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACDEF"}])
+    with pytest.raises(ValueError, match="attention_kernel"):
+        ESMFold2Backend().apply_sampling(
+            PredictionRequest(
+                model="esmfold2", input=job, options={"attention_kernel": "auto"}
+            )
+        )
 
 
 def test_a_ligand_job_is_refused_rather_than_folded_as_protein(tmp_path) -> None:
