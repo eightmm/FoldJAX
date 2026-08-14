@@ -40,7 +40,10 @@ jobs:
       # for all of it: uv resolves every extra to build the lockfile, so a path
       # dependency that exists on one machine breaks `uv sync` on every other.
       - name: Install
-        run: uv sync --group dev --frozen
+        run: >
+          uv sync --group dev --frozen
+          --extra alphafold3
+          --extra openfold3-preprocess
 
       - name: Lockfile is current
         run: uv lock --check
