@@ -1,6 +1,6 @@
 """One output layout, whichever model produced it.
 
-Five backends wrote five layouts. AlphaFold 3 nested a directory per sample and
+Six backends wrote six layouts. AlphaFold 3 nested a directory per sample and
 repeated the top-ranked structure at the root; Protenix and OpenDDE wrote a flat
 `<job>_sample_3.cif` whose seed is nowhere in the name; OpenFold3 wrote its
 samples and confidences at one level. Reading a directory therefore meant
@@ -13,7 +13,7 @@ So after a run, every structure is placed at
 
 with a `confidence.json` beside it. The name carries the whole coordinate, so a
 structure mailed to someone still says what it is; the zero-padded index sorts
-in the order a person means; and the directory is the same shape for all five.
+in the order a person means; and the directory is the same shape for all six.
 Whatever else the backend wrote is left exactly where it wrote it -- the parity
 scripts and upstream tooling that read those names keep working.
 
@@ -26,12 +26,18 @@ ranking across models would invent a number none of them computed.
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
+import math
+import os
+import re
 import shutil
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from foldjax.schema import PredictionResult, PredictionSample
+from foldjax.schema import PredictionOutputError, PredictionResult, PredictionSample
 
 #: The score each model ranks its own samples by, best first. Used only to name
 #: a `best` sample within one model's run -- never to compare two models.
@@ -42,16 +48,31 @@ from foldjax.schema import PredictionResult, PredictionSample
 #: components rather than the ranking. Electing one of them here would publish a
 #: "best" under a rule Boltz does not use, which is worse than saying nothing:
 #: `best_sample` returns None and the per-sample scores are all still there.
-#: OpenFold3 reports `ranking_score_no_clash`, and only for a job with more than
-#: one chain -- a Prediction carries no clash term, so the name says the veto
-#: that the real AF3 ranking score applies never fired. A single-chain run
-#: therefore has no `best`, which is the same answer for the same reason.
+#: OpenFold3 exposes the exact key only when its complete score is available.
+#: Protein inputs need a disorder term that the torch-free writer cannot derive;
+#: those runs report `sample_ranking_score_no_disorder` for inspection and are
+#: deliberately absent from `best_sample`.
 _RANKING_SCORE = {
     "alphafold3": "ranking_score",
     "opendde": "ranking_score",
-    "openfold3": "ranking_score_no_clash",
+    "openfold3": "sample_ranking_score",
     "protenix": "ranking_score",
 }
+
+_UNSAFE_NAME = re.compile(r"[^\w.-]+", flags=re.UNICODE)
+
+
+def safe_job_name(name: str, *, limit: int = 120) -> str:
+    """Return a readable filename component that cannot escape its run root."""
+    original = str(name).strip()
+    safe = _UNSAFE_NAME.sub("_", original.replace("/", "_").replace("\\", "_"))
+    safe = safe.strip("._") or "prediction"
+    if len(safe.encode("utf-8")) <= limit:
+        return safe
+    digest = hashlib.sha256(original.encode()).hexdigest()[:8]
+    prefix_bytes = safe.encode("utf-8")[: limit - len(digest) - 1]
+    prefix = prefix_bytes.decode("utf-8", errors="ignore").rstrip("._-")
+    return f"{prefix or 'prediction'}-{digest}"
 
 
 def sample_directory(output_dir: Path, seed: int, index: int) -> Path:
@@ -59,8 +80,10 @@ def sample_directory(output_dir: Path, seed: int, index: int) -> Path:
     return Path(output_dir) / f"seed-{seed}_sample-{index:02d}"
 
 
-def structure_name(job: str, seed: int, index: int) -> str:
-    return f"{job}_seed-{seed}_sample-{index:02d}.cif"
+def structure_name(
+    job: str, seed: int, index: int, *, suffix: str = ".cif"
+) -> str:
+    return f"{safe_job_name(job)}_seed-{seed}_sample-{index:02d}{suffix}"
 
 
 def _index(sample: PredictionSample, fallback: int) -> int:
@@ -106,13 +129,41 @@ def _write_confidence(
         "scores": dict(sample.scores or {}),
         "scores_are_model_specific": True,
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-confidence-", dir=path.parent
+    ) as scratch:
+        staged = Path(scratch) / path.name
+        staged.write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        os.replace(staged, path)
+
+
+def _copy_atomic(source: Path, target: Path) -> None:
+    """Copy through a sibling file so an existing target symlink is replaced."""
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-structure-", dir=target.parent
+    ) as scratch:
+        staged = Path(scratch) / target.name
+        shutil.copy2(source, staged)
+        os.replace(staged, target)
+
+
+def _move_atomic(source: Path, target: Path) -> None:
+    """Replace the target itself, never follow a target symlink or directory."""
+    try:
+        os.replace(source, target)
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+        _copy_atomic(source, target)
+        source.unlink()
 
 
 def normalize(
     result: PredictionResult, *, job: str, root: Path | None = None
 ) -> PredictionResult:
-    """Move every structure into the canonical layout and return the new result.
+    """Place every structure in the canonical layout and return the new result.
 
     ``root`` is where the canonical directories go, and defaults to the result's
     own output directory. A multi-seed run gives the *parent*: each seed runs
@@ -122,30 +173,72 @@ def normalize(
 
     A sample without a structure (a backend that returned coordinates only) is
     passed through untouched, and so is one whose file has already been placed.
+    Files produced inside the run root are moved; a backend-reported path outside
+    it is copied so a malformed adapter can never delete an input or other user
+    file as a side effect of normalization.
     """
     output_dir = Path(root) if root is not None else Path(result.output_dir)
+    root_resolved = output_dir.resolve()
+    job = safe_job_name(job)
     samples = []
     for position, sample in enumerate(result.samples):
         index = _index(sample, position)
         directory = sample_directory(output_dir, sample.seed, index)
-        target = directory / structure_name(job, sample.seed, index)
         source = sample.structure_path
 
         if source is None or not Path(source).is_file():
             samples.append(sample)
             continue
         source = Path(source)
-        if source != target:
-            directory.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source), target)
-        try:
-            _normalize_cif(
-                target, job=job, model=result.model, seed=sample.seed, index=index
+        suffix = source.suffix.lower()
+        if suffix not in {".cif", ".mmcif", ".pdb"}:
+            suffix = source.suffix or ".cif"
+        sample_job = safe_job_name(str((sample.metadata or {}).get("job") or job))
+        target = directory / structure_name(
+            sample_job, sample.seed, index, suffix=suffix
+        )
+        source_resolved = source.resolve()
+        if directory.is_symlink():
+            raise PredictionOutputError(
+                f"canonical output directory is a symlink: {directory}"
             )
-        except Exception:  # noqa: BLE001 - a header is never worth losing a run
-            # The structure is the result; a CIF this cannot parse is upstream's
-            # to fix, and the file is already where it belongs.
-            pass
+        directory.mkdir(parents=True, exist_ok=True)
+        if directory.is_symlink():
+            raise PredictionOutputError(
+                f"canonical output directory is a symlink: {directory}"
+            )
+        if not directory.resolve().is_relative_to(root_resolved):
+            raise PredictionOutputError(
+                f"canonical output directory escapes run root: {directory}"
+            )
+        same_lexical_path = source.absolute() == target.absolute()
+        try:
+            link_count = source.stat().st_nlink
+        except OSError:
+            link_count = 0
+        safe_to_move = (
+            not source.is_symlink()
+            and link_count == 1
+            and source_resolved.is_relative_to(root_resolved)
+        )
+        if not (same_lexical_path and safe_to_move):
+            if safe_to_move:
+                _move_atomic(source, target)
+            else:
+                _copy_atomic(source, target)
+        if suffix in {".cif", ".mmcif"}:
+            try:
+                _normalize_cif(
+                    target,
+                    job=sample_job,
+                    model=result.model,
+                    seed=sample.seed,
+                    index=index,
+                )
+            except Exception:  # noqa: BLE001 - a header is never worth losing a run
+                # The structure is the result; a CIF this cannot parse is
+                # upstream's to fix, and the file is already where it belongs.
+                pass
         _write_confidence(
             directory / "confidence.json", sample, model=result.model, index=index
         )
@@ -161,17 +254,26 @@ def best_sample(result: PredictionResult) -> dict[str, object] | None:
     ranks by would be a different claim wearing the same word.
     """
     key = _RANKING_SCORE.get(result.model)
-    ranked = [
-        sample
-        for sample in result.samples
-        if key is not None and sample.scores and key in sample.scores
-    ]
-    if not ranked:
+    if key is None or not result.samples:
         return None
-    winner = max(ranked, key=lambda sample: sample.scores[key])
+    ranked: list[tuple[int, PredictionSample, float]] = []
+    for position, sample in enumerate(result.samples):
+        if not sample.scores or key not in sample.scores:
+            return None
+        try:
+            value = float(sample.scores[key])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        ranked.append((position, sample, value))
+
+    # ``max`` keeps the first item on a tie, preserving diffusion/sample order.
+    position, winner, value = max(ranked, key=lambda item: item[2])
     return {
         "score": key,
-        "value": winner.scores[key],
+        "value": value,
         "seed": winner.seed,
+        "sample": _index(winner, position),
         "structure_path": str(winner.structure_path) if winner.structure_path else None,
     }

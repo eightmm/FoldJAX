@@ -6,13 +6,13 @@ import pytest
 import torch
 import torch.nn.functional as functional
 
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import (
     map_triangle_multiplication_state_dict,
 )
 from foldjax.models.boltz2.models.triangle.triangle import (
     triangle_multiplication_forward,
 )
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 CHECKPOINT = Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
 
@@ -21,7 +21,7 @@ CHECKPOINT = Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_co
 def checkpoint_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 @pytest.mark.parametrize("backend", ["xla", "cueq"])

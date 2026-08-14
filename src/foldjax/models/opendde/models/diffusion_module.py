@@ -46,6 +46,8 @@ def diffusion_module_f_forward(
     use_efficient_fusion: bool = False,
     token_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    token_mask: jnp.ndarray | None = None,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run OpenDDE's raw denoising network for one noise level."""
 
@@ -95,6 +97,8 @@ def diffusion_module_f_forward(
         use_efficient_fusion=use_efficient_fusion,
         token_q_chunk_size=token_q_chunk_size,
         attention_backend=attention_backend,
+        token_mask=token_mask,
+        atom_mask=atom_mask,
     )
 
 
@@ -133,6 +137,8 @@ def diffusion_module_forward(
     use_efficient_fusion: bool = False,
     token_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    token_mask: jnp.ndarray | None = None,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run one OpenDDE EDM denoising step."""
 
@@ -172,9 +178,14 @@ def diffusion_module_forward(
         use_efficient_fusion=use_efficient_fusion,
         token_q_chunk_size=token_q_chunk_size,
         attention_backend=attention_backend,
+        token_mask=token_mask,
+        atom_mask=atom_mask,
     )
     s_ratio = (t_hat_noise_level / sigma_data)[..., None, None].astype(r_update.dtype)
-    return (
+    output = (
         x_noisy / (1.0 + s_ratio**2)
         + t_hat_noise_level[..., None, None] / jnp.sqrt(1.0 + s_ratio**2) * r_update
     ).astype(r_update.dtype)
+    if atom_mask is not None:
+        output = output * jnp.asarray(atom_mask, dtype=output.dtype)[..., None]
+    return output

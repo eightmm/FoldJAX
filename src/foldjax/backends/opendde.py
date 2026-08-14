@@ -10,10 +10,12 @@ from pathlib import Path
 
 from foldjax.backends.base import Backend
 from foldjax.schema import (
+    InputRequirement,
     ModelCapabilities,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
+    _strict_boolean,
 )
 from foldjax.scores import scalar_scores
 
@@ -56,6 +58,11 @@ _CONFIDENCE_INFIX = "_summary_confidence_sample_"
 
 class OpenDDEBackend(Backend):
     name = "opendde"
+    # OpenDDE has two token spaces: the residue trunk and the expanded
+    # structural diffusion branch.  Both, the atom axis, and sampled MSA rows
+    # have end-to-end masks and are cropped before public output.
+    padding_axes = ("tokens", "atoms", "msa", "structural_tokens")
+    native_options = frozenset(_CLI_OPTIONS | {"include_raw"})
     sampling_options = {
         "num_samples": "n_sample",
         "num_steps": "n_step",
@@ -74,12 +81,25 @@ class OpenDDEBackend(Backend):
     }
     compile_options = tuple(sorted(_CLI_OPTIONS))
 
+    def validate_native_options(self, options: dict[str, object]) -> None:
+        _strict_boolean(options.get("include_raw", False), name="include_raw")
+
     def capabilities(self) -> ModelCapabilities:
+        requirement = InputRequirement(
+            notes=(
+                "NumPy/Gemmi/RDKit featurization and JAX prediction are included "
+                "in the base install and do not import PyTorch."
+            )
+        )
         return ModelCapabilities(
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "opendde", "foldjax"),
+            input_requirements={
+                name: requirement for name in ("native", "opendde", "foldjax")
+            },
             supports_templates=True,
+            padding_axes=self.padding_axes,
         )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
@@ -118,8 +138,27 @@ class OpenDDEBackend(Backend):
         if options:
             raise ValueError(f"unsupported OpenDDE options: {', '.join(options)}")
 
+        padding_profiles: list[dict[str, object]] = []
+        native = import_module("foldjax.models.opendde.cli.predict")
         with _restored_environment():
-            written = import_module("foldjax.models.opendde.cli.predict").main(argv)
+            if request.padding is None:
+                # Keep the historical one-argument native entry point exact for
+                # embedding applications and default-off predictions.
+                written = native.main(argv)
+            else:
+                unsupported = sorted(
+                    set(request.padding.explicit_axes) - set(self.padding_axes)
+                )
+                if unsupported:
+                    raise ValueError(
+                        "opendde does not support explicit padding axes: "
+                        + ", ".join(unsupported)
+                    )
+                written = native.main(
+                    argv,
+                    padding=request.padding,
+                    padding_profiles=padding_profiles,
+                )
         samples = tuple(
             PredictionSample(
                 seed=request.seed,
@@ -129,11 +168,19 @@ class OpenDDEBackend(Backend):
             for path in written
             if path.suffix == ".cif"
         )
+        shape_profile = _shape_profile(
+            padding_profiles,
+            padded=request.padding is not None,
+        )
+        raw: dict[str, object] = {"argv": tuple(argv)}
+        if shape_profile is not None:
+            raw["padding"] = shape_profile
         return PredictionResult(
             model=self.name,
             samples=samples,
             output_dir=request.output_dir,
-            raw={"argv": tuple(argv)},
+            raw=raw,
+            shape_profile=shape_profile,
         )
 
 
@@ -165,3 +212,22 @@ def _scores(structure_path: Path) -> dict[str, float]:
     return scalar_scores(
         structure_path.with_name(f"{name}{_CONFIDENCE_INFIX}{rank}.json")
     )
+
+
+def _shape_profile(
+    profiles: list[dict[str, object]],
+    *,
+    padded: bool,
+) -> dict[str, object] | None:
+    """Collapse identical native-job profiles without hiding heterogeneous runs."""
+
+    if not padded:
+        return None
+    if not profiles:
+        raise RuntimeError(
+            "OpenDDE padding completed without reporting a concrete shape profile"
+        )
+    first = profiles[0]
+    if all(profile == first for profile in profiles[1:]):
+        return dict(first)
+    return {"per_run": [dict(profile) for profile in profiles]}

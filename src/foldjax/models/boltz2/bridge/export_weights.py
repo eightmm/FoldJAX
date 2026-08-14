@@ -1,8 +1,9 @@
-"""One-time converter: torch Boltz-2 checkpoints -> torch-free native weights.
+"""One-time converter: published Boltz-2 checkpoints -> JAX native weights.
 
-Loads the Lightning ``.ckpt`` files with torch (needed only here), builds every
-JAX parameter pytree through the bridge mappers, and writes the torch-free
-native format (safetensors plus a JSON sidecar, or an ``.npz`` fallback).
+Loads the Lightning ``.ckpt`` container through FoldJAX's restricted NumPy
+archive reader, builds every JAX parameter pytree through the bridge mappers,
+and writes the native format (safetensors plus a JSON sidecar, or an ``.npz``
+fallback). PyTorch is neither installed nor imported for this conversion.
 
 Prediction never calls this: it reads the converted file. Run it once per
 checkpoint, or let ``foldjax weights fetch --model boltz2`` run it for you.
@@ -16,11 +17,11 @@ from pathlib import Path
 
 import jax.numpy as jnp
 
+from foldjax.models.boltz2.bridge.checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.confidence_mapping import (
     map_confidence_module_state_dict,
 )
 from foldjax.models.boltz2.bridge.native import save_params
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import (
     map_bfactor_state_dict,
     map_boltz2_graph_state_dict,

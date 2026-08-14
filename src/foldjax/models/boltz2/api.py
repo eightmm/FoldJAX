@@ -1,8 +1,8 @@
 """High-level Python API: sequences / YAML -> predicted structure.
 
 Wraps featurization + the JAX sampler so other code (incl. other JAX models)
-can call Boltz-2 inference without the CLI. Heavy deps (jax, torch) are imported
-lazily, so ``import foldjax.models.boltz2`` stays cheap.
+can call Boltz-2 inference without the CLI. JAX and the heavier chemistry
+modules are imported lazily, so ``import foldjax.models.boltz2`` stays cheap.
 
   import foldjax.models.boltz2
   out = foldjax.models.boltz2.predict(seq=["MKQLED..."], ligand_ccd=["ATP"],
@@ -29,6 +29,7 @@ import numpy as np
 
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
+from foldjax.schema import PaddingConfig
 
 #: Trunk dtypes `predict` accepts, as names rather than `jnp` dtypes so that
 #: importing this module does not pull in JAX. fp16 is absent deliberately: the
@@ -41,6 +42,55 @@ COMPUTE_DTYPES = ("bfloat16", "float32")
 #: `torch.set_float32_matmul_precision("highest")`, where OpenFold3, Protenix and
 #: OpenDDE all select TF32 -- so "highest" is upstream parity, not caution.
 MATMUL_PRECISION = "highest"
+
+
+def _prefix_stable_noise_tape(
+    key: Any,
+    *,
+    multiplicity: int,
+    storage_atoms: int,
+    target_atoms: int,
+    steps: int,
+) -> tuple[Any, Any]:
+    """Draw at the existing storage stride, then suffix-pad for a bucket.
+
+    Boltz's sampler draws flattened coordinate tensors, so changing the atom
+    dimension can move values belonging to later diffusion samples.  Replaying
+    these dynamic tape arguments preserves the exact default-path stream,
+    including masked storage atoms between real input and a new serving bucket.
+    Only the newly appended suffix is zeroed.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    if multiplicity <= 0:
+        raise ValueError("noise tape multiplicity must be positive")
+    if steps <= 0:
+        raise ValueError("noise tape steps must be positive")
+    if storage_atoms < 0 or target_atoms < storage_atoms:
+        raise ValueError(
+            f"noise tape target atoms {target_atoms} is smaller than storage "
+            f"atoms {storage_atoms}"
+        )
+
+    padding = ((0, 0), (0, target_atoms - storage_atoms), (0, 0))
+
+    def draw(draw_key):
+        real = jax.random.normal(
+            draw_key,
+            (multiplicity, storage_atoms, 3),
+            dtype=jnp.float32,
+        )
+        return jnp.pad(real, padding)
+
+    run_key, init_key = jax.random.split(key)
+    init_noise = draw(init_key)
+    step_noises = []
+    for _ in range(steps):
+        run_key, noise_key = jax.random.split(run_key)
+        step_noises.append(draw(noise_key))
+    return init_noise, jnp.stack(step_noises, axis=0)
 
 
 def _pinned_matmul_precision(function):
@@ -179,6 +229,7 @@ def predict(
     feature_cache: str | Path | None = None,
     compile_cache: str | Path | None = None,
     bucket: bool = False,
+    padding: PaddingConfig | None = None,
     write_fmt: str | None = None,
     max_msa_depth: int | None = None,
 ) -> dict[str, Any]:
@@ -199,6 +250,8 @@ def predict(
 
     if diffusion_samples <= 0:
         raise ValueError("diffusion_samples must be positive")
+    if padding is not None and bucket:
+        raise ValueError("padding and legacy bucket=True cannot be used together")
 
     feats_np, record_id, struct_dir = featurize(
         input=input, seq=seq, dna=dna, rna=rna,
@@ -246,17 +299,57 @@ def predict(
                 "rerun scripts/setup.sh to export the complete affinity model"
             )
 
+    steering_active = steering_args is not None and any(
+        bool(steering_args.get(key, False))
+        for key in (
+            "fk_steering",
+            "physical_guidance_update",
+            "contact_guidance_update",
+        )
+    )
+    if padding is not None:
+        from foldjax.models.boltz2.data.bucket import (
+            select_model_features_for_padding,
+        )
+
+        feats_np = select_model_features_for_padding(
+            feats_np, steering_active=steering_active
+        )
+
     original_tokens = int(feats_np["token_pad_mask"].shape[-1])
     original_atoms = int(feats_np["atom_pad_mask"].shape[-1])
-    if bucket:
-        from foldjax.models.boltz2.data.bucket import pad_feats, resolve_bucket_shape
+    padding_plan = None
+    if padding is not None or bucket:
+        from foldjax.models.boltz2.data.bucket import (
+            pad_feats,
+            resolve_legacy_padding_plan,
+            resolve_padding_plan,
+        )
 
-        tgt_tok, tgt_atom, tgt_msa = resolve_bucket_shape(feats_np)
+        padding_plan = (
+            resolve_padding_plan(feats_np, padding)
+            if padding is not None
+            else resolve_legacy_padding_plan(feats_np)
+        )
         feats_np, _ = pad_feats(
-            feats_np, tgt_tok, tgt_atom, target_msa=tgt_msa
+            feats_np,
+            padding_plan.target["tokens"],
+            padding_plan.target["atoms"],
+            target_msa=padding_plan.target["msa"],
         )
 
     feats = {k: jnp.asarray(v) for k, v in feats_np.items()}
+    padding_noise_tape = (
+        _prefix_stable_noise_tape(
+            jax.random.PRNGKey(seed),
+            multiplicity=diffusion_samples,
+            storage_atoms=padding_plan.storage["atoms"],
+            target_atoms=padding_plan.target["atoms"],
+            steps=steps,
+        )
+        if padding is not None and padding_plan is not None
+        else None
+    )
     predict_kwargs = {
         "recycling_steps": recycling,
         "num_sampling_steps": steps,
@@ -282,19 +375,41 @@ def predict(
         # is answered here on concrete arrays rather than inside the jit.
         "use_template": bool(np.any(feats_np.get("template_mask", np.zeros(1)) != 0)),
     }
-    def run_model(model_params, model_feats, model_key):
-        return boltz2_predict(model_params, model_feats, model_key, **predict_kwargs)
+    primary_static = {
+        "use_template": predict_kwargs["use_template"],
+        "recompute_nonpolymer_frames": predict_kwargs[
+            "recompute_nonpolymer_frames"
+        ],
+    }
+    if padding_noise_tape is not None:
 
-    model_args = (params, feats, jax.random.PRNGKey(seed))
+        def run_model(
+            model_params, model_feats, model_key, init_noise, step_noises
+        ):
+            return boltz2_predict(
+                model_params,
+                model_feats,
+                model_key,
+                init_noise=init_noise,
+                step_noises=step_noises,
+                **predict_kwargs,
+            )
 
-    steering_active = steering_args is not None and any(
-        bool(steering_args.get(key, False))
-        for key in (
-            "fk_steering",
-            "physical_guidance_update",
-            "contact_guidance_update",
+        model_args = (
+            params,
+            feats,
+            jax.random.PRNGKey(seed),
+            *padding_noise_tape,
         )
-    )
+    else:
+
+        def run_model(model_params, model_feats, model_key):
+            return boltz2_predict(
+                model_params, model_feats, model_key, **predict_kwargs
+            )
+
+        model_args = (params, feats, jax.random.PRNGKey(seed))
+
     runner = run_model if steering_active else jax.jit(run_model)
     out = runner(*model_args)
     coords_batched = np.asarray(
@@ -303,6 +418,7 @@ def predict(
     plddt_batched = np.asarray(out["plddt"]).reshape(diffusion_samples, -1)
     assert np.all(np.isfinite(coords_batched)), "non-finite coordinates produced"
 
+    affinity_padding_plan = None
     if affinity_model_params is not None:
         best_idx = int(np.argmax(np.asarray(out["iptm"])))
         affinity_feats_np = _prepare_affinity_features(
@@ -321,16 +437,30 @@ def predict(
             msa_server_password=msa_server_password,
             msa_api_key_header=msa_api_key_header,
             msa_api_key_value=msa_api_key_value,
+            max_msa_depth=max_msa_depth,
         )
-        if bucket:
+        if padding is not None or bucket:
             from foldjax.models.boltz2.data.bucket import (
                 pad_feats,
-                resolve_bucket_shape,
+                resolve_legacy_padding_plan,
+                resolve_padding_plan,
+                select_model_features_for_padding,
             )
 
-            aff_tok, aff_atom, aff_msa = resolve_bucket_shape(affinity_feats_np)
+            if padding is not None:
+                affinity_feats_np = select_model_features_for_padding(
+                    affinity_feats_np, steering_active=False
+                )
+            affinity_padding_plan = (
+                resolve_padding_plan(affinity_feats_np, padding)
+                if padding is not None
+                else resolve_legacy_padding_plan(affinity_feats_np)
+            )
             affinity_feats_np, _ = pad_feats(
-                affinity_feats_np, aff_tok, aff_atom, target_msa=aff_msa
+                affinity_feats_np,
+                affinity_padding_plan.target["tokens"],
+                affinity_padding_plan.target["atoms"],
+                target_msa=affinity_padding_plan.target["msa"],
             )
         affinity_feats = {
             key: jnp.asarray(value) for key, value in affinity_feats_np.items()
@@ -345,18 +475,63 @@ def predict(
             "confidence_sequentially": affinity_diffusion_samples > 1,
             "recompute_nonpolymer_frames": True,
             "affinity_mw_correction": affinity_mw_correction,
+            "use_template": (
+                bool(
+                    np.any(
+                        affinity_feats_np.get("template_mask", np.zeros(1)) != 0
+                    )
+                )
+                if padding is not None
+                else predict_kwargs["use_template"]
+            ),
         }
-
-        def run_affinity(model_params, model_feats, model_key):
-            return boltz2_predict(
-                model_params, model_feats, model_key, **affinity_kwargs
+        affinity_static = {
+            "use_template": affinity_kwargs["use_template"],
+            "recompute_nonpolymer_frames": affinity_kwargs[
+                "recompute_nonpolymer_frames"
+            ],
+        }
+        if padding is not None and affinity_padding_plan is not None:
+            affinity_noise_tape = _prefix_stable_noise_tape(
+                jax.random.PRNGKey(seed),
+                multiplicity=affinity_diffusion_samples,
+                storage_atoms=affinity_padding_plan.storage["atoms"],
+                target_atoms=affinity_padding_plan.target["atoms"],
+                steps=affinity_steps,
             )
 
-        affinity_out = jax.jit(run_affinity)(
-            affinity_model_params,
-            affinity_feats,
-            jax.random.PRNGKey(seed),
-        )
+            def run_affinity(
+                model_params, model_feats, model_key, init_noise, step_noises
+            ):
+                return boltz2_predict(
+                    model_params,
+                    model_feats,
+                    model_key,
+                    init_noise=init_noise,
+                    step_noises=step_noises,
+                    **affinity_kwargs,
+                )
+
+            affinity_args = (
+                affinity_model_params,
+                affinity_feats,
+                jax.random.PRNGKey(seed),
+                *affinity_noise_tape,
+            )
+        else:
+
+            def run_affinity(model_params, model_feats, model_key):
+                return boltz2_predict(
+                    model_params, model_feats, model_key, **affinity_kwargs
+                )
+
+            affinity_args = (
+                affinity_model_params,
+                affinity_feats,
+                jax.random.PRNGKey(seed),
+            )
+
+        affinity_out = jax.jit(run_affinity)(*affinity_args)
         out.update(
             {
                 key: value
@@ -367,16 +542,28 @@ def predict(
 
     from foldjax.models.boltz2.data.bucket import crop_prediction_outputs
 
+    public_tokens = (
+        padding_plan.actual["tokens"]
+        if padding_plan is not None
+        else original_tokens
+    )
+    public_atoms = (
+        padding_plan.actual["atoms"] if padding_plan is not None else original_atoms
+    )
     public_out = (
-        crop_prediction_outputs(out, original_tokens, original_atoms)
-        if bucket
+        crop_prediction_outputs(out, public_tokens, public_atoms)
+        if padding_plan is not None
         else out
     )
     public_coords_batched = (
-        coords_batched[:, :original_atoms] if bucket else coords_batched
+        coords_batched[:, :public_atoms]
+        if padding_plan is not None
+        else coords_batched
     )
     public_plddt_batched = (
-        plddt_batched[:, :original_tokens] if bucket else plddt_batched
+        plddt_batched[:, :public_tokens]
+        if padding_plan is not None
+        else plddt_batched
     )
     public_coords = (
         public_coords_batched[0]
@@ -394,6 +581,15 @@ def predict(
         "record_id": record_id,
         "raw": public_out,
     }
+    if padding_plan is not None:
+        primary_summary = padding_plan.summary()
+        primary_summary["static"] = primary_static
+        padding_summary: dict[str, Any] = {"primary": primary_summary}
+        if affinity_padding_plan is not None:
+            affinity_summary = affinity_padding_plan.summary()
+            affinity_summary["static"] = affinity_static
+            padding_summary["affinity"] = affinity_summary
+        result["padding"] = padding_summary
     result.update(
         {
             key: value
@@ -449,6 +645,7 @@ def _prepare_affinity_features(
     msa_server_password: str | None = None,
     msa_api_key_header: str | None = None,
     msa_api_key_value: str | None = None,
+    max_msa_depth: int | None = None,
 ) -> dict[str, np.ndarray]:
     from foldjax.models.boltz2.data.featurize import (
         featurize_affinity_from_prediction,
@@ -477,6 +674,7 @@ def _prepare_affinity_features(
             msa_api_key_header=msa_api_key_header,
             msa_api_key_value=msa_api_key_value,
             cache_dir=None,
+            max_msa_depth=max_msa_depth,
         )
         processed_dir = regenerated_struct_dir.parent
         if manifest.records[0].id != record_id:
@@ -488,4 +686,5 @@ def _prepare_affinity_features(
         predicted_coords=predicted_coords,
         atom_pad_mask=atom_pad_mask,
         out_dir=out_dir,
+        max_msa_depth=max_msa_depth,
     )

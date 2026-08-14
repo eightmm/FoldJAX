@@ -10,6 +10,8 @@ from __future__ import annotations
 import string
 from collections.abc import Sequence
 
+from foldjax.models.boltz2.data.identifiers import validate_ccd_identifier
+
 _PROTEIN_ALPHABET = frozenset("ARNDCEQGHILKMFPSTWYVXBZJOU")
 _DNA_ALPHABET = frozenset("ACGTN")
 _RNA_ALPHABET = frozenset("ACGUN")
@@ -67,9 +69,7 @@ def build_job_yaml(
             lines += [f"  - {kind}:", f"      id: {next(ids)}"]
             lines.append(f"      sequence: {seq}")
     for ccd in ligands_ccd:
-        ccd = ccd.strip()
-        if not ccd:
-            raise ValueError("ligand CCD code must not be empty")
+        ccd = validate_ccd_identifier(ccd, field="ligand CCD code")
         lines += ["  - ligand:", f"      id: {next(ids)}"]
         lines.append(f"      ccd: {ccd}")
     for smi in ligands_smiles:

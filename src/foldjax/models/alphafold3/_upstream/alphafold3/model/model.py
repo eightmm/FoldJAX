@@ -19,35 +19,32 @@
 
 """AlphaFold3 model."""
 
-from collections.abc import Iterable, Mapping
 import concurrent
 import dataclasses
 import functools
+from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias
 
-from absl import logging
-from alphafold3 import structure
-from alphafold3.common import base_config
-from alphafold3.model import confidences
-from alphafold3.model import feat_batch
-from alphafold3.model import features
-from alphafold3.model import model_config
-from alphafold3.model.atom_layout import atom_layout
-from alphafold3.model.components import mapping
-from alphafold3.model.components import utils
-from alphafold3.model.network import atom_cross_attention
-from alphafold3.model.network import confidence_head
-from alphafold3.model.network import diffusion_head
-from alphafold3.model.network import distogram_head
-from alphafold3.model.network import evoformer as evoformer_network
-from alphafold3.model.network import featurization
 import haiku as hk
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl import logging
+from alphafold3 import structure
+from alphafold3.common import base_config
+from alphafold3.model import confidences, feat_batch, features, model_config
+from alphafold3.model.atom_layout import atom_layout
+from alphafold3.model.components import mapping, utils
+from alphafold3.model.network import (
+  atom_cross_attention,
+  confidence_head,
+  diffusion_head,
+  distogram_head,
+  featurization,
+)
+from alphafold3.model.network import evoformer as evoformer_network
 
-
-ModelResult: TypeAlias = Mapping[str, Any]
+ModelResult: TypeAlias = Mapping[str, Any]  # noqa: UP040
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -253,6 +250,7 @@ class Model(hk.Module):
       embeddings: dict[str, jnp.ndarray],
       *,
       sample_config: diffusion_head.SampleConfig,
+      prefix_stable_noise: bool = False,
   ) -> dict[str, jnp.ndarray]:
     denoising_step = functools.partial(
         self.diffusion_module,
@@ -266,6 +264,7 @@ class Model(hk.Module):
         batch=batch,
         key=hk.next_rng_key(),
         config=sample_config,
+        prefix_stable_noise=prefix_stable_noise,
     )
     return sample
 
@@ -275,6 +274,7 @@ class Model(hk.Module):
     if key is None:
       key = hk.next_rng_key()
 
+    prefix_stable_noise = '__foldjax_prefix_stable_diffusion_noise' in batch
     batch = feat_batch.Batch.from_data_dict(batch)  # pyrefly: ignore[bad-assignment]
 
     embedding_module = evoformer_network.Evoformer(
@@ -322,6 +322,7 @@ class Model(hk.Module):
         batch,  # pyrefly: ignore[bad-argument-type]
         embeddings,
         sample_config=self.config.heads.diffusion.eval,
+        prefix_stable_noise=prefix_stable_noise,
     )
 
     # Compute dist_error_fn over all samples for distance error logging.

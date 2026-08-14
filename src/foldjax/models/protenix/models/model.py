@@ -48,6 +48,47 @@ class ProtenixInferenceParams(NamedTuple):
     confidence: ConfidenceHeadParams
 
 
+_PADDED_MODEL_FEATURES = frozenset(
+    {
+        "atom_padding_mask",
+        "atom_to_tokatom_idx",
+        "atom_to_token_idx",
+        "asym_id",
+        "deletion_mean",
+        "deletion_value",
+        "distogram_rep_atom_mask",
+        "d_lm",
+        "entity_id",
+        "esm_token_embedding",
+        "has_deletion",
+        "has_frame",
+        "mol_id",
+        "msa",
+        "msa_mask",
+        "pad_info",
+        "profile",
+        "ref_atom_name_chars",
+        "ref_charge",
+        "ref_element",
+        "ref_mask",
+        "ref_pos",
+        "relp",
+        "residue_index",
+        "restype",
+        "sym_id",
+        "template_aatype",
+        "template_backbone_frame_mask",
+        "template_distogram",
+        "template_pseudo_beta_mask",
+        "template_unit_vector",
+        "token_bonds",
+        "token_index",
+        "token_padding_mask",
+        "v_lm",
+    }
+)
+
+
 def cast_trunk_params(
     params: ProtenixInferenceParams,
     dtype: jnp.dtype,
@@ -145,6 +186,16 @@ def protenix_infer_static(
     """
 
     n_token = int(input_feature_dict["restype"].shape[-2])
+    token_padding_mask = input_feature_dict.get("token_padding_mask")
+    atom_padding_mask = input_feature_dict.get("atom_padding_mask")
+    if token_padding_mask is not None:
+        token_valid = jnp.asarray(token_padding_mask).astype(bool)
+        padding_pair_mask = token_valid[..., :, None] & token_valid[..., None, :]
+        pair_mask = (
+            padding_pair_mask
+            if pair_mask is None
+            else jnp.asarray(pair_mask).astype(bool) & padding_pair_mask
+        )
     trunk_features = input_feature_dict
     trunk_pair_mask = pair_mask
     if trunk_dtype is not None:
@@ -259,7 +310,10 @@ def protenix_infer_static(
             # the caller has already passed it (see the docstring).
             asym_id = input_feature_dict.get("asym_id")
             if asym_id is not None and not isinstance(asym_id, jax.core.Tracer):
-                n_chain = int(jnp.max(jnp.asarray(asym_id))) + 1
+                asym_id = jnp.asarray(asym_id)
+                if token_padding_mask is not None:
+                    asym_id = asym_id[jnp.asarray(token_padding_mask).astype(bool)]
+                n_chain = int(jnp.max(asym_id)) + 1
 
         def _confidence(sample_coordinates):
             """Head and summaries for one sample's coordinates.
@@ -313,6 +367,8 @@ def protenix_infer_static(
                         ),
                         num_recycles=n_cycle,
                         n_chain=n_chain,
+                        token_mask=token_padding_mask,
+                        atom_mask=atom_padding_mask,
                     )
                 )
             return piece
@@ -411,6 +467,8 @@ def protenix_infer_compiled(
     input_feature_dict: Mapping[str, Any],
     params: ProtenixInferenceParams,
     noise_schedule: jnp.ndarray,
+    *,
+    padded_generated_schema: bool = False,
     **kwargs: Any,
 ) -> dict[str, jnp.ndarray]:
     """Run Protenix as one compiled program instead of op by op.
@@ -430,10 +488,30 @@ def protenix_infer_compiled(
     # The confidence scores size their per-chain loops by the chain count,
     # which they read off `asym_id`. That is a value, so it is resolved here on
     # the concrete features and travels as a static argument.
-    kwargs.setdefault("n_chain", int(jnp.max(input_feature_dict["asym_id"])) + 1)
+    asym_id = jnp.asarray(input_feature_dict["asym_id"])
+    token_padding_mask = input_feature_dict.get("token_padding_mask")
+    if token_padding_mask is not None:
+        asym_id = asym_id[jnp.asarray(token_padding_mask).astype(bool)]
+    kwargs.setdefault("n_chain", int(jnp.max(asym_id)) + 1)
     param_arrays, treedef, flags = split_static_flags(params)
+    model_features = traceable_features(input_feature_dict)
+    if padded_generated_schema:
+        # Generated features also carry writer metadata and variable-length
+        # bond lists. They are not model inputs, but handing them to ``jit``
+        # would still put their shapes in the Python/XLA cache key and defeat a
+        # token/atom/MSA profile. The padding helper has already rejected
+        # constraint/private schemas, so this allow-list is complete for the
+        # supported generated-JSON contract. This is keyed by explicit
+        # provenance rather than by ``token_padding_mask``: static archives
+        # may legitimately contain that mask alongside constraint/private
+        # model inputs, which must never be silently discarded.
+        model_features = {
+            name: value
+            for name, value in model_features.items()
+            if name in _PADDED_MODEL_FEATURES
+        }
     return _compiled_protenix_infer(
-        traceable_features(input_feature_dict),
+        model_features,
         param_arrays,
         noise_schedule,
         params_treedef=treedef,

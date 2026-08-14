@@ -1,24 +1,51 @@
 # OpenFold3
 
-OpenFold3 is carried inside FoldJAX, at `foldjax.models.openfold3`. `uv sync`
-installs it with everything else, and predicting needs no extra and no sibling
-checkout:
+OpenFold3 is carried inside FoldJAX, at `foldjax.models.openfold3`; no sibling
+checkout is needed. Raw jobs use FoldJAX's Torch-free NumPy/JAX featurizer:
 
 ```bash
+uv sync --extra openfold3-preprocess
 foldjax predict --model openfold3 --input job.yaml
 ```
+
+The same Torch-free NumPy/JAX featurizer is also available as a split step when
+you want to reuse an archive and its embedded chemistry table:
+
+```bash
+openfold3-jax-featurize openfold3-query.json -o features.npz
+foldjax predict --model openfold3 --input features.npz \
+  --input-format openfold3-features
+```
+
+`openfold3-query.json` is OpenFold3's native upstream `{"queries": ...}`
+document, not FoldJAX's common job schema. Common JSON/YAML jobs use the
+one-shot `foldjax predict` command above; the split featurizer intentionally
+exposes the exact upstream preprocessing contract.
+
+The distinction is available before running anything:
+
+```bash
+foldjax capabilities --model openfold3
+foldjax models --json
+```
+
+Both JSON views expose `input_requirements` per accepted format. For
+`openfold3-features`, it reports `preprocessing_runtime: "precomputed"`, no
+required extra, and `requires_torch: false`. The raw `native`, `openfold3`, and
+`foldjax` formats report `preprocessing_runtime: "jax"`, the non-Torch
+`openfold3-preprocess` chemistry extra, and `requires_torch: false`.
 
 It was external until it was vendored, and this file used to explain how to
 install it separately. That is no longer necessary — the reason it was excluded
 was that `openfold3-jax` is published on no package index, which vendoring
-removes. AlphaFold 3 stays external for a different reason that vendoring cannot
-remove: its parameters may not be redistributed, and upstream pins an
-incompatible CUDA generation. See [alphafold3.md](alphafold3.md).
+removes. AlphaFold 3 source is vendored too; only its separately licensed
+parameters remain external, while its isolated first-use build avoids
+upstream's environment pin. See [alphafold3.md](alphafold3.md).
 
 ## What it costs to add
 
 Nothing, at the dependency level. The inference path needs `jax`, `numpy`,
-`safetensors` and `gemmi`, all of which the other four ports already required,
+`safetensors` and `gemmi`, all of which the carried model stack already required,
 so vendoring OpenFold3 added no base dependency.
 
 ## Weights
@@ -41,87 +68,121 @@ foldjax weights list                                # openfold3 now reads `ready
 released only on request and names the directory to put them in, rather than
 failing with a bare 401.
 
-Nothing is converted: the port reads the released checkpoint directly. A `.pt`
-is a torch file, so loading one needs `--extra torch-bridge`. A `safetensors`
-export loads without torch and can be passed to `--weights` instead.
+Nothing is converted: the port reads the released checkpoint directly with
+FoldJAX's restricted torch-archive reader. It reconstructs `.pt`/`.ckpt`
+tensors as NumPy arrays without importing PyTorch; a `safetensors` export can
+also be passed to `--weights`.
 
-## Featurization runs upstream's own pipeline, vendored
+## Torch-free featurization
 
-Every other port in FoldJAX featurizes with code written here. OpenFold3 runs
-upstream's own data pipeline instead, on purpose: it is exact where a
-reimplementation would be a guess, and porting it is a separate exercise that
-this now serves as the reference for.
+FoldJAX owns the one-query orchestration and array construction used for
+OpenFold3 prediction. It reuses upstream's non-tensor chemistry, structure and
+MSA parsing routines, but does not import its Dataset, Lightning DataModule, or
+PyTorch tensor feature layer. Reference conformer augmentation is driven by the
+request seed, so repeated featurization is reproducible.
 
-Until 2026-08-06 that meant a second repository — `upstream.ensure_importable()`
-put a sibling checkout on `sys.path`, so building features required a clone that
-`uv sync` could not provide. The pipeline is vendored now:
+Until 2026-08-06 that meant a second repository: building features required a
+sibling checkout that `uv sync` could not provide. The required data subset is
+vendored now:
 
 ```
 src/foldjax/models/openfold3/_upstream/openfold3/
-├── core/data/        # the pipeline: 100 modules
-├── core/utils/       # geometry, atomize, logging
-├── core/config/
-└── projects/of3_all_atom/config/
+├── core/data/        # chemistry, structure, MSA, and template data helpers
+├── core/config/      # MSA/data settings
+└── projects/of3_all_atom/config/  # inference query schema
 ```
 
-~46k lines of upstream code, verbatim, under upstream's Apache-2.0 and in
-upstream's style — `ruff` skips it for the same reason it skips Boltz-2's
-vendored featurizer: reformatting would destroy the property that makes
-vendoring defensible, which is that the tree stays diffable against the
-repository it came from.
+The 51-module subset remains recognisably upstream and stays excluded from
+automatic reformatting so it can be reviewed against its Apache-2.0 source,
+but it is not byte-for-byte identical. FoldJAX carries a small compatibility
+patch set: a data-only package root, a plain-array/pickle-free MSA cache reader,
+and local NumPy/data helper imports. Model, training, Lightning, and tensor
+feature modules are not shipped. FoldJAX-owned orchestration and NumPy feature
+construction live outside this tree.
 
-**One edit was necessary**, and it is marked in the file.
-`core/data/framework/__init__.py` imported its sibling modules by rebuilding each
-name out of *path components*:
-
-```python
-__import__(".".join(list(path.parts[-6:-1]) + [stem]))
-```
-
-That reconstructs `openfold3.core.data.framework.single_datasets.<mod>` only
-while the package sits exactly six components deep. Vendored, the last six
-components are unchanged but the prefix is not, so every name it built pointed at
-a top-level `openfold3` that does not exist here. It now derives the name from
-`__package__`, which is equivalent upstream and correct anywhere.
-
-Featurization still needs one thing prediction does not — the extra, because
-this is upstream's torch code:
+Raw featurization still needs its chemistry/data extra:
 
 ```bash
 uv sync --extra cuda13 --extra openfold3-preprocess
 ```
 
-Everything listed in that extra is a *direct* import of the vendored tree,
-checked against it rather than guessed. `deepspeed` is deliberately absent:
-upstream guards it with `find_spec` and only uses it to disable a Triton
-autotune.
+The extra contains no training framework or second tensor runtime. `deepspeed`,
+PyTorch, Lightning and TorchMetrics are deliberately absent from every
+FoldJAX install profile.
+
+### Pickle-free preprocessing caches
+
+FoldJAX exposes public writers for reusable MSA and template inputs. Both
+formats contain only numeric or Unicode arrays and are always read with
+`allow_pickle=False`:
+
+```python
+import numpy as np
+
+from foldjax.models.openfold3.data import (
+    save_preparsed_msas,
+    save_template_cache,
+)
+
+msa_cache = save_preparsed_msas(
+    {
+        "colabfold_main": {
+            "msa": ["ACDE", "AAAA"],
+            "deletion_matrix": np.zeros((2, 4), dtype=np.int32),
+            "metadata": ["query", "hit"],
+        }
+    },
+    "query-msas.npz",
+)
+
+template_cache = save_template_cache(
+    {
+        "1ubq_A": {
+            "idx_map": [[1, 1], [2, 2], [3, 3]],
+            "release_date": "1987-01-02",
+            "cif_path": "structures/1ubq.cif",
+        }
+    },
+    "template_cache/query.npz",
+)
+```
+
+Relative `cif_path` values are resolved from the template cache directory. If
+`cif_path` is omitted, the loader expects
+`<cache-parent-parent>/template_structures/<entry_id>.cif`. Requested template
+IDs are considered in order: unknown, duplicated, malformed, or locally
+missing candidates are warned about and skipped until four valid entries have
+been selected; accepted entries are reindexed from zero. A request for which no
+entry is valid raises a detailed error, and FoldJAX never downloads a CIF.
+
+Legacy upstream object-valued NPZ files require Python pickle and are therefore
+rejected. To migrate trusted legacy data, extract its primitive arrays in an
+isolated conversion environment and pass those values to the writers above;
+the production FoldJAX process never needs to enable pickle.
 
 ### What the vendoring was checked against
 
-Featurizing 1UBQ both ways — through the vendored tree and through the upstream
-checkout, in one process — agrees on **33 of 34 features bit-for-bit**. The
-thirty-fourth is `ref_pos`, and the control that matters is that running the
-*vendored* pipeline twice disagrees with itself by the same order (8.7 Å against
-8.9 Å): the reference conformers are generated per run, so that difference is
-nondeterminism inside one implementation rather than a difference between two.
+The port keeps a feature-level parity gate against the publisher implementation
+for development. Production tests additionally block every `torch` import and
+exercise raw structure, MSA and template inputs through the FoldJAX path.
 
-`models/openfold3/upstream.py` survives, but only for the torch-parity gates,
-which compare this port against upstream's own *model* modules. Those are the
-thing being ported, so carrying a copy would mean diffing the port against a copy
-of its own source. Boltz-2, Protenix and OpenDDE make the same trade, and their
-parity suites skip without their checkouts too.
+The test suite's `conftest.py` locates an optional external checkout only for
+torch-parity gates, which compare this port against upstream's own *model*
+modules. Those are the thing being ported, so carrying a copy would mean diffing
+the port against a copy of its own source. Production code has no checkout
+locator, and parity tests skip when their external reference environment is
+absent.
 
 ## Sampling knobs
 
 `--num-samples`, `--num-steps` and `--num-recycles` all reach it, translated to
-`num_samples`, `no_rollout_steps` and `num_cycles`.
-
-**`--max-msa-depth` is refused**, and that is deliberate: OpenFold3 exposes no
-MSA-depth argument, so accepting the flag would mean silently ignoring it. It is
-the only sampling knob any backend refuses.
+`num_samples`, `no_rollout_steps` and `num_cycles`. `--max-msa-depth` narrows the
+released `msa_depth` setting and subsamples on the host before device transfer.
 
 Backend options: `query_id`, `ccd_file_path`, `pair_chunk_size`, `prefix`,
-`no_compile`, and the three native sampling spellings.
+`no_compile`, and the three native sampling spellings. `ccd_file_path` applies
+only while preprocessing raw input; a feature archive already contains fixed
+chemistry and rejects that option rather than ignoring it.
 
 `pair_chunk_size` is worth knowing about. Triangle attention's scores are
 `[rows, heads, N, N]` — cubic in token count — so one *unchunked* pair block
@@ -157,6 +218,10 @@ at a few hundred tokens, where XLA prints its own slow-compile warning. FoldJAX'
 persistent cache is on by default and namespaced per model, weight identity and
 compile-relevant options, so it is paid once per shape rather than once per
 process.
+
+The standalone `openfold3-jax-predict` command also enables the persistent
+cache by default. Use `--cache-dir` to choose its location or `--no-cache` for
+an intentionally ephemeral run.
 
 The backend used to ignore that cache, which made it the one model least able to
 afford doing so. It no longer does.
@@ -199,8 +264,6 @@ to 2076 tokens run.
 - **MSA row choice above 1024 rows** cannot be reproduced without an explicit
   permutation, because upstream draws it with `torch.randperm`.
 - **Batch size** is always 1. Nothing assumes it; nothing measures it either.
-- **A torch-free featurizer.** The pipeline is in-repository now, so the port is
-  as self-contained as the other three; what it is not is torch-free on the
-  featurization side, because the vendored pipeline is upstream's torch code.
-  Porting it would drop the `openfold3-preprocess` extra entirely, and the
-  vendored tree is the reference such a port would be gated against.
+- **Template corpus coverage.** The local Torch-free path is gated on the
+  supported raw template formats, but broad structural accuracy still needs a
+  larger deposition set than the current smoke targets.

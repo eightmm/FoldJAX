@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import sys
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
+from foldjax import torch_archive
 from foldjax.models.opendde.bridge import export_weights as export_impl
 from foldjax.models.opendde.bridge import weights_io as weights_impl
 
@@ -33,11 +31,11 @@ def test_torch_checkpoint_reader_is_lazy_safe_and_maps_opendde(
     loaded = {"model": {"module.weight": np.asarray([1.0], dtype=np.float32)}}
     calls = []
 
-    def fake_load(path, **kwargs):
-        calls.append((path, kwargs))
+    def fake_load(path):
+        calls.append(path)
         return loaded
 
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=fake_load))
+    monkeypatch.setattr(torch_archive, "load", fake_load)
     sentinel = object()
     monkeypatch.setattr(
         weights_impl,
@@ -48,12 +46,7 @@ def test_torch_checkpoint_reader_is_lazy_safe_and_maps_opendde(
     actual = weights_impl.load_torch_checkpoint(checkpoint_path)
 
     assert actual is sentinel
-    assert calls == [
-        (
-            str(checkpoint_path),
-            {"map_location": "cpu", "weights_only": True, "mmap": True},
-        )
-    ]
+    assert calls == [checkpoint_path]
 
 
 def test_torch_checkpoint_reader_rejects_missing_file(tmp_path) -> None:

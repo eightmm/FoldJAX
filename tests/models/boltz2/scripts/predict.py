@@ -4,7 +4,7 @@ Featurizes the input via foldjax.models.boltz2.data, runs the JAX structure samp
 native weights, and writes the predicted structure.
 
 Run:
-  uv run --extra torch-bridge python scripts/predict.py \
+  uv run python scripts/predict.py \
       --input X.yaml \
       --weights outputs/native_weights/boltz2_conf \
       --mols .cache/boltz/mols \

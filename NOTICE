@@ -3,16 +3,31 @@ Copyright 2026 FoldJAX contributors
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
-This product carries JAX inference ports of four published structure-prediction
-models. Each port lives under `src/foldjax/models/<name>/`, keeps its upstream
-module layout, and carries that upstream's own LICENSE and NOTICE beside it.
-None of them is an official project of the organisation that published the
-original, and no model weights are distributed with this software.
+This product carries six published structure-prediction models behind one JAX
+interface. Five are independent JAX reimplementations; AlphaFold 3 carries
+upstream's own source. None is an official project of the organisation that
+published the original, and no model weights are distributed with this
+software.
+
+  AlphaFold 3 https://github.com/google-deepmind/alphafold3
+               Apache-2.0, Copyright 2024 DeepMind Technologies Limited
+               -> src/foldjax/models/alphafold3/_upstream/{LICENSE,NOTICE}
+               Python/C++ source and first-use build inputs are vendored.
+               ABI-specific binaries and generated CCD tables are built into
+               FoldJAX's writable runtime store. Model parameters are not
+               included and remain subject to Google's separate terms.
 
   Boltz-2      https://github.com/jwohlwend/boltz
                MIT, Copyright (c) 2024 Jeremy Wohlwend, Gabriele Corso,
                Saro Passaro and contributors
                -> src/foldjax/models/boltz2/{LICENSE,NOTICE}
+
+  ESMFold2     https://huggingface.co/biohub/ESMFold2
+               MIT plus upstream third-party notices, Copyright 2026 Chan
+               Zuckerberg Biohub, Inc.
+               -> src/foldjax/models/esmfold2/{LICENSE,NOTICE}
+               Chemistry tables derived from Transformers' Apache-2.0
+               ESMFold2 support are identified in that NOTICE.
 
   OpenDDE      https://huggingface.co/aurekaresearch/OpenDDE
                Apache-2.0
@@ -33,12 +48,6 @@ original, and no model weights are distributed with this software.
   Protenix     https://github.com/bytedance/Protenix
                Apache-2.0, Copyright 2024 ByteDance and/or its affiliates
                -> src/foldjax/models/protenix/{LICENSE,NOTICE}
-
-AlphaFold 3 (https://github.com/google-deepmind/alphafold3) is *not* carried
-here. FoldJAX drives an installation you provide, and its model parameters are
-released by Google DeepMind under terms that forbid redistribution. FoldJAX
-never downloads, converts, or redistributes them. See docs/alphafold3.md and
-the upstream WEIGHTS_TERMS_OF_USE.md.
 
 Model weights for every backend are subject to their publishers' own terms,
 which are separate from this software's licence.

@@ -1,4 +1,4 @@
-"""Where FoldJAX keeps downloads, converted weights, and compile caches.
+"""Where FoldJAX keeps downloads, prediction assets, and compile caches.
 
 One root so a machine has a single place to look, size, and clear. Override it
 with ``FOLDJAX_HOME``; a source checkout that has a ``.foldjax/`` directory keeps
@@ -49,7 +49,7 @@ def downloads_dir(model: str | None = None) -> Path:
 
 
 def weights_dir(model: str | None = None) -> Path:
-    """Converted, torch-free JAX weights that prediction actually loads."""
+    """Prediction-ready model checkpoints and asset directories."""
     root = foldjax_home() / "weights"
     return root if model is None else root / model
 
@@ -68,6 +68,12 @@ def compile_cache_dir() -> Path:
     return foldjax_home() / "compile"
 
 
+def runtime_dir(model: str | None = None) -> Path:
+    """Generated native artifacts that cannot live in a read-only wheel."""
+    root = foldjax_home() / "runtime"
+    return root if model is None else root / model
+
+
 def describe() -> dict[str, str]:
     """Human-readable map of the locations, for `foldjax home`."""
     return {
@@ -76,4 +82,5 @@ def describe() -> dict[str, str]:
         "weights": str(weights_dir()),
         "assets": str(assets_dir()),
         "compile_cache": str(compile_cache_dir()),
+        "runtime": str(runtime_dir()),
     }

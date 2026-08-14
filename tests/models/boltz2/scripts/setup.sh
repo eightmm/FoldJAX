@@ -25,8 +25,8 @@ echo "==> CUDA extra: $CUDA"
 
 mkdir -p "$CACHE"
 
-echo "==> Installing dependencies (uv sync --extra $CUDA --extra torch-bridge --extra dev)"
-uv sync --extra "$CUDA" --extra torch-bridge --extra dev
+echo "==> Installing FoldJAX dependencies (uv sync --extra $CUDA --group dev)"
+uv sync --extra "$CUDA" --group dev
 
 fetch() {  # fetch <url> <dest>
   if [ -f "$2" ]; then echo "    have $(basename "$2")"; else
@@ -44,7 +44,7 @@ else
 fi
 
 echo "==> Converting checkpoints to native JAX weights"
-uv run --extra torch-bridge python "$ROOT/scripts/export_native_weights.py" \
+uv run python "$ROOT/scripts/export_native_weights.py" \
   --conf-ckpt "$CACHE/boltz2_conf.ckpt" \
   --aff-ckpt "$CACHE/boltz2_aff.ckpt" \
   --out-dir "$ROOT/outputs/native_weights" \
@@ -52,4 +52,4 @@ uv run --extra torch-bridge python "$ROOT/scripts/export_native_weights.py" \
 
 echo "==> Setup complete. Predict with:"
 echo "    uv run python scripts/predict.py --input job.yaml --fmt cif"
-echo "    (no --extra needed — setup synced the GPU + torch env)"
+echo "    (no PyTorch extra is installed or needed)"

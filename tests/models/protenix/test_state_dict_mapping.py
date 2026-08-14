@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from foldjax import torch_archive
+from foldjax.models.protenix.bridge import torch_mapping
 from foldjax.models.protenix.bridge.torch_mapping import (
     map_adaptive_layer_norm_state_dict,
     map_constraint_embedder_state_dict,
@@ -140,3 +142,27 @@ def test_map_constraint_embedder_state_dict_supports_optional_paths() -> None:
 def test_require_key_reports_missing_checkpoint_key() -> None:
     with pytest.raises(KeyError, match="missing checkpoint key: absent.weight"):
         require_key({}, "absent.weight")
+
+
+def test_checkpoint_conversion_uses_the_restricted_archive_reader(
+    tmp_path, monkeypatch
+) -> None:
+    checkpoint = tmp_path / "protenix.pt"
+    checkpoint.write_bytes(b"trusted fixture")
+    loaded = {"model": {"module.weight": np.asarray([1.0])}}
+    seen = []
+    sentinel = object()
+
+    def fake_load(path):
+        seen.append(path)
+        return loaded
+
+    monkeypatch.setattr(torch_archive, "load", fake_load)
+    monkeypatch.setattr(
+        torch_mapping,
+        "map_protenix_inference_state_dict",
+        lambda state: sentinel if set(state) == {"weight"} else None,
+    )
+
+    assert torch_mapping.load_torch_checkpoint(checkpoint) is sentinel
+    assert seen == [checkpoint]

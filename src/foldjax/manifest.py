@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from foldjax.redaction import public_options
 from foldjax.schema import PredictionRequest, PredictionResult
 
 MANIFEST_NAME = "foldjax_run.json"
@@ -95,7 +98,7 @@ def describe_run(
     if weights is not None:
         label, identity = weight_identity(weights)
 
-    return {
+    manifest = {
         "foldjax": __version__,
         "finished": datetime.now(UTC).isoformat(timespec="seconds"),
         "model": request.model,
@@ -105,11 +108,15 @@ def describe_run(
             "sha256": _digest(request.input),
             "native": str(native_input) if native_input is not None else None,
         },
-        "weights": {"path": str(weights) if weights else None, "label": label,
-                    "identity": identity},
+        "weights": {
+            "path": str(weights) if weights else None,
+            "profile": request.profile,
+            "label": label,
+            "identity": identity,
+        },
         "seeds": list(request.resolved_seeds),
         "sampling": request.sampling,
-        "options": {key: str(value) for key, value in request.options.items()},
+        "options": public_options(request.options),
         "runtime": runtime_profile(),
         # What the run cost. Recorded here because the alternative is measuring
         # it from outside, and from outside the only visible memory number is
@@ -122,6 +129,11 @@ def describe_run(
         # invite the question of which is authoritative.
         "best": best_sample(result),
     }
+    if request.padding is not None:
+        manifest["padding"] = request.padding.summary()
+    if result.shape_profile is not None:
+        manifest["shape_profile"] = dict(result.shape_profile)
+    return manifest
 
 
 def write(
@@ -140,15 +152,22 @@ def write(
     try:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / MANIFEST_NAME
-        path.write_text(
-            json.dumps(
-                describe_run(request, result, native_input=native_input, cost=cost),
-                indent=2,
-                sort_keys=True,
+        with tempfile.TemporaryDirectory(
+            prefix=".foldjax-manifest-", dir=directory
+        ) as scratch:
+            staged = Path(scratch) / MANIFEST_NAME
+            staged.write_text(
+                json.dumps(
+                    describe_run(
+                        request, result, native_input=native_input, cost=cost
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
+            os.replace(staged, path)
         return path
-    except OSError:
+    except Exception:  # noqa: BLE001 - provenance must never erase a valid result
         return None

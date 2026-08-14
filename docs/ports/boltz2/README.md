@@ -2,11 +2,18 @@
 
 # Boltz2-JAX
 
+> **Archived port record.** Boltz2-JAX now ships as
+> `foldjax.models.boltz2`. Use the top-level [README](../../../README.md) and
+> common `foldjax` API for current installation and prediction. The
+> model-specific implementation and benchmark notes below are retained as
+> porting evidence.
+
 A JAX/XLA inference port of **[Boltz-2](https://github.com/jwohlwend/boltz)**,
 the open-source biomolecular structure & affinity model. This project
 reimplements the Boltz-2 inference graph (trunk, pairformer, MSA module,
-diffusion sampler, and confidence/affinity heads) in pure JAX, loading the
-original Boltz-2 PyTorch checkpoints unchanged.
+diffusion sampler, and confidence/affinity heads) in pure JAX. FoldJAX reads
+the original Boltz-2 checkpoint format with its restricted NumPy archive reader
+and maps the published parameters into the JAX runtime.
 
 It also ports the AlphaFold3-style efficiency path: fused attention/GLU kernels
 via [tokamax](https://github.com/openxla/tokamax) (Triton), an optional custom
@@ -23,8 +30,8 @@ low-precision inference — selectable per backend without changing weights.
 ## Status
 
 - Inference only (no training).
-- Weight-compatible: the same Boltz-2 checkpoints load and run; no checkpoint
-  key/shape or feature ABI change.
+- Weight-compatible: the same Boltz-2 checkpoint keys, shapes, and feature ABI
+  are preserved by the managed NumPy-to-JAX conversion.
 - Data pipeline (raw input → features) runs without `import boltz` (vendored
   under `src/boltz_jax/data/`). Supported inputs: proteins, ligands (SMILES and
   CCD codes), templates (CIF/PDB), and MSAs from `msa: empty`, precomputed
@@ -50,33 +57,35 @@ low-precision inference — selectable per backend without changing weights.
   but exact coordinates can't bit-match at MSA depth > 1024 by construction. Use
   `subsample_msa=False` or cap MSA ≤ 1024 for bit-level cross-framework tests.
 
-## Quickstart
+## Current FoldJAX quickstart
 
-Two commands ([uv](https://docs.astral.sh/uv/) required):
+Install one JAX/CUDA runtime, fetch the managed publisher assets, and predict:
 
 ```bash
-# 1. One-time setup: install deps + download Boltz-2 weights/mols + convert
-bash scripts/setup.sh
-
-# 2. Predict: raw YAML -> structure
-uv run python scripts/predict.py --input job.yaml --fmt cif
+uv sync --extra cuda13 --group dev
+uv run foldjax weights fetch --model boltz2
+uv run foldjax predict --model boltz2 --input job.yaml
 ```
 
-`scripts/setup.sh` auto-detects your CUDA major version from the driver
-(override with `CUDA=cuda12 bash scripts/setup.sh`), runs `uv sync` with the GPU
-+ torch-bridge extras, downloads the weights + molecule DB, and converts the
-checkpoints. It is idempotent. Because the env is synced once with the extras,
-`uv run python …` afterwards needs **no extra flags** — the GPU JAX plugin and
-the torch-side featurizer are already in the environment.
+`foldjax weights fetch` verifies the published checkpoints, converts them with
+FoldJAX's restricted NumPy archive reader, and stages the molecule database.
+Raw YAML featurization uses the in-package NumPy compatibility layer. Neither
+setup, conversion, featurization, nor prediction imports PyTorch or Lightning.
+Use `--extra cuda12` instead on CUDA 12 hosts; the CUDA extras conflict by
+construction, so select exactly one.
 
-`predict.py` defaults match Boltz-2 (`--steps 200 --recycling 3`, step scale
-1.5, fp32) and read the setup paths, so step 2 needs no path flags.
-
-All artifacts stay inside the project and are git-ignored: downloads + native
-weights under `.cache/`, and predictions, compile cache, and feature cache under
-`outputs/`. Nothing is written outside the repo.
+Managed assets and caches live below the directory reported by `foldjax home`
+(`.foldjax/` in a checkout when that directory exists, otherwise the user cache
+root). Scalar predictions default to `foldjax-outputs/<input-stem>`; pass
+`--output-dir` to choose another location. Prediction never downloads weights
+implicitly.
 
 ## Inference
+
+The native `scripts/predict.py` examples below document the pre-vendoring port
+and are retained for option provenance. That script is not part of FoldJAX;
+translate those options through `foldjax predict --option KEY=VALUE`, or use
+the current quickstart above.
 
 `scripts/predict.py` turns a raw YAML job into a structure file. Full form (all
 defaults shown; override only what you need):
@@ -233,38 +242,39 @@ raises instead of silently changing numerical kernels.
 
 ## Python API
 
-After `setup.sh`, call inference from Python (heavy deps load lazily, so
-`import boltz_jax` stays cheap):
+The public Python entry point is the same model-neutral API used by every
+FoldJAX backend:
 
 ```python
-import boltz_jax
+from foldjax import PredictionRequest, predict
 
-out = boltz_jax.predict(
-    seq=["MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"],
-    ligand_ccd=["ATP"],                 # also dna=, rna=, ligand_smiles=, or input="job.yaml"
-    weights="outputs/native_weights/boltz2_conf",
-    mols=".cache/boltz/mols",
-    write_fmt="cif",                    # omit to skip writing a structure file
+result = predict(
+    PredictionRequest(
+        model="boltz2",
+        input="job.yaml",
+        num_samples=5,
+        num_steps=200,
+        num_recycles=3,
+    )
 )
-out["coords"]   # (n_atom, 3) np.ndarray;  out["plddt"], out["raw"], out["out_path"]
+for sample in result.samples:
+    print(sample.structure_path, sample.scores)
 ```
 
-For multiple structures, set `diffusion_samples=N`; `coords` and `plddt` retain
-the leading sample axis and structure writing returns `out_paths`. For affinity,
-pass an upstream affinity YAML via `input=`. `affinity_weights` defaults to the
-`boltz2_aff` sibling of `weights`, and `affinity_pred_value`,
-`affinity_probability_binary`, plus the two member values/probabilities are
-available in the result.
+For affinity, pass an upstream affinity YAML as `input`; the backend resolves
+the managed `boltz2_aff` checkpoint beside the structure weights. Native
+affinity values remain available under `result.raw`.
 
 For composing with other JAX models, use the low-level pure-JAX function and the
 weight loader directly:
 
 ```python
-from boltz_jax import boltz2_predict, load_params, build_job_yaml  # all lazy
+from foldjax.models.boltz2 import boltz2_predict, load_params
 ```
 
 `boltz2_predict(params, feats, key, ...)` is a jit-friendly function over a
-parameter + feature pytree; `boltz_jax.featurize(...)` produces `feats`.
+parameter + feature pytree. Prefer the common API unless a caller already owns
+native Boltz features and parameters.
 
 ## Tests
 

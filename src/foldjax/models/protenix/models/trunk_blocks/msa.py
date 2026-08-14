@@ -208,6 +208,7 @@ def msa_pair_weighted_averaging(
     m: jnp.ndarray,
     z: jnp.ndarray,
     params: MSAPairWeightedAveragingParams,
+    pair_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Apply inference-mode ``MSAPairWeightedAveraging``."""
 
@@ -216,6 +217,12 @@ def msa_pair_weighted_averaging(
     v = linear(m_norm, params.linear_mv)
     v = v.reshape(v.shape[:-1] + (num_heads, -1))
     b = linear(layer_norm(z, params.layernorm_z), params.linear_z)
+    if pair_mask is not None:
+        b = b + jnp.where(
+            jnp.asarray(pair_mask).astype(bool)[..., None],
+            jnp.asarray(0.0, dtype=b.dtype),
+            jnp.asarray(-1.0e10, dtype=b.dtype),
+        )
     weights = jnn.softmax(b.astype(jnp.float32), axis=-2).astype(v.dtype)
     gate = sigmoid(linear(m_norm, params.linear_mg))
     gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
@@ -267,8 +274,14 @@ def msa_block(
             m_in,
             z_in,
             params.msa_pair_weighted_averaging,
+            pair_mask=pair_mask,
         )
-        return m_out + transition(m_out, params.msa_transition)
+        if msa_mask is not None:
+            m_out = m_out * msa_mask.astype(m_out.dtype)[..., None]
+        m_out = m_out + transition(m_out, params.msa_transition)
+        if msa_mask is not None:
+            m_out = m_out * msa_mask.astype(m_out.dtype)[..., None]
+        return m_out
 
     if msa_stack_first:
         m = msa_stack(m, z)
@@ -280,6 +293,8 @@ def msa_block(
             m, msa_mask, params.outer_product_mean, chunk_size=opm_chunk_size
         )
         m = msa_stack(m, z)
+    if pair_mask is not None:
+        z = z * jnp.asarray(pair_mask, dtype=z.dtype)[..., None]
     _, z = pairformer_block(
         None,
         z,

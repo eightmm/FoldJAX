@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax.models.protenix.chunking import ChunkPolicyName
+from foldjax.schema import PaddingConfig
 
 
 def _load_jobs(path: Path) -> list[dict[str, Any]]:
@@ -51,6 +52,11 @@ def _predict(
     run_confidence_scores: bool = True,
     return_confidence_logits: bool = False,
     n_chain: int | None = None,
+    cycle_msa_features: tuple[dict[str, Any], ...] | None = None,
+    init_noise: Any = None,
+    step_noises: Sequence[Any] | None = None,
+    rotations: Any = None,
+    translations: Any = None,
 ) -> dict[str, Any]:
     import jax
 
@@ -66,11 +72,13 @@ def _predict(
         inference_noise_schedule,
     )
 
-    sampled = sample_opendde_msa_cycle_features(
-        features,
-        n_cycle=n_cycle,
-        seed=seed,
-    )
+    sampled = cycle_msa_features
+    if sampled is None:
+        sampled = sample_opendde_msa_cycle_features(
+            features,
+            n_cycle=n_cycle,
+            seed=seed,
+        )
     infer = opendde_infer_compiled if graph_jit else opendde_infer_static
     # Rolling the repeated stacks into `lax.scan` only pays once the whole graph
     # is traced: unrolled, 20 diffusion steps become 20 copies of the module in
@@ -159,6 +167,10 @@ def _predict(
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
         n_chain=n_chain,
+        init_noise=init_noise,
+        step_noises=step_noises,
+        rotations=rotations,
+        translations=translations,
         **scans,
     )
 
@@ -201,7 +213,12 @@ def _job_seeds(job: Mapping[str, Any], explicit_seed: int | None) -> list[int]:
     return result
 
 
-def main(argv: Sequence[str] | None = None) -> list[Path]:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    padding: PaddingConfig | None = None,
+    padding_profiles: list[dict[str, Any]] | None = None,
+) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-json", type=Path, required=True)
     parser.add_argument("--weights", type=Path, required=True)
@@ -287,6 +304,17 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
         help="Kalign 3.3.5 executable used for exact template realignment",
     )
     args = parser.parse_args(argv)
+
+    if padding is not None:
+        unsupported = sorted(
+            set(padding.explicit_axes)
+            - {"tokens", "atoms", "msa", "structural_tokens"}
+        )
+        if unsupported:
+            raise ValueError(
+                "OpenDDE does not support explicit padding axes: "
+                + ", ".join(unsupported)
+            )
 
     if args.weights.suffix.lower() in {".pt", ".pth", ".ckpt"}:
         raise SystemExit(
@@ -379,8 +407,71 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                     max_msa_rows=args.max_msa_rows,
                     seed=seed,
                 )
+                output_features = features
+                model_features = features
+                cycle_msa_features = None
+                padding_plan = None
+                random_tapes: dict[str, Any] = {}
+                n_chain = (
+                    int(__import__("numpy").max(output_features["asym_id"])) + 1
+                    if "asym_id" in output_features
+                    else None
+                )
+                if padding is not None:
+                    import jax
+
+                    from foldjax.models.opendde.data.padding import (
+                        pad_opendde_features,
+                        select_opendde_model_features,
+                    )
+                    from foldjax.models.opendde.models.msa_sampling import (
+                        sample_opendde_msa_cycle_features,
+                    )
+                    from foldjax.models.opendde.models.sampling import (
+                        make_padded_random_tapes,
+                    )
+
+                    sampled = sample_opendde_msa_cycle_features(
+                        features,
+                        n_cycle=args.n_cycle,
+                        seed=seed,
+                    )
+                    padded_features, cycle_msa_features, padding_plan = (
+                        pad_opendde_features(
+                            features,
+                            sampled,
+                            padding,
+                            n_queries=args.n_queries,
+                            n_keys=args.n_keys,
+                        )
+                    )
+                    model_features = select_opendde_model_features(padded_features)
+                    init_noise, step_noises, rotations, translations = (
+                        make_padded_random_tapes(
+                            key=jax.random.PRNGKey(seed),
+                            n_sample=args.n_sample,
+                            n_steps=args.n_step,
+                            actual_atom=padding_plan.actual["atoms"],
+                            target_atom=padding_plan.target["atoms"],
+                        )
+                    )
+                    random_tapes = {
+                        "init_noise": init_noise,
+                        "step_noises": step_noises,
+                        "rotations": rotations,
+                        "translations": translations,
+                    }
+                    profile = padding_plan.summary()
+                    if n_chain is not None:
+                        # Confidence reductions unroll one loop per chain, so
+                        # this value is part of the JIT executable identity even
+                        # when every padded tensor axis is otherwise identical.
+                        profile = {**profile, "static": {"chains": n_chain}}
+                    if padding_profiles is not None:
+                        padding_profiles.append(profile)
+                    print(padding_plan.message("opendde"))
                 output = _predict(
-                    features,
+                    model_features,
                     params,
                     seed=seed,
                     n_sample=args.n_sample,
@@ -407,23 +498,31 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                     # Without asym_id the per-chain loops cannot be sized on
                     # the host, and the in-graph summaries need exactly that;
                     # fall back to raw logits + host scoring, the old contract.
-                    run_confidence_scores="asym_id" in features,
+                    run_confidence_scores="asym_id" in model_features,
                     return_confidence_logits=(
-                        args.include_raw or "asym_id" not in features
+                        args.include_raw or "asym_id" not in model_features
                     ),
-                    n_chain=(
-                        int(__import__("numpy").max(features["asym_id"])) + 1
-                        if "asym_id" in features
-                        else None
-                    ),
+                    n_chain=n_chain,
+                    cycle_msa_features=cycle_msa_features,
+                    **random_tapes,
                 )
-                scored = _score(output, features, num_recycles=args.n_cycle)
+                if padding_plan is not None:
+                    from foldjax.models.opendde.data.padding import (
+                        crop_opendde_outputs,
+                    )
+
+                    output = crop_opendde_outputs(output, padding_plan)
+                scored = _score(
+                    output,
+                    output_features,
+                    num_recycles=args.n_cycle,
+                )
                 paths = _write(
                     args.out,
                     job_name=job_name,
                     seed=seed,
                     output=scored,
-                    features=features,
+                    features=output_features,
                     include_raw=args.include_raw,
                     include_trunk=False,
                 )

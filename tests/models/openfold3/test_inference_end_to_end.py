@@ -374,12 +374,26 @@ def _batch(torch) -> dict:
     return {k: jnp.asarray(v.numpy()) for k, v in raw.items()}
 
 
-def test_full_inference_path_runs(openfold3_source, randomized) -> None:
+def test_full_inference_path_runs(openfold3_source, randomized, monkeypatch) -> None:
+    import foldjax.models.openfold3.inference as inference
+
     torch = _torch()
     config = _config()
+    batch = _batch(torch)
+    # An archive mask describes reference geometry, not each predicted sample.
+    # Keep it present to prove inference still derives frames from coordinates.
+    batch["has_frame"] = jnp.zeros((1, N_TOKEN), dtype=jnp.float32)
+    calls = []
+    original_token_frame_atoms = inference.token_frame_atoms
+
+    def tracked_token_frame_atoms(*args, **kwargs):
+        calls.append(True)
+        return original_token_frame_atoms(*args, **kwargs)
+
+    monkeypatch.setattr(inference, "token_frame_atoms", tracked_token_frame_atoms)
     out = predict(
         jax.random.key(0),
-        _batch(torch),
+        batch,
         _params(torch, randomized),
         config,
         _representative_atoms(),
@@ -394,11 +408,14 @@ def test_full_inference_path_runs(openfold3_source, randomized) -> None:
     assert out.pde_logits.shape == (config.num_samples, N_TOKEN, N_TOKEN, PAE_BINS)
     assert out.distogram_logits.shape == (1, N_TOKEN, N_TOKEN, PAE_BINS)
     assert out.experimentally_resolved_logits.shape == (config.num_samples, N_ATOM, 2)
-    assert out.iptm is None and out.chain_pair_iptm is None
+    assert out.iptm.shape == (config.num_samples,)
+    assert out.chain_pair_iptm is None
+    assert calls == [True]
     for name, array in (
         ("coordinates", out.coordinates),
         ("plddt", out.plddt),
         ("ptm", out.ptm),
+        ("iptm", out.iptm),
         ("pae", out.pae_logits),
         ("pde", out.pde_logits),
         ("distogram", out.distogram_logits),
@@ -422,6 +439,24 @@ def test_iptm_outputs_appear_when_chains_are_declared(
     assert out.iptm is not None
     assert out.chain_pair_iptm.shape == (2, 2, 2)
     assert np.isfinite(np.asarray(out.chain_pair_iptm)).all()
+
+
+def test_monomer_iptm_is_zero_and_has_no_chain_pair_matrix(
+    openfold3_source, randomized
+) -> None:
+    torch = _torch()
+    batch = _batch(torch)
+    batch["asym_id"] = jnp.zeros_like(batch["asym_id"])
+    out = predict(
+        jax.random.key(0),
+        batch,
+        _params(torch, randomized),
+        _config(),
+        _representative_atoms(),
+        n_chain=1,
+    )
+    np.testing.assert_allclose(np.asarray(out.iptm), 0.0, atol=1e-7)
+    assert out.chain_pair_iptm is None
 
 
 def test_prediction_is_deterministic_for_a_fixed_key(

@@ -7,13 +7,13 @@ import numpy as np
 import pytest
 import torch
 
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import (
     map_diffusion_transformer_layer_state_dict,
 )
 from foldjax.models.boltz2.models.diffusion.diffusion_transformer import (
     diffusion_transformer_layer_forward,
 )
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 CHECKPOINT = (
     Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
@@ -26,7 +26,7 @@ PREFIX = "structure_module.score_model.token_transformer.layers.0"
 def checkpoint_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 def test_checkpoint_diffusion_transformer_layer_matches_boltz_torch(

@@ -88,6 +88,49 @@ def test_pairformer_block_matches_reference_composition() -> None:
     )
 
 
+def test_pairformer_mask_isolates_adversarial_padded_tokens() -> None:
+    rng = np.random.default_rng(111)
+    real_s = rng.normal(size=(1, 3, 4)).astype(np.float32)
+    real_z = rng.normal(size=(1, 3, 3, 4)).astype(np.float32)
+    params = map_pairformer_block_state_dict(
+        _pairformer_block_state(rng, c_s=4, c_z=4, heads=2),
+        "block",
+        has_s=True,
+    )
+    expected_s, expected_z = pairformer_block(
+        jnp.asarray(real_s),
+        jnp.asarray(real_z),
+        jnp.ones((1, 3, 3), dtype=jnp.float32),
+        params,
+    )
+
+    padded_s = np.pad(real_s, ((0, 0), (0, 2), (0, 0)))
+    padded_s[:, 3:] = 1.0e6
+    padded_z = np.pad(real_z, ((0, 0), (0, 2), (0, 2), (0, 0)))
+    padded_z[:, 3:, :, :] = -1.0e6
+    padded_z[:, :, 3:, :] = 1.0e6
+    token_mask = jnp.asarray([[1, 1, 1, 0, 0]], dtype=bool)
+    actual_s, actual_z = pairformer_block(
+        jnp.asarray(padded_s),
+        jnp.asarray(padded_z),
+        token_mask[..., :, None] & token_mask[..., None, :],
+        params,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(actual_s[:, :3]), np.asarray(expected_s), rtol=1e-5, atol=1e-5
+    )
+    np.testing.assert_allclose(
+        np.asarray(actual_z[:, :3, :3]),
+        np.asarray(expected_z),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    assert not np.any(np.asarray(actual_s[:, 3:]))
+    assert not np.any(np.asarray(actual_z[:, 3:]))
+    assert not np.any(np.asarray(actual_z[:, :, 3:]))
+
+
 def test_map_pairformer_block_state_dict_uses_protenix_keys() -> None:
     rng = np.random.default_rng(12)
     state = _pairformer_block_state(rng, c_s=4, c_z=4, heads=2)

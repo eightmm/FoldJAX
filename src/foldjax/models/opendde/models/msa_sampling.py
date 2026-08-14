@@ -7,6 +7,9 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.padding import PaddingPlan, resolve_axis
+from foldjax.schema import PaddingConfig
+
 
 def sample_opendde_msa_cycle_features(
     input_feature_dict: Mapping[str, Any],
@@ -73,3 +76,132 @@ def sample_opendde_msa_cycle_features(
         cycle["msa_mask"] = np.ones(cycle["msa"].shape, dtype=np.float32)
         cycles.append(cycle)
     return tuple(cycles)
+
+
+def pad_opendde_msa_cycle_features(
+    cycles: tuple[dict[str, np.ndarray], ...],
+    config: PaddingConfig,
+    *,
+    gap_token: int = 31,
+    token_target: int | None = None,
+) -> tuple[tuple[dict[str, np.ndarray], ...], PaddingPlan]:
+    """Right-pad sampled OpenDDE MSA cycles with rigorously masked axes.
+
+    OpenDDE samples the same number of MSA rows for every recycle and its MSA
+    stack consumes ``msa_mask`` in every operation that communicates a row
+    back into the pair representation.  That makes both the row and token axes
+    safe to pad as long as real values form prefixes and every added position
+    has a zero mask.  ``token_target`` is supplied by the full OpenDDE feature
+    padder after it has resolved the residue-token bucket.
+
+    This helper intentionally operates *after* native MSA sampling.  Padding
+    the raw alignment first would let synthetic rows enter the sampler and
+    change its seeded permutation, violating the default stochastic contract.
+    """
+
+    if not cycles:
+        raise ValueError(
+            "OpenDDE MSA padding requires sampled MSA features; this input "
+            "does not contain msa, has_deletion, and deletion_value"
+        )
+
+    msa_fields = ("msa", "has_deletion", "deletion_value")
+    storage_depth: int | None = None
+    storage_tokens: int | None = None
+    actual_depth: int | None = None
+    validated: list[tuple[dict[str, np.ndarray], int]] = []
+    for cycle_index, cycle in enumerate(cycles):
+        missing = [name for name in (*msa_fields, "msa_mask") if name not in cycle]
+        if missing:
+            raise ValueError(
+                "OpenDDE MSA padding requires complete sampled cycle fields; "
+                f"cycle {cycle_index} is missing: {', '.join(missing)}"
+            )
+        arrays = {name: np.asarray(cycle[name]) for name in msa_fields}
+        msa = arrays["msa"]
+        if msa.ndim != 2 or any(value.shape != msa.shape for value in arrays.values()):
+            raise ValueError(
+                "OpenDDE sampled MSA and deletion features must share "
+                "shape [N_msa, N_token]"
+            )
+        mask = np.asarray(cycle["msa_mask"])
+        if mask.shape != msa.shape:
+            raise ValueError(
+                "OpenDDE sampled msa_mask must share shape [N_msa, N_token]"
+            )
+        row_valid = np.any(mask.astype(bool), axis=-1)
+        real_depth = int(np.count_nonzero(row_valid))
+        if real_depth < 1:
+            raise ValueError("OpenDDE MSA padding requires at least one real MSA row")
+        if not np.all(row_valid[:real_depth]) or np.any(row_valid[real_depth:]):
+            raise ValueError(
+                "OpenDDE MSA padding requires real rows to form a contiguous prefix"
+            )
+        # A partially masked source row would alter normalization differently
+        # from OpenDDE's native all-token rows.  Token padding is appended only
+        # after this validation, so its synthetic zero columns remain distinct
+        # from an unknown pre-existing layout.
+        if not np.all(mask[:real_depth].astype(bool)):
+            raise ValueError(
+                "OpenDDE MSA padding requires every real row to be valid across "
+                "the full unpadded token axis"
+            )
+        if storage_depth is None:
+            storage_depth = int(msa.shape[0])
+            storage_tokens = int(msa.shape[1])
+            actual_depth = real_depth
+        elif (
+            int(msa.shape[0]) != storage_depth
+            or int(msa.shape[1]) != storage_tokens
+            or real_depth != actual_depth
+        ):
+            raise ValueError(
+                "OpenDDE MSA padding requires every recycle to share one "
+                "storage shape and real-row prefix"
+            )
+        validated.append(({**cycle, **arrays, "msa_mask": mask}, real_depth))
+
+    assert (
+        storage_depth is not None
+        and storage_tokens is not None
+        and actual_depth is not None
+    )
+    if token_target is None:
+        token_target = storage_tokens
+    if token_target < storage_tokens:
+        raise ValueError(
+            "OpenDDE sampled MSA token target is smaller than its storage width "
+            f"{storage_tokens}: {token_target}"
+        )
+    target_depth = resolve_axis(
+        actual_depth,
+        config,
+        "msa",
+        minimum=storage_depth,
+    )
+    padding_rows = target_depth - storage_depth
+    padding_tokens = token_target - storage_tokens
+    padded_cycles: list[dict[str, np.ndarray]] = []
+    for cycle, _real_depth in validated:
+        padded = dict(cycle)
+        for name in msa_fields:
+            constant = gap_token if name == "msa" else 0
+            padded[name] = np.pad(
+                np.asarray(cycle[name]),
+                ((0, padding_rows), (0, padding_tokens)),
+                mode="constant",
+                constant_values=constant,
+            )
+        padded["msa_mask"] = np.pad(
+            np.asarray(cycle["msa_mask"]),
+            ((0, padding_rows), (0, padding_tokens)),
+            mode="constant",
+            constant_values=0,
+        )
+        padded_cycles.append(padded)
+
+    return tuple(padded_cycles), PaddingPlan(
+        actual={"msa": actual_depth},
+        storage={"msa": storage_depth},
+        target={"msa": target_depth},
+    )

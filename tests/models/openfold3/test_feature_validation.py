@@ -1,0 +1,72 @@
+"""Portable feature archives fail before entering checkpoint/JAX code."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from foldjax.models.openfold3.data.featurize import load_features, save_features
+from foldjax.models.openfold3.data.validation import validate_features
+from foldjax.models.openfold3.models.representative_atoms import (
+    RepresentativeAtomTable,
+)
+
+from .feature_fixture import minimal_features
+
+
+def _features() -> dict[str, np.ndarray]:
+    return minimal_features(tokens=3, atoms=5)
+
+
+def test_valid_released_feature_abi_is_accepted() -> None:
+    validate_features(_features())
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement", "message"),
+    [
+        ("restype", np.zeros((1, 3, 31), dtype=np.int32), "expected"),
+        ("ref_element", np.zeros((1, 5, 120), dtype=np.int32), "expected"),
+        ("msa", np.zeros((1, 2, 3, 32), dtype=np.float32), "dtype"),
+        ("token_mask", np.array([[1.0, 0.0, 1.0]], dtype=np.float32), "padding"),
+        ("atom_mask", np.array([[1, 1, 0, 1, 0]], dtype=np.float32), "padding"),
+        ("ref_pos", np.full((1, 5, 3), np.nan, dtype=np.float32), "NaN"),
+        (
+            "atom_to_token_index",
+            np.array([[0, 0, 2, 2, 2]], dtype=np.int32),
+            "inconsistent",
+        ),
+    ],
+)
+def test_malformed_feature_abi_is_refused(
+    name: str, replacement: np.ndarray, message: str
+) -> None:
+    features = _features()
+    features[name] = replacement
+    with pytest.raises(ValueError, match=message):
+        validate_features(features)
+
+
+def test_atom_counts_and_slots_must_agree() -> None:
+    features = _features()
+    features["num_atoms_per_token"] = np.array([[1, 2, 2]], dtype=np.int32)
+    with pytest.raises(ValueError, match="start_atom_index|atom_to_token_index|mask"):
+        validate_features(features)
+
+
+def test_non_numeric_extra_payload_cannot_reach_jax() -> None:
+    features = _features()
+    features["surprise"] = np.array(["not a tensor argument"])
+    with pytest.raises(ValueError, match="must be numeric"):
+        validate_features(features)
+
+
+def test_archive_loader_enforces_the_feature_abi(tmp_path) -> None:
+    features = _features()
+    features["token_bonds"] = np.zeros((1, 2, 3), dtype=np.int32)
+    table = RepresentativeAtomTable(
+        *(np.zeros(32, dtype=np.float32) for _ in RepresentativeAtomTable._fields)
+    )
+    path = save_features(features, tmp_path / "invalid.npz", representative_atoms=table)
+    with pytest.raises(ValueError, match="token_bonds.*expected"):
+        load_features(path)

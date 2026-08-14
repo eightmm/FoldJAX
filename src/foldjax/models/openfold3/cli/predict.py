@@ -40,6 +40,17 @@ def _parser() -> argparse.ArgumentParser:
         help="run eagerly; far slower, but skips a multi-minute compile",
     )
     parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="persistent XLA cache directory (default: FoldJAX cache)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="disable the persistent XLA compilation cache",
+    )
+    parser.add_argument(
         "--all-arrays",
         action="store_true",
         help="write the per-bin PAE/PDE/distogram logits whatever their size. They "
@@ -94,16 +105,22 @@ def _report_peak_memory(jax: Any, config: Any) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.no_cache and args.cache_dir is not None:
+        parser.error("--cache-dir and --no-cache are mutually exclusive")
 
     import jax
     import jax.numpy as jnp
     import numpy as np
 
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
-    from foldjax.models.openfold3.bridge.chemistry import representative_atom_table
     from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
-    from foldjax.models.openfold3.data import MODEL_FEATURES, split_chemistry
+    from foldjax.models.openfold3.data import (
+        load_feature_archive,
+        normalize_asym_ids,
+        subsample_msa_rows,
+    )
     from foldjax.models.openfold3.inference import (
         compile_predict,
         predict,
@@ -114,30 +131,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         write_prediction_outputs,
     )
 
-    loaded = np.load(args.features, allow_pickle=False)
-    raw, table = split_chemistry({name: loaded[name] for name in loaded.files})
-    features = {name: jnp.asarray(value) for name, value in raw.items()}
-    # Completeness first: an incomplete file must fail here, before the
-    # chemistry rebuild below -- which imports the vendored upstream pipeline
-    # (torch) on a cold store and would turn a clear refusal into a
-    # ModuleNotFoundError.
-    missing = [name for name in MODEL_FEATURES if name not in features]
-    if missing:
-        print(f"features are incomplete; missing {missing}")
+    try:
+        raw, table, output_metadata = load_feature_archive(args.features)
+    except (OSError, ValueError) as error:
+        print(f"cannot load features: {error}")
         return 1
-    if table is None:
-        # Written before the table travelled with the features; rebuilding it needs
-        # upstream, which is exactly what this path is meant to avoid.
-        print(
-            "features carry no chemistry table; rebuilding it from upstream "
-            "(re-run openfold3-jax-featurize to embed it)"
-        )
-        from foldjax.models.openfold3.bridge.chemistry import representative_atom_table
 
-        table = representative_atom_table()
-
-    n_token = features["token_mask"].shape[-1]
-    n_atom = features["atom_mask"].shape[-1]
+    n_token = raw["token_mask"].shape[-1]
+    n_atom = raw["atom_mask"].shape[-1]
     overrides = {
         name: value
         for name, value in (
@@ -148,6 +149,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if value is not None
     }
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
+    # Keep a full alignment on the host only. At long sequences it can be
+    # several GiB, so converting before this cut defeats the memory saving.
+    raw = subsample_msa_rows(raw, config.msa_depth)
+    raw, n_chain = normalize_asym_ids(raw)
+    features = {name: jnp.asarray(value) for name, value in raw.items()}
     print(
         f"{n_token} tokens, {n_atom} atoms | {config.num_samples} samples x "
         f"{config.no_rollout_steps} steps, {config.num_cycles} cycles"
@@ -163,12 +169,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     key = jax.random.key(args.seed)
     if args.no_compile:
         started = time.perf_counter()
-        prediction = predict(key, features, params, config, table)
+        prediction = predict(
+            key, features, params, config, table, n_chain=n_chain
+        )
         jax.block_until_ready(prediction.coordinates)
         print(f"predicted in {time.perf_counter() - started:.1f}s (eager)")
     else:
+        if not args.no_cache:
+            from foldjax.models.openfold3.compilation import (
+                enable_compilation_cache,
+            )
+
+            cache = enable_compilation_cache(args.cache_dir)
+            print(f"persistent compilation cache {cache}")
         print("compiling (one-time, minutes at long sequences) ...")
-        compiled = compile_predict(config, table)
+        compiled = compile_predict(config, table, n_chain=n_chain)
         elapsed = []
         for _ in range(max(1, args.repeats)):
             started = time.perf_counter()
@@ -197,6 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output,
         name=args.name or args.features.stem,
         max_array_bytes=None if args.all_arrays else DEFAULT_ARRAY_BUDGET_BYTES,
+        output_metadata=output_metadata,
     )
     for path in written["structures"]:
         print(f"wrote {path}")

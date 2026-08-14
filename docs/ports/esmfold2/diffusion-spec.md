@@ -61,3 +61,28 @@ inside `AttentionPairBias`.
   logits, not a head of their own.
 * `FourierEmbedding.w/b` and `ConfidenceHead.boundaries` are persistent
   buffers: load them, do not redraw them.
+
+## Managed assets
+
+FoldJAX currently exposes ESMFold2 for protein inputs only. Those features get
+their canonical atom names and reference coordinates from the chemistry tables
+carried in the package, so neither featurization nor prediction reads the
+publisher's 417 MB `ccd.pkl`.
+
+The managed store has two explicit profiles:
+
+* `released` (default) stages the structure checkpoint and complete ESMC-6B;
+* `structure-only` stages `model.safetensors` and `config.json` only (940 MB).
+  It supports either `no_language_model=true` or a released-model run whose
+  ESMC checkpoint is supplied explicitly with `esmc_weights`.
+
+A complete release satisfies both profiles; a structure-only install cannot
+satisfy a default prediction. `foldjax predict --profile structure-only` is the
+first-class structure-network-only request and sets `no_language_model=true`
+automatically. Request resolution also selects the smaller managed bundle from
+the legacy native option, or from an explicit external `esmc_weights`, when no
+structure weights were supplied. The default path fails with the complete-bundle
+fetch instruction instead of silently changing the model.
+Supporting ligands or nucleic acids remains a
+separate feature-building task; merely downloading the old CCD pickle would not
+make those inputs valid.

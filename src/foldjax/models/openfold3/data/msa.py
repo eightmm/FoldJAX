@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -24,18 +26,45 @@ PAIRED_STEM = "colabfold_paired"
 MAIN_STEM = "colabfold_main"
 
 
-
 def _link(source: Path, target: Path) -> Path:
     """Point ``target`` at ``source``, preferring a symlink over a copy."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
-        target.unlink()
-    try:
-        target.symlink_to(source)
-    except OSError:
-        # Some filesystems refuse symlinks; the file is small enough to copy.
-        target.write_bytes(source.read_bytes())
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-msa-link-", dir=target.parent
+    ) as scratch:
+        staged = Path(scratch) / target.name
+        try:
+            staged.symlink_to(source.resolve())
+        except OSError:
+            # Some filesystems refuse symlinks; the file is small enough to copy.
+            shutil.copyfile(source, staged)
+        os.replace(staged, target)
     return target
+
+
+def _safe_directory(root: Path, *parts: str) -> Path:
+    """Create an internal directory without following user-planted symlinks."""
+    if root.is_symlink():
+        raise ValueError(f"alignment directory is a symlink: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    root_resolved = root.resolve()
+    directory = root
+    for part in parts:
+        directory /= part
+        # Resolve before mkdir as well: an intermediate symlink must not let the
+        # mkdir itself create a directory outside ``root``.
+        if not directory.resolve().is_relative_to(root_resolved):
+            raise ValueError(
+                f"alignment subdirectory escapes output root: {directory}"
+            )
+        if directory.is_symlink():
+            raise ValueError(f"alignment subdirectory is a symlink: {directory}")
+        directory.mkdir(exist_ok=True)
+        if not directory.resolve().is_relative_to(root_resolved):
+            raise ValueError(
+                f"alignment subdirectory escapes output root: {directory}"
+            )
+    return directory
 
 
 def attach_msas(
@@ -45,6 +74,7 @@ def attach_msas(
     cache_dir: str | os.PathLike[str] | None = None,
     backend: Any = None,
     paired: bool = False,
+    query_id: str | None = None,
 ) -> dict[str, Any]:
     """Search for each protein chain's MSA and record the paths in ``spec``.
 
@@ -62,6 +92,9 @@ def attach_msas(
             degrade gracefully -- upstream collapses the MSA to the query sequence
             alone, with no error. Turn it on for a multimer whose backend returns a
             genuinely paired search.
+        query_id: search only this query. Required by callers that select one
+            member of a multi-query document, so unused queries never trigger
+            network work or write alignments.
 
     Returns:
         A copy of ``spec`` with ``main_msa_file_paths`` -- and
@@ -75,13 +108,32 @@ def attach_msas(
     from foldjax.search import MsaSearchPipeline, RemoteMMseqs2Client
 
     root = Path(alignment_dir)
+    queries = spec.get("queries", {})
+    if not isinstance(queries, Mapping):
+        raise ValueError("OpenFold3 specification requires a 'queries' mapping")
+    if query_id is not None and query_id not in queries:
+        raise KeyError(f"{query_id!r} is not in the specification: {list(queries)}")
+    indexed_queries = list(enumerate(queries.items()))
+    selected = [
+        (index, selected_id)
+        for index, (selected_id, _) in indexed_queries
+        if query_id is None or selected_id == query_id
+    ]
+
+    _safe_directory(root)
+    pipeline_cache = (
+        Path(cache_dir)
+        if cache_dir is not None
+        else _safe_directory(root, "cache")
+    )
     pipeline = MsaSearchPipeline(
-        cache_dir=Path(cache_dir) if cache_dir is not None else root / "cache",
+        cache_dir=pipeline_cache,
         backend=backend if backend is not None else RemoteMMseqs2Client(),
     )
 
     updated = copy.deepcopy(dict(spec))
-    for query_id, query in updated.get("queries", {}).items():
+    for query_index, selected_id in selected:
+        query = updated["queries"][selected_id]
         chains = [
             chain
             for chain in query.get("chains", [])
@@ -90,11 +142,14 @@ def attach_msas(
         ]
         if not chains:
             continue
+        query_directory = _safe_directory(root, f"query_{query_index:04d}")
         results = pipeline.search([chain["sequence"] for chain in chains])
         for index, (chain, result) in enumerate(zip(chains, results, strict=True)):
             # Keyed by position rather than chain id: a chain entry can name
             # several ids, and the sequence is what was searched.
-            directory = root / str(query_id) / f"chain_{index}"
+            # Query names are arbitrary document keys and may contain path
+            # separators. Only deterministic positional identifiers reach disk.
+            directory = _safe_directory(query_directory, f"chain_{index:04d}")
             chain["main_msa_file_paths"] = [
                 str(
                     _link(

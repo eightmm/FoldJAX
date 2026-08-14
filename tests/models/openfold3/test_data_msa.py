@@ -116,6 +116,88 @@ def test_each_chain_gets_its_own_alignments(tmp_path: Path) -> None:
     assert backend.calls == [UBIQUITIN, SECOND]
 
 
+def test_query_ids_never_become_alignment_path_components(tmp_path: Path) -> None:
+    spec = _spec(UBIQUITIN)
+    spec["queries"]["../../outside"] = spec["queries"].pop("q")
+
+    updated = attach_msas(spec, alignment_dir=tmp_path / "align", backend=_Backend())
+
+    (main,) = updated["queries"]["../../outside"]["chains"][0][
+        "main_msa_file_paths"
+    ]
+    path = Path(main)
+    assert path.is_relative_to(tmp_path / "align")
+    assert path.parent.parent.name == "query_0000"
+    assert "outside" not in path.parts
+
+
+def test_selected_query_is_the_only_one_searched(tmp_path: Path) -> None:
+    spec = _spec(UBIQUITIN)
+    spec["queries"]["second"] = _spec(SECOND)["queries"]["q"]
+    backend = _Backend()
+
+    updated = attach_msas(
+        spec,
+        alignment_dir=tmp_path,
+        backend=backend,
+        query_id="second",
+    )
+
+    assert backend.calls == [SECOND]
+    assert "main_msa_file_paths" not in updated["queries"]["q"]["chains"][0]
+    (main,) = updated["queries"]["second"]["chains"][0]["main_msa_file_paths"]
+    assert Path(main).parent.parent.name == "query_0001"
+
+
+def test_unknown_selected_query_is_rejected_without_search(tmp_path: Path) -> None:
+    backend = _Backend()
+    with pytest.raises(KeyError, match="not in the specification"):
+        attach_msas(
+            _spec(UBIQUITIN),
+            alignment_dir=tmp_path,
+            backend=backend,
+            query_id="missing",
+        )
+    assert backend.calls == []
+
+
+def test_preexisting_query_directory_symlink_is_refused_before_search(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "align"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "query_0000").symlink_to(outside, target_is_directory=True)
+    backend = _Backend()
+
+    with pytest.raises(ValueError, match="escapes output root|is a symlink"):
+        attach_msas(_spec(UBIQUITIN), alignment_dir=root, backend=backend)
+
+    assert backend.calls == []
+    assert not list(outside.iterdir())
+
+
+def test_existing_alignment_symlink_is_replaced_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "align"
+    directory = root / "query_0000" / "chain_0000"
+    directory.mkdir(parents=True)
+    external = tmp_path / "user-owned.a3m"
+    external.write_text("do not replace\n")
+    generated = directory / f"{MAIN_STEM}.a3m"
+    generated.symlink_to(external)
+
+    updated = attach_msas(
+        _spec(UBIQUITIN), alignment_dir=root, backend=_Backend()
+    )
+
+    (main,) = updated["queries"]["q"]["chains"][0]["main_msa_file_paths"]
+    assert UBIQUITIN in Path(main).read_text()
+    assert external.read_text() == "do not replace\n"
+
+
 def test_non_protein_chains_are_left_alone(tmp_path: Path) -> None:
     spec = {
         "queries": {

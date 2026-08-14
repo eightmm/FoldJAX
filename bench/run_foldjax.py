@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -89,13 +90,28 @@ def main() -> int:
         **SCHEDULE,
     )
 
+    import jax
+
+    device = jax.local_devices()[0]
+    if not args.warmup:
+        # The same live-bytes quantity the peak below reports, sampled as the
+        # run goes. `bytes_in_use` is unaffected by preallocation -- the pool is
+        # reserved address space, not an allocation -- so the trace is taken
+        # under exactly the configuration the table rows ran under.
+        sys.path.insert(0, str(Path(__file__).parent / "peakhook"))
+        import benchtrace
+
+        benchtrace.start(
+            lambda: (device.memory_stats() or {}).get("bytes_in_use", 0),
+            lambda: (device.memory_stats() or {}).get("peak_bytes_in_use", 0),
+            backend="jax",
+        )
+
     start = time.perf_counter()
     result = foldjax.predict(request)
     elapsed = time.perf_counter() - start
 
-    import jax
-
-    stats = jax.local_devices()[0].memory_stats() or {}
+    stats = device.memory_stats() or {}
     record = {
         "impl": "foldjax",
         "model": args.model,

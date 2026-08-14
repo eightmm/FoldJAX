@@ -10,8 +10,8 @@ from foldjax.models.boltz2.bridge.affinity_mapping import (
     map_affinity_ensemble_state_dict,
     map_affinity_module_state_dict,
 )
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.models.heads.affinity import affinity_module_forward
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 CHECKPOINT = Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_aff.ckpt"
 BOLTZ_SRC = Path(__file__).resolve().parents[4] / "boltz/src"
@@ -39,7 +39,7 @@ GROUPS = {0: 1, 1: 4, 2: 6, 3: 4, 4: 1}
 def checkpoint_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 affinity checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 def _build_torch_module(

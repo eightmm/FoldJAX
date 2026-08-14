@@ -57,3 +57,11 @@ A port that produced one fixed answer would not be reproducing this model.
   the other two.
 * `ConfidenceHead` treats its `FoldingTrunk` output as a **delta**
   (`pair += trunk(pair)`); the main loop treats it as an overwrite.
+
+## Status
+
+Ported and gated. `tests/models/esmfold2/` holds 60-odd parity tests against
+the torch modules these notes describe, plus an end-to-end run on the released
+checkpoint. What this file records is what the torch source does; where the
+port deliberately departs from it -- the PDB writer's chain field and b-factor
+scale -- the departure is stated where it happens.

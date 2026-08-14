@@ -339,13 +339,21 @@ def calculate_chain_based_ptm(
     max_bin: float,
     no_bins: int | None = None,
     n_chain: int | None = None,
+    token_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute the complete chain pTM/ipTM summaries used by Protenix."""
 
     if no_bins is None:
         no_bins = int(pae_prob.shape[-1])
+    if token_mask is not None:
+        token_mask = jnp.asarray(token_mask).astype(bool)
+        if token_mask.shape != asym_id.shape:
+            raise ValueError("token_mask must match the chain pTM token axis")
     if n_chain is None:
-        n_chain = int(jnp.max(asym_id)) + 1
+        chain_ids = (
+            asym_id if token_mask is None else jnp.where(token_mask, asym_id, -1)
+        )
+        n_chain = int(jnp.max(chain_ids)) + 1
     asym_id = asym_id.astype(jnp.int32)
     has_frame = has_frame.astype(bool)
     token_is_ligand = token_is_ligand.astype(bool)
@@ -361,6 +369,8 @@ def calculate_chain_based_ptm(
                 value = pair_rows[aid_2][aid_1]
             else:
                 pair_mask = (asym_id == aid_1) | (asym_id == aid_2)
+                if token_mask is not None:
+                    pair_mask = pair_mask & token_mask
                 value = calculate_iptm(
                     pae_prob,
                     has_frame,
@@ -384,14 +394,25 @@ def calculate_chain_based_ptm(
                 min_bin=min_bin,
                 max_bin=max_bin,
                 no_bins=no_bins,
-                token_mask=asym_id == aid,
+                token_mask=(
+                    asym_id == aid
+                    if token_mask is None
+                    else (asym_id == aid) & token_mask
+                ),
             )
             for aid in range(n_chain)
         ],
         axis=-1,
     )
 
-    chain_has_frame = [jnp.any((asym_id == aid) & has_frame) for aid in range(n_chain)]
+    chain_has_frame = [
+        jnp.any(
+            (asym_id == aid) & has_frame
+            if token_mask is None
+            else (asym_id == aid) & has_frame & token_mask
+        )
+        for aid in range(n_chain)
+    ]
     chain_iptm_values = []
     for aid in range(n_chain):
         values = []
@@ -427,6 +448,8 @@ def calculate_chain_based_ptm(
     chain_is_ligand = []
     for aid in range(n_chain):
         chain_mask = asym_id == aid
+        if token_mask is not None:
+            chain_mask = chain_mask & token_mask
         chain_is_ligand.append(
             jnp.sum(token_is_ligand & chain_mask)
             >= jnp.sum(chain_mask.astype(jnp.int32)) // 2
@@ -468,12 +491,18 @@ def calculate_chain_based_plddt(
     atom_to_token_idx: jnp.ndarray,
     *,
     n_chain: int | None = None,
+    atom_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute Protenix chain pLDDT summaries."""
 
     if n_chain is None:
         n_chain = int(jnp.max(asym_id)) + 1
     atom_chain_id = asym_id.astype(jnp.int32)[atom_to_token_idx]
+    if atom_mask is not None:
+        atom_mask = jnp.asarray(atom_mask).astype(bool)
+        if atom_mask.shape != atom_chain_id.shape:
+            raise ValueError("atom_mask must match the pLDDT atom axis")
+        atom_chain_id = jnp.where(atom_mask, atom_chain_id, -1)
 
     chain_vals = []
     for aid in range(n_chain):
@@ -509,15 +538,26 @@ def calculate_chain_based_gpde(
     *,
     n_chain: int | None = None,
     eps: float = 1e-8,
+    token_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute Protenix chain and chain-pair gPDE summaries."""
 
+    if token_mask is not None:
+        token_mask = jnp.asarray(token_mask).astype(bool)
+        if token_mask.shape != asym_id.shape:
+            raise ValueError("token_mask must match the chain gPDE token axis")
     if n_chain is None:
-        n_chain = int(jnp.max(asym_id)) + 1
+        chain_ids = (
+            asym_id if token_mask is None else jnp.where(token_mask, asym_id, -1)
+        )
+        n_chain = int(jnp.max(chain_ids)) + 1
     asym_id = asym_id.astype(jnp.int32)
     contact_probs = contact_probs.astype(token_pair_pde.dtype)
 
     def _weighted_mean(mask_1, mask_2):
+        if token_mask is not None:
+            mask_1 = mask_1 & token_mask
+            mask_2 = mask_2 & token_mask
         pair_mask = (mask_1[:, None] & mask_2[None, :]).astype(token_pair_pde.dtype)
         weights = contact_probs * pair_mask
         return jnp.sum(token_pair_pde * weights, axis=(-1, -2)) / (
@@ -558,11 +598,19 @@ def calculate_chain_pair_pae(
     *,
     n_chain: int | None = None,
     eps: float = 1e-8,
+    token_mask: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute Protenix chain-pair PAE mean and minimum summaries."""
 
+    if token_mask is not None:
+        token_mask = jnp.asarray(token_mask).astype(bool)
+        if token_mask.shape != asym_id.shape:
+            raise ValueError("token_mask must match the chain PAE token axis")
     if n_chain is None:
-        n_chain = int(jnp.max(asym_id)) + 1
+        chain_ids = (
+            asym_id if token_mask is None else jnp.where(token_mask, asym_id, -1)
+        )
+        n_chain = int(jnp.max(chain_ids)) + 1
     asym_id = asym_id.astype(jnp.int32)
     token_has_frame = token_has_frame.astype(bool)
     if contact_probs is None:
@@ -571,6 +619,8 @@ def calculate_chain_pair_pae(
         contact_probs = contact_probs.astype(token_pair_pae.dtype)
 
     frame_mask = token_has_frame[:, None] & token_has_frame[None, :]
+    if token_mask is not None:
+        frame_mask = frame_mask & token_mask[:, None] & token_mask[None, :]
     mean_rows = []
     min_rows = []
     for aid_1 in range(n_chain):
@@ -663,6 +713,7 @@ def calculate_clash(
     threshold: float = 1.1,
     n_chain: int | None = None,
     row_chunk_size: int = CLASH_ROW_CHUNK,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Compute a Protenix AF3-style inter-chain clash flag per sample.
 
@@ -676,6 +727,11 @@ def calculate_clash(
     if n_chain is None:
         n_chain = int(jnp.max(asym_id)) + 1
     atom_chain_id = asym_id.astype(jnp.int32)[atom_to_token_idx]
+    if atom_mask is not None:
+        atom_mask = jnp.asarray(atom_mask).astype(bool)
+        if atom_mask.shape != atom_chain_id.shape:
+            raise ValueError("atom_mask must match the clash atom axis")
+        atom_chain_id = jnp.where(atom_mask, atom_chain_id, -1)
     if atom_is_polymer is None:
         chain_is_polymer = jnp.ones((n_chain,), dtype=bool)
     else:
@@ -763,6 +819,7 @@ def calculate_vdw_clash(
     threshold: float = 0.75,
     n_chain: int | None = None,
     row_chunk_size: int = CLASH_ROW_CHUNK,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Compute inter-chain VDW clash flags using Protenix/RDKit radii.
 
@@ -773,6 +830,11 @@ def calculate_vdw_clash(
     if n_chain is None:
         n_chain = int(jnp.max(asym_id)) + 1
     atom_chain_id = asym_id.astype(jnp.int32)[atom_to_token_idx]
+    if atom_mask is not None:
+        atom_mask = jnp.asarray(atom_mask).astype(bool)
+        if atom_mask.shape != atom_chain_id.shape:
+            raise ValueError("atom_mask must match the VDW clash atom axis")
+        atom_chain_id = jnp.where(atom_mask, atom_chain_id, -1)
     element_order = jnp.argmax(elements_one_hot, axis=-1)
     radii = RDKIT_VDWS[element_order]
     pairs = _chain_pairs(n_chain)
@@ -885,6 +947,7 @@ def confidence_scores_from_logits(
     clash_threshold: float = 1.1,
     vdw_clash_threshold: float = 0.75,
     token_mask: jnp.ndarray | None = None,
+    atom_mask: jnp.ndarray | None = None,
     token_is_ligand: jnp.ndarray | None = None,
     num_recycles: int | None = None,
     n_chain: int | None = None,
@@ -918,9 +981,29 @@ def confidence_scores_from_logits(
         no_bins=distogram_no_bins,
         thres=contact_threshold,
     )
-    summary_plddt = jnp.mean(atom_plddt, axis=-1) * 100.0
-    gpde_numer = jnp.sum(token_pair_pde * contact_probs, axis=(-1, -2))
-    gpde_denom = jnp.sum(contact_probs, axis=(-1, -2))
+    if atom_mask is None:
+        summary_plddt = jnp.mean(atom_plddt, axis=-1) * 100.0
+    else:
+        atom_mask_f = jnp.asarray(atom_mask, dtype=atom_plddt.dtype)
+        if atom_mask_f.shape != atom_plddt.shape[-1:]:
+            raise ValueError("atom_mask must match the pLDDT atom axis")
+        summary_plddt = (
+            jnp.sum(atom_plddt * atom_mask_f, axis=-1)
+            / jnp.maximum(jnp.sum(atom_mask_f), 1.0)
+            * 100.0
+        )
+    if token_mask is None:
+        gpde_weights = contact_probs
+    else:
+        token_mask_bool = jnp.asarray(token_mask).astype(bool)
+        if token_mask_bool.shape != contact_probs.shape[-2:-1]:
+            raise ValueError("token_mask must match the confidence token axis")
+        score_pair_mask = (token_mask_bool[:, None] & token_mask_bool[None, :]).astype(
+            contact_probs.dtype
+        )
+        gpde_weights = contact_probs * score_pair_mask
+    gpde_numer = jnp.sum(token_pair_pde * gpde_weights, axis=(-1, -2))
+    gpde_denom = jnp.sum(gpde_weights, axis=(-1, -2))
     summary_gpde = jnp.where(gpde_denom > 0, gpde_numer / gpde_denom, 0.0)
     scores = {
         "atom_plddt": atom_plddt.astype(jnp.float32),
@@ -957,6 +1040,7 @@ def confidence_scores_from_logits(
                 atom_is_polymer=atom_is_polymer,
                 threshold=clash_threshold,
                 n_chain=n_chain,
+                atom_mask=atom_mask,
             )
             ranking_score = ranking_score - 100.0 * has_clash.astype(
                 ranking_score.dtype
@@ -971,6 +1055,7 @@ def confidence_scores_from_logits(
                     mol_id=mol_id,
                     threshold=vdw_clash_threshold,
                     n_chain=n_chain,
+                    atom_mask=atom_mask,
                 )
                 scores["has_vdw_clash"] = has_vdw_clash
                 scores["summary_ranking_score_vdw_penalized"] = (
@@ -998,6 +1083,7 @@ def confidence_scores_from_logits(
                 max_bin=pae_max_bin,
                 no_bins=pae_no_bins,
                 n_chain=n_chain,
+                token_mask=token_mask,
             )
         )
         scores.update(
@@ -1006,6 +1092,7 @@ def confidence_scores_from_logits(
                 contact_probs,
                 token_asym_id,
                 n_chain=n_chain,
+                token_mask=token_mask,
             )
         )
         if include_chain_pair_pae:
@@ -1016,6 +1103,7 @@ def confidence_scores_from_logits(
                     token_has_frame,
                     contact_probs,
                     n_chain=n_chain,
+                    token_mask=token_mask,
                 )
             )
         if atom_to_token_idx is not None:
@@ -1025,6 +1113,7 @@ def confidence_scores_from_logits(
                     token_asym_id,
                     atom_to_token_idx,
                     n_chain=n_chain,
+                    atom_mask=atom_mask,
                 )
             )
         scores["disorder"] = jnp.zeros_like(summary_ptm, dtype=jnp.float32)

@@ -52,6 +52,15 @@ __all__ = [
 Atom = tuple[str, int, str]
 
 
+def _document_text(value: Any, *, name: str) -> str | None:
+    """Normalize an optional string field without stringifying invalid data."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value.strip()
+
+
 @dataclass(frozen=True, slots=True)
 class Modification:
     """A residue replaced by a CCD component, at a 1-based position."""
@@ -184,7 +193,14 @@ class Job:
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> Job:
         """Structure a job mapping. Unknown fields raise rather than vanish."""
-        from foldjax.input import _JOB_KEYS, _LIGAND_KEYS, _POLYMER_KEYS
+        from foldjax.input import (
+            _JOB_KEYS,
+            _LIGAND_KEYS,
+            _POLYMER_KEYS,
+            _bonds,
+            _ids,
+            _modifications,
+        )
 
         if not isinstance(document, dict):
             raise ValueError("a FoldJAX job must be a mapping")
@@ -196,6 +212,7 @@ class Job:
             raise ValueError("FoldJAX input requires a non-empty entities list")
 
         entities: list[Entity] = []
+        chains: set[str] = set()
         for raw in raw_entities:
             if not isinstance(raw, dict):
                 raise ValueError("each entity must be an object")
@@ -204,37 +221,60 @@ class Job:
             unknown = set(raw) - allowed
             if unknown:
                 raise ValueError(f"unsupported {kind} entity fields: {sorted(unknown)}")
-            identifier = raw.get("id")
-            if isinstance(identifier, list):
-                identifier = tuple(str(item) for item in identifier)
+            identifiers = _ids(raw)
+            if any(not identifier.strip() for identifier in identifiers):
+                raise ValueError("every entity requires a non-empty id")
+            for chain in identifiers:
+                if chain in chains:
+                    raise ValueError(f"duplicate chain id: {chain!r}")
+                chains.add(chain)
+            identifier: str | tuple[str, ...] = (
+                tuple(identifiers)
+                if isinstance(raw.get("id"), list)
+                else identifiers[0]
+            )
             if kind == "ligand":
+                ligand_values: dict[str, str | None] = {}
+                for field_name in ("ccd", "smiles"):
+                    value = raw.get(field_name)
+                    ligand_values[field_name] = _document_text(
+                        value, name=f"ligand {field_name}"
+                    )
                 entities.append(
-                    Ligand(identifier, ccd=raw.get("ccd"), smiles=raw.get("smiles"))
+                    Ligand(
+                        identifier,
+                        ccd=ligand_values["ccd"],
+                        smiles=ligand_values["smiles"],
+                    )
                 )
                 continue
             polymer = {"protein": Protein, "dna": Dna, "rna": Rna}.get(str(kind))
             if polymer is None:
                 raise ValueError(f"unsupported entity type: {kind!r}")
+            sequence = raw.get("sequence")
+            if not isinstance(sequence, str) or not sequence.strip():
+                raise ValueError(
+                    f"{kind} entity requires a non-empty string sequence"
+                )
             entities.append(
                 polymer(
                     identifier,
-                    sequence=str(raw.get("sequence", "")),
-                    unpaired_msa=raw.get("unpaired_msa"),
-                    paired_msa=raw.get("paired_msa"),
+                    sequence=sequence.strip(),
+                    unpaired_msa=_document_text(
+                        raw.get("unpaired_msa"), name="unpaired_msa"
+                    ),
+                    paired_msa=_document_text(
+                        raw.get("paired_msa"), name="paired_msa"
+                    ),
                     modifications=tuple(
-                        Modification(str(item["ccd"]), int(item["position"]))
-                        for item in raw.get("modifications") or ()
-                        if isinstance(item, dict) and {"ccd", "position"} <= set(item)
+                        Modification(ccd, position)
+                        for ccd, position in _modifications(raw)
                     ),
                 )
             )
 
         bonds = tuple(
-            Bond(
-                (str(first[0]), int(first[1]), str(first[2])),
-                (str(second[0]), int(second[1]), str(second[2])),
-            )
-            for first, second in document.get("bonds") or ()
+            Bond(first, second) for first, second in _bonds(document, chains)
         )
         return cls(str(document.get("name", "")), tuple(entities), bonds)
 

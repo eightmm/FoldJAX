@@ -60,6 +60,26 @@ def pairformer_block(
     Dropout is omitted because this port targets inference/eval only.
     """
 
+    pair_gate = None
+    single_gate = None
+    single_attention_bias = None
+    if pair_mask is not None:
+        pair_valid = jnp.asarray(pair_mask).astype(bool)
+        pair_gate = pair_valid.astype(z.dtype)[..., None]
+        z = z * pair_gate
+        single_valid = jnp.diagonal(pair_valid, axis1=-2, axis2=-1)
+        single_gate = single_valid.astype(z.dtype)[..., None]
+        # Mask keys in the single path and gate queries below. Merely masking
+        # triangle updates is insufficient: otherwise padded keys still enter
+        # the single-attention softmax denominator and move every real token.
+        single_attention_bias = jnp.where(
+            single_valid[..., :, None] & single_valid[..., None, :],
+            jnp.asarray(0.0, dtype=z.dtype),
+            jnp.asarray(-1.0e10, dtype=z.dtype),
+        )
+        if s is not None:
+            s = s * single_gate.astype(s.dtype)
+
     z = z + triangle_multiplication(
         z,
         pair_mask,
@@ -68,6 +88,8 @@ def pairformer_block(
         chunk_size=triangle_mul_chunk_size,
         use_jit=(triangle_attention_backend or "").endswith("_jit"),
     )
+    if pair_gate is not None:
+        z = z * pair_gate
     z = z + triangle_multiplication(
         z,
         pair_mask,
@@ -76,6 +98,8 @@ def pairformer_block(
         chunk_size=triangle_mul_chunk_size,
         use_jit=(triangle_attention_backend or "").endswith("_jit"),
     )
+    if pair_gate is not None:
+        z = z * pair_gate
 
     tri_heads = int(params.tri_att_start.linear.weight.shape[0])
     z = z + triangle_attention(
@@ -86,6 +110,8 @@ def pairformer_block(
         q_chunk_size=triangle_att_q_chunk_size,
         attention_backend=triangle_attention_backend,
     )
+    if pair_gate is not None:
+        z = z * pair_gate
     z_t = jnp.swapaxes(z, -2, -3)
     pair_mask_t = None if pair_mask is None else jnp.swapaxes(pair_mask, -1, -2)
     z_t = z_t + triangle_attention(
@@ -97,6 +123,8 @@ def pairformer_block(
         attention_backend=triangle_attention_backend,
     )
     z = jnp.swapaxes(z_t, -2, -3)
+    if pair_gate is not None:
+        z = z * pair_gate
 
     pair_transition_fn = (
         compiled_transition
@@ -104,6 +132,8 @@ def pairformer_block(
         else transition
     )
     z = z + pair_transition_fn(z, params.pair_transition)
+    if pair_gate is not None:
+        z = z * pair_gate
 
     if params.attention_pair_bias is not None:
         if s is None:
@@ -121,13 +151,18 @@ def pairformer_block(
             num_heads=pair_heads,
             q_chunk_size=single_att_q_chunk_size,
             attention_backend=single_attention_backend,
+            extra_attn_bias=single_attention_bias,
         )
+        if single_gate is not None:
+            s = s * single_gate.astype(s.dtype)
         if params.single_transition is None:
             raise ValueError("missing single_transition for single path")
         single_transition_fn = (
             compiled_transition if single_attention_backend == "xla_jit" else transition
         )
         s = s + single_transition_fn(s, params.single_transition)
+        if single_gate is not None:
+            s = s * single_gate.astype(s.dtype)
 
     return s, z
 
@@ -194,4 +229,3 @@ def stack_pairformer_block_params(
     if not blocks:
         raise ValueError("stack_pairformer_block_params requires at least one block")
     return stacked_or_stack(blocks)
-

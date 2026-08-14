@@ -74,8 +74,17 @@ def diffusion_transformer_block(
     attention_backend: str = "xla",
     z_is_normalized: bool = False,
     extra_attn_bias: jnp.ndarray | None = None,
+    sequence_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Apply one inference-mode DiffusionTransformer block."""
+
+    gate = None
+    if sequence_mask is not None:
+        sequence_mask = jnp.asarray(sequence_mask).astype(bool)
+        if sequence_mask.ndim != 1 or sequence_mask.shape[0] != a.shape[-2]:
+            raise ValueError("diffusion transformer sequence_mask must have shape [N]")
+        gate = sequence_mask.astype(a.dtype)[..., None]
+        a = a * gate
 
     if n_queries is not None and n_keys is not None:
         if extra_attn_bias is not None:
@@ -90,9 +99,21 @@ def diffusion_transformer_block(
             num_heads=num_heads,
             n_queries=n_queries,
             n_keys=n_keys,
+            sequence_mask=sequence_mask,
             attention_backend=attention_backend,
         )
     else:
+        if sequence_mask is not None:
+            mask_bias = jnp.where(
+                sequence_mask[..., :, None] & sequence_mask[..., None, :],
+                jnp.asarray(0.0, dtype=a.dtype),
+                jnp.asarray(-1.0e10, dtype=a.dtype),
+            )
+            extra_attn_bias = (
+                mask_bias
+                if extra_attn_bias is None
+                else jnp.asarray(extra_attn_bias, dtype=a.dtype) + mask_bias
+            )
         attn_out = attention_pair_bias(
             a,
             s,
@@ -105,12 +126,17 @@ def diffusion_transformer_block(
             extra_attn_bias=extra_attn_bias,
         )
     a = a + attn_out
+    if gate is not None:
+        a = a * gate
     transition_fn = (
         _compiled_conditioned_transition_block
         if attention_backend == "xla_jit"
         else conditioned_transition_block
     )
-    return a + transition_fn(a, s, params.conditioned_transition)
+    a = a + transition_fn(a, s, params.conditioned_transition)
+    if gate is not None:
+        a = a * gate
+    return a
 
 
 def diffusion_transformer_stack(
@@ -127,6 +153,7 @@ def diffusion_transformer_stack(
     attention_backend: str = "xla",
     z_is_normalized: bool = False,
     extra_attn_bias: jnp.ndarray | None = None,
+    sequence_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Apply a DiffusionTransformer stack in inference mode."""
 
@@ -146,6 +173,7 @@ def diffusion_transformer_stack(
                 attention_backend=attention_backend,
                 z_is_normalized=z_is_normalized,
                 extra_attn_bias=extra_attn_bias,
+                sequence_mask=sequence_mask,
             )
         return a
 
@@ -181,6 +209,7 @@ def diffusion_transformer_stack(
                 attention_backend=attention_backend,
                 z_is_normalized=z_is_normalized,
                 extra_attn_bias=extra_attn_bias,
+                sequence_mask=sequence_mask,
             ),
             None,
         )
@@ -197,4 +226,3 @@ def stack_diffusion_transformer_block_params(
     if not blocks:
         raise ValueError("stack_diffusion_transformer_block_params requires blocks")
     return stacked_or_stack(blocks)
-

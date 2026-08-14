@@ -70,6 +70,13 @@ def main() -> int:
     parser.add_argument(
         "--skip-existing", action="store_true", help="leave finished rows alone"
     )
+    parser.add_argument(
+        "--traces",
+        type=Path,
+        help="also record device memory over time, one file per measurement. "
+        "The warm-up run is never traced: it is discarded work, and tracing it "
+        "would put a compile-bound curve next to the ones being compared.",
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, str(REPO))
@@ -127,6 +134,18 @@ def main() -> int:
                         "--model", model, "--case", case_name,
                         "--job", str(job), "--output-dir", str(work / "out"),
                         "--json-out", str(row), "--timeout", str(args.timeout),
+                    ]
+
+                if args.traces:
+                    # A wrapper, not a different runner: the measurement below
+                    # is byte-for-byte the one an untraced matrix runs, so a
+                    # trace and its table row can never be of different things.
+                    argv = [
+                        str(REPO / ".venv/bin/python"), "-m", "bench.trace", "run",
+                        "--model", model, "--impl", impl, "--case", case_name,
+                        "--out",
+                        str(args.traces / f"{model}-{impl}-{case_name}.jsonl"),
+                        "--", *argv,
                     ]
 
                 started = time.perf_counter()

@@ -178,6 +178,7 @@ def local_attention(
     trunked_attn_bias: jnp.ndarray | None,
     n_queries: int,
     n_keys: int,
+    sequence_mask: jnp.ndarray | None = None,
     inf: float = 1.0e10,
     attention_backend: str = "xla",
 ) -> jnp.ndarray:
@@ -192,6 +193,7 @@ def local_attention(
             trunked_attn_bias=trunked_attn_bias,
             n_queries=n_queries,
             n_keys=n_keys,
+            sequence_mask=sequence_mask,
             inf=inf,
             attention_backend="xla",
         )
@@ -208,6 +210,17 @@ def local_attention(
         n_queries=n_queries,
         n_keys=n_keys,
     )
+    if sequence_mask is not None:
+        sequence_mask = jnp.asarray(sequence_mask).astype(bool)
+        if sequence_mask.ndim != 1 or sequence_mask.shape[0] != q_x.shape[-2]:
+            raise ValueError("local attention sequence_mask must have shape [N_atom]")
+        q_valid, k_valid, _, _ = _local_qk_trunks(
+            sequence_mask[:, None],
+            sequence_mask[:, None],
+            n_queries=n_queries,
+            n_keys=n_keys,
+        )
+        mask = mask & q_valid[..., 0, None] & k_valid[..., None, :, 0]
     mask = mask.reshape((1,) * (q_trunked.ndim - 4) + mask.shape)
     if attention_backend == "xla":
         logits = jnp.einsum("...htqd,...htkd->...htqk", q_trunked, k_trunked)
@@ -236,7 +249,10 @@ def local_attention(
         gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
         out = out * gate
     out = out.reshape(out.shape[:-2] + (-1,))
-    return linear(out, params.linear_o)
+    out = linear(out, params.linear_o)
+    if sequence_mask is not None:
+        out = out * sequence_mask.astype(out.dtype)[..., None]
+    return out
 
 
 _compiled_local_attention = jax.jit(
@@ -260,6 +276,7 @@ def local_attention_pair_bias(
     num_heads: int,
     n_queries: int,
     n_keys: int,
+    sequence_mask: jnp.ndarray | None = None,
     attention_backend: str = "xla",
 ) -> jnp.ndarray:
     """Run adaptive local ``AttentionPairBias`` for AtomTransformer."""
@@ -280,6 +297,7 @@ def local_attention_pair_bias(
         trunked_attn_bias=bias,
         n_queries=n_queries,
         n_keys=n_keys,
+        sequence_mask=sequence_mask,
         attention_backend=attention_backend,
     )
     if params.linear_a_last is not None:

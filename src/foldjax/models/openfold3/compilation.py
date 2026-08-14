@@ -6,10 +6,10 @@ measured on an RTX PRO 6000, ~290 s at 32 tokens, ~340 s at 128, and ~650 s at 3
 cost is paid again in every new process, which is most of the wall clock of a
 one-off prediction.
 
-Enabling it is opt-in rather than automatic. Importing the port already sets
-allocator defaults, but those are process-local; writing
-hundreds of megabytes to a directory the caller never named is a different kind of
-side effect.
+Importing the library never enables it: writing hundreds of megabytes is not an
+acceptable import side effect. The FoldJAX backend and standalone prediction CLI
+do enable it at execution time by default, with explicit opt-outs; direct library
+callers choose by calling :func:`enable_compilation_cache`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def default_cache_dir() -> Path:
     standalone package keeps using it rather than silently recompiling into a
     new location.
 
-    Only the native ``openfold3-jax-predict`` path reaches this. Predictions
+    The native ``openfold3-jax-predict`` path uses this default. Predictions
     driven through `foldjax predict` are given a cache directory that
     `api.predict` has already namespaced per model, weight identity, and
     compile-relevant options.

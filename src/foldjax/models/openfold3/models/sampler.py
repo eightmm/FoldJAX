@@ -22,6 +22,8 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._random import masked_prefix_draw
+
 
 def sample_diffusion(
     key: jax.Array,
@@ -35,6 +37,8 @@ def sample_diffusion(
     step_scale: float,
     augment_fn: Callable[[jax.Array, jnp.ndarray], jnp.ndarray] | None = None,
     noise_fn: Callable[[int, tuple[int, ...]], jnp.ndarray] | None = None,
+    noise_tape: jnp.ndarray | None = None,
+    noise_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Roll out the EDM sampler.
 
@@ -56,6 +60,15 @@ def sample_diffusion(
             Supplied to compare the rollout against another implementation's
             random stream, which cannot otherwise be matched; ``None`` uses
             ``key``.
+        noise_tape: Runtime array ``[steps + 1, *shape]`` replacing the same
+            draws. Padding mode builds it at the real atom count and right-pads
+            it, so a serving bucket cannot change the same seed's molecular
+            noise prefix. Mutually exclusive with ``noise_fn``.
+        noise_mask: Runtime mask with shape ``shape[:-1]``. Random coordinate
+            rows are drawn from the compact prefix and scattered into the valid
+            entries, preserving an unpadded run's stream without retaining a
+            full rollout tape. Mutually exclusive with ``noise_fn`` and
+            ``noise_tape``.
 
     Returns:
         Coordinates of shape ``shape``.
@@ -67,9 +80,37 @@ def sample_diffusion(
     noise_keys = jax.random.split(noise_root, n_steps)
     augment_keys = jax.random.split(augment_root, n_steps)
 
-    if noise_fn is None:
+    if sum(value is not None for value in (noise_fn, noise_tape, noise_mask)) > 1:
+        raise ValueError("noise_fn, noise_tape and noise_mask are mutually exclusive")
+    if noise_mask is not None:
+        noise_mask = jnp.asarray(noise_mask, dtype=bool)
+        expected_mask = shape[:-1]
+        if tuple(noise_mask.shape) != expected_mask:
+            raise ValueError(
+                f"noise_mask expected shape {expected_mask}, got {noise_mask.shape}"
+            )
+
+    def normal(draw_key: jax.Array) -> jnp.ndarray:
+        if noise_mask is None:
+            return jax.random.normal(draw_key, shape)
+        return masked_prefix_draw(
+            jax.random.normal,
+            draw_key,
+            noise_mask,
+            trailing_shape=(shape[-1],),
+        )
+
+    if noise_tape is not None:
+        injected = jnp.asarray(noise_tape)
+        expected = (n_steps + 1, *shape)
+        if tuple(injected.shape) != expected:
+            raise ValueError(
+                f"noise_tape expected shape {expected}, got {injected.shape}"
+            )
+        xl = noise_schedule[0] * injected[0]
+    elif noise_fn is None:
         injected = None
-        xl = noise_schedule[0] * jax.random.normal(init_key, shape)
+        xl = noise_schedule[0] * normal(init_key)
     else:
         # Materialize the injected draws so the rollout can be scanned. The
         # callback is a pure function of the step index, so this changes only when
@@ -87,9 +128,7 @@ def sample_diffusion(
         gamma = jnp.where(c_tau > gamma_min, gamma_0, 0.0)
         t = previous * (gamma + 1.0)
 
-        drawn = (
-            jax.random.normal(noise_key, shape) if injected is None else step_noise
-        )
+        drawn = normal(noise_key) if injected is None else step_noise
         xl_noisy = xl + (
             noise_scale * jnp.sqrt(jnp.maximum(t**2 - previous**2, 0.0)) * drawn
         )
@@ -116,3 +155,28 @@ def sample_diffusion(
         ),
     )
     return xl
+
+
+def padded_noise_tape(
+    key: jax.Array,
+    *,
+    n_steps: int,
+    n_sample: int,
+    actual_atoms: int,
+    target_atoms: int,
+) -> jnp.ndarray:
+    """Replay the ordinary sampler draws, then suffix-pad only their atom axis."""
+
+    if n_steps < 1 or n_sample < 1 or actual_atoms < 1:
+        raise ValueError("noise tape dimensions must be positive")
+    if target_atoms < actual_atoms:
+        raise ValueError("target_atoms cannot be smaller than actual_atoms")
+    init_key, noise_root, _augment_root = jax.random.split(key, 3)
+    keys = (init_key, *jax.random.split(noise_root, n_steps))
+    natural = jnp.stack(
+        [
+            jax.random.normal(draw_key, (n_sample, actual_atoms, 3))
+            for draw_key in keys
+        ]
+    )
+    return jnp.pad(natural, ((0, 0), (0, 0), (0, target_atoms - actual_atoms), (0, 0)))

@@ -506,9 +506,7 @@ def test_static_infer_adds_esm_for_esm_model(
         n_atom = len(features["atom_to_token_idx"])
         return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
 
-    monkeypatch.setattr(
-        "foldjax.models.protenix.data.esm.FairEsmProvider", FakeProvider
-    )
+    monkeypatch.setattr("foldjax.models.protenix.data.esm.JaxEsmProvider", FakeProvider)
     monkeypatch.setattr(
         "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
     )
@@ -537,6 +535,144 @@ def test_static_infer_adds_esm_for_esm_model(
 
     assert providers == [(provider_name, checkpoint_dir)]
     assert captured["esm_token_embedding"].shape == (1, 2560)
+
+
+def test_static_infer_pads_mini_esm_language_model_and_reports_profile(
+    tmp_path, monkeypatch
+) -> None:
+    from foldjax.models.protenix.cli.predict import main as predict_main
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    input_json = tmp_path / "input.json"
+    input_json.write_text(
+        '[{"sequences": [{"proteinChain": {"sequence": "A", "count": 1}}]}]'
+    )
+    save_native_weights(weights_path, _toy_params_with_relp_dim(139), compress=False)
+    language_targets: list[int] = []
+    captured: dict[str, object] = {}
+    profiles: list[tuple[object, object]] = []
+
+    class FakeProvider:
+        max_sequence_length = 4094
+
+        def __init__(self, _model_name, *, checkpoint_dir):
+            del checkpoint_dir
+
+        def __call__(self, sequence):
+            return np.ones((len(sequence), 2560), dtype=np.float32)
+
+        def embed(self, sequence, *, target_length):
+            language_targets.append(target_length)
+            return np.ones((len(sequence), 2560), dtype=np.float32)
+
+    def fake_predict(_params, features, **kwargs):
+        captured["features"] = features
+        captured["kwargs"] = kwargs
+        n_atom = len(features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    def collect_profile(plan, static):
+        profiles.append((plan, static))
+
+    monkeypatch.setattr("foldjax.models.protenix.data.esm.JaxEsmProvider", FakeProvider)
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    predict_main(
+        [
+            "--weights",
+            str(weights_path),
+            "--input-json",
+            str(input_json),
+            "--out",
+            str(tmp_path / "out.npz"),
+            "--model-name",
+            "protenix_mini_esm_v0.5.0",
+            "--trunk-dtype",
+            "fp32",
+            "--n-sample",
+            "1",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--padding",
+            "--pad-tokens",
+            "8",
+            "--pad-atoms",
+            "8",
+            "--pad-msa",
+            "4",
+            "--pad-templates",
+            "4",
+            "--pad-language-model-tokens",
+            "16",
+            "--no-compile-cache",
+        ],
+        on_padding_plan=collect_profile,
+    )
+
+    features = captured["features"]
+    kwargs = captured["kwargs"]
+    assert language_targets == [16]
+    assert features["restype"].shape[0] == 8
+    assert kwargs["padded_generated_schema"] is True
+    plan, static = profiles[0]
+    assert plan.target["language_model_tokens"] == 16
+    assert static == {"chains": 1}
+
+
+def test_static_esm_features_bypass_language_model_checkpoint(
+    tmp_path, monkeypatch
+) -> None:
+    weights_path = tmp_path / "toy_weights.pkl"
+    features_path = tmp_path / "features.npz"
+    features = dict(_toy_features())
+    n_token = int(features["restype"].shape[-2])
+    expected = np.arange(n_token * 2560, dtype=np.float32).reshape(n_token, 2560)
+    features["esm_token_embedding"] = expected
+    save_native_weights(
+        weights_path, _toy_params_with_relp_dim(139), compress=False
+    )
+    save_static_feature_npz(features_path, features)
+    captured = {}
+
+    class UnexpectedProvider:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("precomputed ESM features constructed a provider")
+
+    def fake_predict(_params, model_features, **_kwargs):
+        captured.update(model_features)
+        n_atom = len(model_features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.data.esm.JaxEsmProvider", UnexpectedProvider
+    )
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    main(
+        [
+            "--weights",
+            str(weights_path),
+            "--features",
+            str(features_path),
+            "--out",
+            str(tmp_path / "out.npz"),
+            "--model-name",
+            "protenix_mini_esm_v0.5.0",
+            "--trunk-dtype",
+            "fp32",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--no-compile-cache",
+        ]
+    )
+
+    np.testing.assert_array_equal(captured["esm_token_embedding"], expected)
 
 
 @pytest.mark.parametrize("mode", ["local", "remote"])

@@ -139,6 +139,7 @@ def input_feature_embedder(
         n_queries=n_queries,
         n_keys=n_keys,
         use_scan=use_scan,
+        atom_mask=input_feature_dict.get("atom_padding_mask"),
     )
     batch_shape = input_feature_dict["restype"].shape[:-1]
     s_inputs = jnp.concatenate(
@@ -155,6 +156,9 @@ def input_feature_embedder(
             input_feature_dict["esm_token_embedding"],
             params.linear_esm,
         )
+    token_mask = input_feature_dict.get("token_padding_mask")
+    if token_mask is not None:
+        s_inputs = s_inputs * jnp.asarray(token_mask, dtype=s_inputs.dtype)[..., None]
     return s_inputs
 
 

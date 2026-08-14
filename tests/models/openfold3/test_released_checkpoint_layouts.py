@@ -61,7 +61,11 @@ def test_chemistry_table_round_trips_through_the_feature_file(tmp_path) -> None:
     fields = RepresentativeAtomTable._fields
     table = RepresentativeAtomTable(
         **{
-            name: np.full(3, index, dtype=np.float32)
+            # The released table is indexed by the 32 model residue bins.
+            # A three-entry stand-in used to exercise serialization only, but
+            # it is not a table inference can safely consume and is now
+            # rejected at the archive boundary.
+            name: np.full(32, index, dtype=np.float32)
             for index, name in enumerate(fields)
         }
     )

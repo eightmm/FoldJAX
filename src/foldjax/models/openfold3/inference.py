@@ -31,6 +31,7 @@ from foldjax.models.openfold3.models.diffusion_conditioning import (
     single_conditioning,
 )
 from foldjax.models.openfold3.models.diffusion_schedule import noise_schedule
+from foldjax.models.openfold3.models.frames import token_frame_atoms
 from foldjax.models.openfold3.models.heads import (
     AtomHeadParams,
     PairformerEmbeddingParams,
@@ -312,6 +313,8 @@ def predict(
     *,
     n_chain: int | None = None,
     noise_fn: Callable[[int, tuple[int, ...]], jnp.ndarray] | None = None,
+    noise_tape: jnp.ndarray | None = None,
+    noise_mask: jnp.ndarray | None = None,
     augment: bool = True,
     use_trunk_pair_embedding: bool = True,
 ) -> Prediction:
@@ -322,9 +325,14 @@ def predict(
         batch: featurized input.
         params: mapped parameters.
         config: shapes and hyperparameters from the checkpoint.
-        n_chain: chain-id upper bound; enables ipTM outputs when given.
+        n_chain: chain-id upper bound; enables the chain-pair ipTM matrix for a
+            multichain input. Aggregate ipTM is returned for every input.
         noise_fn: forwarded to the sampler to replace its random draws; supplied
             only to compare the rollout against another implementation.
+        noise_tape: runtime sampler draws used by shape padding to preserve the
+            real atom prefix for a fixed seed.
+        noise_mask: runtime sample/atom mask used to preserve that prefix
+            without materializing all rollout draws at once.
         augment: apply centred random augmentation each rollout step. Turning it
             off is for the same comparison, not for production.
         use_trunk_pair_embedding: feed the trunk pair embedding into the confidence
@@ -442,6 +450,8 @@ def predict(
             else None
         ),
         noise_fn=noise_fn,
+        noise_tape=noise_tape,
+        noise_mask=noise_mask,
     )
 
     # The distogram head is the only one that reads the trunk pair embedding.
@@ -549,13 +559,17 @@ def predict(
             n_atom=config.n_atom,
         )
 
-    # pTM needs a per-sample frame mask; broadcast the token mask when the
-    # featurizer did not supply one.
-    has_frame = batch.get("has_frame")
-    if has_frame is None:
-        has_frame = jnp.broadcast_to(
-            batch["token_mask"][..., :], (config.num_samples, config.n_token)
-        )
+    # pTM/ipTM exclude tokens whose *predicted* coordinates cannot form a valid
+    # local frame. For atomized ligands and modified residues this depends on
+    # their two closest same-chain atoms and their angle. A feature archive can
+    # contain a frame mask for its input/reference geometry, but reusing that
+    # mask for every diffusion sample changes the confidence score, so derive it
+    # unconditionally here.
+    _, has_frame = token_frame_atoms(
+        sampled_batch,
+        coordinates,
+        sampled_batch["atom_mask"],
+    )
     pae_for_ptm = jnp.broadcast_to(
         pae_logits, (config.num_samples, *pae_logits.shape[-3:])
     )
@@ -567,17 +581,20 @@ def predict(
     token_mask = batch["token_mask"].reshape(-1)[: config.n_token]
     ptm = compute_ptm(pae_for_ptm, has_frame, token_mask, **ptm_kwargs)
 
-    iptm = chain_pair = None
-    if n_chain is not None:
-        asym_id = batch["asym_id"].reshape(-1)[: config.n_token]
-        iptm = compute_ptm(
-            pae_for_ptm,
-            has_frame,
-            token_mask,
-            asym_id=asym_id,
-            interface=True,
-            **ptm_kwargs,
-        )
+    # ipTM has well-defined zero semantics for a monomer (there are no
+    # inter-chain pairs), so it is a scalar output for every input. Only the
+    # chain-pair matrix is conditional on an actual multichain complex.
+    asym_id = batch["asym_id"].reshape(-1)[: config.n_token]
+    iptm = compute_ptm(
+        pae_for_ptm,
+        has_frame,
+        token_mask,
+        asym_id=asym_id,
+        interface=True,
+        **ptm_kwargs,
+    )
+    chain_pair = None
+    if n_chain is not None and n_chain > 1:
         chain_pair = compute_chain_pair_iptm(
             pae_for_ptm,
             has_frame,
@@ -705,9 +722,11 @@ def compile_predict(
     checkpoint, or averaged weights -- without recompiling. Changing ``config``,
     the batch shapes, or any keyword here does require a new compilation.
 
-    ``noise_fn`` is deliberately not exposed: it exists to replay another
-    implementation's random stream in tests, and baking a Python callback into a
-    compiled function would defeat the scan.
+    ``noise_fn`` is deliberately not used by production callers: baking a
+    Python callback into a compiled function would defeat the scan. A concrete
+    ``noise_tape`` and ``noise_mask`` remain normal runtime keyword arguments.
+    Padding uses the mask so the compact random stream is preserved without
+    retaining every rollout draw at once.
     """
     return jax.jit(
         functools.partial(

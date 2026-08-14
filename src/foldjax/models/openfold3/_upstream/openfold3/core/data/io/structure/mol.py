@@ -21,8 +21,16 @@ from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import Mol
 
-from foldjax.models.openfold3._upstream.openfold3.core.data.io import utils
 from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.component import AnnotatedMol
+
+
+def _is_intlike_string(value: str) -> bool:
+    """Return whether ``value`` has an integer representation."""
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
 
 
 def read_single_sdf(path: PathLike) -> Mol:
@@ -112,7 +120,7 @@ def read_single_annotated_sdf(path: PathLike) -> AnnotatedMol:
                     atom.SetBoolProp(key, True)
                 elif annot.lower() == "false":
                     atom.SetBoolProp(key, False)
-                elif utils.is_intlike_string(annot):
+                elif _is_intlike_string(annot):
                     atom.SetIntProp(key, int(annot))
                 else:
                     atom.SetProp(key, annot)

@@ -343,17 +343,16 @@ def parse_msas_alignment_database(
 def parse_msas_preparsed(
     file_list: list[Path],
 ) -> dict[str, MsaArray]:
-    """Parses a pre-parsed .npz file into a dictionary of Msa objects.
+    """Parses a pickle-free pre-parsed .npz into a dictionary of Msa objects.
 
-    This function is used to parse MSAs for a single chain. If a list of npz files is
-    provided, where each file contains a dict of MSA arrays, the function will
-    concatenate the MSAs from all dicts into a single dict, so for repeating keys, only
-    the last MSA will be kept.
+    FoldJAX stores each database under three plain array keys:
+    ``<database>__msa``, ``<database>__deletion_matrix``, and optional
+    ``<database>__metadata``. The old object-valued archive format is deliberately not
+    loaded because doing so requires pickle execution.
 
     Args:
         file_list (list[Path]):
-            Path a list of npz files pre-parsed using
-            foldjax.models.openfold3._upstream.openfold3.scripts.data_preprocessing.preparse_alginments_of3.
+            Paths to pickle-free FoldJAX MSA archives.
 
     Returns:
         dict[str, MsaArray]:
@@ -362,21 +361,69 @@ def parse_msas_preparsed(
     msas = {}
 
     for aln_file in file_list:
-        # Parse npz file
-        with np.load(aln_file, allow_pickle=True) as pre_parsed_msas:
-            # Unpack the pre-parsed MSA arrays into a dict of MsaArrays
-            for k in list(pre_parsed_msas.keys()):
-                unpacked_msas = pre_parsed_msas[k].item()
-                if k in msas:
+        with np.load(aln_file, allow_pickle=False) as pre_parsed_msas:
+            suffix = "__msa"
+            database_names = [
+                key[: -len(suffix)]
+                for key in pre_parsed_msas.files
+                if key.endswith(suffix)
+            ]
+            if not database_names:
+                raise ValueError(
+                    f"Pre-parsed MSA {aln_file} is not a safe FoldJAX archive. "
+                    "Expected plain <database>__msa and "
+                    "<database>__deletion_matrix arrays. Object-valued upstream "
+                    "archives are not loaded because they require pickle."
+                )
+            for database_name in database_names:
+                deletion_key = f"{database_name}__deletion_matrix"
+                if deletion_key not in pre_parsed_msas.files:
+                    raise ValueError(
+                        f"Pre-parsed MSA {aln_file} lacks {deletion_key!r}"
+                    )
+                msa_array = np.asarray(pre_parsed_msas[f"{database_name}__msa"])
+                deletion_matrix = np.asarray(pre_parsed_msas[deletion_key])
+                metadata_key = f"{database_name}__metadata"
+                metadata = (
+                    np.asarray(pre_parsed_msas[metadata_key])
+                    if metadata_key in pre_parsed_msas.files
+                    else np.full(msa_array.shape[0], "", dtype="U1")
+                )
+                if msa_array.dtype.kind not in {"U", "S"} or msa_array.ndim != 2:
+                    raise ValueError(
+                        f"Pre-parsed MSA {database_name!r} must be a 2D string array"
+                    )
+                if (
+                    deletion_matrix.dtype.kind not in {"i", "u"}
+                    or deletion_matrix.shape != msa_array.shape
+                ):
+                    raise ValueError(
+                        f"Pre-parsed MSA {database_name!r} deletion matrix must be "
+                        "an integer array with the same shape as msa"
+                    )
+                if metadata.ndim != 1 or metadata.shape[0] != msa_array.shape[0]:
+                    raise ValueError(
+                        f"Pre-parsed MSA {database_name!r} metadata must have one "
+                        "string per row"
+                    )
+                if metadata.dtype.kind not in {"U", "S"}:
+                    raise ValueError(
+                        f"Pre-parsed MSA {database_name!r} metadata must be strings"
+                    )
+                if msa_array.dtype.kind == "S":
+                    msa_array = msa_array.astype("U1")
+                if metadata.dtype.kind == "S":
+                    metadata = metadata.astype(str)
+                if database_name in msas:
                     warnings.warn(
-                        f"Found duplicate key {k} in {aln_file}. Only the last "
+                        f"Found duplicate key {database_name} in {aln_file}. Only the last "
                         "MSA will be kept.",
                         stacklevel=2,
                     )
-                msas[k] = MsaArray(
-                    msa=unpacked_msas["msa"],
-                    deletion_matrix=unpacked_msas["deletion_matrix"],
-                    metadata=unpacked_msas["metadata"],
+                msas[database_name] = MsaArray(
+                    msa=msa_array,
+                    deletion_matrix=deletion_matrix,
+                    metadata=metadata,
                 )
 
     return msas

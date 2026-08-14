@@ -85,15 +85,15 @@ def test_materialized_opendde_job_parses_with_native_loader(tmp_path: Path) -> N
 
 
 def test_boltz_predict_accepts_the_keywords_the_adapter_passes() -> None:
-    # foldjax.models.boltz2.predict imports Boltz's torch/lightning featurizer, so this
-    # asserts against the signature in source rather than importing it.
+    # Reading the signature from source keeps this contract check off JAX's import
+    # cost; prediction itself and its NumPy featurizer are part of the base install.
     source = (_boltz_jax_root() / "api.py").read_text(encoding="utf-8")
     signature = source.split("def predict(", 1)[1].split(") -> dict", 1)[0]
     for keyword in ("input", "weights", "mols", "out_dir", "seed", "compile_cache"):
         assert f"{keyword}:" in signature, keyword
 
 
-def test_boltz_backend_reports_a_missing_featurization_extra(
+def test_boltz_backend_reports_a_missing_base_dependency(
     tmp_path: Path, monkeypatch
 ) -> None:
     from foldjax.backends import boltz2
@@ -101,7 +101,7 @@ def test_boltz_backend_reports_a_missing_featurization_extra(
     class Lazy:
         @property
         def predict(self):
-            raise ModuleNotFoundError(name="pytorch_lightning")
+            raise ModuleNotFoundError(name="required_package")
 
     monkeypatch.setattr(boltz2, "import_module", lambda name: Lazy())
     request = PredictionRequest(
@@ -111,8 +111,9 @@ def test_boltz_backend_reports_a_missing_featurization_extra(
         output_dir=tmp_path / "out",
         options={"mols": tmp_path},
     )
-    with pytest.raises(ModuleNotFoundError, match="boltz-preprocess"):
+    with pytest.raises(ModuleNotFoundError, match="base installation") as error:
         boltz2.Boltz2Backend().predict(request)
+    assert "boltz-preprocess" not in str(error.value)
 
 
 def _write_yaml(tmp_path: Path) -> Path:

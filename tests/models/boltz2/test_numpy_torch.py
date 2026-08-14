@@ -105,4 +105,4 @@ def test_unimplemented_operations_raise_rather_than_approximate() -> None:
 def test_the_selector_reports_which_backend_is_in_use() -> None:
     from foldjax.models.boltz2.data._torch import BACKEND
 
-    assert BACKEND in {"torch", "numpy"}
+    assert BACKEND == "numpy"

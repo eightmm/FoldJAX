@@ -10,11 +10,15 @@ changing the exit code.
 from __future__ import annotations
 
 import json
+import operator
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from foldjax.models.boltz2.data.identifiers import validate_ccd_identifier
 from foldjax.schema import ModelCapabilities
 
 _ENTITY_TYPES = ("protein", "dna", "rna", "ligand")
@@ -65,7 +69,10 @@ _TARGETS = {
     # enforces and this writer therefore has to: alignment files are selected by
     # *stem* and only database names are parsed, and a paired MSA that cannot
     # actually be paired collapses the MSA to the query sequence alone.
-    "openfold3": _Target(".json", _ALL_FEATURES),
+    # The released OpenFold3 query schema declares covalent bonds but its
+    # featurizer never applies them. Advertising the field would silently drop
+    # chemistry, so reject it until the upstream pipeline consumes the contract.
+    "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"}),
     # ESMFold2's entry point takes a sequence, not a job file, so its adapter
     # reads the FoldJAX document itself. The document is still written out and
     # still validated -- against a backend that declares protein only, so a
@@ -77,14 +84,32 @@ _TARGETS = {
 def _ids(entity: dict[str, Any]) -> list[str]:
     value = entity.get("id")
     if isinstance(value, str):
-        return [value]
+        identifiers = [value]
     if isinstance(value, list) and value:
-        return [str(item) for item in value]
-    raise ValueError("every entity requires a non-empty id")
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError("every entity id must be a string")
+        identifiers = value
+    elif not isinstance(value, str):
+        raise ValueError("every entity requires a non-empty id")
+    normalized = [identifier.strip() for identifier in identifiers]
+    if any(not identifier for identifier in normalized):
+        raise ValueError("every entity requires a non-empty id")
+    return normalized
+
+
+def _strict_position(value: Any, *, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(operator.index(value))
+    except TypeError as error:
+        raise ValueError(f"{name} must be an integer") from error
 
 
 def _path(value: Any, base: Path) -> str:
-    path = Path(str(value))
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("MSA references must be non-empty path strings")
+    path = Path(value.strip())
     return str(path if path.is_absolute() else (base / path).resolve())
 
 
@@ -107,11 +132,12 @@ def _modifications(entity: dict[str, Any]) -> list[tuple[str, int]]:
             raise ValueError(
                 "each modification requires exactly a ccd and a position field"
             )
-        ccd = str(item["ccd"]).strip()
-        try:
-            position = int(item["position"])
-        except (TypeError, ValueError) as error:
-            raise ValueError("modification position must be an integer") from error
+        if not isinstance(item["ccd"], str):
+            raise ValueError("modification ccd must be a string")
+        ccd = item["ccd"].strip()
+        position = _strict_position(
+            item["position"], name="modification position"
+        )
         if not ccd:
             raise ValueError("modification ccd must be non-empty")
         if not 1 <= position <= length:
@@ -150,11 +176,12 @@ def _bonds(job: dict[str, Any], chains: set[str]) -> list[tuple[_Endpoint, _Endp
                     "each bond atom must be [chain_id, residue_index, atom_name]"
                 )
             chain, residue, atom = endpoint
-            chain, atom = str(chain), str(atom)
-            try:
-                residue = int(residue)
-            except (TypeError, ValueError) as error:
-                raise ValueError("bond residue index must be an integer") from error
+            if not isinstance(chain, str) or not isinstance(atom, str):
+                raise ValueError("bond chain id and atom name must be strings")
+            chain, atom = chain.strip(), atom.strip()
+            if not chain or not atom:
+                raise ValueError("bond chain id and atom name must be non-empty")
+            residue = _strict_position(residue, name="bond residue index")
             if chains and chain not in chains:
                 raise ValueError(f"bond references unknown chain id: {chain!r}")
             if residue < 1:
@@ -197,21 +224,53 @@ def _validate(
             chains.add(chain_id)
 
         if kind == "ligand":
+            for field_name in ("ccd", "smiles"):
+                field_value = entity.get(field_name)
+                if field_value is not None and (
+                    not isinstance(field_value, str) or not field_value.strip()
+                ):
+                    raise ValueError(
+                        f"ligand {field_name} must be a non-empty string"
+                    )
+                if field_value is not None:
+                    entity[field_name] = field_value.strip()
             if not (entity.get("ccd") or entity.get("smiles")):
                 raise ValueError("ligand entity requires ccd or smiles")
             if entity.get("ccd") and entity.get("smiles"):
                 raise ValueError("ligand entity accepts either ccd or smiles, not both")
+            if model == "boltz2" and entity.get("ccd"):
+                entity["ccd"] = validate_ccd_identifier(
+                    entity["ccd"], field="ligand CCD code"
+                )
             feature = "ligand_ccd" if entity.get("ccd") else "ligand_smiles"
             if feature not in target.features:
                 _reject(model, feature, "supply the other ligand representation")
             continue
 
-        if not entity.get("sequence"):
-            raise ValueError(f"{kind} entity requires sequence")
-        for feature in ("unpaired_msa", "paired_msa", "modifications"):
-            if entity.get(feature) and feature not in target.features:
+        sequence = entity.get("sequence")
+        if not isinstance(sequence, str) or not sequence.strip():
+            raise ValueError(f"{kind} entity requires a non-empty string sequence")
+        entity["sequence"] = sequence.strip()
+        for feature in ("unpaired_msa", "paired_msa"):
+            value = entity.get(feature)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(f"{feature} must be a non-empty path string")
+            if value is not None and feature not in target.features:
                 _reject(model, feature, f"remove it from entity {_ids(entity)[0]!r}")
-        _modifications(entity)
+            if value is not None:
+                entity[feature] = value.strip()
+        if entity.get("modifications") and "modifications" not in target.features:
+            _reject(
+                model,
+                "modifications",
+                f"remove it from entity {_ids(entity)[0]!r}",
+            )
+        modifications = _modifications(entity)
+        if model == "boltz2":
+            for ccd, _ in modifications:
+                validate_ccd_identifier(ccd, field="modification CCD code")
 
     if job.get("bonds") and "bonds" not in target.features:
         _reject(model, "bonds", "use that model's native input format instead")
@@ -242,7 +301,7 @@ def _alphafold3(job: dict[str, Any], base: Path, seed: int) -> dict[str, Any]:
             # MSA is a different thing and is accepted -- it means single
             # sequence, which is what the other backends already fall back to
             # when a job carries no alignment. Say so explicitly rather than
-            # failing a job the other four models accept.
+            # failing a job the other MSA-capable models accept.
             if kind in ("protein", "rna") and not unpaired:
                 body["unpairedMsa"] = ""
             if kind == "protein":
@@ -404,8 +463,21 @@ _OPENFOLD3_MAIN_STEM = "colabfold_main"
 _OPENFOLD3_PAIRED_STEM = "colabfold_paired"
 
 
+def _link_or_copy_atomic(source: Path, target: Path) -> None:
+    """Publish a generated alignment link without following ``target``."""
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-msa-link-", dir=target.parent
+    ) as scratch:
+        staged = Path(scratch) / target.name
+        try:
+            staged.symlink_to(source.resolve())
+        except OSError:
+            shutil.copyfile(source, staged)
+        os.replace(staged, target)
+
+
 def _openfold3_msa(
-    value: Any, base: Path, field: str, destination: Path, chain: str
+    value: Any, base: Path, field: str, destination: Path, entity_index: int
 ) -> list[str]:
     """The alignment, under a name OpenFold3 will actually read.
 
@@ -414,38 +486,78 @@ def _openfold3_msa(
     which is honest but leaves the backend unable to take the one thing users
     have -- an `.a3m` named after the target. Linking it under an accepted stem
     keeps the refusal's real point (nothing is silently dropped) while letting
-    the run happen, and the link goes in a per-chain directory because two
-    chains with different alignments would otherwise both want the same name.
+    the run happen, and the link goes in a per-entity directory because two
+    entities with different alignments would otherwise both want the same name.
     """
     path = Path(_path(value, base))
-    if not path.suffix or path.stem in _OPENFOLD3_MSA_STEMS:
+    if path.is_dir():
         return [str(path)]
+
+    if not path.is_file():
+        raise FileNotFoundError(f"MSA path is not a file or directory: {path}")
+
+    suffix = path.suffix.lower()
+    supported_suffixes = {".a3m", ".sto"}
+    if suffix in supported_suffixes and path.stem in _OPENFOLD3_MSA_STEMS:
+        return [str(path)]
+
+    if suffix not in supported_suffixes:
+        # Extension-less files are common when an alignment comes from a
+        # workflow artifact store. OpenFold3 itself dispatches on extension,
+        # so infer only the two unambiguous text formats and otherwise fail at
+        # this boundary instead of passing a file it will silently ignore.
+        prefix = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        content = prefix.lstrip("\ufeff \t\r\n")
+        if content.startswith("# STOCKHOLM"):
+            suffix = ".sto"
+        elif content.startswith(">"):
+            suffix = ".a3m"
+        else:
+            raise ValueError(
+                f"cannot infer MSA format for {path}; use an A3M/FASTA file "
+                "starting with '>' or Stockholm starting with '# STOCKHOLM'"
+            )
 
     # Equality, not `"paired" in field`: the other caller passes "unpaired_msa",
     # which contains it, and would have linked an unpaired alignment under the
     # paired stem -- a silent halving of the row cap, 16,384 to 8,192.
     stem = _OPENFOLD3_PAIRED_STEM if field == "paired_msa" else _OPENFOLD3_MAIN_STEM
-    directory = destination / "msa" / chain
+    # User-controlled chain identifiers are document data, not path components.
+    # A fixed positional directory is stable for one materialized job and cannot
+    # turn values such as ``../../outside`` into a traversal.
+    msa_root = destination / "msa"
+    if msa_root.is_symlink():
+        raise ValueError(f"generated MSA directory is a symlink: {msa_root}")
+    msa_root.mkdir(parents=True, exist_ok=True)
+    if not msa_root.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f"generated MSA directory escapes output root: {msa_root}")
+    directory = msa_root / f"entity_{entity_index:04d}"
+    if directory.is_symlink():
+        raise ValueError(f"generated MSA directory is a symlink: {directory}")
     directory.mkdir(parents=True, exist_ok=True)
-    linked = directory / f"{stem}{path.suffix}"
-    if linked.is_symlink() or linked.exists():
-        linked.unlink()
-    try:
-        linked.symlink_to(path.resolve())
-    except OSError:
-        # Windows without developer mode, or a filesystem that refuses links.
-        shutil.copyfile(path, linked)
+    if not directory.resolve().is_relative_to(destination.resolve()):
+        raise ValueError(f"generated MSA directory escapes output root: {directory}")
+    linked = directory / f"{stem}{suffix}"
+    _link_or_copy_atomic(path, linked)
     return [str(linked)]
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Replace a generated input file without following an existing symlink."""
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-input-", dir=path.parent
+    ) as scratch:
+        staged = Path(scratch) / path.name
+        staged.write_text(text, encoding="utf-8")
+        os.replace(staged, path)
 
 
 def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, Any]:
     """Build OpenFold3's inference query document."""
     chains: list[dict[str, Any]] = []
-    known: set[str] = set()
-    for entity in job["entities"]:
+    for entity_index, entity in enumerate(job["entities"]):
         kind = entity["type"]
         ids = _ids(entity)
-        known.update(ids)
         body: dict[str, Any] = {"molecule_type": kind, "chain_ids": ids}
         if kind == "ligand":
             if entity.get("ccd"):
@@ -456,11 +568,19 @@ def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, 
             body["sequence"] = str(entity["sequence"])
             if entity.get("unpaired_msa"):
                 body["main_msa_file_paths"] = _openfold3_msa(
-                    entity["unpaired_msa"], base, "unpaired_msa", destination, ids[0]
+                    entity["unpaired_msa"],
+                    base,
+                    "unpaired_msa",
+                    destination,
+                    entity_index,
                 )
             if entity.get("paired_msa"):
                 body["paired_msa_file_paths"] = _openfold3_msa(
-                    entity["paired_msa"], base, "paired_msa", destination, ids[0]
+                    entity["paired_msa"],
+                    base,
+                    "paired_msa",
+                    destination,
+                    entity_index,
                 )
             modifications = _modifications(entity)
             if modifications:
@@ -471,9 +591,6 @@ def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, 
         chains.append(body)
 
     query: dict[str, Any] = {"chains": chains}
-    bonds = _bonds(job, known)
-    if bonds:
-        query["bonds"] = [[list(first), list(second)] for first, second in bonds]
     return {"queries": {str(job.get("name", "query")): query}}
 
 
@@ -521,6 +638,8 @@ def materialize_native_input(
     # Created before the dialects are built: OpenFold3 writes alongside its
     # document rather than only into it.
     output_dir = Path(output_dir)
+    if output_dir.is_symlink():
+        raise ValueError(f"generated input directory is a symlink: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if model == "esmfold2":
@@ -536,5 +655,5 @@ def materialize_native_input(
         document = _openfold3(job, base, output_dir)
     path = output_dir / f"{model}_input{target.suffix}"
     text = document if isinstance(document, str) else json.dumps(document, indent=2)
-    path.write_text(text, encoding="utf-8")
+    _write_text_atomic(path, text)
     return path

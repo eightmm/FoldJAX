@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 import torch
 
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import (
     map_conditioned_diffusion_model_state_dict,
     map_diffusion_conditioning_state_dict,
@@ -17,6 +16,7 @@ from foldjax.models.boltz2.models.diffusion.diffusion import (
 from foldjax.models.boltz2.models.diffusion.diffusion_conditioning import (
     diffusion_conditioning_forward,
 )
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 CHECKPOINT = (
     Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
@@ -29,7 +29,7 @@ PREFIX = "diffusion_conditioning"
 def checkpoint_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 def test_checkpoint_diffusion_conditioning_matches_boltz_torch(

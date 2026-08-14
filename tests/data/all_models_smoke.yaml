@@ -1,0 +1,6 @@
+# Minimal common-schema job used by real-weight, Torch-blocked GPU smoke tests.
+name: all_models_smoke
+entities:
+  - type: protein
+    id: [A]
+    sequence: GAAG

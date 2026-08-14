@@ -163,6 +163,33 @@ def test_a_multi_query_spec_requires_choosing(openfold3_source: Path) -> None:
         featurize_query(spec, query_id="absent")
 
 
+def test_selected_query_rejects_native_covalent_bonds(
+    openfold3_source: Path,
+) -> None:
+    spec = _spec()
+    spec["queries"]["ubq"]["covalent_bonds"] = [
+        [["A", 1, 1], ["A", 2, 2]]
+    ]
+
+    with pytest.raises(ValueError, match="covalent_bonds.*does not apply"):
+        featurize_query(spec)
+
+
+def test_unselected_query_msa_filename_is_not_validated(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    stray = tmp_path / "ignored.a3m"
+    stray.write_text(f">query\n{UBIQUITIN}\n")
+    spec = _spec()
+    spec["queries"]["unused"] = _spec(
+        main_msa_file_paths=[str(stray)]
+    )["queries"]["ubq"]
+
+    selected = featurize_query(spec, query_id="ubq")
+
+    assert selected["token_mask"].shape[-1] == len(UBIQUITIN)
+
+
 def test_an_unrecognized_alignment_filename_is_refused(
     openfold3_source: Path, tmp_path: Path
 ) -> None:
@@ -186,6 +213,33 @@ def test_a_recognized_stem_in_a_subdirectory_is_accepted(
     path = nested / "uniref90_hits.a3m"
     path.write_text(f">query\n{UBIQUITIN}\n>hit\n{'A' * len(UBIQUITIN)}\n")
     features = featurize_query(_spec(main_msa_file_paths=[str(path)]))
+    assert features["msa"].shape[1] > 1
+
+
+def test_msa_directory_requires_a_supported_accepted_alignment(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    directory = tmp_path / "alignments"
+    directory.mkdir()
+    (directory / "colabfold_main.txt").write_text("not an alignment\n")
+    (directory / "unknown.a3m").write_text(f">query\n{UBIQUITIN}\n")
+
+    with pytest.raises(ValueError, match="no supported .a3m/.sto"):
+        featurize_query(_spec(main_msa_file_paths=[str(directory)]))
+
+
+def test_msa_directory_accepts_a_supported_alignment_among_other_files(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
+    directory = tmp_path / "alignments"
+    directory.mkdir()
+    (directory / "notes.txt").write_text("ignored\n")
+    (directory / "colabfold_main.a3m").write_text(
+        f">query\n{UBIQUITIN}\n>hit\n{'A' * len(UBIQUITIN)}\n"
+    )
+
+    features = featurize_query(_spec(main_msa_file_paths=[str(directory)]))
+
     assert features["msa"].shape[1] > 1
 
 

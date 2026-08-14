@@ -1,8 +1,10 @@
 # FoldJAX against upstream
 
-Every model here is a JAX reimplementation of a published torch model, so the
-only comparison worth making is against the repository it came from, on the
-same job, under the same schedule, measured the same way.
+Every runtime here is JAX. Five models are reimplementations of published
+torch models; AlphaFold 3 is the official JAX distribution driven through the
+same FoldJAX interface. The useful comparison is against each model's own
+reference repository, on the same job, under the same schedule, measured the
+same way.
 
 That is what [`bench/`](bench/) does, and it is reproducible: one command per
 row, one process per measurement, results written as they land.
@@ -28,7 +30,7 @@ upstream, which is what makes the comparison mean anything.
 | 499 | protenix | 28 | 63 | 4.9 | 5.0 | 2.26x | 1.02x | ranking_score | 0.1937 | 0.1935 |
 | 1003 | alphafold3 | 368 | - | 6.7 | - | - | - | - | - | - |
 | 1003 | boltz2 | 94 | 141 | 7.2 | 15.8 | 1.51x | 2.19x | complex_plddt | 0.9489 | 0.9482 |
-| 1003 | opendde | 287 | 287 | 44.3 | 59.5 | 1.00x | 1.34x | ranking_score | 0.1926 | 0.1930 |
+| 1003 | opendde | 278 | 287 | 42.1 | 59.5 | 1.03x | 1.41x | ranking_score | 0.1926 | 0.1930 |
 | 1003 | openfold3 | 126 | 323 | 11.8 | 25.0 | 2.56x | 2.13x | ptm | 0.9315 | 0.9300 |
 | 1003 | protenix | 72 | 99 | 8.3 | 12.7 | 1.38x | 1.54x | ranking_score | 0.1921 | 0.1922 |
 | 3012 | alphafold3 | 1,013 | - | 41.3 | - | - | - | - | - | - |
@@ -49,6 +51,175 @@ differ; same-seed parity is a separate, per-port exercise.
 [`bench/upstream-environments.md`](../bench/upstream-environments.md) records each
 virtualenv's provisioning, the kernels that cannot run on this card, and how to
 verify both.
+
+## How the cost grows
+
+The table is three sizes. The question that decides whether a sequence is
+affordable is a different one -- how steeply the cost climbs -- and its answer
+is a slope, not a number.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="scaling-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="scaling-light.png">
+  <img alt="wall time and peak memory against token count, log-log, one panel per model" src="scaling-dark.png">
+</picture>
+
+Both axes are logarithmic, so a power law is a straight line. The figure
+printed against each series is what **doubling the token count multiplies that
+cost by** -- the same fact as an exponent, in the unit the decision is actually
+made in. Two are printed where they disagree: over every completed size, then
+at the top end.
+
+They disagree because a per-run cost that does not grow with `n` -- weight
+loading, XLA compilation -- is a constant added to a power law, and it flattens
+the average at the small end.
+
+- **Nothing here doubles cheaply, and everything gets worse as it grows.**
+  FoldJAX time multiplies 3.5-3.9x per doubling across 499-3,012 tokens, but
+  5.8-6.8x between 2,096 and 3,012. Extrapolating a small-size measurement to a
+  large sequence underestimates it, in every column.
+- **AlphaFold 3's 1.6x per doubling is the clearest case of that constant.**
+  Its 285 s at 499 tokens is mostly fixed cost, which is why its average is the
+  flattest here while its top end (2.8x) nearly doubles it. It is not scaling
+  better than the ports; it is starting from a bigger floor.
+- **Memory grows slower than time -- about 2.1-2.7x per doubling -- and it is
+  what runs out first anyway.** OpenDDE is the exception and fails earliest:
+  3.6x per doubling on two surviving points, 45.4 GiB already at 1,003 tokens.
+- **OpenFold3 upstream's memory falls from 93.4 GiB at 2,096 tokens to 83.2 at
+  3,012, and that is not a saving** -- see below. It is the one series here
+  whose memory panel cannot be read without its time panel.
+
+Hollow markers are sizes a run reached and did not finish. They are drawn
+rather than dropped: omitting them would bend a curve into a claim that the
+model kept scaling.
+
+### The four upstreams against each other
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="upstream-scaling-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="upstream-scaling-light.png">
+  <img alt="wall time and peak memory against token count for the four upstream implementations" src="upstream-scaling-dark.png">
+</picture>
+
+The same measurements with the FoldJAX column dropped and every model's own
+reference implementation on one pair of axes, where the question is which one
+costs what. **AlphaFold 3 is in this figure from its `foldjax` rows**, and that
+is not a substitution: FoldJAX drives the official installation rather than
+reimplementing it, so those rows *are* upstream AlphaFold 3 running its own
+code. It is the same fact that leaves its upstream column blank in the table.
+
+**OpenFold3 is drawn dashed because it is not a like-for-like run.** It is the
+one series that could not reach its own released fast path on this card --
+DS4Sci's evoformer attention refuses to build for sm_120 and 0.3.1's
+experimental cuEquivariance flag crashes above one diffusion sample -- so it
+runs plain torch attention chunked four rows at a time at every size. Its
+6,722 s at 3,012 tokens is that, not OpenFold3 as published. It stays in the
+figure because a size no implementation here reaches on this hardware is a
+result; the dashes stop it being read as a fair comparison. This figure pools the earlier 132-1,531 token sweep as well, which the
+faceted one does not: those runs measured the *same unmodified upstream
+repositories*, so their points belong on the same curve, while FoldJAX's own
+code changed between the two sweeps and its points would not.
+
+**Linear axes, deliberately.** A log-log plot is for reading an exponent off a
+slope; it renders every one of these as a tidy straight line, which is the
+opposite of what a growth plot is for. On linear axes OpenFold3's upstream
+visibly runs away from the other three, and that is the finding.
+
+Every point is one run of one sequence. Nothing here is measured more than
+once, so there are no error bars -- where the two sweeps both covered a size
+(490 against 499, 970 against 1,003, different proteins a few percent apart)
+the length sweep's point is kept and the earlier sweep contributes only the
+sizes it alone has, 132 and 1,531. Averaging those pairs would have invented a
+statistic this benchmark never measured.
+
+- **OpenFold3's upstream is the steepest thing here, 5.2x per doubling**, and
+  part of that steepness is why its memory curve bends down. Upstream tunes its
+  attention chunk size at runtime, binary-searching the largest chunk that does
+  not raise (`chunk_utils.py`, `tune_chunk_size` defaults to `True` in
+  `model_config.py:47`). At 2,096 tokens a large chunk fits: 93.4 GiB, 2,410 s.
+  At 3,012 it does not, so the search falls back to a smaller one: 83.2 GiB,
+  6,722 s. **The peak came down because the time went up** -- memory traded for
+  time by the implementation itself, at a size it chose. Reading either panel
+  alone gets this backwards, which is also why that point is drawn where it was
+  measured rather than interpolated to somewhere more plausible.
+- **Protenix's upstream has the flattest curve (1.8x) and the highest floor** --
+  52 s at 132 tokens, where OpenDDE's takes 17. Below ~500 tokens it is the
+  slowest of the four and above ~1,000 it is the fastest. That crossing is only
+  visible because the small sizes are plotted; a sweep starting at 499 tokens
+  would have said "Protenix is faster" without qualification.
+- **OpenDDE's upstream stops at 1,003 tokens.** Everything past it is in the
+  band.
+
+<!-- -->
+
+    uv run --with matplotlib python docs/make_scaling_figure.py \
+        --results ../foldjax-bench/results-lengths \
+        --upstream-extra bench/results
+
+## Where the memory goes during a run
+
+A peak is one number off a curve. `bench/trace.py` samples the same live-bytes
+quantity the peak reports, from inside the measured process, four times a
+second.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="memory-trace-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="memory-trace-light.png">
+  <img alt="live device memory through one 1,003-token prediction, FoldJAX against upstream, one panel per model" src="memory-trace-dark.png">
+</picture>
+
+**FoldJAX holds a plateau; upstream churns.** That is the whole figure, and it
+qualifies the headline the table gives.
+
+| model | FoldJAX mean | peak | of run near peak | upstream mean | peak | of run near peak |
+|---|---|---|---|---|---|---|
+| boltz2 | 6.3 GiB | 7.2 | 85% | 6.6 GiB | 15.8 | 9% |
+| protenix | 6.4 | 8.3 | 75% | 2.9 | 12.6 | 0% |
+| openfold3 | 9.9 | 11.8 | 83% | 5.4 | 25.0 | 0% |
+| opendde | 38.4 | 42.1 | 91% | 14.6 | 59.4 | 0% |
+| alphafold3 | 2.7 | 6.7 | 12% | - | - | - |
+
+"Near peak" is the share of samples within 10% of it.
+
+- **FoldJAX sits within 10% of its peak for 75-91% of the run. Upstream does
+  for 0-9%.** One traced JAX program allocates its arena once and holds it;
+  torch's caching allocator builds and releases per layer, so its curve is a
+  sawtooth that touches its maximum briefly and spends the rest well below it.
+- **So FoldJAX wins on peak and loses on average.** OpenDDE is the sharpest
+  case: FoldJAX peaks 1.4x lower (42.1 against 59.4 GiB) while averaging 2.6x
+  higher (38.4 against 14.6). If the question is "will this job fit", the peak
+  is the answer and FoldJAX is ahead everywhere. If it is "can I run something
+  else on this card at the same time", the average is the answer and FoldJAX is
+  behind everywhere except Boltz-2.
+- **AlphaFold 3 is the one that behaves differently**: a staircase that reaches
+  its peak only at the end, 12% of the run near it, averaging 41% of peak.
+
+Two things to know before reading the x axis. The JAX traces start at process
+start; the torch ones start when that process first touches CUDA, so their
+spans are short of their wall times by the featurization and weight loading
+that precede it -- OpenFold3's upstream traces 280 s of a 321 s run. And the
+sampler is a 4 Hz observer, so its largest sample is a lower bound; the dashed
+rule in each panel is the allocator's own high-water mark, which is the number
+in the table.
+
+These traces first exposed that OpenDDE's 44.3 GiB table entry was stale. A
+final warm run through the public FoldJAX API now confirms **277.81 s and
+43,089.9 MiB (42.1 GiB)**; the table and benchmark figure use that rerun.
+Against the matching upstream result (287.14 s and 60,904.8 MiB), FoldJAX is
+1.03x faster and uses 1.41x less peak memory.
+
+The rerun also passed a structure-level gate: all five mmCIF samples contain
+7,750 finite atom coordinates in one chain. Across all 25 FoldJAX/upstream
+sample pairs, median TM-score is **0.99298** and median aligned RMSD is
+**2.318 Å**. FoldJAX's own ten within-run sample pairs have median TM-score
+0.99225, so the cross-implementation difference is no larger than its normal
+diffusion-sampling spread.
+
+    python -m bench.drive --models boltz2 protenix openfold3 opendde \
+        --impls foldjax upstream --cases L1000_3og2 \
+        --results results-trace/ --work /tmp/bench-trace --traces traces-1003/
+    python -m bench.trace plot --out docs/memory-trace.png \
+        --case "1,003 tokens (L1000_3og2)" traces-1003/*.jsonl
 
 ## What the table says
 

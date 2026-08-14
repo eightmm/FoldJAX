@@ -137,6 +137,7 @@ def aggregate_atom_to_token(
     *,
     n_token: int,
     reduce: str = "mean",
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Aggregate atom embeddings to token embeddings."""
 
@@ -144,11 +145,19 @@ def aggregate_atom_to_token(
         raise ValueError("reduce must be 'mean' or 'sum'")
     out_shape = x_atom.shape[:-2] + (n_token, x_atom.shape[-1])
     out = jnp.zeros(out_shape, dtype=x_atom.dtype)
-    out = out.at[..., atom_to_token_idx, :].add(x_atom)
+    if atom_mask is None:
+        weights = None
+        weighted_atoms = x_atom
+    else:
+        weights = jnp.asarray(atom_mask, dtype=x_atom.dtype)
+        if weights.shape != atom_to_token_idx.shape:
+            raise ValueError("atom_mask must share shape [N_atom] with atom mapping")
+        weighted_atoms = x_atom * weights.reshape((1,) * (x_atom.ndim - 2) + (-1, 1))
+    out = out.at[..., atom_to_token_idx, :].add(weighted_atoms)
     if reduce == "sum":
         return out
     counts = jnp.zeros((n_token,), dtype=x_atom.dtype)
-    counts = counts.at[atom_to_token_idx].add(1.0)
+    counts = counts.at[atom_to_token_idx].add(1.0 if weights is None else weights)
     return out / jnp.maximum(counts[..., None], 1.0)
 
 
@@ -317,6 +326,7 @@ def atom_attention_encoder(
     n_keys: int,
     use_scan: bool = False,
     attention_backend: str = "xla",
+    atom_mask: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run Protenix AtomAttentionEncoder in input or diffusion mode."""
 
@@ -368,12 +378,14 @@ def atom_attention_encoder(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        sequence_mask=atom_mask,
     )
     a = aggregate_atom_to_token(
         jax.nn.relu(linear(q_l, params.linear_q)),
         atom_to_token_idx,
         n_token=n_token,
         reduce="mean",
+        atom_mask=atom_mask,
     )
     return a, q_l, c_l, p_lm
 
@@ -391,6 +403,7 @@ def atom_attention_decoder(
     n_keys: int,
     use_scan: bool = False,
     attention_backend: str = "xla",
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run Protenix ``AtomAttentionDecoder`` in inference mode."""
 
@@ -406,8 +419,12 @@ def atom_attention_decoder(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        sequence_mask=atom_mask,
     )
-    return linear(layer_norm(q, params.layernorm_q), params.linear_out)
+    output = linear(layer_norm(q, params.layernorm_q), params.linear_out)
+    if atom_mask is not None:
+        output = output * jnp.asarray(atom_mask, dtype=output.dtype)[..., None]
+    return output
 
 
 def _require_has_coords_params(params: AtomAttentionEncoderParams) -> None:

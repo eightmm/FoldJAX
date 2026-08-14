@@ -5,9 +5,9 @@ import pytest
 import torch
 import torch.nn.functional as functional
 
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import map_transition_state_dict
 from foldjax.models.boltz2.models.primitives.transition import transition_forward
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 PREFIX = "msa_module.layers.0.msa_transition"
 CHECKPOINT = (
@@ -19,7 +19,7 @@ CHECKPOINT = (
 def transition_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 def test_checkpoint_transition_matches_torch_no_chunk(

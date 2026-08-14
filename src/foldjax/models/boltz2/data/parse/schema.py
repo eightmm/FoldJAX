@@ -13,6 +13,7 @@ from rdkit.Chem.rdMolDescriptors import CalcNumHeavyAtoms
 from scipy.optimize import linear_sum_assignment
 
 from foldjax.models.boltz2.data import const
+from foldjax.models.boltz2.data.identifiers import validate_ccd_identifier
 from foldjax.models.boltz2.data.mol import load_molecules
 
 # NOTE: lazy imports (kept off the protein/no-MSA path so heavy/optional deps
@@ -1012,6 +1013,31 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
     if version != 1:
         msg = f"Invalid version {version} in input!"
         raise ValueError(msg)
+
+    # CCD codes are job-controlled selectors for trusted pickles in ``mol_dir``.
+    # Validate native YAML/FASTA jobs here as well as at the file-loading sink,
+    # because native passthrough bypasses FoldJAX's common-schema validation.
+    for item in schema["sequences"]:
+        entity_type = next(iter(item.keys())).lower()
+        body = item[entity_type]
+        if entity_type == "ligand" and "ccd" in body:
+            codes = body["ccd"]
+            if isinstance(codes, str):
+                body["ccd"] = validate_ccd_identifier(
+                    codes, field="ligand CCD code"
+                )
+            elif isinstance(codes, list) and codes:
+                body["ccd"] = [
+                    validate_ccd_identifier(code, field="ligand CCD code")
+                    for code in codes
+                ]
+            else:
+                raise ValueError("ligand CCD code must be a string or non-empty list")
+        if entity_type in {"protein", "dna", "rna"}:
+            for modification in body.get("modifications", []):
+                modification["ccd"] = validate_ccd_identifier(
+                    modification.get("ccd"), field="modification CCD code"
+                )
 
     # Disable rdkit warnings
     blocker = rdBase.BlockLogs()  # noqa: F841

@@ -93,6 +93,35 @@ def test_an_unrecognized_alignment_stem_is_linked_not_refused(
     assert Path(main).read_text() == ">q\nACD\n"
 
 
+@pytest.mark.parametrize(
+    ("contents", "suffix"),
+    [(">q\nACD\n", ".a3m"), ("# STOCKHOLM 1.0\nq ACD\n//\n", ".sto")],
+)
+def test_extensionless_alignment_is_published_with_its_detected_format(
+    tmp_path: Path, job: dict, contents: str, suffix: str
+) -> None:
+    (tmp_path / "alignment").write_text(contents)
+    job["entities"][0]["unpaired_msa"] = "alignment"
+
+    document = _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
+
+    (main,) = document["queries"]["complex"]["chains"][0][
+        "main_msa_file_paths"
+    ]
+    assert Path(main).name == f"colabfold_main{suffix}"
+    assert Path(main).read_text() == contents
+
+
+def test_unknown_extensionless_alignment_fails_at_materialization(
+    tmp_path: Path, job: dict
+) -> None:
+    (tmp_path / "alignment").write_text("not an alignment\n")
+    job["entities"][0]["unpaired_msa"] = "alignment"
+
+    with pytest.raises(ValueError, match="cannot infer MSA format"):
+        _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
+
+
 def test_an_unpaired_alignment_never_lands_on_the_paired_stem(
     tmp_path: Path, job: dict
 ) -> None:
@@ -150,6 +179,65 @@ def test_two_chains_do_not_overwrite_each_others_alignment(tmp_path: Path) -> No
     assert Path(right).read_text() == ">b\nWYF\n"
 
 
+def test_chain_ids_never_become_alignment_path_components(
+    tmp_path: Path, job: dict
+) -> None:
+    """Chain IDs are document data and may contain path traversal syntax."""
+    (tmp_path / "msa.a3m").write_text(">q\nACD\n")
+    job["entities"][0]["id"] = ["../../outside"]
+    job["entities"][0]["unpaired_msa"] = "msa.a3m"
+    output = tmp_path / "generated"
+
+    document = _materialize(_write(tmp_path / "job.json", job), output)
+
+    (main,) = document["queries"]["complex"]["chains"][0][
+        "main_msa_file_paths"
+    ]
+    path = Path(main)
+    assert path.is_relative_to(output)
+    assert path.parent.name == "entity_0000"
+    assert "outside" not in path.parts
+
+
+def test_alignment_directory_symlink_is_refused_before_writing(
+    tmp_path: Path, job: dict
+) -> None:
+    (tmp_path / "msa.a3m").write_text(">q\nACD\n")
+    job["entities"][0]["unpaired_msa"] = "msa.a3m"
+    output = tmp_path / "generated"
+    output.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (output / "msa").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="MSA directory is a symlink"):
+        _materialize(_write(tmp_path / "job.json", job), output)
+
+    assert not list(outside.iterdir())
+
+
+def test_existing_alignment_symlink_is_replaced_without_touching_target(
+    tmp_path: Path, job: dict
+) -> None:
+    (tmp_path / "msa.a3m").write_text(">q\nACD\n")
+    job["entities"][0]["unpaired_msa"] = "msa.a3m"
+    output = tmp_path / "generated"
+    directory = output / "msa" / "entity_0000"
+    directory.mkdir(parents=True)
+    external = tmp_path / "user-owned.a3m"
+    external.write_text("do not replace\n")
+    generated = directory / "colabfold_main.a3m"
+    generated.symlink_to(external)
+
+    document = _materialize(_write(tmp_path / "job.json", job), output)
+
+    (main,) = document["queries"]["complex"]["chains"][0][
+        "main_msa_file_paths"
+    ]
+    assert Path(main).read_text() == ">q\nACD\n"
+    assert external.read_text() == "do not replace\n"
+
+
 def test_a_recognized_stem_in_any_directory_is_accepted(
     tmp_path: Path, job: dict
 ) -> None:
@@ -185,10 +273,12 @@ def test_smiles_ligands_are_carried(tmp_path: Path, job: dict) -> None:
     assert "ccd_codes" not in ligand
 
 
-def test_bonds_are_carried_as_endpoint_pairs(tmp_path: Path, job: dict) -> None:
+def test_bonds_are_rejected_until_the_native_pipeline_applies_them(
+    tmp_path: Path, job: dict
+) -> None:
     job["bonds"] = [[["A", 1, "SG"], ["L", 1, "C1"]]]
-    document = _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
-    assert document["queries"]["complex"]["bonds"] == [[["A", 1, "SG"], ["L", 1, "C1"]]]
+    with pytest.raises(ValueError, match="openfold3 cannot express bonds"):
+        _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
 
 
 def test_no_bonds_key_when_there_are_none(tmp_path: Path, job: dict) -> None:

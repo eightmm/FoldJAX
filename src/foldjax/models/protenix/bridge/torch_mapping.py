@@ -1,9 +1,9 @@
 """PyTorch checkpoint -> JAX param bridge for Protenix.
 
 Pure-mapping functions are torch-free (tensors are duck-typed via
-``tensor_to_numpy``). ``load_torch_checkpoint`` is the only entry that needs
-PyTorch, and it imports it lazily so the native inference runtime never pulls
-in torch.
+``tensor_to_numpy``). ``load_torch_checkpoint`` reads the published archive
+through FoldJAX's restricted NumPy reader, so conversion and native inference
+both run without importing PyTorch.
 """
 
 from __future__ import annotations
@@ -910,6 +910,18 @@ def map_template_embedder_state_dict(
 ) -> TemplateEmbedderParams:
     """Map Protenix ``TemplateEmbedder`` parameters."""
 
+    # The released v0.5 mini/default models inherit ``n_blocks = 0`` for the
+    # template stack.  PyTorch consequently serialises the surrounding
+    # projections but no ``pairformer_stack.blocks.*`` keys at all.  Treat that
+    # exact absence as the published zero-block architecture; the fixed
+    # template parameters below remain required, so a missing/corrupt template
+    # module still fails loudly.
+    block_stem = f"{prefix}.pairformer_stack.blocks."
+    if num_blocks is None and not any(
+        str(key).startswith(block_stem) for key in state_dict
+    ):
+        num_blocks = 0
+
     return TemplateEmbedderParams(
         linear_z=map_linear_state_dict(
             state_dict,
@@ -1166,27 +1178,15 @@ def load_torch_checkpoint(path: str | Path) -> ProtenixInferenceParams:
 
     Mirrors the upstream Protenix inference loader: reads ``checkpoint["model"]``
     (falling back to the raw object), strips a DistributedDataParallel
-    ``module.`` prefix, then maps to ``ProtenixInferenceParams``. ``torch`` is
-    imported lazily so the native runtime stays torch-free.
-
-    Security: ``path`` MUST be a trusted, locally-produced checkpoint. Loading
-    prefers the safe ``weights_only=True`` path (tensors + basic types only);
-    it only falls back to full unpickling for legacy checkpoints that bundle
-    non-tensor objects (optimizer/scheduler state), exactly as upstream
-    Protenix saves them. Never point this at an untrusted file.
+    ``module.`` prefix, then maps to ``ProtenixInferenceParams``. FoldJAX's
+    restricted archive reader reconstructs the released tensor archive directly
+    as NumPy arrays, without importing PyTorch or allowing arbitrary pickle
+    callables.
     """
 
-    # Real torch when importable (the parity suites feed torch modules from
-    # this state), FoldJAX's own reader otherwise -- bit-identical either way
-    # (tests/test_torch_archive.py), so conversion needs no torch installed.
-    try:
-        import torch
-    except ImportError:
-        from foldjax import torch_archive
+    from foldjax import torch_archive
 
-        obj = torch_archive.load(path)
-    else:
-        obj = torch.load(str(path), map_location="cpu", weights_only=False)
+    obj = torch_archive.load(path)
     if isinstance(obj, Mapping) and "model" in obj:
         state_dict = obj["model"]
     elif isinstance(obj, Mapping) and "state_dict" in obj:

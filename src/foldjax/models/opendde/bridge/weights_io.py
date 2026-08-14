@@ -16,29 +16,18 @@ from foldjax.models.protenix.bridge.weights_io import (
 def load_torch_checkpoint(path: str | Path) -> Any:
     """Convert one trusted official ``.pt`` checkpoint to JAX parameters.
 
-    PyTorch is imported only inside this optional bridge. Production prediction
-    loads the native archive with :func:`load_native_weights` and never imports
-    PyTorch. The safe ``weights_only`` loader is deliberately not followed by
-    an unrestricted pickle fallback.
+    FoldJAX's restricted archive reader reconstructs tensor storage directly as
+    NumPy arrays. Production prediction loads the resulting native archive;
+    neither operation imports PyTorch.
     """
 
     checkpoint_path = Path(path)
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"missing checkpoint: {checkpoint_path}")
 
-    try:
-        import torch
-    except ImportError:
-        from foldjax import torch_archive
+    from foldjax import torch_archive
 
-        checkpoint = torch_archive.load(checkpoint_path)
-    else:
-        checkpoint = torch.load(
-            str(checkpoint_path),
-            map_location="cpu",
-            weights_only=True,
-            mmap=True,
-        )
+    checkpoint = torch_archive.load(checkpoint_path)
     return map_opendde_inference_state_dict(unwrap_state_dict(checkpoint))
 
 

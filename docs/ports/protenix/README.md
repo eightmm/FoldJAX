@@ -2,6 +2,12 @@
 
 # Protenix-JAX
 
+> **Archived port record.** Protenix-JAX now ships as
+> `foldjax.models.protenix`. Use the top-level [README](../../../README.md) and
+> common `foldjax` API for current installation and prediction. The native
+> entry points and performance evidence below remain useful for advanced
+> inspection.
+
 An independent JAX inference port of
 [ByteDance Protenix](https://github.com/bytedance/Protenix) for biomolecular
 structure prediction.
@@ -40,15 +46,14 @@ checkpoint conversion, preprocessing, parity, and performance.
 
 ## Installation
 
-Python 3.11 and 3.12 are supported. The recommended environment manager is
+FoldJAX currently targets Python 3.12. The recommended environment manager is
 [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/eightmm/protenix-jax.git
-cd protenix-jax
-
 # NVIDIA CUDA 13 runtime and development tools
-uv sync --extra cuda13 --extra preprocess --extra dev
+uv sync --extra cuda13 --group dev
+uv run foldjax weights fetch --model protenix
+uv run foldjax predict --model protenix --input job.json
 ```
 
 Optional extras:
@@ -57,10 +62,8 @@ Optional extras:
 |---|---|
 | `cuda12` | JAX CUDA 12 runtime; select XLA triangle backends explicitly |
 | `cuda13` | JAX CUDA 13 plus cuEquivariance JAX kernels |
-| `preprocess` | RDKit for SMILES, structure files, arbitrary CCD, and TFG geometry |
-| `esm` | fair-esm and PyTorch for ESM/ISM embedding generation |
-| `torch-bridge` | PyTorch used only while converting an upstream checkpoint |
-| `dev` | pytest and Ruff |
+| base install | RDKit/NumPy preprocessing, restricted checkpoint reader, and JAX ESM/ISM |
+| `dev` group | pytest and Ruff |
 
 The default production triangle backend is `cueq_jit`, so CUDA 13 inference
 should install the `cuda13` extra. CPU and CUDA 12 users should choose the XLA
@@ -72,21 +75,22 @@ Checkpoint conversion is a one-time trusted operation. Prediction uses only
 the resulting native JAX file.
 
 ```bash
-uv run --extra torch-bridge protenix-jax-export-weights \
+uv run protenix-jax-export-weights \
   --checkpoint /path/to/protenix_base_default_v1.0.0.pt \
   --out weights/protenix_base_default_v1.0.0-jax.pkl \
   --no-compress
 ```
 
-Only convert checkpoints obtained from a trusted source. Both PyTorch
-checkpoints and native JAX weights use pickle-based containers.
+Only convert checkpoints obtained from a trusted source. Publisher `.pt`
+archives are decoded by FoldJAX's restricted NumPy reader; no PyTorch runtime
+is imported. Native `.jax` weights use FoldJAX's restricted container.
 
 ## Predict
 
 Run directly from a Protenix inference JSON file:
 
 ```bash
-uv run --extra cuda13 --extra preprocess protenix-jax-predict \
+uv run --extra cuda13 protenix-jax-predict \
   --weights weights/protenix_base_default_v1.0.0-jax.pkl \
   --input-json examples/input.json \
   --model-name protenix_base_default_v1.0.0 \
@@ -107,7 +111,7 @@ files. Use `both` to also retain the raw NPZ output.
 Precompute features once:
 
 ```bash
-JAX_PLATFORMS=cpu uv run --extra preprocess protenix-jax-featurize-json \
+JAX_PLATFORMS=cpu uv run protenix-jax-featurize-json \
   --input examples/input.json \
   --out outputs/features.npz \
   --max-msa-rows 16384
@@ -126,6 +130,29 @@ uv run --extra cuda13 protenix-jax-predict \
 
 Nested feature dictionaries are serialized as dotted NPZ keys and restored
 without enabling pickle.
+
+### ESM and ISM variants
+
+`protenix_mini_esm_v0.5.0` and `protenix_mini_ism_v0.5.0` use the exact
+36-layer, 2560-wide ESM2 encoder in JAX. Place the publisher checkpoint beside
+the Protenix native weights, or use the matching managed asset profile. The
+official zip-based `.pt`, representation-only `.safetensors`, and `.npz`
+formats are accepted without importing PyTorch or fair-esm.
+
+The common API configures the full bundle from one profile name:
+
+```bash
+foldjax weights fetch --model protenix --profile mini-esm-v0.5.0
+foldjax predict --model protenix --input job.json --profile mini-esm-v0.5.0
+```
+
+This selects `protenix_mini_esm_v0.5.0` and the staged ESM2 checkpoint
+automatically. `mini-ism-v0.5.0` does the same for the ISM pair. Explicit
+conflicting `model_name` or `esm_checkpoint_dir` options are rejected.
+
+A static feature archive containing a finite `[num_tokens, 2560]`
+`esm_token_embedding` bypasses the 3B language-model checkpoint entirely. This
+is useful when several structure predictions reuse one sequence embedding.
 
 ## MSA and Template Search
 
@@ -150,7 +177,7 @@ the database release, wrapper version, and search options with every result.
 Pass the original Protenix guidance mapping as JSON:
 
 ```bash
-uv run --extra cuda13 --extra preprocess protenix-jax-predict \
+uv run --extra cuda13 protenix-jax-predict \
   --weights weights/protenix_base_default_v1.0.0-jax.pkl \
   --input-json examples/input.json \
   --guidance-config configs/guidance.json \
@@ -228,9 +255,9 @@ same 245-token/2529-atom protein-DNA input.
 Under that production-default comparison, JAX is 1.18x faster and uses 32.5%
 less peak GPU memory. See the controlled methodology and parity details:
 
-- [Torch/JAX parity benchmark](docs/PARITY_BENCHMARK_2026-07-13.md)
-- [Warm performance profile](docs/PERFORMANCE_PROFILE_2026-07-13.md)
-- [Production inference benchmark](docs/PRODUCTION_INFERENCE_BENCHMARK_2026-07-13.md)
+- [Torch/JAX parity benchmark](PARITY_BENCHMARK_2026-07-13.md)
+- [Warm performance profile](PERFORMANCE_PROFILE_2026-07-13.md)
+- [Production inference benchmark](PRODUCTION_INFERENCE_BENCHMARK_2026-07-13.md)
 
 Matched-noise multimodal checks reached all-atom Kabsch errors of
 `2.54e-5 Å` for protein-DNA and `1.85e-4 Å` for protein-ATP. TFG potential
@@ -240,14 +267,14 @@ checks reached maximum energy and gradient differences of approximately
 ## Development
 
 ```bash
-uv sync --extra dev --extra preprocess
-JAX_PLATFORMS=cpu uv run pytest -q
-uv run ruff check src tests
+uv sync --group dev
+JAX_PLATFORMS=cpu uv run --group dev pytest -q tests/models/protenix
+uv run --group dev ruff check src tests
 uv build
 ```
 
-The CPU suite currently contains 266 tests. GPU parity and production benchmark
-scripts are in `scripts/`; model weights, captured tensors, compile caches, and
+Publisher-reference parity and production benchmarks use separately
+provisioned environments. Model weights, captured tensors, compile caches, and
 benchmark outputs are intentionally excluded from Git.
 
 ## Scope and Scientific Use

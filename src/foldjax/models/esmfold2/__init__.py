@@ -4,7 +4,15 @@ A reimplementation of Biohub's ESMFold2 (MIT), carried the same way as the
 other ports here: upstream's released weights, this project's JAX code, and
 per-module parity gates against the torch modules that define correctness.
 
-The port is in progress. `foldjax.backends.esmfold2` currently drives the torch
-model; this package replaces it module by module, and each one lands only once
-`tests/models/esmfold2/` shows it matching torch on real weights.
+Both halves are ported. `models/` holds the 235M-parameter structure network --
+the atom stack, the linear-recurrence pair trunk, the diffusion head and its
+sampler, and the confidence head -- and `models/esmc.py` holds ESMC-6B, the
+protein language model whose 81 hidden states the trunk folds. `data/` builds
+features and writes structures, and `bridge/` reads the two checkpoints.
+Publisher-runtime feature conversion lives with its parity tests, outside the
+installable package; the production tree contains only the NumPy/JAX path.
+
+Where the port and upstream diverge, it is stated at the point of divergence
+rather than here; `docs/ports/esmfold2/` records what the torch source does
+and where it is easy to read wrongly.
 """

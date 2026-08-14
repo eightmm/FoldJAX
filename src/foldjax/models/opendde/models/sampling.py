@@ -13,6 +13,62 @@ from foldjax.models.opendde.models.geometry import (
 )
 
 
+def make_padded_random_tapes(
+    *,
+    key: jax.Array,
+    n_sample: int,
+    n_steps: int,
+    actual_atom: int,
+    target_atom: int,
+    batch_shape: Sequence[int] = (),
+    dtype: jnp.dtype = jnp.float32,
+) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], jnp.ndarray, jnp.ndarray]:
+    """Generate OpenDDE's real-size random stream, then pad its atom axis.
+
+    Drawing directly at ``target_atom`` changes the flat RNG offsets for later
+    samples.  This helper follows :func:`sample_diffusion`'s exact key split and
+    real shapes first, so every real atom retains the default unpadded stream.
+    Rotations and translations have no atom axis and are reused unchanged.
+    """
+
+    if n_sample < 1 or n_steps < 1 or actual_atom < 1:
+        raise ValueError(
+            "padded random tapes require positive sample/step/atom sizes"
+        )
+    if target_atom < actual_atom:
+        raise ValueError(
+            f"target_atom={target_atom} is smaller than actual_atom={actual_atom}"
+        )
+    from foldjax.models.protenix.data.padding import pad_atom_noise
+
+    init_key, step_key, rotation_key, translation_key = jax.random.split(key, 4)
+    real_shape = (*batch_shape, n_sample, actual_atom, 3)
+    init_noise = jax.random.normal(init_key, real_shape, dtype=dtype)
+    step_noises = tuple(
+        jax.random.normal(step_key_i, real_shape, dtype=dtype)
+        for step_key_i in jax.random.split(step_key, n_steps)
+    )
+    leading_shape = real_shape[:-2]
+    rotations = uniform_random_rotations(
+        rotation_key,
+        (n_steps, *leading_shape),
+    )
+    translations = jax.random.normal(
+        translation_key,
+        (n_steps, *leading_shape, 3),
+        dtype=jnp.float32,
+    )
+    return (
+        pad_atom_noise(init_noise, actual=actual_atom, target=target_atom),
+        tuple(
+            pad_atom_noise(noise, actual=actual_atom, target=target_atom)
+            for noise in step_noises
+        ),
+        rotations,
+        translations,
+    )
+
+
 def sample_diffusion(
     denoise_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
     noise_schedule: jnp.ndarray,
@@ -31,6 +87,7 @@ def sample_diffusion(
     step_scale_eta: float = 1.5,
     dtype: jnp.dtype = jnp.float32,
     use_scan: bool = False,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run OpenDDE's loop sampler with optional shared random tapes.
 
@@ -67,6 +124,13 @@ def sample_diffusion(
         raise ValueError(
             f"init_noise expected shape {expected_shape}, got {init_noise.shape}"
         )
+    if atom_mask is not None:
+        atom_mask = jnp.asarray(atom_mask, dtype=dtype)
+        if tuple(atom_mask.shape) != (n_atom,):
+            raise ValueError(
+                f"atom_mask expected shape {(n_atom,)}, got {atom_mask.shape}"
+            )
+        init_noise = init_noise * atom_mask[..., None]
 
     leading_shape = init_noise.shape[:-2]
     if step_noises is None:
@@ -117,6 +181,7 @@ def sample_diffusion(
         augmented = centre_random_augmentation(
             x_current,
             n_sample=1,
+            mask=atom_mask,
             rotations=rotation[..., None, :, :],
             translations=translation[..., None, :],
         )
@@ -130,11 +195,16 @@ def sample_diffusion(
         # cancellation. Same defect and same fix as the Protenix sampler.
         delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
         x_noisy = x_current + noise_scale_lambda * delta_noise_level * step_noise
+        if atom_mask is not None:
+            x_noisy = x_noisy * atom_mask[..., None]
         t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
         x_denoised = denoise_fn(x_noisy, t_hat)
         delta = (x_noisy - x_denoised) / t_hat[..., None, None]
         dt = c_tau - t_hat
-        return x_noisy + step_scale_eta * dt[..., None, None] * delta
+        x_next = x_noisy + step_scale_eta * dt[..., None, None] * delta
+        if atom_mask is not None:
+            x_next = x_next * atom_mask[..., None]
+        return x_next
 
     if use_scan:
         stacked_noises = jnp.stack(tuple(step_noises), axis=0)

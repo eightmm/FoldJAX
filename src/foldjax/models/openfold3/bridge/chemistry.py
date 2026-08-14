@@ -1,8 +1,9 @@
 """Build the representative-atom table from upstream's constants.
 
-This lives in ``bridge`` because it imports OpenFold3: the table encodes chemistry
-that must not be transcribed by hand, but the inference path must not depend on
-upstream either. Build it once with torch installed, then carry it as data.
+This lives in ``bridge`` because it imports OpenFold3's vendored constant tables:
+the chemistry must not be transcribed by hand, but feature-archive inference must
+not import the preprocessing pipeline. Build it once while featurizing, then carry
+it as data. The constants themselves are NumPy-only and do not import Torch.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ def representative_atom_table() -> RepresentativeAtomTable:
         STANDARD_PROTEIN_RESIDUES_ORDER,
         STANDARD_RESIDUES_WITH_GAP_3,
     )
-    from foldjax.models.openfold3._upstream.openfold3.core.utils.atomize_utils import (  # noqa: E501
+    from foldjax.models.openfold3._upstream.openfold3.core.data.resources.token_atom_constants import (  # noqa: E501
         atom_name_to_index_by_restype,
     )
 
