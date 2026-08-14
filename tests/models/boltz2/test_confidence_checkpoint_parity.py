@@ -9,8 +9,8 @@ import torch
 from foldjax.models.boltz2.bridge.confidence_mapping import (
     map_confidence_module_state_dict,
 )
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.models.heads.confidence import confidence_module_forward
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 CHECKPOINT = Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
 BOLTZ_SRC = Path(__file__).resolve().parents[4] / "boltz/src"
@@ -48,7 +48,7 @@ CONFIDENCE_MODEL_ARGS = {
 def checkpoint_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 def _load_torch_module(state: dict[str, torch.Tensor]) -> torch.nn.Module:

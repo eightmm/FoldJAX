@@ -1,9 +1,8 @@
 """Deterministic MSA search with local and remote backends.
 
-Extracted verbatim from ``protenix_jax.data.search.msa`` -- which had no
-``protenix`` imports at all -- so the search step can be shared instead of
-duplicated. ``chai_jax`` carries a near-identical copy (same private helper names,
-same ColabFold MMseqs2 backend), which is what made the duplication visible.
+Extracted from the former standalone Protenix JAX port -- it had no model imports
+at all -- so the search step can be shared instead of duplicated. The private
+helper names and ColabFold MMseqs2 behavior remain compatible with that port.
 
 Nothing was changed during the move: the cache layout, filenames and returned key
 names are protenix's, so protenix's behaviour is byte-identical and a consumer with

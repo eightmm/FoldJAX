@@ -230,7 +230,7 @@ def test_a_bare_request_resolves_weights_output_and_cache(
 ) -> None:
     store = tmp_path / "store"
     (store / "weights" / "opendde").mkdir(parents=True)
-    (store / "weights" / "opendde" / "opendde.jax").touch()
+    (store / "weights" / "opendde" / "opendde.jax").write_bytes(b"weights")
     monkeypatch.setenv("FOLDJAX_HOME", str(store))
     monkeypatch.chdir(tmp_path)
 
@@ -275,7 +275,11 @@ def test_sampling_knobs_survive_the_whole_predict_path(tmp_path: Path) -> None:
     """End to end: a neutral knob reaches the backend under its native name."""
     from tests.test_api import DummyBackend
 
-    backend = DummyBackend()
+    class OpenDDEDummyBackend(DummyBackend):
+        name = "opendde"
+        sampling_options = OpenDDEBackend.sampling_options
+
+    backend = OpenDDEDummyBackend()
     with backend_override("opendde", lambda: backend):
         foldjax.predict(
             PredictionRequest(
@@ -315,6 +319,7 @@ def test_seeds_run_the_job_once_each_and_return_every_structure(
         def predict(self, request):
             seen.append((request.seed, request.output_dir))
             path = request.output_dir / f"s{request.seed}.cif"
+            path.write_text("data_prediction\n#\n")
             return PredictionResult(
                 model="opendde",
                 samples=(PredictionSample(seed=request.seed, structure_path=path),),
@@ -341,20 +346,68 @@ def test_seeds_run_the_job_once_each_and_return_every_structure(
     ]
     assert [sample.seed for sample in result.samples] == [7, 11, 13]
     assert result.output_dir == out
+    for seed in (7, 11, 13):
+        manifest = json.loads((out / f"seed_{seed}" / "foldjax_run.json").read_text())
+        assert manifest["seeds"] == [seed]
+
+
+def test_num_seeds_child_manifests_name_only_the_seed_that_ran(
+    tmp_path: Path,
+) -> None:
+    from foldjax.schema import PredictionResult, PredictionSample
+
+    class Recorder(OpenDDEBackend):
+        def predict(self, request):
+            return PredictionResult(
+                model="opendde",
+                samples=(
+                    PredictionSample(
+                        seed=request.seed, coordinates=((0.0, 0.0, 0.0),)
+                    ),
+                ),
+                output_dir=request.output_dir,
+            )
+
+    out = tmp_path / "out"
+    with backend_override("opendde", Recorder):
+        foldjax.predict(
+            PredictionRequest(
+                model="opendde",
+                input=_job_file(tmp_path),
+                weights=_weights(tmp_path),
+                output_dir=out,
+                input_format="native",
+                seed=4,
+                num_seeds=2,
+                use_compile_cache=False,
+            )
+        )
+
+    assert json.loads((out / "seed_4" / "foldjax_run.json").read_text())["seeds"] == [4]
+    assert json.loads((out / "seed_5" / "foldjax_run.json").read_text())["seeds"] == [5]
 
 
 def test_one_seed_keeps_the_output_directory_it_was_given(
     tmp_path: Path, monkeypatch
 ) -> None:
     """The single-seed path must not gain a directory level."""
-    from foldjax.schema import PredictionResult
+    from foldjax.schema import PredictionResult, PredictionSample
 
     seen: list[Path] = []
 
     class Recorder(OpenDDEBackend):
         def predict(self, request):
             seen.append(request.output_dir)
-            return PredictionResult(model="opendde", output_dir=request.output_dir)
+            return PredictionResult(
+                model="opendde",
+                samples=(
+                    PredictionSample(
+                        seed=request.seed,
+                        coordinates=((0.0, 0.0, 0.0),),
+                    ),
+                ),
+                output_dir=request.output_dir,
+            )
 
     out = tmp_path / "out"
     with backend_override("opendde", Recorder):
@@ -411,7 +464,9 @@ def test_openfold3_knobs_use_the_names_its_config_takes(tmp_path: Path) -> None:
     assert backend.apply_sampling(request) == {
         "num_samples": 3,
         "no_rollout_steps": 40,
-        "num_cycles": 2,
+        # OpenFold3's native config is the number of executed cycles, while the
+        # neutral knob follows upstream's num_recycles + 1 convention.
+        "num_cycles": 3,
     }
     # Every translated name must also be one the cache namespace knows about,
     # or two different schedules would share a compiled program.

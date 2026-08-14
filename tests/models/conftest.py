@@ -1,24 +1,24 @@
 """Collection gate for the vendored ports' own test suites.
 
 Each port arrived with the suite it was developed against. Part of that suite
-compares the JAX port against the upstream torch implementation, so it needs an
-optional extra the base FoldJAX environment deliberately omits: the whole point
-of these ports is that inference runs without torch.
+compares the JAX port against a publisher reference implementation. Those
+dependencies live in a separate development environment: no FoldJAX install
+profile contains a second tensor runtime.
 
 Those modules import their optional dependency at module scope, so they have to
-be excluded at collection time rather than skipped inside a test. Install the
-named extra to collect and run them.
+be excluded at collection time rather than skipped inside a test. Provision the
+named external environment to collect and run them.
 """
 
 from __future__ import annotations
 
 from importlib.util import find_spec
 
-# optional import -> the FoldJAX extra that provides it, and the vendored
+# optional import -> the external environment that provides it, and the vendored
 # modules that fail to import without it
 _OPTIONAL_SUITES: dict[str, tuple[str, tuple[str, ...]]] = {
     "torch": (
-        "torch-bridge",
+        "external publisher-parity environment",
         (
             "boltz2/test_affinity_checkpoint_parity.py",
             "boltz2/test_atom_attention_checkpoint_parity.py",
@@ -61,6 +61,6 @@ def pytest_report_header() -> list[str]:
     if not _skipped:
         return []
     return [
-        f"vendored parity suites not collected: "
-        f"{', '.join(f'{m} (--extra {e})' for m, e in sorted(_skipped.items()))}"
+        "vendored parity suites not collected: "
+        f"{', '.join(f'{m} ({e})' for m, e in sorted(_skipped.items()))}"
     ]

@@ -2,7 +2,7 @@
 #
 #   foldjax predict --model boltz2 --input examples/monomer.yaml
 #
-# Any of the five models accepts this file unchanged; that is the point of the
+# Any of the six models accepts this file unchanged; that is the point of the
 # common schema. Nothing here is model-specific.
 entities:
   - type: protein

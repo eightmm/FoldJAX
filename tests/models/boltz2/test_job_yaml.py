@@ -41,6 +41,8 @@ def test_build_job_yaml_preserves_all_supported_entity_types() -> None:
         ({"dna": ["ACGU"]}, "DNA sequence"),
         ({"rna": ["ACGT"]}, "RNA sequence"),
         ({"ligands_ccd": [""]}, "CCD"),
+        ({"ligands_ccd": ["../ATP"]}, "uppercase ASCII"),
+        ({"ligands_ccd": ["ATP\n  - protein:"]}, "uppercase ASCII"),
         ({"ligands_smiles": [""]}, "SMILES"),
     ],
 )

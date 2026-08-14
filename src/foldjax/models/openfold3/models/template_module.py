@@ -193,6 +193,22 @@ def template_embedder(
     """
     t = template_pair_embedder(batch, z, params.template_pair_embedder, eps=eps)
     n_templ = t.shape[-4]
+    template_weights = batch.get("template_padding_mask")
+    if template_weights is None:
+        # Default-off and legacy archives retain the historical behaviour: all
+        # rows in their existing storage participate, including chemically
+        # empty rows in the released fixed-width template axis.
+        template_weights = jnp.ones(t.shape[:-3], dtype=t.dtype)
+    else:
+        template_weights = jnp.asarray(template_weights, dtype=t.dtype)
+        expected = t.shape[:-3]
+        if template_weights.shape != expected:
+            raise ValueError(
+                "template_padding_mask must have shape "
+                f"{expected}, got {template_weights.shape}"
+            )
+    denominator = jnp.clip(jnp.sum(template_weights, axis=-1), min=1.0)
+    denominator = denominator[..., None, None, None]
 
     settings = dict(
         no_heads=no_heads,
@@ -207,17 +223,23 @@ def template_embedder(
         # Templates are independent until the average below, so summing them one at
         # a time is exact and keeps only one template's intermediates alive.
         leading = jnp.moveaxis(t, -4, 0)
+        leading_weights = jnp.moveaxis(template_weights, -1, 0)
 
-        def accumulate(total: jnp.ndarray, one: jnp.ndarray):
+        def accumulate(
+            total: jnp.ndarray, item: tuple[jnp.ndarray, jnp.ndarray]
+        ):
+            one, weight = item
             updated = template_pair_stack(
                 one, params.template_pair_stack, mask=pair_mask, **settings
             )
-            return total + updated, None
+            return total + updated * weight[..., None, None, None], None
 
         total, _ = jax.lax.scan(
-            accumulate, jnp.zeros_like(leading[0]), leading
+            accumulate,
+            jnp.zeros_like(leading[0]),
+            (leading, leading_weights),
         )
-        t = total / n_templ
+        t = total / denominator
     else:
         t = template_pair_stack(
             t,
@@ -225,5 +247,6 @@ def template_embedder(
             mask=pair_mask[..., None, :, :],
             **settings,
         )
-        t = jnp.sum(t, axis=-4) / n_templ
+        weights = template_weights[..., :, None, None, None]
+        t = jnp.sum(t * weights, axis=-4) / denominator
     return linear(jax.nn.relu(t), params.linear_t)

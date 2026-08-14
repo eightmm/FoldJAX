@@ -211,6 +211,18 @@ def _validate_static_structural_features(
         "pae_rep_atom_mask": (n_atom,),
         "distogram_rep_atom_mask": (n_atom,),
     }
+    optional_shapes = {
+        "token_padding_mask": (n_residue,),
+        "atom_padding_mask": (n_atom,),
+        "structural_token_padding_mask": (n_structural,),
+    }
+    expected_shapes.update(
+        {
+            name: shape
+            for name, shape in optional_shapes.items()
+            if name in features
+        }
+    )
     for name, expected in expected_shapes.items():
         actual = tuple(jnp.asarray(features[name]).shape)
         if actual != expected:
@@ -266,20 +278,40 @@ def _validate_static_structural_features(
         raise ValueError("atom_to_token_idx contains an out-of-range residue index")
 
     if require_residue_confidence_mask and check_values:
-        representative_mask = jnp.asarray(features["distogram_rep_atom_mask"])
+        token_mask = jnp.asarray(
+            features.get(
+                "token_padding_mask",
+                jnp.ones((n_residue,), dtype=bool),
+            )
+        ).astype(bool)
+        atom_mask = jnp.asarray(
+            features.get(
+                "atom_padding_mask",
+                jnp.ones((n_atom,), dtype=bool),
+            )
+        ).astype(bool)
+        representative_mask = (
+            jnp.asarray(features["distogram_rep_atom_mask"]).astype(bool)
+            & atom_mask
+        )
         representative_counts = (
             jnp.zeros(
                 (n_residue,),
                 dtype=jnp.int32,
             )
             .at[residue_atom_map]
-            .add(representative_mask.astype(bool).astype(jnp.int32))
+            .add(representative_mask.astype(jnp.int32))
         )
-        valid_counts = bool(jax.device_get(jnp.all(representative_counts == 1)))
+        valid_counts = bool(
+            jax.device_get(
+                jnp.all(representative_counts == token_mask.astype(jnp.int32))
+            )
+        )
         if not valid_counts:
             raise ValueError(
                 "distogram_rep_atom_mask must select exactly one representative "
-                "atom per residue token"
+                "atom per residue token for every real token and none for "
+                "padded tokens"
             )
     return n_residue, n_structural, n_atom
 
@@ -306,6 +338,10 @@ def prepare_structural_features(
     )
     for name in residue_aliases:
         structural[f"residue_level_{name}"] = residue_features[name]
+    if "token_padding_mask" in residue_features:
+        structural["residue_level_token_padding_mask"] = residue_features[
+            "token_padding_mask"
+        ]
 
     parent = jnp.asarray(residue_features["parent_residue_idx"], dtype=jnp.int32)
     structural["token_index"] = residue_features["structural_token_index"]
@@ -321,6 +357,10 @@ def prepare_structural_features(
     structural["distogram_rep_atom_mask"] = residue_features[
         "structural_distogram_rep_atom_mask"
     ]
+    if "structural_token_padding_mask" in residue_features:
+        structural["token_padding_mask"] = residue_features[
+            "structural_token_padding_mask"
+        ]
     structural.update(structural_pair_features)
     structural["relp"] = relative_position_features(structural)
 
@@ -431,8 +471,32 @@ def opendde_infer_static(
             "pair_mask expected shape "
             f"{(n_residue_token, n_residue_token)}, got {tuple(pair_mask.shape)}"
         )
+    residue_token_mask = input_feature_dict.get("token_padding_mask")
+    atom_mask = input_feature_dict.get("atom_padding_mask")
+    structural_token_mask = input_feature_dict.get(
+        "structural_token_padding_mask"
+    )
+    residue_padding_pair_mask = None
+    if residue_token_mask is not None:
+        residue_token_mask = jnp.asarray(residue_token_mask).astype(bool)
+        residue_padding_pair_mask = (
+            residue_token_mask[:, None] & residue_token_mask[None, :]
+        )
+    structural_pair_mask = None
+    if structural_token_mask is not None:
+        structural_token_mask = jnp.asarray(structural_token_mask).astype(bool)
+        structural_pair_mask = (
+            structural_token_mask[:, None] & structural_token_mask[None, :]
+        )
     trunk_features = input_feature_dict
-    trunk_pair_mask = pair_mask
+    if pair_mask is None:
+        trunk_pair_mask = residue_padding_pair_mask
+    elif residue_padding_pair_mask is None:
+        trunk_pair_mask = pair_mask
+    else:
+        trunk_pair_mask = (
+            jnp.asarray(pair_mask).astype(bool) & residue_padding_pair_mask
+        )
     if trunk_dtype is not None:
         trunk_features = jax.tree.map(
             lambda value: (
@@ -442,8 +506,8 @@ def opendde_infer_static(
             ),
             input_feature_dict,
         )
-        if pair_mask is not None:
-            trunk_pair_mask = pair_mask.astype(trunk_dtype)
+        if trunk_pair_mask is not None:
+            trunk_pair_mask = trunk_pair_mask.astype(trunk_dtype)
     s_inputs_residue = input_feature_embedder(
         trunk_features,
         params.input_embedder,
@@ -487,6 +551,10 @@ def opendde_infer_static(
         z_residue,
         params.structural_expander,
     )
+    if structural_token_mask is not None:
+        s_inputs_structural = s_inputs_structural * structural_token_mask.astype(
+            s_inputs_structural.dtype
+        )[..., None]
     structural_features = prepare_structural_features(
         trunk_features,
         structural_pair_features,
@@ -512,7 +580,7 @@ def opendde_infer_static(
     s_structural, z_structural = structural_refiner_stack(
         s_structural,
         z_structural,
-        None,
+        structural_pair_mask,
         structural_pair_bias,
         params.structural_refiner,
         use_scan=use_structural_refiner_scan,
@@ -534,6 +602,8 @@ def opendde_infer_static(
         diffusion_z_trunk,
         params.diffusion.conditioning,
     )
+    if structural_pair_mask is not None:
+        pair_z = pair_z * structural_pair_mask.astype(pair_z.dtype)[..., None]
     p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
         structural_features["atom_to_token_idx"],
         structural_features["ref_pos"],
@@ -586,6 +656,8 @@ def opendde_infer_static(
             use_efficient_fusion=use_diffusion_efficient_fusion,
             token_q_chunk_size=token_q_chunk_size,
             attention_backend=diffusion_attention_backend,
+            token_mask=structural_token_mask,
+            atom_mask=atom_mask,
         )
 
     coordinates = sample_diffusion(
@@ -604,6 +676,7 @@ def opendde_infer_static(
         noise_scale_lambda=noise_scale_lambda,
         step_scale_eta=step_scale_eta,
         use_scan=use_sampler_scan,
+        atom_mask=atom_mask,
     )
 
     head_s_inputs = as_float32(s_inputs_residue)
@@ -639,7 +712,10 @@ def opendde_infer_static(
                 head_s_inputs,
                 head_s_trunk,
                 head_z_trunk,
-                None,
+                # The explicit pair mask historically affects the residue
+                # trunk only. Confidence needs the padding mask to exclude
+                # dummy tokens, while retaining that default/custom-mask API.
+                residue_padding_pair_mask,
                 coordinates,
                 params.confidence,
                 use_embedding=use_confidence_embedding,

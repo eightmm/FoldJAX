@@ -236,6 +236,8 @@ def pack_lm_inputs(
     residue_index: np.ndarray,
     mol_type: np.ndarray,
     token_mask: np.ndarray,
+    *,
+    packed_length: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Turn structure tokens into one LM input per batch entry.
 
@@ -297,7 +299,13 @@ def pack_lm_inputs(
 
         expand_maps[index, np.nonzero(selected)[0]] = lm_positions[inverse_ordered]
 
-    length = max(sequence.shape[0] for sequence in sequences)
+    natural_length = max(sequence.shape[0] for sequence in sequences)
+    if packed_length is not None and packed_length < natural_length:
+        raise ValueError(
+            "ESMC packed length cannot be smaller than the real packed input: "
+            f"{packed_length} < {natural_length}"
+        )
+    length = natural_length if packed_length is None else packed_length
     lm_input_ids = np.full((batch, length), PAD_TOKEN_ID, dtype=input_ids.dtype)
     for index, sequence in enumerate(sequences):
         lm_input_ids[index, : sequence.shape[0]] = sequence
@@ -327,6 +335,21 @@ def hidden_states_for_tokens(
     return jnp.where(keep, rows, 0.0)
 
 
+def packed_lm_length(
+    input_ids: np.ndarray,
+    asym_id: np.ndarray,
+    residue_index: np.ndarray,
+    mol_type: np.ndarray,
+    token_mask: np.ndarray,
+) -> int:
+    """Natural ESMC length after residue collapse and chain special tokens."""
+
+    packed, _sequence_id, _expand_map = pack_lm_inputs(
+        input_ids, asym_id, residue_index, mol_type, token_mask
+    )
+    return int(packed.shape[1])
+
+
 def lm_hidden_states(
     input_ids: np.ndarray,
     asym_id: np.ndarray,
@@ -337,10 +360,16 @@ def lm_hidden_states(
     prefix: str = "",
     *,
     settings: ESMCSettings,
+    packed_length: int | None = None,
 ) -> jnp.ndarray:
     """`compute_lm_hidden_states`: pack, run ESMC, scatter back."""
     lm_input_ids, sequence_id, expand_map = pack_lm_inputs(
-        input_ids, asym_id, residue_index, mol_type, token_mask
+        input_ids,
+        asym_id,
+        residue_index,
+        mol_type,
+        token_mask,
+        packed_length=packed_length,
     )
     hidden = encode(
         jnp.asarray(lm_input_ids),
@@ -365,6 +394,7 @@ __all__ = [
     "feed_forward",
     "hidden_states_for_tokens",
     "lm_hidden_states",
+    "packed_lm_length",
     "pack_lm_inputs",
     "rotary_tables",
     "settings_from_config",

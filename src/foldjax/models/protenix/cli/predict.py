@@ -6,12 +6,16 @@ import argparse
 import json
 import os
 import shlex
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 
-def main(argv: Sequence[str] | None = None) -> list[Path]:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    on_padding_plan: Callable[..., None] | None = None,
+) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     feature_group = parser.add_mutually_exclusive_group(required=True)
     feature_group.add_argument("--features", type=Path)
@@ -235,7 +239,59 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
         type=Path,
         help="JSON file containing the original Protenix TFG guidance mapping.",
     )
+    parser.add_argument(
+        "--padding",
+        action="store_true",
+        help="Pad generated feature axes to a reusable, fully masked shape profile.",
+    )
+    parser.add_argument("--pad-tokens", type=int)
+    parser.add_argument("--pad-atoms", type=int)
+    parser.add_argument("--pad-msa", type=int)
+    parser.add_argument("--pad-templates", type=int)
+    parser.add_argument("--pad-language-model-tokens", type=int)
+    parser.add_argument(
+        "--padding-overflow",
+        choices=("error", "exact"),
+        default="error",
+    )
     args = parser.parse_args(argv)
+
+    padding_requested = args.padding or any(
+        value is not None
+        for value in (
+            args.pad_tokens,
+            args.pad_atoms,
+            args.pad_msa,
+            args.pad_templates,
+            args.pad_language_model_tokens,
+        )
+    )
+    padding_config = None
+    if padding_requested:
+        from foldjax.schema import PaddingConfig
+
+        padding_config = PaddingConfig(
+            tokens=args.pad_tokens,
+            atoms=args.pad_atoms,
+            msa=args.pad_msa,
+            templates=args.pad_templates,
+            language_model_tokens=args.pad_language_model_tokens,
+            overflow=args.padding_overflow,
+        )
+        if args.features is not None:
+            raise SystemExit(
+                "padding currently supports generated --input-json features only; "
+                "static NPZ schemas may contain unregistered semantic axes"
+            )
+        if args.guidance_config is not None:
+            raise SystemExit(
+                "padding with TFG guidance is not yet supported; use one or the other"
+            )
+        if not args.full_depth_msa:
+            raise SystemExit(
+                "padding currently requires --full-depth-msa so random cycle "
+                "sampling cannot select padded rows"
+            )
 
     guidance_config = None
     if args.guidance_config is not None:
@@ -422,14 +478,23 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
             "--template-search-command is required with template search options"
         )
 
+    esm_name = None
     esm_provider = None
     if model_name is not None and ("_esm_" in model_name or "_ism_" in model_name):
-        from foldjax.models.protenix.data.esm import FairEsmProvider
-
         esm_name = "esm2-3b-ism" if "_ism_" in model_name else "esm2-3b"
-        esm_provider = FairEsmProvider(
-            esm_name,
-            checkpoint_dir=args.esm_checkpoint_dir or args.weights.parent,
+        # A static feature NPZ may already carry the publisher-derived
+        # ``esm_token_embedding``.  In that case no language-model checkpoint
+        # is opened (or even required); the feature is validated below.
+        if args.features is None:
+            from foldjax.models.protenix.data.esm import JaxEsmProvider
+
+            esm_provider = JaxEsmProvider(
+                esm_name,
+                checkpoint_dir=args.esm_checkpoint_dir or args.weights.parent,
+            )
+    elif padding_config is not None and args.pad_language_model_tokens is not None:
+        raise SystemExit(
+            "--pad-language-model-tokens applies only to Protenix ESM/ISM variants"
         )
 
     try:
@@ -474,13 +539,58 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                     n_keys=args.n_keys,
                     max_msa_rows=args.max_msa_rows,
                 )
+                language_model_profile = None
+                if esm_provider is not None and padding_config is not None:
+                    from foldjax.padding import (
+                        LANGUAGE_MODEL_TOKEN_BUCKETS,
+                        resolve_axis,
+                    )
+
+                    protein_lengths = []
+                    for wrapper in job.get("sequences", []):
+                        if not isinstance(wrapper, dict):
+                            continue
+                        protein = wrapper.get("proteinChain")
+                        if isinstance(protein, dict):
+                            protein_lengths.append(
+                                len(str(protein.get("sequence", "")))
+                            )
+                    if not protein_lengths or max(protein_lengths) < 1:
+                        raise ValueError(
+                            "ESM/ISM padding requires at least one protein sequence"
+                        )
+                    language_model_actual = max(protein_lengths)
+                    language_model_target = resolve_axis(
+                        language_model_actual,
+                        padding_config,
+                        "language_model_tokens",
+                        buckets=tuple(
+                            target
+                            for target in LANGUAGE_MODEL_TOKEN_BUCKETS
+                            if target <= esm_provider.max_sequence_length
+                        )
+                        + (esm_provider.max_sequence_length,),
+                    )
+                    language_model_profile = (
+                        language_model_actual,
+                        language_model_target,
+                    )
                 if esm_provider is not None:
                     from foldjax.models.protenix.data.esm import add_esm_embeddings
 
                     esm_features = dict(features)
                     esm_features["residue_index"] = esm_features["residue_index"] - 1
+                    provider = esm_provider
+                    if language_model_profile is not None:
+                        _, language_model_target = language_model_profile
+
+                        def provider(sequence: str) -> Any:
+                            return esm_provider.embed(
+                                sequence, target_length=language_model_target
+                            )
+
                     features = add_esm_embeddings(
-                        esm_features, job, provider=esm_provider
+                        esm_features, job, provider=provider
                     )
                     features["residue_index"] = esm_features["residue_index"] + 1
                 jobs.append(
@@ -488,19 +598,16 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                         "name": str(job.get("name") or fallback_name),
                         "features": features,
                         "modelSeeds": job.get("modelSeeds"),
+                        "language_model_profile": language_model_profile,
                     }
                 )
 
         for job in jobs:
             features = job["features"]
-            if (
-                esm_provider is not None
-                and args.features is not None
-                and "esm_token_embedding" not in features
-            ):
-                raise ValueError(
-                    "ESM/ISM model static features require esm_token_embedding"
-                )
+            if esm_name is not None:
+                from foldjax.models.protenix.data.esm import validate_esm_embeddings
+
+                validate_esm_embeddings(features)
             n_token = int(features["restype"].shape[-2])
             validate_inference_limits(model_name=model_name, n_token=n_token)
             if args.full_depth_msa and args.msa_row_alignment > 0 and "msa" in features:
@@ -516,6 +623,55 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                     print(
                         f"{job['name']}: MSA rows aligned: "
                         f"{original_msa_rows} -> {aligned_msa_rows}"
+                    )
+            job["output_features"] = features
+            if padding_config is not None:
+                from foldjax.models.protenix.data.padding import (
+                    pad_protenix_features,
+                )
+
+                features, padding_plan = pad_protenix_features(
+                    features,
+                    padding_config,
+                    n_queries=args.n_queries,
+                    n_keys=args.n_keys,
+                )
+                language_model_profile = job.get("language_model_profile")
+                if language_model_profile is not None:
+                    from foldjax.padding import PaddingPlan
+
+                    language_model_actual, language_model_target = (
+                        language_model_profile
+                    )
+                    padding_plan = PaddingPlan(
+                        actual={
+                            **padding_plan.actual,
+                            "language_model_tokens": language_model_actual,
+                        },
+                        storage={
+                            **(padding_plan.storage or padding_plan.actual),
+                            "language_model_tokens": language_model_actual,
+                        },
+                        target={
+                            **padding_plan.target,
+                            "language_model_tokens": language_model_target,
+                        },
+                    )
+                job["features"] = features
+                job["padding_plan"] = padding_plan
+                validate_inference_limits(
+                    model_name=model_name,
+                    n_token=padding_plan.target["tokens"],
+                )
+                print(f"{job['name']}: {padding_plan.message('protenix')}")
+                if on_padding_plan is not None:
+                    valid_tokens = jnp.asarray(features["token_padding_mask"]).astype(
+                        bool
+                    )
+                    valid_asym = jnp.asarray(features["asym_id"])[valid_tokens]
+                    on_padding_plan(
+                        padding_plan,
+                        {"chains": int(jnp.max(valid_asym)) + 1},
                     )
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -546,6 +702,8 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
     wants_raw = args.output_format in ("npz", "both")
     for job, seeds in zip(jobs, job_seeds, strict=True):
         features = job["features"]
+        output_features = job.get("output_features", features)
+        padding_plan = job.get("padding_plan")
         guidance_features = None
         if guidance_config is not None and guidance_config.get("enable"):
             from foldjax.models.protenix.data.geometry import (
@@ -568,6 +726,17 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
             diffusion_chunk_size=args.diffusion_chunk_size,
         )
         for seed in seeds:
+            init_noise = None
+            step_noises = None
+            if padding_plan is not None:
+                init_noise, step_noises = _padded_noise_tapes(
+                    seed=seed,
+                    n_sample=args.n_sample,
+                    n_step=n_step,
+                    actual_atom=padding_plan.actual["atoms"],
+                    target_atom=padding_plan.target["atoms"],
+                    diffusion_chunk_size=chunk_config.diffusion_chunk_size,
+                )
             cycle_msa_features = None
             if not args.full_depth_msa:
                 sampled = sample_msa_cycle_features(
@@ -621,6 +790,9 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                 guidance_config=guidance_config,
                 guidance_features=guidance_features,
                 graph_jit=not args.no_graph_jit,
+                padded_generated_schema=padding_plan is not None,
+                init_noise=init_noise,
+                step_noises=step_noises,
             )
             if args.prewarm_only:
                 jax.block_until_ready(output)
@@ -631,13 +803,19 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                     f"samples={args.n_sample}"
                 )
                 break
+            if padding_plan is not None:
+                from foldjax.models.protenix.data.padding import (
+                    crop_protenix_outputs,
+                )
+
+                output = crop_protenix_outputs(output, padding_plan)
             if args.output_format in ("protenix", "both"):
                 paths = write_protenix_outputs(
                     args.out,
                     job_name=job["name"],
                     seed=seed,
                     output=output,
-                    features=features,
+                    features=output_features,
                     include_raw=args.output_format == "both",
                     include_trunk=args.include_trunk,
                 )
@@ -670,6 +848,68 @@ def main(argv: Sequence[str] | None = None) -> list[Path]:
                 written.append(output_path)
                 print(f"wrote: {output_path}")
     return written
+
+
+def _padded_noise_tapes(
+    *,
+    seed: int,
+    n_sample: int,
+    n_step: int,
+    actual_atom: int,
+    target_atom: int,
+    diffusion_chunk_size: int | None,
+) -> tuple[Any, tuple[Any, ...]]:
+    """Generate the exact unpadded random stream, then right-pad it.
+
+    Generating directly at ``target_atom`` preserves sample zero's flat prefix
+    but changes every later sample's offset. Building the released real shape
+    first keeps all real atoms of every sample identical to the default path.
+    """
+
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models.protenix.data.padding import pad_atom_noise
+
+    root_key = jax.random.PRNGKey(seed)
+    if diffusion_chunk_size is None or diffusion_chunk_size <= 0:
+        chunk_sizes = (n_sample,)
+        chunk_keys = (root_key,)
+    else:
+        chunk_sizes = tuple(
+            min(diffusion_chunk_size, n_sample - start)
+            for start in range(0, n_sample, diffusion_chunk_size)
+        )
+        chunk_keys = tuple(jax.random.split(root_key, len(chunk_sizes)))
+
+    init_chunks = []
+    step_chunks: list[list[Any]] = [[] for _ in range(n_step)]
+    for chunk_size, chunk_key in zip(chunk_sizes, chunk_keys, strict=True):
+        chunk_key, init_key = jax.random.split(chunk_key)
+        init_chunks.append(
+            jax.random.normal(
+                init_key,
+                (chunk_size, actual_atom, 3),
+                dtype=jnp.float32,
+            )
+        )
+        for step_index, step_key in enumerate(jax.random.split(chunk_key, n_step)):
+            step_chunks[step_index].append(
+                jax.random.normal(
+                    step_key,
+                    (chunk_size, actual_atom, 3),
+                    dtype=jnp.float32,
+                )
+            )
+    init_noise = jnp.concatenate(init_chunks, axis=0)
+    step_noises = tuple(jnp.concatenate(chunks, axis=0) for chunks in step_chunks)
+    return (
+        pad_atom_noise(init_noise, actual=actual_atom, target=target_atom),
+        tuple(
+            pad_atom_noise(noise, actual=actual_atom, target=target_atom)
+            for noise in step_noises
+        ),
+    )
 
 
 def _resolve_seeds(args: argparse.Namespace, model_seeds: Any) -> list[int]:

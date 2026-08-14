@@ -7,10 +7,9 @@ assumed — which is the open risk in this port: the released weights' top-level
 prefixes, real dimensions, and whether the triangular multiplication is stored
 fused or unfused are all unverified.
 
-``safetensors`` is preferred when available because it needs no torch. A
-``.pt``/``.ckpt`` file falls back to ``torch.load``, which means the torch-bridge
-extra; production inference should convert once to safetensors rather than
-depending on that path.
+``safetensors`` uses its native NumPy loader. ``.pt``/``.ckpt`` uses FoldJAX's
+restricted torch-archive reader, which reconstructs tensors as NumPy arrays and
+never imports PyTorch.
 """
 
 from __future__ import annotations
@@ -75,22 +74,25 @@ def load_checkpoint(path: str | Path) -> dict[str, np.ndarray]:
 
         raw: Mapping[str, Any] = load_file(str(path))
     else:
-        try:
-            import torch
-        except ImportError:
-            from foldjax import torch_archive
+        from foldjax import torch_archive
 
-            loaded = torch_archive.load(path)
-        else:
-            loaded = torch.load(str(path), map_location="cpu", weights_only=False)
+        loaded = torch_archive.load(path)
         raw = unwrap_state_dict(loaded)
 
     flat: dict[str, np.ndarray] = {}
+    origins: dict[str, str] = {}
     for key, value in raw.items():
-        name = strip_wrapper_prefixes(str(key))
+        original = str(key)
+        name = strip_wrapper_prefixes(original)
+        if name in flat:
+            raise ValueError(
+                "checkpoint keys collide after wrapper-prefix normalization: "
+                f"{origins[name]!r} and {original!r} both become {name!r}"
+            )
         if hasattr(value, "detach"):
             value = value.detach().cpu().numpy()
         flat[name] = np.asarray(value)
+        origins[name] = original
     return flat
 
 

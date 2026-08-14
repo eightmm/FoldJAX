@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from foldjax.models.boltz2.data import const
 from foldjax.models.boltz2.data._external import lddt_dist
+from foldjax.models.boltz2.data.identifiers import resolve_molecule_pickle
 from foldjax.models.boltz2.data.pad import pad_dim
 
 
@@ -30,10 +31,7 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
     """
     loaded_mols = {}
     for molecule in molecules:
-        path = Path(moldir) / f"{molecule}.pkl"
-        if not path.exists():
-            msg = f"CCD component {molecule} not found!"
-            raise ValueError(msg)
+        path = resolve_molecule_pickle(moldir, molecule)
         with path.open("rb") as f:
             loaded_mols[molecule] = pickle.load(f)  # noqa: S301
     return loaded_mols
@@ -76,7 +74,8 @@ def load_all_molecules(moldir: str) -> dict[str, Mol]:
     files = list(Path(moldir).glob("*.pkl"))
     for path in tqdm(files, total=len(files), desc="Loading molecules", leave=False):
         mol_name = path.stem
-        with path.open("rb") as f:
+        resolved = resolve_molecule_pickle(moldir, mol_name)
+        with resolved.open("rb") as f:
             loaded_mols[mol_name] = pickle.load(f)  # noqa: S301
     return loaded_mols
 

@@ -31,18 +31,32 @@ NONDETERMINISTIC = {"ref_pos"}
 
 
 def _featurize(job: Path, out: Path, backend: str, mols: Path) -> dict:
-    """Featurize in a subprocess so each backend is chosen at import time."""
-    script = (
-        "import os, sys, numpy as np\n"
-        f"os.environ['FOLDJAX_BOLTZ_FEATURIZER'] = {backend!r}\n"
-        "from pathlib import Path\n"
-        "from foldjax.models.boltz2.data._torch import BACKEND\n"
-        f"assert BACKEND == {backend!r}, BACKEND\n"
-        "from foldjax.models.boltz2.data.featurize import featurize_yaml\n"
-        "feats, _, _ = featurize_yaml(\n"
-        f"    yaml_path=Path({str(job)!r}), out_dir=Path({str(out)!r}),\n"
-        f"    mol_dir=Path({str(mols)!r}))\n"
-        f"np.savez({str(out) + '.npz'!r}, **feats)\n"
+    """Featurize in a subprocess with a test-only upstream tensor injection."""
+    test_backend = ""
+    if backend == "torch":
+        test_backend = (
+            "import torch, types\n"
+            "selector = types.ModuleType(\n"
+            "    'foldjax.models.boltz2.data._torch')\n"
+            "selector.torch = torch\n"
+            "selector.Tensor = torch.Tensor\n"
+            "selector.from_numpy = torch.from_numpy\n"
+            "selector.BACKEND = 'torch'\n"
+            "sys.modules['foldjax.models.boltz2.data._torch'] = selector\n"
+        )
+    script = "".join(
+        (
+            "import sys, numpy as np\n",
+            test_backend,
+            "from pathlib import Path\n",
+            "from foldjax.models.boltz2.data._torch import BACKEND\n",
+            f"assert BACKEND == {backend!r}, BACKEND\n",
+            "from foldjax.models.boltz2.data.featurize import featurize_yaml\n",
+            "feats, _, _ = featurize_yaml(\n",
+            f"    yaml_path=Path({str(job)!r}), out_dir=Path({str(out)!r}),\n",
+            f"    mol_dir=Path({str(mols)!r}))\n",
+            f"np.savez({str(out) + '.npz'!r}, **feats)\n",
+        )
     )
     completed = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, check=False

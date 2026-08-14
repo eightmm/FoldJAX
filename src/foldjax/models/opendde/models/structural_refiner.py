@@ -37,6 +37,24 @@ def structural_refiner_block(
     of the single attention logits.
     """
 
+    single_gate = None
+    single_attention_bias = extra_attn_bias
+    if pair_mask is not None:
+        pair_valid = jnp.asarray(pair_mask).astype(bool)
+        single_valid = jnp.diagonal(pair_valid, axis1=-2, axis2=-1)
+        single_gate = single_valid.astype(s.dtype)[..., None]
+        s = s * single_gate
+        mask_bias = jnp.where(
+            single_valid[..., :, None] & single_valid[..., None, :],
+            jnp.asarray(0.0, dtype=z.dtype),
+            jnp.asarray(-1.0e10, dtype=z.dtype),
+        )
+        single_attention_bias = (
+            mask_bias
+            if extra_attn_bias is None
+            else jnp.asarray(extra_attn_bias, dtype=z.dtype) + mask_bias
+        )
+
     pair_only_params = params._replace(
         attention_pair_bias=None,
         single_transition=None,
@@ -65,9 +83,14 @@ def structural_refiner_block(
         num_heads=num_heads,
         q_chunk_size=single_att_q_chunk_size,
         attention_backend=single_attention_backend,
-        extra_attn_bias=extra_attn_bias,
+        extra_attn_bias=single_attention_bias,
     )
-    return s + transition(s, params.single_transition), z
+    if single_gate is not None:
+        s = s * single_gate
+    s = s + transition(s, params.single_transition)
+    if single_gate is not None:
+        s = s * single_gate
+    return s, z
 
 
 def structural_refiner_stack(

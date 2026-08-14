@@ -1,5 +1,10 @@
 # OpenDDE JAX
 
+> **Archived port record.** OpenDDE now ships inside FoldJAX. Use the
+> top-level [README](../../../README.md) for current installation and the
+> common `foldjax` CLI. This file retains the port's model-specific evidence
+> and native entry-point details.
+
 Inference-only JAX port of
 [Aureka AI Research OpenDDE](https://github.com/aurekaresearch/OpenDDE), pinned
 to source revision `f607bb3c9ff299c0627ac20f5ef8e25d716ed46f`.
@@ -7,8 +12,8 @@ to source revision `f607bb3c9ff299c0627ac20f5ef8e25d716ed46f`.
 The native prediction path now runs an OpenDDE JSON job through
 featurization, the released 655,791,538-parameter model, confidence scoring,
 and CIF/summary writing without importing PyTorch or executing upstream
-OpenDDE/Protenix. PyTorch is confined to an optional, one-time converter for a
-trusted released checkpoint.
+OpenDDE/Protenix. The optional one-time checkpoint conversion also uses
+FoldJAX's restricted NumPy archive reader; PyTorch is not installed or imported.
 
 The checked tiny protein example produces a finite 71-atom CIF and summary
 through both the native CLI and the FoldJAX backend. A second actual-weight
@@ -29,8 +34,9 @@ memory, and score comparisons are below.
 
 ## Checkpoint provenance and conversion
 
-Checkpoints are not bundled or downloaded automatically. The verified general
-checkpoint is from Hugging Face revision
+Checkpoints are not bundled, and prediction never downloads them implicitly.
+The explicit `foldjax weights fetch --model opendde` command downloads and
+verifies the general checkpoint from Hugging Face revision
 `eddd563ce96571f784012edd8f045181c8f8627d`:
 
 | Asset | Size (bytes) | SHA-256 |
@@ -53,26 +59,34 @@ printf '%s  %s\n' \
   'opendde.pt' | sha256sum --check
 ```
 
-Install the isolated bridge extra and convert the trusted checkpoint once:
+The common managed-weight command downloads, verifies, and converts the pinned
+publisher checkpoint with the NumPy reader:
 
 ```bash
-uv sync --extra torch-bridge
+foldjax weights fetch --model opendde
+```
+
+To convert a trusted local copy explicitly instead, use the native exporter;
+no additional tensor-runtime extra is required:
+
+```bash
 uv run opendde-jax-export-weights \
   --checkpoint /path/to/opendde.pt \
   --out /path/to/opendde.jax
 ```
 
-The bridge uses PyTorch's safe `weights_only=True` loader with memory mapping
-and has no unsafe deserialization fallback. The resulting native file can be
-loaded by the prediction runtime without PyTorch. Its loader uses a restricted
-unpickler that accepts only NumPy arrays and the port's parameter NamedTuples;
+The reader accepts only the storage and reconstruction primitives needed by
+the released archive and has no arbitrary-deserialization fallback. The
+resulting native file is loaded by the same PyTorch-free prediction runtime.
+Its loader accepts only NumPy arrays and the port's parameter NamedTuples;
 arbitrary pickle globals are rejected. The actual 2.6 GB native archive loads
 all 4,612 leaves and 655,791,538 parameters without importing `torch`.
 
 ## Chemistry and template assets
 
-Prediction never downloads databases or runtime assets. Supply the assets a
-job needs explicitly:
+Prediction never downloads databases or runtime assets. The managed setup
+commands stage shared public chemistry assets; native-entry-point callers may
+also supply the assets a job needs explicitly:
 
 | CLI option | Purpose |
 | --- | --- |
@@ -169,9 +183,9 @@ instead of copying that output bug.
 The current CPU verification gate is:
 
 ```bash
-uv sync --extra dev
-JAX_PLATFORMS=cpu uv run --extra dev pytest -q
-uv run --extra dev ruff check .
+uv sync --group dev
+JAX_PLATFORMS=cpu uv run --group dev pytest -q tests/models/opendde
+uv run --group dev ruff check .
 ```
 
 The final gate is intentionally expressed as commands rather than a fixed test

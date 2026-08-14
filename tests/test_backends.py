@@ -1,6 +1,10 @@
+import builtins
 import dataclasses
 import json
+import os
+import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -8,14 +12,24 @@ import numpy as np
 import pytest
 
 from foldjax.backends.alphafold3 import (
+    _PREFIX_STABLE_NOISE_FEATURE,
     VENDORED_RUNNER,
     AlphaFold3Backend,
+    _load_runner,
     _runner_path,
+    _samples,
+    _validated_fold_jobs,
 )
 from foldjax.backends.boltz2 import Boltz2Backend
+from foldjax.backends.esmfold2 import ESMFold2Backend
 from foldjax.backends.opendde import OpenDDEBackend
-from foldjax.backends.protenix import ProtenixBackend
-from foldjax.schema import PredictionRequest
+from foldjax.backends.openfold3 import (
+    OpenFold3Backend,
+    _compile_enabled,
+    _features_and_chemistry,
+)
+from foldjax.backends.protenix import _RESERVED_CLI_FLAGS, ProtenixBackend
+from foldjax.schema import PaddingConfig, PredictionRequest
 
 
 def _request(tmp_path: Path, model: str, **options) -> PredictionRequest:
@@ -65,8 +79,54 @@ def test_boltz_adapter_calls_native_api_and_normalizes_samples(
     assert seen["weights"].name == "weights"
     assert seen["seed"] == 5
     assert seen["compile_cache"] == tmp_path / "cache"
+    assert seen["padding"] is None
     assert result.samples[0].structure_path == output_path
     assert result.samples[0].scores == {"iptm": 0.6, "mean_plddt": 0.75}
+
+
+def test_boltz_adapter_routes_padding_and_preserves_the_native_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mols = tmp_path / "mols"
+    mols.mkdir()
+    seen = {}
+    profile = {
+        "actual": {"tokens": 2, "atoms": 3, "msa": 1},
+        "storage": {"tokens": 2, "atoms": 5, "msa": 1},
+        "target": {"tokens": 8, "atoms": 32, "msa": 1},
+        "changed": True,
+        "static": {
+            "use_template": False,
+            "recompute_nonpolymer_frames": True,
+        },
+    }
+
+    def native_predict(**kwargs):
+        seen.update(kwargs)
+        return {
+            "coords": np.zeros((2, 3, 3)),
+            "plddt": np.ones((2, 2)),
+            "raw": {"iptm": np.asarray([0.3, 0.7])},
+            "padding": {"primary": profile},
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    padding = PaddingConfig(tokens=8, atoms=32, msa=1)
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2", mols=mols),
+        padding=padding,
+        num_samples=2,
+    )
+
+    result = Boltz2Backend().predict(request)
+
+    assert seen["padding"] is padding
+    assert result.shape_profile == profile
+    assert len(result.samples) == 2
+    assert result.samples[0].coordinates.shape == (3, 3)
 
 
 def test_boltz_gives_each_sample_its_own_confidence(
@@ -192,6 +252,20 @@ def test_boltz_adapter_requires_molecule_data(tmp_path: Path) -> None:
         Boltz2Backend().predict(_request(tmp_path, "boltz2"))
 
 
+def test_boltz_rejects_a_single_diffusion_step_before_loading_model(
+    tmp_path: Path,
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        num_steps=1,
+        input_format="native",
+        options={},
+    )
+
+    with pytest.raises(ValueError, match="steps must be at least 2"):
+        Boltz2Backend().validate_request(request)
+
+
 def _write_protenix_outputs(out: Path, samples: int = 1) -> list[Path]:
     """Write what the shared Protenix writer writes, and return what it returns.
 
@@ -232,7 +306,14 @@ def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) ->
         lambda name: SimpleNamespace(main=native_main),
     )
     result = ProtenixBackend().predict(
-        _request(tmp_path, "protenix", n_sample=2, n_step=20)
+        _request(
+            tmp_path,
+            "protenix",
+            n_sample=2,
+            n_step=20,
+            esm_checkpoint_dir=tmp_path / "esm-checkpoint",
+            cli_args=("--gamma0", "0.2"),
+        )
     )
 
     assert seen[:6] == [
@@ -245,6 +326,10 @@ def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) ->
     ]
     assert "--n-sample" in seen and "2" in seen
     assert "--n-step" in seen and "20" in seen
+    assert seen[seen.index("--esm-checkpoint-dir") + 1] == str(
+        tmp_path / "esm-checkpoint"
+    )
+    assert seen[seen.index("--gamma0") + 1] == "0.2"
     assert seen[seen.index("--compile-cache") + 1] == str(tmp_path / "cache")
     assert result.samples[0].structure_path.name == "job_sample_0.cif"
     # Scalar confidence fields become common scores; arrays stay in the file.
@@ -304,6 +389,47 @@ def test_no_cache_reaches_protenix_as_an_explicit_refusal(
 def test_protenix_adapter_rejects_unknown_options(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported Protenix options"):
         ProtenixBackend().predict(_request(tmp_path, "protenix", nonsense=1))
+
+
+def test_protenix_esm_checkpoint_dir_requires_a_path(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="esm_checkpoint_dir must be a path"):
+        ProtenixBackend().predict(
+            _request(tmp_path, "protenix", esm_checkpoint_dir=object())
+        )
+
+
+@pytest.mark.parametrize(
+    "cli_args",
+    ["--gamma0 0.2", ["--gamma0", 0.2], {"--gamma0", "0.2"}, None],
+)
+def test_protenix_cli_args_require_a_string_sequence(
+    tmp_path: Path, cli_args: object
+) -> None:
+    with pytest.raises(ValueError, match="non-string sequence of strings"):
+        ProtenixBackend().predict(
+            _request(tmp_path, "protenix", cli_args=cli_args)
+        )
+
+
+@pytest.mark.parametrize("flag", sorted(_RESERVED_CLI_FLAGS))
+@pytest.mark.parametrize("equals_form", [False, True])
+def test_protenix_cli_args_cannot_override_adapter_owned_flags(
+    tmp_path: Path, flag: str, equals_form: bool
+) -> None:
+    cli_args = (f"{flag}=override",) if equals_form else (flag, "override")
+    with pytest.raises(ValueError, match="adapter-owned flag"):
+        ProtenixBackend().predict(
+            _request(tmp_path, "protenix", cli_args=cli_args)
+        )
+
+
+def test_protenix_cli_args_reject_argparse_abbreviations_of_owned_flags(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="--weights"):
+        ProtenixBackend().predict(
+            _request(tmp_path, "protenix", cli_args=("--weig", "other"))
+        )
 
 
 def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
@@ -463,6 +589,22 @@ def test_opendde_adapter_requires_native_weight_file(tmp_path: Path) -> None:
         OpenDDEBackend().predict(request)
 
 
+def test_esmfold2_rejects_text_for_boolean_native_options(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda _name: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2._job_chains", lambda _path: ([], {})
+    )
+
+    with pytest.raises(ValueError, match="no_language_model must be a boolean"):
+        ESMFold2Backend().predict(
+            _request(tmp_path, "esmfold2", no_language_model="false")
+        )
+
+
 def test_opendde_capabilities_match_the_current_native_runtime() -> None:
     capabilities = OpenDDEBackend().capabilities()
     assert capabilities.input_formats == ("native", "opendde", "foldjax")
@@ -479,11 +621,107 @@ class FakeFoldInput:
         return self.name
 
 
+@pytest.mark.parametrize(
+    "name", ["", ".", "..", "../escape", "/absolute", "a/b", "a\\b"]
+)
+def test_alphafold3_rejects_unsafe_native_job_output_names(
+    tmp_path: Path, name: str
+) -> None:
+    with pytest.raises(ValueError, match="one safe filename component"):
+        _validated_fold_jobs(
+            (FakeFoldInput(name=name),), output_dir=tmp_path / "out", seed=5
+        )
+
+
+def test_alphafold3_rejects_a_native_job_symlink_escape(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    outside = tmp_path / "outside"
+    output.mkdir()
+    outside.mkdir()
+    (output / "job").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes its run directory"):
+        _validated_fold_jobs(
+            (FakeFoldInput(),), output_dir=output, seed=5
+        )
+
+
+def test_alphafold3_rejects_duplicate_job_directories_before_prediction(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folding = ModuleType("alphafold3.common.folding_input")
+    folding.load_fold_inputs_from_path = lambda _path: iter(
+        (FakeFoldInput(name="same"), FakeFoldInput(name="same"))
+    )
+    common = ModuleType("alphafold3.common")
+    common.folding_input = folding
+    package = ModuleType("alphafold3")
+    monkeypatch.setitem(sys.modules, "alphafold3", package)
+    monkeypatch.setitem(sys.modules, "alphafold3.common", common)
+    monkeypatch.setitem(sys.modules, "alphafold3.common.folding_input", folding)
+    predicted = []
+    runner = SimpleNamespace(
+        predict_structure=lambda *_args, **_kwargs: predicted.append(True)
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._runner_path", lambda _options: Path("runner")
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._load_runner", lambda _path: runner
+    )
+
+    with pytest.raises(ValueError, match="share output directory"):
+        AlphaFold3Backend().predict(_request(tmp_path, "alphafold3"))
+
+    assert predicted == []
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("return_embeddings", "false"), ("return_distogram", 1)],
+)
+def test_alphafold3_requires_real_booleans_for_output_options(
+    tmp_path: Path, monkeypatch, option: str, value: object
+) -> None:
+    folding = ModuleType("alphafold3.common.folding_input")
+    folding.load_fold_inputs_from_path = lambda _path: iter((FakeFoldInput(),))
+    common = ModuleType("alphafold3.common")
+    common.folding_input = folding
+    package = ModuleType("alphafold3")
+    monkeypatch.setitem(sys.modules, "alphafold3", package)
+    monkeypatch.setitem(sys.modules, "alphafold3.common", common)
+    monkeypatch.setitem(sys.modules, "alphafold3.common.folding_input", folding)
+    configured = []
+    runner = SimpleNamespace(
+        make_model_config=lambda **kwargs: configured.append(kwargs)
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._runner_path", lambda _options: Path("runner")
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._load_runner", lambda _path: runner
+    )
+    monkeypatch.setattr("jax.local_devices", lambda backend=None: ("device0",))
+    request = dataclasses.replace(
+        _request(tmp_path, "alphafold3", **{option: value}),
+        cache_dir=None,
+        use_compile_cache=False,
+    )
+
+    with pytest.raises(ValueError, match=f"{option} must be a boolean"):
+        AlphaFold3Backend().predict(request)
+
+    assert configured == []
+
+
 def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path, "alphafold3", diffusion_samples=2)
     runner_file = tmp_path / "af3" / "run_alphafold.py"
     runner_file.parent.mkdir()
     runner_file.touch()
+    package_init = runner_file.parent / "src/alphafold3/__init__.py"
+    package_init.parent.mkdir(parents=True)
+    package_init.touch()
     request.options["source"] = runner_file.parent
     seen = {}
 
@@ -518,6 +756,9 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
     folding.load_fold_inputs_from_path = lambda path: iter((FakeFoldInput(),))
     common = ModuleType("alphafold3.common")
     common.folding_input = folding
+    package = ModuleType("alphafold3")
+    package.__file__ = str(package_init)
+    monkeypatch.setitem(sys.modules, "alphafold3", package)
     monkeypatch.setitem(sys.modules, "alphafold3.common", common)
     monkeypatch.setitem(sys.modules, "alphafold3.common.folding_input", folding)
     monkeypatch.setattr("foldjax.backends.alphafold3._load_runner", lambda path: runner)
@@ -534,22 +775,179 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
     assert sample.scores == {"ptm": 0.7, "iptm": 0.5, "ranking_score": 0.91}
 
 
+def test_alphafold3_adapter_routes_padding_through_native_inference(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seen = {}
+    plan_summary = {
+        "actual": {"tokens": 3},
+        "storage": {"tokens": 3},
+        "target": {"tokens": 512},
+        "changed": True,
+    }
+    example = {
+        "seq_length": np.asarray(3),
+        "seq_mask": np.pad(np.ones(3), (0, 509)),
+    }
+    inference_result = SimpleNamespace(metadata={"ranking_score": 0.88})
+
+    class FakeModelRunner:
+        def __init__(self, **kwargs):
+            seen["runner"] = kwargs
+
+        def run_inference(self, model_batch, key):
+            seen["model_batch"] = model_batch
+            return {"native": np.asarray(1)}
+
+        def extract_inference_results(self, *, batch, result, target_name):
+            seen["extraction_batch"] = batch
+            return (inference_result,)
+
+        def extract_embeddings(self, *, result, num_tokens):
+            return None
+
+        def extract_distogram(self, *, result, num_tokens):
+            return None
+
+    def fake_featurize(fold_input, *, buckets, overflow, fixed_target):
+        seen["preflight"] = (buckets, overflow, fixed_target)
+        return (example,), SimpleNamespace(summary=lambda: plan_summary)
+
+    def write_outputs(results, output_dir, job_name):
+        sample_dir = Path(output_dir) / "seed-5_sample-0"
+        sample_dir.mkdir(parents=True)
+        prefix = f"{job_name}_seed-5_sample-0"
+        (sample_dir / f"{prefix}_model.cif").touch()
+        (sample_dir / f"{prefix}_summary_confidences.json").write_text("{}")
+
+    runner = SimpleNamespace(
+        ModelRunner=FakeModelRunner,
+        ResultsForSeed=lambda **kwargs: SimpleNamespace(**kwargs),
+        make_model_config=lambda **kwargs: SimpleNamespace(),
+        write_outputs=write_outputs,
+    )
+    folding = ModuleType("alphafold3.common.folding_input")
+    folding.load_fold_inputs_from_path = lambda path: iter((FakeFoldInput(),))
+    common = ModuleType("alphafold3.common")
+    common.folding_input = folding
+    package = ModuleType("alphafold3")
+    monkeypatch.setitem(sys.modules, "alphafold3", package)
+    monkeypatch.setitem(sys.modules, "alphafold3.common", common)
+    monkeypatch.setitem(sys.modules, "alphafold3.common.folding_input", folding)
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._runner_path", lambda options: Path("runner")
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._load_runner", lambda path: runner
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._featurize_padded_structure",
+        fake_featurize,
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._tokamax_kernel_fallback",
+        lambda strategy: nullcontext(),
+    )
+    monkeypatch.setattr("jax.local_devices", lambda backend=None: ("device0",))
+    padding = PaddingConfig(tokens=512, overflow="exact")
+    request = dataclasses.replace(
+        _request(tmp_path, "alphafold3"),
+        cache_dir=None,
+        use_compile_cache=False,
+        padding=padding,
+    )
+
+    result = AlphaFold3Backend().predict(request)
+
+    assert seen["preflight"] == ((512,), "exact", True)
+    assert bool(seen["model_batch"][_PREFIX_STABLE_NOISE_FEATURE])
+    assert _PREFIX_STABLE_NOISE_FEATURE not in seen["extraction_batch"]
+    assert result.shape_profile == plan_summary
+    assert result.raw["padding"] == plan_summary
+    assert result.samples[0].structure_path is not None
+
+
+def test_alphafold3_jobs_receive_unique_common_sample_slots(tmp_path: Path) -> None:
+    """Native AF3 files may contain several jobs whose local samples restart at 0."""
+    inference_result = SimpleNamespace(metadata={"ranking_score": 0.91})
+    results = (SimpleNamespace(seed=5, inference_results=(inference_result,)),)
+    samples = []
+    for job_name in ("first", "second"):
+        job_dir = tmp_path / job_name
+        sample_dir = job_dir / "seed-5_sample-0"
+        sample_dir.mkdir(parents=True)
+        prefix = f"{job_name}_seed-5_sample-0"
+        (sample_dir / f"{prefix}_model.cif").write_text("data_result\n#\n")
+        (sample_dir / f"{prefix}_summary_confidences.json").write_text("{}")
+        samples.extend(
+            _samples(
+                results,
+                job_dir,
+                job_name,
+                sample_offset=len(samples),
+            )
+        )
+
+    assert [sample.metadata["sample"] for sample in samples] == [0, 1]
+    assert [sample.metadata["job"] for sample in samples] == ["first", "second"]
+
+
 def test_alphafold3_source_path_validation(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="runner not found"):
         _runner_path({"source": tmp_path})
 
 
-def test_an_installed_alphafold3_falls_back_to_the_vendored_runner(
+def test_a_failed_runner_import_is_removed_before_retry(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """`pip install alphafold3` leaves `run_alphafold.py` behind; we carry it.
+    runner = tmp_path / "broken_runner.py"
+    runner.write_text("PARTIAL = True\nraise RuntimeError('broken runner')\n")
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._settle_absl_flags", lambda: None
+    )
 
-    Upstream keeps that program at its repository root rather than in the
-    package, so resolving it from the import location finds nothing once the
-    package is installed normally -- which used to mean the backend only worked
-    next to a checkout.
-    """
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="broken runner"):
+            _load_runner(runner)
+
+
+def test_runner_cache_is_scoped_to_the_resolved_source_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("IDENTITY = 'first'\n")
+    second.write_text("IDENTITY = 'second'\n")
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._settle_absl_flags", lambda: None
+    )
+
+    assert _load_runner(first).IDENTITY == "first"
+    assert _load_runner(second).IDENTITY == "second"
+
+
+def test_runner_cache_changes_when_the_file_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = tmp_path / "runner.py"
+    runner.write_text("IDENTITY = 'first'\n")
+    monkeypatch.setattr(
+        "foldjax.backends.alphafold3._settle_absl_flags", lambda: None
+    )
+
+    assert _load_runner(runner).IDENTITY == "first"
+    runner.write_text("IDENTITY = 'second'\n")
+
+    assert _load_runner(runner).IDENTITY == "second"
+
+
+def test_an_installed_alphafold3_cannot_change_the_default_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An unimported site-package never changes FoldJAX's provenance."""
     import importlib.util
+
+    from foldjax.models.alphafold3 import build
 
     installed = tmp_path / "site-packages" / "alphafold3" / "__init__.py"
     installed.parent.mkdir(parents=True)
@@ -559,28 +957,198 @@ def test_an_installed_alphafold3_falls_back_to_the_vendored_runner(
         "find_spec",
         lambda name: SimpleNamespace(origin=str(installed)),
     )
+    monkeypatch.delitem(sys.modules, "alphafold3", raising=False)
+    selected = []
+    monkeypatch.setattr(build, "register_runtime", lambda: selected.append("managed"))
 
     assert _runner_path({}) == VENDORED_RUNNER
+    assert selected == ["managed"]
     assert VENDORED_RUNNER.is_file()
 
 
-def test_a_checkout_outranks_the_vendored_alphafold3_runner(
+def test_an_already_imported_external_alphafold3_is_not_replaced(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The vendored copy is a snapshot; a checkout is the live thing."""
+    installed = tmp_path / "site-packages" / "alphafold3" / "__init__.py"
+    installed.parent.mkdir(parents=True)
+    installed.touch()
+    package = ModuleType("alphafold3")
+    package.__file__ = str(installed)
+    monkeypatch.setitem(sys.modules, "alphafold3", package)
+
+    with pytest.raises(RuntimeError, match="already imported"):
+        _runner_path({})
+
+
+def test_a_managed_runtime_remains_identifiable_after_home_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.alphafold3 import _upstream, build
+
+    old_package = tmp_path / "home-a/runtime/alphafold3/key/alphafold3"
+    new_package = tmp_path / "home-b/runtime/alphafold3/key/alphafold3"
+    old_package.mkdir(parents=True)
+    new_package.mkdir(parents=True)
+    module = ModuleType("alphafold3")
+    module.__file__ = str(old_package / "__init__.py")
+    setattr(module, _upstream._MANAGED_PACKAGE_ATTR, str(old_package))
+    monkeypatch.setitem(sys.modules, "alphafold3", module)
+    monkeypatch.setattr(build, "is_managed_origin", lambda origin: False)
+    monkeypatch.setattr(build, "active_package", lambda: new_package)
+
+    with pytest.raises(RuntimeError, match="different FoldJAX-managed"):
+        _upstream.ensure_registered()
+
+
+def test_runner_resolution_rechecks_a_loaded_managed_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.alphafold3 import _upstream, build
+
+    old_package = tmp_path / "old/runtime/alphafold3/key/alphafold3"
+    new_package = tmp_path / "new/runtime/alphafold3/key/alphafold3"
+    old_package.mkdir(parents=True)
+    new_package.mkdir(parents=True)
+    module = ModuleType("alphafold3")
+    module.__file__ = str(old_package / "__init__.py")
+    setattr(module, _upstream._MANAGED_PACKAGE_ATTR, str(old_package))
+    monkeypatch.setitem(sys.modules, "alphafold3", module)
+    monkeypatch.setattr(build, "active_package", lambda: new_package)
+    monkeypatch.setattr(build, "runtime_package", lambda: new_package)
+
+    with pytest.raises(RuntimeError, match="different FoldJAX-managed"):
+        _runner_path({})
+
+
+def test_runner_resolution_rejects_an_explicit_checkout_package_mismatch(
+    tmp_path: Path, monkeypatch
+) -> None:
     import importlib.util
+
+    checkout = tmp_path / "checkout"
+    (checkout / "src/alphafold3").mkdir(parents=True)
+    (checkout / "src/alphafold3/__init__.py").touch()
+    (checkout / "run_alphafold.py").touch()
+    other = tmp_path / "other/alphafold3/__init__.py"
+    other.parent.mkdir(parents=True)
+    other.touch()
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: SimpleNamespace(origin=str(other)),
+    )
+
+    with pytest.raises(RuntimeError, match="does not match the imported package"):
+        _runner_path({"source": checkout})
+
+
+def test_registered_runtime_restores_its_libcifpp_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.alphafold3 import _upstream, build
+
+    package = tmp_path / "runtime/alphafold3/key/alphafold3"
+    data = package.parent / "share/libcifpp"
+    package.mkdir(parents=True)
+    data.mkdir(parents=True)
+    module = ModuleType("alphafold3")
+    module.__file__ = str(package / "__init__.py")
+    setattr(module, _upstream._MANAGED_PACKAGE_ATTR, str(package))
+    monkeypatch.setitem(sys.modules, "alphafold3", module)
+    monkeypatch.setattr(build, "active_package", lambda: package)
+    monkeypatch.delenv("LIBCIFPP_DATA_DIR", raising=False)
+
+    _upstream.ensure_registered()
+
+    assert os.environ["LIBCIFPP_DATA_DIR"] == str(data)
+
+
+def test_a_registered_foldjax_alphafold3_runtime_is_rechecked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A failed CCD build may leave the module registered but not complete."""
+    from foldjax.models.alphafold3 import build
+
+    managed = tmp_path / "runtime" / "alphafold3" / "__init__.py"
+    managed.parent.mkdir(parents=True)
+    managed.touch()
+    monkeypatch.delitem(sys.modules, "alphafold3", raising=False)
+    monkeypatch.setattr(build, "is_managed_origin", lambda origin: True)
+    calls = []
+    monkeypatch.setattr(build, "register_runtime", lambda: calls.append("registered"))
+
+    assert _runner_path({}) == VENDORED_RUNNER
+    assert calls == ["registered"]
+
+
+def test_an_unselected_checkout_cannot_outrank_the_managed_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Discovery alone is not consent to run arbitrary checkout code."""
+    import importlib.util
+
+    from foldjax.models.alphafold3 import build
 
     checkout = tmp_path / "AlphaFold3"
     origin = checkout / "src" / "alphafold3" / "__init__.py"
     origin.parent.mkdir(parents=True)
     origin.touch()
-    runner = checkout / "run_alphafold.py"
-    runner.touch()
+    (checkout / "run_alphafold.py").touch()
     monkeypatch.setattr(
         importlib.util, "find_spec", lambda name: SimpleNamespace(origin=str(origin))
     )
+    selected = []
+    monkeypatch.delitem(sys.modules, "alphafold3", raising=False)
+    monkeypatch.setattr(build, "register_runtime", lambda: selected.append("managed"))
 
-    assert _runner_path({}) == runner
+    assert _runner_path({}) == VENDORED_RUNNER
+    assert selected == ["managed"]
+
+
+def test_alphafold3_source_environment_does_not_opt_into_external_code(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """External provenance requires the request option, not ambient state."""
+    from foldjax.models.alphafold3 import build
+
+    checkout = tmp_path / "AlphaFold3"
+    checkout.mkdir()
+    monkeypatch.setenv("ALPHAFOLD3_SOURCE", str(checkout))
+    monkeypatch.delitem(sys.modules, "alphafold3", raising=False)
+    selected = []
+    monkeypatch.setattr(build, "register_runtime", lambda: selected.append("managed"))
+
+    assert _runner_path({}) == VENDORED_RUNNER
+    assert selected == ["managed"]
+
+
+def test_alphafold3_import_and_default_resolution_are_torch_free() -> None:
+    script = r"""
+import builtins
+import sys
+
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == "torch" or name.startswith("torch."):
+        raise AssertionError(f"AlphaFold 3 runtime resolution imported {name}")
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+
+from foldjax.backends import alphafold3
+from foldjax.models.alphafold3 import build
+
+assert alphafold3.VENDORED_RUNNER.is_file()
+assert build.source_package().is_dir()
+assert "torch" not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert completed.returncode == 0, completed.stdout
 
 
 def test_the_vendored_alphafold3_runner_matches_upstream() -> None:
@@ -624,13 +1192,228 @@ def test_openfold3_predicts_from_the_vendored_package() -> None:
         assert import_module(name) is not None, name
 
 
+def test_openfold3_capabilities_separate_raw_and_feature_runtime_needs() -> None:
+    capabilities = OpenFold3Backend().capabilities()
+    requirements = capabilities.input_requirements
+
+    archive = requirements["openfold3-features"]
+    assert archive.prediction_runtime == "jax"
+    assert archive.preprocessing_runtime == "precomputed"
+    assert archive.required_extras == ()
+    assert archive.requires_torch is False
+
+    for input_format in ("native", "openfold3", "foldjax"):
+        raw = requirements[input_format]
+        assert raw.prediction_runtime == "jax"
+        assert raw.preprocessing_runtime == "jax"
+        assert raw.required_extras == ("openfold3-preprocess",)
+        assert raw.requires_torch is False
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_openfold3_no_compile_requires_a_real_boolean(value) -> None:
+    with pytest.raises(ValueError, match="no_compile must be a boolean"):
+        _compile_enabled({"no_compile": value})
+
+
+def test_openfold3_no_compile_boolean_is_consumed() -> None:
+    eager = {"no_compile": True}
+    compiled = {"no_compile": False}
+    assert _compile_enabled(eager) is False and eager == {}
+    assert _compile_enabled(compiled) is True and compiled == {}
+
+
+@pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
+def test_openfold3_backend_passes_normalized_static_chain_count(
+    tmp_path: Path, monkeypatch, eager: bool
+) -> None:
+    from foldjax.models.openfold3.data import normalize_asym_ids
+
+    features = {
+        "token_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
+        "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
+        "asym_id": np.asarray([[5, 20, 999]], dtype=np.int64),
+    }
+    prediction = object()
+    output_metadata = object()
+    seen: dict[str, object] = {}
+    scores = tmp_path / "scores.json"
+    scores.write_text('{"samples": []}')
+
+    def fake_predict(key, batch, params, config, table, *, n_chain=None):
+        seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
+        return prediction
+
+    def fake_compile(config, table, *, n_chain=None):
+        def compiled(key, batch, params):
+            seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
+            return prediction
+
+        return compiled
+
+    def fake_write(*args, **kwargs):
+        seen["output_metadata"] = kwargs.get("output_metadata")
+        return {"structures": (), "scores": scores}
+
+    modules = {
+        "foldjax.models.openfold3.data": SimpleNamespace(
+            featurize_query_with_metadata=lambda *args, **kwargs: (
+                features,
+                output_metadata,
+            ),
+            subsample_msa_rows=lambda batch, depth: batch,
+            normalize_asym_ids=normalize_asym_ids,
+        ),
+        "foldjax.models.openfold3.inference": SimpleNamespace(
+            released_config=lambda **kwargs: SimpleNamespace(msa_depth=1024),
+            compile_predict=fake_compile,
+            predict=fake_predict,
+        ),
+        "foldjax.models.openfold3.output": SimpleNamespace(
+            write_prediction_outputs=fake_write
+        ),
+        "foldjax.models.openfold3.bridge.chemistry": SimpleNamespace(
+            representative_atom_table=lambda: object()
+        ),
+        "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(
+            load_checkpoint=lambda path: {}
+        ),
+        "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
+            map_inference_params=lambda state, prefix: object()
+        ),
+        "foldjax.models.openfold3.compilation": SimpleNamespace(
+            enable_compilation_cache=lambda path: path
+        ),
+        "jax": SimpleNamespace(random=SimpleNamespace(key=lambda seed: seed)),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.openfold3.import_module", lambda name: modules[name]
+    )
+    request = _request(
+        tmp_path,
+        "openfold3",
+        **({"no_compile": True} if eager else {}),
+    )
+
+    OpenFold3Backend().predict(request)
+
+    assert seen["n_chain"] == 2
+    assert seen["output_metadata"] is output_metadata
+    np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
+
+
+def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    features = {
+        "token_mask": np.asarray([[1, 1]], dtype=np.float32),
+        "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
+        "asym_id": np.asarray([[0, 0]], dtype=np.int64),
+        "msa_mask": np.ones((1, 1, 2), dtype=np.float32),
+        "template_backbone_frame_mask": np.ones((1, 1, 2), dtype=np.float32),
+        "template_pseudo_beta_mask": np.ones((1, 1, 2), dtype=np.float32),
+    }
+    prediction = object()
+    output_metadata = object()
+    seen: dict[str, object] = {}
+    scores = tmp_path / "scores.json"
+    scores.write_text('{"samples": []}')
+
+    def pad_features(batch, *, n_token, n_atom, n_msa, n_templates):
+        seen["targets"] = (n_token, n_atom, n_msa, n_templates)
+        return {
+            "token_mask": np.asarray([[1, 1, 0, 0]], dtype=np.float32),
+            "atom_mask": np.asarray([[1, 1, 0, 0]], dtype=np.float32),
+            "asym_id": np.asarray([[0, 0, 0, 0]], dtype=np.int64),
+            "msa_mask": np.pad(batch["msa_mask"], ((0, 0), (0, 1), (0, 2))),
+            "template_backbone_frame_mask": np.pad(
+                batch["template_backbone_frame_mask"],
+                ((0, 0), (0, 1), (0, 2)),
+            ),
+            "template_pseudo_beta_mask": np.pad(
+                batch["template_pseudo_beta_mask"],
+                ((0, 0), (0, 1), (0, 2)),
+            ),
+        }
+
+    def fake_compile(config, table, *, n_chain=None):
+        def compiled(key, batch, params, *, noise_mask=None):
+            seen["noise_mask"] = np.asarray(noise_mask)
+            return prediction
+
+        return compiled
+
+    def fake_write(*args, **kwargs):
+        return {"structures": (), "scores": scores}
+
+    modules = {
+        "foldjax.models.openfold3.data": SimpleNamespace(
+            featurize_query_with_metadata=lambda *args, **kwargs: (
+                features,
+                output_metadata,
+            ),
+            subsample_msa_rows=lambda batch, depth: batch,
+            pad_features=pad_features,
+            normalize_asym_ids=lambda batch: (batch, 1),
+        ),
+        "foldjax.models.openfold3.inference": SimpleNamespace(
+            released_config=lambda **kwargs: SimpleNamespace(
+                msa_depth=1024,
+                num_samples=2,
+            ),
+            compile_predict=fake_compile,
+        ),
+        "foldjax.models.openfold3.output": SimpleNamespace(
+            write_prediction_outputs=fake_write
+        ),
+        "foldjax.models.openfold3.bridge.chemistry": SimpleNamespace(
+            representative_atom_table=lambda: object()
+        ),
+        "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(
+            load_checkpoint=lambda path: {}
+        ),
+        "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
+            map_inference_params=lambda state, prefix: object()
+        ),
+        "foldjax.models.openfold3.compilation": SimpleNamespace(
+            enable_compilation_cache=lambda path: path
+        ),
+        "jax": SimpleNamespace(random=SimpleNamespace(key=lambda seed: seed)),
+        "jax.numpy": SimpleNamespace(
+            asarray=np.asarray,
+            broadcast_to=np.broadcast_to,
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.openfold3.import_module", lambda name: modules[name]
+    )
+    request = dataclasses.replace(
+        _request(tmp_path, "openfold3"),
+        padding=PaddingConfig(tokens=4, atoms=4, msa=2, templates=2),
+    )
+
+    result = OpenFold3Backend().predict(request)
+
+    assert seen["targets"] == (4, 4, 2, 2)
+    np.testing.assert_array_equal(
+        seen["noise_mask"],
+        [[True, True, False, False], [True, True, False, False]],
+    )
+    assert result.shape_profile["target"] == {
+        "tokens": 4,
+        "atoms": 4,
+        "msa": 2,
+        "templates": 2,
+    }
+
+
 def test_openfold3_featurization_names_the_extra_it_needs(monkeypatch) -> None:
-    """Featurization runs upstream's pipeline, which needs the torch extra.
+    """Featurization names its chemistry extra without implying Torch is needed.
 
     The pipeline is vendored, so this no longer fails for want of a checkout --
-    but it is still upstream's torch and lightning code, and a bare
-    "No module named ..." would not say which extra supplies that. The message
-    names it.
+    and its FoldJAX path is NumPy/JAX-only. A bare "No module named ..." would
+    not say which chemistry extra supplies the missing package, so the message
+    names both the extra and the Torch-free boundary.
 
     Simulated rather than assumed: setting the module to None in `sys.modules`
     makes the import fail even in an environment that has the extra, so this
@@ -653,4 +1436,76 @@ def test_openfold3_featurization_names_the_extra_it_needs(monkeypatch) -> None:
         featurize_query({"queries": {}})
     message = str(error.value)
     assert "openfold3-preprocess" in message
-    assert "inference path itself needs none of it" in message
+    assert "PyTorch and Lightning are not required" in message
+
+
+def test_openfold3_feature_archive_loads_without_importing_torch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from foldjax.models.openfold3 import data
+    from foldjax.models.openfold3.models.representative_atoms import (
+        RepresentativeAtomTable,
+    )
+    from tests.models.openfold3.feature_fixture import minimal_features
+
+    features = minimal_features()
+    table = RepresentativeAtomTable(
+        *(np.zeros(32, dtype=np.float32) for _ in RepresentativeAtomTable._fields)
+    )
+    archive = data.save_features(
+        features, tmp_path / "features.npz", representative_atoms=table
+    )
+    request = _request(tmp_path, "openfold3")
+    request = dataclasses.replace(
+        request, input=archive, input_format="openfold3-features"
+    )
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise AssertionError("feature inference path imported torch")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    loaded, loaded_table = _features_and_chemistry(
+        request, data=data, query_id=None, ccd_file_path=None
+    )
+
+    assert set(loaded) == set(data.MODEL_FEATURES)
+    assert loaded_table is not None
+
+
+def test_openfold3_cold_inference_import_closure_is_torch_free() -> None:
+    """Guard before the first FoldJAX import, then traverse the real closure."""
+    script = r"""
+import builtins
+import sys
+
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == "torch" or name.startswith("torch."):
+        raise AssertionError(f"inference closure imported {name}")
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+
+from foldjax.backends.openfold3 import OpenFold3Backend
+from foldjax.models.openfold3 import data, inference, output
+from foldjax.models.openfold3.bridge import checkpoint, chemistry, torch_mapping
+
+assert OpenFold3Backend().name == "openfold3"
+assert data.MODEL_FEATURES
+assert inference.RELEASED_BLOCK_COUNTS
+assert output.RESIDUE_NAMES
+assert checkpoint is not None and torch_mapping is not None
+assert chemistry.representative_atom_table().cb_mask.shape
+assert "torch" not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "JAX_PLATFORMS": "cpu"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert completed.returncode == 0, completed.stdout

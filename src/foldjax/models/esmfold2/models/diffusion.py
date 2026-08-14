@@ -33,6 +33,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models.atom import (
     FLOAT32_EPS,
     atom_conditioning,
@@ -601,6 +602,45 @@ def center_random_augmentation(
     return x, second
 
 
+def _atom_normal(
+    key: jnp.ndarray,
+    atom_mask: jnp.ndarray,
+    *,
+    dtype: object,
+    preserve_prefix_rng: bool,
+) -> jnp.ndarray:
+    """Draw one 3-vector per atom, preserving the native sample stride.
+
+    The ESMFold2 featurizer already rounds the exact atom axis to 32 before
+    serving padding is considered. Repeating a semantic mask across diffusion
+    samples and compacting only its true entries would collapse those native
+    dummy slots between samples, changing every sample after the first. Recover
+    that native storage prefix dynamically from the mask, use it to advance the
+    random stream, then apply the semantic mask so both kinds of dummy atom stay
+    zero. The derived count remains array data, not a compilation argument.
+    """
+
+    shape = (*atom_mask.shape, 3)
+    if not preserve_prefix_rng:
+        # Keep the exact historical call for default, unpadded inference.
+        return jax.random.normal(key, shape, dtype=dtype)
+    semantic_mask = atom_mask.astype(bool)
+    real_count = jnp.sum(semantic_mask.astype(jnp.int32), axis=-1, keepdims=True)
+    native_count = ((real_count + 31) // 32) * 32
+    native_storage_mask = (
+        jnp.arange(atom_mask.shape[-1], dtype=jnp.int32)[None, :] < native_count
+    )
+    drawn = masked_prefix_draw(
+        lambda draw_key, draw_shape: jax.random.normal(
+            draw_key, draw_shape, dtype=dtype
+        ),
+        key,
+        native_storage_mask,
+        trailing_shape=(3,),
+    )
+    return drawn * semantic_mask[..., None].astype(drawn.dtype)
+
+
 def weighted_rigid_align(
     x: jnp.ndarray, x_gt: jnp.ndarray, weights: jnp.ndarray, mask: jnp.ndarray
 ) -> jnp.ndarray:
@@ -636,6 +676,7 @@ def _step(
     denoise: Callable[[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]],
     atom_mask: jnp.ndarray,
     settings: DiffusionSettings,
+    preserve_prefix_rng: bool = False,
 ) -> tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], None]:
     """One denoise-align-step, shared by the scanned and the eager driver.
 
@@ -655,7 +696,12 @@ def _step(
     # sigma * sqrt(g^2 + 2g) == sqrt(t_hat^2 - sigma^2) without the
     # cancellation; zero throughout with the released noise_scale of 0.
     churn = settings.noise_scale * sigma_from * jnp.sqrt(gamma * gamma + 2.0 * gamma)
-    x_noisy = x + churn * jax.random.normal(churn_key, x.shape, dtype=x.dtype)
+    x_noisy = x + churn * _atom_normal(
+        churn_key,
+        atom_mask,
+        dtype=x.dtype,
+        preserve_prefix_rng=preserve_prefix_rng,
+    )
 
     x_denoised, token_repr = denoise(
         x_noisy, jnp.broadcast_to(jnp.asarray(t_hat, jnp.float32), (x.shape[0],))
@@ -680,6 +726,7 @@ def sample(
     token_mask: jnp.ndarray | None = None,
     num_samples: int = 1,
     early_exit_rmsd: float | None = None,
+    preserve_prefix_rng: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Algorithm 18, returning `(sample_atom_coords, token_repr)`.
 
@@ -694,11 +741,14 @@ def sample(
     steps = np.stack([schedule[:-1], schedule[1:], gammas[1:]], axis=-1)
 
     atom_mask = cache.atom_mask.astype(jnp.float32)
-    batch, n_atoms = atom_mask.shape
+    batch, _ = atom_mask.shape
 
     key, initial_key = jax.random.split(key)
-    x = float(schedule[0]) * jax.random.normal(
-        initial_key, (batch, n_atoms, 3), dtype=jnp.float32
+    x = float(schedule[0]) * _atom_normal(
+        initial_key,
+        atom_mask,
+        dtype=jnp.float32,
+        preserve_prefix_rng=preserve_prefix_rng,
     )
 
     def denoise(
@@ -718,7 +768,12 @@ def sample(
 
     def run(carry, step):
         return _step(
-            carry, step, denoise=denoise, atom_mask=atom_mask, settings=settings
+            carry,
+            step,
+            denoise=denoise,
+            atom_mask=atom_mask,
+            settings=settings,
+            preserve_prefix_rng=preserve_prefix_rng,
         )
 
     # `lax.scan` needs a fixed carry structure, so the previous prediction and

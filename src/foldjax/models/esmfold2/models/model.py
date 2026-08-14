@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models.atom import atom_encoder, one_hot_atom_features
 from foldjax.models.esmfold2.models.embedders import (
@@ -269,18 +270,88 @@ def language_model_pair(
     )
 
 
-def _dropout(key: jnp.ndarray, x: jnp.ndarray, rate: float) -> jnp.ndarray:
+def _dropout(
+    key: jnp.ndarray,
+    x: jnp.ndarray,
+    rate: float,
+    *,
+    valid_mask: jnp.ndarray | None = None,
+    preserve_prefix_rng: bool = False,
+) -> jnp.ndarray:
     """`F.dropout(..., training=True)`, which upstream leaves on at inference."""
     if rate <= 0.0:
         return x
-    keep = jax.random.bernoulli(key, 1.0 - rate, x.shape)
+    if preserve_prefix_rng:
+        if valid_mask is None:
+            raise ValueError("prefix-preserving dropout requires a validity mask")
+        keep = masked_prefix_draw(
+            lambda draw_key, shape: jax.random.bernoulli(
+                draw_key, 1.0 - rate, shape
+            ),
+            key,
+            valid_mask,
+            trailing_shape=x.shape[valid_mask.ndim :],
+        )
+    else:
+        # Keep the exact historical call for default, unpadded inference.
+        keep = jax.random.bernoulli(key, 1.0 - rate, x.shape)
     return jnp.where(keep, x / (1.0 - rate), 0.0)
+
+
+def _initial_pair_state_draw(
+    key: jnp.ndarray,
+    pair_mask: jnp.ndarray,
+    width: int,
+    *,
+    preserve_prefix_rng: bool,
+) -> jnp.ndarray:
+    """Draw the trunk's initial pair state, optionally preserving real pairs."""
+
+    shape = (*pair_mask.shape, width)
+    if not preserve_prefix_rng:
+        return jax.random.truncated_normal(
+            key, -3.0, 3.0, shape, dtype=jnp.float32
+        )
+    return masked_prefix_draw(
+        lambda draw_key, draw_shape: jax.random.truncated_normal(
+            draw_key, -3.0, 3.0, draw_shape, dtype=jnp.float32
+        ),
+        key,
+        pair_mask,
+        trailing_shape=(width,),
+    )
+
+
+def _msa_column_keep(
+    key: jnp.ndarray,
+    token_mask: jnp.ndarray,
+    rate: float,
+    *,
+    preserve_prefix_rng: bool,
+) -> jnp.ndarray:
+    """Draw one column decision per token without exposing the real length."""
+
+    if preserve_prefix_rng:
+        values = masked_prefix_draw(
+            lambda draw_key, shape: jax.random.uniform(draw_key, shape),
+            key,
+            token_mask,
+        )
+    else:
+        # Keep the exact historical call for default, unpadded inference.
+        values = jax.random.uniform(key, token_mask.shape)
+    return values >= rate
 
 
 def _subsample_msa(
     key: jnp.ndarray, depth: int, max_depth: int | None
 ) -> jnp.ndarray | None:
-    """Row indices for one loop's MSA subsample, query row kept and sorted."""
+    """Row indices for one loop's MSA subsample, query row kept and sorted.
+
+    Unpadded inference retains the released per-loop draw exactly.  The opt-in
+    serving path host-normalizes deep alignments to a target no larger than the
+    active cap, so this branch is not entered with padded dummy rows.
+    """
     if max_depth is None or depth <= 1 or depth <= max_depth:
         return None
     chosen = jax.random.permutation(key, depth - 1)[: max_depth - 1] + 1
@@ -298,6 +369,7 @@ def run_loops(
     *,
     settings: ModelSettings,
     total_steps: int,
+    preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
     """The parcae recurrence, `total_steps` times.
 
@@ -316,15 +388,26 @@ def run_loops(
         and settings.per_loop_lm_dropout
         and settings.lm_dropout > 0.0
     )
-    depth = 0 if msa_inputs is None else int(msa_inputs["msa_one_hot"].shape[2])
+    loop_tape = None if msa_inputs is None else msa_inputs.get("loop_tape")
+    depth = (
+        0
+        if msa_inputs is None or loop_tape is not None
+        else int(msa_inputs["msa_one_hot"].shape[2])
+    )
 
-    def body(carry, _):
+    def body(carry, loop_inputs):
         z, key = carry
         key, dropout_key, msa_key = jax.random.split(key, 3)
 
         loop_lm = lm_pair
         if loop_lm is not None and dropout_on:
-            loop_lm = _dropout(dropout_key, loop_lm, settings.lm_dropout)
+            loop_lm = _dropout(
+                dropout_key,
+                loop_lm,
+                settings.lm_dropout,
+                valid_mask=pair_mask,
+                preserve_prefix_rng=preserve_prefix_rng,
+            )
 
         refined = None
         if loop_lm is not None and settings.lm_encoder_n_layers is not None:
@@ -341,16 +424,34 @@ def run_loops(
             injected = injected + loop_lm
 
         if msa_inputs is not None and settings.msa_n_layers is not None:
-            rows = _subsample_msa(msa_key, depth, settings.msa_max_depth)
-            one_hot = msa_inputs["msa_one_hot"]
-            msa_mask = msa_inputs["msa_mask"]
-            has_deletion = msa_inputs["has_deletion"]
-            deletion_value = msa_inputs["deletion_value"]
-            if rows is not None:
-                one_hot = jnp.take(one_hot, rows, axis=2)
-                msa_mask = jnp.take(msa_mask, rows, axis=2)
-                has_deletion = jnp.take(has_deletion, rows, axis=2)
-                deletion_value = jnp.take(deletion_value, rows, axis=2)
+            if loop_inputs is None:
+                rows = _subsample_msa(msa_key, depth, settings.msa_max_depth)
+                one_hot = msa_inputs["msa_one_hot"]
+                msa_mask = msa_inputs["msa_mask"]
+                has_deletion = msa_inputs["has_deletion"]
+                deletion_value = msa_inputs["deletion_value"]
+                if rows is not None:
+                    one_hot = jnp.take(one_hot, rows, axis=2)
+                    msa_mask = jnp.take(msa_mask, rows, axis=2)
+                    has_deletion = jnp.take(has_deletion, rows, axis=2)
+                    deletion_value = jnp.take(deletion_value, rows, axis=2)
+            else:
+                loop_msa, loop_mask, loop_has_deletion, loop_deletion = loop_inputs
+                one_hot = jax.nn.one_hot(
+                    loop_msa.astype(jnp.int32),
+                    NUM_RES_TYPES,
+                    dtype=z_init.dtype,
+                )
+                one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(
+                    loop_mask, 1, 2
+                )[..., None].astype(z_init.dtype)
+                msa_mask = jnp.swapaxes(loop_mask, 1, 2)
+                has_deletion = jnp.swapaxes(
+                    loop_has_deletion, 1, 2
+                ).astype(jnp.float32)
+                deletion_value = jnp.swapaxes(loop_deletion, 1, 2).astype(
+                    jnp.float32
+                )
             msa_pair = msa_encoder(
                 injected,
                 msa_inputs["x_inputs"],
@@ -381,7 +482,9 @@ def run_loops(
         )
         return (z, key), None
 
-    (z, _), _ = jax.lax.scan(body, (z, key), None, length=total_steps)
+    (z, _), _ = jax.lax.scan(
+        body, (z, key), loop_tape, length=total_steps
+    )
     return z
 
 
@@ -394,6 +497,7 @@ def predict(
     lm_hidden_states: jnp.ndarray | None = None,
     initial_pair_state: jnp.ndarray | None = None,
     n_chains: int | None = None,
+    preserve_prefix_rng: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -426,15 +530,18 @@ def predict(
 
     msa = features.get("msa")
     msa_mask = features.get("msa_attention_mask")
-    if msa is not None:
+    profile = features.get("msa_profile")
+    if msa is not None and profile is None:
         msa_one_hot = jax.nn.one_hot(msa.astype(jnp.int32), NUM_RES_TYPES)
         if msa_mask is not None:
             msa_one_hot = msa_one_hot * msa_mask[..., None].astype(jnp.float32)
-            counts = jnp.clip(jnp.sum(msa_mask.astype(jnp.float32), axis=1), min=1.0)
+            counts = jnp.clip(
+                jnp.sum(msa_mask.astype(jnp.float32), axis=1), min=1.0
+            )
             profile = jnp.sum(msa_one_hot, axis=1) / counts[..., None]
         else:
             profile = jnp.mean(msa_one_hot, axis=1)
-    else:
+    if profile is None:
         profile = res_type_one_hot
 
     deletion_mean = features.get("deletion_mean")
@@ -514,8 +621,11 @@ def predict(
     # zeros, and two runs of the same code therefore differ.
     if initial_pair_state is None:
         std = (2.0 / (5.0 * z_init.shape[-1])) ** 0.5
-        z = std * jax.random.truncated_normal(
-            state_key, -3.0, 3.0, z_init.shape, dtype=jnp.float32
+        z = std * _initial_pair_state_draw(
+            state_key,
+            pair_mask,
+            z_init.shape[-1],
+            preserve_prefix_rng=preserve_prefix_rng,
         )
     else:
         z = initial_pair_state
@@ -523,40 +633,104 @@ def predict(
 
     msa_inputs = None
     if settings.msa_n_layers is not None and msa is not None:
-        mask = msa_mask
-        if mask is not None and settings.msa_column_mask_rate > 0 and msa.shape[1] > 1:
-            keep = (
-                jax.random.uniform(column_key, (batch, n_tokens))
-                >= settings.msa_column_mask_rate
+        loop_msa = features.get("msa_loop_tape")
+        loop_mask = features.get("msa_attention_mask_loop_tape")
+        loop_has_deletion = features.get("has_deletion_loop_tape")
+        loop_deletion_value = features.get("deletion_value_loop_tape")
+        tape_values = (
+            loop_msa,
+            loop_mask,
+            loop_has_deletion,
+            loop_deletion_value,
+        )
+        if any(value is not None for value in tape_values):
+            if any(value is None for value in tape_values):
+                raise ValueError(
+                    "ESMFold2 padded MSA requires all four per-loop tape features"
+                )
+            assert loop_msa is not None
+            assert loop_mask is not None
+            assert loop_has_deletion is not None
+            assert loop_deletion_value is not None
+            total_steps = max(1, settings.num_loops + 1)
+            if loop_msa.shape[0] != total_steps:
+                raise ValueError(
+                    "ESMFold2 MSA tape loop count does not match the model: "
+                    f"{loop_msa.shape[0]} versus {total_steps}"
+                )
+            tape_mask = loop_mask
+            if settings.msa_column_mask_rate > 0 and loop_msa.shape[2] > 1:
+                keep = _msa_column_keep(
+                    column_key,
+                    token_mask,
+                    settings.msa_column_mask_rate,
+                    preserve_prefix_rng=preserve_prefix_rng,
+                )
+                keep = jnp.broadcast_to(
+                    keep[None, :, None, :], tape_mask.shape
+                )
+                keep = keep.at[:, :, 0, :].set(True)
+                tape_mask = tape_mask.astype(bool) & keep
+            tape_mask = tape_mask.astype(jnp.float32)
+            # Keep the compact integer tape in [loop, batch, row, token]
+            # layout. One-hot expansion happens for one loop inside lax.scan,
+            # avoiding a loops-times-MSA-times-token temporary.
+            loop_tape = (
+                loop_msa,
+                tape_mask,
+                loop_has_deletion,
+                loop_deletion_value,
             )
-            keep = jnp.broadcast_to(keep[:, None, :], mask.shape)
-            keep = keep.at[:, 0, :].set(True)
-            mask = mask.astype(bool) & keep
-        mask = (
-            jnp.ones_like(msa, dtype=jnp.float32) if mask is None else mask
-        ).astype(jnp.float32)
-        # The MSA encoder works token-major; upstream permutes on the way in
-        # and zeroes the padding, because its embedding has no bias.
-        one_hot = jax.nn.one_hot(msa.astype(jnp.int32), NUM_RES_TYPES, dtype=compute)
-        one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(mask, 1, 2)[
-            ..., None
-        ].astype(compute)
-        zeros = jnp.zeros(one_hot.shape[:3], dtype=jnp.float32)
-        msa_inputs = {
-            "msa_one_hot": one_hot,
-            "msa_mask": jnp.swapaxes(mask, 1, 2),
-            "has_deletion": (
-                zeros
-                if features.get("has_deletion") is None
-                else jnp.swapaxes(features["has_deletion"], 1, 2).astype(jnp.float32)
-            ),
-            "deletion_value": (
-                zeros
-                if features.get("deletion_value") is None
-                else jnp.swapaxes(features["deletion_value"], 1, 2).astype(jnp.float32)
-            ),
-            "x_inputs": x_inputs,
-        }
+            msa_inputs = {"loop_tape": loop_tape, "x_inputs": x_inputs}
+        else:
+            # Keep the historical unpadded graph exactly: column masking is
+            # applied to the raw alignment before each loop selects its rows.
+            mask = msa_mask
+            if (
+                mask is not None
+                and settings.msa_column_mask_rate > 0
+                and msa.shape[1] > 1
+            ):
+                keep = _msa_column_keep(
+                    column_key,
+                    token_mask,
+                    settings.msa_column_mask_rate,
+                    preserve_prefix_rng=preserve_prefix_rng,
+                )
+                keep = jnp.broadcast_to(keep[:, None, :], mask.shape)
+                keep = keep.at[:, 0, :].set(True)
+                mask = mask.astype(bool) & keep
+            mask = (
+                jnp.ones_like(msa, dtype=jnp.float32) if mask is None else mask
+            ).astype(jnp.float32)
+            # The MSA encoder works token-major; upstream permutes on the way in
+            # and zeroes the padding, because its embedding has no bias.
+            one_hot = jax.nn.one_hot(
+                msa.astype(jnp.int32), NUM_RES_TYPES, dtype=compute
+            )
+            one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(mask, 1, 2)[
+                ..., None
+            ].astype(compute)
+            zeros = jnp.zeros(one_hot.shape[:3], dtype=jnp.float32)
+            msa_inputs = {
+                "msa_one_hot": one_hot,
+                "msa_mask": jnp.swapaxes(mask, 1, 2),
+                "has_deletion": (
+                    zeros
+                    if features.get("has_deletion") is None
+                    else jnp.swapaxes(features["has_deletion"], 1, 2).astype(
+                        jnp.float32
+                    )
+                ),
+                "deletion_value": (
+                    zeros
+                    if features.get("deletion_value") is None
+                    else jnp.swapaxes(features["deletion_value"], 1, 2).astype(
+                        jnp.float32
+                    )
+                ),
+                "x_inputs": x_inputs,
+            }
 
     z = run_loops(
         loop_key,
@@ -568,6 +742,7 @@ def predict(
         trunk_params,
         settings=settings,
         total_steps=max(1, settings.num_loops + 1),
+        preserve_prefix_rng=preserve_prefix_rng,
     )
     z = linear(z, trunk_params, "parcae_readout")
     z = folding_trunk(
@@ -611,6 +786,7 @@ def predict(
         settings=settings.diffusion,
         token_mask=token_mask,
         num_samples=n_samples,
+        preserve_prefix_rng=preserve_prefix_rng,
     )
 
     if n_chains is None:

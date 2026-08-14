@@ -51,6 +51,36 @@ def test_materializes_alphafold3_input(common_job: Path, tmp_path: Path) -> None
     assert native["sequences"][2]["ligand"]["ccdCodes"] == ["ATP"]
 
 
+@pytest.mark.parametrize("value", [42, ["msa.a3m"], {"path": "msa.a3m"}, "  "])
+def test_msa_references_must_be_nonempty_path_strings(
+    tmp_path: Path, job: dict, value: object
+) -> None:
+    job["entities"][0]["unpaired_msa"] = value
+    source = _write(tmp_path / "bad-msa.json", job)
+
+    with pytest.raises(ValueError, match="unpaired_msa must be a non-empty"):
+        _materialize(source, "alphafold3", tmp_path / "out")
+
+
+def test_common_text_fields_are_stripped_before_native_conversion(
+    tmp_path: Path, job: dict
+) -> None:
+    alignment = tmp_path / "msa.a3m"
+    alignment.write_text(">q\nACD\n")
+    job["entities"][0]["sequence"] = "  ACD  "
+    job["entities"][0]["unpaired_msa"] = "  msa.a3m  "
+    job["entities"][2]["ccd"] = "  ATP  "
+    source = _write(tmp_path / "spaced.json", job)
+
+    native = json.loads(
+        _materialize(source, "alphafold3", tmp_path / "out").read_text()
+    )
+    protein = native["sequences"][0]["protein"]
+    assert protein["sequence"] == "ACD"
+    assert protein["unpairedMsaPath"] == str(alignment)
+    assert native["sequences"][2]["ligand"]["ccdCodes"] == ["ATP"]
+
+
 def test_materializes_boltz_input_as_parseable_yaml(
     common_job: Path, tmp_path: Path
 ) -> None:
@@ -104,6 +134,37 @@ def test_materializes_opendde_input_as_a_native_job_list(tmp_path: Path) -> None
     }
     assert native[0]["sequences"][1]["dnaSequence"]["id"] == ["D"]
     assert native[0]["sequences"][2]["ligand"]["ligand"] == "CCD_ATP"
+
+
+def test_materialized_input_replaces_a_symlink_without_touching_its_target(
+    common_job: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "generated"
+    output.mkdir()
+    external = tmp_path / "user-owned.json"
+    external.write_text("do not replace\n")
+    generated = output / "protenix_input.json"
+    generated.symlink_to(external)
+
+    path = _materialize(common_job, "protenix", output)
+
+    assert path == generated
+    assert path.is_file() and not path.is_symlink()
+    assert external.read_text() == "do not replace\n"
+
+
+def test_materialized_input_directory_symlink_is_refused(
+    common_job: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "generated"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="input directory is a symlink"):
+        _materialize(common_job, "protenix", linked)
+
+    assert not list(outside.iterdir())
 
 
 def test_materializes_opendde_modifications_and_covalent_bonds(
@@ -247,6 +308,18 @@ def test_rejects_unsupported_common_entity(common_job: Path, tmp_path: Path) -> 
             "exactly a ccd and a position",
         ),
         (
+            lambda job: job["entities"][0].update(
+                {"modifications": [{"ccd": "SEP", "position": 1.9}]}
+            ),
+            "modification position must be an integer",
+        ),
+        (
+            lambda job: job["entities"][0].update(
+                {"modifications": [{"ccd": "SEP", "position": True}]}
+            ),
+            "modification position must be an integer",
+        ),
+        (
             lambda job: job.update({"bonds": [[["Z", 1, "N"], ["A", 1, "C"]]]}),
             "unknown chain id",
         ),
@@ -254,12 +327,28 @@ def test_rejects_unsupported_common_entity(common_job: Path, tmp_path: Path) -> 
             lambda job: job.update({"bonds": [[["A", 1, "N"]]]}),
             "pair of atom references",
         ),
+        (
+            lambda job: job.update(
+                {"bonds": [[["A", 1.5, "N"], ["L", 1, "C1"]]]}
+            ),
+            "bond residue index must be an integer",
+        ),
         (lambda job: job["entities"].clear(), "non-empty entities list"),
         (
             lambda job: job["entities"][0].pop("sequence"),
-            "protein entity requires sequence",
+            "protein entity requires a non-empty string sequence",
+        ),
+        (
+            lambda job: job["entities"][0].update({"sequence": 123}),
+            "protein entity requires a non-empty string sequence",
+        ),
+        (
+            lambda job: job["entities"][2].update({"ccd": 123}),
+            "ligand ccd must be a non-empty string",
         ),
         (lambda job: job["entities"][1].pop("id"), "non-empty id"),
+        (lambda job: job["entities"][1].update({"id": ""}), "non-empty id"),
+        (lambda job: job["entities"][1].update({"id": [""]}), "non-empty id"),
     ],
 )
 def test_common_schema_validation(

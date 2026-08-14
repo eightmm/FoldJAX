@@ -33,6 +33,65 @@ from foldjax.models.esmfold2.data import chemistry
 #: attention is happier on a round length, and the padding is masked anyway.
 ATOM_BLOCK = 32
 
+# ESMC's tokenizer reserves 1 for right padding.  Keeping the sentinel here
+# avoids importing the 6B model implementation into the NumPy featurizer.
+ESMC_PAD_TOKEN_ID = 1
+
+
+# Explicit semantic axes for the feature dictionary returned below.  Shape
+# matching is not safe: a perfectly ordinary target can have 32 tokens, which
+# is also the atom block size and a fixed channel width elsewhere in the model.
+_TOKEN_AXES: dict[str, tuple[int, ...]] = {
+    "token_index": (-1,),
+    "residue_index": (-1,),
+    "asym_id": (-1,),
+    "sym_id": (-1,),
+    "entity_id": (-1,),
+    "mol_type": (-1,),
+    "res_type": (-1,),
+    "input_ids": (-1,),
+    "token_bonds": (-3, -2),
+    "token_attention_mask": (-1,),
+    "distogram_atom_idx": (-1,),
+    "msa": (-1,),
+    "msa_attention_mask": (-1,),
+    "has_deletion": (-1,),
+    "deletion_value": (-1,),
+    "deletion_mean": (-1,),
+    # Host-side deep-MSA normalization preserves the profile of the complete
+    # alignment here before selecting the bounded set of encoder rows.
+    "msa_profile": (-2,),
+}
+
+_ATOM_AXES: dict[str, tuple[int, ...]] = {
+    "ref_pos": (-2,),
+    "ref_element": (-1,),
+    "ref_charge": (-1,),
+    "ref_atom_name_chars": (-2,),
+    "ref_space_uid": (-1,),
+    "atom_attention_mask": (-1,),
+    "atom_to_token": (-1,),
+}
+
+_MSA_AXES: dict[str, tuple[int, ...]] = {
+    "msa": (-2,),
+    "msa_attention_mask": (-2,),
+    "has_deletion": (-2,),
+    "deletion_value": (-2,),
+}
+
+_MSA_TAPE_FEATURES = {
+    "msa": "msa_loop_tape",
+    "msa_attention_mask": "msa_attention_mask_loop_tape",
+    "has_deletion": "has_deletion_loop_tape",
+    "deletion_value": "deletion_value_loop_tape",
+}
+_MSA_ROW_FEATURES = frozenset(_MSA_TAPE_FEATURES)
+for _tape_name in _MSA_TAPE_FEATURES.values():
+    _TOKEN_AXES[_tape_name] = (-1,)
+    _MSA_AXES[_tape_name] = (-2,)
+_NUM_RES_TYPES = 33
+
 
 def build_features(
     chains: Sequence[tuple[str, str, int, int]],
@@ -153,6 +212,209 @@ def build_features(
     return {name: value[None] for name, value in features.items()}
 
 
+def pad_features(
+    features: dict[str, np.ndarray],
+    *,
+    n_token: int,
+    n_atom: int,
+    n_msa: int,
+) -> dict[str, np.ndarray]:
+    """Right-pad all dynamic axes while preserving the real feature prefix.
+
+    ESMFold2 already masks every one of these axes, but padding only the obvious
+    token vector is insufficient: the pair features carry two token axes, the
+    alignment carries token and row axes, and atom features have their own
+    independently compiled length.  This helper owns that schema in one place.
+
+    ``msa`` uses its gap token rather than zero for padded cells.  Its mask is
+    still false there, so the choice is numerically inert, while keeping the
+    archive meaningful to feature inspection tools.
+    """
+
+    tokens = int(np.asarray(features["token_attention_mask"]).shape[-1])
+    atoms = int(np.asarray(features["atom_attention_mask"]).shape[-1])
+    msa_rows = int(np.asarray(features["msa_attention_mask"]).shape[-2])
+    requested = {"tokens": n_token, "atoms": n_atom, "msa": n_msa}
+    current = {"tokens": tokens, "atoms": atoms, "msa": msa_rows}
+    for axis, target in requested.items():
+        if target < current[axis]:
+            raise ValueError(
+                f"cannot pad ESMFold2 {axis} down from {current[axis]} to {target}"
+            )
+
+    padded: dict[str, np.ndarray] = {}
+    for name, value in features.items():
+        array = np.asarray(value)
+        widths = [(0, 0) for _ in array.shape]
+        for kind, axes, source, target in (
+            ("token", _TOKEN_AXES.get(name, ()), tokens, n_token),
+            ("atom", _ATOM_AXES.get(name, ()), atoms, n_atom),
+            ("MSA", _MSA_AXES.get(name, ()), msa_rows, n_msa),
+        ):
+            for declared_axis in axes:
+                if not -array.ndim <= declared_axis < array.ndim:
+                    raise ValueError(
+                        f"ESMFold2 feature {name!r} has shape {array.shape}, "
+                        f"which has no declared {kind} axis {declared_axis}"
+                    )
+                axis = declared_axis % array.ndim
+                if array.shape[axis] != source:
+                    raise ValueError(
+                        f"ESMFold2 feature {name!r} has {array.shape[axis]} entries "
+                        f"on {kind} axis {axis}, expected {source}"
+                    )
+                widths[axis] = (0, target - source)
+
+        fill = (
+            chemistry.MSA_GAP_TOKEN_ID
+            if name in {"msa", "msa_loop_tape"}
+            else ESMC_PAD_TOKEN_ID
+            if name == "input_ids"
+            else 0
+        )
+        padded[name] = np.pad(array, widths, constant_values=fill)
+    return padded
+
+
+def normalize_msa_features(
+    features: dict[str, np.ndarray],
+    *,
+    n_msa: int,
+    row_indices: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Materialize exact per-loop MSA rows before serving-bucket padding.
+
+    The released model samples at most ``msa_max_depth`` rows separately in
+    every trunk loop.  A serving bucket cannot retain an arbitrarily deep raw
+    alignment, however, and padding invalid rows above the sampling cap would
+    let the random permutation select dummy rows. On the opt-in padding path,
+    the caller therefore supplies the exact query-preserving row indices that
+    the original model would select for each loop. They become a fixed-shape
+    tape; the compiled loop still performs every original key split, but reads
+    the already selected rows instead of permuting the padded storage.
+
+    ``msa_profile`` captures the profile of the complete alignment before any
+    rows are removed; ``deletion_mean`` is already a token-only aggregate and
+    is preserved as-is.  The helper refuses feature layouts it cannot crop
+    coherently rather than guessing which dimension is the MSA axis.
+    """
+
+    if n_msa < 1:
+        raise ValueError(f"ESMFold2 MSA target must be positive; got {n_msa}")
+
+    missing = sorted(_MSA_ROW_FEATURES - features.keys())
+    if "token_attention_mask" not in features:
+        missing.append("token_attention_mask")
+    if "deletion_mean" not in features:
+        missing.append("deletion_mean")
+    if missing:
+        raise ValueError(
+            "cannot normalize ESMFold2 MSA without row features: "
+            + ", ".join(missing)
+        )
+
+    mask = np.asarray(features["msa_attention_mask"])
+    if mask.ndim != 3 or mask.shape[0] != 1:
+        raise ValueError(
+            "ESMFold2 MSA normalization requires one batched alignment with "
+            f"shape [1, rows, tokens]; got {mask.shape}"
+        )
+    rows, tokens = mask.shape[1:]
+    token_mask = np.asarray(features["token_attention_mask"]).astype(bool)
+    if token_mask.shape != (1, tokens):
+        raise ValueError(
+            "ESMFold2 token mask does not match the MSA token axis: "
+            f"{token_mask.shape} versus {(1, tokens)}"
+        )
+    bool_mask = mask.astype(bool)
+    if not np.array_equal(bool_mask[:, 0], token_mask) or np.any(
+        bool_mask & ~token_mask[:, None, :]
+    ):
+        raise ValueError(
+            "ESMFold2 MSA normalization requires query row 0 to match the "
+            "token mask and every hit row to stay within it"
+        )
+    for name in _MSA_ROW_FEATURES:
+        value = np.asarray(features[name])
+        if (
+            value.ndim != 3
+            or value.shape[:2] != (1, rows)
+            or value.shape[2] != tokens
+        ):
+            raise ValueError(
+                f"ESMFold2 MSA row feature {name!r} has shape {value.shape}, "
+                f"expected {(1, rows, tokens)}"
+            )
+    if "msa_profile" in features:
+        profile_shape = np.asarray(features["msa_profile"]).shape
+        expected_profile = (1, tokens, _NUM_RES_TYPES)
+        if profile_shape != expected_profile:
+            raise ValueError(
+                f"ESMFold2 feature 'msa_profile' has shape {profile_shape}, "
+                f"expected {expected_profile}"
+            )
+
+    active_rows = np.flatnonzero(np.any(bool_mask, axis=-1)[0])
+    if active_rows.size == 0 or active_rows[0] != 0:
+        raise ValueError(
+            "ESMFold2 MSA normalization requires a valid query in row 0"
+        )
+    normalized = dict(features)
+    if "msa_profile" not in normalized:
+        msa = np.asarray(features["msa"])
+        active_ids = msa[bool_mask]
+        if np.any(active_ids < 0) or np.any(active_ids >= _NUM_RES_TYPES):
+            raise ValueError(
+                "cannot normalize ESMFold2 MSA with residue ids outside "
+                f"[0, {_NUM_RES_TYPES - 1}]"
+            )
+        safe_ids = np.where(bool_mask, msa, 0)
+        one_hot = np.eye(_NUM_RES_TYPES, dtype=np.float32)[safe_ids]
+        one_hot *= bool_mask[..., None].astype(np.float32)
+        counts = np.clip(bool_mask.astype(np.float32).sum(axis=1), 1.0, None)
+        normalized["msa_profile"] = one_hot.sum(axis=1) / counts[..., None]
+
+    indices = np.asarray(row_indices)
+    if (
+        indices.ndim != 2
+        or indices.shape[0] < 1
+        or indices.shape[1] < 1
+        or indices.shape[1] > n_msa
+    ):
+        raise ValueError(
+            "ESMFold2 MSA loop indices must have shape [loops, selected_rows] "
+            f"with selected_rows <= {n_msa}; got {indices.shape}"
+        )
+    if not np.issubdtype(indices.dtype, np.integer):
+        raise ValueError("ESMFold2 MSA loop indices must be integers")
+    if np.any(indices < 0) or np.any(indices >= rows):
+        raise ValueError(
+            f"ESMFold2 MSA loop indices exceed stored depth {rows}"
+        )
+    valid_rows = np.any(bool_mask, axis=-1)[0]
+    if np.any(~valid_rows[indices]):
+        raise ValueError(
+            "ESMFold2 MSA loop indices select stored dummy rows; refusing an "
+            "alignment layout that cannot be normalized safely"
+        )
+    if np.any(indices[:, 0] != 0):
+        raise ValueError("ESMFold2 MSA loop indices must keep query row 0")
+    if np.any(np.diff(indices, axis=1) <= 0):
+        raise ValueError(
+            "ESMFold2 MSA loop indices must be unique and sorted per loop"
+        )
+
+    first_loop = indices[0]
+    for name, tape_name in _MSA_TAPE_FEATURES.items():
+        value = np.asarray(features[name])
+        normalized[name] = np.take(value, first_loop, axis=1)
+        # np.take inserts both index axes after batch; put loops first so lax.scan
+        # consumes exactly one [batch, rows, tokens] block at each iteration.
+        tape = np.take(value, indices, axis=1)
+        normalized[tape_name] = np.swapaxes(tape, 0, 1)
+    return normalized
+
+
 def build_msa(
     chain_spans: Sequence[tuple[int, int, int]],
     res_type: Sequence[int],
@@ -240,4 +502,12 @@ def read_a3m(path: Path, *, query: str) -> list[tuple[str, list[int]]]:
     return rows
 
 
-__all__ = ["ATOM_BLOCK", "build_features", "build_msa", "read_a3m"]
+__all__ = [
+    "ATOM_BLOCK",
+    "ESMC_PAD_TOKEN_ID",
+    "build_features",
+    "build_msa",
+    "normalize_msa_features",
+    "pad_features",
+    "read_a3m",
+]

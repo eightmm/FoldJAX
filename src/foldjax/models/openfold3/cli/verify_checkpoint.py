@@ -9,12 +9,12 @@ cheapest first:
    key in any of the seven parameter groups,
 3. optionally the full ``predict`` path on the real parameters.
 
-Step 3 needs a featurized batch, which this port does not build — pass one as an
-``.npz`` if you have it from upstream's data pipeline.
+Step 3 takes the self-contained ``.npz`` made by ``openfold3-jax-featurize``.
+Its token and atom sizes are read from the archive; ``--tokens``/``--atoms`` are
+optional assertions for scripts that want to pin the expected bucket.
 
     openfold3-jax-verify-checkpoint of3_ft3_v1.pt
-    openfold3-jax-verify-checkpoint of3_ft3_v1.pt --batch batch.npz --tokens 384 \
-        --atoms 3072
+    openfold3-jax-verify-checkpoint of3_ft3_v1.pt --batch batch.npz
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 from pathlib import Path
-
-import numpy as np
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -41,8 +39,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--batch", type=Path, default=None, help="featurized batch as .npz"
     )
-    parser.add_argument("--tokens", type=int, default=None)
-    parser.add_argument("--atoms", type=int, default=None)
+    parser.add_argument(
+        "--tokens", type=int, default=None, help="optional expected token count"
+    )
+    parser.add_argument(
+        "--atoms", type=int, default=None, help="optional expected atom count"
+    )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--cycles", type=int, default=1)
@@ -52,10 +54,30 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    # A usage error must be reported before anything expensive: loading and
-    # mapping a checkpoint raises, which would mask the real problem.
-    if args.batch is not None and (args.tokens is None or args.atoms is None):
-        parser.error("--tokens and --atoms are required with --batch")
+
+    batch_np = None
+    table = None
+    if args.batch is not None:
+        # Validate and size the archive before reading a multi-gigabyte
+        # checkpoint. This also strips chemistry metadata from the model batch.
+        from foldjax.models.openfold3.data import load_features
+
+        try:
+            batch_np, table = load_features(args.batch)
+        except (OSError, ValueError) as error:
+            print(f"cannot load batch: {error}")
+            return 1
+        n_token = batch_np["token_mask"].shape[-1]
+        n_atom = batch_np["atom_mask"].shape[-1]
+        for label, expected, actual in (
+            ("tokens", args.tokens, n_token),
+            ("atoms", args.atoms, n_atom),
+        ):
+            if expected is not None and expected != actual:
+                print(
+                    f"batch has {actual} {label}, but --{label} expected {expected}"
+                )
+                return 1
 
     from foldjax.models.openfold3.bridge.checkpoint import (
         detect_fused_tri_mul,
@@ -126,23 +148,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     import jax.numpy as jnp
     import numpy as onp
 
-    from foldjax.models.openfold3.bridge.chemistry import representative_atom_table
+    from foldjax.models.openfold3.data import normalize_asym_ids, subsample_msa_rows
     from foldjax.models.openfold3.inference import predict, released_config
 
-    batch = {
-        key: jnp.asarray(value)
-        for key, value in np.load(args.batch, allow_pickle=False).items()
-    }
     config = released_config(
-        n_token=args.tokens,
-        n_atom=args.atoms,
+        n_token=n_token,
+        n_atom=n_atom,
         num_cycles=args.cycles,
         num_samples=args.samples,
         no_rollout_steps=args.steps,
     )
+    batch_np = subsample_msa_rows(batch_np, config.msa_depth)
+    batch_np, n_chain = normalize_asym_ids(batch_np)
+    batch = {key: jnp.asarray(value) for key, value in batch_np.items()}
     print(f"\nrunning predict on {jax.devices()[0]} ...")
     prediction = predict(
-        jax.random.key(0), batch, params, config, representative_atom_table()
+        jax.random.key(0),
+        batch,
+        params,
+        config,
+        table,
+        n_chain=n_chain,
     )
     ok = True
     for name, value in prediction._asdict().items():

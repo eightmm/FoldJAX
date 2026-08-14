@@ -5,23 +5,40 @@ in the test. It adds the sibling checkout to ``sys.path`` instead of installing
 the package, because installing ``openfold3`` would pull in its full data stack
 (lmdb, biotite, pdbeccdutils, awscli) that the model layers do not need.
 
-Where the checkout is comes from :mod:`foldjax.models.openfold3.upstream`, so
-the tests and the featurization CLI look in the same places.
+The checkout locator lives here because no production FoldJAX code needs an
+upstream source tree.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-from foldjax.models.openfold3.upstream import find_source
 
-# ``.../<workspace>/foldjax/tests/models/openfold3/conftest.py``: the workspace
-# holding both checkouts is four levels up. This was ``parents[2]`` while the
-# port was a top-level package with its own ``tests/`` directory.
-OPENFOLD3_SOURCE = find_source() or Path(__file__).resolve().parents[4] / "openfold3"
+def _is_checkout(path: Path) -> bool:
+    return (path / "openfold3" / "core" / "model").is_dir()
+
+
+def _find_source() -> Path | None:
+    repository_root = Path(__file__).resolve().parents[3]
+    candidates = [
+        Path(explicit).expanduser()
+        if (explicit := os.environ.get("OPENFOLD3_SOURCE"))
+        else None,
+        repository_root.parent / "openfold3",
+        Path.cwd() / "openfold3",
+        Path.cwd().parent / "openfold3",
+    ]
+    return next(
+        (path for path in candidates if path is not None and _is_checkout(path)),
+        None,
+    )
+
+
+OPENFOLD3_SOURCE = _find_source() or Path(__file__).resolve().parents[4] / "openfold3"
 
 
 def _torch_bridge_available() -> tuple[bool, str]:
@@ -31,7 +48,10 @@ def _torch_bridge_available() -> tuple[bool, str]:
         try:
             __import__(module)
         except ImportError:
-            return False, f"{module} is not installed (need the torch-bridge extra)"
+            return False, (
+                f"{module} is not installed; provision it in the external "
+                "publisher-parity environment"
+            )
     return True, ""
 
 

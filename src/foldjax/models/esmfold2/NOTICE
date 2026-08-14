@@ -1,0 +1,21 @@
+ESMFold2 JAX port
+Copyright 2026 FoldJAX contributors
+
+This product includes software adapted from Biohub's ESMFold2 model:
+https://huggingface.co/biohub/ESMFold2
+
+ESMFold2 is Copyright 2026 Chan Zuckerberg Biohub, Inc. The model card declares
+MIT plus additional third-party notices; a copy of the MIT License is in
+LICENSE beside this file, and the publisher's current third-party notice is:
+https://github.com/Biohub/esm/blob/main/THIRD_PARTY_NOTICE.md
+This is an independent community JAX reimplementation and is not an official
+Biohub project.
+
+The chemistry reference tables in data/chemistry.py are generated from
+Biohub's ESMFold2 support in the Transformers project. That source is
+Copyright 2026 Biohub and is licensed under the Apache License, Version 2.0:
+https://github.com/huggingface/transformers
+
+ESMFold2 and ESMC-6B model weights are downloaded separately from their
+publishers and are not distributed with FoldJAX. Their repository terms apply
+independently of FoldJAX's software licence.

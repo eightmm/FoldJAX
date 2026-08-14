@@ -8,6 +8,7 @@ unverified assumption.
 
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 
 import numpy as np
@@ -117,6 +118,26 @@ def test_load_safetensors_round_trip(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded["trunk.linear.weight"], np.ones((2, 3)))
 
 
+def test_load_refuses_keys_that_collide_after_prefix_stripping(
+    tmp_path: Path,
+) -> None:
+    from safetensors.numpy import save_file
+
+    path = tmp_path / "ambiguous.safetensors"
+    save_file(
+        {
+            "trunk.linear.weight": np.zeros((2, 3), dtype=np.float32),
+            "model.module.trunk.linear.weight": np.ones(
+                (2, 3), dtype=np.float32
+            ),
+        },
+        path,
+    )
+
+    with pytest.raises(ValueError, match="collide.*trunk.linear.weight"):
+        load_checkpoint(path)
+
+
 def test_load_torch_checkpoint_round_trip(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     path = tmp_path / "weights.pt"
@@ -126,3 +147,19 @@ def test_load_torch_checkpoint_round_trip(tmp_path: Path) -> None:
     loaded = load_checkpoint(path)
     assert "a.weight" in loaded
     np.testing.assert_allclose(loaded["a.weight"], np.ones((2, 2)))
+
+
+def test_load_torch_checkpoint_never_imports_torch(monkeypatch) -> None:
+    fixture = Path(__file__).parents[2] / "data" / "torch_archive_fixture.pt"
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise AssertionError("prediction checkpoint loading imported torch")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    loaded = load_checkpoint(fixture)
+
+    assert set(loaded) == {"w", "h", "b", "i", "flag", "scalar", "view"}
+    assert loaded["w"].shape == (3, 5)

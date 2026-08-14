@@ -1,7 +1,14 @@
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
-from foldjax.models.boltz2.data.bucket import pad_feats, resolve_bucket_shape
+from foldjax.models.boltz2.data.bucket import (
+    pad_feats,
+    resolve_bucket_shape,
+    resolve_padding_plan,
+    select_model_features_for_padding,
+)
+from foldjax.schema import PaddingConfig
 
 
 def _features(tokens: int = 3, atoms: int = 4, msa: int = 2):
@@ -62,12 +69,86 @@ def test_pad_feats_truncates_msa_before_padding() -> None:
 
 def test_resolve_bucket_shape_normalizes_msa_without_overpadding_shallow_inputs(
 ) -> None:
-    assert resolve_bucket_shape(_features(msa=1)) == (256, 32, 1)
-    assert resolve_bucket_shape(_features(msa=77)) == (256, 32, 128)
-    assert resolve_bucket_shape(_features(msa=249)) == (256, 32, 256)
-    assert resolve_bucket_shape(_features(msa=400)) == (256, 32, 512)
-    assert resolve_bucket_shape(_features(msa=900)) == (256, 32, 1024)
-    assert resolve_bucket_shape(_features(msa=2000)) == (256, 32, 1024)
+    assert resolve_bucket_shape(_features(msa=1)) == (256, 256, 1)
+    assert resolve_bucket_shape(_features(msa=77)) == (256, 256, 128)
+    assert resolve_bucket_shape(_features(msa=249)) == (256, 256, 256)
+    assert resolve_bucket_shape(_features(msa=400)) == (256, 256, 512)
+    assert resolve_bucket_shape(_features(msa=900)) == (256, 256, 1024)
+    assert resolve_bucket_shape(_features(msa=2000)) == (256, 256, 1024)
+
+
+def test_neutral_padding_resolves_all_three_compile_shape_axes() -> None:
+    plan = resolve_padding_plan(_features(msa=2), PaddingConfig())
+
+    assert plan.actual == {"tokens": 3, "atoms": 4, "msa": 2}
+    assert plan.storage == {"tokens": 3, "atoms": 4, "msa": 2}
+    assert plan.target == {"tokens": 256, "atoms": 256, "msa": 64}
+
+
+def test_neutral_padding_honours_exact_axis_targets() -> None:
+    plan = resolve_padding_plan(
+        _features(msa=2),
+        PaddingConfig(tokens=512, atoms=1024, msa=128),
+    )
+
+    assert plan.target == {"tokens": 512, "atoms": 1024, "msa": 128}
+
+
+def test_neutral_padding_rejects_unaligned_exact_atom_target() -> None:
+    with pytest.raises(ValueError, match="multiple of 32"):
+        resolve_padding_plan(
+            _features(), PaddingConfig(tokens=8, atoms=33, msa=2)
+        )
+
+
+def test_neutral_padding_never_shrinks_materialized_features() -> None:
+    with pytest.raises(ValueError, match="smaller than the input size"):
+        resolve_padding_plan(
+            _features(tokens=8, atoms=32, msa=4),
+            PaddingConfig(tokens=4),
+        )
+
+
+def test_atom_buckets_reuse_shapes_beyond_the_featurizers_32_alignment() -> None:
+    first = resolve_bucket_shape(_features(atoms=33))
+    second = resolve_bucket_shape(_features(atoms=200))
+
+    assert first[1] == second[1] == 256
+
+
+def test_public_crop_requires_real_mask_entries_to_be_a_prefix() -> None:
+    feats = _features(tokens=4)
+    feats["token_pad_mask"] = np.asarray([[1, 0, 1, 0]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="contiguous prefix"):
+        resolve_padding_plan(feats, PaddingConfig())
+
+
+def test_neutral_padding_rejects_unprofiled_template_rows() -> None:
+    feats = _features()
+    feats["template_mask"] = np.zeros((1, 2, 3), dtype=np.float32)
+    feats["visibility_ids"] = np.zeros((1, 2, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exactly one template row"):
+        select_model_features_for_padding(feats, steering_active=False)
+
+
+def test_neutral_padding_rejects_active_variable_length_steering() -> None:
+    with pytest.raises(ValueError, match="does not support active steering"):
+        select_model_features_for_padding(_features(), steering_active=True)
+
+
+def test_neutral_padding_drops_features_unused_by_the_jitted_graph() -> None:
+    feats = _features()
+    feats["host_only_variable_archive"] = np.zeros((1, 37), dtype=np.float32)
+    feats["r_set_to_rep_atom"] = np.zeros((1, 11, 4), dtype=np.float32)
+    feats["token_to_rep_atom"] = np.zeros((1, 3, 4), dtype=np.float32)
+
+    selected = select_model_features_for_padding(feats, steering_active=False)
+
+    assert "host_only_variable_archive" not in selected
+    assert "r_set_to_rep_atom" not in selected
+    assert "token_to_rep_atom" in selected
 
 
 def test_pad_feats_preserves_jax_compatible_arrays() -> None:

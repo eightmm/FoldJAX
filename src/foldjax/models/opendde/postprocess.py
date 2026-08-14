@@ -141,10 +141,19 @@ def opendde_confidence_scores(
         raise KeyError(
             "OpenDDE confidence requires per-atom is_protein/is_dna/is_rna masks"
         )
+    atom_padding_mask = features.get("atom_padding_mask")
+    if atom_padding_mask is None:
+        real_atom_mask = jnp.ones(atom_to_token_idx.shape, dtype=bool)
+    else:
+        real_atom_mask = jnp.asarray(atom_padding_mask).astype(bool)
+        if real_atom_mask.shape != atom_to_token_idx.shape:
+            raise ValueError(
+                "atom_padding_mask must share shape [N_atom] with atom_to_token_idx"
+            )
     token_ligand_count = (
         jnp.zeros((n_token,), dtype=jnp.int32)
         .at[atom_to_token_idx]
-        .add((~atom_is_polymer).astype(jnp.int32))
+        .add(((~atom_is_polymer) & real_atom_mask).astype(jnp.int32))
     )
     token_is_ligand = token_ligand_count > 0
 
@@ -177,14 +186,24 @@ def opendde_confidence_scores(
         num_recycles=num_recycles,
         n_chain=n_chain,
         include_chain_pair_pae=False,
+        token_mask=features.get("token_padding_mask"),
+        atom_mask=features.get("atom_padding_mask"),
     )
 
     contact_probs = compute_contact_prob(jnp.asarray(output["distogram_logits"]))
     token_pair_pde = scores["token_pair_pde"]
+    token_mask = features.get("token_padding_mask")
+    if token_mask is not None:
+        token_mask = jnp.asarray(token_mask).astype(bool)
+        pair_mask = token_mask[:, None] & token_mask[None, :]
+        contact_probs = contact_probs * pair_mask.astype(contact_probs.dtype)
     gpde_denominator = jnp.sum(contact_probs, axis=(-1, -2))
     scores["contact_probs"] = contact_probs.astype(jnp.float32)
-    scores["summary_gpde"] = (
-        jnp.sum(token_pair_pde * contact_probs, axis=(-1, -2)) / gpde_denominator
+    gpde_numerator = jnp.sum(token_pair_pde * contact_probs, axis=(-1, -2))
+    scores["summary_gpde"] = jnp.where(
+        gpde_denominator > 0,
+        gpde_numerator / gpde_denominator,
+        0.0,
     ).astype(jnp.float32)
     scores.update(
         calculate_chain_based_gpde(
@@ -192,6 +211,7 @@ def opendde_confidence_scores(
             contact_probs,
             token_asym_id,
             n_chain=n_chain,
+            token_mask=token_mask,
         )
     )
     if include_shape_complementarity:
@@ -228,12 +248,16 @@ def _shape_complementarity_scores(
     needed = {"token_index", "atom_to_token_idx", "asym_id"}
     if not needed <= features.keys():
         return {}
-    if not ({"distogram_rep_atom_mask", "structural_distogram_rep_atom_mask"}
-            & features.keys()):
+    if not (
+        {"distogram_rep_atom_mask", "structural_distogram_rep_atom_mask"}
+        & features.keys()
+    ):
         return {}
 
     coordinate = jnp.asarray(output["coordinate"])
     atom_mask = features.get("atom_exists_mask")
+    if atom_mask is None:
+        atom_mask = features.get("atom_padding_mask")
     atom_mask = (
         jnp.ones(coordinate.shape[-2], dtype=bool)
         if atom_mask is None

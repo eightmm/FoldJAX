@@ -2,9 +2,10 @@
 
 ``featurize_yaml`` runs check_inputs -> process_inputs -> PredictionDataset over
 one input and returns the batched feature dict, the manifest, and the processed
-structures dir. Requires torch (featurization is torch-side); the JAX runtime
-does not import this. ``cache_dir`` memoizes features by a content digest of the
-input (YAML + referenced MSA/template files + options).
+structures dir. The vendored tensor facade is NumPy-backed, so both this
+preprocessor and inference stay inside FoldJAX's NumPy/JAX runtime. ``cache_dir``
+memoizes features by a content digest of the input (YAML + referenced
+MSA/template files + options).
 """
 
 from __future__ import annotations
@@ -179,8 +180,9 @@ def featurize_affinity_from_prediction(
     predicted_coords: np.ndarray,
     atom_pad_mask: np.ndarray,
     out_dir: Path,
+    max_msa_depth: int | None = None,
 ) -> dict[str, np.ndarray]:
-    """Build the cropped second-stage affinity features used by Boltz-2."""
+    """Build cropped affinity features under the primary stage's MSA cap."""
 
     from foldjax.models.boltz2.data._torch import torch
 
@@ -224,6 +226,7 @@ def featurize_affinity_from_prediction(
         extra_mols_dir=processed_dir / "mols",
         override_method="other",
         affinity=True,
+        max_msa_seqs=max_msa_depth,
     )
     features = dataset[0]
     feats_np: dict[str, np.ndarray] = {}

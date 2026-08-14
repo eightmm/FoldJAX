@@ -1,66 +1,72 @@
 # Running AlphaFold 3 through FoldJAX
 
-AlphaFold 3 is the one backend FoldJAX does not carry itself. Its parameters are
-released under terms that forbid redistribution, and upstream pins a CUDA 12
-JAX plugin that cannot co-resolve with a CUDA 13 cluster. So FoldJAX does not
-list it as a dependency: you install it for your own hardware, and FoldJAX finds
-it. Everything after that is the same as any other model — one job file, one
-model name.
+FoldJAX carries AlphaFold 3's Apache-2.0 source and runner, but never its model
+parameters. The parameters are released directly by Google under separate
+terms that forbid redistribution. Everything else uses the same interface as
+the other models — one job file, one model name.
 
 ```bash
 foldjax predict --model alphafold3 --input job.yaml
 ```
 
-## Installing AlphaFold 3 into the FoldJAX environment
+## Installing the AlphaFold 3 runtime
 
-AlphaFold 3 from v3.0.5 onwards targets the same stack FoldJAX runs on — JAX
-0.10.x, Tokamax 0.0.12, Python 3.12 — so it installs into the same environment.
-Earlier releases pinned `jax==0.4.34` and `triton==3.1.0` and do not.
-
-```bash
-git clone https://github.com/google-deepmind/alphafold3
-uv sync --extra cuda13 --extra alphafold3    # its deps, minus JAX
-uv run build_data                            # builds the CCD tables, ~5 min
-uv pip install --no-deps ./alphafold3        # --no-deps keeps your JAX plugin
-```
-
-Install it **non-editable**, and build the CCD tables first. `build_data` writes
-a 512 MB `ccd.pickle` next to the source it is run against, and AlphaFold 3 reads
-it back from its own package directory — there is no environment variable for it.
-An editable install therefore leaves that half-gigabyte in the checkout and needs
-it at run time; a plain install copies it into the environment, and the checkout
-becomes disposable. The runner does not come along either, which is why FoldJAX
-carries a copy: see `backends/_alphafold3_upstream/`.
-
-`--no-deps` is the important part. AlphaFold 3 requires `jax[cuda12]`; letting
-that resolve would install a second JAX plugin next to the one your cluster
-actually uses. Everything else it needs is generation-independent, which is what
-the `alphafold3` extra carries — `absl-py`, `dm-haiku`, `etils[epath]` and
-`zstandard`, with `rdkit` and `tqdm` already in the base set.
-
-**Afterwards, sync with `--inexact`:**
+Install FoldJAX's AlphaFold 3 extra for its non-JAX runtime dependencies. Keep
+the CUDA extra that matches the machine, then inspect or
+prepare the generated runtime explicitly:
 
 ```bash
-uv sync --inexact --extra cuda13 --extra alphafold3
+uv sync --extra cuda13 --extra alphafold3
+foldjax runtime status --model alphafold3
+foldjax runtime prepare --model alphafold3
 ```
 
-`uv sync` is an *exact* sync by default: it removes anything not in the
-lockfile, and the `alphafold3` package itself cannot be in the lockfile, so a
-plain `uv sync` uninstalls it every time. The extra keeps its dependencies from
-being removed alongside it, but only `--inexact` keeps the package. This is the
-one manual step in the "one environment runs every model" story, and it exists
-because AlphaFold 3 is the one backend FoldJAX cannot carry.
+On the first AlphaFold 3 prediction, FoldJAX builds upstream's small
+ABI-specific extension and the generated CCD lookup tables. These files go to
+`$FOLDJAX_HOME/runtime/alphafold3`, never into the installed wheel or
+site-packages, so a read-only container installation works. `foldjax home`
+prints the exact runtime location. `runtime prepare` makes this potentially
+long step explicit; prediction still prepares it automatically on first use if
+you skip that command.
 
-If you would rather keep it in its own environment, point FoldJAX at the
-checkout instead and the backend will load the runner from there:
+The first build needs a C++ compiler, Git, network access, and either `uv` or
+Python's `pip`. The `alphafold3` extra supplies the Python *runtime*
+dependencies. CMake and Ninja are isolated build requirements declared by the
+vendored AlphaFold 3 project, so `uv`/`pip` obtains them for the temporary build
+environment; the extra does not install them directly. CMake also fetches
+pinned C++ sources from their upstream Git repositories. Later predictions
+reuse the source-, Python-ABI-, platform-, and NumPy-version-keyed runtime.
+
+FoldJAX deliberately ignores unmarked `cpp*.so` files and generated CCD
+pickles left in a source checkout. They do not prove which source or NumPy ABI
+created them, so reusing them after an update could fail much later inside the
+model. Generated artifacts are published only through the keyed runtime store.
+
+FoldJAX does not automatically adopt an independently installed
+`alphafold3` distribution. The default is always the vendored,
+source-and-ABI-keyed managed runtime, even when another distribution appears
+earlier on `sys.path`. This makes the code provenance and JAX-only dependency
+boundary reproducible.
+
+If an external `alphafold3` package was already imported in the current Python
+process, FoldJAX refuses to replace its native extension in place. Restart the
+process before using the managed runtime.
+
+For development against an upstream checkout, opt in explicitly with the
+backend's `source` option. Place that checkout's `src` first on `PYTHONPATH` so
+the selected runner and package have the same provenance; FoldJAX rejects a
+mismatched pair:
 
 ```bash
-export ALPHAFOLD3_SOURCE=/path/to/alphafold3
+PYTHONPATH=/path/to/alphafold3/src:$PYTHONPATH \
+  foldjax predict --model alphafold3 --input job.yaml \
+  --option source=/path/to/alphafold3
 ```
 
-Without that variable the backend looks for `run_alphafold.py` beside the
-imported package — which is what an editable install gives you — and otherwise
-uses its vendored copy.
+Without that explicit option FoldJAX uses the runner matching its vendored
+source. The former `ALPHAFOLD3_SOURCE` ambient environment switch is not
+honoured. Do not install upstream's JAX dependency over FoldJAX's CUDA-specific
+JAX environment.
 
 ## Weights
 
@@ -69,8 +75,9 @@ Request the parameters from DeepMind
 then drop the file into the FoldJAX weight store:
 
 ```bash
-mkdir -p "$(foldjax home)/weights/alphafold3"
-cp af3.bin "$(foldjax home)/weights/alphafold3/"
+weights_store=$(foldjax home --path weights)
+mkdir -p "$weights_store/alphafold3"
+cp af3.bin "$weights_store/alphafold3/"
 ```
 
 `foldjax weights list` will then show `alphafold3` as ready. FoldJAX never
@@ -83,7 +90,7 @@ AlphaFold 3 refuses to featurise a protein or RNA chain whose MSA is *absent*:
 it assumes its own genetic-search pipeline will produce one, which needs
 hundreds of gigabytes of databases. FoldJAX therefore writes an **empty** MSA
 when your job carries no alignment, which AlphaFold 3 accepts as single-sequence
-mode — the same fallback the other four backends already have. Predictions will
+mode — the same fallback the other MSA-capable backends already have. Predictions will
 be much worse than with a real MSA; supply one for anything you care about:
 
 ```yaml

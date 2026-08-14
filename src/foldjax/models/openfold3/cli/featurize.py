@@ -1,9 +1,8 @@
-"""Turn a query specification into a feature ``.npz``.
+"""Turn a query specification into a feature ``.npz`` using NumPy preprocessing.
 
-Splitting featurization from inference is the point: featurization needs upstream's
-data stack (torch, rdkit, lightning), inference needs none of it. Running this once
-produces a file the inference path can load on a machine where none of that is
-installed.
+Chemistry, tokenization, MSA, and local-template preprocessing run without PyTorch
+or Lightning. Running this once produces a portable, pickle-free archive for JAX
+inference.
 
     openfold3-jax-featurize query.json -o ubq.npz
     openfold3-jax-featurize query.json -o ubq.npz --query-id 7cnx \\
@@ -28,7 +27,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--query-id", default=None, help="required when the file holds several"
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="deterministic preprocessing seed (default: 0)",
+    )
     parser.add_argument(
         "--ccd", type=Path, default=None, help="CCD file; biotite's copy by default"
     )
@@ -70,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import json
 
     from foldjax.models.openfold3.data import (
-        featurize_query,
+        featurize_query_with_metadata,
         pad_features,
         save_features,
     )
@@ -85,9 +89,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.loads(args.spec.read_text()),
             alignment_dir=alignment_dir,
             paired=args.paired_msa,
+            query_id=args.query_id,
         )
 
-    features = featurize_query(
+    features, output_metadata = featurize_query_with_metadata(
         spec, query_id=args.query_id, seed=args.seed, ccd_file_path=args.ccd
     )
     tokens = features["token_mask"].shape[-1]
@@ -106,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"padded to {args.pad_tokens} tokens, {args.pad_atoms} atoms")
 
-    path = save_features(features, args.output)
+    path = save_features(features, args.output, output_metadata=output_metadata)
     print(f"wrote {path}")
     print(
         "  run it with: released_config(n_token="

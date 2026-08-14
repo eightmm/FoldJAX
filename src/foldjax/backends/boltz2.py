@@ -10,28 +10,30 @@ import numpy as np
 
 from foldjax.backends.base import Backend
 from foldjax.schema import (
+    InputRequirement,
     ModelCapabilities,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
+    _strict_boolean,
+    _strict_integer,
 )
 
 
 def _native_module():
     """Import the Boltz-2 port and resolve its lazy prediction entry point.
 
-    Boltz-2 runs inference in JAX, but its featurizer reuses upstream Boltz's
-    torch/lightning data code. That dependency only surfaces when the lazy
-    ``predict`` attribute is touched, so it is resolved here to turn a bare
-    ``ModuleNotFoundError`` into an actionable message.
+    Prediction and featurization are both part of the base, torch-free FoldJAX
+    install. Resolve the lazy attribute here so an incomplete installation says
+    which base dependency is missing instead of recommending a parity-only extra.
     """
     native = import_module("foldjax.models.boltz2")
     try:
         native.predict
     except ModuleNotFoundError as error:
         raise ModuleNotFoundError(
-            "the boltz2 backend needs Boltz's featurization dependencies; "
-            "install them with `uv sync --extra cuda13 --extra boltz-preprocess` "
+            "the boltz2 backend is included in FoldJAX's base installation, but "
+            "one of its required dependencies is missing; reinstall FoldJAX "
             f"(missing: {error.name})"
         ) from error
     return native
@@ -103,8 +105,45 @@ def _default_mols(weights: Path) -> Path | None:
     return None
 
 
+def _padding_shape_profile(metadata: object) -> dict[str, object] | None:
+    """Report every independently compiled stage in a Boltz2 padded run."""
+
+    if not isinstance(metadata, Mapping):
+        return None
+    primary = metadata.get("primary")
+    if not isinstance(primary, Mapping):
+        return None
+    affinity = metadata.get("affinity")
+    if isinstance(affinity, Mapping):
+        return {"primary": dict(primary), "affinity": dict(affinity)}
+    return dict(primary)
+
+
 class Boltz2Backend(Backend):
     name = "boltz2"
+    padding_axes = ("tokens", "atoms", "msa")
+    native_options = frozenset(
+        {
+            "affinity_diffusion_samples",
+            "affinity_mw_correction",
+            "affinity_steps",
+            "affinity_weights",
+            "bucket",
+            "feature_cache",
+            "glu_backend",
+            "mols",
+            "msa_api_key_header",
+            "msa_api_key_value",
+            "msa_pairing_strategy",
+            "msa_server_password",
+            "msa_server_url",
+            "msa_server_username",
+            "return_confidence_logits",
+            "steering_args",
+            "use_msa_server",
+            "write_fmt",
+        }
+    )
     sampling_options = {
         "num_samples": "diffusion_samples",
         "num_steps": "steps",
@@ -138,13 +177,52 @@ class Boltz2Backend(Backend):
         "bucket",
     )
 
+    def validate_native_options(self, options: dict[str, object]) -> None:
+        if "steps" in options:
+            # The published Karras schedule divides by ``steps - 1``.  One
+            # step therefore produces a NaN schedule and only fails after an
+            # expensive model compile; reject it while planning instead.
+            _strict_integer(options["steps"], name="steps", minimum=2)
+        for name in (
+            "affinity_mw_correction",
+            "bucket",
+            "return_confidence_logits",
+            "use_msa_server",
+        ):
+            if name in options:
+                _strict_boolean(options[name], name=name)
+        if "write_fmt" in options and options["write_fmt"] not in {
+            None,
+            "cif",
+            "pdb",
+        }:
+            raise ValueError("write_fmt must be one of 'cif', 'pdb', or null")
+
     def capabilities(self) -> ModelCapabilities:
+        requirement = InputRequirement(
+            notes=(
+                "NumPy featurization and JAX prediction are included in the base "
+                "install and never select a second tensor runtime."
+            )
+        )
         return ModelCapabilities(
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "boltz", "foldjax"),
+            input_requirements={
+                name: requirement for name in ("native", "boltz", "foldjax")
+            },
             supports_affinity=True,
+            padding_axes=self.padding_axes,
         )
+
+    def validate_request(self, request: PredictionRequest) -> None:
+        if request.padding is not None and "bucket" in request.options:
+            raise ValueError(
+                "padding and the native Boltz2 option 'bucket' were both set; "
+                "pass one of them"
+            )
+        super().validate_request(request)
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
@@ -163,6 +241,7 @@ class Boltz2Backend(Backend):
             out_dir=request.output_dir,
             seed=request.seed,
             compile_cache=request.cache_dir,
+            padding=request.padding,
             write_fmt=options.pop("write_fmt", "cif"),
             **options,
         )
@@ -181,9 +260,11 @@ class Boltz2Backend(Backend):
             )
             for index in range(sample_count)
         )
+        shape_profile = _padding_shape_profile(output.get("padding"))
         return PredictionResult(
             model=self.name,
             samples=samples,
             output_dir=request.output_dir,
             raw=output,
+            shape_profile=shape_profile,
         )

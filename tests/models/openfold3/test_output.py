@@ -18,6 +18,7 @@ from foldjax.models.openfold3.output import (
     ELEMENT_SYMBOLS,
     RESIDUE_NAMES,
     UNKNOWN_ELEMENT_BIN,
+    _has_clash_blocked,
     atom_metadata,
     confidence_summary,
     write_prediction_outputs,
@@ -147,7 +148,8 @@ def test_written_structure_round_trips(tmp_path: Path) -> None:
     metadata = atom_metadata(features)
     prediction = _prediction(features["atom_mask"].shape[-1])
 
-    written = write_prediction_outputs(prediction, features, tmp_path, name="ubq")
+    with pytest.warns(RuntimeWarning, match="no exact output metadata"):
+        written = write_prediction_outputs(prediction, features, tmp_path, name="ubq")
     assert len(written["structures"]) == 3
     assert written["num_atoms"] == metadata.name.size
 
@@ -189,7 +191,8 @@ def test_b_factors_carry_plddt(tmp_path: Path) -> None:
     features = featurized("1UBQ", include_ligands=False)
     metadata = atom_metadata(features)
     prediction = _prediction(features["atom_mask"].shape[-1])
-    written = write_prediction_outputs(prediction, features, tmp_path, name="ubq")
+    with pytest.warns(RuntimeWarning, match="no exact output metadata"):
+        written = write_prediction_outputs(prediction, features, tmp_path, name="ubq")
 
     structure = gemmi.read_structure(str(written["structures"][0]))
     b_factors = np.asarray(
@@ -203,32 +206,127 @@ def test_b_factors_carry_plddt(tmp_path: Path) -> None:
     )
     np.testing.assert_allclose(
         b_factors,
-        np.asarray(prediction.plddt)[0][metadata.keep],
+        np.asarray(prediction.plddt)[0][metadata.keep] * 100.0,
         atol=1e-2,
     )
 
 
-def test_scores_are_ranked_by_the_ranking_score() -> None:
+def _ranking_features(n_atom: int, *, has_protein: bool) -> dict[str, np.ndarray]:
+    split = n_atom // 2
+    return {
+        "atom_mask": np.ones((1, n_atom), dtype=np.float32),
+        "atom_to_token_index": np.arange(n_atom, dtype=np.int32)[None],
+        "token_mask": np.ones((1, n_atom), dtype=np.float32),
+        "asym_id": np.asarray(
+            [[0] * split + [1] * (n_atom - split)], dtype=np.int32
+        ),
+        "is_protein": np.full((1, n_atom), has_protein, dtype=np.int32),
+        "is_rna": np.zeros((1, n_atom), dtype=np.int32),
+        "is_dna": np.full((1, n_atom), not has_protein, dtype=np.int32),
+    }
+
+
+def test_nonprotein_scores_use_the_exact_upstream_ranking_formula() -> None:
     prediction = _prediction(64, n_samples=3, with_iptm=True)
-    summary = confidence_summary(prediction)
+    summary = confidence_summary(
+        prediction, _ranking_features(64, has_protein=False)
+    )
     assert summary["num_samples"] == 3
-    scores = [entry["ranking_score_no_clash"] for entry in summary["samples"]]
-    # Highest first, and the order is reported rather than left to the caller.
+    scores = [entry["sample_ranking_score"] for entry in summary["samples"]]
+    for entry, score in zip(summary["samples"], scores, strict=True):
+        assert entry["has_clash"] == 0.0
+        assert score == pytest.approx(0.8 * entry["iptm"] + 0.2 * entry["ptm"])
     assert summary["ranked_samples"] == [
         index for index, _ in sorted(enumerate(scores), key=lambda p: -p[1])
     ]
+    assert summary["samples"][0]["mean_plddt"] > 1.0
 
 
-def test_scores_fall_back_to_plddt_without_iptm() -> None:
-    """A monomer has no ipTM, and an unranked list is what a caller cannot
-    reconstruct."""
+def test_protein_score_is_clearly_partial_and_never_promoted_to_ranking() -> None:
+    prediction = _prediction(64, n_samples=3, with_iptm=True)
+    summary = confidence_summary(prediction, _ranking_features(64, has_protein=True))
+    assert "ranked_samples" not in summary
+    for entry in summary["samples"]:
+        assert "sample_ranking_score" not in entry
+        assert entry["sample_ranking_score_no_disorder"] == pytest.approx(
+            0.8 * entry["iptm"]
+            + 0.2 * entry["ptm"]
+            - 100.0 * entry["has_clash"]
+        )
+
+
+def test_scores_do_not_fall_back_to_plddt_without_exact_ranking_inputs() -> None:
     prediction = _prediction(64, n_samples=3, with_iptm=False)
     summary = confidence_summary(prediction)
-    assert all("ranking_score_no_clash" not in s for s in summary["samples"])
-    means = [entry["mean_plddt"] for entry in summary["samples"]]
-    assert summary["ranked_samples"] == [
-        index for index, _ in sorted(enumerate(means), key=lambda p: -p[1])
-    ]
+    assert "ranked_samples" not in summary
+    assert all("sample_ranking_score" not in s for s in summary["samples"])
+
+
+def test_nonfinite_coordinates_prevent_an_exact_ranking_claim() -> None:
+    prediction = _prediction(8, n_samples=2, with_iptm=True)
+    coordinates = np.asarray(prediction.coordinates).copy()
+    coordinates[1, 0, 0] = np.nan
+    summary = confidence_summary(
+        prediction._replace(coordinates=coordinates),
+        _ranking_features(8, has_protein=False),
+    )
+    assert summary["samples"][1]["has_clash"] is None
+    assert "sample_ranking_score" not in summary["samples"][1]
+    assert "ranked_samples" not in summary
+
+
+def test_blocked_clash_veto_matches_the_upstream_score_formula() -> None:
+    prediction = _prediction(8, n_samples=2, with_iptm=True)
+    first = np.arange(4, dtype=np.float32)[:, None] * np.asarray([[3.0, 0.0, 0.0]])
+    clashing = np.concatenate((first, first + 0.1), axis=0)
+    clean = np.concatenate((first, first + 100.0), axis=0)
+    prediction = prediction._replace(coordinates=np.stack((clashing, clean)))
+
+    summary = confidence_summary(
+        prediction, _ranking_features(8, has_protein=False)
+    )
+
+    assert [entry["has_clash"] for entry in summary["samples"]] == [1.0, 0.0]
+    assert summary["samples"][0]["sample_ranking_score"] == pytest.approx(
+        0.8 * summary["samples"][0]["iptm"]
+        + 0.2 * summary["samples"][0]["ptm"]
+        - 100.0
+    )
+    assert summary["ranked_samples"][0] == 1
+
+
+def test_blocked_clash_matches_the_jax_metric_across_distance_tiles() -> None:
+    import jax.numpy as jnp
+
+    from foldjax.models.openfold3.models.clash import compute_has_clash
+
+    first = np.arange(4, dtype=np.float32)[:, None] * np.asarray([[3.0, 0.0, 0.0]])
+    positions = np.stack(
+        (
+            np.concatenate((first, first + 0.1)),
+            np.concatenate((first, first + 100.0)),
+        )
+    )
+    asym_id = np.asarray([0] * 4 + [1] * 4, dtype=np.int32)
+    atom_mask = np.ones(8, dtype=bool)
+    is_polymer = np.ones(8, dtype=bool)
+
+    expected = compute_has_clash(
+        jnp.asarray(asym_id),
+        jnp.asarray(positions),
+        jnp.asarray(atom_mask),
+        jnp.asarray(is_polymer),
+        n_chain=2,
+    )
+    actual = _has_clash_blocked(
+        positions,
+        atom_mask,
+        asym_id,
+        is_polymer,
+        block_size=2,
+    )
+
+    np.testing.assert_array_equal(actual, np.asarray(expected))
 
 
 def test_missing_features_are_named() -> None:

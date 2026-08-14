@@ -93,6 +93,26 @@ def test_map_template_embedder_state_dict_discovers_pairformer_blocks() -> None:
     assert tuple(params.linear_u.weight.shape) == (4, 2)
 
 
+def test_map_template_embedder_accepts_published_zero_block_architecture() -> None:
+    state = _template_state(np.random.default_rng(4))
+    state = {
+        key: value
+        for key, value in state.items()
+        if not key.startswith("template_embedder.pairformer_stack.blocks.")
+    }
+
+    params = map_template_embedder_state_dict(state)
+    output = template_embedder(
+        {"template_aatype": jnp.zeros((1, 2), dtype=jnp.int32)},
+        jnp.ones((2, 2, 4), dtype=jnp.float32),
+        None,
+        params,
+    )
+
+    assert params.pairformer_stack.blocks == ()
+    np.testing.assert_array_equal(np.asarray(output), np.zeros((2, 2, 4)))
+
+
 def _template_state(rng: np.random.Generator) -> dict[str, np.ndarray]:
     state = {
         "template_embedder.linear_no_bias_z.weight": rng.normal(

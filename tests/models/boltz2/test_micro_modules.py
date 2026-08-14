@@ -8,6 +8,8 @@ from foldjax.models.boltz2.models.primitives.micro_modules import (
     jax_pairformer_forward,
     jax_structure_forward,
     to_jax_tree,
+)
+from tests.models.boltz2.torch_micro_modules import (
     to_torch_tree,
     torch_pairformer_forward,
     torch_structure_forward,

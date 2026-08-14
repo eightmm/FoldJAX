@@ -1,8 +1,10 @@
 # FoldJAX against upstream
 
-Every model here is a JAX reimplementation of a published torch model, so the
-only comparison worth making is against the repository it came from, on the
-same job, under the same schedule, measured the same way.
+Every runtime here is JAX. Five models are reimplementations of published
+torch models; AlphaFold 3 is the official JAX distribution driven through the
+same FoldJAX interface. The useful comparison is against each model's own
+reference repository, on the same job, under the same schedule, measured the
+same way.
 
 That is what [`bench/`](bench/) does, and it is reproducible: one command per
 row, one process per measurement, results written as they land.
@@ -28,7 +30,7 @@ upstream, which is what makes the comparison mean anything.
 | 499 | protenix | 28 | 63 | 4.9 | 5.0 | 2.26x | 1.02x | ranking_score | 0.1937 | 0.1935 |
 | 1003 | alphafold3 | 368 | - | 6.7 | - | - | - | - | - | - |
 | 1003 | boltz2 | 94 | 141 | 7.2 | 15.8 | 1.51x | 2.19x | complex_plddt | 0.9489 | 0.9482 |
-| 1003 | opendde | 287 | 287 | 44.3 | 59.5 | 1.00x | 1.34x | ranking_score | 0.1926 | 0.1930 |
+| 1003 | opendde | 278 | 287 | 42.1 | 59.5 | 1.03x | 1.41x | ranking_score | 0.1926 | 0.1930 |
 | 1003 | openfold3 | 126 | 323 | 11.8 | 25.0 | 2.56x | 2.13x | ptm | 0.9315 | 0.9300 |
 | 1003 | protenix | 72 | 99 | 8.3 | 12.7 | 1.38x | 1.54x | ranking_score | 0.1921 | 0.1922 |
 | 3012 | alphafold3 | 1,013 | - | 41.3 | - | - | - | - | - | - |
@@ -200,12 +202,18 @@ sampler is a 4 Hz observer, so its largest sample is a lower bound; the dashed
 rule in each panel is the allocator's own high-water mark, which is the number
 in the table.
 
-These runs also re-measured the 1,003-token column, and eight of nine rows
-reproduce the table within noise. The ninth does not: **OpenDDE's FoldJAX peak
-is 42.1 GiB here against 44.3 in the table.** The port's code changed between
-the two sweeps and 2.2 GiB is far outside the agreement of the other eight, so
-that is a real improvement rather than run-to-run spread -- and the table's
-sweep is due a re-run, which this figure does not substitute for.
+These traces first exposed that OpenDDE's 44.3 GiB table entry was stale. A
+final warm run through the public FoldJAX API now confirms **277.81 s and
+43,089.9 MiB (42.1 GiB)**; the table and benchmark figure use that rerun.
+Against the matching upstream result (287.14 s and 60,904.8 MiB), FoldJAX is
+1.03x faster and uses 1.41x less peak memory.
+
+The rerun also passed a structure-level gate: all five mmCIF samples contain
+7,750 finite atom coordinates in one chain. Across all 25 FoldJAX/upstream
+sample pairs, median TM-score is **0.99298** and median aligned RMSD is
+**2.318 Å**. FoldJAX's own ten within-run sample pairs have median TM-score
+0.99225, so the cross-implementation difference is no larger than its normal
+diffusion-sampling spread.
 
     python -m bench.drive --models boltz2 protenix openfold3 opendde \
         --impls foldjax upstream --cases L1000_3og2 \

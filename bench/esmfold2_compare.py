@@ -116,7 +116,7 @@ def run_torch(case: str, warmup: bool) -> dict:
     import torch
     from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
 
-    from foldjax.models.esmfold2.data.torch_features import build_features
+    from tests.models.esmfold2.torch_features import build_features
 
     chains, alignments = _job(case)
     weights = _weights()

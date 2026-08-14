@@ -13,25 +13,54 @@ all carried inside the package:
 |---|---|---|---|
 | `alphafold3` | `foldjax.models.alphafold3` | Apache-2.0 | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
 | `boltz2` | `foldjax.models.boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
-| `esmfold2` | `foldjax.models.esmfold2` | MIT | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
+| `esmfold2` | `foldjax.models.esmfold2` | MIT + upstream notices | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
 | `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
 | `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
 | `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
 
 Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations
 that match their upstream's results; AlphaFold 3 is upstream's own source,
-vendored. Weights are never redistributed — `foldjax weights fetch` gets each
-from its publisher (AlphaFold 3's on request from Google).
+vendored. Weights are never redistributed. `foldjax weights fetch` downloads
+and converts or stages public assets; AlphaFold 3 and gated OpenFold3 weights
+are supplied manually after accepting their publishers' terms.
+
+Every advertised prediction path is Torch-free, including raw OpenFold3 jobs
+and Protenix ESM/ISM conditioning. Publisher `.pt` checkpoints are a file
+format here, not a runtime dependency: FoldJAX reads them with a restricted
+NumPy archive reader. Neither the base install nor any public extra installs
+PyTorch, Lightning, or TorchMetrics.
 
 ESMFold2 is the odd one out and worth knowing about before you use it. It has
 no evolutionary trunk: it is a diffusion structure head on a linear-recurrence
 pair trunk, folding the representations of **ESMC-6B**, a 25 GB protein
-language model that upstream distributes separately (`scripts/fetch_esmc6b.sh`
-puts it where the loader looks). It is also *random at inference by design* —
+language model that upstream distributes separately (`foldjax weights fetch
+--model esmfold2` puts the complete bundle where the loader looks). It is also
+*random at inference by design* —
 random initial pair state, per-loop language-model dropout, sampler noise — so
 two seeds give genuinely different structures rather than the same structure
-twice. Protein only for now; ligands and nucleic acids need reference
-conformers this adapter does not build yet.
+twice. Protein only for now: supported protein jobs use FoldJAX's in-package
+canonical chemistry. Ligands and nucleic acids are rejected because this
+adapter does not build their features; the current runtime does not consume
+upstream's 417 MB `ccd.pkl`.
+
+The complete released ESMFold2 profile is the compatible default. To run the
+explicit structure-network-only variant without downloading ESMC-6B, fetch its
+940 MB profile and select the same profile for prediction:
+
+```bash
+foldjax weights fetch --model esmfold2 --profile structure-only
+foldjax predict --model esmfold2 --input protein.json \
+  --profile structure-only
+```
+
+`--profile structure-only` sets `no_language_model=true` itself; conflicting
+native options are rejected instead of silently overriding the profile.
+The older explicit option still selects that managed profile automatically
+when weights are omitted. Without either spelling, FoldJAX still requires the complete
+structure+ESMC release and never silently falls back to a different model.
+An explicit `esmc_weights=/path/to/esmc` also selects the 940 MB managed
+profile: the released language-model branch still runs, but its weights come
+from that path rather than a redundant managed ESMC copy.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
@@ -59,17 +88,20 @@ uv sync --extra cuda13 --group dev                                    # CUDA 13 
 UV_PROJECT_ENVIRONMENT=.venv-cu12 uv sync --extra cuda12 --group dev  # CUDA 12 nodes
 ```
 
-**Neither prediction nor weight conversion imports torch** — checkpoints are
-read by FoldJAX's own deserializer (`foldjax.torch_archive`, bit-identical
-against `torch.load`). The extras that carry torch exist for featurization
-parity suites (`boltz-preprocess`, `torch-bridge`) and OpenFold3's vendored
-upstream data pipeline (`openfold3-preprocess`); prediction never needs them.
+Managed weight conversion and all six inference paths use NumPy/JAX only.
+OpenFold3 can predict from a self-contained feature `.npz`; turning raw
+JSON/YAML into that archive uses the Torch-free in-package featurizer and the
+non-Torch chemistry packages in `--extra openfold3-preprocess`. Protenix
+ESM/ISM conditioning runs the exact ESM2 architecture in JAX.
 
-**AlphaFold 3** needs `--extra alphafold3`; its compiled half is built in
-place on first use — a one-time step like fetching weights — and an installed
-`alphafold3` distribution wins if present: [docs/alphafold3.md](docs/alphafold3.md).
-**OpenFold3** predicts with no extra; building features needs
-`--extra openfold3-preprocess`: [docs/openfold3.md](docs/openfold3.md).
+**AlphaFold 3** needs `--extra alphafold3`; its compiled half and generated CCD
+tables are built under `$FOLDJAX_HOME/runtime/alphafold3` on first use — a
+one-time step that also works from a read-only wheel install. FoldJAX uses its
+versioned managed runtime by default; external source is explicit opt-in:
+[docs/alphafold3.md](docs/alphafold3.md).
+**OpenFold3** predicts from an embedded-chemistry `.npz` with no extra; raw job
+featurization needs `--extra openfold3-preprocess`:
+[docs/openfold3.md](docs/openfold3.md).
 
 ## Input
 
@@ -91,15 +123,15 @@ bonds:
 
 `--input-format auto` decides on content, so native dialects (a Boltz YAML, a
 Protenix job list) pass through untouched. Modifications, covalent bonds and
-`unpaired_msa` have one neutral spelling and are translated into each backend's
-own; **a field a backend cannot express is rejected, not dropped** — silently
+`unpaired_msa` have one neutral spelling and are translated where the backend
+supports them; **a field a backend cannot express is rejected, not dropped** — silently
 discarding an alignment would change the science without changing the exit
 code.
 
 The same document can be built in Python instead of written by hand:
 
 ```python
-from foldjax import Job, Ligand, Modification, Protein
+from foldjax import Job, Ligand, Modification, PredictionRequest, Protein
 
 job = Job(
     "example",
@@ -121,11 +153,17 @@ back.
 uv run foldjax predict \
   --model protenix \
   --input job.yaml \
+  --profile mini-esm-v0.5.0 \
   --num-samples 5 \
   --num-steps 200 \
   --num-recycles 10 \
   --seed 42
 ```
+
+With one model and one input, the compatible default remains
+`foldjax-outputs/<input-stem>`. An explicit `--output-dir` replaces that scalar
+default. Batch requests add canonical model namespaces below their output root
+so different models cannot overwrite one another.
 
 `--num-samples`, `--num-steps`, and `--num-recycles` are model-neutral. Each
 backend calls them something different, and FoldJAX translates:
@@ -144,6 +182,59 @@ runs the job once per seed into `seed_<n>` directories and returns every
 structure together. Every run writes `foldjax_run.json` beside its structures:
 model, input SHA-256, resolved weights, the knobs actually used, and each
 structure's confidence.
+
+### Optional shape padding
+
+JAX reuses a compiled executable only when all dynamic feature axes have the
+same shape. FoldJAX therefore offers one opt-in padding switch across all six
+models:
+
+```bash
+uv run foldjax predict --model boltz2 --input job.yaml --padding
+```
+
+With no padding flag, the exact historical model path and shapes are unchanged.
+With `--padding`, each backend selects the smallest conservative *complete*
+shape profile: tokens plus the atom, MSA, template, structural-token, and/or
+language-model axes that actually enter that model. Masks keep padded entries
+out of the structure and confidence output, and the run summary and
+`foldjax_run.json` report the concrete profile that ran.
+
+For a deployment profile or an exact cache warm, pin only the axes you need;
+the remaining model axes still use safe automatic buckets:
+
+```bash
+uv run foldjax cache warm \
+  --model openfold3 \
+  --input job.yaml \
+  --pad-tokens 512 \
+  --pad-atoms 4096 \
+  --pad-msa 128
+```
+
+The advanced axes are `--pad-templates`, `--pad-structural-tokens` (OpenDDE),
+and `--pad-language-model-tokens` (ESMFold2/ESMC and Protenix ESM/ISM). A
+target smaller than the materialized input is an error—padding never truncates
+tokens or atoms.
+Automatic profiles fail before compilation above their standard grid; use
+`--padding-overflow exact` only when an unplanned exact-shape compile is
+intentional. Padding can substantially increase quadratic token work, so a
+4096-token profile is explicit capacity planning, not a good universal default.
+
+`--profile` is the prediction-side spelling of `foldjax weights ... --profile`.
+For Protenix, `mini-esm-v0.5.0` and `mini-ism-v0.5.0` select the matching mini
+structure model and the ESM/ISM checkpoint staged beside it, so callers do not
+need to know `model_name` or `esm_checkpoint_dir`. The Python API uses the same
+field: `PredictionRequest(..., profile="mini-esm-v0.5.0")`.
+
+To choose a model before downloading anything, use `foldjax models --json`.
+It reports each canonical name, accepted inputs and execution knobs, whether
+its weights are ready, their location and download size when known, and the
+next setup step. Each accepted format also has an `input_requirements` entry:
+the prediction and preprocessing runtimes, required install extras, whether
+preprocessing imports PyTorch, and a short explanation. `foldjax capabilities
+--model MODEL` remains the compact capability-only view with the same format
+requirements.
 
 ### Memory
 
@@ -174,44 +265,58 @@ Details and measurements: [docs/engineering-notes.md](docs/engineering-notes.md)
 
 Caps the `[depth, tokens, channels]` MSA representation, the dominant memory
 term after the pair stack. What the cap costs in accuracy differs by model --
-free on Protenix (its upstream subsamples anyway), pointless on OpenDDE,
-harmful on some Chai-style stacks -- so FoldJAX translates the knob but never
-imposes it. Per-model semantics and the measurements:
+free on Protenix (its upstream subsamples anyway), pointless on OpenDDE, and
+potentially harmful when a model embeds the complete alignment before recycling
+-- so FoldJAX translates the knob but never imposes it. Per-model semantics and
+the measurements:
 [docs/engineering-notes.md](docs/engineering-notes.md).
 
 ### Weights and setup
 
-Every upstream project publishes torch checkpoints; FoldJAX predicts from
-torch-free JAX weights. `foldjax weights` owns that gap — it downloads from each
-publisher, verifies against the published hash where one exists, converts once,
-and stores the result under the FoldJAX home.
+Upstreams publish several formats. `foldjax weights` downloads public files,
+checks their pinned size and SHA-256, converts Boltz-2/OpenDDE/Protenix once,
+stages ESMFold2's native safetensors, and locates manually supplied AlphaFold 3
+or OpenFold3 parameters. Managed checkpoint loading remains PyTorch-free.
 
 ```bash
-uv run foldjax setup                            # everything public, in one go
+uv run foldjax setup                            # default public models, in one go
 uv run foldjax weights list                     # what is downloaded and converted
 uv run foldjax weights fetch --model opendde    # download, verify, convert
 uv run foldjax weights path --model opendde     # where it landed
 uv run foldjax home                             # every location FoldJAX uses
+uv run foldjax home --path runtime              # one script-friendly location
 ```
 
-`setup` fetches and converts every publicly published model — Boltz-2,
-OpenDDE, Protenix — plus shared CCD assets, then names what it cannot do for
-you: AlphaFold 3 and OpenFold3 release parameters on request. MSA search needs
-nothing installed (ColabFold MMseqs2 server).
+Weight preparation keeps its lifecycle and progress on stderr. `weights fetch`
+retains a human-readable summary on stdout; use `weights path` when a script
+needs path-only stdout. A fresh conversion shows `resolve`, per-file `download`,
+`convert` (or `stage`/`direct`), `validate`, and `ready`, with elapsed time and
+sizes; a repeat run explicitly reports that the verified native bundle was
+skipped. Library callers can receive the same structured `AssetEvent` objects
+through `foldjax.assets.fetch(..., on_event=callback)` instead of parsing text.
+
+`setup` fetches and converts the default publicly published models — Boltz-2,
+OpenDDE, Protenix — plus shared CCD assets. ESMFold2 is public but deliberately
+opt-in because its full structure+ESMC bundle is about 26 GB; fetch it with
+`foldjax weights fetch --model esmfold2`, or fetch only its 940 MB structure
+network with `--profile structure-only`, then pass that same profile to
+`foldjax predict`. AlphaFold 3 and OpenFold3 release parameters on
+request. MSA search needs nothing installed (ColabFold MMseqs2 server).
 
 ```
 ~/.cache/foldjax/          # or $FOLDJAX_HOME, or a .foldjax/ in the checkout,
 ├── downloads/<model>/     #   or $XDG_CACHE_HOME/foldjax — `foldjax home` says
 ├── assets/                # CCD dictionaries shared by protenix and opendde
-├── weights/<model>/       # converted JAX weights — what prediction loads
-└── compile/               # XLA persistent compilation cache
+├── weights/<model>/       # prediction-ready weights/assets
+├── compile/               # XLA persistent compilation cache
+└── runtime/<model>/       # generated native binaries/data (AlphaFold 3)
 ```
 
-`mkdir .foldjax` in a checkout keeps all of it beside the source. Conversion
-reads the torch archives with FoldJAX's own deserializer, so the whole flow
-runs in the base environment. No weights are redistributed — each file comes
-from its own publisher under that project's terms, and nothing is fetched
-implicitly during prediction.
+`mkdir .foldjax` in a checkout keeps all of it beside the source. Where a `.pt`
+archive needs conversion or direct loading, FoldJAX's restricted reader returns
+NumPy arrays without importing PyTorch. No weights are redistributed — each
+file comes from its own publisher under that project's terms, and nothing is
+fetched implicitly during prediction.
 
 ### GPU and the compile cache
 
@@ -221,8 +326,45 @@ profile, and the options that actually change the compiled program. Different
 models and weight sets never share a cache entry, and options that only affect
 output formatting never fragment one.
 
-`--no-cache` turns it off for benchmark or ephemeral runs; `--cache-dir` moves
-the root. Every model also runs on CPU, slowly.
+Warm the exact request before a production run on its deployment GPU:
+
+```bash
+uv run foldjax cache warm \
+  --model opendde \
+  --input job.yaml \
+  --num-samples 5 \
+  --num-steps 200 \
+  --num-recycles 10
+```
+
+This deliberately uses an `execute_once` strategy: FoldJAX runs the first
+requested seed through the normal prediction path, including GPU kernel
+autotuning, then discards its prediction files. Pass `--output-dir` if that
+warm-up prediction should be kept. The command reports the exact cache
+namespace, elapsed time, device allocator peak, and files/bytes before and
+after. Persistent entries are accelerator-, JAX-runtime-, weight-, input-shape-,
+profile-, and static-option-specific, so warm representative production shapes
+with the same options on the machine that will run them. One small input cannot
+prewarm arbitrary larger shapes. A padded warm reports the one concrete full
+shape profile it selected; it does not claim that every bucket or every
+token/atom/MSA combination was compiled.
+
+A zero cache delta is reported neutrally as `no_new_entry_observed`: directory
+contents alone cannot prove an XLA cache hit, and FoldJAX does not pretend that
+they can.
+
+The cache setting is scoped to one FoldJAX request even though JAX exposes it
+as process-wide configuration: FoldJAX serializes its own predictions, applies
+the resolved directory while the backend runs, and restores the embedding
+application's previous setting afterwards, including on failure. An embedding
+application must not compile unrelated JAX programs concurrently in another
+thread; use a separate process for mixed workloads because JAX has no
+thread-local cache configuration.
+`--no-cache` therefore disables reads and writes for that request rather than
+merely omitting a directory argument; `use_compile_cache=False` is the Python
+spelling. It cannot be combined with `--cache-dir`/`cache_dir`, because one asks
+to disable the cache while the other asks where to use it. Every model also
+runs on CPU, slowly.
 
 ## Python API
 
@@ -230,11 +372,11 @@ Everything the CLI does, as one request type — and the same neutral
 vocabulary, so nothing below has a CLI-only or API-only spelling.
 
 ```python
-from foldjax import PredictionRequest, predict
+from foldjax import PaddingConfig, PredictionRequest, predict
 
 result = predict(
     PredictionRequest(
-        model="protenix",          # boltz2 / opendde / openfold3 / alphafold3
+        model="protenix",          # boltz2 / esmfold2 / opendde / openfold3 / alphafold3
         input="job.yaml",          # FoldJAX job, or the model's native format
         output_dir="out/",
         seed=42,
@@ -243,6 +385,9 @@ result = predict(
         num_steps=200,
         num_recycles=10,
         max_msa_depth=8192,
+        # Opt-in shape normalization. `padding=True` uses standard buckets;
+        # pinning axes defines one exact serving/cache profile.
+        padding=PaddingConfig(tokens=512, atoms=4096, msa=128),
         # Execution, likewise: dtype, matmul_precision, triangle_kernel,
         # attention_kernel. "auto" is the fastest path this build can run --
         # never a silent fallback to a slower one.
@@ -253,11 +398,24 @@ for sample in result.samples:
     print(sample.structure_path, sample.scores)
 ```
 
+The same prewarming operation is available without the CLI:
+
+```python
+from foldjax import PredictionRequest, warm_cache
+
+report = warm_cache(
+    PredictionRequest(model="opendde", input="job.yaml", num_steps=200)
+)
+print(report.summary())
+```
+
 **One declaration, several runs.** Every axis that can name one thing can name
 several -- the plural spelling fans out, nothing else changes. `models` x
 `inputs` runs the cross product, each prediction into its own
 `output_dir/<model>/<input stem>` subtree; `seeds` reruns each under every
-seed. One result comes back per run, in declaration order:
+seed. Model aliases are canonicalized before the path is chosen, and two input
+files with the same stem are refused if they would collide. One result comes
+back per model/input run, in declaration order:
 
 ```python
 results = predict(
@@ -272,6 +430,17 @@ results = predict(
 
 The CLI spells it the same way: `foldjax predict --model boltz2 protenix
 --input kinase.yaml complex.yaml`.
+
+For multiple different models, omit `weights` so each resolves its managed
+checkpoint. One explicit `weights` path is accepted only when every run uses
+the same canonical model; this prevents handing one model another model's
+checkpoint by accident.
+
+`resolve_request(request)` resolves one scalar model/input pair.
+`resolve_requests(request)` handles either spelling and returns the complete
+tuple of scalar requests, including the plural cross product and final output
+paths, without executing a model. `foldjax plan` exposes the latter behavior in
+the CLI and prints one object for a scalar request or a list for a plural one.
 
 `sample.scores` carries that model's released confidence summaries. Native
 option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
@@ -304,10 +473,26 @@ on Boltz-2 and you are asking more of it than `boltz predict` does. ESMFold2 is
 not on that chart: it has no evolutionary trunk and no comparable schedule, so
 putting it on the same axes would compare two different questions.
 
-`foldjax.resolve_request` applies every default without running anything, and
-`foldjax.capabilities(model)` reports the input formats, entity types, and
-sampling knobs a backend honours. Backend-specific output stays on
-`PredictionResult.raw`.
+`foldjax.capabilities(model)` reports the scientific input and sampling
+surface. Its `input_requirements` mapping distinguishes dependencies by input
+format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
+while its raw `native`, `openfold3`, and `foldjax` formats require the
+non-Torch `openfold3-preprocess` chemistry extra for JAX featurization.
+`foldjax.model_info(model)` adds execution choices and managed-weight
+readiness, path, provenance, download size, and setup guidance; it is the
+Python counterpart of `foldjax models --json`. Backend-specific output stays
+on `PredictionResult.raw`.
+
+A backend returning normally is not enough to count as success. FoldJAX checks
+that it returned a `PredictionResult` for the selected model, at least one
+sample, and for every sample either a non-empty structure file or non-empty
+coordinates. Violations raise `PredictionOutputError`. A vendored native CLI
+that calls `SystemExit` is converted to `PredictionError` instead of terminating
+the host Python process; diagnosed allocator failures remain `MemoryError`.
+Copied native structures retain their real `.pdb`, `.cif`, or `.mmcif` suffix,
+and multi-job AlphaFold 3 inputs keep separate job names instead of overwriting
+one another. Secret-looking option values and URL credentials are redacted from
+plans and run manifests.
 
 ## Tests
 
@@ -324,12 +509,13 @@ JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q \
     --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 ```
 
-1,669 tests pass with the optional extras installed, 88 skipped, 87% coverage
-on the orchestration layer. Each vendored port brought its own suite to
-`tests/models/<name>/`, including the torch-parity gates it was built against;
-those need the torch extras and skip (or are excluded at collection, with
-`test_optional_suite_gate.py` keeping the list honest) without them. Tests on
-real depositions skip without `biotite` (`--extra openfold3-preprocess`).
+The CPU suite and the 80% orchestration coverage gate run in CI. Each vendored
+port brought its own suite to `tests/models/<name>/`. Historical publisher
+parity gates may use a separately provisioned reference environment, but those
+dependencies are deliberately absent from FoldJAX's package metadata. Clean
+runtime tests hard-block external Torch, Lightning, TorchMetrics, and fair-esm
+imports. Tests on real depositions skip without `biotite`
+(`--extra openfold3-preprocess`).
 
 ## Provenance
 

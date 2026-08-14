@@ -27,7 +27,6 @@ from biotite.structure.io.pdbx import CIFFile
 
 from foldjax.models.openfold3._upstream.openfold3.core.data.io.structure.atom_array import read_atomarray_from_npz
 from foldjax.models.openfold3._upstream.openfold3.core.data.io.structure.cif import SkippedStructure, parse_mmcif
-from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.featurization.structure import get_token_starts
 from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.quality_control.logging_utils import (
     log_runtime_memory,
 )
@@ -36,6 +35,7 @@ from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure
     remove_non_CCD_atoms,
     remove_waters,
 )
+from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.labels import get_token_starts
 from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.metadata import get_cif_block
 from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.unresolved import (
     add_unresolved_atoms,

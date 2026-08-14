@@ -2,9 +2,90 @@
 
 from __future__ import annotations
 
+import operator
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def _coordinate_shape(value: Any) -> list[int] | None:
+    """Small JSON-friendly shape summary without serializing coordinate arrays."""
+    if value is None:
+        return None
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        try:
+            return [int(dimension) for dimension in shape]
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return [0]
+        nested = _coordinate_shape(value[0])
+        return [len(value), *(nested or [])]
+    return None
+
+
+class PredictionError(RuntimeError):
+    """A requested prediction could not produce a usable result."""
+
+
+class PredictionOutputError(PredictionError):
+    """A backend returned successfully without the structure it promised."""
+
+
+def _strict_integer(value: Any, *, name: str, minimum: int) -> int:
+    """Return a real integer without silently truncating floats or booleans."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        normalized = operator.index(value)
+    except TypeError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    normalized = int(normalized)
+    if normalized < minimum:
+        condition = "non-negative" if minimum == 0 else f"at least {minimum}"
+        raise ValueError(f"{name} must be {condition}")
+    return normalized
+
+
+def _strict_boolean(value: Any, *, name: str) -> bool:
+    """Return a real boolean without treating non-empty text as true."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class InputRequirement:
+    """Runtime and install requirements for one accepted input format.
+
+    ``preprocessing_runtime`` uses intentionally small, user-facing labels:
+    ``base`` is included in the base FoldJAX install, ``jax`` is an in-package
+    NumPy/JAX path with optional chemistry dependencies, ``precomputed`` means
+    the input already contains model features, and ``native`` needs a
+    model-specific non-Torch runtime. ``required_extras`` names install extras
+    required for that format; CUDA selection is shared by every backend and is
+    therefore not repeated. ``requires_torch`` remains in the serialized
+    contract for third-party backend compatibility, but every built-in backend
+    reports ``False``.
+    """
+
+    prediction_runtime: str = "jax"
+    preprocessing_runtime: str = "base"
+    required_extras: tuple[str, ...] = ()
+    requires_torch: bool = False
+    notes: str = ""
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "prediction_runtime": self.prediction_runtime,
+            "preprocessing_runtime": self.preprocessing_runtime,
+            "required_extras": list(self.required_extras),
+            "requires_torch": self.requires_torch,
+            "notes": self.notes,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +99,158 @@ class ModelCapabilities:
     # Which model-neutral sampling knobs this backend can honour, and the native
     # option each one becomes. Reported by `foldjax capabilities`.
     sampling: dict[str, str] = field(default_factory=dict)
+    # Appended after the existing fields to preserve positional construction of
+    # ModelCapabilities by embedding applications. Real backends declare one
+    # entry per advertised format; the empty default keeps third-party backend
+    # implementations source-compatible until they add the richer contract.
+    input_requirements: dict[str, InputRequirement] = field(default_factory=dict)
+    # Appended to preserve positional construction by embedding applications.
+    # An empty tuple keeps third-party backends source compatible.
+    padding_axes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInfo:
+    """Preparation state for native artifacts needed by one backend.
+
+    Most FoldJAX backends are ready as soon as the package is installed.
+    Backends that need generated, ABI-specific artifacts expose the explicit
+    preparation command and whether that step needs network access here.
+    """
+
+    ready: bool
+    setup: str | None
+    requires_network: bool
+    notes: str = ""
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "setup": self.setup,
+            "requires_network": self.requires_network,
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ModelInfo:
+    """User-facing readiness and capability information for one backend."""
+
+    model: str
+    capabilities: ModelCapabilities
+    execution: dict[str, tuple[str, ...]]
+    weights_ready: bool
+    weights_path: Path
+    weights_source: str
+    weights_licence: str
+    weights_fetchable: bool
+    download_bytes: int | None
+    runtime: RuntimeInfo = field(
+        default_factory=lambda: RuntimeInfo(
+            ready=True,
+            setup=None,
+            requires_network=False,
+            notes="No generated runtime preparation is required.",
+        )
+    )
+    setup: str | None = None
+    notes: str = ""
+    # Profile-aware models expose the alternatives without changing the
+    # compatible `weights_*` fields above, which continue to describe the
+    # complete released/default bundle.
+    weight_profiles: tuple[dict[str, Any], ...] = ()
+
+    def summary(self) -> dict[str, Any]:
+        capabilities = self.capabilities
+        return {
+            "model": self.model,
+            "input_formats": list(capabilities.input_formats),
+            "entity_types": list(capabilities.entity_types),
+            "supports_affinity": capabilities.supports_affinity,
+            "supports_templates": capabilities.supports_templates,
+            "supports_msa": capabilities.supports_msa,
+            "padding_axes": list(capabilities.padding_axes),
+            "sampling": dict(capabilities.sampling),
+            "input_requirements": {
+                name: requirement.summary()
+                for name, requirement in capabilities.input_requirements.items()
+            },
+            "execution": {
+                key: list(values) for key, values in self.execution.items()
+            },
+            "weights": {
+                "ready": self.weights_ready,
+                "path": str(self.weights_path),
+                "source": self.weights_source,
+                "licence": self.weights_licence,
+                "fetchable": self.weights_fetchable,
+                "download_bytes": self.download_bytes,
+                "setup": self.setup,
+                "notes": self.notes,
+                "profiles": [dict(profile) for profile in self.weight_profiles],
+            },
+            "runtime": self.runtime.summary(),
+        }
+
+
+_PADDING_AXES = (
+    "tokens",
+    "atoms",
+    "msa",
+    "templates",
+    "structural_tokens",
+    "language_model_tokens",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PaddingConfig:
+    """Optional shape normalization for reusable JAX executables.
+
+    ``None`` targets ask each backend for its conservative standard bucket.
+    Setting an integer pins that axis to an exact padded size, which is useful
+    for warming one known serving profile. The default ``overflow='error'``
+    refuses inputs beyond the standard grid before an unplanned large compile;
+    ``'exact'`` deliberately keeps such an input runnable at its natural size.
+
+    Not every model owns every axis.  Backend capabilities advertise the axes
+    they understand and reject an explicitly pinned unsupported axis before
+    loading weights.
+    """
+
+    tokens: int | None = None
+    atoms: int | None = None
+    msa: int | None = None
+    templates: int | None = None
+    structural_tokens: int | None = None
+    language_model_tokens: int | None = None
+    overflow: str = "error"
+
+    def __post_init__(self) -> None:
+        for name in _PADDING_AXES:
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    name,
+                    _strict_integer(value, name=f"padding.{name}", minimum=1),
+                )
+        if not isinstance(self.overflow, str) or self.overflow not in {
+            "exact",
+            "error",
+        }:
+            raise ValueError("padding.overflow must be 'exact' or 'error'")
+
+    @property
+    def explicit_axes(self) -> tuple[str, ...]:
+        """Axes whose target was pinned rather than backend-selected."""
+        return tuple(name for name in _PADDING_AXES if getattr(self, name) is not None)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            **{name: getattr(self, name) for name in _PADDING_AXES},
+            "overflow": self.overflow,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,9 +301,57 @@ class PredictionRequest:
     # minutes to compile and seconds to replay, so a cold second run is almost
     # never what someone wants. Turn it off for ephemeral or benchmark runs.
     use_compile_cache: bool = True
-    options: dict[str, Any] = field(default_factory=dict)
+    options: Mapping[str, Any] = field(default_factory=dict)
+    # A model-specific managed bundle and, where necessary, its matching model
+    # variant.  Appended to preserve the positional layout of the public
+    # request dataclass while adding the same name used by ``foldjax weights``.
+    profile: str | None = None
+    # Appended to preserve the positional request layout. ``None``/False keeps
+    # exact historical shapes; True selects a backend's standard profile.
+    padding: PaddingConfig | Mapping[str, Any] | bool | None = None
 
     def __post_init__(self) -> None:
+        padding = self.padding
+        if padding is True:
+            padding = PaddingConfig()
+        elif padding is False or padding is None:
+            padding = None
+        elif isinstance(padding, Mapping):
+            supported = {*_PADDING_AXES, "overflow"}
+            unknown = [key for key in padding if key not in supported]
+            if unknown:
+                raise ValueError(
+                    "unsupported padding fields: "
+                    + ", ".join(sorted(map(repr, unknown)))
+                )
+            padding = PaddingConfig(**dict(padding))
+        elif not isinstance(padding, PaddingConfig):
+            raise ValueError(
+                "padding must be a boolean, mapping, PaddingConfig, or None"
+            )
+        object.__setattr__(self, "padding", padding)
+        object.__setattr__(
+            self,
+            "use_compile_cache",
+            _strict_boolean(self.use_compile_cache, name="use_compile_cache"),
+        )
+        if not isinstance(self.options, Mapping):
+            raise ValueError("options must be a mapping")
+        options: dict[str, Any] = {}
+        for raw_key, value in self.options.items():
+            if not isinstance(raw_key, str) or not raw_key.strip():
+                raise ValueError("options keys must be non-empty strings")
+            key = raw_key.strip()
+            if key in options:
+                raise ValueError(
+                    f"option {key!r} was set more than once after trimming keys"
+                )
+            options[key] = value
+        object.__setattr__(self, "options", options)
+        if self.profile is not None:
+            if not isinstance(self.profile, str) or not self.profile.strip():
+                raise ValueError("profile must be a non-empty string")
+            object.__setattr__(self, "profile", self.profile.strip())
         for name in ("input", "weights", "output_dir", "cache_dir"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, Path):
@@ -79,48 +360,77 @@ class PredictionRequest:
             raise ValueError("set exactly one of model and models")
         if (self.input is None) == (self.inputs is None):
             raise ValueError("set exactly one of input and inputs")
+        if self.model is not None:
+            if not isinstance(self.model, str) or not self.model.strip():
+                raise ValueError("model must be a non-empty string")
+            object.__setattr__(self, "model", self.model.strip())
         if self.models is not None:
-            models = tuple(str(value) for value in self.models)
+            if isinstance(self.models, str):
+                raise ValueError("models must be a sequence; use model for one model")
+            try:
+                raw_models = tuple(self.models)
+            except TypeError as error:
+                raise ValueError("models must be a sequence of strings") from error
+            if not all(isinstance(value, str) for value in raw_models):
+                raise ValueError("every models entry must be a string")
+            models = tuple(value.strip() for value in raw_models)
             if not models:
                 raise ValueError("models must not be empty")
+            if any(not value for value in models):
+                raise ValueError("models entries must be non-empty strings")
             if len(set(models)) != len(models):
                 raise ValueError("models must be unique")
             object.__setattr__(self, "models", models)
         if self.inputs is not None:
+            if isinstance(self.inputs, (str, Path)):
+                raise ValueError("inputs must be a sequence; use input for one file")
             inputs = tuple(Path(value) for value in self.inputs)
             if not inputs:
                 raise ValueError("inputs must not be empty")
             object.__setattr__(self, "inputs", inputs)
         for path in self.resolved_inputs:
-            if not path.exists():
-                raise FileNotFoundError(f"input does not exist: {path}")
+            if not path.is_file():
+                detail = "does not exist" if not path.exists() else "is not a file"
+                raise FileNotFoundError(f"input {detail}: {path}")
         if self.weights is not None and not self.weights.exists():
             raise FileNotFoundError(f"weights do not exist: {self.weights}")
+        if not self.use_compile_cache and self.cache_dir is not None:
+            raise ValueError(
+                "cache_dir and use_compile_cache=False were both set; remove "
+                "cache_dir or enable the compile cache"
+            )
+        seed = _strict_integer(self.seed, name="seed", minimum=0)
+        object.__setattr__(self, "seed", seed)
         if self.seeds is not None:
-            seeds = tuple(int(value) for value in self.seeds)
+            seeds = tuple(
+                _strict_integer(value, name="each seed", minimum=0)
+                for value in self.seeds
+            )
             if not seeds:
                 raise ValueError("seeds must not be empty")
-            if any(value < 0 for value in seeds):
-                raise ValueError("seeds must be non-negative")
             if len(set(seeds)) != len(seeds):
                 raise ValueError("seeds must be unique")
-            if self.seed != 0:
+            if seed != 0:
                 # Silently preferring one would change which structures come
                 # back without changing the exit code, the same rule the
                 # sampling knobs follow.
                 raise ValueError("seed and seeds were both set; pass one of them")
             object.__setattr__(self, "seeds", seeds)
-        if self.seed < 0:
-            raise ValueError("seed must be non-negative")
         if self.num_seeds is not None:
-            if self.num_seeds < 1:
-                raise ValueError("num_seeds must be at least 1")
+            num_seeds = _strict_integer(
+                self.num_seeds, name="num_seeds", minimum=1
+            )
+            object.__setattr__(self, "num_seeds", num_seeds)
             if self.seeds is not None:
                 raise ValueError("seeds and num_seeds were both set; pass one of them")
         for name in ("num_samples", "num_steps", "num_recycles", "max_msa_depth"):
             value = getattr(self, name)
-            if value is not None and value < 1:
-                raise ValueError(f"{name} must be at least 1")
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    name,
+                    _strict_integer(value, name=name, minimum=1),
+                )
 
     @property
     def resolved_models(self) -> tuple[str, ...]:
@@ -166,13 +476,16 @@ class PredictionSample:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
+        from foldjax.redaction import redact
+
         return {
-            "seed": self.seed,
+            "seed": int(self.seed),
             "structure_path": (
                 str(self.structure_path) if self.structure_path is not None else None
             ),
-            "scores": dict(self.scores),
-            "metadata": dict(self.metadata),
+            "coordinate_shape": _coordinate_shape(self.coordinates),
+            "scores": {str(key): float(value) for key, value in self.scores.items()},
+            "metadata": redact(dict(self.metadata)),
         }
 
 
@@ -182,10 +495,17 @@ class PredictionResult:
     samples: tuple[PredictionSample, ...] = ()
     output_dir: Path | None = None
     raw: Any = None
+    # Present only for opt-in padding. This is the concrete profile that ran,
+    # not the requested policy, so cache warm can report exactly one executable
+    # shape without pretending that it populated an entire grid.
+    shape_profile: dict[str, Any] | None = None
 
     def summary(self) -> dict[str, Any]:
-        return {
+        summary = {
             "model": self.model,
             "output_dir": str(self.output_dir) if self.output_dir is not None else None,
             "samples": [sample.summary() for sample in self.samples],
         }
+        if self.shape_profile is not None:
+            summary["shape_profile"] = dict(self.shape_profile)
+        return summary

@@ -7,31 +7,30 @@ were argued from. The code moved into `src/foldjax/models/<name>/` and the test
 suites into `tests/models/<name>/`; this directory is where the *reasoning*
 moved, so the sibling checkouts can be deleted without losing it.
 
-Chai-1 is absent: the port was removed from FoldJAX on 2026-08-05, and its
-records went with it. They are in the archive beside its git history --
-`../../../_archive/2026-08-05-ports/` -- rather than here, because this directory
-documents ports the package still carries.
-
 | port | what is here |
 |---|---|
 | [`boltz2/`](boltz2/) | `EXPERIMENTS.jsonl` (30 KB), `RELEASE_GATES.md`, `PERFORMANCE_POLICY.md`, the original README |
+| [`esmfold2/`](esmfold2/) | diffusion specification and implementation notes |
 | [`opendde/`](opendde/) | `EXPERIMENTS.jsonl` (17 KB), `OFFICIAL_ASSETS.json`, README and PROJECT notes |
 | [`openfold3/`](openfold3/) | README and PROJECT notes |
 | [`protenix/`](protenix/) | `PORTING_PLAN.md` (29 KB), `EXPERIMENTS.jsonl` (66 KB), a parity benchmark, a performance profile, a production inference benchmark, the original README |
 
 ## Read these as history, not as instructions
 
-**Every file here predates vendoring**, and none has been rewritten to match the
-package as it stands. Three things follow:
+**Every file here began before vendoring.** Their historical parity and
+benchmark narratives are intentionally preserved; only the archive notices and
+obviously obsolete public setup/runtime snippets are kept aligned with the
+current package. Three things follow:
 
-- **The module names are the old ones.** `protenix_jax.models.model`,
-  `chai_jax.output`, `boltz_jax.data.featurize_yaml` and the rest are now
+- **The module names are historical.** Names such as
+  `protenix_jax.models.model` and `boltz_jax.data.featurize_yaml` are now
   `foldjax.models.<name>.*`. Nothing in the current package answers to the old
-  names except the weight loader, which maps them deliberately so that files
+  names except restricted weight loaders, which map them deliberately so files
   exported before the move still load.
-- **The install and test commands do not work.** Each port had its own
-  `pyproject.toml` and virtualenv; there is one of each now. The commands in the
-  top-level [README](../../README.md) are the current ones.
+- **Historical commands inside dated experiments are not current setup
+  instructions.** Each port had its own `pyproject.toml` and virtualenv; there
+  is one of each now. The commands in the top-level [README](../../README.md)
+  are authoritative.
 - **Some conclusions have since been overturned**, and the overturning is
   recorded in the top-level README rather than here. The clearest case is
   OpenDDE's speed against upstream: figures taken at bfloat16 against an fp32

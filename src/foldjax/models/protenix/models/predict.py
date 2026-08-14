@@ -84,6 +84,7 @@ def protenix_predict_static(
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     graph_jit: bool = True,
+    padded_generated_schema: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """Run the static-feature Protenix inference graph.
 
@@ -124,6 +125,11 @@ def protenix_predict_static(
             use_diffusion_scan = True
         else:
             infer = protenix_infer_static
+        compiled_only_kwargs = (
+            {"padded_generated_schema": padded_generated_schema}
+            if infer is protenix_infer_compiled
+            else {}
+        )
         return infer(
             dict(features),
             params,
@@ -171,4 +177,5 @@ def protenix_predict_static(
             cycle_msa_features=cycle_msa_features,
             guidance_config=guidance_config,
             guidance_features=guidance_features,
+            **compiled_only_kwargs,
         )

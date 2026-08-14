@@ -3,9 +3,8 @@ from pathlib import Path
 
 import numpy as np
 
-from foldjax.models.boltz2.data._torch import Tensor, torch
-
 from foldjax.models.boltz2.data import const
+from foldjax.models.boltz2.data._torch import Tensor, torch
 from foldjax.models.boltz2.data.feature.featurizerv2 import Boltz2Featurizer
 from foldjax.models.boltz2.data.mol import load_canonicals, load_molecules
 from foldjax.models.boltz2.data.pad import pad_to_max
@@ -312,23 +311,26 @@ class PredictionDataset(torch.utils.data.Dataset):
         return len(self.manifest.records)
 
 
-try:
-    import pytorch_lightning as pl
+class _PredictionLoader:
+    """Small re-iterable batch loader for the framework-free inference API."""
 
-    _DataModuleBase = pl.LightningDataModule
-except ModuleNotFoundError:  # pragma: no cover - depends on the installed extras
-    # FoldJAX drives PredictionDataset directly and never builds a DataLoader,
-    # so requiring pytorch-lightning to import this module would rule out the
-    # torch-free environment for no benefit. The DataModule below is upstream
-    # Boltz's entry point and is simply unavailable without it.
-    _DataModuleBase = object
+    def __init__(self, dataset: PredictionDataset) -> None:
+        self.dataset = dataset
+
+    def __iter__(self):
+        for index in range(len(self.dataset)):
+            yield collate([self.dataset[index]])
+
+    def __len__(self) -> int:
+        return len(self.dataset)
 
 
-class Boltz2InferenceDataModule(_DataModuleBase):
-    """DataModule for Boltz2 inference.
+class Boltz2InferenceDataModule:
+    """Framework-free compatibility wrapper for Boltz2 inference data.
 
-    Subclasses ``pl.LightningDataModule`` when pytorch-lightning is installed;
-    see :func:`_lightning_data_module`.
+    FoldJAX indexes :class:`PredictionDataset` directly. This wrapper preserves
+    the useful upstream construction API without importing Lightning or a
+    PyTorch ``DataLoader`` merely because those packages happen to be installed.
     """
 
     def __init__(
@@ -368,7 +370,6 @@ class Boltz2InferenceDataModule(_DataModuleBase):
             The method to override.
 
         """
-        super().__init__()
         self.num_workers = num_workers
         self.manifest = manifest
         self.target_dir = target_dir
@@ -381,12 +382,12 @@ class Boltz2InferenceDataModule(_DataModuleBase):
         self.affinity = affinity
 
     def predict_dataloader(self):
-        """Get the training dataloader.
+        """Return a re-iterable stream of single-record inference batches.
 
         Returns
         -------
-        DataLoader
-            The training dataloader.
+        _PredictionLoader
+            The framework-free inference loader.
 
         """
         dataset = PredictionDataset(
@@ -400,16 +401,7 @@ class Boltz2InferenceDataModule(_DataModuleBase):
             override_method=self.override_method,
             affinity=self.affinity,
         )
-        from torch.utils.data import DataLoader
-
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            shuffle=False,
-            collate_fn=collate,
-        )
+        return _PredictionLoader(dataset)
 
     def transfer_batch_to_device(
         self,

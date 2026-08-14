@@ -1945,7 +1945,16 @@ class AtomCrossAtt:
     )
 
     # Create the layout for the keys (the key subsets are centered around the
-    # query subsets)
+    # query subsets).  The released CLI's smallest bucket is 256 tokens, so
+    # upstream normally has far more atoms than the 128-entry key window.  The
+    # public pipeline also supports ``buckets=None``, however, and then a short
+    # peptide can have fewer padded atoms than one key subset.  In that case a
+    # full window is still well-defined: its remaining entries are masked
+    # padding atoms.  Keep the query shape unchanged and create only the extra
+    # dummy layout entries the key gathers require.
+    key_source_size = max(padding_shapes.num_atoms, keys_subset_size)
+    padded_key_layout = flat_layout.copy_and_pad_to((key_source_size,))
+    key_bound = max(num_atoms, keys_subset_size)
     # Create initial gather indices (contain out-of-bound indices)
     subset_centers = np.arange(
         queries_subset_size / 2, padding_shapes.num_atoms, queries_subset_size
@@ -1960,11 +1969,11 @@ class AtomCrossAtt:
     for row in range(flat_to_key_gathers.shape[0]):
       if flat_to_key_gathers[row, 0] < 0:
         flat_to_key_gathers[row, :] -= flat_to_key_gathers[row, 0]
-      elif flat_to_key_gathers[row, -1] > num_atoms - 1:
-        overflow = flat_to_key_gathers[row, -1] - (num_atoms - 1)
+      elif flat_to_key_gathers[row, -1] > key_bound - 1:
+        overflow = flat_to_key_gathers[row, -1] - (key_bound - 1)
         flat_to_key_gathers[row, :] -= overflow
     # Create the keys layout.
-    keys_layout = padded_flat_layout[flat_to_key_gathers]
+    keys_layout = padded_key_layout[flat_to_key_gathers]
 
     # Create gather indices for conversion between token atoms layout,
     # queries layout and keys layout.

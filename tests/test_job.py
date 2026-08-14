@@ -106,6 +106,98 @@ def test_an_unknown_field_is_refused_on_read(tmp_path: Path) -> None:
         Job.read(path)
 
 
+@pytest.mark.parametrize(
+    "modification",
+    [
+        {"ccd": "SEP"},
+        {"ccd": "SEP", "position": 3, "comment": "unexpected"},
+    ],
+)
+def test_malformed_modifications_are_refused_instead_of_dropped(
+    modification: dict[str, object],
+) -> None:
+    document = {
+        "name": "demo",
+        "entities": [
+            {
+                "type": "protein",
+                "id": "A",
+                "sequence": SEQUENCE,
+                "modifications": [modification],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="requires exactly a ccd and a position"):
+        Job.from_document(document)
+
+
+def test_a_malformed_bond_has_a_schema_error() -> None:
+    document = {
+        "name": "demo",
+        "entities": [{"type": "protein", "id": "A", "sequence": SEQUENCE}],
+        "bonds": [["not", "a", "pair"]],
+    }
+
+    with pytest.raises(ValueError, match="each bond must be a pair of atom references"):
+        Job.from_document(document)
+
+
+def test_an_entity_without_an_id_has_a_schema_error() -> None:
+    document = {
+        "name": "demo",
+        "entities": [{"type": "protein", "sequence": SEQUENCE}],
+    }
+
+    with pytest.raises(ValueError, match="every entity requires a non-empty id"):
+        Job.from_document(document)
+
+
+def test_job_reader_does_not_stringify_scientific_fields() -> None:
+    with pytest.raises(ValueError, match="non-empty string sequence"):
+        Job.from_document(
+            {
+                "entities": [{"type": "protein", "id": "A", "sequence": 123}]
+            }
+        )
+    with pytest.raises(ValueError, match="ligand ccd must be a non-empty string"):
+        Job.from_document(
+            {"entities": [{"type": "ligand", "id": "L", "ccd": 123}]}
+        )
+    with pytest.raises(ValueError, match="unpaired_msa must be a non-empty string"):
+        Job.from_document(
+            {
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": SEQUENCE,
+                        "unpaired_msa": 123,
+                    }
+                ]
+            }
+        )
+
+
+def test_job_reader_normalizes_user_text_fields() -> None:
+    job = Job.from_document(
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": f"  {SEQUENCE}  ",
+                    "unpaired_msa": "  hits.a3m  ",
+                },
+                {"type": "ligand", "id": "L", "ccd": "  ATP  "},
+            ]
+        }
+    )
+    assert job.entities[0].sequence == SEQUENCE
+    assert job.entities[0].unpaired_msa == "hits.a3m"
+    assert job.entities[1].ccd == "ATP"
+
+
 def test_msa_paths_stay_relative_and_resolve_against_the_document(
     tmp_path: Path,
 ) -> None:

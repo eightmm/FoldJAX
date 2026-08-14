@@ -9,10 +9,15 @@ is exercised by the benchmark, not by the suite.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from foldjax.backends.esmfold2 import ESMFold2Backend, _job_chains
+from foldjax.backends.esmfold2 import (
+    ESMFold2Backend,
+    _job_chains,
+    managed_asset_profile,
+)
 from foldjax.schema import PredictionRequest
 
 
@@ -56,6 +61,76 @@ def test_the_torch_kernel_knob_is_gone_rather_than_ignored(tmp_path) -> None:
                 model="esmfold2", input=job, options={"attention_kernel": "auto"}
             )
         )
+
+
+def test_managed_asset_profile_tracks_the_language_model_variant() -> None:
+    assert managed_asset_profile({}) == "released"
+    assert managed_asset_profile({"no_language_model": False}) == "released"
+    assert managed_asset_profile({"no_language_model": True}) == "structure-only"
+    assert managed_asset_profile({"esmc_weights": "/tmp/esmc"}) == "structure-only"
+    assert (
+        managed_asset_profile(
+            {"no_language_model": False, "esmc_weights": "/tmp/esmc"}
+        )
+        == "structure-only"
+    )
+    with pytest.raises(ValueError, match="no_language_model must be a boolean"):
+        managed_asset_profile({"no_language_model": "true"})
+    with pytest.raises(ValueError, match="esmc_weights cannot be combined"):
+        managed_asset_profile(
+            {"no_language_model": True, "esmc_weights": "/tmp/esmc"}
+        )
+
+
+def test_external_esmc_keeps_the_released_language_model_branch(
+    tmp_path, monkeypatch
+) -> None:
+    """A smaller managed download must not silently select a smaller model."""
+    job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACDEF"}])
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    external_esmc = tmp_path / "external-esmc"
+    external_esmc.mkdir()
+    seen = {}
+    model = SimpleNamespace(has_language_model=True)
+
+    def fake_load(path, *, esmc, language_model):
+        seen.update(path=path, esmc=esmc, language_model=language_model)
+        return model
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            load=fake_load,
+            seed_key=lambda seed: seed,
+            predict_job=lambda *args, **kwargs: (object(), object()),
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 91.0}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+
+    result = ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            options={"esmc_weights": external_esmc},
+        )
+    )
+
+    assert seen == {
+        "path": weights,
+        "esmc": external_esmc,
+        "language_model": True,
+    }
+    assert result.raw["language_model"] is True
 
 
 def test_a_ligand_job_is_refused_rather_than_folded_as_protein(tmp_path) -> None:

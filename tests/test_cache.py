@@ -5,19 +5,48 @@ import pytest
 
 from foldjax.api import resolve_cache_dir
 from foldjax.backends.base import Backend
-from foldjax.cache import cache_namespace, runtime_profile, weight_identity
+from foldjax.backends.openfold3 import OpenFold3Backend
+from foldjax.cache import (
+    CacheSnapshot,
+    cache_namespace,
+    cache_snapshot,
+    compilation_cache_scope,
+    runtime_profile,
+    weight_identity,
+)
+from foldjax.registry import available_models, get_backend
 from foldjax.schema import ModelCapabilities, PredictionRequest, PredictionResult
 
 
 class ProfiledBackend(Backend):
     name = "boltz2"
     compile_options = ("steps",)
+    sampling_options = {"num_steps": "steps"}
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(model=self.name, input_formats=("native",))
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         raise AssertionError("not called")
+
+
+def test_cache_snapshot_counts_regular_files_without_following_symlinks(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    nested = cache / "nested"
+    nested.mkdir(parents=True)
+    (cache / "one").write_bytes(b"123")
+    (nested / "two").write_bytes(b"4567")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "large").write_bytes(b"x" * 100)
+    (cache / "linked").symlink_to(outside, target_is_directory=True)
+
+    snapshot = cache_snapshot(cache)
+
+    assert snapshot == CacheSnapshot(files=2, bytes=7)
+    assert snapshot.summary() == {"files": 2, "bytes": 7}
 
 
 def _request(tmp_path: Path, **options) -> PredictionRequest:
@@ -94,6 +123,92 @@ def test_resolve_cache_dir_partitions_by_backend_and_compile_options(
         _request(tmp_path, steps=200, write_fmt="pdb"), backend
     )
     assert unrelated == base
+
+
+def test_neutral_and_native_sampling_share_one_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    backend = ProfiledBackend()
+    native = resolve_cache_dir(_request(tmp_path, steps=200), backend)
+    neutral = resolve_cache_dir(
+        dataclasses.replace(_request(tmp_path), num_steps=200), backend
+    )
+
+    assert neutral == native
+
+
+@pytest.mark.parametrize("model", available_models())
+def test_every_sampling_knob_participates_in_the_compile_profile(model: str) -> None:
+    backend = get_backend(model)
+    assert set(backend.sampling_options.values()) <= set(backend.compile_options)
+
+
+def test_compile_option_types_are_part_of_the_cache_profile(tmp_path: Path) -> None:
+    backend = ProfiledBackend()
+    integer = resolve_cache_dir(_request(tmp_path, steps=1), backend)
+    text = resolve_cache_dir(_request(tmp_path, steps="1"), backend)
+
+    assert integer != text
+
+
+def test_openfold3_triangle_kernel_changes_the_cache_namespace(tmp_path: Path) -> None:
+    backend = OpenFold3Backend()
+    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+    cueq = resolve_cache_dir(
+        dataclasses.replace(request, options={"triangle_kernel": "cueq"}), backend
+    )
+    xla = resolve_cache_dir(
+        dataclasses.replace(request, options={"triangle_kernel": "xla"}), backend
+    )
+
+    assert cueq != xla
+
+
+def test_compilation_cache_scope_disables_and_restores_host_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import jax
+    from jax.experimental.compilation_cache import compilation_cache
+
+    names = (
+        "jax_compilation_cache_dir",
+        "jax_persistent_cache_min_compile_time_secs",
+        "jax_persistent_cache_min_entry_size_bytes",
+    )
+    original = {name: getattr(jax.config, name) for name in names}
+    original_reset = compilation_cache.reset_cache
+    resets: list[None] = []
+
+    def reset_cache() -> None:
+        resets.append(None)
+        original_reset()
+
+    monkeypatch.setattr(compilation_cache, "reset_cache", reset_cache)
+    host = tmp_path / "host-cache"
+    request = tmp_path / "request-cache"
+    try:
+        jax.config.update("jax_compilation_cache_dir", str(host))
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 7.0)
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", 2048)
+        configured = {name: getattr(jax.config, name) for name in names}
+
+        with pytest.raises(RuntimeError, match="prediction failed"):
+            with compilation_cache_scope(None):
+                assert jax.config.jax_compilation_cache_dir is None
+                assert jax.config.jax_persistent_cache_min_compile_time_secs == 7.0
+                assert jax.config.jax_persistent_cache_min_entry_size_bytes == 2048
+                raise RuntimeError("prediction failed")
+        assert {name: getattr(jax.config, name) for name in names} == configured
+
+        with compilation_cache_scope(request):
+            assert jax.config.jax_compilation_cache_dir == str(request)
+            assert jax.config.jax_persistent_cache_min_compile_time_secs == 1.0
+            assert request.is_dir()
+        assert {name: getattr(jax.config, name) for name in names} == configured
+        assert len(resets) == 4
+    finally:
+        for name, value in original.items():
+            jax.config.update(name, value)
 
 
 def test_resolve_cache_dir_requires_a_cache_root(tmp_path: Path) -> None:

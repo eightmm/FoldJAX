@@ -13,8 +13,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models.boltz2.bridge.checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.native import load_features_npz
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import map_boltz2_graph_state_dict
 from foldjax.paths import downloads_dir
 

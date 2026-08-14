@@ -14,36 +14,58 @@ resolved for you. See ``foldjax.assets`` for the weight store and
 """
 
 from foldjax import assets, paths
-from foldjax.api import detect_input_format, predict, resolve_request
+from foldjax.api import detect_input_format, predict, resolve_request, resolve_requests
 from foldjax.job import Bond, Dna, Job, Ligand, Modification, Protein, Rna
-from foldjax.registry import available_models, capabilities, normalize_model_name
+from foldjax.registry import (
+    available_models,
+    capabilities,
+    model_info,
+    normalize_model_name,
+)
 from foldjax.schema import (
+    InputRequirement,
     ModelCapabilities,
+    ModelInfo,
+    PaddingConfig,
+    PredictionError,
+    PredictionOutputError,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
+    RuntimeInfo,
 )
+from foldjax.warmup import CacheWarmResult, warm_cache
 
 __all__ = [
     "Bond",
+    "CacheWarmResult",
     "Dna",
+    "InputRequirement",
     "Job",
     "Ligand",
     "ModelCapabilities",
+    "ModelInfo",
     "Modification",
+    "PaddingConfig",
+    "PredictionError",
+    "PredictionOutputError",
     "PredictionRequest",
     "PredictionResult",
     "PredictionSample",
     "Protein",
     "Rna",
+    "RuntimeInfo",
     "assets",
     "available_models",
     "capabilities",
     "detect_input_format",
+    "model_info",
     "normalize_model_name",
     "paths",
     "predict",
     "resolve_request",
+    "resolve_requests",
+    "warm_cache",
 ]
 
 __version__ = "0.3.0"

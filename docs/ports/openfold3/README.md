@@ -1,10 +1,11 @@
 # OpenFold3-JAX
 
-> **Superseded on 2026-08-05.** This port now lives inside FoldJAX, at
+> **Archived port record.** This port now lives inside FoldJAX, at
 > `foldjax.models.openfold3`, and is installed by FoldJAX's own `uv sync` —
-> there is no longer a separate package to install. This checkout is the
-> pre-vendoring snapshot; **edit `../foldjax` instead.** See
-> `../foldjax/docs/openfold3.md`.
+> there is no separate package or sibling checkout to install. Use the current
+> [OpenFold3 guide](../../openfold3.md) and top-level
+> [README](../../../README.md) for production instructions; the parity and
+> performance discussion below is retained as porting evidence.
 
 A JAX inference port of [OpenFold3](https://github.com/aqlaboratory/openfold-3).
 
@@ -13,8 +14,9 @@ A JAX inference port of [OpenFold3](https://github.com/aqlaboratory/openfold-3).
 stack (AF2 Alg. 16) — plus the diffusion sampler and confidence heads are ported and
 gated against the real upstream torch modules. The released `of3_ft3_v1` checkpoint
 loads and predicts: real 1UBQ folds to 2.5 Å CA RMSD from its deposition using the
-query sequence alone, and real targets up to 2076 tokens run. Featurization uses
-upstream's own pipeline; inference itself imports neither torch nor upstream.
+query sequence alone, and real targets up to 2076 tokens run. Raw-job
+featurization and inference use FoldJAX's NumPy/JAX path and import neither
+torch nor the publisher runtime.
 
 `PROJECT.md`'s milestone numbering predates all of that and understates where the
 port is; the tables below are what has actually been gated.
@@ -33,9 +35,11 @@ metrics, and tooling that an inference port does not need.
 
 ## Process-level settings
 
-Importing `openfold3_jax` sets two things, matching the sibling ports here:
+Importing `foldjax.models.openfold3` applies allocator defaults with `setdefault`,
+so an operator's explicit process settings survive. Numerical precision is scoped
+around this model's `predict` call rather than changing JAX globally:
 
-- `jax_default_matmul_precision = "high"` — TF32, which is what upstream sets for
+- `jax_default_matmul_precision = "high"` inside prediction — TF32, which is what upstream sets for
   itself (`entry_points/import_utils.py:33`,
   `torch.set_float32_matmul_precision("high")`). This was `"highest"` until
   2026-08-10 on the strength of a GPU comparison against torch — max |error|
@@ -52,18 +56,22 @@ Importing `openfold3_jax` sets two things, matching the sibling ports here:
 ## Setup
 
 ```bash
-uv sync --extra dev --extra torch-bridge
+uv sync --extra cuda13 --extra openfold3-preprocess --group dev
 ```
+
+The preprocessing extra contains chemistry and data libraries only. No
+FoldJAX extra installs PyTorch, Lightning, or TorchMetrics.
 
 ## Tests
 
 ```bash
-# everything, including the torch-vs-JAX parity gate
-JAX_PLATFORMS=cpu uv run --extra dev --extra torch-bridge pytest -q
-
-# torch-free subset only
-JAX_PLATFORMS=cpu uv run --extra dev pytest -q -m "not torch_parity"
+# production and NumPy/JAX preprocessing paths
+JAX_PLATFORMS=cpu uv run --extra openfold3-preprocess --group dev \
+  pytest -q tests/models/openfold3
 ```
+
+Publisher-reference parity is intentionally run in a separately provisioned
+external environment; it is not an installation profile of FoldJAX.
 
 ## The parity gate
 
@@ -85,7 +93,8 @@ checkpoint key mapping, not trained weights. Tests also pin the upstream
 `state_dict` key names the mappers depend on, so an upstream rename fails a test
 instead of silently producing wrong parameters.
 
-`torch` is required only for the gate. Production inference must never import it.
+`torch` belongs only to that external publisher-reference gate. Production
+featurization and inference must never import it.
 
 Parity alone is not sufficient: a literal translation of upstream can pass every
 numerical test and still be untraceable under `jax.jit` (boolean indexing on a
@@ -152,13 +161,15 @@ lmdb, pdbeccdutils, awscli and the rest of the data stack.
 
 ## End-to-end inference
 
-`openfold3_jax.inference.predict` runs trunk -> noise conditioning -> denoiser ->
+`foldjax.models.openfold3.inference.predict` runs trunk -> noise conditioning -> denoiser ->
 sampler -> confidence heads:
 
 ```python
-from openfold3_jax.inference import InferenceConfig, predict
+from foldjax.models.openfold3.data import load_features
+from foldjax.models.openfold3.inference import InferenceConfig, predict
 
-prediction = predict(key, batch, params, config, n_chain=2)
+batch, chemistry = load_features("features.npz")
+prediction = predict(key, batch, params, config, chemistry, n_chain=2)
 prediction.coordinates   # [num_samples, N_atom, 3]
 prediction.plddt, prediction.ptm, prediction.iptm
 ```
@@ -168,7 +179,7 @@ upstream's `model_config.py` and gated by reading that file back — so only the
 input sizes and sampling knobs are arguments:
 
 ```python
-from openfold3_jax.inference import RELEASED_BLOCK_COUNTS, released_config
+from foldjax.models.openfold3.inference import RELEASED_BLOCK_COUNTS, released_config
 
 config = released_config(n_token=384, n_atom=3000, num_samples=5)
 ```
@@ -177,9 +188,10 @@ Check `RELEASED_BLOCK_COUNTS` against the CLI's block counts before trusting it;
 mismatch means the checkpoint uses a different config. Featurization
 (building `batch`) and output writing are out of scope; see below.
 
-The suite runs on both backends: **493 pass on CPU** with the three GPU-only tests
-skipped. Running it on GPU is worth doing too — it caught a scatter-add
-nondeterminism that CPU testing could not.
+The OpenFold3 suite runs on CPU with GPU-only kernel tests skipped, and the full
+FoldJAX gate exercises it alongside every other backend. Running the GPU gate is
+still essential — it caught a scatter-add nondeterminism that CPU testing could
+not.
 
 ### What has actually been run
 
@@ -238,11 +250,11 @@ here would waste effort:
 
 ## Checkpoints
 
-`openfold3_jax.bridge.checkpoint` loads a checkpoint into a flat `{key: array}`
+`foldjax.models.openfold3.bridge.checkpoint` loads a checkpoint into a flat `{key: array}`
 mapping and can summarize one before any layout is assumed:
 
 ```python
-from openfold3_jax.bridge.checkpoint import (
+from foldjax.models.openfold3.bridge.checkpoint import (
     describe, detect_fused_tri_mul, load_checkpoint,
 )
 
@@ -291,7 +303,7 @@ shapes static.
 ## Structures and scores out
 
 ```python
-from openfold3_jax import write_prediction_outputs
+from foldjax.models.openfold3 import write_prediction_outputs
 
 written = write_prediction_outputs(prediction, batch, "out/", name="ubq")
 # out/ubq_sample_0.cif ... , out/ubq_confidences.json, out/ubq_raw.npz
@@ -306,25 +318,25 @@ does the same from a feature `.npz` and a checkpoint.
 ## From a sequence
 
 ```bash
-uv sync --extra data-reference          # upstream's data stack, featurization only
-openfold3-jax-featurize query.json -o ubq.npz
+uv sync --extra openfold3-preprocess    # NumPy/JAX raw-job featurization
+openfold3-jax-featurize openfold3-query.json -o ubq.npz
 ```
 
-`query.json` is upstream's format, and alignments and templates ride along per chain:
+`openfold3-query.json` is upstream's native `{"queries": ...}` format, not
+FoldJAX's common job schema. Alignments and templates ride along per chain:
 
 ```json
 {"queries": {"ubq": {"chains": [{"molecule_type": "protein", "chain_ids": ["A"],
   "sequence": "MQIFVK...", "main_msa_file_paths": ["aln/colabfold_main.a3m"]}]}}}
 ```
 
-Search alignments automatically with `--msa-server` (public ColabFold MMseqs2,
-needs the `msa` extra), or supply your own. The search itself lives in
-[`foldsearch`](../foldsearch), shared with the other JAX ports rather than copied
-into each.
+Search alignments automatically with `--msa-server` (public ColabFold MMseqs2)
+or supply your own. The client lives in `foldjax.search`, shared with the other
+JAX ports rather than copied into each.
 
 ```bash
-uv sync --extra data-reference --extra msa
-openfold3-jax-featurize query.json -o ubq.npz --msa-server
+uv sync --extra openfold3-preprocess
+openfold3-jax-featurize openfold3-query.json -o ubq.npz --msa-server
 ```
 
 `--paired-msa` is off by default: pairing needs taxonomy-annotated headers, and an
@@ -337,19 +349,20 @@ unrecognized name is refused with the accepted list rather than silently ignored
 With no alignments the MSA is the query alone and accuracy drops sharply, so both
 the featurizer and the CLI say so.
 
-Featurization delegates to upstream's `InferenceDataset`, which is exact but needs
-torch, rdkit and lightning. **Inference needs none of it**: the `.npz` loads
-anywhere. No CCD download is required -- biotite's bundled copy is the default.
+Featurization uses FoldJAX's one-query NumPy/JAX orchestration while reusing the
+vendored publisher chemistry and parsing routines. It does not instantiate the
+publisher Dataset or Lightning DataModule and does not create PyTorch tensors.
+The self-contained `.npz` can be reused without the preprocessing extra. No CCD
+download is required -- biotite's bundled copy is the default.
 
 ```python
-import numpy as np
-from openfold3_jax import compile_predict
-from openfold3_jax.bridge.chemistry import representative_atom_table
-from openfold3_jax.inference import released_config
+from foldjax.models.openfold3 import compile_predict
+from foldjax.models.openfold3.data import load_features
+from foldjax.models.openfold3.inference import released_config
 
-batch = {k: v for k, v in np.load("ubq.npz").items()}
+batch, chemistry = load_features("ubq.npz")
 config = released_config(n_token=76, n_atom=601)
-prediction = compile_predict(config, representative_atom_table())(key, batch, params)
+prediction = compile_predict(config, chemistry)(key, batch, params)
 ```
 
 Use `--pad-tokens/--pad-atoms` (or `pad_features`) to bucket several targets onto one
@@ -361,12 +374,11 @@ rollout is a `lax.scan`, so compiled the released 5-sample 200-step rollout runs
 **0.89 s** after a one-time 249 s compile (RTX PRO 6000).
 
 ```python
-from openfold3_jax import compile_predict
-from openfold3_jax.bridge.chemistry import representative_atom_table
-from openfold3_jax.inference import released_config
+from foldjax.models.openfold3 import compile_predict
+from foldjax.models.openfold3.inference import released_config
 
 config = released_config(n_token=..., n_atom=...)
-run = compile_predict(config, representative_atom_table())
+run = compile_predict(config, chemistry)
 prediction = run(key, batch, params)   # params may be swapped without recompiling
 ```
 
@@ -374,11 +386,12 @@ prediction = run(key, batch, params)   # params may be swapped without recompili
 tests use; `compile_predict` is a factory rather than a hidden cache so the compile
 cost is visible at the call site.
 
-**Cache the compile.** It is the dominant cost and it grows with length, so without
-a persistent cache every process pays it again:
+**Cache the compile.** The FoldJAX backend and `openfold3-jax-predict` enable a
+persistent cache by default because every uncached process pays this dominant
+cost again. Direct library callers opt in explicitly:
 
 ```python
-from openfold3_jax import enable_compilation_cache
+from foldjax.models.openfold3 import enable_compilation_cache
 
 enable_compilation_cache()          # or pass a directory / set $OPENFOLD3_JAX_CACHE
 ```
@@ -421,11 +434,13 @@ It exits non-zero on a block-count mismatch rather than mapping a checkpoint the
 released config does not describe, and reports the shape and finiteness of every
 `Prediction` field. It does **not** check structural accuracy — that needs a
 reference structure, so RMSD and clashes are still unverified. `--batch` takes a featurized batch as `.npz`;
-this port does not build one, so it has to come from upstream's data pipeline.
+build one with `openfold3-jax-featurize` or pass a raw job through the common
+FoldJAX prediction API.
 
-`safetensors` loads without torch; a `.pt`/`.ckpt` file falls back to
-`torch.load` and therefore needs the torch-bridge extra. Wrapper prefixes
-(`module.`, `_orig_mod.`, `ema.`) are stripped on load.
+`safetensors` uses its NumPy loader; a `.pt`/`.ckpt` file uses FoldJAX's
+restricted archive reader and does not import torch. Publisher-reference parity
+tooling stays outside FoldJAX's install metadata. Wrapper prefixes (`module.`,
+`_orig_mod.`, `ema.`) are stripped on load.
 
 **Both triangular-multiplication layouts load, through the ordinary mappers.**
 The fused variant is one `2*c_hidden` projection split in half — the same function

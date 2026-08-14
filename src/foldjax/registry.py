@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from importlib import import_module
 
 from foldjax.backends.base import Backend
-from foldjax.schema import ModelCapabilities
+from foldjax.schema import ModelCapabilities, ModelInfo, RuntimeInfo
 
 BackendFactory = Callable[[], Backend]
 
@@ -65,6 +65,81 @@ def get_backend(name: str) -> Backend:
 
 def capabilities(name: str) -> ModelCapabilities:
     return get_backend(name).capabilities()
+
+
+def _runtime_info(name: str) -> RuntimeInfo:
+    """Return non-mutating native-runtime readiness for one backend."""
+    if name != "alphafold3":
+        return RuntimeInfo(
+            ready=True,
+            setup=None,
+            requires_network=False,
+            notes="No generated runtime preparation is required.",
+        )
+
+    from foldjax.models.alphafold3 import build
+
+    ready = build.is_ready()
+    blocker = None if ready else build.runtime_blocker()
+    if blocker is not None:
+        return RuntimeInfo(
+            ready=False,
+            setup=blocker,
+            requires_network=False,
+            notes=(
+                "An external alphafold3 native package is already imported in "
+                "this process. FoldJAX will not replace a loaded extension; "
+                "restart to select the managed runtime."
+            ),
+        )
+    return RuntimeInfo(
+        ready=ready,
+        setup=None if ready else "foldjax runtime prepare --model alphafold3",
+        requires_network=not ready,
+        notes=(
+            "FoldJAX always selects its vendored, ABI-specific C++ extension "
+            "and CCD tables from the writable runtime store. Independently "
+            "installed packages are not adopted implicitly; preparation "
+            "fetches pinned build sources."
+        ),
+    )
+
+
+def model_info(name: str) -> ModelInfo:
+    """Return enough readiness detail to choose a backend before predicting."""
+    from foldjax.assets import assets_for, profile_status
+
+    backend = get_backend(name)
+    spec = assets_for(backend.name)
+    sizes = [item.size for item in spec.downloads]
+    download_bytes = (
+        sum(sizes) if sizes and all(size is not None for size in sizes) else None
+    )
+    ready = spec.ready()
+    if ready:
+        setup = None
+    elif spec.downloads:
+        setup = f"foldjax weights fetch --model {backend.name}"
+    else:
+        setup = spec.notes
+    return ModelInfo(
+        model=backend.name,
+        capabilities=backend.capabilities(),
+        execution={
+            knob: tuple(values)
+            for knob, (_native, values) in backend.execution_options.items()
+        },
+        weights_ready=ready,
+        weights_path=spec.native_path(),
+        weights_source=spec.source,
+        weights_licence=spec.licence,
+        weights_fetchable=bool(spec.downloads),
+        download_bytes=download_bytes,
+        runtime=_runtime_info(backend.name),
+        setup=setup,
+        notes=spec.notes,
+        weight_profiles=profile_status(backend.name),
+    )
 
 
 @contextmanager

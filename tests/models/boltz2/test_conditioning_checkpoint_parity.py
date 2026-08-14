@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 import torch
 
-from foldjax.models.boltz2.bridge.torch_checkpoint import load_checkpoint_state_dict
 from foldjax.models.boltz2.bridge.torch_mapping import (
     map_pairwise_conditioning_state_dict,
     map_single_conditioning_state_dict,
@@ -15,6 +14,7 @@ from foldjax.models.boltz2.models.trunk_blocks.conditioning import (
     pairwise_conditioning_forward,
     single_conditioning_forward,
 )
+from tests.models.boltz2.torch_checkpoint import load_torch_checkpoint_state_dict
 
 CHECKPOINT = (
     Path(__file__).resolve().parents[4] / "boltz/.cache/boltz/boltz2_conf.ckpt"
@@ -28,7 +28,7 @@ PAIRWISE_PREFIX = "structure_module.score_model.pairwise_conditioner"
 def checkpoint_state() -> dict[str, torch.Tensor]:
     if not CHECKPOINT.exists():
         pytest.skip(f"Boltz-2 checkpoint not found: {CHECKPOINT}")
-    return load_checkpoint_state_dict(CHECKPOINT)
+    return load_torch_checkpoint_state_dict(CHECKPOINT)
 
 
 def test_checkpoint_single_conditioning_matches_boltz_torch(

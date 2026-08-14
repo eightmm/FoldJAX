@@ -8,6 +8,8 @@ the contents of a table against itself.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from foldjax import execution
@@ -151,3 +153,22 @@ def test_auto_resolves_to_the_fused_kernel_where_one_exists(request_with) -> Non
             request_with(triangle_kernel="auto")
         )
         assert resolved[native] in ("cueq", "cueq_jit"), model
+
+
+def test_openfold3_kernel_selection_restores_the_host_environment(
+    monkeypatch,
+) -> None:
+    from foldjax.backends.openfold3 import _triangle_backend
+
+    name = "OPENFOLD3_TRIANGLE_BACKEND"
+    monkeypatch.setenv(name, "host-choice")
+    with _triangle_backend("xla"):
+        assert os.environ[name] == "xla"
+    assert os.environ[name] == "host-choice"
+
+    monkeypatch.delenv(name)
+    with pytest.raises(RuntimeError, match="failed"):
+        with _triangle_backend("cueq"):
+            assert os.environ[name] == "cueq"
+            raise RuntimeError("failed")
+    assert name not in os.environ

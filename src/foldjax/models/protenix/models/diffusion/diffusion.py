@@ -87,10 +87,18 @@ def inference_noise_schedule(
     return schedule.at[-1].set(0.0)
 
 
-def centre_random_augmentation(x: jnp.ndarray) -> jnp.ndarray:
+def centre_random_augmentation(
+    x: jnp.ndarray,
+    atom_mask: jnp.ndarray | None = None,
+) -> jnp.ndarray:
     """Center coordinates over the atom axis, matching inference centering."""
 
-    return x - jnp.mean(x, axis=-2, keepdims=True)
+    if atom_mask is None:
+        return x - jnp.mean(x, axis=-2, keepdims=True)
+    mask = jnp.asarray(atom_mask, dtype=x.dtype)
+    numerator = jnp.sum(x * mask[..., None], axis=-2, keepdims=True)
+    denominator = jnp.maximum(jnp.sum(mask), 1.0)
+    return (x - numerator / denominator) * mask[..., None]
 
 
 def sample_diffusion(
@@ -112,6 +120,7 @@ def sample_diffusion(
     use_scan: bool = False,
     guidance_config=None,
     guidance_features=None,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run Protenix Algorithm 18 diffusion sampling with a JAX denoiser."""
 
@@ -133,6 +142,7 @@ def sample_diffusion(
             use_scan=use_scan,
             guidance_config=guidance_config,
             guidance_features=guidance_features,
+            atom_mask=atom_mask,
         )
 
     outputs = []
@@ -168,6 +178,7 @@ def sample_diffusion(
                 use_scan=use_scan,
                 guidance_config=guidance_config,
                 guidance_features=guidance_features,
+                atom_mask=atom_mask,
             )
         )
     return jnp.concatenate(outputs, axis=-3)
@@ -215,6 +226,8 @@ def sample_diffusion_with_module(
     """Sample coordinates using ``DiffusionModuleParams`` and static features."""
 
     atom_to_token_idx = input_feature_dict["atom_to_token_idx"]
+    atom_padding_mask = input_feature_dict.get("atom_padding_mask")
+    token_padding_mask = input_feature_dict.get("token_padding_mask")
     n_atom = int(atom_to_token_idx.shape[-1])
     n_token = int(s_inputs.shape[-2])
     transformer_z = None
@@ -259,6 +272,8 @@ def sample_diffusion_with_module(
             use_efficient_fusion=use_efficient_fusion,
             token_q_chunk_size=token_q_chunk_size,
             attention_backend=attention_backend,
+            token_mask=token_padding_mask,
+            atom_mask=atom_padding_mask,
         )
 
     denoiser = jax.jit(denoise_fn) if use_denoiser_jit else denoise_fn
@@ -280,6 +295,7 @@ def sample_diffusion_with_module(
         use_scan=use_sampler_scan,
         guidance_config=guidance_config,
         guidance_features=guidance_features,
+        atom_mask=atom_padding_mask,
     )
 
 
@@ -366,6 +382,8 @@ def diffusion_module_f_forward(
     use_efficient_fusion: bool = False,
     token_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    token_mask: jnp.ndarray | None = None,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run the raw Protenix denoising network ``F`` for one noise level."""
 
@@ -413,6 +431,7 @@ def diffusion_module_f_forward(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        atom_mask=atom_mask,
     )
     a_token = a_token.astype(jnp.float32)
     a_token = a_token + linear(
@@ -430,6 +449,7 @@ def diffusion_module_f_forward(
         attention_backend=attention_backend,
         z_is_normalized=use_efficient_fusion,
         extra_attn_bias=extra_attn_bias,
+        sequence_mask=token_mask,
     )
     a_token = layer_norm(a_token, params.layernorm_a)
     return atom_attention_decoder(
@@ -444,6 +464,7 @@ def diffusion_module_f_forward(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        atom_mask=atom_mask,
     )
 
 
@@ -482,6 +503,8 @@ def diffusion_module_forward(
     use_efficient_fusion: bool = False,
     token_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    token_mask: jnp.ndarray | None = None,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run one Protenix EDM denoising step."""
 
@@ -521,12 +544,17 @@ def diffusion_module_forward(
         use_efficient_fusion=use_efficient_fusion,
         token_q_chunk_size=token_q_chunk_size,
         attention_backend=attention_backend,
+        token_mask=token_mask,
+        atom_mask=atom_mask,
     )
     s_ratio = (t_hat_noise_level / sigma_data)[..., None, None].astype(r_update.dtype)
-    return (
+    output = (
         x_noisy / (1.0 + s_ratio**2)
         + t_hat_noise_level[..., None, None] / jnp.sqrt(1.0 + s_ratio**2) * r_update
     ).astype(r_update.dtype)
+    if atom_mask is not None:
+        output = output * jnp.asarray(atom_mask, dtype=output.dtype)[..., None]
+    return output
 
 
 # Algorithm 18 raises the noise level from `c_tau_last` to `t_hat = c_tau_last *
@@ -563,6 +591,7 @@ def _sample_diffusion_chunk(
     use_scan: bool,
     guidance_config,
     guidance_features,
+    atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     guidance_engine = None
     if guidance_config is not None:
@@ -585,6 +614,11 @@ def _sample_diffusion_chunk(
             raise ValueError("key is required when init_noise is not provided")
         key, init_key = jax.random.split(key)
         init_noise = jax.random.normal(init_key, (n_sample, n_atom, 3), dtype=dtype)
+    if atom_mask is not None:
+        atom_mask = jnp.asarray(atom_mask, dtype=dtype)
+        if atom_mask.shape != (n_atom,):
+            raise ValueError("atom_mask must have shape [N_atom]")
+        init_noise = init_noise * atom_mask[None, :, None]
     x_l = noise_schedule[0].astype(dtype) * init_noise.astype(dtype)
 
     if step_noises is None:
@@ -610,16 +644,20 @@ def _sample_diffusion_chunk(
         def body(x_carry, xs):
             c_tau_last, c_tau, step_noise = xs
             if centre_each_step:
-                x_carry = centre_random_augmentation(x_carry)
+                x_carry = centre_random_augmentation(x_carry, atom_mask)
             gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
             t_hat_scalar = c_tau_last * (gamma + 1.0)
             delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
             x_noisy = x_carry + noise_scale_lambda * delta_noise_level * step_noise
+            if atom_mask is not None:
+                x_noisy = x_noisy * atom_mask[None, :, None]
             t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
             x_denoised = denoise_fn(x_noisy, t_hat)
             delta = (x_noisy - x_denoised) / t_hat[..., None, None]
             dt = c_tau - t_hat
             x_next = x_noisy + step_scale_eta * dt[..., None, None] * delta
+            if atom_mask is not None:
+                x_next = x_next * atom_mask[None, :, None]
             return x_next, None
 
         xs = (noise_schedule[:-1], noise_schedule[1:], stacked_noises)
@@ -630,11 +668,13 @@ def _sample_diffusion_chunk(
         c_tau_last = noise_schedule[step_i].astype(dtype)
         c_tau = noise_schedule[step_i + 1].astype(dtype)
         if centre_each_step:
-            x_l = centre_random_augmentation(x_l)
+            x_l = centre_random_augmentation(x_l, atom_mask)
         gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
         t_hat_scalar = c_tau_last * (gamma + 1.0)
         delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
         x_noisy = x_l + noise_scale_lambda * delta_noise_level * step_noises[step_i]
+        if atom_mask is not None:
+            x_noisy = x_noisy * atom_mask[None, :, None]
         t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)
         if guidance_engine is None:
             x_denoised = denoise_fn(x_noisy, t_hat)
@@ -654,6 +694,8 @@ def _sample_diffusion_chunk(
                 input_feature_dict=guidance_features,
                 key=None if guidance_keys is None else guidance_keys[step_i],
             )
+        if atom_mask is not None:
+            x_l = x_l * atom_mask[None, :, None]
     return x_l
 
 

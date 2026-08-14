@@ -21,19 +21,21 @@
 
 from collections.abc import Callable
 
-from alphafold3.common import base_config
-from alphafold3.model import feat_batch
-from alphafold3.model import model_config
-from alphafold3.model.components import haiku_modules as hm
-from alphafold3.model.components import utils
-from alphafold3.model.network import atom_cross_attention
-from alphafold3.model.network import diffusion_transformer
-from alphafold3.model.network import featurization
-from alphafold3.model.network import noise_level_embeddings
 import haiku as hk
 import jax
 import jax.numpy as jnp
+from alphafold3.common import base_config
+from alphafold3.model import feat_batch, model_config
+from alphafold3.model.components import haiku_modules as hm
+from alphafold3.model.components import utils
+from alphafold3.model.network import (
+  atom_cross_attention,
+  diffusion_transformer,
+  featurization,
+  noise_level_embeddings,
+)
 
+from foldjax.models._random import masked_prefix_draw
 
 # Carefully measured by averaging multimer training set.
 SIGMA_DATA = 16.0
@@ -89,6 +91,21 @@ def noise_schedule(t, smin=0.0004, smax=160.0, p=7):
   return (
       SIGMA_DATA
       * (smax ** (1 / p) + t * (smin ** (1 / p) - smax ** (1 / p))) ** p
+  )
+
+
+def _prefix_stable_atom_noise(
+    key: jax.Array,
+    token_mask: jnp.ndarray,
+    *,
+    trailing_shape: tuple[int, ...],
+) -> jnp.ndarray:
+  """Draw compact AF3 atom noise and scatter it into a token bucket."""
+  return masked_prefix_draw(
+      lambda draw_key, shape: jax.random.normal(draw_key, shape),
+      key,
+      token_mask,
+      trailing_shape=trailing_shape,
   )
 
 
@@ -308,6 +325,7 @@ def sample(
     batch: feat_batch.Batch,
     key: jnp.ndarray,
     config: SampleConfig,
+    prefix_stable_noise: bool = False,
 ) -> dict[str, jnp.ndarray]:
   """Sample using denoiser on batch.
 
@@ -345,7 +363,15 @@ def sample(
         # Don't take sqrt of tiny negative number (happens when running on CPU).
         jnp.maximum(t_hat**2 - noise_level_prev**2, 0.0)
     )
-    noise = noise_scale * jax.random.normal(key_noise, positions.shape)
+    if prefix_stable_noise:
+      noise = _prefix_stable_atom_noise(
+          key_noise,
+          batch.token_features.mask,
+          trailing_shape=positions.shape[1:],
+      )
+    else:
+      noise = jax.random.normal(key_noise, positions.shape)
+    noise *= noise_scale
     positions_noisy = positions + noise
 
     positions_denoised = denoising_step(positions_noisy, t_hat)
@@ -361,7 +387,19 @@ def sample(
   noise_levels = noise_schedule(jnp.linspace(0, 1, config.steps + 1))
 
   key, noise_key = jax.random.split(key)
-  positions = jax.random.normal(noise_key, (num_samples,) + mask.shape + (3,))
+  if prefix_stable_noise:
+    token_mask = jnp.broadcast_to(
+        batch.token_features.mask[None, :], (num_samples, mask.shape[0])
+    )
+    positions = _prefix_stable_atom_noise(
+        noise_key,
+        token_mask,
+        trailing_shape=mask.shape[1:] + (3,),
+    )
+  else:
+    positions = jax.random.normal(
+        noise_key, (num_samples,) + mask.shape + (3,)
+    )
   positions *= noise_levels[0]
 
   init = (

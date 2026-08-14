@@ -103,7 +103,8 @@ REFERENCE_IMPL = {
 #: Series that could not reach their own released fast path on this card, drawn
 #: dashed -- and only dashed. The caveat is a paragraph in `docs/benchmark.md`,
 #: not a caption: a figure that has to explain itself on the canvas is one that
-#: will be read without its explanation anyway. OpenFold3's upstream is the only one: DS4Sci's evoformer attention
+#: will be read without its explanation anyway. OpenFold3's upstream is the
+#: only one: DS4Sci's evoformer attention
 #: refuses to build for sm_120 and 0.3.1's experimental cuEquivariance flag
 #: crashes at more than one diffusion sample, so it runs plain torch attention
 #: chunked four rows at a time at every size. That is where its 6,722 s lives.

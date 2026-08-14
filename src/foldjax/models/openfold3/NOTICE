@@ -12,6 +12,7 @@ OpenFold3 model weights are not distributed with this software; they are
 published separately at https://huggingface.co/OpenFold/OpenFold3 under that
 repository's own terms.
 
-Featurization delegates to upstream OpenFold3's own data pipeline, which is a
-checkout rather than a package and is not vendored here. The inference path
-imports neither upstream nor torch.
+FoldJAX vendors the Apache-2.0 OpenFold3 data definitions and NumPy preprocessing
+helpers required for standalone inference under `_upstream/`. Training, model,
+and tensor-runtime modules are not included. Compatibility changes are limited
+to the FoldJAX package namespace, NumPy-only MSA parsing, and local data loading.

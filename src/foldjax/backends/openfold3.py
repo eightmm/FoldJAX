@@ -5,27 +5,34 @@ than its CLI, because OpenFold3 splits featurization from inference on purpose:
 featurization delegates to upstream's data stack, inference needs only JAX and
 a checkpoint. Shelling out would force both into one process for no benefit.
 
-That split is also the one thing about this backend that is not self-contained.
-Prediction from a featurized batch needs nothing beyond FoldJAX's base
-dependencies, but building that batch needs the ``openfold3-preprocess`` extra
-and an upstream OpenFold3 checkout, which is a directory rather than a package.
-`foldjax.models.openfold3.data` raises with both remedies named.
+Both halves are vendored. Prediction from a self-contained feature ``.npz``
+needs only FoldJAX's JAX runtime; building those features from JSON/YAML uses
+the in-package NumPy/JAX preprocessing path and its chemistry dependencies in
+the ``openfold3-preprocess`` extra.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from foldjax.backends.base import Backend
+from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import (
+    InputRequirement,
     ModelCapabilities,
+    PaddingConfig,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
+    _strict_boolean,
 )
 
 # Options that change the compiled program, so they belong in the cache namespace.
@@ -36,10 +43,95 @@ _COMPILE_OPTIONS = (
     "num_cycles",
     "pair_chunk_size",
     "max_msa_depth",
+    "triangle_kernel",
 )
+
+# ``released_config``'s model-side MSA subsampling depth. The public
+# ``max_msa_depth`` knob is a cap, so asking for more cannot widen the released
+# model's 1024-row input.
+_RELEASED_MSA_DEPTH = 1024
+
+
+def _real_prefix_size(mask: np.ndarray, *, axis: str) -> int:
+    """Count one padded axis and reject holes before model compilation."""
+
+    mask = np.asarray(mask, dtype=bool).reshape(-1)
+    size = int(np.count_nonzero(mask))
+    if not np.array_equal(mask, np.arange(mask.size) < size):
+        raise ValueError(f"OpenFold3 {axis} padding must be a contiguous suffix")
+    return size
+
+
+def _padding_plan(
+    features: dict[str, Any], config: PaddingConfig
+) -> PaddingPlan:
+    """Resolve OpenFold3's four independently compiled feature axes."""
+
+    token_mask = np.asarray(features["token_mask"]) > 0
+    atom_mask = np.asarray(features["atom_mask"]) > 0
+    msa_mask = np.asarray(features["msa_mask"]) > 0
+    template_mask = (
+        np.asarray(features["template_backbone_frame_mask"]) > 0
+    ) | (np.asarray(features["template_pseudo_beta_mask"]) > 0)
+
+    msa_rows = np.any(msa_mask, axis=(0, 2))
+    template_rows = np.any(template_mask, axis=(0, 2))
+    actual = {
+        "tokens": _real_prefix_size(token_mask, axis="token"),
+        "atoms": _real_prefix_size(atom_mask, axis="atom"),
+        "msa": _real_prefix_size(msa_rows, axis="MSA-row"),
+        "templates": _real_prefix_size(template_rows, axis="template-row"),
+    }
+    storage = {
+        "tokens": int(token_mask.shape[-1]),
+        "atoms": int(atom_mask.shape[-1]),
+        "msa": int(msa_mask.shape[-2]),
+        "templates": int(template_mask.shape[-2]),
+    }
+    target = {
+        axis: resolve_axis(actual[axis], config, axis, minimum=storage[axis])
+        for axis in ("tokens", "atoms", "msa", "templates")
+    }
+    return PaddingPlan(actual=actual, storage=storage, target=target)
+
+
+def _sampler_noise_mask(plan: PaddingPlan, *, num_samples: int) -> np.ndarray:
+    """Mask the source storage prefix so padding cannot change sample strides."""
+
+    source = plan.storage or plan.actual
+    target_atoms = plan.target["atoms"]
+    stored_atom_prefix = np.arange(target_atoms) < source["atoms"]
+    return np.broadcast_to(stored_atom_prefix, (num_samples, target_atoms))
+
+
+def _compile_enabled(options: dict[str, Any]) -> bool:
+    """Consume ``no_compile`` without applying Python's truthiness coercion."""
+    return not _strict_boolean(options.pop("no_compile", False), name="no_compile")
+
+
+@contextmanager
+def _triangle_backend(value: str | None) -> Iterator[None]:
+    """Select one kernel for this call without leaking it into the next one."""
+    name = "OPENFOLD3_TRIANGLE_BACKEND"
+    previous = os.environ.get(name)
+    if value is not None:
+        os.environ[name] = value
+    try:
+        yield
+    finally:
+        if value is not None:
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+
 
 class OpenFold3Backend(Backend):
     name = "openfold3"
+    padding_axes = ("tokens", "atoms", "msa", "templates")
+    native_options = frozenset(
+        {"ccd_file_path", "no_compile", "pair_chunk_size", "prefix", "query_id"}
+    )
     # OpenFold3 spells these `no_rollout_steps` and `num_cycles`, which is what
     # `released_config` takes and what `predict` below pops. Mapping them onto
     # their own neutral names put `num_steps` and `num_recycles` into the option
@@ -69,11 +161,65 @@ class OpenFold3Backend(Backend):
     }
     compile_options = _COMPILE_OPTIONS
 
+    def validate_native_options(self, options: dict[str, Any]) -> None:
+        _compile_enabled(dict(options))
+        for name in ("num_samples", "no_rollout_steps", "num_cycles"):
+            if name in options:
+                try:
+                    int(options[name])
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{name} must be an integer") from error
+        if "pair_chunk_size" in options:
+            try:
+                int(options["pair_chunk_size"])
+            except (TypeError, ValueError) as error:
+                raise ValueError("pair_chunk_size must be an integer") from error
+
+    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
+        """Translate neutral semantics that differ from OpenFold3's literals."""
+        options = super().apply_sampling(request)
+        # Upstream exposes ``num_recycles`` but executes recycle + 1 trunk
+        # cycles. A caller using the native ``num_cycles`` option has already
+        # specified the executed count, so only the neutral knob gets +1.
+        if request.num_recycles is not None:
+            options["num_cycles"] = request.num_recycles + 1
+        if options.get("max_msa_depth") is not None:
+            options["max_msa_depth"] = min(
+                _RELEASED_MSA_DEPTH, int(options["max_msa_depth"])
+            )
+        return options
+
     def capabilities(self) -> ModelCapabilities:
+        raw = InputRequirement(
+            preprocessing_runtime="jax",
+            required_extras=("openfold3-preprocess",),
+            notes=(
+                "Runs FoldJAX's Torch-free OpenFold3 preprocessing pipeline "
+                "before JAX prediction; no sibling checkout is required."
+            ),
+        )
         return ModelCapabilities(
             model=self.name,
             sampling=dict(self.sampling_options),
-            input_formats=("native", "openfold3", "foldjax"),
+            input_formats=(
+                "native",
+                "openfold3",
+                "openfold3-features",
+                "foldjax",
+            ),
+            input_requirements={
+                "native": raw,
+                "openfold3": raw,
+                "openfold3-features": InputRequirement(
+                    preprocessing_runtime="precomputed",
+                    notes=(
+                        "A self-contained feature .npz with embedded chemistry; "
+                        "prediction is JAX-only and needs no preprocessing extra."
+                    ),
+                ),
+                "foldjax": raw,
+            },
+            padding_axes=self.padding_axes,
         )
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
@@ -90,14 +236,25 @@ class OpenFold3Backend(Backend):
         compilation = import_module("foldjax.models.openfold3.compilation")
         jax = import_module("jax")
 
-        spec = json.loads(Path(request.input).read_text(encoding="utf-8"))
         query_id = options.pop("query_id", None)
-        features = data.featurize_query(
-            spec,
+        ccd_file_path = options.pop("ccd_file_path", None)
+        features, table, output_metadata = _features_chemistry_and_metadata(
+            request,
+            data=data,
             query_id=query_id,
-            seed=request.seed,
-            ccd_file_path=options.pop("ccd_file_path", None),
+            ccd_file_path=ccd_file_path,
         )
+        # Portable archives may carry numeric host-side annotations in
+        # addition to the model ABI.  They are useful to archive tooling but
+        # must not enter the jitted pytree as undocumented compile axes.
+        model_feature_names = getattr(data, "MODEL_FEATURES", None)
+        if model_feature_names is not None:
+            optional_feature_names = getattr(data, "OPTIONAL_MODEL_FEATURES", ())
+            features = {
+                name: features[name]
+                for name in (*model_feature_names, *optional_feature_names)
+                if name in features
+            }
         n_token = features["token_mask"].shape[-1]
         n_atom = features["atom_mask"].shape[-1]
 
@@ -117,18 +274,29 @@ class OpenFold3Backend(Backend):
         # on the host, before the alignment reaches the device. Unconditional, so
         # the default path is the released one rather than a full-depth divergence.
         features = data.subsample_msa_rows(features, config.msa_depth)
+        padding_plan = None
+        if request.padding is not None:
+            padding_plan = _padding_plan(features, request.padding)
+            features = data.pad_features(
+                features,
+                n_token=padding_plan.target["tokens"],
+                n_atom=padding_plan.target["atoms"],
+                n_msa=padding_plan.target["msa"],
+                n_templates=padding_plan.target["templates"],
+            )
+            n_token = padding_plan.target["tokens"]
+            n_atom = padding_plan.target["atoms"]
+            config = inference.released_config(
+                n_token=n_token, n_atom=n_atom, **overrides
+            )
+        features, n_chain = data.normalize_asym_ids(features)
 
         params = mapping.map_inference_params(
             checkpoint.load_checkpoint(request.weights),
             options.pop("prefix", None),
         )
         kernel = options.pop("triangle_kernel", None)
-        if kernel is not None:
-            # Set before the model modules read it; `_default_backend()` looks
-            # it up per call, so this reaches the template stack and the
-            # confidence head as well as the trunk.
-            os.environ["OPENFOLD3_TRIANGLE_BACKEND"] = kernel
-        compile_it = not bool(options.pop("no_compile", False))
+        compile_it = _compile_enabled(options)
         if options:
             raise ValueError(f"unsupported OpenFold3 options: {', '.join(options)}")
 
@@ -146,17 +314,77 @@ class OpenFold3Backend(Backend):
             compilation.enable_compilation_cache(request.cache_dir)
 
         key = jax.random.key(request.seed)
-        table = chemistry.representative_atom_table()
-        if compile_it:
-            prediction = inference.compile_predict(config, table)(key, features, params)
-        else:
-            prediction = inference.predict(key, features, params, config, table)
+        noise_mask = None
+        if padding_plan is not None:
+            # Preserve the ordinary sampler's *stored* row stride, not only its
+            # semantic atom count.  A portable archive may already have a
+            # masked suffix; compacting that suffix would move sample 2's first
+            # draw directly behind sample 1's real atoms instead of behind the
+            # full source storage width.
+            noise_mask = _sampler_noise_mask(
+                padding_plan,
+                num_samples=config.num_samples,
+            )
+        if table is None:
+            table = chemistry.representative_atom_table()
+        # `_default_backend()` reads this environment variable per call. Keep
+        # it set through tracing/execution so it reaches the template stack and
+        # confidence head as well as the trunk, then restore the host value.
+        with _triangle_backend(kernel):
+            if compile_it:
+                compiled = inference.compile_predict(
+                    config, table, n_chain=n_chain
+                )
+                prediction = (
+                    compiled(key, features, params)
+                    if noise_mask is None
+                    else compiled(key, features, params, noise_mask=noise_mask)
+                )
+            else:
+                prediction = (
+                    inference.predict(
+                        key,
+                        features,
+                        params,
+                        config,
+                        table,
+                        n_chain=n_chain,
+                    )
+                    if noise_mask is None
+                    else inference.predict(
+                        key,
+                        features,
+                        params,
+                        config,
+                        table,
+                        n_chain=n_chain,
+                        noise_mask=noise_mask,
+                    )
+                )
 
         name = query_id or Path(request.input).stem
         written = output.write_prediction_outputs(
-            prediction, features, request.output_dir, name=name
+            prediction,
+            features,
+            request.output_dir,
+            name=name,
+            output_metadata=output_metadata,
         )
         scores = _scores(written["scores"])
+        shape_profile = None
+        if padding_plan is not None:
+            shape_profile = {
+                **padding_plan.summary(),
+                "static": {"chains": 1 if n_chain is None else int(n_chain)},
+            }
+        raw = {
+            "features": {"n_token": n_token, "n_atom": n_atom},
+            "output_metadata": (
+                "exact" if output_metadata is not None else "canonical_fallback"
+            ),
+        }
+        if shape_profile is not None:
+            raw["padding"] = shape_profile
         return PredictionResult(
             model=self.name,
             samples=tuple(
@@ -168,8 +396,57 @@ class OpenFold3Backend(Backend):
                 for index, path in enumerate(written["structures"])
             ),
             output_dir=request.output_dir,
-            raw={"features": {"n_token": n_token, "n_atom": n_atom}},
+            raw=raw,
+            shape_profile=shape_profile,
         )
+
+
+def _features_and_chemistry(
+    request: PredictionRequest,
+    *,
+    data: Any,
+    query_id: str | None,
+    ccd_file_path: str | Path | None,
+) -> tuple[dict[str, Any], Any | None]:
+    """Compatibility wrapper returning model features and chemistry only."""
+    features, table, _metadata = _features_chemistry_and_metadata(
+        request,
+        data=data,
+        query_id=query_id,
+        ccd_file_path=ccd_file_path,
+    )
+    return features, table
+
+
+def _features_chemistry_and_metadata(
+    request: PredictionRequest,
+    *,
+    data: Any,
+    query_id: str | None,
+    ccd_file_path: str | Path | None,
+) -> tuple[dict[str, Any], Any | None, Any | None]:
+    """Load a JAX-only archive or run FoldJAX's NumPy raw-job preprocessor."""
+    path = Path(request.input)
+    if path.suffix.lower() == ".npz" or request.input_format == "openfold3-features":
+        if ccd_file_path is not None:
+            raise ValueError(
+                "ccd_file_path applies only to raw OpenFold3 input; feature "
+                "archives already contain fixed chemistry"
+            )
+        archive_loader = getattr(data, "load_feature_archive", None)
+        if archive_loader is None:
+            features, table = data.load_features(path)
+            return features, table, None
+        return archive_loader(path)
+
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    features, output_metadata = data.featurize_query_with_metadata(
+        spec,
+        query_id=query_id,
+        seed=request.seed,
+        ccd_file_path=ccd_file_path,
+    )
+    return features, None, output_metadata
 
 
 def _scores(path: Path) -> dict[int, dict[str, float]]:
