@@ -115,6 +115,9 @@ def describe_run(
             "identity": identity,
         },
         "seeds": list(request.resolved_seeds),
+        # Whether the alignments were the caller's or FoldJAX searched for them
+        # changes the prediction, so it belongs with the knobs, not in a log.
+        "msa": request.msa,
         "sampling": request.sampling,
         "options": public_options(request.options),
         "runtime": runtime_profile(),

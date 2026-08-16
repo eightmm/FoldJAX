@@ -64,7 +64,23 @@ def get_backend(name: str) -> Backend:
 
 
 def capabilities(name: str) -> ModelCapabilities:
-    return get_backend(name).capabilities()
+    """One backend's capabilities, with the common-schema reach filled in.
+
+    A backend describes itself; only the input layer knows which of those
+    abilities a common job document can actually reach. Joining the two here
+    keeps every backend's `capabilities()` unchanged and keeps the public answer
+    from claiming a field the schema does not have.
+    """
+    import dataclasses
+
+    from foldjax.input import common_schema_features, native_only_features
+
+    described = get_backend(name).capabilities()
+    return dataclasses.replace(
+        described,
+        common_schema_features=common_schema_features(described.model),
+        native_only_features=native_only_features(described.model, described),
+    )
 
 
 def _runtime_info(name: str) -> RuntimeInfo:
@@ -124,7 +140,7 @@ def model_info(name: str) -> ModelInfo:
         setup = spec.notes
     return ModelInfo(
         model=backend.name,
-        capabilities=backend.capabilities(),
+        capabilities=capabilities(backend.name),
         execution={
             knob: tuple(values)
             for knob, (_native, values) in backend.execution_options.items()

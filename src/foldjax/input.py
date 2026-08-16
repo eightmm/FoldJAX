@@ -9,22 +9,33 @@ changing the exit code.
 
 from __future__ import annotations
 
+import difflib
 import json
 import operator
 import os
 import shutil
+import string
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from foldjax.models.boltz2.data.identifiers import validate_ccd_identifier
-from foldjax.schema import ModelCapabilities
+from foldjax.schema import MSA_POLICIES, ModelCapabilities
 
 _ENTITY_TYPES = ("protein", "dna", "rna", "ligand")
-_JOB_KEYS = frozenset({"name", "entities", "bonds"})
+_JOB_KEYS = frozenset({"name", "entities", "bonds", "properties"})
 _POLYMER_KEYS = frozenset(
-    {"type", "id", "sequence", "unpaired_msa", "paired_msa", "modifications"}
+    {
+        "type",
+        "id",
+        "sequence",
+        "unpaired_msa",
+        "paired_msa",
+        "modifications",
+        "templates",
+    }
 )
 _LIGAND_KEYS = frozenset({"type", "id", "ccd", "smiles"})
 _PROTENIX_ENTITY_NAMES = {
@@ -51,20 +62,36 @@ _ALL_FEATURES = frozenset(
         "ligand_ccd",
         "ligand_smiles",
         "bonds",
+        # A structural template, in the two forms the dialects actually take.
+        # AlphaFold 3, Protenix and OpenDDE all require an explicit
+        # query-residue -> template-residue map and refuse a bare file
+        # (`folding_input.py:378`, `template_features.py:329`); Boltz-2 takes a
+        # path and aligns it itself (`parse/schema.py:986`). These are different
+        # inputs, not one input in two spellings, so they are separate features
+        # and a document is refused by whichever model cannot use its form.
+        "templates",
+        "templates_unmapped",
+        # Binding affinity. Only Boltz-2 has the head, and its schema addresses
+        # the binder by chain id (`parse/schema.py:988`).
+        "affinity",
     }
 )
+
+_NO_TEMPLATES = {"templates", "templates_unmapped", "affinity"}
 
 # Boltz derives pairing from a single per-chain a3m, so a separate paired MSA has
 # nowhere to go.
 _TARGETS = {
-    "alphafold3": _Target(".json", _ALL_FEATURES),
+    "alphafold3": _Target(
+        ".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}
+    ),
     # foldjax.models.boltz2 dispatches its parser on the file suffix and rejects .json
     # outright; JSON is a YAML subset, so the document is written as .yaml.
-    "boltz2": _Target(".yaml", _ALL_FEATURES - {"paired_msa"}),
+    "boltz2": _Target(".yaml", _ALL_FEATURES - {"paired_msa", "templates"}),
     # OpenDDE consumes the Protenix list-of-jobs dialect, including its modified
     # polymer and entity/copy-addressed covalent-bond representations.
-    "opendde": _Target(".json", _ALL_FEATURES),
-    "protenix": _Target(".json", _ALL_FEATURES),
+    "opendde": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
+    "protenix": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     # OpenFold3 expresses everything, but with two constraints its own layer
     # enforces and this writer therefore has to: alignment files are selected by
     # *stem* and only database names are parsed, and a paired MSA that cannot
@@ -72,7 +99,10 @@ _TARGETS = {
     # The released OpenFold3 query schema declares covalent bonds but its
     # featurizer never applies them. Advertising the field would silently drop
     # chemistry, so reject it until the upstream pipeline consumes the contract.
-    "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"}),
+    # OpenFold3's template features come from its own cache/search pipeline;
+    # its query document has no field for a caller-supplied structure, so a
+    # template here would be dropped rather than used.
+    "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"} - _NO_TEMPLATES),
     # ESMFold2's entry point takes a sequence, not a job file, so its adapter
     # reads the FoldJAX document itself. The document is still written out and
     # still validated -- against a backend that declares protein only, so a
@@ -95,6 +125,124 @@ def _ids(entity: dict[str, Any]) -> list[str]:
     if any(not identifier for identifier in normalized):
         raise ValueError("every entity requires a non-empty id")
     return normalized
+
+
+def _reject_unknown(unknown: set[str], allowed: frozenset[str], what: str) -> None:
+    """Refuse unrecognized keys, naming the field the writer probably meant.
+
+    A misspelled ``unpaired_msa`` used to produce ``unsupported protein entity
+    fields: ['unpared_msa']`` -- correct, and no help at all when the two
+    spellings differ by one character in the middle of a long document.
+    """
+    if not unknown:
+        return
+    hints = []
+    for name in sorted(unknown):
+        close = difflib.get_close_matches(name, sorted(allowed), n=1, cutoff=0.7)
+        hints.append(f"{name!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+    raise ValueError(f"unsupported {what}: {', '.join(hints)}")
+
+
+def chain_labels() -> Iterator[str]:
+    """A, B, ... Z, AA, AB, ... -- the order a person writes chains in."""
+    letters = string.ascii_uppercase
+    width = 1
+    while True:
+        index = 0
+        total = len(letters) ** width
+        while index < total:
+            label = ""
+            remainder = index
+            for _ in range(width):
+                label = letters[remainder % len(letters)] + label
+                remainder //= len(letters)
+            yield label
+            index += 1
+        width += 1
+
+
+def assign_chain_ids(entities: list[dict[str, Any]]) -> None:
+    """Give every entity that did not name itself the next free chain id.
+
+    Requiring an ``id`` made the smallest possible job -- one protein -- carry a
+    field whose value cannot matter, and the error for leaving it out said only
+    that it was required. Explicit ids still win everywhere, and the assignment
+    is positional, so the same document always produces the same chains.
+
+    Only an *absent* id is filled in. ``id: ""`` and ``id: [""]`` keep raising:
+    a field that was written and left blank is a mistake, and inventing a chain
+    name for it would hide the typo rather than the ceremony.
+    """
+    taken: set[str] = set()
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        value = entity.get("id")
+        if isinstance(value, str) and value.strip():
+            taken.add(value.strip())
+        elif isinstance(value, list):
+            taken.update(
+                item.strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            )
+    labels = chain_labels()
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        if entity.get("id") is not None:
+            continue
+        label = next(labels)
+        while label in taken:
+            label = next(labels)
+        taken.add(label)
+        entity["id"] = label
+
+
+#: What each polymer alphabet may contain.
+#:
+#: Nucleic acids are checked against IUPAC, which is complete and unambiguous --
+#: a protein sequence pasted into a ``dna`` entity is a real mistake and this
+#: catches it. Protein deliberately accepts every letter: which non-canonical
+#: residues a model tolerates differs by model, and rejecting one here would
+#: refuse a job that its backend would have run. What is refused for every
+#: polymer is a character that is not a letter at all -- a digit, a gap dash, a
+#: FASTA header that came along with the sequence.
+_NUCLEIC_ALPHABETS = {
+    "dna": frozenset("ACGTNRYKMSWBDHV"),
+    "rna": frozenset("ACGUNRYKMSWBDHV"),
+}
+
+
+def _normalize_sequence(value: Any, *, kind: str, chain: str) -> str:
+    """Return the sequence as the featurizers need it, or say exactly what is wrong.
+
+    Whitespace is removed rather than trimmed. A YAML block scalar is how people
+    paste a sequence -- ``sequence: |`` keeps the newlines and ``>`` turns them
+    into spaces -- and both used to travel all the way into a featurizer, which
+    reported the damage as an index error somewhere else entirely.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{kind} entity requires a non-empty string sequence")
+    sequence = "".join(value.split()).upper()
+    if not sequence:
+        raise ValueError(f"{kind} entity requires a non-empty string sequence")
+    allowed = _NUCLEIC_ALPHABETS.get(kind)
+    for position, residue in enumerate(sequence, start=1):
+        if residue.isalpha() if allowed is None else residue in allowed:
+            continue
+        window = sequence[max(0, position - 12) : position + 11]
+        caret = " " * (position - max(1, position - 11)) + "^"
+        expected = (
+            "letters only"
+            if allowed is None
+            else "IUPAC " + "".join(sorted(allowed))
+        )
+        raise ValueError(
+            f"{kind} entity {chain!r} has an unsupported residue {residue!r} at "
+            f"position {position} ({expected})\n  {window}\n  {caret}"
+        )
+    return sequence
 
 
 def _strict_position(value: Any, *, name: str) -> int:
@@ -151,6 +299,98 @@ def _modifications(entity: dict[str, Any]) -> list[tuple[str, int]]:
     return pairs
 
 
+_TEMPLATE_KEYS = frozenset(
+    {"mmcif", "query_indices", "template_indices", "chain_id"}
+)
+
+
+def _templates(entity: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return validated structural templates for one chain.
+
+    ``mmcif`` is a path. ``query_indices``/``template_indices`` are the
+    residue map three of the five dialects require; supplying one without the
+    other, or lists of different lengths, is refused here rather than producing
+    a silently truncated mapping inside a featurizer.
+    """
+    value = entity.get("templates")
+    if value is None:
+        return []
+    if not isinstance(value, list) or not value:
+        raise ValueError("templates must be a non-empty list")
+    templates: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("each template must be an object")
+        _reject_unknown(set(item) - _TEMPLATE_KEYS, _TEMPLATE_KEYS, "template fields")
+        path = item.get("mmcif")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("template mmcif must be a non-empty path string")
+        query = item.get("query_indices")
+        target = item.get("template_indices")
+        if (query is None) != (target is None):
+            raise ValueError(
+                "template query_indices and template_indices go together; "
+                "supply both or neither"
+            )
+        mapping: list[tuple[int, int]] = []
+        if query is not None:
+            if not isinstance(query, list) or not isinstance(target, list):
+                raise ValueError("template indices must be lists of integers")
+            if len(query) != len(target):
+                raise ValueError(
+                    f"template indices differ in length: {len(query)} query "
+                    f"positions against {len(target)} template positions"
+                )
+            mapping = [
+                (
+                    _strict_position(left, name="template query index"),
+                    _strict_position(right, name="template index"),
+                )
+                for left, right in zip(query, target, strict=True)
+            ]
+        chain_id = item.get("chain_id")
+        if chain_id is not None and (
+            not isinstance(chain_id, str) or not chain_id.strip()
+        ):
+            raise ValueError("template chain_id must be a non-empty string")
+        templates.append(
+            {
+                "mmcif": path.strip(),
+                "mapping": mapping,
+                "chain_id": chain_id.strip() if isinstance(chain_id, str) else None,
+            }
+        )
+    return templates
+
+
+def _affinity_binder(job: dict[str, Any], chains: set[str]) -> str | None:
+    """Return the chain whose binding affinity is requested, if any."""
+    value = job.get("properties")
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise ValueError("properties must be a non-empty list")
+    binder: str | None = None
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"affinity"}:
+            raise ValueError(
+                "each property must be an object with exactly an affinity field"
+            )
+        body = item["affinity"]
+        if not isinstance(body, dict) or set(body) != {"binder"}:
+            raise ValueError("affinity requires exactly a binder field")
+        name = body["binder"]
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("affinity binder must be a non-empty chain id")
+        name = name.strip()
+        if chains and name not in chains:
+            raise ValueError(f"affinity binder is not a chain in this job: {name!r}")
+        if binder is not None:
+            raise ValueError("only one affinity binder is supported per job")
+        binder = name
+    return binder
+
+
 _Endpoint = tuple[str, int, str]
 
 
@@ -198,12 +438,11 @@ def _validate(
     entity_types: tuple[str, ...],
 ) -> None:
     """Check the common document against what ``model`` can express."""
-    unknown_job = set(job) - _JOB_KEYS
-    if unknown_job:
-        raise ValueError(f"unsupported top-level fields: {sorted(unknown_job)}")
+    _reject_unknown(set(job) - _JOB_KEYS, _JOB_KEYS, "top-level fields")
     entities = job.get("entities")
     if not isinstance(entities, list) or not entities:
         raise ValueError("FoldJAX input requires a non-empty entities list")
+    assign_chain_ids(entities)
 
     chains: set[str] = set()
     for entity in entities:
@@ -215,9 +454,7 @@ def _validate(
         if kind not in entity_types:
             _reject(model, "an entity type", f"{kind} is not a supported entity")
         allowed = _LIGAND_KEYS if kind == "ligand" else _POLYMER_KEYS
-        unknown = set(entity) - allowed
-        if unknown:
-            raise ValueError(f"unsupported {kind} entity fields: {sorted(unknown)}")
+        _reject_unknown(set(entity) - allowed, allowed, f"{kind} entity fields")
         for chain_id in _ids(entity):
             if chain_id in chains:
                 raise ValueError(f"duplicate chain id: {chain_id!r}")
@@ -247,10 +484,9 @@ def _validate(
                 _reject(model, feature, "supply the other ligand representation")
             continue
 
-        sequence = entity.get("sequence")
-        if not isinstance(sequence, str) or not sequence.strip():
-            raise ValueError(f"{kind} entity requires a non-empty string sequence")
-        entity["sequence"] = sequence.strip()
+        entity["sequence"] = _normalize_sequence(
+            entity.get("sequence"), kind=kind, chain=_ids(entity)[0]
+        )
         for feature in ("unpaired_msa", "paired_msa"):
             value = entity.get(feature)
             if value is not None and (
@@ -272,9 +508,41 @@ def _validate(
             for ccd, _ in modifications:
                 validate_ccd_identifier(ccd, field="modification CCD code")
 
+        for template in _templates(entity):
+            feature = "templates" if template["mapping"] else "templates_unmapped"
+            if feature in target.features:
+                continue
+            if feature == "templates_unmapped" and "templates" in target.features:
+                _reject(
+                    model,
+                    "a template without a residue map",
+                    "it requires query_indices and template_indices; Boltz-2 is "
+                    "the one backend that aligns a bare mmCIF itself",
+                )
+            if feature == "templates" and "templates_unmapped" in target.features:
+                _reject(
+                    model,
+                    "a template residue map",
+                    "it aligns the mmCIF itself; drop query_indices and "
+                    "template_indices",
+                )
+            _reject(
+                model,
+                "templates",
+                "this backend has no per-job template field; use its own "
+                "template pipeline",
+            )
+
     if job.get("bonds") and "bonds" not in target.features:
         _reject(model, "bonds", "use that model's native input format instead")
     _bonds(job, chains)
+    if job.get("properties") and "affinity" not in target.features:
+        _reject(
+            model,
+            "binding affinity",
+            "only Boltz-2 carries an affinity head",
+        )
+    _affinity_binder(job, chains)
 
 
 def _alphafold3(job: dict[str, Any], base: Path, seed: int) -> dict[str, Any]:
@@ -320,6 +588,18 @@ def _alphafold3(job: dict[str, Any], base: Path, seed: int) -> dict[str, Any]:
                 body["modifications"] = [
                     {"modificationType": ccd, "basePosition": position}
                     for ccd, position in modifications
+                ]
+            templates = _templates(entity)
+            if templates:
+                # AlphaFold 3 reads the file itself and wants the residue map
+                # split into two parallel lists (`folding_input.py:389`).
+                body["templates"] = [
+                    {
+                        "mmcifPath": _path(template["mmcif"], base),
+                        "queryIndices": [pair[0] for pair in template["mapping"]],
+                        "templateIndices": [pair[1] for pair in template["mapping"]],
+                    }
+                    for template in templates
                 ]
         sequences.append({kind: body})
     native: dict[str, Any] = {
@@ -371,10 +651,56 @@ def _boltz(job: dict[str, Any], base: Path) -> dict[str, Any]:
             {"bond": {"atom1": list(left), "atom2": list(right)}}
             for left, right in bonds
         ]
+    # Boltz keeps templates at the top level and aligns each one itself
+    # (`parse/schema.py:1633`), so there is no residue map to carry across.
+    templates = [
+        {"cif": _path(template["mmcif"], base)}
+        for entity in job["entities"]
+        for template in _templates(entity)
+    ]
+    if templates:
+        native["templates"] = templates
+    binder = _affinity_binder(job, set())
+    if binder is not None:
+        native["properties"] = [{"affinity": {"binder": binder}}]
     return native
 
 
-def _protenix(job: dict[str, Any], base: Path, seed: int) -> list[dict[str, Any]]:
+def _protenix_templates(
+    templates: list[dict[str, Any]],
+    base: Path,
+    destination: Path,
+    entity_index: int,
+) -> str:
+    """Write one chain's templates as the sidecar JSON Protenix reads.
+
+    Protenix takes a per-chain ``templatesPath`` pointing at a JSON list whose
+    entries hold the mmCIF *contents* rather than a path
+    (`template_features.py:328`). The structure is inlined here, into a file of
+    its own, so the generated job document stays readable at the size a
+    multi-megabyte mmCIF would otherwise give it.
+    """
+    payload = []
+    for template in templates:
+        path = Path(_path(template["mmcif"], base))
+        entry: dict[str, Any] = {
+            "mmcif": path.read_text(encoding="utf-8"),
+            "queryIndices": [pair[0] for pair in template["mapping"]],
+            "templateIndices": [pair[1] for pair in template["mapping"]],
+        }
+        if template["chain_id"] is not None:
+            entry["chainId"] = template["chain_id"]
+        payload.append(entry)
+    directory = destination / "templates"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"entity_{entity_index:04d}.json"
+    _write_text_atomic(target, json.dumps(payload))
+    return str(target)
+
+
+def _protenix(
+    job: dict[str, Any], base: Path, seed: int, destination: Path
+) -> list[dict[str, Any]]:
     sequences = []
     # Protenix addresses covalent bonds by 1-based entity number and copy index
     # rather than by chain id, and derives both from this sequences list.
@@ -407,6 +733,11 @@ def _protenix(job: dict[str, Any], base: Path, seed: int) -> list[dict[str, Any]
                     {"modificationType": f"CCD_{ccd}", "basePosition": position}
                     for ccd, position in modifications
                 ]
+            templates = _templates(entity)
+            if templates:
+                body["templatesPath"] = _protenix_templates(
+                    templates, base, destination, entity_number - 1
+                )
         sequences.append({_PROTENIX_ENTITY_NAMES[kind]: body})
     native: dict[str, Any] = {
         "name": str(job.get("name", "foldjax_job")),
@@ -542,6 +873,238 @@ def _openfold3_msa(
     return [str(linked)]
 
 
+#: The public ColabFold MMseqs2 endpoint, and the label its results are cached
+#: under. The label is part of the cache identity, so pointing FoldJAX at a
+#: different server does not read another server's alignments back.
+#:
+#: Searching **sends the query sequence to that server**. That is the reason the
+#: policy is opt-in rather than a better default: for some of the sequences this
+#: package is used on, leaving the machine is the part that matters, not the
+#: alignment.
+_MSA_SERVER_ENV = "FOLDJAX_MSA_SERVER_URL"
+_MSA_VERSION_ENV = "FOLDJAX_MSA_SERVER_VERSION"
+_DEFAULT_MSA_SERVER = "https://api.colabfold.com"
+_DEFAULT_MSA_VERSION = "colabfold-mmseqs2"
+
+#: A locally installed search, for sequences that must not leave the machine
+#: and for RNA, which no public endpoint answers. The wrapper is called as
+#: ``<command> --input query.fasta --output DIR`` and writes ``pairing.a3m``
+#: and ``non_pairing.a3m`` (``rna_msa.a3m`` for the RNA one) -- the contract
+#: `foldjax.search.msa.LocalMsaClient` already implements. The version string
+#: is part of the cache identity, so upgrading a database invalidates the
+#: alignments it produced instead of silently mixing generations.
+_MSA_COMMAND_ENV = "FOLDJAX_MSA_COMMAND"
+_RNA_MSA_COMMAND_ENV = "FOLDJAX_RNA_MSA_COMMAND"
+_LOCAL_VERSION_ENV = "FOLDJAX_MSA_LOCAL_VERSION"
+_DEFAULT_LOCAL_VERSION = "local"
+
+
+def _local_command(name: str) -> list[str] | None:
+    """A configured local search command, split the way a shell would."""
+    import shlex
+
+    raw = os.environ.get(name, "").strip()
+    return shlex.split(raw) if raw else None
+
+
+def _msa_pipeline() -> Any:
+    """The protein search: a local wrapper when configured, else the server."""
+    from foldjax.paths import msa_cache_dir
+    from foldjax.search.msa import (
+        LocalMsaClient,
+        MsaSearchPipeline,
+        RemoteMMseqs2Client,
+    )
+
+    version = os.environ.get(_LOCAL_VERSION_ENV, "").strip() or _DEFAULT_LOCAL_VERSION
+    command = _local_command(_MSA_COMMAND_ENV)
+    if command is not None:
+        # Nothing leaves the machine on this path, which is the whole point of
+        # configuring it.
+        return MsaSearchPipeline(
+            msa_cache_dir(),
+            LocalMsaClient(command, version=version),
+            options={"command": command},
+        )
+
+    host = os.environ.get(_MSA_SERVER_ENV, _DEFAULT_MSA_SERVER).strip()
+    if not host:
+        raise ValueError(f"{_MSA_SERVER_ENV} is set to an empty value")
+    remote_version = (
+        os.environ.get(_MSA_VERSION_ENV, "").strip() or _DEFAULT_MSA_VERSION
+    )
+    return MsaSearchPipeline(
+        msa_cache_dir(),
+        RemoteMMseqs2Client(host, version=remote_version),
+        options={"host": host, "pairing": "paircomplete"},
+    )
+
+
+def _rna_msa_pipeline() -> Any | None:
+    """The RNA search, or None when no local workflow is configured.
+
+    There is no remote fallback on purpose: the ColabFold endpoint answers for
+    protein, and pretending otherwise would send an RNA sequence to a service
+    that cannot search it.
+    """
+    from foldjax.paths import msa_cache_dir
+    from foldjax.search.msa import LocalRnaMsaClient, RnaMsaSearchPipeline
+
+    command = _local_command(_RNA_MSA_COMMAND_ENV)
+    if command is None:
+        return None
+    version = os.environ.get(_LOCAL_VERSION_ENV, "").strip() or _DEFAULT_LOCAL_VERSION
+    return RnaMsaSearchPipeline(
+        msa_cache_dir(),
+        LocalRnaMsaClient(command, version=version),
+        options={"command": command},
+    )
+
+
+def msa_search_backend() -> dict[str, Any]:
+    """What a search would use right now, for `foldjax doctor` to report."""
+    protein_command = _local_command(_MSA_COMMAND_ENV)
+    return {
+        "protein": (
+            {"kind": "local", "command": protein_command}
+            if protein_command
+            else {
+                "kind": "remote",
+                "host": os.environ.get(_MSA_SERVER_ENV, _DEFAULT_MSA_SERVER),
+            }
+        ),
+        "rna": (
+            {"kind": "local", "command": _local_command(_RNA_MSA_COMMAND_ENV)}
+            if _local_command(_RNA_MSA_COMMAND_ENV)
+            else {"kind": "unavailable", "setup": _RNA_MSA_COMMAND_ENV}
+        ),
+    }
+
+
+def _search_alignments(
+    job: dict[str, Any],
+    target: _Target,
+    *,
+    policy: str,
+    model: str,
+) -> list[dict[str, str]]:
+    """Fill in missing alignments, and report what was searched.
+
+    Only protein chains: the remote MMseqs2 endpoint answers for protein, and
+    the RNA pipeline in `foldjax.search.msa` needs a locally installed nhmmer
+    workflow that this package does not ship. An RNA chain therefore keeps the
+    behaviour it had, and ``required`` says why rather than pretending.
+    """
+    if policy == "none":
+        return []
+    if "unpaired_msa" not in target.features:
+        raise ValueError(
+            f"{model} cannot take a searched alignment; run it with msa='none'"
+        )
+    wanted = [
+        entity
+        for entity in job["entities"]
+        if entity.get("type") == "protein" and not entity.get("unpaired_msa")
+    ]
+    rna = [
+        entity
+        for entity in job["entities"]
+        if entity.get("type") == "rna" and not entity.get("unpaired_msa")
+    ]
+    rna_pipeline = _rna_msa_pipeline() if rna else None
+    if policy == "required" and rna and rna_pipeline is None:
+        raise ValueError(
+            f"RNA entity {_ids(rna[0])[0]!r} has no alignment and no RNA search "
+            f"is configured; set {_RNA_MSA_COMMAND_ENV} to a local nhmmer "
+            "workflow, or supply unpaired_msa for it"
+        )
+    searched: list[dict[str, str]] = []
+    if wanted:
+        searched.extend(
+            _run_search(
+                _msa_pipeline(),
+                wanted,
+                policy=policy,
+                paired="paired_msa" in target.features,
+            )
+        )
+    if rna and rna_pipeline is not None:
+        searched.extend(
+            _run_search(rna_pipeline, rna, policy=policy, paired=False)
+        )
+    return searched
+
+
+def _run_search(
+    pipeline: Any,
+    entities: list[dict[str, Any]],
+    *,
+    policy: str,
+    paired: bool,
+) -> list[dict[str, str]]:
+    """Search for these chains and attach what came back."""
+    from foldjax.search.msa import SearchError
+
+    try:
+        found = pipeline.search([str(entity["sequence"]) for entity in entities])
+    except (SearchError, TimeoutError, OSError, ValueError) as error:
+        if policy == "required":
+            raise ValueError(
+                f"MSA search failed and msa='required': {error}"
+            ) from error
+        # `auto` is a convenience, not a promise. A search that could not run
+        # must not destroy a job that would have folded from single sequence --
+        # but it must also not do so quietly, so the caller sees the reason.
+        import warnings
+
+        warnings.warn(
+            f"MSA search failed ({error}); folding from single sequence",
+            UserWarning,
+            stacklevel=3,
+        )
+        return []
+
+    searched = []
+    for entity, result in zip(entities, found, strict=True):
+        entity["unpaired_msa"] = result["unpairedMsaPath"]
+        if paired and "pairedMsaPath" in result:
+            entity["paired_msa"] = result["pairedMsaPath"]
+        searched.append(
+            {
+                "chain": _ids(entity)[0],
+                "unpaired_msa": result["unpairedMsaPath"],
+                "provenance": result["provenancePath"],
+            }
+        )
+    return searched
+
+
+def _warn_single_sequence(job: dict[str, Any], model: str) -> None:
+    """Say out loud that a protein chain is being folded without an alignment.
+
+    This is the one failure this layer used to have no answer for: the job is
+    valid, the run succeeds, the structure is worse, and nothing anywhere says
+    why. Boltz-2's ``msa: empty`` and AlphaFold 3's ``unpairedMsa: ""`` are both
+    written from here, so here is where the sentence belongs.
+    """
+    bare = [
+        _ids(entity)[0]
+        for entity in job["entities"]
+        if entity.get("type") == "protein" and not entity.get("unpaired_msa")
+    ]
+    if not bare:
+        return
+    import warnings
+
+    chains = ", ".join(bare)
+    warnings.warn(
+        f"{model}: protein chain(s) {chains} have no alignment; predicting from "
+        "a single sequence. Pass msa='auto' (--msa auto) to search for one.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     """Replace a generated input file without following an existing symlink."""
     with tempfile.TemporaryDirectory(
@@ -594,6 +1157,68 @@ def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, 
     return {"queries": {str(job.get("name", "query")): query}}
 
 
+def common_schema_features(model: str) -> tuple[str, ...]:
+    """Which common-schema fields this backend's native dialect can carry."""
+    target = _TARGETS.get(model)
+    if target is None:
+        return ()
+    return tuple(sorted(target.features))
+
+
+def native_only_features(
+    model: str, capabilities: ModelCapabilities
+) -> tuple[str, ...]:
+    """Scientific inputs this model takes that the common schema cannot express.
+
+    ``supports_templates`` and ``supports_affinity`` describe the *model*, and
+    five of the six backends report templates. The common job document has no
+    field for either (`_JOB_KEYS`, `_POLYMER_KEYS`), so a discovery surface that
+    printed only the model-level flag told a caller to look for a field that has
+    never existed. Naming the gap is the honest half of that answer; the other
+    half is that the model's own dialect still reaches it.
+    """
+    target = _TARGETS.get(model)
+    features = target.features if target is not None else frozenset()
+    unreachable = []
+    if capabilities.supports_templates and not (
+        {"templates", "templates_unmapped"} & features
+    ):
+        unreachable.append("templates")
+    if capabilities.supports_affinity and "affinity" not in features:
+        unreachable.append("affinity")
+    return tuple(unreachable)
+
+
+def compatibility(document: Any, model: str) -> str | None:
+    """Why ``model`` cannot run this common-schema job, or None if it can.
+
+    The answer comes from `_validate` itself rather than from a second table:
+    "can this backend express this document" already has exactly one
+    implementation, and a discovery command that reimplemented it would
+    eventually disagree with the one that decides.
+    """
+    from copy import deepcopy
+
+    from foldjax.registry import get_backend
+
+    backend = get_backend(model)
+    target = _TARGETS.get(backend.name)
+    if target is None:
+        return f"{backend.name} has no common-schema dialect"
+    if not isinstance(document, dict):
+        return "a FoldJAX job must be a JSON or YAML mapping"
+    try:
+        _validate(
+            deepcopy(document),
+            backend.name,
+            target,
+            backend.capabilities().entity_types,
+        )
+    except (ValueError, FileNotFoundError) as error:
+        return str(error).splitlines()[0]
+    return None
+
+
 def read_job_document(path: Path) -> Any:
     """Load a job file as JSON or YAML.
 
@@ -622,12 +1247,15 @@ def materialize_native_input(
     output_dir: Path,
     *,
     seed: int,
+    msa: str = "none",
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file."""
     model = capabilities.model
     target = _TARGETS.get(model)
     if target is None:
         raise ValueError(f"unsupported model: {model}")
+    if msa not in MSA_POLICIES:
+        raise ValueError(f"msa must be one of {MSA_POLICIES}; got {msa!r}")
     source = Path(source)
     job = read_job_document(source)
     if not isinstance(job, dict):
@@ -636,11 +1264,19 @@ def materialize_native_input(
 
     base = source.parent
     # Created before the dialects are built: OpenFold3 writes alongside its
-    # document rather than only into it.
+    # document rather than only into it, and a searched alignment is recorded
+    # beside both.
     output_dir = Path(output_dir)
     if output_dir.is_symlink():
         raise ValueError(f"generated input directory is a symlink: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    searched = _search_alignments(job, target, policy=msa, model=model)
+    if searched:
+        _write_text_atomic(
+            output_dir / "msa_search.json", json.dumps(searched, indent=2)
+        )
+    elif msa == "none":
+        _warn_single_sequence(job, model)
 
     if model == "esmfold2":
         # No dialect to translate into: the adapter consumes this schema.
@@ -650,7 +1286,7 @@ def materialize_native_input(
     elif model == "boltz2":
         document = _boltz(job, base)
     elif model in {"opendde", "protenix"}:
-        document = _protenix(job, base, seed)
+        document = _protenix(job, base, seed, output_dir)
     else:
         document = _openfold3(job, base, output_dir)
     path = output_dir / f"{model}_input{target.suffix}"

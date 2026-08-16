@@ -2130,6 +2130,54 @@ def _conversion_action(spec: ModelAssets) -> tuple[str, str]:
     return "convert", "publisher checkpoint to native JAX parameters"
 
 
+def _check_free_space(
+    spec: ModelAssets,
+    *,
+    convert: bool,
+    on_event: Callable[[AssetEvent], None] | None,
+    profile: str | None,
+) -> None:
+    """Refuse a download the disk cannot hold, and say when it will be tight.
+
+    The registry pins every published file's size, so the answer is known
+    before the first byte moves -- and the failure it prevents is expensive:
+    ESMFold2's complete bundle is about 26 GB, and running out at the end
+    wastes the whole transfer. Conversion writes a second copy of what it
+    reads, so the comfortable figure is roughly twice the download; that one is
+    a warning rather than a refusal because the peak depends on the model and a
+    wrong refusal is worse than a tight success.
+    """
+    sizes = [item.size for item in spec.downloads]
+    if not sizes or any(size is None for size in sizes):
+        return
+    needed = sum(int(size) for size in sizes)
+    root = downloads_dir(spec.model)
+    probe = root
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        return
+    if free < needed:
+        raise RuntimeError(
+            f"{spec.model} needs {needed / 1e9:.1f} GB of published files and "
+            f"{free / 1e9:.1f} GB is free at {root}. Free some space, or point "
+            "FOLDJAX_HOME at a larger filesystem."
+        )
+    if convert and free < needed * 2:
+        _asset_event(
+            on_event,
+            spec,
+            profile,
+            "resolve",
+            "warn",
+            f"{free / 1e9:.1f} GB free for a {needed / 1e9:.1f} GB download; "
+            "conversion writes a second copy and may not fit",
+            path=root,
+        )
+
+
 def fetch(
     model: str,
     *,
@@ -2184,6 +2232,7 @@ def fetch(
         )
         return spec.native_path()
 
+    _check_free_space(spec, convert=convert, on_event=on_event, profile=profile)
     provenance = _conversion_provenance_recorded(spec)
     for item in spec.downloads:
         if _adopt_legacy_protenix_variant_download(item, spec.model):

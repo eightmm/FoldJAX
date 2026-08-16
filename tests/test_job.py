@@ -143,14 +143,31 @@ def test_a_malformed_bond_has_a_schema_error() -> None:
         Job.from_document(document)
 
 
-def test_an_entity_without_an_id_has_a_schema_error() -> None:
+def test_an_entity_without_an_id_is_named_in_document_order() -> None:
+    """A one-chain job should not have to invent a chain name.
+
+    An id that is present but blank still raises: that is a typo, and inventing
+    a name for it would hide the mistake rather than the ceremony.
+    """
     document = {
         "name": "demo",
-        "entities": [{"type": "protein", "sequence": SEQUENCE}],
+        "entities": [
+            {"type": "protein", "sequence": SEQUENCE},
+            {"type": "protein", "id": "A", "sequence": SEQUENCE},
+            {"type": "protein", "sequence": SEQUENCE},
+        ],
     }
 
+    job = Job.from_document(document)
+
+    assert [entity.id for entity in job.entities] == ["B", "A", "C"]
+    # The caller's own mapping is not where that side effect belongs.
+    assert "id" not in document["entities"][0]
+
     with pytest.raises(ValueError, match="every entity requires a non-empty id"):
-        Job.from_document(document)
+        Job.from_document(
+            {"entities": [{"type": "protein", "id": "", "sequence": SEQUENCE}]}
+        )
 
 
 def test_job_reader_does_not_stringify_scientific_fields() -> None:

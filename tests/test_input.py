@@ -346,7 +346,9 @@ def test_rejects_unsupported_common_entity(common_job: Path, tmp_path: Path) -> 
             lambda job: job["entities"][2].update({"ccd": 123}),
             "ligand ccd must be a non-empty string",
         ),
-        (lambda job: job["entities"][1].pop("id"), "non-empty id"),
+        # An id that was written and left blank is a typo, not an omission, so
+        # it keeps failing. An absent one is filled in -- see
+        # `test_an_absent_chain_id_is_assigned_in_document_order`.
         (lambda job: job["entities"][1].update({"id": ""}), "non-empty id"),
         (lambda job: job["entities"][1].update({"id": [""]}), "non-empty id"),
     ],

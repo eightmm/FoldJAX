@@ -27,6 +27,18 @@ def _coordinate_shape(value: Any) -> list[int] | None:
     return None
 
 
+#: How a job without alignments is treated. ``none`` is the historical
+#: behaviour and stays the default: searching by default would change what a
+#: recorded command predicts. ``auto`` fills empty protein chains in from the
+#: shared alignment cache; ``required`` additionally refuses to fold a chain it
+#: could not find one for -- what a batch script wants, because the silent
+#: fallback it guards against is a *successful* single-sequence run.
+MSA_POLICIES = ("none", "auto", "required")
+
+#: What a failing run does to the rest of the request.
+ERROR_POLICIES = ("stop", "continue")
+
+
 class PredictionError(RuntimeError):
     """A requested prediction could not produce a usable result."""
 
@@ -107,6 +119,13 @@ class ModelCapabilities:
     # Appended to preserve positional construction by embedding applications.
     # An empty tuple keeps third-party backends source compatible.
     padding_axes: tuple[str, ...] = ()
+    # Which common-schema fields this backend's dialect can carry, and which
+    # scientific inputs it accepts that the common document has no field for.
+    # Backends do not set these: `foldjax.capabilities` fills them in from the
+    # single translation table, so the discovery surface cannot drift from the
+    # writer that decides. See `foldjax.input.native_only_features`.
+    common_schema_features: tuple[str, ...] = ()
+    native_only_features: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +189,8 @@ class ModelInfo:
             "supports_templates": capabilities.supports_templates,
             "supports_msa": capabilities.supports_msa,
             "padding_axes": list(capabilities.padding_axes),
+            "common_schema_features": list(capabilities.common_schema_features),
+            "native_only_features": list(capabilities.native_only_features),
             "sampling": dict(capabilities.sampling),
             "input_requirements": {
                 name: requirement.summary()
@@ -309,6 +330,23 @@ class PredictionRequest:
     # Appended to preserve the positional request layout. ``None``/False keeps
     # exact historical shapes; True selects a backend's standard profile.
     padding: PaddingConfig | Mapping[str, Any] | bool | None = None
+    # Skip any run whose output directory already holds a finished manifest.
+    # The manifest is written after a run completes, so its presence is already
+    # the evidence; this needs no state file of its own. Seeds are checked
+    # individually -- a five-seed job that died on the fourth must not repeat
+    # the three that finished, which is hours on a real checkpoint.
+    resume: bool = False
+    # ``stop`` (the default, and the historical behaviour) lets the first
+    # failure end the whole request. ``continue`` finishes every other run and
+    # records what failed, because losing seventeen good predictions to the
+    # third one's OOM is what makes people stop batching.
+    on_error: str = "stop"
+    # What to do about a protein chain that arrived without an alignment.
+    # ``none`` is what FoldJAX has always done -- fold it from the single
+    # sequence -- and stays the default, because searching by default would
+    # change what a recorded command predicts. ``auto`` searches and caches;
+    # ``required`` additionally refuses to fall back. See `foldjax.input`.
+    msa: str = "none"
 
     def __post_init__(self) -> None:
         padding = self.padding
@@ -334,6 +372,18 @@ class PredictionRequest:
             self,
             "use_compile_cache",
             _strict_boolean(self.use_compile_cache, name="use_compile_cache"),
+        )
+        if self.msa not in MSA_POLICIES:
+            raise ValueError(
+                f"msa must be one of {', '.join(MSA_POLICIES)}; got {self.msa!r}"
+            )
+        if self.on_error not in ERROR_POLICIES:
+            raise ValueError(
+                f"on_error must be one of {', '.join(ERROR_POLICIES)}; "
+                f"got {self.on_error!r}"
+            )
+        object.__setattr__(
+            self, "resume", _strict_boolean(self.resume, name="resume")
         )
         if not isinstance(self.options, Mapping):
             raise ValueError("options must be a mapping")
@@ -509,3 +559,61 @@ class PredictionResult:
         if self.shape_profile is not None:
             summary["shape_profile"] = dict(self.shape_profile)
         return summary
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionFailure:
+    """One model/input/seed that did not produce a structure, and why.
+
+    A successful run leaves `foldjax_run.json` behind and can be read back
+    forever. A failed one used to leave nothing at all: with ``on_error``
+    set to ``continue``, seventeen predictions succeeded and the reason the
+    other three did not existed only in the terminal scrollback of whoever
+    started the batch. This is that record.
+    """
+
+    model: str
+    input: Path
+    error: str
+    error_type: str
+    seed: int | None = None
+    output_dir: Path | None = None
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "input": str(self.input),
+            "seed": self.seed,
+            "output_dir": (
+                str(self.output_dir) if self.output_dir is not None else None
+            ),
+            "error_type": self.error_type,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BatchReport:
+    """Everything one request produced: what ran, what was skipped, what failed.
+
+    `predict` keeps its original return type -- results only -- because that is
+    what every existing caller unpacks. A batch needs the other two lists to be
+    actionable, so it has its own entry point rather than a return type that
+    changes shape depending on a flag.
+    """
+
+    results: tuple[PredictionResult, ...] = ()
+    failures: tuple[PredictionFailure, ...] = ()
+    #: Runs whose finished manifest was found and reused instead of re-run.
+    skipped: tuple[Path, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "results": [result.summary() for result in self.results],
+            "failures": [failure.summary() for failure in self.failures],
+            "skipped": [str(path) for path in self.skipped],
+        }

@@ -13,9 +13,24 @@ resolved for you. See ``foldjax.assets`` for the weight store and
 ``foldjax.paths`` for where everything lives.
 """
 
-from foldjax import assets, paths
-from foldjax.api import detect_input_format, predict, resolve_request, resolve_requests
-from foldjax.job import Bond, Dna, Job, Ligand, Modification, Protein, Rna
+from foldjax import assets, paths, progress
+from foldjax.api import (
+    detect_input_format,
+    predict,
+    predict_batch,
+    resolve_request,
+    resolve_requests,
+)
+from foldjax.job import (
+    Bond,
+    Dna,
+    Job,
+    Ligand,
+    Modification,
+    Protein,
+    Rna,
+    Template,
+)
 from foldjax.registry import (
     available_models,
     capabilities,
@@ -23,11 +38,15 @@ from foldjax.registry import (
     normalize_model_name,
 )
 from foldjax.schema import (
+    ERROR_POLICIES,
+    MSA_POLICIES,
+    BatchReport,
     InputRequirement,
     ModelCapabilities,
     ModelInfo,
     PaddingConfig,
     PredictionError,
+    PredictionFailure,
     PredictionOutputError,
     PredictionRequest,
     PredictionResult,
@@ -37,6 +56,9 @@ from foldjax.schema import (
 from foldjax.warmup import CacheWarmResult, warm_cache
 
 __all__ = [
+    "ERROR_POLICIES",
+    "MSA_POLICIES",
+    "BatchReport",
     "Bond",
     "CacheWarmResult",
     "Dna",
@@ -48,6 +70,7 @@ __all__ = [
     "Modification",
     "PaddingConfig",
     "PredictionError",
+    "PredictionFailure",
     "PredictionOutputError",
     "PredictionRequest",
     "PredictionResult",
@@ -55,6 +78,7 @@ __all__ = [
     "Protein",
     "Rna",
     "RuntimeInfo",
+    "Template",
     "assets",
     "available_models",
     "capabilities",
@@ -63,6 +87,8 @@ __all__ = [
     "normalize_model_name",
     "paths",
     "predict",
+    "predict_batch",
+    "progress",
     "resolve_request",
     "resolve_requests",
     "warm_cache",

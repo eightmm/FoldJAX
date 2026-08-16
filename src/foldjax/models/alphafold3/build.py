@@ -206,8 +206,10 @@ def active_package() -> Path:
     if _runtime_is_complete():
         return runtime_package()
     raise RuntimeError(
-        "AlphaFold 3 runtime is incomplete; call build.ensure_ready() before "
-        "registering the vendored package"
+        "the AlphaFold 3 runtime has not been prepared. Run "
+        "`foldjax runtime prepare --model alphafold3` once; it builds the "
+        "ABI-specific extension and CCD tables under the FoldJAX runtime store. "
+        "(Library callers: foldjax.models.alphafold3.build.ensure_ready().)"
     )
 
 

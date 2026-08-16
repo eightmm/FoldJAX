@@ -575,7 +575,18 @@ class RemoteMMseqs2Client:
         self.timeout = timeout
         self.poll_interval = poll_interval
         self.max_wait_seconds = max_wait_seconds
-        self.headers = {"User-Agent": "protenix-jax/0.1.0", **dict(auth_headers or {})}
+        # The public ColabFold endpoint is a shared, free service whose operators
+        # ask clients to identify themselves. This one used to say
+        # "protenix-jax", which was true when the search lived in that port and
+        # is now the name of one of six callers.
+        try:
+            from foldjax import __version__ as foldjax_version
+        except ImportError:  # pragma: no cover - the package is always present
+            foldjax_version = "0"
+        self.headers = {
+            "User-Agent": f"foldjax/{foldjax_version}",
+            **dict(auth_headers or {}),
+        }
         if username is not None:
             token = base64.b64encode(f"{username}:{password}".encode()).decode()
             self.headers["Authorization"] = f"Basic {token}"

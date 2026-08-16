@@ -511,12 +511,14 @@ def test_predict_cli_prints_result_summary(tmp_path: Path, monkeypatch, capsys) 
     seen = {}
 
     def fake_predict(request):
-        from foldjax.schema import PredictionResult
+        from foldjax.schema import BatchReport, PredictionResult
 
         seen["request"] = request
-        return PredictionResult(model="protenix", output_dir=request.output_dir)
+        return BatchReport(
+            results=(PredictionResult(model="protenix", output_dir=request.output_dir),)
+        )
 
-    monkeypatch.setattr("foldjax.cli.predict", fake_predict)
+    monkeypatch.setattr("foldjax.cli.predict_batch", fake_predict)
     code = main(
         [
             "predict",
@@ -698,15 +700,17 @@ def test_batch_predict_cli_prints_a_json_array(
     seen = {}
 
     def fake_predict(request):
-        from foldjax.schema import PredictionResult
+        from foldjax.schema import BatchReport, PredictionResult
 
         seen["request"] = request
-        return (
-            PredictionResult(model="boltz2", output_dir=tmp_path / "boltz2"),
-            PredictionResult(model="protenix", output_dir=tmp_path / "protenix"),
+        return BatchReport(
+            results=(
+                PredictionResult(model="boltz2", output_dir=tmp_path / "boltz2"),
+                PredictionResult(model="protenix", output_dir=tmp_path / "protenix"),
+            )
         )
 
-    monkeypatch.setattr("foldjax.cli.predict", fake_predict)
+    monkeypatch.setattr("foldjax.cli.predict_batch", fake_predict)
     assert (
         main(
             [

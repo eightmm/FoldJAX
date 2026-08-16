@@ -68,6 +68,16 @@ def compile_cache_dir() -> Path:
     return foldjax_home() / "compile"
 
 
+def msa_cache_dir() -> Path:
+    """Searched alignments, addressed by sequence and search provenance.
+
+    Deliberately not per model: the alignment for a sequence is the same
+    alignment whichever model consumes it, so running one target through three
+    backends searches once.
+    """
+    return foldjax_home() / "msa"
+
+
 def runtime_dir(model: str | None = None) -> Path:
     """Generated native artifacts that cannot live in a read-only wheel."""
     root = foldjax_home() / "runtime"
@@ -82,5 +92,6 @@ def describe() -> dict[str, str]:
         "weights": str(weights_dir()),
         "assets": str(assets_dir()),
         "compile_cache": str(compile_cache_dir()),
+        "msa": str(msa_cache_dir()),
         "runtime": str(runtime_dir()),
     }

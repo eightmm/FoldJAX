@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import progress
 from foldjax.backends.base import Backend
 from foldjax.cache import (
     cache_namespace,
@@ -26,14 +27,16 @@ from foldjax.cache import (
     weight_identity,
 )
 from foldjax.input import materialize_native_input, read_job_document
-from foldjax.manifest import device_peak_bytes
+from foldjax.manifest import MANIFEST_NAME, device_peak_bytes
 from foldjax.manifest import write as write_manifest
 from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
 from foldjax.registry import get_backend
 from foldjax.schema import (
+    BatchReport,
     PredictionError,
+    PredictionFailure,
     PredictionOutputError,
     PredictionRequest,
     PredictionResult,
@@ -217,6 +220,121 @@ def resolve_requests(request: PredictionRequest) -> tuple[PredictionRequest, ...
     return tuple(runs)
 
 
+#: Failures a `continue` policy absorbs. Everything else -- a defect in
+#: FoldJAX, a `KeyboardInterrupt` -- still ends the request immediately: one
+#: run's bug is not evidence that the next run is worth attempting, and a
+#: cancelled batch must stop when it is cancelled.
+_RESUMABLE_ERRORS = (
+    PredictionError,
+    MemoryError,
+    ValueError,
+    OSError,
+    ModuleNotFoundError,
+)
+
+#: Where a batch records what did not work. A successful run has
+#: `foldjax_run.json`; this is the other half of that story.
+FAILURES_NAME = "foldjax_failures.json"
+
+
+def _result_from_manifest(directory: Path) -> PredictionResult | None:
+    """Rebuild a finished run's result from the manifest it left behind.
+
+    A resumed run returns what is on disk rather than nothing, so a caller sees
+    one result per requested run whether or not this invocation produced it.
+    ``raw`` is absent by construction: model-specific arrays were never written
+    to the manifest, and inventing them would be worse than their absence.
+    """
+    path = Path(directory) / MANIFEST_NAME
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    samples = []
+    for entry in document.get("samples") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        structure = entry.get("structure_path")
+        samples.append(
+            PredictionSample(
+                seed=int(entry.get("seed", 0)),
+                structure_path=Path(structure) if structure else None,
+                scores={
+                    str(key): float(value)
+                    for key, value in (entry.get("scores") or {}).items()
+                },
+                metadata=dict(entry.get("metadata") or {}),
+            )
+        )
+    if not samples:
+        return None
+    return PredictionResult(
+        model=str(document.get("model") or ""),
+        samples=tuple(samples),
+        output_dir=Path(directory),
+        shape_profile=document.get("shape_profile"),
+    )
+
+
+def _write_failures(directory: Path, failures: list[PredictionFailure]) -> None:
+    """Record what failed, beside the runs that did not.
+
+    Reported rather than raised, exactly like the manifest: a batch that
+    produced seventeen good predictions must not be turned into a failure
+    because the note about the other three could not be written.
+    """
+    if not failures:
+        return
+    try:
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / FAILURES_NAME).write_text(
+            json.dumps(
+                [failure.summary() for failure in failures], indent=2, sort_keys=True
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def predict_batch(request: PredictionRequest) -> BatchReport:
+    """Run everything ``request`` names and report results, skips and failures.
+
+    This is the complete answer; :func:`predict` is the same execution with the
+    original return type. Only this one can say *which* runs were reused from a
+    previous invocation and which failed, which is what a batch needs in order
+    to be resumed or reported on.
+    """
+    plural = request.models is not None or request.inputs is not None
+    if request.output_dir is None:
+        output_root = Path.cwd()
+    elif plural:
+        output_root = Path(request.output_dir)
+    else:
+        output_root = None
+    resolved = resolve_requests(request)
+    results: list[PredictionResult] = []
+    failures: list[PredictionFailure] = []
+    skipped: list[Path] = []
+    for item in resolved:
+        outcome = _predict_resolved(
+            item, output_root=output_root, failures=failures, skipped=skipped
+        )
+        if outcome is not None:
+            results.append(outcome)
+    _write_failures(
+        Path(request.output_dir) if request.output_dir is not None else Path.cwd(),
+        failures,
+    )
+    return BatchReport(
+        results=tuple(results), failures=tuple(failures), skipped=tuple(skipped)
+    )
+
+
 def predict(
     request: PredictionRequest,
 ) -> PredictionResult | tuple[PredictionResult, ...]:
@@ -235,20 +353,19 @@ def predict(
     program is read back from the cache, so the repeat cost is the load, not
     the compile.
     """
+    report = predict_batch(request)
     plural = request.models is not None or request.inputs is not None
-    if request.output_dir is None:
-        # The default path is generated rather than explicitly entrusted by
-        # the caller, so include its top-level component in the symlink check.
-        output_root = Path.cwd()
-    elif plural:
-        output_root = Path(request.output_dir)
-    else:
-        output_root = None
-    resolved = resolve_requests(request)
-    results = tuple(
-        _predict_resolved(item, output_root=output_root) for item in resolved
-    )
-    return results if plural else results[0]
+    if plural:
+        return report.results
+    if not report.results:
+        # A scalar request has nothing to continue *to*, so a policy that lets
+        # a batch survive one failure must not turn one failed prediction into
+        # a silent success here.
+        failure = report.failures[0]
+        raise PredictionError(
+            f"{failure.model} failed on {failure.input}: {failure.error}"
+        )
+    return report.results[0]
 
 
 def _prepare_output_directory(
@@ -288,30 +405,100 @@ def _prepare_output_directory(
         )
 
 
+def _finished(directory: Path) -> bool:
+    """Whether a completed run already left its manifest in ``directory``."""
+    return (Path(directory) / MANIFEST_NAME).is_file()
+
+
+def _attempt(
+    request: PredictionRequest,
+    seed: int,
+    directory: Path,
+    *,
+    layout_root: Path | None,
+    allowed_root: Path | None,
+    failures: list[PredictionFailure],
+    skipped: list[Path],
+) -> PredictionResult | None:
+    """One seed, honouring the request's resume and error policies."""
+    if request.resume and _finished(directory):
+        reused = _result_from_manifest(directory)
+        if reused is not None:
+            skipped.append(Path(directory))
+            return reused
+    try:
+        return _predict_once(
+            request,
+            seed,
+            directory,
+            layout_root=layout_root,
+            allowed_root=allowed_root,
+        )
+    except _RESUMABLE_ERRORS as error:
+        if request.on_error != "continue":
+            raise
+        failures.append(
+            PredictionFailure(
+                model=request.model,
+                input=Path(request.input),
+                seed=seed,
+                output_dir=Path(directory),
+                error=str(error),
+                error_type=type(error).__name__,
+            )
+        )
+        return None
+
+
 def _predict_resolved(
-    request: PredictionRequest, *, output_root: Path | None = None
-) -> PredictionResult:
-    """Run one already-resolved model/input pair, including all requested seeds."""
+    request: PredictionRequest,
+    *,
+    output_root: Path | None = None,
+    failures: list[PredictionFailure] | None = None,
+    skipped: list[Path] | None = None,
+) -> PredictionResult | None:
+    """Run one already-resolved model/input pair, including all requested seeds.
+
+    ``failures`` and ``skipped`` are appended to rather than returned so that
+    the call shape stays what every existing caller -- and every test double --
+    already uses. ``None`` comes back only when the request's error policy
+    absorbed every seed's failure.
+    """
+    failures = [] if failures is None else failures
+    skipped = [] if skipped is None else skipped
     _prepare_output_directory(request.output_dir, boundary=output_root)
     seeds = request.resolved_seeds
     if len(seeds) == 1:
-        return _predict_once(
+        outcome = _attempt(
             request,
             seeds[0],
             request.output_dir,
+            layout_root=None,
+            allowed_root=None,
+            failures=failures,
+            skipped=skipped,
         )
+        return outcome
 
     started = time.perf_counter()
     results = [
-        _predict_once(
-            request,
-            seed,
-            request.output_dir / f"seed_{seed}",
-            layout_root=request.output_dir,
-            allowed_root=request.output_dir,
-        )
+        outcome
         for seed in seeds
+        if (
+            outcome := _attempt(
+                request,
+                seed,
+                request.output_dir / f"seed_{seed}",
+                layout_root=request.output_dir,
+                allowed_root=request.output_dir,
+                failures=failures,
+                skipped=skipped,
+            )
+        )
+        is not None
     ]
+    if not results:
+        return None
     combined = PredictionResult(
         model=results[0].model,
         samples=tuple(sample for result in results for sample in result.samples),
@@ -329,15 +516,21 @@ def _predict_resolved(
     # Each seed already recorded its own; this one covers the whole request. The
     # peak is the process high-water mark, so it already spans every seed --
     # summing the per-seed peaks would report memory that was never held at once.
-    write_manifest(
-        request,
-        combined,
-        request.output_dir,
-        cost={
-            "seconds": round(time.perf_counter() - started, 2),
-            "peak_bytes": device_peak_bytes(),
-        },
-    )
+    #
+    # Written only when every seed succeeded. The manifest's presence means "this
+    # run finished", and `resume` reads it as exactly that: writing one for a
+    # partial run would make the next attempt skip the pair and never produce
+    # the seeds that are still missing.
+    if not failures:
+        write_manifest(
+            request,
+            combined,
+            request.output_dir,
+            cost={
+                "seconds": round(time.perf_counter() - started, 2),
+                "peak_bytes": device_peak_bytes(),
+            },
+        )
     return combined
 
 
@@ -398,13 +591,21 @@ def _predict_once(
     # below the same directory.
     _prepare_output_directory(request.output_dir, boundary=allowed_root)
 
+    # Started here rather than at the model call, so `seconds` and the sum of
+    # `phases` describe the same span: preparing input is part of what the run
+    # cost, and for a searched alignment it can be most of it.
+    started = time.perf_counter()
+    timeline = progress.Timeline()
+    progress.header(backend.name, request.input.name, request.seed)
     if request.input_format == "foldjax":
-        native_input = materialize_native_input(
-            request.input,
-            capabilities,
-            request.output_dir / "inputs",
-            seed=request.seed,
-        )
+        with timeline.stage("prepare input"):
+            native_input = materialize_native_input(
+                request.input,
+                capabilities,
+                request.output_dir / "inputs",
+                seed=request.seed,
+                msa=request.msa,
+            )
         # Most backends have a dialect of their own and the materialised file
         # is in it. ESMFold2 does not -- its adapter reads the common schema
         # directly -- so for it the written file is still FoldJAX's, and
@@ -422,9 +623,11 @@ def _predict_once(
         request = dataclasses.replace(
             request, cache_dir=resolve_cache_dir(request, backend)
         )
-    started = time.perf_counter()
     try:
-        with compilation_cache_scope(request.cache_dir):
+        with (
+            timeline.stage("predict"),
+            compilation_cache_scope(request.cache_dir),
+        ):
             result = backend.predict(request)
     except SystemExit as error:
         explanation = diagnose_oom(error)
@@ -452,17 +655,22 @@ def _predict_once(
             f"{backend.name} accepted padding but did not report the concrete "
             "shape profile it executed"
         )
+    # Six backends wrote six layouts; this puts every structure in the same
+    # place under the same name, and leaves everything else where it was.
+    with timeline.stage("write"):
+        result = normalize_output(
+            result,
+            job=_job_name(asked),
+            root=layout_root or request.output_dir,
+        )
     cost = {
         "seconds": round(time.perf_counter() - started, 2),
         "peak_bytes": device_peak_bytes(),
+        # One number for the run cannot say whether the eleven minutes went to
+        # an alignment search, a cold compile, or the sample schedule, and those
+        # call for three different responses.
+        "phases": timeline.summary(),
     }
-    # Six backends wrote six layouts; this puts every structure in the same
-    # place under the same name, and leaves everything else where it was.
-    result = normalize_output(
-        result,
-        job=_job_name(asked),
-        root=layout_root or request.output_dir,
-    )
     # Backends own their native layout, but the common result always reports
     # the directory this scalar request actually ran in.
     result = dataclasses.replace(result, output_dir=request.output_dir)

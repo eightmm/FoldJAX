@@ -147,6 +147,100 @@ request = PredictionRequest(model="protenix", input=job.write("job.json"))
 `Job.write` emits exactly the document above; `Job.read` takes either format
 back.
 
+Sequences are normalized where the document is validated: whitespace is
+removed, not trimmed, so a YAML block scalar (`sequence: |`) works; letters are
+upper-cased; a nucleic-acid sequence is checked against IUPAC and points at the
+offending position. Chain ids may be omitted entirely and are assigned `A`,
+`B`, ... in document order — an id that is *present but blank* is still an
+error, because that is a typo rather than an omission.
+
+**Or skip the file.** A sequence is the smallest thing anyone has, and it is
+enough:
+
+```bash
+uv run foldjax predict --model boltz2 --sequence MKTAYIAKQRQISFVK --ligand ATP
+uv run foldjax predict --model protenix --input target.fasta   # one chain per record
+uv run foldjax predict --model boltz2   --input 1abc.pdb       # re-fold a deposition
+uv run foldjax predict --model boltz2   --input jobs/          # a directory is a batch
+```
+
+A `.pdb` or `.mmcif` file is read for its **chemistry, never its coordinates**:
+polymer chains keep their sequences and names, non-water heteroatoms become CCD
+ligands, and the point is to predict the positions again. `.cif` needs the
+explicit `structure:1abc.cif` spelling, because that suffix is also a perfectly
+good name for a job document. A residue with no one-letter code is refused by
+name rather than dropped — express it as a `modifications` entry instead.
+
+`--sequence`/`--dna`/`--rna`/`--ligand`/`--ligand-smiles` and FASTA files are
+turned into an ordinary common-schema job under `$FOLDJAX_HOME/runtime/jobs/`
+and run through the same path as any other input, so `plan` prints the
+generated file and the manifest hashes it. FASTA records become protein chains
+unless `Job.from_fasta(path, kind="rna")` says otherwise: `ACGT` is a valid
+protein as well as valid DNA, and guessing would fold the wrong polymer
+silently. `--ligand` takes CCD codes and `--ligand-smiles` takes SMILES,
+separately, because `CCO` is both a plausible CCD code and ethanol.
+
+### Alignments
+
+A protein chain with no `unpaired_msa` is folded from its single sequence. That
+is unchanged and still the default — but it now says so, once per run, instead
+of being the invisible difference between a good prediction and a poor one.
+
+```bash
+uv run foldjax predict --model openfold3 --input job.yaml --msa auto
+```
+
+`--msa auto` searches the ColabFold MMseqs2 server for every protein chain that
+arrived without an alignment and caches the result under
+`$FOLDJAX_HOME/msa/`, keyed by sequence and search provenance. **It sends the
+sequence to a third-party server** — that is why it is opt-in and why nothing
+is searched by default; point `FOLDJAX_MSA_SERVER_URL` at your own instance for
+sequences that must not leave. The cache is not
+per model, so running one target through three backends searches once.
+`--msa required` fails instead of falling back, which is what a batch script
+wants: the silent fallback it guards against is a *successful* single-sequence
+run. `FOLDJAX_MSA_SERVER_URL` points at a different server, and the URL is part
+of the cache identity, so two servers never read each other's alignments.
+For sequences that must not leave the machine — and for RNA, which no public
+endpoint answers — point FoldJAX at a locally installed search instead:
+
+```bash
+export FOLDJAX_MSA_COMMAND="/opt/msa/run.sh"          # protein
+export FOLDJAX_RNA_MSA_COMMAND="/opt/msa/rna.sh"      # RNA
+export FOLDJAX_MSA_LOCAL_VERSION="uniref-2026-06"     # part of the cache identity
+```
+
+Each wrapper is called as `<command> --input query.fasta --output DIR` and
+writes `pairing.a3m` and `non_pairing.a3m` (`rna_msa.a3m` for the RNA one).
+Nothing is sent anywhere on this path. The version string is part of the cache
+key, so upgrading a database invalidates the alignments it produced instead of
+mixing generations. `foldjax doctor` prints which search is configured.
+
+### Templates and binding affinity
+
+```yaml
+entities:
+  - type: protein
+    id: [A]
+    sequence: ACDEFG
+    templates:
+      - mmcif: templates/5xyz.cif
+        query_indices: [1, 2, 3]
+        template_indices: [7, 8, 9]
+  - {type: ligand, id: [L], ccd: ATP}
+properties:
+  - affinity: {binder: L}
+```
+
+The two forms of a template are different inputs, not one input in two
+spellings. AlphaFold 3, Protenix and OpenDDE require the query→template residue
+map and refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a
+map it would have to ignore. Affinity reaches Boltz-2 alone — it is the only
+carried model with that head. OpenFold3 builds template features from its own
+pipeline and has no per-job field, so a template addressed to it is refused.
+`foldjax capabilities --model MODEL` reports both `common_schema_features` and
+`native_only_features` for exactly this reason.
+
 ## CLI
 
 ```bash
@@ -182,6 +276,64 @@ runs the job once per seed into `seed_<n>` directories and returns every
 structure together. Every run writes `foldjax_run.json` beside its structures:
 model, input SHA-256, resolved weights, the knobs actually used, and each
 structure's confidence.
+
+A run reports its stages on stderr and its results as a table on stdout:
+
+```
+[foldjax] protenix · job.yaml · seed 101
+  prepare input        1.2s
+  predict             6m18s
+  write                0.3s
+
+model     protenix        weights  protenix-v0.5.0
+samples   15              time     6m21s     peak  18.4 GiB
+seeds     101, 102, 103   msa      auto
+best      seed 102 / sample 01     ranking_score 0.873
+          seed-102_sample-01/job_seed-102_sample-01.cif
+```
+
+stdout stays JSON whenever it is not a terminal, so pipes and scripts are
+unchanged; `--json` forces it and `--quiet` silences the stage lines
+(`FOLDJAX_PROGRESS=0` does the same). The same stage timings are kept in
+`foldjax_run.json` under `cost.phases`, because "it took eleven minutes" cannot
+be acted on until it is split into a search, a compile and a schedule.
+`foldjax show <output-dir>` renders that table again later, for one run or a
+whole batch, from the manifests alone.
+
+Batches get two flags that only make sense per model/input pair:
+
+```bash
+uv run foldjax predict --model boltz2 --input jobs/ --resume --keep-going
+```
+
+`--resume` skips any run whose output directory already holds a finished
+`foldjax_run.json` — the manifest is written after the run, so its presence
+already means the run completed and no separate state file is needed. It works
+at **seed** granularity: every seed writes its own manifest, so a five-seed job
+that died on the fourth repeats only what is missing rather than all five.
+`--keep-going` runs the rest of the batch when one run fails and exits 3 if any
+did, instead of losing seventeen good predictions to the third one's OOM; what
+failed is recorded in `foldjax_failures.json` beside the runs that did not,
+because a successful run leaves a manifest behind and a failed one used to
+leave nothing at all.
+
+Both are request fields, not CLI-only flags:
+`PredictionRequest(resume=True, on_error="continue")`. `foldjax.predict_batch`
+returns a `BatchReport` with the results, the reused runs and the failures
+together; `foldjax.predict` keeps its original return type.
+
+Two commands answer the questions that used to need a failed run:
+
+```bash
+uv run foldjax models --for job.yaml   # which models can run this, and why not
+uv run foldjax doctor                  # install, accelerator, weights, templates
+uv run foldjax cache gc --older-than 30 --max-size 20G   # reports; --apply deletes
+```
+
+`models --for` is answered from the input translation table, so it needs no
+weights, no GPU and no network. `cache gc` reports by default and deletes only
+with `--apply`: cache entries are pure derived data, but they are still someone's
+disk.
 
 ### Optional shape padding
 
@@ -447,7 +599,9 @@ option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
 warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary. Predictions
 return summaries, not raw tensors -- the full-bin PAE/PDE logits are tens of
 GiB at long sequences and come back only on request
-(`return_confidence_logits=True`, `--include-raw`, or the raw `.npz` formats).
+(`--option return_confidence_logits=true` on Boltz-2, `--option
+include_raw=true` on OpenDDE, or the raw `.npz` output formats). Both are
+native option names passed through `--option`, not FoldJAX flags of their own.
 
 Leave a sampling knob unset and each backend runs its own upstream's released
 default -- which differ, deliberately: matching each upstream is the whole
@@ -474,8 +628,14 @@ not on that chart: it has no evolutionary trunk and no comparable schedule, so
 putting it on the same axes would compare two different questions.
 
 `foldjax.capabilities(model)` reports the scientific input and sampling
-surface. Its `input_requirements` mapping distinguishes dependencies by input
-format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
+surface. Two of its fields describe the *common schema* rather than the model:
+`common_schema_features` is what this backend's dialect can carry from a
+FoldJAX job document, and `native_only_features` names abilities the model has
+that the common document has no field for. Templates are the case that matters
+— five of the six backends support them and the common schema cannot express
+one, so those jobs need the model's native input format. `supports_templates`
+alone used to imply otherwise. Its `input_requirements` mapping distinguishes
+dependencies by input format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
 while its raw `native`, `openfold3`, and `foldjax` formats require the
 non-Torch `openfold3-preprocess` chemistry extra for JAX featurization.
 `foldjax.model_info(model)` adds execution choices and managed-weight
