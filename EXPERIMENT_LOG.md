@@ -697,3 +697,32 @@ layout (`pair_row_spec`), and locked in with a whole-stack probe at 2x2 and
 3x3 that fails when the literal is reinstated. Real weights end to end,
 1-D against 2-D on the same four devices: 3.7e-4 A max coordinate difference,
 confidence summaries equal to four decimals.
+
+## The workaround was the bug (2026-08-18)
+
+Context-parallel runs on GPU returned NaN for every confidence output while
+coordinates, distogram and both trunk representations stayed finite. A day of
+narrowing ruled out the obvious suspects one at a time -- kernel (XLA and
+cueq both), shard count (2 and 4), token count (9 and 1,003), layout (1-D and
+2-D), padding (a token count divisible by the mesh fails too), card (A5000
+and RTX 6000 Ada), and the code itself (CPU meshes are finite at every
+setting). An instrumented run then showed every *input* to the confidence
+head finite and every output NaN, which pointed inside the head.
+
+It was none of those. It was `XLA_FLAGS`:
+
+    --xla_gpu_enable_triton_gemm=false --xla_gpu_autotune_level=1  -> NaN
+    the same run with XLA_FLAGS removed                            -> finite
+
+`--xla_gpu_autotune_level` performs a correctness check on autotuned results
+at level 3 and above; at level 1 an algorithm is selected without it, and a
+GEMM that returns garbage is never rejected. Nothing in the port was wrong.
+
+The deeper mistake is procedural, and it is worth more than the fix. When the
+first multi-GPU runs hung, two workarounds went in at once -- these XLA flags
+and `NCCL_P2P_DISABLE=1` -- and both were then carried as required. Only one
+was: the hang was the NCCL peer-to-peer deadlock, and a run with P2P disabled
+and no XLA flags completes fine. The unnecessary half sat there quietly
+corrupting a whole class of outputs, and it was written into the CHANGELOG as
+advice. Two workarounds applied together must be removed one at a time before
+either is believed.

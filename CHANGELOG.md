@@ -37,10 +37,12 @@ command predicts unless it says so here, in its own paragraph.
   OOMs one 24 GB card completes at CP=4 with balanced per-device peaks of
   11.7 GiB (bf16) / 18.0 GiB (fp32) -- 2.53x below the 45.5 GiB single-device
   fp32 peak, the gap to 4x being the triangle-mult all-gather that a future
-  ring pass reclaims. Multi-GPU runs need `NCCL_P2P_DISABLE=1` and
-  `--xla_gpu_enable_triton_gemm=false --xla_gpu_autotune_level=1` on the
-  tested nodes, and homogeneous cards (a mixed H100/RTX mesh is refused by
-  XLA). Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
+  ring pass reclaims. Multi-GPU runs need `NCCL_P2P_DISABLE=1` on the tested
+  nodes, and homogeneous cards (a mixed H100/RTX mesh is refused by XLA).
+  **Do not lower `--xla_gpu_autotune_level`**: at level 1 XLA selects
+  autotuned GEMMs without the correctness check it runs from level 3, and a
+  context-parallel job then returns NaN for every confidence output while its
+  coordinates stay finite. The same job with the flag removed is finite. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
   3x 96 GB because the fp32 diffusion side's atom-window gathers pull full
   pair tensors per device; sharding those consumers is the next lever.
 - **The square context-parallel grid (`--cp-layout 2d`).** Fold-CP's own
