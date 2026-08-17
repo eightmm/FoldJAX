@@ -726,3 +726,15 @@ and no XLA flags completes fine. The unnecessary half sat there quietly
 corrupting a whole class of outputs, and it was written into the CHANGELOG as
 advice. Two workarounds applied together must be removed one at a time before
 either is believed.
+
+**Correction, an hour later: the flags were not the cause.** The A/B above was
+a single pair of runs, and it read cleanly -- flags on, NaN; flags off,
+finite. A later run of the *same* flag-free configuration produced NaN again,
+this time including the coordinates. So the failure is intermittent, the
+one-pair comparison was luck, and the autotune flag is exonerated as the sole
+cause. What is established is narrower and worse: context-parallel runs on
+these GPUs intermittently produce non-finite output, single-device runs do
+not, and CPU meshes never do. The next measurement is frequency -- the same
+job repeated five times at CP=4 and three times at CP=1 -- because a rate is
+what tells a race apart from a threshold. The CHANGELOG now says multi-GPU
+output is unvalidated rather than naming a cause it cannot support.

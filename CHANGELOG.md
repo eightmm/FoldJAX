@@ -39,10 +39,13 @@ command predicts unless it says so here, in its own paragraph.
   fp32 peak, the gap to 4x being the triangle-mult all-gather that a future
   ring pass reclaims. Multi-GPU runs need `NCCL_P2P_DISABLE=1` on the tested
   nodes, and homogeneous cards (a mixed H100/RTX mesh is refused by XLA).
-  **Do not lower `--xla_gpu_autotune_level`**: at level 1 XLA selects
-  autotuned GEMMs without the correctness check it runs from level 3, and a
-  context-parallel job then returns NaN for every confidence output while its
-  coordinates stay finite. The same job with the flag removed is finite. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
+  **Multi-GPU output is not yet trustworthy on the tested nodes**: a
+  context-parallel run intermittently returns NaN for the confidence outputs,
+  and sometimes for the coordinates too, while the identical command succeeds
+  on other attempts. The failure is nondeterministic and not yet isolated --
+  it survives removing `--xla_gpu_autotune_level=1`, which an earlier
+  single comparison had implicated. Treat multi-GPU results as unvalidated
+  until this is resolved; single-device runs are unaffected. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
   3x 96 GB because the fp32 diffusion side's atom-window gathers pull full
   pair tensors per device; sharding those consumers is the next lever.
 - **The square context-parallel grid (`--cp-layout 2d`).** Fold-CP's own
