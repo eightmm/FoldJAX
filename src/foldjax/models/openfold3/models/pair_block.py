@@ -18,6 +18,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models.openfold3.models.primitives import (
     SwiGLUTransitionParams,
     swiglu_transition,
@@ -88,6 +89,10 @@ def tri_att_start_end(
         chunk_size=chunk_size,
     )
     z = jnp.swapaxes(z, -2, -3)
+    # The Fold-CP transpose exchange: the ending-node update treats columns as
+    # rows, so under context parallelism the sharded axis moves with the
+    # transpose (an all-to-all under the partitioner, an identity otherwise).
+    z = shard_pair_rows(z)
     z = z + triangle_attention(
         z,
         params.tri_att_end,
@@ -97,7 +102,7 @@ def tri_att_start_end(
         eps=eps,
         chunk_size=chunk_size,
     )
-    return jnp.swapaxes(z, -2, -3)
+    return shard_pair_rows(jnp.swapaxes(z, -2, -3))
 
 
 def pair_block(
@@ -130,6 +135,17 @@ def pair_block(
     Returns:
         ``[..., N, N, C_z]`` updated pair representation.
     """
+    # Under context parallelism the pair representation is sharded along its
+    # rows; pinning it here keeps every block of every stack -- trunk, MSA,
+    # template, confidence re-embedding -- on the same layout. The transition's
+    # row chunking is disabled in that mode: `map_row_chunks` is a `lax.map`
+    # over slices of the sharded axis, which the partitioner could only
+    # satisfy by gathering the whole tensor, and the sharding already divides
+    # the widened intermediate by the mesh size. Triangle attention keeps its
+    # chunk: its blocked loop runs *inside* the shard_map, on local rows,
+    # where it still bounds the score tensor.
+    z = shard_pair_rows(z)
+    transition_chunk = None if cp_mesh() is not None else chunk_size
     if tri_mul_first:
         z = tri_mul_out_in(z, params, pair_mask=pair_mask, eps=eps)
         z = tri_att_start_end(
@@ -164,7 +180,7 @@ def pair_block(
             ),
             z,
             pair_mask,
-            chunk_size=chunk_size,
+            chunk_size=transition_chunk,
             row_axes=(-3, -2),
         )
     return z + map_row_chunks(
@@ -172,5 +188,5 @@ def pair_block(
             rows, params.pair_transition, mask=None, eps=eps
         ),
         z,
-        chunk_size=chunk_size,
+        chunk_size=transition_chunk,
     )

@@ -46,6 +46,8 @@ def _predict(
     chunk_policy: ChunkPolicyName = "auto",
     chunk_overrides: Mapping[str, int | None] | None = None,
     graph_jit: bool = True,
+    cp_shards: int = 1,
+    cp_layout: str = "auto",
     trunk_dtype: Any = None,
     # The summaries come out of the graph; the raw logits only when a raw dump
     # was asked for. `_score` passes precomputed summaries straight through.
@@ -78,6 +80,11 @@ def _predict(
             features,
             n_cycle=n_cycle,
             seed=seed,
+        )
+    if cp_shards > 1 and not graph_jit:
+        raise ValueError(
+            "context parallelism requires the compiled graph; "
+            "drop --no-graph-jit or --cp-devices"
         )
     infer = opendde_infer_compiled if graph_jit else opendde_infer_static
     # Rolling the repeated stacks into `lax.scan` only pays once the whole graph
@@ -163,6 +170,8 @@ def _predict(
         single_att_q_chunk_size=chunks.single_att_q_chunk_size,
         token_q_chunk_size=chunks.token_q_chunk_size,
         cycle_msa_features=sampled or None,
+        cp_shards=cp_shards,
+        cp_layout=cp_layout,
         trunk_dtype=trunk_dtype,
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
@@ -251,6 +260,24 @@ def main(
         help="trace the model op by op instead of as one compiled graph; "
         "much slower, kept for debugging and numerical comparison",
     )
+    parser.add_argument(
+        "--cp-devices",
+        type=int,
+        default=1,
+        help="shard the pair representations across this many JAX devices "
+        "(context parallelism, the JAX form of upstream's Fold-CP); needs "
+        "that many visible devices and trades collective traffic for pair "
+        "memory per device",
+    )
+    parser.add_argument(
+        "--cp-layout",
+        choices=("auto", "1d", "2d"),
+        default="auto",
+        help="how the pair axes are split: '2d' is Fold-CP's square grid "
+        "(rows and columns, O(N^2/P) per device, needs a square device "
+        "count), '1d' splits rows only. 'auto' picks 2d when the device "
+        "count is a perfect square.",
+    )
     parser.add_argument("--triangle-mul-chunk-size", type=int)
     parser.add_argument("--triangle-att-q-chunk-size", type=int)
     parser.add_argument("--single-att-q-chunk-size", type=int)
@@ -327,6 +354,8 @@ def main(
         raise SystemExit(f"missing native weights: {args.weights}")
     if args.n_sample < 1 or args.n_step < 1 or args.n_cycle < 1:
         raise SystemExit("n-sample, n-step, and n-cycle must be positive")
+    if args.cp_devices < 1:
+        raise SystemExit("cp-devices must be positive")
     for path, env_name, label in (
         (
             args.components_cif,
@@ -495,6 +524,8 @@ def main(
                         "token_q_chunk_size": args.token_q_chunk_size,
                     },
                     graph_jit=not args.no_graph_jit,
+                    cp_shards=args.cp_devices,
+                    cp_layout=args.cp_layout,
                     # Without asym_id the per-chain loops cannot be sized on
                     # the host, and the in-graph summaries need exactly that;
                     # fall back to raw logits + host scoring, the old contract.

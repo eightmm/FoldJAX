@@ -202,6 +202,22 @@ def main(
         help="trace the model op by op instead of as one compiled graph; "
         "much slower, kept for debugging and numerical comparison",
     )
+    parser.add_argument(
+        "--cp-devices",
+        type=int,
+        default=1,
+        help="shard the pair representations across this many JAX devices "
+        "(context parallelism, the JAX form of OpenDDE's Fold-CP); needs "
+        "that many visible devices",
+    )
+    parser.add_argument(
+        "--cp-layout",
+        choices=("auto", "1d", "2d"),
+        default="auto",
+        help="how the pair axes are split: '2d' is Fold-CP's square grid "
+        "(needs a square device count), '1d' splits rows only, 'auto' picks "
+        "2d when the device count is a perfect square.",
+    )
     parser.add_argument("--include-trunk", action="store_true")
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument(
@@ -790,6 +806,8 @@ def main(
                 guidance_config=guidance_config,
                 guidance_features=guidance_features,
                 graph_jit=not args.no_graph_jit,
+                cp_shards=args.cp_devices,
+                cp_layout=args.cp_layout,
                 padded_generated_schema=padding_plan is not None,
                 init_noise=init_noise,
                 step_noises=step_noises,

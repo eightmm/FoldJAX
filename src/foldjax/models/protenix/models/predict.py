@@ -84,6 +84,8 @@ def protenix_predict_static(
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     graph_jit: bool = True,
+    cp_shards: int = 1,
+    cp_layout: str = "auto",
     padded_generated_schema: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """Run the static-feature Protenix inference graph.
@@ -114,6 +116,11 @@ def protenix_predict_static(
             sigma_data=sigma_data,
         )
         guided = guidance_config is not None and guidance_config.get("enable")
+        if cp_shards > 1 and (not graph_jit or guided):
+            raise ValueError(
+                "context parallelism requires the compiled graph; drop "
+                "--no-graph-jit/guidance or cp_shards"
+            )
         if graph_jit and not guided:
             infer = protenix_infer_compiled
             # Rolling the repeated stacks into `lax.scan` only pays once the whole
@@ -126,7 +133,11 @@ def protenix_predict_static(
         else:
             infer = protenix_infer_static
         compiled_only_kwargs = (
-            {"padded_generated_schema": padded_generated_schema}
+            {
+                "padded_generated_schema": padded_generated_schema,
+                "cp_shards": cp_shards,
+                "cp_layout": cp_layout,
+            }
             if infer is protenix_infer_compiled
             else {}
         )

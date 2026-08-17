@@ -15,6 +15,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.diffusion.atom import (
     gather_rep_atoms_to_tokens,
     gather_tokens_to_atoms,
@@ -153,7 +154,10 @@ def confidence_module_forward(
     boundaries = params["boundaries"]
     distogram = jnp.sum(d[..., None] > boundaries, axis=-1).astype(jnp.int32)
     distogram = params["dist_bin_pairwise_embed"][distogram]
-    z = z + distogram
+    # Born sharded under context parallelism: the head's z assembly above
+    # (relpos, bonds, outer sums, distogram) otherwise materializes whole on
+    # every device before the stack's own seams take over.
+    z = shard_pair_rows(z + distogram)
 
     mask = jnp.repeat(feats["token_pad_mask"].astype(jnp.float32), multiplicity, axis=0)
     pair_mask = mask[:, :, None] * mask[:, None, :]

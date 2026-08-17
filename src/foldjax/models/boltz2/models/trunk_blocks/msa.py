@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.primitives._scan_utils import stack_layer_params
@@ -478,6 +479,9 @@ def pairformer_no_seq_layer_forward(
 ) -> jnp.ndarray:
     """Run Boltz PairformerNoSeqLayer in eval mode."""
 
+    # Row-sharded under context parallelism; identity otherwise. Same seam as
+    # `pairformer_layer_forward`.
+    z = shard_pair_rows(z)
     tri_att_chunk = resolve_triangle_attention_chunk(
         z.shape[1], chunk_size, triangle_attention_chunk
     )

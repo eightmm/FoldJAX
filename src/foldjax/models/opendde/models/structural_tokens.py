@@ -8,6 +8,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
@@ -153,13 +154,21 @@ def structural_token_expand(
     )
 
     pair = build_structural_pair_features(input_features)
-    z_parent = jnp.take(jnp.take(z_res, parent, axis=-3), parent, axis=-2)
+    # Row gather first, column gather second. Under context parallelism the
+    # row gather crosses shards -- the partitioner satisfies it by gathering
+    # the *residue* pair tensor, the smaller of the two by ~3.8x -- and the
+    # constraint between the takes re-shards immediately, so the structural
+    # pair tensor is born sharded and the column gather is shard-local.
+    z_parent = shard_pair_rows(jnp.take(z_res, parent, axis=-3))
+    z_parent = shard_pair_rows(jnp.take(z_parent, parent, axis=-2))
     z_struct = z_parent + _pair_project_by_role(
         z_parent,
         role,
         params.pair_block_proj.astype(z_parent.dtype),
     )
-    z_struct = z_struct + _pair_embedding_bias(pair, params, z_parent.dtype)
+    z_struct = shard_pair_rows(
+        z_struct + _pair_embedding_bias(pair, params, z_parent.dtype)
+    )
     pair["structural_pair_attn_bias"] = _pair_attention_bias(
         pair, params, z_parent.dtype
     )
@@ -195,6 +204,25 @@ def _pair_project_by_role(
             "pair_block_proj must have shape [roles, roles, C_out, C_in], got "
             f"{pair_block_proj.shape} for z={z.shape}"
         )
+
+    if cp_mesh() is not None:
+        # The row-by-row `lax.map` iterates the sharded axis, which the
+        # partitioner could only satisfy by gathering the whole pair tensor
+        # onto every device. Summing over the 7 column roles instead keeps
+        # each term a plain batched matmul over rows -- partitionable -- at
+        # the cost of projecting every pair once per role. The selected
+        # weights stay [N, C_out, C_in], never [N, N, C_out, C_in].
+        row_weights = pair_block_proj[role]
+        one_hot_cols = (
+            role[:, None] == jnp.arange(pair_block_proj.shape[1])[None, :]
+        ).astype(z.dtype)
+        out = jnp.zeros(z.shape[:-1] + (pair_block_proj.shape[-2],), dtype=z.dtype)
+        for column_role in range(pair_block_proj.shape[1]):
+            projected = jnp.einsum(
+                "...ijc,ioc->...ijo", z, row_weights[:, column_role]
+            )
+            out = out + projected * one_hot_cols[None, :, column_role, None]
+        return shard_pair_rows(out)
 
     rows = jnp.moveaxis(z, -3, 0)
 

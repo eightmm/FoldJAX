@@ -130,7 +130,15 @@ class OpenFold3Backend(Backend):
     name = "openfold3"
     padding_axes = ("tokens", "atoms", "msa", "templates")
     native_options = frozenset(
-        {"ccd_file_path", "no_compile", "pair_chunk_size", "prefix", "query_id"}
+        {
+            "ccd_file_path",
+            "cp_devices",
+            "cp_layout",
+            "no_compile",
+            "pair_chunk_size",
+            "prefix",
+            "query_id",
+        }
     )
     # OpenFold3 spells these `no_rollout_steps` and `num_cycles`, which is what
     # `released_config` takes and what `predict` below pops. Mapping them onto
@@ -269,6 +277,12 @@ class OpenFold3Backend(Backend):
         depth = options.pop("max_msa_depth", None)
         if depth is not None:
             overrides["msa_depth"] = int(depth)
+        cp_devices = options.pop("cp_devices", None)
+        if cp_devices is not None:
+            overrides["cp_shards"] = int(cp_devices)
+        cp_layout = options.pop("cp_layout", None)
+        if cp_layout is not None:
+            overrides["cp_layout"] = str(cp_layout)
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
         # Upstream subsamples inside `MSAModuleEmbedder.forward`; this port does it
         # on the host, before the alignment reaches the device. Unconditional, so
@@ -297,6 +311,11 @@ class OpenFold3Backend(Backend):
         )
         kernel = options.pop("triangle_kernel", None)
         compile_it = _compile_enabled(options)
+        if getattr(config, "cp_shards", 1) > 1 and not compile_it:
+            raise ValueError(
+                "context parallelism requires the compiled graph; drop "
+                "no_compile or cp_devices"
+            )
         if options:
             raise ValueError(f"unsupported OpenFold3 options: {', '.join(options)}")
 

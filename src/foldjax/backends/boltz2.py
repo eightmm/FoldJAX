@@ -129,6 +129,8 @@ class Boltz2Backend(Backend):
             "affinity_steps",
             "affinity_weights",
             "bucket",
+            "cp_devices",
+            "cp_layout",
             "feature_cache",
             "glu_backend",
             "mols",
@@ -167,6 +169,8 @@ class Boltz2Backend(Backend):
         "steps",
         "recycling",
         "diffusion_samples",
+        "cp_devices",
+        "cp_layout",
         "affinity_steps",
         "affinity_diffusion_samples",
         "compute_dtype",
@@ -183,6 +187,14 @@ class Boltz2Backend(Backend):
             # step therefore produces a NaN schedule and only fails after an
             # expensive model compile; reject it while planning instead.
             _strict_integer(options["steps"], name="steps", minimum=2)
+        if "cp_devices" in options:
+            _strict_integer(options["cp_devices"], name="cp_devices", minimum=1)
+        if "cp_layout" in options and options["cp_layout"] not in {
+            "auto",
+            "1d",
+            "2d",
+        }:
+            raise ValueError("cp_layout must be one of 'auto', '1d', or '2d'")
         for name in (
             "affinity_mw_correction",
             "bucket",

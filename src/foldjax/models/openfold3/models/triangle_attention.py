@@ -14,7 +14,9 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 
+from foldjax.models._cp import cp_mesh, cp_row_shards, pair_row_spec, shard_pair_rows
 from foldjax.models.openfold3.models.attention import (
     AttentionParams,
     attention,
@@ -116,6 +118,32 @@ def triangle_attention(
     Returns:
         ``[..., I, J, C_in]`` update. Upstream returns the update only.
     """
+    if cp_mesh() is not None:
+        # The fused kernel is an FFI call the SPMD partitioner cannot split --
+        # the same constraint upstream Fold-CP states as "torch kernels only".
+        # An *unset* backend resolves to the blocked XLA path instead of the
+        # cueq environment default; an explicit request is honoured, because
+        # inside `shard_map` the kernel runs on whole local rows.
+        if backend is None and "OPENFOLD3_TRIANGLE_BACKEND" not in os.environ:
+            backend = "xla"
+        elif backend is None:
+            backend = _default_backend()
+        if backend not in {"xla", "cueq"}:
+            raise ValueError(
+                "context-parallel triangle attention supports the XLA and "
+                f"cueq backends; got {backend!r}."
+            )
+        return _triangle_attention_cp(
+            x,
+            params,
+            no_heads=no_heads,
+            mask=mask,
+            starting=starting,
+            inf=inf,
+            eps=eps,
+            chunk_size=chunk_size,
+            local_backend=backend,
+        )
     if backend is None:
         backend = _default_backend()
     if backend not in {"xla", "cueq"}:
@@ -265,3 +293,108 @@ def _chunked_attention(
         (flat_x.shape[0], n_chunks * chunk_size, *chunks.shape[-2:])
     )
     return merged[:, :rows].reshape((*lead, rows, *chunks.shape[-2:]))
+
+
+def _triangle_attention_cp(
+    x: jnp.ndarray,
+    params: TriangleAttentionParams,
+    *,
+    no_heads: int,
+    mask: jnp.ndarray | None,
+    starting: bool,
+    inf: float,
+    eps: float,
+    chunk_size: int | None,
+    local_backend: str = "xla",
+) -> jnp.ndarray:
+    """Triangle attention with the row axis sharded across the ``cp`` mesh.
+
+    Each row of the pair representation is an independent attention, so a row
+    shard needs no other shard's queries, keys or values -- the one cross-row
+    input is the triangle bias, whose ``[i, j]`` indices read every row. The
+    bias is therefore projected from the sharded tensor in its cheapest form
+    (``heads`` channels, not ``C``) and handed to every shard whole, and the
+    existing blocked row loop runs unchanged on each device's local rows. This
+    is the one routing the SPMD partitioner cannot derive on its own: the
+    chunked path slices the sharded axis at traced offsets, which a
+    constraint-only program could satisfy only by gathering the whole pair
+    tensor back onto every device.
+
+    Leading batch axes (the template stack's ``[N_templ, N, N, C_t]``, the
+    confidence re-embedding's sample axis) stay unsharded; only the row axis
+    at ``-3`` is split.
+    """
+    mesh = cp_mesh()
+    if mask is None:
+        mask = jnp.ones(x.shape[:-1], dtype=x.dtype)
+    if not starting:
+        x = jnp.swapaxes(x, -2, -3)
+        mask = jnp.swapaxes(mask, -1, -2)
+    # The reshard after a transpose is the Fold-CP "transpose exchange":
+    # ending-node attention runs on columns, so the columns become the
+    # sharded rows.
+    x = shard_pair_rows(x, row_axis=-3)
+
+    x = layer_norm(x, params.layer_norm, eps=eps)
+    mask_bias = (inf * (mask - 1.0))[..., :, None, None, :]
+    triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
+    triangle_bias = jnp.expand_dims(triangle_bias, -4)
+
+    # `shard_map` requires the sharded axis to divide evenly; pad the rows and
+    # slice them back. The mask bias is padded with zeros, not -inf: a fully
+    # masked row makes softmax divide by zero, and the padded rows are
+    # discarded either way.
+    n_rows = x.shape[-3]
+    pad = (-n_rows) % cp_row_shards()
+    if pad:
+        width = [(0, 0)] * x.ndim
+        width[-3] = (0, pad)
+        x = jnp.pad(x, width)
+        bias_width = [(0, 0)] * mask_bias.ndim
+        bias_width[-4] = (0, pad)
+        mask_bias = jnp.pad(mask_bias, bias_width)
+
+    def local_rows(x_l, mask_bias_l, bias_l, params_l):
+        if local_backend == "cueq":
+            # Each device holds whole rows here, which is exactly the layout
+            # the fused kernel takes; it never sees the sharded axis.
+            return _cueq_attention(
+                x_l, mask_bias_l, bias_l, params_l.mha, no_heads=no_heads
+            )
+        if chunk_size is None:
+            return attention(
+                x_l,
+                x_l,
+                params_l.mha,
+                no_heads=no_heads,
+                biases=(mask_bias_l, bias_l),
+            )
+        return _chunked_attention(
+            x_l,
+            mask_bias_l,
+            bias_l,
+            params_l.mha,
+            no_heads=no_heads,
+            chunk_size=chunk_size,
+        )
+
+    out = jax.shard_map(
+        local_rows,
+        mesh=mesh,
+        in_specs=(
+            pair_row_spec(x.ndim, row_axis=-3),
+            pair_row_spec(mask_bias.ndim, row_axis=-4),
+            PartitionSpec(),
+            PartitionSpec(),
+        ),
+        out_specs=pair_row_spec(x.ndim, row_axis=-3),
+    )(x, mask_bias, triangle_bias, params)
+    if pad:
+        # Slicing the padded rows away would otherwise let the partitioner
+        # fall back to a replicated result.
+        out = shard_pair_rows(
+            jax.lax.slice_in_dim(out, 0, n_rows, axis=-3), row_axis=-3
+        )
+    if not starting:
+        out = jnp.swapaxes(out, -2, -3)
+    return out

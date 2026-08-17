@@ -19,6 +19,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.openfold3.models.input_embedders import (
     InputEmbedderParams,
     MSAEmbedderParams,
@@ -130,6 +131,11 @@ def trunk(
         eps=eps,
     )
 
+    # Shard the pair state from its first materialization: `z_init` stays live
+    # across every recycle as the recycling residual, so its layout decides
+    # whether the carry ever exists whole on one device.
+    z_init = shard_pair_rows(z_init)
+
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
 
@@ -148,8 +154,9 @@ def trunk(
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         s, z = carry
         # Initial embedding plus a projection of the previous cycle, not a sum.
-        z = z_init + linear(
-            layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z
+        z = shard_pair_rows(
+            z_init
+            + linear(layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z)
         )
 
         # Templates fold into z between the recycling projection and the MSA

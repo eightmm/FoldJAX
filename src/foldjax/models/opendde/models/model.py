@@ -10,6 +10,17 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import (
+    context_parallel,
+    replicate_tree,
+    shard_pair_rows,
+)
+from foldjax.models._cp import (
+    cp_layout as _active_cp_layout,
+)
+from foldjax.models._cp import (
+    cp_shards as _active_cp_shards,
+)
 from foldjax.models._graph import (
     merge_static_flags,
     split_static_flags,
@@ -445,6 +456,15 @@ def opendde_infer_static(
     validate_feature_values: bool = True,
     return_representations: bool = False,
     trunk_dtype: jnp.dtype | None = None,
+    #: Context-parallel shard count. More than one requires an active
+    #: `foldjax.models._cp.context_parallel` mesh of the same size; the value
+    #: is also a static argument so a mesh change is a retrace, never a stale
+    #: cache hit. `opendde_infer_compiled` manages both together.
+    cp_shards: int = 1,
+    #: Sharding layout of the context-parallel mesh: ``"1d"`` splits pair rows
+    #: only, ``"2d"`` splits rows and columns on Fold-CP's square grid.
+    #: Carried as a static argument so a layout change is a retrace.
+    cp_layout: str = "1d",
 ) -> dict[str, jnp.ndarray]:
     """Run OpenDDE from already-featurized, unbatched static inputs.
 
@@ -454,6 +474,24 @@ def opendde_infer_static(
     model function.
     """
 
+    if cp_layout != (_active_cp_layout() or "1d"):
+        raise RuntimeError(
+            f"cp_layout={cp_layout!r} but the active mesh is "
+            f"{_active_cp_layout()!r}"
+        )
+    if cp_shards != _active_cp_shards():
+        raise RuntimeError(
+            f"cp_shards={cp_shards} but the active context-parallel mesh has "
+            f"{_active_cp_shards()} shard(s); run through "
+            "opendde_infer_compiled or activate context_parallel() yourself"
+        )
+    # Triangle backends are NOT overridden for context parallelism. Attention
+    # keeps whatever kernel is configured -- `_triangle_attention_cp` runs it
+    # per-shard inside `shard_map`, where each device holds whole rows -- and
+    # triangle multiplication falls back to the partitionable XLA einsum on
+    # its own inside `triangle_multiplication` when a mesh is active. Forcing
+    # a value here also made PROTENIX_TRIANGLE_BACKEND inert, so an A/B that
+    # set it compared a backend against itself.
     n_residue_token, n_structural_token, n_atom = _validate_static_structural_features(
         input_feature_dict,
         require_residue_confidence_mask=run_confidence,
@@ -559,6 +597,10 @@ def opendde_infer_static(
         trunk_features,
         structural_pair_features,
     )
+    # The structural relp is [N_s, N_s, 139] and feeds the diffusion
+    # conditioning's pair projection; born sharded, that projection stays
+    # shard-local.
+    structural_features["relp"] = shard_pair_rows(structural_features["relp"])
     structural_pair_bias = structural_features.get("structural_pair_attn_bias")
     expected_pair_shape = (n_structural_token, n_structural_token)
     if structural_pair_bias is None or tuple(structural_pair_bias.shape) != (
@@ -604,6 +646,7 @@ def opendde_infer_static(
     )
     if structural_pair_mask is not None:
         pair_z = pair_z * structural_pair_mask.astype(pair_z.dtype)[..., None]
+    pair_z = shard_pair_rows(pair_z)
     p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
         structural_features["atom_to_token_idx"],
         structural_features["ref_pos"],
@@ -755,6 +798,8 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_decoder_heads",
     "atom_encoder_heads",
     "confidence_triangle_attention_backend",
+    "cp_layout",
+    "cp_shards",
     "run_confidence_scores",
     "n_chain",
     "return_confidence_logits",
@@ -839,11 +884,35 @@ def opendde_infer_compiled(
         require_residue_confidence_mask=kwargs.get("run_confidence", True),
     )
     param_arrays, treedef, flags = split_static_flags(params)
-    return _compiled_opendde_infer(
-        traceable_features(input_feature_dict),
-        param_arrays,
-        noise_schedule,
-        params_treedef=treedef,
-        params_flags=flags,
-        **kwargs,
-    )
+    cp = int(kwargs.pop("cp_shards", 1))
+    layout = str(kwargs.pop("cp_layout", "auto"))
+    if layout == "auto":
+        # "auto" stays on the 1-D layout for now. The 2-D grid is the better
+        # design and is verified on CPU meshes at 2x2 and 3x3, but every
+        # measurement published for this feature -- the size ladders, the
+        # per-device peaks -- was taken on the 1-D layout, and a default that
+        # silently changes the program would make those numbers describe a
+        # configuration nobody can reproduce. Ask for "2d" explicitly; this
+        # flips once the square grid has its own GPU parity and memory
+        # evidence.
+        layout = "1d"
+    with context_parallel(cp, layout=layout):
+        if cp > 1:
+            # A checkpoint committed to one device fails the multi-device
+            # jit's device-assignment check; everything token-linear is
+            # replicated onto the mesh, and the graph's own constraints
+            # shard the pair-shaped state from its first materialization.
+            param_arrays = replicate_tree(param_arrays)
+            input_feature_dict = replicate_tree(input_feature_dict)
+            noise_schedule = replicate_tree(noise_schedule)
+            kwargs = replicate_tree(kwargs)
+        return _compiled_opendde_infer(
+            traceable_features(input_feature_dict),
+            param_arrays,
+            noise_schedule,
+            params_treedef=treedef,
+            params_flags=flags,
+            cp_shards=cp,
+            cp_layout=layout,
+            **kwargs,
+        )

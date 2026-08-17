@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._scan_utils import stack_layer_params
 from foldjax.models.boltz2.models.primitives.attention import (
@@ -118,6 +119,11 @@ def pairformer_layer_forward(
     (default, bit-exact) or ``"pallas"`` (opt-in GPU flash kernel).
     """
 
+    # Under context parallelism the pair representation is sharded along its
+    # rows; pinning it at every layer entry keeps the whole stack on one
+    # layout without the partitioner re-deriving it per consumer. Identity
+    # when no mesh is active.
+    z = shard_pair_rows(z)
     tri_att_chunk = resolve_triangle_attention_chunk(
         z.shape[1], chunk_size, triangle_attention_chunk
     )

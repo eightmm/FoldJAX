@@ -7,6 +7,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
@@ -157,6 +158,9 @@ def pairformer_output_from_s_inputs(
     relp = input_feature_dict.get("relp")
     if relp is None:
         relp = relative_position_features(input_feature_dict)
+    # [N, N, 139] and consumed by a linear projection into `z_init`; born
+    # sharded, the projection is shard-local instead of transiently whole.
+    relp = shard_pair_rows(relp)
     s_init, z_init = trunk_initial_embeddings(
         s_inputs,
         relp,
@@ -177,7 +181,10 @@ def pairformer_output_from_s_inputs(
     # boundary (`prev['pair'].astype(pair_activations.dtype)`) rather than
     # trying to keep every internal op from widening.
     s_init = s_init.astype(trunk_dtype)
-    z_init = z_init.astype(trunk_dtype)
+    # Shard the pair state from its first materialization: `z_init` stays live
+    # across every recycle as the recycling residual, so its layout decides
+    # whether the carry ever exists whole on one device.
+    z_init = shard_pair_rows(z_init.astype(trunk_dtype))
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
@@ -252,7 +259,7 @@ def pairformer_output_from_s_inputs(
         # went in. Under `lax.scan` that is not merely wasteful, it is a type
         # error -- the carry has to close. Cast at the boundary, as AlphaFold 3
         # does, rather than chasing every internal widening.
-        return (s.astype(trunk_dtype), z.astype(trunk_dtype)), None
+        return (s.astype(trunk_dtype), shard_pair_rows(z.astype(trunk_dtype))), None
 
     # Recycling is the same computation every cycle, differing only in the carry and
     # -- when the alignment is resampled per cycle -- in the MSA features. Both are

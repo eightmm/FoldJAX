@@ -8,6 +8,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
@@ -1208,9 +1209,16 @@ def confidence_head_single_sample(
         s_inputs,
         params.linear_s2,
     )[..., None, :, :]
-    z_pair = z_base + z_init + confidence_distance_embedding(
-        x_pred_rep_coords,
-        params.distance_embedding,
+    # Born sharded under context parallelism: the distance embedding and the
+    # outer-sum init are otherwise materialized whole on every device before
+    # the stack's own constraints take over.
+    z_pair = shard_pair_rows(
+        z_base
+        + z_init
+        + confidence_distance_embedding(
+            x_pred_rep_coords,
+            params.distance_embedding,
+        )
     )
     if params.pairformer_stack.blocks:
         s_single, z_pair = pairformer_stack(

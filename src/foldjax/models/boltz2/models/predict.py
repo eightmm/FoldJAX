@@ -24,6 +24,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh
 from foldjax.models.boltz2.models.heads.affinity import affinity_module_forward
 from foldjax.models.boltz2.models.heads.bfactor import bfactor_forward
 from foldjax.models.boltz2.models.heads.confidence import confidence_module_forward
@@ -85,6 +86,14 @@ def boltz2_predict(
     function directly with the same trunk/sample tensors.
     """
     multiplicity = int(sample_kwargs.pop("multiplicity", 1))
+    if cp_mesh() is not None and (
+        str(sample_kwargs.get("triangle_backend", "cueq")) == "cueq"
+    ):
+        # Under context parallelism the fused kernel default resolves to the
+        # blocked XLA path -- the cueq FFI call cannot be partitioned. An
+        # explicitly requested pallas/tokamax backend still fails loudly in
+        # the triangle modules.
+        sample_kwargs["triangle_backend"] = "xla"
     if affinity_params is None and "affinity" in params:
         affinity_params = params["affinity"]
     return_pair_chains_iptm = bool(sample_kwargs.pop("return_pair_chains_iptm", True))

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models.atom import atom_encoder, one_hot_atom_features
@@ -605,11 +606,17 @@ def predict(
         trunk_params,
         "token_bonds",
     )
-    z_init = z_init + rel_pos + token_bonds_encoding
+    # Born sharded under context parallelism: `z_init` re-enters the
+    # recurrence every loop, `rel_pos` is reused by the diffusion cache and
+    # the confidence head, and the LM pair feeds the lm-encoder trunk.
+    rel_pos = shard_pair_rows(rel_pos)
+    z_init = shard_pair_rows(z_init + rel_pos + token_bonds_encoding)
 
     lm_pair = None
     if lm_hidden_states is not None:
-        lm_pair = language_model_pair(lm_hidden_states.astype(compute), trunk_params)
+        lm_pair = shard_pair_rows(
+            language_model_pair(lm_hidden_states.astype(compute), trunk_params)
+        )
 
     pair_mask = (
         token_mask[:, :, None].astype(jnp.float32)
@@ -629,7 +636,7 @@ def predict(
         )
     else:
         z = initial_pair_state
-    z = z.astype(z_init.dtype)
+    z = shard_pair_rows(z.astype(z_init.dtype))
 
     msa_inputs = None
     if settings.msa_n_layers is not None and msa is not None:
@@ -751,7 +758,7 @@ def predict(
     # Upstream's `z = z.float()`, which closes the autocast region. Everything
     # after this -- the distogram head, the sampler, the confidence head -- is
     # float32, bar the two sub-regions that open their own bfloat16 block.
-    z = z.astype(jnp.float32)
+    z = shard_pair_rows(z.astype(jnp.float32))
     x_inputs = x_inputs.astype(jnp.float32)
     rel_pos = rel_pos.astype(jnp.float32)
     token_bonds_encoding = token_bonds_encoding.astype(jnp.float32)

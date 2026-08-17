@@ -9,6 +9,17 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import (
+    context_parallel,
+    replicate_tree,
+    shard_pair_rows,
+)
+from foldjax.models._cp import (
+    cp_layout as _active_cp_layout,
+)
+from foldjax.models._cp import (
+    cp_shards as _active_cp_shards,
+)
 from foldjax.models._graph import (
     merge_static_flags,
     split_static_flags,
@@ -176,6 +187,14 @@ def protenix_infer_static(
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     n_chain: int | None = None,
+    #: Context-parallel shard count; same contract as OpenDDE's. More than one
+    #: requires an active `foldjax.models._cp.context_parallel` mesh of the
+    #: same size, and the value is a static argument so a mesh change is a
+    #: retrace. `protenix_infer_compiled` manages both together.
+    cp_shards: int = 1,
+    #: Mesh layout, same contract as OpenDDE's: ``"2d"`` is Fold-CP's square
+    #: grid (rows and columns split), ``"1d"`` splits rows only.
+    cp_layout: str = "1d",
 ) -> dict[str, jnp.ndarray]:
     """Run the currently ported static-feature Protenix inference path.
 
@@ -185,6 +204,21 @@ def protenix_infer_static(
     consolidated graph resolves it on the host and passes it here.
     """
 
+    if cp_layout != (_active_cp_layout() or "1d"):
+        raise RuntimeError(
+            f"cp_layout={cp_layout!r} but the active mesh is "
+            f"{_active_cp_layout()!r}"
+        )
+    if cp_shards != _active_cp_shards():
+        raise RuntimeError(
+            f"cp_shards={cp_shards} but the active context-parallel mesh has "
+            f"{_active_cp_shards()} shard(s); run through "
+            "protenix_infer_compiled or activate context_parallel() yourself"
+        )
+    # Same rule as OpenDDE: no backend override for context parallelism.
+    # Attention keeps its configured kernel (run per-shard inside
+    # `shard_map`); triangle multiplication falls back to the partitionable
+    # XLA einsum on its own when a mesh is active.
     n_token = int(input_feature_dict["restype"].shape[-2])
     token_padding_mask = input_feature_dict.get("token_padding_mask")
     atom_padding_mask = input_feature_dict.get("atom_padding_mask")
@@ -236,11 +270,16 @@ def protenix_infer_static(
     diffusion_s_inputs = s_inputs.astype(jnp.float32)
     diffusion_s_trunk = s_trunk.astype(jnp.float32)
     diffusion_z_trunk = z_trunk.astype(jnp.float32)
-    relp = input_feature_dict["relp"]
-    pair_z = diffusion_conditioning_prepare_cache(
-        relp,
-        diffusion_z_trunk,
-        params.diffusion.conditioning,
+    # `relp` is a host-supplied [N, N, 139] pair feature here (the trunk
+    # shards its own copy); pinned so the conditioning projection is
+    # shard-local and `pair_z` is born sharded.
+    relp = shard_pair_rows(jnp.asarray(input_feature_dict["relp"]))
+    pair_z = shard_pair_rows(
+        diffusion_conditioning_prepare_cache(
+            relp,
+            diffusion_z_trunk,
+            params.diffusion.conditioning,
+        )
     )
     p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
         input_feature_dict["atom_to_token_idx"],
@@ -405,6 +444,8 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_encoder_heads",
     "centre_each_step",
     "confidence_triangle_attention_backend",
+    "cp_layout",
+    "cp_shards",
     "diffusion_attention_backend",
     "diffusion_chunk_size",
     "gamma0",
@@ -510,11 +551,35 @@ def protenix_infer_compiled(
             for name, value in model_features.items()
             if name in _PADDED_MODEL_FEATURES
         }
-    return _compiled_protenix_infer(
-        model_features,
-        param_arrays,
-        noise_schedule,
-        params_treedef=treedef,
-        params_flags=flags,
-        **kwargs,
-    )
+    cp = int(kwargs.pop("cp_shards", 1))
+    layout = str(kwargs.pop("cp_layout", "auto"))
+    if layout == "auto":
+        # "auto" stays on the 1-D layout for now. The 2-D grid is the better
+        # design and is verified on CPU meshes at 2x2 and 3x3, but every
+        # measurement published for this feature -- the size ladders, the
+        # per-device peaks -- was taken on the 1-D layout, and a default that
+        # silently changes the program would make those numbers describe a
+        # configuration nobody can reproduce. Ask for "2d" explicitly; this
+        # flips once the square grid has its own GPU parity and memory
+        # evidence.
+        layout = "1d"
+    with context_parallel(cp, layout=layout):
+        if cp > 1:
+            # A checkpoint committed to one device fails the multi-device
+            # jit's device-assignment check; everything token-linear is
+            # replicated onto the mesh, and the graph's own constraints
+            # shard the pair-shaped state from its first materialization.
+            param_arrays = replicate_tree(param_arrays)
+            model_features = replicate_tree(model_features)
+            noise_schedule = replicate_tree(noise_schedule)
+            kwargs = replicate_tree(kwargs)
+        return _compiled_protenix_infer(
+            model_features,
+            param_arrays,
+            noise_schedule,
+            params_treedef=treedef,
+            params_flags=flags,
+            cp_shards=cp,
+            cp_layout=layout,
+            **kwargs,
+        )

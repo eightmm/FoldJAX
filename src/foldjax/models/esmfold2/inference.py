@@ -22,6 +22,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._cp import (
+    context_parallel,
+    replicate_tree,
+)
+from foldjax.models._cp import (
+    cp_shards as _active_cp_shards,
+)
 from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
 from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
 from foldjax.models.esmfold2.data import features as featurisation
@@ -147,6 +154,11 @@ def predict(
     language_model_tokens: int | None = None,
     compile_it: bool = True,
     preserve_prefix_rng: bool = False,
+    #: Context-parallel shard count; same contract as the other ports. More
+    #: than one shards the pair state across that many visible JAX devices,
+    #: requires the compiled path, and replicates everything token-linear --
+    #: the ESMC hidden states and the checkpoint included.
+    cp_shards: int = 1,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -170,20 +182,37 @@ def predict(
     # traced maximum cannot size anything.
     n_chains = int(np.asarray(features["asym_id"]).max()) + 1
 
+    if cp_shards > 1 and not compile_it:
+        raise ValueError(
+            "context parallelism requires the compiled graph; drop "
+            "compile_it=False or cp_shards"
+        )
     runner = (
-        compiled_predict(settings, n_chains, preserve_prefix_rng)
+        compiled_predict(settings, n_chains, preserve_prefix_rng, cp_shards)
         if compile_it
         else _run
     )
-    return runner(
-        key,
-        arrays,
-        model.parameters,
-        hidden,
-        settings,
-        n_chains,
-        preserve_prefix_rng,
-    )
+    parameters = model.parameters
+    with context_parallel(cp_shards):
+        if cp_shards > 1:
+            # A checkpoint committed to one device fails the multi-device
+            # jit's device-assignment check; everything token-linear is
+            # replicated onto the mesh, and the graph's own constraints
+            # shard the pair state from its first materialization.
+            key = replicate_tree(key)
+            arrays = replicate_tree(arrays)
+            parameters = replicate_tree(parameters)
+            hidden = replicate_tree(hidden)
+        return runner(
+            key,
+            arrays,
+            parameters,
+            hidden,
+            settings,
+            n_chains,
+            preserve_prefix_rng,
+            cp_shards,
+        )
 
 
 def _run(
@@ -194,7 +223,14 @@ def _run(
     settings: structure_model.ModelSettings,
     n_chains: int,
     preserve_prefix_rng: bool,
+    cp_shards: int = 1,
 ) -> dict[str, jnp.ndarray]:
+    if cp_shards != _active_cp_shards():
+        raise RuntimeError(
+            f"cp_shards={cp_shards} but the active context-parallel mesh has "
+            f"{_active_cp_shards()} shard(s); run through `predict`, which "
+            "activates context_parallel() around this call"
+        )
     return structure_model.predict(
         key,
         features,
@@ -211,15 +247,18 @@ def compiled_predict(
     settings: structure_model.ModelSettings,
     n_chains: int,
     preserve_prefix_rng: bool = False,
+    cp_shards: int = 1,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
-    Those three values are static: the settings decide how many layers get
-    traced, `n_chains` sizes an output, and the RNG mode selects either the
-    historical exact-shape calls or masked serving draws. The real token and
-    atom counts remain data in the masks and never enter this cache key.
+    Those values are static: the settings decide how many layers get traced,
+    `n_chains` sizes an output, the RNG mode selects either the historical
+    exact-shape calls or masked serving draws, and `cp_shards` decides whether
+    the trace carries sharding constraints -- a mesh change must be a retrace,
+    never a stale cache hit. The real token and atom counts remain data in the
+    masks and never enter this cache key.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6))
+    return jax.jit(_run, static_argnums=(4, 5, 6, 7))
 
 
 def predict_job(

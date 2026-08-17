@@ -40,6 +40,22 @@ def _parser() -> argparse.ArgumentParser:
         help="run eagerly; far slower, but skips a multi-minute compile",
     )
     parser.add_argument(
+        "--cp-devices",
+        type=int,
+        default=1,
+        help="shard the pair representations across this many JAX devices "
+        "(context parallelism, the JAX form of OpenDDE's Fold-CP); needs "
+        "that many visible devices and runs the XLA triangle kernels",
+    )
+    parser.add_argument(
+        "--cp-layout",
+        choices=("auto", "1d", "2d"),
+        default="auto",
+        help="how those devices are arranged: '1d' splits pair rows only, "
+        "'2d' is Fold-CP's square grid and splits columns too (needs a square "
+        "device count); 'auto' is '1d' until the grid has its own GPU numbers",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=None,
@@ -148,6 +164,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if value is not None
     }
+    if args.cp_devices < 1:
+        print("cp-devices must be positive")
+        return 1
+    if args.cp_devices > 1:
+        if args.no_compile:
+            print("context parallelism requires the compiled graph; drop "
+                  "--no-compile or --cp-devices")
+            return 1
+        overrides["cp_shards"] = args.cp_devices
+        overrides["cp_layout"] = args.cp_layout
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
     # Keep a full alignment on the host only. At long sequences it can be
     # several GiB, so converting before this cut defeats the memory saving.

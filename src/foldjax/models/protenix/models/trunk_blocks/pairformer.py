@@ -7,6 +7,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models._stacking import stacked_or_stack
 from foldjax.models.protenix.models.primitives.attention import (
     AttentionPairBiasParams,
@@ -60,6 +61,11 @@ def pairformer_block(
     Dropout is omitted because this port targets inference/eval only.
     """
 
+    # Under context parallelism the pair representation is sharded along its
+    # rows; pinning it here (and after the transpose below) keeps every block
+    # of every stack -- trunk, MSA, template, refiner, confidence -- on the
+    # same layout without the partitioner re-deriving it per consumer.
+    z = shard_pair_rows(z)
     pair_gate = None
     single_gate = None
     single_attention_bias = None
@@ -113,6 +119,10 @@ def pairformer_block(
     if pair_gate is not None:
         z = z * pair_gate
     z_t = jnp.swapaxes(z, -2, -3)
+    # The Fold-CP transpose exchange: ending-node attention treats columns as
+    # rows, so the sharded axis moves with the transpose (an all-to-all under
+    # the partitioner, an identity otherwise).
+    z_t = shard_pair_rows(z_t)
     pair_mask_t = None if pair_mask is None else jnp.swapaxes(pair_mask, -1, -2)
     z_t = z_t + triangle_attention(
         z_t,
@@ -123,6 +133,7 @@ def pairformer_block(
         attention_backend=triangle_attention_backend,
     )
     z = jnp.swapaxes(z_t, -2, -3)
+    z = shard_pair_rows(z)
     if pair_gate is not None:
         z = z * pair_gate
 

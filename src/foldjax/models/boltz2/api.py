@@ -19,6 +19,7 @@ and ``foldjax.models.boltz2.load_params`` directly.
 from __future__ import annotations
 
 import functools
+import math
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -178,6 +179,41 @@ def featurize(
     return feats, record_id, struct_dir
 
 
+def _resolve_cp_layout(layout: str, cp_devices: int) -> str:
+    """Resolve the context-parallel layout, expanding ``"auto"``.
+
+    ``"1d"`` splits pair rows only; ``"2d"`` is Fold-CP's square grid, which
+    splits both pair axes and needs a perfect-square device count. ``"auto"``
+    resolves to ``"1d"`` -- see the comment on that branch for why the grid is
+    opt-in rather than automatic.
+
+    An explicit ``"2d"`` on a non-square count is refused here rather than left
+    to ``context_parallel``, which is only reached after featurization -- an
+    MSA search is a long way to go to be told the device count was the wrong
+    shape.
+    """
+    if layout not in ("auto", "1d", "2d"):
+        raise ValueError(
+            f"cp_layout must be one of 'auto', '1d', '2d'; got {layout!r}"
+        )
+    side = math.isqrt(cp_devices)
+    square = cp_devices > 1 and side * side == cp_devices
+    if layout == "auto":
+        # "auto" stays on the 1-D layout. The square grid is the better design
+        # and is gated on CPU meshes at 2x2 and 3x3, but every published
+        # measurement of this feature was taken on the 1-D layout, and a
+        # default that silently changes the program would make those numbers
+        # describe a configuration nobody can reproduce. It flips once the
+        # grid has its own GPU evidence; "2d" asks for it explicitly.
+        return "1d"
+    if layout == "2d" and not square:
+        raise ValueError(
+            "cp_layout='2d' needs a square cp_devices greater than 1 "
+            f"(4, 9, 16, ...); got cp_devices={cp_devices}"
+        )
+    return layout
+
+
 @_pinned_matmul_precision
 def predict(
     *,
@@ -218,6 +254,18 @@ def predict(
     attention_backend: str = "xla",
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
+    #: Context parallelism: shard the pair representations across this many
+    #: JAX devices (the JAX form of OpenDDE's Fold-CP). Needs that many
+    #: visible devices; the default "cueq" triangle kernel resolves to the
+    #: blocked XLA path because a fused FFI call cannot be partitioned.
+    cp_devices: int = 1,
+    #: How those devices are arranged. "1d" splits pair rows only; "2d" is
+    #: Fold-CP's square grid, which splits both pair axes and runs the triangle
+    #: multiplication as Cannon's algorithm, so no full-width operand is ever
+    #: built. "auto" (the default) stays on the 1-D layout until the square
+    #: grid has GPU evidence of its own; pass "2d" to ask for the grid, which
+    #: then requires a square `cp_devices`.
+    cp_layout: str = "auto",
     steering_args: Mapping[str, object] | None = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
@@ -252,6 +300,14 @@ def predict(
         raise ValueError("diffusion_samples must be positive")
     if padding is not None and bucket:
         raise ValueError("padding and legacy bucket=True cannot be used together")
+    if cp_devices < 1:
+        raise ValueError("cp_devices must be positive")
+    resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_devices)
+    if cp_devices > 1 and glu_backend != "xla":
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
 
     feats_np, record_id, struct_dir = featurize(
         input=input, seq=seq, dna=dna, rna=rna,
@@ -307,6 +363,17 @@ def predict(
             "contact_guidance_update",
         )
     )
+    if cp_devices > 1:
+        if steering_active:
+            raise ValueError(
+                "context parallelism requires the compiled graph; steering "
+                "runs eagerly, so drop steering or cp_devices"
+            )
+        if affinity_requested:
+            raise ValueError(
+                "affinity jobs are not supported under context parallelism "
+                "yet; run the affinity job on a single device"
+            )
     if padding is not None:
         from foldjax.models.boltz2.data.bucket import (
             select_model_features_for_padding,
@@ -365,7 +432,13 @@ def predict(
         "score_use_scan": True,
         "multiplicity": diffusion_samples,
         "attention_backend": attention_backend,
-        "triangle_backend": triangle_backend,
+        "triangle_backend": (
+            # The fused default cannot be partitioned; unset-equivalent
+            # resolves to the blocked XLA path under context parallelism.
+            "xla"
+            if cp_devices > 1 and triangle_backend == "cueq"
+            else triangle_backend
+        ),
         "glu_backend": glu_backend,
         "confidence_sequentially": diffusion_samples > 1,
         "return_pair_chains_iptm": False,
@@ -410,8 +483,17 @@ def predict(
 
         model_args = (params, feats, jax.random.PRNGKey(seed))
 
+    from foldjax.models._cp import context_parallel, replicate_tree
+
     runner = run_model if steering_active else jax.jit(run_model)
-    out = runner(*model_args)
+    with context_parallel(cp_devices, layout=resolved_cp_layout):
+        if cp_devices > 1:
+            # A single-device-committed checkpoint fails the multi-device
+            # jit's device-assignment check; everything token-linear is
+            # replicated onto the mesh and the graph's own constraints shard
+            # the pair-shaped state.
+            model_args = replicate_tree(model_args)
+        out = runner(*model_args)
     coords_batched = np.asarray(
         jax.block_until_ready(out["sample_atom_coords"])
     ).reshape(diffusion_samples, -1, 3)

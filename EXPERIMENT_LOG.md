@@ -429,3 +429,259 @@ Next, in order: the atom encoder/decoder and 3D-RoPE sliding-window attention;
 the diffusion transformer and its EDM preconditioning; the sampler (Euler with
 a Kabsch realignment, 48 real steps from 68 nominal); the confidence head; the
 checkpoint mapper; then ESMC-6B. Each lands only with parity against torch.
+
+## OpenDDE context parallelism: Fold-CP as sharding annotations (2026-08-16)
+
+Upstream OpenDDE's Fold-CP is ~20 files of hand-written torch collectives
+because torch has no partitioner. The JAX port needed none of that code --
+only its layout: pair tensors row-sharded, transposes re-sharded, everything
+token-linear replicated. `--cp-devices P` builds a 1D `cp` mesh in one
+process (no torchrun equivalent) and the consolidated graph carries
+`with_sharding_constraint` at the seams: trunk `z_init` and recycle carry,
+every `pairformer_block` entry/transpose/exit, structural expansion,
+diffusion conditioning `pair_z`, structural `relp`, confidence `z_pair`.
+
+Two places could not be annotation-only, both because a loop iterates the
+sharded axis:
+
+* **Triangle attention** runs under `shard_map`: per-row attention is local
+  to a row shard, the `[heads, N, N]` triangle bias is projected from the
+  sharded tensor and passed in replicated, and the existing blocked row loop
+  runs unchanged on each device's local rows. Rows pad to a multiple of the
+  mesh and slice back, with a re-shard after the slice -- without it the
+  partitioner returned a replicated result after every block.
+* **The role-pair projection** (`_pair_project_by_role`) swaps its row-wise
+  `lax.map` for a sum over the 7 column roles under CP: seven batched
+  matmuls partition cleanly; the row scan would have gathered the whole
+  structural pair tensor per step.
+
+Routing rules under CP: cueq/tokamax are FFI calls the partitioner cannot
+split -- unset triangle backends resolve to `xla_jit`, explicit fused ones
+fail loudly (upstream's own rule: torch kernels only in distributed mode).
+The blocked triangle-mult contraction and the inner `jit` wrappers are also
+bypassed: the former iterates the sharded axis, the latter's trace cache
+does not key on the mesh.
+
+Evidence, all on a forced 4-device CPU mesh (`cp_shards` is a static arg, so
+mesh changes are retraces): module parity for the pairformer stack and
+structural expander at N=13 (indivisible by 4) is exact; end-to-end tiny.json
+with real weights matches the single-device run at 6.1e-4 A max coordinate
+diff and confidence summaries equal to 5 decimals; the compiled 2-block stack
+at N=512 shows row-sharded input/output, `f32[128,512,128]` tiles, 15
+all-gathers and 18 all-to-alls, and exactly 3 full-size pair tensors left in
+the module -- the triangle-mult `b` operands, the known v1 concession.
+
+Not measured: real multi-GPU memory and time (this host has one GPU; CPU
+`memory_analysis` reports the host-shared total, which is invariant by
+construction). Next lever if the all-gather hurts on small cards: a
+`ppermute` ring for the triangle-mult contraction, ~50 lines inside
+`shard_map`.
+
+## Context parallelism rolled out to five backends (2026-08-16)
+
+The OpenDDE recipe generalized in one pass: Protenix (by hand -- its modules
+already carried the seams, since OpenDDE reuses them), then Boltz-2,
+OpenFold3, and ESMFold2 by three parallel agents working from the recipe.
+AlphaFold 3 is excluded on three grounds: the vendored upstream source is
+authoritative per the project contract, its default attention is a Triton
+kernel the partitioner cannot split anyway, and it is the leanest model of
+the six.
+
+What transferred unchanged: the seam list (block entry / transpose exchange /
+born-sharded creation sites), the fused-kernel gate, the inner-jit bypass,
+`cp_shards` as a static argument, and the pad+slice+re-shard shard_map
+pattern. What each port forced:
+
+* **Protenix**: nothing new -- entry activation, `pair_z` and host-`relp`
+  seams, CLI. Its bf16 default trunk makes CP-vs-single coordinate diffs
+  look large (0.53 A at 2 steps); at fp32 the same comparison is 7.3e-4 A,
+  so the spread is bf16 reduction-order amplification, not CP.
+* **Boltz-2**: rank-4 `[B,N,N,C]` triangle attention with an internal
+  transpose; already had opt-in mesh plumbing in its trunk, which now
+  defaults to the ambient CP mesh. Its fp32 trunk is documented as
+  reduction-order chaotic through the rigid-alignment sampler -- the CP e2e
+  gate there is confidence summaries (agree to 3e-3), not coordinates, and
+  the control (a mathematically exact reorder alone) diverges *more* than
+  CP does. Steering and affinity jobs are rejected under CP v1.
+* **OpenFold3**: rank-general CP triangle attention (leading batch axis
+  everywhere, more on template/confidence paths); chunking split three ways
+  -- pair-transition chunk off under CP, triangle-attention chunk kept
+  (local to the shard), OPM chunk untouched (replicated operands; turning
+  it off would rebuild the 3,000-token OPM wall).
+* **ESMFold2**: constraint-only -- no triangle attention, so no shard_map;
+  the recurrence carry, MSA encoder pair, LM pair, diffusion condition pair
+  and confidence pair are pinned. Module parity is bit-exact; end-to-end is
+  not a valid gate (stochastic by design). The ESMC-6B checkpoint
+  replicates per device.
+
+Every backend's parity runs on a forced 4-device CPU mesh at N=13
+(indivisible by the mesh, so the padding path is always exercised). Full
+suite after the rollout: all green. Real multi-GPU still unmeasured -- one
+card in this host.
+
+## CP on real multi-GPU: the 24 GB wall falls at CP=4 (2026-08-16, SNU cluster)
+
+First real multi-GPU execution of the context-parallel path, on a Slurm
+cluster (`snucluster`): gpu2 = 4x RTX A5000 24 GB, gpu1 = H100 PCIe + 3x RTX
+PRO 6000 Blackwell Max-Q 96 GB (the desktop's card). Getting it to run took
+three fixes the desktop could never have surfaced, then it delivered the
+number the whole project was after.
+
+**The result.** OpenDDE at 1,003 residues on the A5000 node:
+
+    single 24 GB card, bf16:  OOM              (control)
+    CP=4 bf16:                completed, per-device peak 11.72-11.73 GiB
+    CP=4 fp32:                completed, per-device peak 18.02-18.05 GiB
+
+Per-device peaks agree across the four cards to 0.01 GiB -- the row sharding
+is balanced. Against the desktop's single-device 45.5 GiB (fp32, same size):
+2.53x per-device, and the shortfall from 4x is exactly the v1 concession --
+45.5/4 = 11.4 sharded + ~5.5 all-gathered triangle-mult projection + margin
+= 18.0. The fp32/bf16 confidence summaries agree to 4 decimals. A job that
+cannot run on one 24 GB card runs on four of them.
+
+**The three fixes** (all recorded in `cp-gpu-deployment-gotchas`):
+
+1. NCCL P2P deadlock -- CP runs spun at 100% GPU forever on the A5000 node;
+   `NCCL_P2P_DISABLE=1` (SHM transport) turned a 34-minute hang into an
+   84-second run.
+2. Triton GEMM autotune -- per-config `tt.dot` errors escalated to a stall /
+   allocator churn on CP graphs; `--xla_gpu_enable_triton_gemm=false
+   --xla_gpu_autotune_level=1`.
+3. The incoming triangle multiplication contracted over the *sharded* axis,
+   which the partitioner realised as a full-size f32 partial (49 GiB per
+   device at 3,012 residues) plus an all-reduce. Fixed in all four ports by
+   projecting the transpose and contracting in the outgoing form -- same
+   arithmetic, sharded partials. Module parity stays green everywhere.
+
+Also settled empirically: a mixed-architecture mesh (H100 sm90 + 6000 Pro
+sm120) is refused outright -- "executable is built for device ... cannot run
+it on device ..." -- so CP meshes must be homogeneous.
+
+**The honest boundary.** 3,012 residues on 3x 96 GB still fails in v1: the
+trunk shards, but the diffusion side is f32 by design and its atom-window
+gathers pull full pair tensors per device (49 GiB), with one 84 GiB
+allocation beyond any pool. v2 items, in value order: shard the diffusion
+conditioning consumers (atom-encoder gather, per-step pair bias), then the
+triangle-mult ppermute ring to reclaim the remaining all-gather, then cueq
+under shard_map. Also operational: 24 GB cards need
+`XLA_PYTHON_CLIENT_MEM_FRACTION=0.92`; the default 0.75 pool is what failed,
+not the cards.
+
+## The v1 CP ceiling, measured: 2,800 residues on 3x 96 GB (2026-08-16)
+
+Walking the gap between the 1,003-residue pass and the 3,012-residue failure,
+bf16 CP=3 on the three RTX PRO 6000 Max-Q cards (pool 0.90 = 86.4 GiB),
+per-device peaks from the allocator:
+
+    2,000 residues:  43.2 GiB/device   completed
+    2,500 residues:  67.1 GiB/device   completed
+    2,800 residues:  84.7 GiB/device   completed  (1.7 GiB under the pool)
+    2,000 fp32:      74.1 GiB/device   completed
+
+The curve is cleanly quadratic -- 43.2 x (2500/2000)^2 predicts 67.5 against
+67.1 measured, and extrapolates to ~98 GiB at 3,012, which is exactly why
+that size OOMs. All 38 minutes of sweep, every size balanced across the
+three cards to 0.1 GiB, confidence summaries sane at every size. So v1
+context parallelism on this hardware runs OpenDDE to ~2,800 residues in
+bf16 (~2,100 in fp32); past that, the unsharded fp32 diffusion side is the
+binding constraint and v2's diffusion-consumer sharding is the lever.
+
+## Fold-CP's own design, read from NVIDIA's boltz-cp (2026-08-17)
+
+The Fold-CP this port has been chasing turns out to be NVIDIA's, published
+with a paper (arXiv 2603.14806) and code (NVIDIA-Digital-Bio/boltz-cp); the
+OpenDDE implementation is downstream of it. Reading the source corrected
+three assumptions this port was built on:
+
+* **The mesh is square, and 1xP is not a supported configuration** -- four
+  assertions in `comm.py` refuse a non-square grid and the CLI `isqrt`s a
+  scalar `size_cp`. Our 1-D row sharding is outside their design space, which
+  is exactly why we still hold full-size buffers.
+* **Triangle multiplication is Cannon's algorithm**, not an all-gather: skew
+  both operands, then P steps of local matmul with a one-hop shift. The
+  per-device transient is two double-buffered tiles, O((N/P)^2), never a
+  panel. Both directions are the same code with a transpose-which-operand
+  flag -- our transposed-outgoing rewrite is unnecessary once the ring
+  exists.
+* **The triangle-attention bias is never gathered.** It is redistributed by
+  two P2P stages and then rotates one hop per ring step, so each rank holds
+  one [H, I/P, J/P] tile. Our replicated [heads, N, N] bias is the 1-D
+  compromise.
+
+The diffusion side, which is our remaining wall, is solved structurally
+rather than by dtype: the atom pair is never [N_atom, N_atom] but is born
+window-batched (B, K, W, H, C) with the window index sharded, and the token
+pair reaches it only through a bounded-rectangle gather after projection to
+the narrow atom_z width. Their fp32 islands are the same as ours -- the
+defect was never the dtype, it was the consumer pulling a whole pair tensor.
+
+For a JAX port the good news is that every schedule is a *static*
+permutation, so `lax.ppermute` covers the transpose, the Cannon skew and the
+ring; `psum` covers the OPM mask denominator and the confidence reductions;
+and everything placement-preserving stays plain `with_sharding_constraint`
+(they hand-wrote ~40 DTensor wrappers only because torch has no GSPMD). The
+one primitive that does not port cleanly is their data-dependent rectangular
+gather, which needs runtime interval arithmetic; a fixed halo or an
+all-gather of the *projected* z is the static-shape substitute.
+
+Order to implement, each step parity-testable against the current 1-D code:
+mesh + placements (with MSA depth on cp0, tokens on cp1) -> grid transpose
+primitive -> Cannon triangle multiplication -> rotating-bias triangle
+attention -> OPM and pair-weighted averaging -> the atom/diffusion path ->
+confidence and distogram heads last. Two testing ideas worth stealing: a
+per-parameter gradient parity check through `full_tensor()`, and comparing
+fp32 error *distributions* by percentile against an fp64 oracle instead of
+hand-tuning a tolerance.
+
+## The square grid lands, and two ways a CP test lies (2026-08-17)
+
+Fold-CP's own layout -- rows and columns both split on a square grid, with
+the triangle contraction run as Cannon's algorithm -- now works in the
+Protenix/OpenDDE shared modules, in OpenFold3, and in Boltz-2. Per-device
+pair cost drops from `O(N^2/P_rows)` with a full-width column axis to
+`O(N^2/P_total)`, and the ring never materialises a full-width operand: the
+transient is two tiles.
+
+Getting there produced two lessons worth more than the feature.
+
+**A grid permutation does not transpose a tile.** The first implementation
+read the moved operand as if its axes had been swapped and used the matmul
+einsum `ikd,kjd->ijd`. It runs, it type-checks, and it computes a different
+function -- 15.9 off the dense result on a value scale of 13.4. Cannon moves
+whole tiles and leaves their internal axes alone, so the local contraction
+stays the dense einsum *of that direction*: `ikd,jkd->ijd` outgoing,
+`kid,kjd->ijd` incoming. (Adding a local `swapaxes` after the grid hop is the
+equally valid other spelling, which is what the Boltz-2 port uses.)
+
+**Every context-parallel parity test in the repo was vacuous.** The pattern
+was `jax.jit(run)(z)` once outside the mesh and once inside it. `jit` caches
+its jaxpr on the callable, and the mesh is a module global read at trace
+time, so the second call replayed the unsharded program: the test compared
+the unsharded program against itself. The tell was in plain sight and had
+been read as good news -- an *exactly zero* difference, which a real
+`shard_map` cannot produce because it reorders float32 accumulation. Fixed
+with `jax.clear_caches()` before each mesh block, and proved non-vacuous by
+mutation: the wrong einsum now fails the gate it used to pass.
+
+**A 2x2 mesh cannot falsify a sign.** Every shift in the schedule is +-1 or
++-coord, and modulo 2 a forward hop and a backward hop are the same
+permutation, so skew signs and ring directions were untested by construction.
+Nine forced CPU devices separate them. Measured:
+
+    mutation                       2x2     3x3
+    lhs ring hop reversed          pass    FAIL
+    row-skew sign flipped          pass    FAIL
+    col-skew sign flipped          pass    FAIL
+    *both* ring hops reversed      pass    pass   <- not a defect
+
+The last row is the trap: reversing both hops walks the k blocks in the
+opposite order with the operands still paired at every step, so it is an
+equivalent schedule at any size. Only breaking the pairing is a bug.
+
+`--cp-layout` selects the layout and **`auto` stays on 1-D**. The grid is the
+better design, but every published number for this feature -- the size
+ladders, the per-device peaks, the 1,003-residue GPU parity -- was measured
+on the 1-D layout, and a default that silently changes the program would make
+those numbers describe a configuration nobody can reproduce. It flips when
+the grid has its own GPU evidence.

@@ -252,7 +252,12 @@ This is a working inference port, but it is not a bundled data pipeline:
 
 - database search, MSA/template generation, and asset downloads are not
   orchestrated; provide precomputed files and local databases explicitly;
-- multi-device/Fold-CP execution is not verified;
+- multi-device execution is available as `--cp-devices P` (context
+  parallelism, the JAX form of upstream's Fold-CP: pair representations
+  row-sharded across `P` local devices, XLA triangle kernels only). Numerical
+  parity against the single-device program is verified on a simulated
+  four-device CPU mesh; real multi-GPU memory and speed are not yet measured
+  on this hardware;
 - GPU validation currently covers one FP32 sample on one RTX PRO 6000
   Blackwell Max-Q; other accelerators, multi-sample scaling, and the default
   five-sample workload are not benchmarked.

@@ -18,6 +18,14 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import (
+    context_parallel,
+    replicate_tree,
+    shard_pair_rows,
+)
+from foldjax.models._cp import (
+    cp_shards as _active_cp_shards,
+)
 from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
 from foldjax.models.openfold3.models.confidence import (
     compute_chain_pair_iptm,
@@ -115,6 +123,21 @@ class InferenceConfig(NamedTuple):
         "pde_logits",
         "distogram_logits",
     )
+    #: Context-parallel shard count. More than one shards the pair
+    #: representations row-wise across that many devices (the JAX form of
+    #: OpenDDE's Fold-CP) and requires the mesh :func:`compile_predict`
+    #: activates. Part of the config so a mesh change is a new compilation,
+    #: never a stale cache hit.
+    cp_shards: int = 1
+    #: Which context-parallel layout those shards form. ``"1d"`` splits pair
+    #: rows only; ``"2d"`` is Fold-CP's square grid, which splits columns too
+    #: and drops the per-device pair cost from ``O(N^2/P)`` with a full-width
+    #: row of tiles to ``O(N^2/P)`` outright, at the price of a Cannon ring in
+    #: the triangle multiplication. ``"auto"`` currently resolves to ``"1d"``
+    #: whatever the shard count -- see :func:`resolve_cp_layout` for why the
+    #: better layout is not yet the default. ``"2d"`` needs a square shard
+    #: count, which is the only shape the ring schedules accept.
+    cp_layout: str = "auto"
 
 
 class InferenceParams(NamedTuple):
@@ -343,6 +366,12 @@ def predict(
     Returns:
         A :class:`Prediction`.
     """
+    if config.cp_shards != _active_cp_shards():
+        raise RuntimeError(
+            f"cp_shards={config.cp_shards} but the active context-parallel "
+            f"mesh has {_active_cp_shards()} shard(s); run through "
+            "compile_predict or activate context_parallel() yourself"
+        )
     s_input, s_trunk, z = trunk(
         batch,
         params.trunk,
@@ -388,16 +417,22 @@ def predict(
     # in the diffusion path -- the relative-position encoding is
     # ``[N_token, N_token, 139]`` and is concatenated onto the pair representation
     # before the projection. Hoisting it out is exact, not an approximation.
-    zij_s = _expand_samples(
-        pair_conditioning(
-            batch,
-            z,
-            params.diffusion_conditioning,
-            max_relative_idx=config.max_relative_idx,
-            max_relative_chain=config.max_relative_chain,
-            token_mask=batch["token_mask"],
-        ),
-        config.num_samples,
+    # Born sharded under context parallelism; the sample axis stays a
+    # broadcast view, only the row axis is split.
+    zij_s = shard_pair_rows(
+        _expand_samples(
+            shard_pair_rows(
+                pair_conditioning(
+                    batch,
+                    z,
+                    params.diffusion_conditioning,
+                    max_relative_idx=config.max_relative_idx,
+                    max_relative_chain=config.max_relative_chain,
+                    token_mask=batch["token_mask"],
+                )
+            ),
+            config.num_samples,
+        )
     )
 
     def denoise_fn(xl_noisy: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
@@ -466,7 +501,9 @@ def predict(
     pair_mask_1 = token_mask_1[..., :, None] * token_mask_1[..., None, :]
     # Zeroing happens after the distogram head, which reads the trunk embedding
     # regardless.
-    z_conf_input = z if use_trunk_pair_embedding else jnp.zeros_like(z)
+    z_conf_input = shard_pair_rows(
+        z if use_trunk_pair_embedding else jnp.zeros_like(z)
+    )
 
     def confidence_pair(
         si_input: jnp.ndarray,
@@ -629,6 +666,8 @@ def released_config(
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
     per_sample_token_cutoff: int | None = 750,
     msa_depth: int | None = 1024,
+    cp_shards: int = 1,
+    cp_layout: str = "auto",
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -683,6 +722,8 @@ def released_config(
         pair_chunk_size=resolved_chunk,
         per_sample_token_cutoff=per_sample_token_cutoff,
         msa_depth=msa_depth,
+        cp_shards=cp_shards,
+        cp_layout=cp_layout,
     )
 
 
@@ -694,6 +735,23 @@ RELEASED_BLOCK_COUNTS = {
     "diffusion_transformer.blocks": 24,
     "atom_transformer.blocks": 3,
 }
+
+
+def resolve_cp_layout(config: InferenceConfig) -> str:
+    """Turn ``config.cp_layout`` into a layout :func:`context_parallel` accepts.
+
+    ``"auto"`` stays on the 1-D layout. The square grid is the better design
+    and is verified on CPU meshes, but every published measurement of this
+    feature was taken on the 1-D layout, and a default that silently changes
+    the program would make those numbers describe a configuration nobody can
+    reproduce; it flips once the square grid has its own GPU evidence. An
+    explicit ``"1d"``/``"2d"`` is passed through and validated by
+    ``context_parallel``, so ``"2d"`` on a non-square shard count still fails
+    loudly instead of quietly falling back.
+    """
+    if config.cp_layout != "auto":
+        return config.cp_layout
+    return "1d"
 
 
 def compile_predict(
@@ -728,7 +786,7 @@ def compile_predict(
     Padding uses the mask so the compact random stream is preserved without
     retaining every rollout draw at once.
     """
-    return jax.jit(
+    compiled = jax.jit(
         functools.partial(
             predict,
             config=config,
@@ -738,3 +796,22 @@ def compile_predict(
             use_trunk_pair_embedding=use_trunk_pair_embedding,
         )
     )
+    if config.cp_shards <= 1:
+        return compiled
+
+    def contextual(key, batch, params, **kwargs):
+        # Tracing happens on the first call, so the mesh has to be active
+        # here, not at factory time. A checkpoint committed to one device
+        # fails the multi-device call's device-assignment check; everything
+        # token-linear is replicated onto the mesh, and the graph's own
+        # constraints shard the pair-shaped state from its first
+        # materialization.
+        with context_parallel(config.cp_shards, layout=resolve_cp_layout(config)):
+            return compiled(
+                replicate_tree(key),
+                replicate_tree(batch),
+                replicate_tree(params),
+                **replicate_tree(kwargs),
+            )
+
+    return contextual

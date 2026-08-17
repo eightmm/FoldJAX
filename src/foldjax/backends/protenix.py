@@ -18,6 +18,8 @@ from foldjax.schema import (
 from foldjax.scores import scalar_scores
 
 _CLI_OPTIONS = {
+    "cp_devices",
+    "cp_layout",
     "n_sample",
     "n_step",
     "n_cycle",

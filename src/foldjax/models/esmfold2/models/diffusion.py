@@ -33,6 +33,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models.atom import (
     FLOAT32_EPS,
@@ -388,12 +389,17 @@ def build_cache(
         atom_conditioning=spread(conditioning),
         cos=spread(cos),
         sin=spread(sin),
-        pair=condition_pair(
-            z_trunk,
-            relative_position_encoding,
-            params,
-            f"{dot}conditioning",
-            trunk_dtype=trunk_dtype,
+        # Born sharded under context parallelism: the pair conditioning is
+        # cached across the whole sampling run, so its layout decides whether
+        # a full copy sits on every device for the duration.
+        pair=shard_pair_rows(
+            condition_pair(
+                z_trunk,
+                relative_position_encoding,
+                params,
+                f"{dot}conditioning",
+                trunk_dtype=trunk_dtype,
+            )
         ),
         atom_to_token=spread(atom_to_token),
         atom_mask=spread(ref_mask),

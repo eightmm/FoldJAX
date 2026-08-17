@@ -8,6 +8,9 @@ from math import pi
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import CP_AXIS, CP_ROW_AXIS
+from foldjax.models._cp import cp_layout as _cp_layout
+from foldjax.models._cp import cp_mesh as _cp_mesh
 from foldjax.models.boltz2.models.diffusion.diffusion import (
     conditioned_diffusion_score_forward,
     diffusion_score_model_forward,
@@ -790,6 +793,22 @@ def boltz2_trunk_forward(
         ``scripts/check_sharding.py`` parity gate to validate the sharding path
         on 8 simulated CPU devices.
     """
+
+    # `--cp-devices` activates an ambient context-parallel mesh (see
+    # `foldjax.models._cp`); an explicit `mesh` argument still wins, so the
+    # original opt-in API is unchanged. The triangle modules read the ambient
+    # mesh themselves to reroute their kernels, which the explicit-mesh path
+    # never did.
+    if mesh is None:
+        ambient = _cp_mesh()
+        if ambient is not None:
+            # The 2-D grid names its axes `cp_row`/`cp_col`, so `CP_AXIS` is
+            # not a mesh axis there. Tokens go on the row axis either way --
+            # that is what `_cp.single_spec` means by keeping the single stream
+            # beside the pair rows -- and the pair tensors pick up their second
+            # axis from `shard_pair_rows` inside the blocks themselves.
+            mesh, shard_tokens = ambient, True
+            token_axis = CP_ROW_AXIS if _cp_layout() == "2d" else CP_AXIS
 
     chunks = resolve_long_sequence_chunks(
         feats["token_pad_mask"].shape[1],

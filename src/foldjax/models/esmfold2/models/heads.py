@@ -27,6 +27,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.esmfold2.models.embedders import row_attention_pooling
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear
 from foldjax.models.esmfold2.models.trunk import folding_trunk
@@ -157,7 +158,11 @@ def confidence_head(
     rep_distances = jnp.sqrt(jnp.sum(offsets * offsets, axis=-1) + 1e-12)
     boundaries = params[f"{dot}boundaries"]
     bins = jnp.sum(rep_distances[..., None] > boundaries, axis=-1)
-    pair = pair + params[f"{dot}dist_bin_pairwise_embed.weight"][bins]
+    # Born sharded under context parallelism, before the head's own trunk:
+    # `spread` just repeated it once per sample.
+    pair = shard_pair_rows(
+        pair + params[f"{dot}dist_bin_pairwise_embed.weight"][bins]
+    )
 
     pair_mask = mask[:, :, None] * mask[:, None, :]
     # The trunk's own output already contains `pair`; adding it again is

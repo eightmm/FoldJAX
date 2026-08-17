@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.openfold3.models.atomize import max_atom_per_token_masked_select
 from foldjax.models.openfold3.models.pairformer import (
     PairformerStackParams,
@@ -189,7 +190,10 @@ def pairformer_embedding(
         keepdims=True,
     )
     dij = ((dij > squared) & (dij < upper)).astype(zij.dtype)
-    zij = zij + linear(dij, params.linear_distance)
+    # Born sharded under context parallelism: the distance embedding and the
+    # outer-sum init otherwise materialize whole on every device before the
+    # stack's own constraints take over.
+    zij = shard_pair_rows(zij + linear(dij, params.linear_distance))
 
     return pairformer_stack(
         si,

@@ -198,7 +198,7 @@ def apply_managed_profile(
 class ESMFold2Backend(Backend):
     name = "esmfold2"
     padding_axes = ("tokens", "atoms", "msa", "language_model_tokens")
-    native_options = frozenset({"esmc_weights", "no_language_model"})
+    native_options = frozenset({"cp_devices", "esmc_weights", "no_language_model"})
     # The neutral names, against the port's. `max_msa_depth` is the one that is
     # not simply a rename: the model resubsamples that many MSA rows *per trunk
     # loop* rather than cutting the alignment once, which is the same policy
@@ -221,6 +221,7 @@ class ESMFold2Backend(Backend):
         "num_loops",
         "msa_max_depth",
         "no_language_model",
+        "cp_devices",
     )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
@@ -262,6 +263,11 @@ class ESMFold2Backend(Backend):
             for name in ("num_loops", "num_steps", "num_samples", "msa_max_depth")
             if name in options
         }
+        if "cp_devices" in options:
+            cp_devices = int(options.pop("cp_devices"))
+            if cp_devices < 1:
+                raise ValueError("cp_devices must be positive")
+            overrides["cp_shards"] = cp_devices
         # The managed download profile answers *where* ESMC comes from, not
         # whether the model uses it.  An external ESMC checkpoint selects the
         # structure-only managed bundle while still running the released LM

@@ -9,7 +9,24 @@ from typing import Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 
+from foldjax.models._cp import (
+    CP_AXIS,
+    CP_COL_AXIS,
+    CP_ROW_AXIS,
+    col_skew_perm,
+    cp_grid,
+    cp_layout,
+    cp_mesh,
+    cp_row_shards,
+    pair_spec,
+    permute,
+    ring_perm,
+    row_skew_perm,
+    shard_pair_rows,
+    transpose_perm,
+)
 from foldjax.models.protenix.models.primitives.attention import AttentionParams
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
@@ -87,7 +104,17 @@ def triangle_multiplication(
 ) -> jnp.ndarray:
     """Apply Protenix triangle multiplication without eval in-place mutation."""
 
-    if use_jit:
+    # Context parallelism changes three routing decisions at once. The cueq
+    # kernel is an FFI call the SPMD partitioner cannot split, so the XLA
+    # einsum runs instead (upstream Fold-CP makes the same trade: torch
+    # kernels only). The blocked contraction is a `lax.scan` of dynamic
+    # slices over the row axis -- the sharded axis -- which the partitioner
+    # can only satisfy by gathering, so the contraction runs whole and the
+    # partitioner splits the one einsum. And the inner `jit` is bypassed:
+    # its trace cache does not key on the mesh, so a graph traced without
+    # constraints could be replayed inside a context-parallel trace.
+    cp_active = cp_mesh() is not None
+    if use_jit and not cp_active:
         return _compiled_triangle_multiplication(
             z,
             mask,
@@ -109,7 +136,7 @@ def triangle_multiplication(
         params.linear_a_p.weight.shape[0] == z.shape[-1]
         and z.shape[-1] % 32 == 0
     )
-    if backend == "cueq" and cueq_supported:
+    if backend == "cueq" and cueq_supported and not cp_active:
         from foldjax.models.protenix.models.triangle.triangle_cueq import (
             cueq_triangle_multiplication,
         )
@@ -124,16 +151,50 @@ def triangle_multiplication(
     # and a fifth of that on a narrower trunk. Swept there against the policy's
     # value, the peak went 9,809 -> 9,652 -> 9,628 MiB at 256 -> 128 -> 64 rows,
     # against a 9 MiB run-to-run spread.
-    chunk_size = _row_block(
-        rows=z.shape[-3],
-        per_row=z.shape[-2] * params.linear_a_p.weight.shape[0] * z.dtype.itemsize,
-        requested=chunk_size,
-        budget=_PROJECTION_BUDGET_BYTES,
+    chunk_size = (
+        None
+        if cp_active
+        else _row_block(
+            rows=z.shape[-3],
+            per_row=(
+                z.shape[-2] * params.linear_a_p.weight.shape[0] * z.dtype.itemsize
+            ),
+            requested=chunk_size,
+            budget=_PROJECTION_BUDGET_BYTES,
+        )
     )
 
     z_norm = layer_norm(z, params.layer_norm_in)
-    b = mask * sigmoid(linear(z_norm, params.linear_b_g))
-    b = b * linear(z_norm, params.linear_b_p)
+    if cp_layout() == "2d":
+        # Fold-CP's own schedule: both pair axes are sharded, so the
+        # contraction runs as Cannon's algorithm -- skew, then one local
+        # matmul per ring hop. Nothing full-width is ever built.
+        mask_c = mask if mask.shape == z_norm.shape[:-1] + (1,) else mask
+        a = _project_pair(z_norm, mask_c, params.linear_a_g, params.linear_a_p)
+        b = _project_pair(z_norm, mask_c, params.linear_b_g, params.linear_b_p)
+        out = _cannon_contract(a, b, direction).astype(z.dtype)
+        out = layer_norm(out, params.layer_norm_out)
+        out = linear(out, params.linear_z)
+        return out * sigmoid(linear(z_norm, params.linear_g))
+
+    contract_z = z_norm
+    contract_mask = mask
+    contract_direction = direction
+    if cp_active and direction == "incoming":
+        # The incoming contraction sums over the *sharded* axis, and the
+        # partitioner realises that as a full-size float32 partial sum plus an
+        # all-reduce on every device -- 49 GiB per device at 3,012 residues,
+        # measured as the allocation that killed the first cluster run. The
+        # projections are elementwise, so projecting the transpose and
+        # contracting in the outgoing form is the same arithmetic
+        # (out[i,j] = sum_k a[k,i] b[k,j] either way) with the partials
+        # sharded like every other pair tensor. The gate below still reads
+        # the untransposed `z_norm`.
+        contract_z = shard_pair_rows(jnp.swapaxes(z_norm, -2, -3))
+        contract_mask = jnp.swapaxes(mask, -3, -2)
+        contract_direction = "outgoing"
+    b = contract_mask * sigmoid(linear(contract_z, params.linear_b_g))
+    b = b * linear(contract_z, params.linear_b_p)
 
     def project_a(z_slice: jnp.ndarray, mask_slice: jnp.ndarray) -> jnp.ndarray:
         gated = mask_slice * sigmoid(linear(z_slice, params.linear_a_g))
@@ -153,12 +214,15 @@ def triangle_multiplication(
     # attention makes with its queries.
     out = _triangle_contract(
         project_a,
-        z_norm,
-        mask,
+        contract_z,
+        contract_mask,
         b,
-        direction,
+        contract_direction,
         chunk_size,
     )
+    # Pin the contraction result to the pair layout before the epilogue; the
+    # partitioner otherwise sometimes materialises it replicated.
+    out = shard_pair_rows(out)
     out = out.astype(z.dtype)
     out = layer_norm(out, params.layer_norm_out)
     out = linear(out, params.linear_z)
@@ -169,6 +233,94 @@ _compiled_triangle_multiplication = jax.jit(
     triangle_multiplication,
     static_argnames=("direction", "chunk_size", "use_jit"),
 )
+
+
+def _project_pair(
+    z_norm: jnp.ndarray,
+    mask: jnp.ndarray,
+    gate_params: LinearParams,
+    value_params: LinearParams,
+) -> jnp.ndarray:
+    """One gated pair projection, elementwise and therefore shard-local."""
+    return mask * sigmoid(linear(z_norm, gate_params)) * linear(z_norm, value_params)
+
+
+def _cannon_contract(
+    a: jnp.ndarray,
+    b: jnp.ndarray,
+    direction: TriangleDirection,
+) -> jnp.ndarray:
+    """Contract two 2-D-sharded pair projections by Cannon's algorithm.
+
+    The triangle contraction is a per-channel matrix product:
+    ``outgoing`` is ``out[i,j] = sum_k a[i,k] b[j,k]`` and ``incoming`` is
+    ``out[i,j] = sum_k a[k,i] b[k,j]``. Both become ``A @ B`` once the
+    operand whose contracted axis sits on the wrong grid axis is transposed
+    across the grid -- ``b`` for outgoing, ``a`` for incoming -- which is why
+    the two directions differ by one flag rather than by a rewrite.
+
+    Cannon then aligns the operands so every device starts on matching
+    indices: the left operand is skewed along grid columns by its row
+    coordinate, the right along grid rows by its column coordinate. Each of
+    the ``P`` steps multiplies the two resident tiles and shifts both one hop,
+    so the per-device transient is two tiles -- ``O((N/P)^2 C)`` -- and no
+    all-gather appears anywhere.
+    """
+    mesh = cp_mesh()
+    side = cp_grid()[0]
+    if a.ndim != 3:
+        raise ValueError(
+            "the 2-D context-parallel triangle multiplication takes unbatched "
+            f"[N, N, C] operands, got rank {a.ndim}"
+        )
+    n = a.shape[0]
+    pad = (-n) % side
+    if pad:
+        # Padded rows and columns project to zero (their mask is zero), so a
+        # padded k block contributes nothing to the sum and the padded output
+        # region is sliced away.
+        widths = ((0, pad), (0, pad), (0, 0))
+        a = jnp.pad(a, widths)
+        b = jnp.pad(b, widths)
+    spec = pair_spec(3)
+
+    # A grid permutation moves whole tiles; it never permutes the axes *inside*
+    # a tile. So after the transpose and the skews the resident operands still
+    # carry their dense index meaning -- outgoing holds `a[i, k]` against
+    # `b[j, k]`, incoming `a[k, i]` against `b[k, j]` -- and the local
+    # contraction stays the dense einsum of that direction. Reading the moved
+    # `b` as if it were `[k, j]` is the error this comment exists to prevent:
+    # it type-checks, it runs, and it silently computes a different function.
+    equations = {"outgoing": "ikd,jkd->ijd", "incoming": "kid,kjd->ijd"}
+    if direction not in equations:
+        raise ValueError(f"unsupported triangle direction: {direction!r}")
+    equation = equations[direction]
+
+    def body(lhs, rhs):
+        if direction == "outgoing":
+            rhs = permute(rhs, transpose_perm(side))
+        else:
+            lhs = permute(lhs, transpose_perm(side))
+        lhs = permute(lhs, row_skew_perm(side))
+        rhs = permute(rhs, col_skew_perm(side))
+        rows = lhs.shape[1] if direction == "incoming" else lhs.shape[0]
+        cols = rhs.shape[1] if direction == "incoming" else rhs.shape[0]
+        total = jnp.zeros((rows, cols) + lhs.shape[2:], dtype=jnp.float32)
+        for step in range(side):
+            total = total + jnp.einsum(
+                equation, lhs, rhs, preferred_element_type=jnp.float32
+            )
+            if step + 1 < side:
+                lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
+                rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
+        return total
+
+    out = jax.shard_map(
+        body, mesh=mesh, in_specs=(spec, spec), out_specs=spec
+    )(a, b)
+    if pad:
+        out = out[:n, :n]
+    return shard_pair_rows(out)
 
 
 def _triangle_contract(
@@ -315,6 +467,30 @@ def triangle_attention(
         if attention_backend is None
         else attention_backend
     )
+    if cp_mesh() is not None:
+        # The SPMD partitioner cannot split an FFI call -- but triangle
+        # attention is a batch of independent per-row attentions, and inside
+        # `shard_map` each device holds whole rows, so the cueq kernel can run
+        # unchanged on the local shard (it takes q/k/v for a block of rows
+        # plus the full bias, which is exactly what the body has). The
+        # inner-jit route stays bypassed because its trace cache does not key
+        # on the mesh. Tokamax remains unvalidated under a mesh.
+        local_backend = backend.removesuffix("_jit")
+        if local_backend not in {"xla", "cueq"}:
+            raise ValueError(
+                "context-parallel triangle attention supports the XLA and "
+                f"cueq backends; got {backend!r}."
+            )
+        return _triangle_attention_cp(
+            x,
+            mask,
+            params,
+            num_heads=num_heads,
+            starting=starting,
+            inf=inf,
+            q_chunk_size=q_chunk_size,
+            local_backend=local_backend,
+        )
     if backend in {"xla_jit", "cueq_jit"}:
         return _compiled_triangle_attention(
             x,
@@ -365,6 +541,95 @@ _compiled_triangle_attention = jax.jit(
         "attention_backend",
     ),
 )
+
+
+def _triangle_attention_cp(
+    x: jnp.ndarray,
+    mask: jnp.ndarray | None,
+    params: TriangleAttentionParams,
+    *,
+    num_heads: int,
+    starting: bool,
+    inf: float,
+    q_chunk_size: int | None,
+    local_backend: str = "xla",
+) -> jnp.ndarray:
+    """Triangle attention with the row axis sharded across the ``cp`` mesh.
+
+    Each row of the pair representation is an independent attention, so a row
+    shard needs no other shard's ``q``/``k``/``v`` -- the one cross-row input
+    is the triangle bias, whose ``[j, k]`` indices read every row. The bias is
+    therefore projected from the sharded tensor (its cheapest form: ``heads``
+    channels, not ``C``) and handed to every shard whole, and the blocked row
+    loop then runs unchanged on each device's local rows. This is the one
+    routing the SPMD partitioner cannot derive on its own: the row loop
+    slices the sharded axis, which a constraint-only program could satisfy
+    only by gathering the whole pair tensor back.
+    """
+    mesh = cp_mesh()
+    if x.ndim != 3:
+        raise ValueError(
+            "context-parallel triangle attention supports unbatched "
+            f"[N, N, C] inputs, got rank {x.ndim}"
+        )
+    if mask is None:
+        mask = jnp.ones(x.shape[:-1], dtype=x.dtype)
+    if not starting:
+        x = jnp.swapaxes(x, -2, -3)
+        mask = jnp.swapaxes(mask, -1, -2)
+    # The reshard after the transpose is the Fold-CP "transpose exchange":
+    # ending-node attention runs on columns, so the columns become the
+    # sharded rows.
+    x = shard_pair_rows(x, row_axis=-3)
+
+    x = layer_norm(x, params.layer_norm)
+    mask_bias = inf * (mask.astype(jnp.float32) - 1.0)
+    mask_bias = mask_bias[..., :, None, None, :]
+    triangle_bias = linear(x, params.linear)
+    triangle_bias = jnp.moveaxis(triangle_bias, -1, -3)
+    triangle_bias = jnp.expand_dims(triangle_bias, axis=-4)
+
+    # `shard_map` requires the sharded axis to divide evenly; pad the rows and
+    # slice them back. Padded rows attend over real columns and are discarded,
+    # so their values never reach a kept output.
+    n_rows = x.shape[-3]
+    pad = (-n_rows) % cp_row_shards()
+    if pad:
+        x = jnp.pad(x, ((0, pad), (0, 0), (0, 0)))
+        mask_bias = jnp.pad(mask_bias, ((0, pad), (0, 0), (0, 0), (0, 0)))
+
+    def local_rows(x_l, mask_bias_l, bias_l, params_l):
+        return _triangle_attention_dense(
+            x_l,
+            params_l,
+            num_heads,
+            mask_bias_l,
+            bias_l,
+            q_chunk_size,
+            local_backend,
+        )
+
+    out = jax.shard_map(
+        local_rows,
+        mesh=mesh,
+        in_specs=(
+            PartitionSpec(CP_AXIS),
+            PartitionSpec(CP_AXIS),
+            PartitionSpec(),
+            PartitionSpec(),
+        ),
+        out_specs=PartitionSpec(CP_AXIS),
+    )(x, mask_bias, triangle_bias, params)
+    if pad:
+        # Slicing the padded rows away would otherwise let the partitioner
+        # fall back to a replicated result -- one whole pair tensor per
+        # device, transiently, after every block.
+        out = shard_pair_rows(
+            jax.lax.slice_in_dim(out, 0, n_rows, axis=-3), row_axis=-3
+        )
+    if not starting:
+        out = jnp.swapaxes(out, -2, -3)
+    return out
 
 
 # One row of the score tensor costs `heads * N * N * 4` bytes -- the logits are

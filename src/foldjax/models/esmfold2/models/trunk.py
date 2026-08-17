@@ -21,6 +21,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear, swiglu
 
 Params = Mapping[str, jnp.ndarray]
@@ -59,8 +60,18 @@ def triangle_multiplicative(
     routed = routed.astype(jnp.float32)
     half = routed.shape[-1] // 2
     left, right = routed[..., :half], routed[..., half:]
-    equation = "bikd,bjkd->bijd" if outgoing else "bkid,bkjd->bijd"
+    contract_outgoing = outgoing
+    if cp_mesh() is not None and not outgoing:
+        # The incoming contraction sums over the sharded row axis, which the
+        # partitioner realises as a full-size float32 partial plus an
+        # all-reduce per device. Swapping the pair axes and contracting in
+        # the outgoing form is the same arithmetic with sharded partials.
+        left = shard_pair_rows(jnp.swapaxes(left, 1, 2))
+        right = shard_pair_rows(jnp.swapaxes(right, 1, 2))
+        contract_outgoing = True
+    equation = "bikd,bjkd->bijd" if contract_outgoing else "bkid,bkjd->bijd"
     contracted = jnp.einsum(equation, left, right, preferred_element_type=jnp.float32)
+    contracted = shard_pair_rows(contracted)
 
     mixed = layer_norm(
         contracted,
@@ -105,13 +116,20 @@ def pair_update_block(
     at inference besides, so it is simply absent here.
     """
     dot = f"{prefix}." if prefix else ""
+    # Under context parallelism the pair state is sharded along its rows;
+    # pinning it at block entry and exit keeps the whole stack -- the main
+    # trunk, the parcae coda, the lm encoder, and the confidence head's trunk
+    # -- on one layout without the partitioner re-deriving it per consumer.
+    pair = shard_pair_rows(pair)
     pair = pair + triangle_multiplicative(
         pair, params, f"{dot}tri_mul_out", outgoing=True, mask=mask
     )
     pair = pair + triangle_multiplicative(
         pair, params, f"{dot}tri_mul_in", outgoing=False, mask=mask
     )
-    return transition(pair, params, f"{dot}pair_transition", residual=True)
+    return shard_pair_rows(
+        transition(pair, params, f"{dot}pair_transition", residual=True)
+    )
 
 
 def folding_trunk(

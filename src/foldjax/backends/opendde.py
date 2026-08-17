@@ -33,6 +33,7 @@ _EXPORTED_ENVIRONMENT = (
 _CLI_OPTIONS = {
     "ccd_rdkit_cache",
     "components_cif",
+    "cp_devices",
     "diffusion_attention_backend",
     "kalign_binary",
     "max_msa_rows",

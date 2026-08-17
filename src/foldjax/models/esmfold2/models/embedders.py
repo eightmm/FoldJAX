@@ -19,6 +19,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear
 from foldjax.models.esmfold2.models.trunk import (
     msa_pair_weighted_averaging,
@@ -131,6 +132,9 @@ def msa_encoder_block(
     present and unused, and asking for them would raise.
     """
     dot = f"{prefix}." if prefix else ""
+    # This block updates the pair outside `pair_update_block`, so it carries
+    # its own context-parallel row pin.
+    pair = shard_pair_rows(pair)
     pair = pair + outer_product_mean(
         msa, params, f"{dot}outer_product_mean", msa_mask=msa_mask
     )
@@ -149,7 +153,9 @@ def msa_encoder_block(
     pair = pair + triangle_multiplicative(
         pair, params, f"{dot}tri_mul_in", outgoing=False, mask=pair_mask
     )
-    pair = pair + transition(pair, params, f"{dot}pair_transition", residual=False)
+    pair = shard_pair_rows(
+        pair + transition(pair, params, f"{dot}pair_transition", residual=False)
+    )
     return msa, pair
 
 

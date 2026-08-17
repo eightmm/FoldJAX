@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_unit
 
@@ -59,6 +60,11 @@ def transition_forward(
     (GPU, low precision); ``"xla"`` (default) keeps the bit-exact split-matmul.
     """
 
+    if cp_mesh() is not None:
+        # Under context parallelism axis 1 is the sharded row axis; slicing
+        # it block by block would fight the partitioner, and the memory the
+        # row chunk exists to bound is already divided across devices.
+        row_chunk_size = 0
     if row_chunk_size is None:
         row_chunk_size = _auto_row_chunk(x, params)
     if (

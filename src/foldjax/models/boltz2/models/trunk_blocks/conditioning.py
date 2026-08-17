@@ -7,6 +7,7 @@ from math import pi
 
 import jax.numpy as jnp
 
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.primitives.transition import transition_forward
@@ -58,7 +59,9 @@ def pairwise_conditioning_forward(
 ) -> jnp.ndarray:
     """Run Boltz PairwiseConditioning with mapped PyTorch parameters."""
 
-    z = jnp.concatenate((z_trunk, token_rel_pos_feats), axis=-1)
+    # Born sharded under context parallelism: this pair conditioning stays
+    # live for the whole diffusion sampling loop. Identity otherwise.
+    z = shard_pair_rows(jnp.concatenate((z_trunk, token_rel_pos_feats), axis=-1))
     init_proj = params["dim_pairwise_init_proj"]
     z = _linear(
         _layer_norm(
@@ -71,4 +74,4 @@ def pairwise_conditioning_forward(
     )
     for transition_params in params["transitions"]:
         z = z + transition_forward(transition_params, z, eps=eps)
-    return z
+    return shard_pair_rows(z)
