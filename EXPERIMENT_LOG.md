@@ -738,3 +738,30 @@ not, and CPU meshes never do. The next measurement is frequency -- the same
 job repeated five times at CP=4 and three times at CP=1 -- because a rate is
 what tells a race apart from a threshold. The CHANGELOG now says multi-GPU
 output is unvalidated rather than naming a cause it cannot support.
+
+**Second correction: the retraction was premature too.** With the flags gone,
+six consecutive context-parallel runs on a node whose four cards all
+initialise came back finite. The run that had refuted the flag hypothesis --
+flag-free and still NaN -- turns out to have been on a node in a degraded
+state: Slurm handed the job four A5000s, JAX could initialise only three, one
+card carried a leftover CUDA context with no owning process, and every
+context-parallel run there returned non-finite output regardless of settings.
+So there are two independent ways to get NaN, and each one masked the other:
+
+    clean node, no flags   6 runs   all finite
+    clean node, flags      1 run    NaN        (repeat under way)
+    degraded node, either  many     NaN
+
+Three self-inflicted lessons, in the order they were learned. A single A/B
+cannot establish a cause when the failure is intermittent -- that produced the
+first wrong conclusion. A single counter-example cannot retract one either --
+that produced the second. And a diagnostic that does not verify its own
+preconditions measures nothing: two "failure rate" jobs reported five failed
+runs each, which turned out to be `only 3 JAX devices visible` rather than any
+numerical failure, because the node had not released the cards and the harness
+threw the error away with `>/dev/null`. The device-count guard that now opens
+those jobs is the cheapest thing in this entire investigation.
+
+The degraded node is worth reporting on its own: after a day of `scancel`,
+one A5000 on that node no longer initialises and another holds an orphaned
+context. Anything measured there today is suspect.
