@@ -685,3 +685,15 @@ ladders, the per-device peaks, the 1,003-residue GPU parity -- was measured
 on the 1-D layout, and a default that silently changes the program would make
 those numbers describe a configuration nobody can reproduce. It flips when
 the grid has its own GPU evidence.
+
+**Postscript: the whole-stack run found what the module probes could not.**
+The 2-D layout passed every module-level parity probe and then failed the
+first real end-to-end run: triangle attention's `shard_map` named the 1-D
+mesh axis literally, and under the square grid that axis is called something
+else. Nothing caught it because the attention had only ever been traced under
+a 1-D mesh -- the module probes exercised the multiplication on the grid and
+the attention off it, never both at once. Fixed by deriving the spec from the
+layout (`pair_row_spec`), and locked in with a whole-stack probe at 2x2 and
+3x3 that fails when the literal is reinstated. Real weights end to end,
+1-D against 2-D on the same four devices: 3.7e-4 A max coordinate difference,
+confidence summaries equal to four decimals.

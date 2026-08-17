@@ -12,7 +12,6 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 
 from foldjax.models._cp import (
-    CP_AXIS,
     CP_COL_AXIS,
     CP_ROW_AXIS,
     col_skew_perm,
@@ -20,6 +19,7 @@ from foldjax.models._cp import (
     cp_layout,
     cp_mesh,
     cp_row_shards,
+    pair_row_spec,
     pair_spec,
     permute,
     ring_perm,
@@ -609,16 +609,16 @@ def _triangle_attention_cp(
             local_backend,
         )
 
+    # The specs name the mesh's *row* axis rather than a literal, because the
+    # 2-D layout calls it something else. Triangle attention stays row-sharded
+    # under either layout -- its softmax spans whole columns -- so the column
+    # axis stays unmanaged here and the partitioner supplies whole rows.
+    row_spec = pair_row_spec(1, row_axis=0)
     out = jax.shard_map(
         local_rows,
         mesh=mesh,
-        in_specs=(
-            PartitionSpec(CP_AXIS),
-            PartitionSpec(CP_AXIS),
-            PartitionSpec(),
-            PartitionSpec(),
-        ),
-        out_specs=PartitionSpec(CP_AXIS),
+        in_specs=(row_spec, row_spec, PartitionSpec(), PartitionSpec()),
+        out_specs=row_spec,
     )(x, mask_bias, triangle_bias, params)
     if pad:
         # Slicing the padded rows away would otherwise let the partitioner

@@ -374,6 +374,104 @@ def test_cannon_holds_on_a_three_by_three_grid() -> None:
     assert "CANNON_PARITY_OK" in _run_probe(_CANNON_PROBE, devices=9)
 
 
+_WHOLE_MODEL_PROBE = textwrap.dedent(
+    """
+    import os
+    os.environ["PROTENIX_TRIANGLE_BACKEND"] = "xla"
+    os.environ["PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"] = "xla"
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel, cp_layout
+    from foldjax.models.protenix.models.primitives.attention import (
+        AttentionPairBiasParams, AttentionParams,
+    )
+    from foldjax.models.protenix.models.primitives.primitives import (
+        LayerNormParams, LinearParams, TransitionParams,
+    )
+    from foldjax.models.protenix.models.triangle.triangle import (
+        TriangleAttentionParams, TriangleMultiplicationParams,
+    )
+    from foldjax.models.protenix.models.trunk_blocks.pairformer import (
+        PairformerBlockParams, PairformerStackParams, pairformer_stack,
+    )
+
+    # Triangle *attention* stays row-sharded under a 2-D mesh, so its
+    # `shard_map` specs have to name the mesh's row axis rather than the 1-D
+    # literal. They did not, and no module-level probe caught it because the
+    # attention was only ever run under a 1-D mesh; the whole-stack run below
+    # is what fails when the two layouts disagree about axis names.
+    total = int(os.environ.get("FOLDJAX_CP_PROBE_DEVICES", "4"))
+    assert jax.device_count() == total, jax.devices()
+    C, HEADS, N = 8, 2, 12
+    rng = np.random.default_rng(0)
+    arr = lambda *s: jnp.asarray(rng.normal(size=s, scale=0.5), dtype=jnp.float32)
+    lin = lambda o, i: LinearParams(weight=arr(o, i), bias=arr(o))
+    ln = lambda c: LayerNormParams(weight=arr(c) * 0.1 + 1.0, bias=arr(c) * 0.1)
+    mult = lambda: TriangleMultiplicationParams(
+        ln(C), ln(C), lin(C, C), lin(C, C), lin(C, C), lin(C, C), lin(C, C), lin(C, C)
+    )
+    attn = lambda: AttentionParams(
+        lin(C, C), lin(C, C), lin(C, C), lin(C, C), lin(C, C)
+    )
+    tri_att = lambda: TriangleAttentionParams(
+        ln(C), LinearParams(weight=arr(HEADS, C), bias=None), attn()
+    )
+    trans = lambda: TransitionParams(
+        ln(C), lin(2 * C, C), lin(2 * C, C), lin(C, 2 * C)
+    )
+    params = PairformerStackParams(blocks=(PairformerBlockParams(
+        tri_mul_out=mult(), tri_mul_in=mult(),
+        tri_att_start=tri_att(), tri_att_end=tri_att(),
+        pair_transition=trans(),
+        attention_pair_bias=AttentionPairBiasParams(
+            layernorm_a=ln(C), layernorm_kv=None, attention=attn(),
+            layernorm_z=ln(C),
+            linear_z=LinearParams(weight=arr(HEADS, C), bias=None),
+            has_s=False, cross_attention_mode=False,
+        ),
+        single_transition=trans(),
+    ),) * 2)
+    s_in, z = arr(N, C), arr(N, N, C)
+    keep = rng.random(N) > 0.15
+    pair_mask = jnp.asarray(keep[:, None] & keep[None, :])
+    traced = []
+
+    def run(s_arg, z_arg):
+        traced.append(cp_layout())
+        return pairformer_stack(
+            s_arg, z_arg, pair_mask, params, use_scan=True,
+            single_attention_backend="xla", triangle_attention_backend="xla",
+        )
+
+    ref_s, ref_z = map(jax.device_get, jax.jit(run)(s_in, z))
+    jax.clear_caches()
+    with context_parallel(total, layout="2d"):
+        got_s, got_z = map(jax.device_get, jax.jit(run)(s_in, z))
+    assert traced == [None, "2d"], traced
+    np.testing.assert_allclose(ref_s, got_s, atol=3e-5, rtol=3e-5)
+    np.testing.assert_allclose(ref_z, got_z, atol=3e-5, rtol=3e-5)
+    print("WHOLE_STACK_2D_OK")
+    """
+)
+
+
+def test_the_whole_pair_stack_runs_under_the_square_grid() -> None:
+    """Attention and multiplication together, which module probes miss.
+
+    The triangle-attention `shard_map` names a mesh axis; under the 2-D
+    layout that axis has a different name, and a spec that hardcodes the 1-D
+    one raises only when attention actually runs on the grid.
+    """
+    assert "WHOLE_STACK_2D_OK" in _run_probe(_WHOLE_MODEL_PROBE)
+
+
+def test_the_whole_pair_stack_runs_on_a_three_by_three_grid() -> None:
+    assert "WHOLE_STACK_2D_OK" in _run_probe(_WHOLE_MODEL_PROBE, devices=9)
+
+
 def test_square_layout_requires_a_square_device_count() -> None:
     with pytest.raises(ValueError, match="square device count"):
         with context_parallel(3, layout="2d"):
