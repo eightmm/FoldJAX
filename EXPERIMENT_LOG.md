@@ -816,3 +816,49 @@ The methodological entry for the day is not the third correction but what it
 cost: three published causes, two of them wrong, all three argued from runs
 that were never repeated enough to distinguish a cause from a coin. The base
 rate should have been measured first. It takes six runs.
+
+Four measurements later the shape of the fault is settled, and two of the
+guesses above are dead.
+
+The step sweep says the failure is not a curiosity of the fast probe
+settings. Every run that had shown it used `--n-step 2`, chosen for speed
+against a released default of 200, so the obvious suspicion was that the
+two-step schedule -- `[2560, 56, 0]` -- was degenerate and context
+parallelism merely tipped it. The opposite is true:
+
+    n_step    CP=4                single device
+    2         3 of 4 non-finite   finite
+    5         4 of 4 non-finite   finite
+    20        4 of 4 non-finite   finite
+
+The probability of a clean run collapses as steps accumulate, which is what
+per-step corruption looks like and rules out a one-off threshold. At the
+released default nothing usable comes out of an OpenDDE context-parallel run.
+
+Removing `pair_z = shard_pair_rows(pair_z)` -- the one place context
+parallelism reached past the trunk, and the suspect named above -- does not
+fix it. Two of fourteen calls still failed. That hypothesis is closed.
+
+The hash probe closes the other one. Hashing the three representations the
+diffusion conditioning consumes, over eight calls in each of two processes:
+
+    process 1   z_trunk 41722362afeb  (identical on all eight calls)
+    process 2   z_trunk dd9d13b4c397  (identical on all eight calls)
+    one device  z_trunk 17445f89ccb0  (identical on all eight calls)
+
+So the trunk is bit-stable within a process and differs between them -- the
+signature of autotuning, and harmless. But the coordinates flip between
+finite and NaN *inside* a single process, where the diffusion input is
+bitwise the same on every call. Identical inputs, identical executable,
+different answers. No knife-edge on perturbed values can produce that: the
+values are not perturbed. What remains is nondeterminism in the execution
+itself -- a buffer read before it is written, or a collective racing its
+consumer -- and three ablations are queued to separate them: collectives
+forced synchronous, peer-to-peer transport restored, and the sampler's
+`lax.scan` unrolled.
+
+Two of the three named suspects in this investigation were mine, stated
+before the measurement that would have killed them. The pattern is stable
+enough to name: a mechanism that explains the evidence is not thereby the
+mechanism, and the cheap experiment that discriminates it from its rivals is
+always worth running before it goes in a document.
