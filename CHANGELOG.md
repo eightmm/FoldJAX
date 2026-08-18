@@ -39,15 +39,20 @@ command predicts unless it says so here, in its own paragraph.
   fp32 peak, the gap to 4x being the triangle-mult all-gather that a future
   ring pass reclaims. Multi-GPU runs need `NCCL_P2P_DISABLE=1` on the tested
   nodes, and homogeneous cards (a mixed H100/RTX mesh is refused by XLA).
-  Two environment conditions produce silently non-finite output and neither
-  is in the model: a GPU that JAX cannot initialise (a node handing out four
-  cards where only three come up returns NaN from every run on it, whatever
-  the settings), and lowering `--xla_gpu_autotune_level`, which switches off
-  the correctness check XLA runs on autotuned GEMMs from level 3. **Verify
-  the device count before trusting a multi-GPU run** -- `jax.device_count()`
-  must equal the requested shard count -- and do not pass autotune flags. On
-  a node whose cards all initialise, six consecutive flag-free runs at CP=4
-  were finite and matched the single-device result. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
+  **Multi-GPU runs can return silently non-finite output, and the cause is
+  not yet established -- check every one.** Two things are known. A node
+  that hands out four cards where only three initialise returns NaN from
+  every run on it, so `jax.device_count()` must equal the requested shard
+  count before a result is worth reading; that check is necessary and not
+  sufficient. On one node where all four cards did initialise, CP=4 returned
+  non-finite confidence and coordinates in 11 of 20 runs of the same input,
+  at the same rate with and without XLA autotune flags -- which refutes the
+  earlier entries in this file that blamed `--xla_gpu_autotune_level`, whose
+  evidence was a single run either way against what is now known to be a
+  coin-flip base rate. A second node of the same card model returned six
+  finite runs from six. Whether the difference is that node's hardware or a
+  timing-sensitive defect in the context-parallel path is under
+  investigation; single-device runs are unaffected either way. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
   3x 96 GB because the fp32 diffusion side's atom-window gathers pull full
   pair tensors per device; sharding those consumers is the next lever.
 - **The square context-parallel grid (`--cp-layout 2d`).** Fold-CP's own
