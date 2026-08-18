@@ -765,3 +765,54 @@ those jobs is the cheapest thing in this entire investigation.
 The degraded node is worth reporting on its own: after a day of `scancel`,
 one A5000 on that node no longer initialises and another holds an orphaned
 context. Anything measured there today is suspect.
+
+**Third correction, and the one the evidence actually supports: the fault is
+in the program.** Two controls settled it. The flag hypothesis died on a
+same-node A/B -- on the node that had produced NaN with the autotune flags,
+removing them left the rate unchanged (7 of 14 runs non-finite with, 4 of 6
+without), so the single-pair comparison that first accused the flags was a
+coin flip against a base rate near one half. The bad-node hypothesis died the
+same afternoon: the node that had returned six finite runs from six returned
+a NaN run on the seventh attempt. There is no environment left to blame.
+
+Before spending more GPU time on rates, every retained run directory on the
+cluster was re-checked -- 63 of them, most never checked at all, because a job
+that exits 0 and writes a structure had been read as a success, which is
+exactly the reading a silent NaN passes. The map that came back is the most
+useful artifact of the day:
+
+    single-device runs, every size            12 / 12 finite
+    OpenDDE ladder 1,003 / 2,000 / 2,500 / 2,800   all finite
+    Protenix 3,012 / 4,500                    all finite
+    Boltz-2 2,000 ... 5,500                   all finite
+    OpenDDE short context-parallel probes     19 non-finite, about half
+
+So the published per-device peaks stand, and the failure is not a function of
+size, layout, shard count, node or flags. It is also not the sampler settings:
+the finite and the non-finite runs use the same `--n-step 2`.
+
+Localisation, from a probe that returns the trunk representations alongside
+the outputs, is unambiguous. In a failing run `s_inputs`, `s_trunk`,
+`z_trunk`, the structural refiner's outputs and the distogram logits -- which
+read `z_trunk` alone -- are all fully finite, and `coordinate` is fully NaN,
+taking the confidence heads with it. Everything sharded is right; the failure
+appears in diffusion. Calling the same compiled program five times inside one
+process settles when the coin is flipped: the first process returned five
+finite calls, but the second returned finite, NaN, NaN, NaN, finite -- same
+executable, same inputs, same devices. So the outcome is decided per
+execution, not per compilation, which rules out an autotuned algorithm choice
+being the thing that varies and leaves only two candidates: a buffer the
+program reads without having written it, or a race between an asynchronous
+collective and its consumer.
+
+That leaves one suspect with a mechanism. Context parallelism reaches past the
+trunk exactly once, at `pair_z = shard_pair_rows(pair_z)` in the diffusion
+conditioning, and the tensor it constrains is then read by an arbitrary
+two-axis gather, `z_token[..., idx_q, idx_k, :]`, over a row count that does
+not divide by the shard count. An ablation with that single constraint removed
+and nothing else changed is running from an isolated checkout.
+
+The methodological entry for the day is not the third correction but what it
+cost: three published causes, two of them wrong, all three argued from runs
+that were never repeated enough to distinguish a cause from a coin. The base
+rate should have been measured first. It takes six runs.
