@@ -17,7 +17,7 @@ from foldjax.models.boltz2.models.primitives.transition import transition_forwar
 from foldjax.models.boltz2.models.triangle.triangle import (
     triangle_multiplication_forward,
 )
-from foldjax.models.boltz2.models.triangle.triangle_attention import (
+from foldjax.models.boltz2.models.triangle.triangle_attention_cp import (
     resolve_triangle_attention_chunk,
     resolve_triangle_attention_q_chunk,
     triangle_attention_forward,
