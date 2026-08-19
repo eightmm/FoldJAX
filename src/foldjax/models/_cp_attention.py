@@ -134,11 +134,7 @@ def _softmax_rescale(
     source_maximum: jax.Array,
     next_maximum: jax.Array,
 ) -> jax.Array:
-    """Stable rescale, including an empty ``-inf`` block.
-
-    ``exp(-inf - -inf)`` is NaN. An all-masked block carries no softmax mass,
-    so its scale is exactly zero instead.
-    """
+    """Stable rescale, including empty ``-inf`` and ``+inf`` blocks."""
 
     finite = jnp.isfinite(source_maximum) & jnp.isfinite(next_maximum)
     positive_infinity = jnp.isposinf(source_maximum) & jnp.isposinf(next_maximum)
@@ -148,6 +144,29 @@ def _softmax_rescale(
         jnp.ones_like(difference),
         jnp.where(finite, jnp.exp(difference), jnp.zeros_like(difference)),
     )
+
+
+def _compensated_add(
+    total: jax.Array,
+    correction: jax.Array,
+    term: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Neumaier-add one ring tile without changing its communication schedule.
+
+    A three-by-three mesh combines three independently reduced key tiles. Plain
+    fp32 addition can lose enough low bits there to become visible after several
+    Pairformer residual blocks. The correction tensor has the same local output
+    shape, so the per-device asymptotic memory remains ``O(N^2/P)`` and no
+    collective is introduced.
+    """
+
+    updated = total + term
+    residual = jnp.where(
+        jnp.abs(total) >= jnp.abs(term),
+        (total - updated) + term,
+        (term - updated) + total,
+    )
+    return updated, correction + residual
 
 
 def online_softmax_update(
@@ -160,10 +179,9 @@ def online_softmax_update(
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Merge one locally normalised key tile into an online accumulator.
 
-    The production ring uses a lower-roundoff variant that evaluates each tile
-    directly against the new global running maximum. This helper remains useful
-    for tests and callers that already own block-local numerator/denominator
-    statistics.
+    This public helper keeps its historical three-state API. The production
+    ring below additionally carries compensation terms for the numerator and
+    denominator so repeated residual blocks stay close to the dense fp32 path.
     """
 
     next_maximum = jnp.maximum(maximum, block_maximum)
@@ -245,21 +263,15 @@ def ring_triangle_attention_2d(
         )
         mask_bias = _widen(mask_bias, ((-4, pad_outer),))
         if pad_tokens:
-            finite_mask = jnp.where(
-                jnp.isfinite(mask_bias),
-                mask_bias,
-                jnp.asarray(0.0, mask_bias.dtype),
-            )
-            floor = jnp.minimum(
-                jnp.min(finite_mask),
-                jnp.zeros((), mask_bias.dtype),
-            ) - jnp.asarray(1.0e9, mask_bias.dtype)
+            # Padded keys are absent, not merely very unlikely. Using -inf is
+            # now safe because the online recurrence explicitly handles a
+            # completely empty tile and a globally empty query row.
             mask_bias = jnp.concatenate(
                 [
                     mask_bias,
                     jnp.full(
                         mask_bias.shape[:-1] + (pad_tokens,),
-                        floor,
+                        -jnp.inf,
                         dtype=mask_bias.dtype,
                     ),
                 ],
@@ -288,13 +300,14 @@ def ring_triangle_attention_2d(
             dtype=jnp.float32,
         )
         normalizer = jnp.zeros_like(maximum)
+        normalizer_correction = jnp.zeros_like(maximum)
         output = jnp.zeros(q_l.shape, dtype=jnp.float32)
+        output_correction = jnp.zeros_like(output)
 
         for step in range(side):
-            scores = jnp.einsum(
-                "...hqd,...hkd->...hqk",
+            scores = jnp.matmul(
                 q_l.astype(jnp.float32),
-                k_l.astype(jnp.float32),
+                jnp.swapaxes(k_l.astype(jnp.float32), -1, -2),
                 precision=precision,
             )
             scores = (
@@ -306,32 +319,43 @@ def ring_triangle_attention_2d(
             next_maximum = jnp.maximum(maximum, block_maximum)
             previous_scale = _softmax_rescale(maximum, next_maximum)
 
-            # Evaluate this tile directly relative to the new running maximum.
-            # The older block-local form first formed ``exp(s - block_max)``,
-            # reduced it, then multiplied the numerator and denominator by a
-            # second scale. Eliminating that extra rounded multiply materially
-            # improves 3x3 full-stack parity while preserving the exact online
-            # softmax recurrence.
-            valid_next = jnp.isfinite(next_maximum)
+            finite_maximum = jnp.isfinite(next_maximum)
+            positive_infinity = jnp.isposinf(next_maximum)
             shifted = jnp.where(
-                valid_next,
+                finite_maximum,
                 scores - next_maximum,
                 -jnp.inf,
             )
-            probabilities = jnp.exp(shifted)
+            probabilities = jnp.where(
+                positive_infinity,
+                jnp.isposinf(scores).astype(jnp.float32),
+                jnp.exp(shifted),
+            )
             block_normalizer = jnp.sum(
                 probabilities,
                 axis=-1,
                 keepdims=True,
             )
-            block_output = jnp.einsum(
-                "...hqk,...hkd->...hqd",
+            block_output = jnp.matmul(
                 probabilities,
                 v_l.astype(jnp.float32),
                 precision=precision,
             )
-            output = previous_scale * output + block_output
-            normalizer = previous_scale * normalizer + block_normalizer
+
+            output = previous_scale * output
+            output_correction = previous_scale * output_correction
+            output, output_correction = _compensated_add(
+                output,
+                output_correction,
+                block_output,
+            )
+            normalizer = previous_scale * normalizer
+            normalizer_correction = previous_scale * normalizer_correction
+            normalizer, normalizer_correction = _compensated_add(
+                normalizer,
+                normalizer_correction,
+                block_normalizer,
+            )
             maximum = next_maximum
 
             if step + 1 < side:
@@ -340,6 +364,8 @@ def ring_triangle_attention_2d(
                 mask_l = permute(mask_l, kv_hop)
                 bias_l = permute(bias_l, bias_hop)
 
+        output = output + output_correction
+        normalizer = normalizer + normalizer_correction
         tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
         result = jnp.where(
             normalizer > 0,
