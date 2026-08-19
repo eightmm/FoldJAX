@@ -1,6 +1,6 @@
 """Context-parallel dispatch for OpenFold3 triangle attention.
 
-The serial module remains the numerical reference.  A one-dimensional CP mesh
+The serial module remains the numerical reference. A one-dimensional CP mesh
 uses the existing row-sharded implementation, while a square two-dimensional
 mesh uses the gather-free Fold-CP ring implemented in
 :mod:`foldjax.models._cp_attention`.
@@ -8,7 +8,6 @@ mesh uses the gather-free Fold-CP ring implemented in
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
@@ -43,7 +42,7 @@ def triangle_attention(
     """Apply serial/1-D attention or exact 2-D Fold-CP ring attention.
 
     On the 2-D path the query tile remains resident and K/V/mask/bias tiles
-    rotate around the mesh.  A fused local attention backend is rejected: it
+    rotate around the mesh. A fused local attention backend is rejected: it
     normalises one key tile before the online softmax can combine all ring
     steps, so using it would change the function.
     """
@@ -85,9 +84,15 @@ def triangle_attention(
     triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
 
-    query = jnp.swapaxes(split_heads(linear(x, params.mha.linear_q), no_heads), -2, -3)
-    key = jnp.swapaxes(split_heads(linear(x, params.mha.linear_k), no_heads), -2, -3)
-    value = jnp.swapaxes(split_heads(linear(x, params.mha.linear_v), no_heads), -2, -3)
+    query = jnp.swapaxes(
+        split_heads(linear(x, params.mha.linear_q), no_heads), -2, -3
+    )
+    key = jnp.swapaxes(
+        split_heads(linear(x, params.mha.linear_k), no_heads), -2, -3
+    )
+    value = jnp.swapaxes(
+        split_heads(linear(x, params.mha.linear_v), no_heads), -2, -3
+    )
     query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
 
     out = ring_triangle_attention_2d(
