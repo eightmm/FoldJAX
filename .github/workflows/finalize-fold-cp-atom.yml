@@ -1,0 +1,134 @@
+name: Finalize Fold-CP atom windows
+
+on:
+  push:
+    branches: [agent/fold-cp-jax-complete]
+    paths:
+      - .github/workflows/finalize-fold-cp-atom.yml
+      - tools/finalize_fold_cp_atom.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-fold-cp-atom
+  cancel-in-progress: false
+
+env:
+  JAX_PLATFORMS: cpu
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fold-cp-jax-complete
+          fetch-depth: 0
+
+      - name: Normalize staged patch and apply implementation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/finalize_fold_cp_atom.py')
+          text = path.read_text()
+          old = '''# Two calls inside scan/eager.
+          for _ in range(2):
+              replace_in_function(
+                  "src/foldjax/models/boltz2/models/trunk_blocks/trunk.py",
+                  "boltz2_sample_forward",
+                  \'''                token_layers=token_layers,\\n            )\\n\''',
+                  \'''                token_layers=token_layers,\\n                atom_context_parallel=atom_context_parallel,\\n            )\\n\''',
+              )
+          '''
+          new = '''# The scan and eager calls have different indentation.
+          replace_in_function(
+              "src/foldjax/models/boltz2/models/trunk_blocks/trunk.py",
+              "boltz2_sample_forward",
+              \'''                token_layers=token_layers,\\n            )\\n\''',
+              \'''                token_layers=token_layers,\\n                atom_context_parallel=atom_context_parallel,\\n            )\\n\''',
+          )
+          replace_in_function(
+              "src/foldjax/models/boltz2/models/trunk_blocks/trunk.py",
+              "boltz2_sample_forward",
+              \'''            token_layers=token_layers,\\n        )\\n\''',
+              \'''            token_layers=token_layers,\\n            atom_context_parallel=atom_context_parallel,\\n        )\\n\''',
+          )
+          '''
+          if old not in text:
+              raise SystemExit('staged scan/eager patch block was not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python tools/finalize_fold_cp_atom.py
+
+      - name: Install uv and test environment
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.3"
+          enable-cache: true
+      - run: uv sync --group dev --frozen
+
+      - name: Format and lint implementation
+        run: |
+          uv run --no-sync ruff format \
+            src/foldjax/models/_cp_atom.py \
+            src/foldjax/models/boltz2/api.py \
+            src/foldjax/backends/boltz2.py \
+            src/foldjax/models/boltz2/data/bucket.py \
+            src/foldjax/models/boltz2/models/diffusion/atom.py \
+            src/foldjax/models/boltz2/models/diffusion/diffusion.py \
+            src/foldjax/models/boltz2/models/diffusion/diffusion_conditioning.py \
+            src/foldjax/models/boltz2/models/diffusion/diffusion_transformer.py \
+            src/foldjax/models/boltz2/models/heads/confidence.py \
+            src/foldjax/models/boltz2/models/predict.py \
+            src/foldjax/models/boltz2/models/trunk_blocks/trunk.py \
+            tests/models/boltz2/test_atom_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_padding.py
+          uv run --no-sync ruff check --fix \
+            src/foldjax/models/_cp_atom.py \
+            src/foldjax/models/boltz2/api.py \
+            src/foldjax/backends/boltz2.py \
+            src/foldjax/models/boltz2/data/bucket.py \
+            src/foldjax/models/boltz2/models/diffusion/atom.py \
+            src/foldjax/models/boltz2/models/diffusion/diffusion.py \
+            src/foldjax/models/boltz2/models/diffusion/diffusion_conditioning.py \
+            src/foldjax/models/boltz2/models/diffusion/diffusion_transformer.py \
+            src/foldjax/models/boltz2/models/heads/confidence.py \
+            src/foldjax/models/boltz2/models/predict.py \
+            src/foldjax/models/boltz2/models/trunk_blocks/trunk.py \
+            tests/models/boltz2/test_atom_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_padding.py
+          git diff --check
+          uv run --no-sync python -m compileall -q src/foldjax
+
+      - name: Run atom-window proof gates
+        run: |
+          uv run --no-sync pytest -q \
+            tests/models/boltz2/test_atom_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_padding.py \
+            tests/models/test_cp_runtime.py \
+            tests/models/test_cp_ring_attention.py \
+            tests/models/test_cp_masked_ring.py \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/protenix/test_context_parallel.py \
+            tests/models/opendde/test_context_parallel.py \
+            tests/models/openfold3/test_context_parallel.py \
+            tests/models/esmfold2/test_context_parallel.py
+
+      - name: Run API and padding regression gates
+        run: |
+          uv run --no-sync pytest -q \
+            tests/test_backends.py \
+            tests/test_padding.py \
+            tests/models/boltz2/test_bucket.py
+
+      - name: Commit validated atom-window runtime
+        run: |
+          rm -f tools/finalize_fold_cp_atom.py
+          rm -f .github/workflows/finalize-fold-cp-atom.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: complete Fold-CP atom-window runtime"
+          git push origin HEAD:agent/fold-cp-jax-complete
