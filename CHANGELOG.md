@@ -59,9 +59,14 @@ command predicts unless it says so here, in its own paragraph.
   the passing runs used -- so nothing the sharded pair code computes is wrong
   -- and only the diffusion coordinates are bad. It is also not always loud:
   Boltz-2 produced structures 34 Å from the single-device answer with every
-  array in them finite, so **a finiteness check is the wrong gate** and the
-  runs called clean by one should be re-scored by whether repeats of a seed
-  agree with each other. Ten hypotheses have been measured and closed --
+  array in them finite, so **a finiteness check is the wrong gate**. Mutual
+  agreement between repeats does not replace it: the two corrupted Boltz-2
+  runs agree with *each other* to 0.224 Å, inside the clean rerun floor, so
+  a group of repeats that are all corrupted looks consistent. Only agreement
+  with a single-device run settles it. That coincidence is also the sharpest
+  clue so far -- a race would scatter two bad runs, and these land in the
+  same wrong place, so the corruption is a deterministic computation that is
+  sometimes selected rather than noise. Ten hypotheses have been measured and closed --
   autotune flags, a bad node, the step count, the diffusion-side sharding
   constraints, the sampler's `lax.scan`, NCCL's transport, the allocator,
   asynchronous collectives, and pinning the trunk/diffusion handover
