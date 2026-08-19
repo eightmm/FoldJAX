@@ -2,7 +2,7 @@
 
 The pair representation is tiled over a square ``cp_row x cp_col`` mesh.
 Queries stay resident while key, value, mask and pair-bias tiles rotate through
-a ring.  An fp32 online-softmax accumulator makes the result mathematically
+a ring. An fp32 online-softmax accumulator makes the result mathematically
 equivalent to dense attention without materialising a full token axis.
 """
 
@@ -136,7 +136,7 @@ def _softmax_rescale(
 ) -> jax.Array:
     """Stable rescale, including an empty ``-inf`` block.
 
-    ``exp(-inf - -inf)`` is NaN.  An all-masked block carries no softmax mass,
+    ``exp(-inf - -inf)`` is NaN. An all-masked block carries no softmax mass,
     so its scale is exactly zero instead.
     """
 
@@ -158,7 +158,13 @@ def online_softmax_update(
     block_normalizer: jax.Array,
     block_maximum: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Merge one key tile into an unnormalised online-softmax accumulator."""
+    """Merge one locally normalised key tile into an online accumulator.
+
+    The production ring uses a lower-roundoff variant that evaluates each tile
+    directly against the new global running maximum. This helper remains useful
+    for tests and callers that already own block-local numerator/denominator
+    statistics.
+    """
 
     next_maximum = jnp.maximum(maximum, block_maximum)
     previous_scale = _softmax_rescale(maximum, next_maximum)
@@ -297,10 +303,19 @@ def ring_triangle_attention_2d(
                 + mask_l.astype(jnp.float32)
             )
             block_maximum = jnp.max(scores, axis=-1, keepdims=True)
-            valid_block = jnp.isfinite(block_maximum)
+            next_maximum = jnp.maximum(maximum, block_maximum)
+            previous_scale = _softmax_rescale(maximum, next_maximum)
+
+            # Evaluate this tile directly relative to the new running maximum.
+            # The older block-local form first formed ``exp(s - block_max)``,
+            # reduced it, then multiplied the numerator and denominator by a
+            # second scale. Eliminating that extra rounded multiply materially
+            # improves 3x3 full-stack parity while preserving the exact online
+            # softmax recurrence.
+            valid_next = jnp.isfinite(next_maximum)
             shifted = jnp.where(
-                valid_block,
-                scores - block_maximum,
+                valid_next,
+                scores - next_maximum,
                 -jnp.inf,
             )
             probabilities = jnp.exp(shifted)
@@ -315,14 +330,9 @@ def ring_triangle_attention_2d(
                 v_l.astype(jnp.float32),
                 precision=precision,
             )
-            output, normalizer, maximum = online_softmax_update(
-                output,
-                normalizer,
-                maximum,
-                block_output,
-                block_normalizer,
-                block_maximum,
-            )
+            output = previous_scale * output + block_output
+            normalizer = previous_scale * normalizer + block_normalizer
+            maximum = next_maximum
 
             if step + 1 < side:
                 k_l = permute(k_l, kv_hop)
