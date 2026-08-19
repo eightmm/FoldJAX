@@ -18,10 +18,12 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models import _capture
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
     shard_pair_rows,
+    without_communication,
 )
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
@@ -123,6 +125,14 @@ class InferenceConfig(NamedTuple):
         "pde_logits",
         "distogram_logits",
     )
+    #: Trunk representations to hand back, by the shared vocabulary in
+    #: `foldjax.models._representations`. Empty means none, which is the
+    #: default: these are the largest arrays the program produces.
+    returned_representations: tuple[str, ...] = ()
+    #: Stop once the representations exist, skipping the sampler and the
+    #: confidence heads. The Prediction that comes back carries the trunk
+    #: arrays and nothing else.
+    stop_after_trunk: bool = False
     #: Context-parallel shard count. More than one shards the pair
     #: representations row-wise across that many devices (the JAX form of
     #: OpenDDE's Fold-CP) and requires the mesh :func:`compile_predict`
@@ -157,9 +167,9 @@ class InferenceParams(NamedTuple):
 class Prediction(NamedTuple):
     """Predicted coordinates and the confidence outputs derived from them."""
 
-    coordinates: jnp.ndarray
-    plddt: jnp.ndarray
-    ptm: jnp.ndarray
+    coordinates: jnp.ndarray | None
+    plddt: jnp.ndarray | None
+    ptm: jnp.ndarray | None
     iptm: jnp.ndarray | None
     chain_pair_iptm: jnp.ndarray | None
     #: None when the config's ``returned_pair_logits`` excludes them: these are
@@ -170,6 +180,13 @@ class Prediction(NamedTuple):
     pde_logits: jnp.ndarray | None
     distogram_logits: jnp.ndarray | None
     experimentally_resolved_logits: jnp.ndarray | None = None
+    #: The trunk's own outputs, present only when `returned_representations`
+    #: asks for them. A pair representation is quadratic in token count and
+    #: an entry output stays resident for the whole run, so they are off by
+    #: default and written straight to disk when they are on.
+    single_inputs: jnp.ndarray | None = None
+    single: jnp.ndarray | None = None
+    pair: jnp.ndarray | None = None
 
 
 #: Bytes the triangle-attention score tensor is allowed to reach before
@@ -466,28 +483,59 @@ def predict(
             sigma_data=config.sigma_data,
         )
 
-    coordinates = sample_diffusion(
-        key,
-        schedule,
-        (config.num_samples, config.n_atom, 3),
-        denoise_fn,
-        gamma_0=config.gamma_0,
-        gamma_min=config.gamma_min,
-        noise_scale=config.noise_scale,
-        step_scale=config.step_scale,
-        augment_fn=(
-            (
-                lambda k, xl: centre_random_augmentation(
-                    k, xl, sampled_batch["atom_mask"]
+    s_input = _capture.capture("single_inputs", s_input)
+    s_trunk = _capture.capture("single", s_trunk)
+    z = _capture.capture("pair", z)
+
+    if config.stop_after_trunk:
+        return Prediction(
+            coordinates=None,
+            plddt=None,
+            ptm=None,
+            iptm=None,
+            chain_pair_iptm=None,
+            pae_logits=None,
+            pde_logits=None,
+            distogram_logits=None,
+            single_inputs=(
+                s_input
+                if "single_inputs" in config.returned_representations
+                else None
+            ),
+            single=(
+                s_trunk if "single" in config.returned_representations else None
+            ),
+            pair=z if "pair" in config.returned_representations else None,
+        )
+
+    def sample(key, noise_tape, noise_mask):
+        return sample_diffusion(
+            key,
+            schedule,
+            (config.num_samples, config.n_atom, 3),
+            denoise_fn,
+            gamma_0=config.gamma_0,
+            gamma_min=config.gamma_min,
+            noise_scale=config.noise_scale,
+            step_scale=config.step_scale,
+            augment_fn=(
+                (
+                    lambda k, xl: centre_random_augmentation(
+                        k, xl, sampled_batch["atom_mask"]
+                    )
                 )
-            )
-            if augment
-            else None
-        ),
-        noise_fn=noise_fn,
-        noise_tape=noise_tape,
-        noise_mask=noise_mask,
-    )
+                if augment
+                else None
+            ),
+            noise_fn=noise_fn,
+            noise_tape=noise_tape,
+            noise_mask=noise_mask,
+        )
+
+    # Every device runs the whole sampler on its own copy. Left to the
+    # partitioner the sampler communicates once per diffusion step, which
+    # is where context-parallel runs of the sibling ports went wrong.
+    coordinates = without_communication(sample, key, noise_tape, noise_mask)
 
     # The distogram head is the only one that reads the trunk pair embedding.
     disto_logits = distogram_head(z, params.distogram_head)
@@ -652,6 +700,11 @@ def predict(
         pde_logits=pde_logits if "pde_logits" in returned else None,
         distogram_logits=disto_logits if "distogram_logits" in returned else None,
         experimentally_resolved_logits=experimentally_resolved_logits,
+        single_inputs=(
+            s_input if "single_inputs" in config.returned_representations else None
+        ),
+        single=s_trunk if "single" in config.returned_representations else None,
+        pair=z if "pair" in config.returned_representations else None,
     )
 
 
@@ -806,7 +859,11 @@ def compile_predict(
         # token-linear is replicated onto the mesh, and the graph's own
         # constraints shard the pair-shaped state from its first
         # materialization.
-        with context_parallel(config.cp_shards, layout=resolve_cp_layout(config)):
+        # A tap records a tracer of the graph being built, so the capture
+        # set has to be live while the program is traced, not while it runs.
+        with _capture.capturing(config.returned_representations), context_parallel(
+            config.cp_shards, layout=resolve_cp_layout(config)
+        ):
             return compiled(
                 replicate_tree(key),
                 replicate_tree(batch),

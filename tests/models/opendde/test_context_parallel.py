@@ -491,3 +491,63 @@ def test_context_parallel_matches_the_unsharded_program() -> None:
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "CP_PARITY_OK" in completed.stdout
+
+
+_NO_COMMUNICATION_PROBE = textwrap.dedent(
+    """
+    import os
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel, without_communication
+
+    total = int(os.environ.get("FOLDJAX_CP_PROBE_DEVICES", "4"))
+    assert jax.device_count() == total, jax.devices()
+
+    def body(x, y):
+        # A reduction over a whole axis is exactly the shape the partitioner
+        # would satisfy with a collective if the region were left to it.
+        return jnp.sin(x) @ y + jnp.sum(x)
+
+    rng = np.random.default_rng(0)
+    x = jnp.asarray(rng.normal(size=(12, 8)), jnp.float32)
+    y = jnp.asarray(rng.normal(size=(8, 5)), jnp.float32)
+
+    expected = np.asarray(jax.jit(body)(x, y))
+
+    with context_parallel(total, layout="1d"):
+        jax.clear_caches()
+        run = jax.jit(lambda a, b: without_communication(body, a, b))
+        got = np.asarray(run(x, y))
+        text = run.lower(x, y).compile().as_text()
+
+    assert np.allclose(got, expected, atol=1e-6), np.abs(got - expected).max()
+    collectives = [
+        line for line in text.splitlines()
+        if any(f"{kind}(" in line for kind in
+               ("all-gather", "all-reduce", "reduce-scatter", "collective-permute"))
+    ]
+    assert not collectives, collectives[:3]
+    print("NO_COMMUNICATION_OK")
+    """
+)
+
+
+def test_without_communication_is_a_no_op_outside_a_mesh() -> None:
+    """Call sites pass through it unconditionally, so it must be transparent."""
+    from foldjax.models._cp import without_communication
+
+    assert without_communication(lambda a, b: a + b, 2, 3) == 5
+
+
+def test_without_communication_emits_no_collective() -> None:
+    """The guarantee the sampler relies on, asserted from the compiled program.
+
+    A sharding constraint is a preference the partitioner may route around,
+    which is why pinning the diffusion inputs replicated left the per-step
+    collectives in place. This region has to contain none, and the only way
+    to know is to read what was compiled.
+    """
+    assert "NO_COMMUNICATION_OK" in _run_probe(_NO_COMMUNICATION_PROBE)

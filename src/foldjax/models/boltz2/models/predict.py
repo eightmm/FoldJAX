@@ -24,7 +24,8 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._cp import cp_mesh
+from foldjax.models import _capture
+from foldjax.models._cp import cp_mesh, without_communication
 from foldjax.models.boltz2.models.heads.affinity import affinity_module_forward
 from foldjax.models.boltz2.models.heads.bfactor import bfactor_forward
 from foldjax.models.boltz2.models.heads.confidence import confidence_module_forward
@@ -56,6 +57,8 @@ def boltz2_predict(
     augmentation: bool = True,
     steering_args: Mapping[str, object] | None = None,
     run_confidence: bool = True,
+    return_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
     run_distogram: bool = True,
     run_bfactor: bool = False,
     #: Whether the confidence head's full-bin logits stay in the result. The
@@ -145,23 +148,57 @@ def boltz2_predict(
         use_template=use_template,
     )
     s_inputs, s, z = trunk["s_inputs"], trunk["s"], trunk["z"]
+    s_inputs = _capture.capture("single_inputs", s_inputs)
+    s = _capture.capture("single", s)
+    z = _capture.capture("pair", z)
 
-    sample_out = boltz2_sample_forward(
-        params,
-        feats,
-        key,
-        recycling_steps=recycling_steps,
-        num_sampling_steps=num_sampling_steps,
-        augmentation=augmentation,
-        steering_args=steering_args,
-        multiplicity=multiplicity,
-        eps=eps,
-        trunk=trunk,
-        **sample_kwargs,
-    )
+    if stop_after_trunk:
+        # The representations exist; the sampler, the confidence module
+        # and the affinity path are the rest of the run.
+        return {
+            name: value
+            for name, value in (
+                ("single_inputs", s_inputs),
+                ("single", s),
+                ("pair", z),
+            )
+            if name in return_representations
+        }
+
+    def sample(key):
+        return boltz2_sample_forward(
+            params,
+            feats,
+            key,
+            recycling_steps=recycling_steps,
+            num_sampling_steps=num_sampling_steps,
+            augmentation=augmentation,
+            steering_args=steering_args,
+            multiplicity=multiplicity,
+            eps=eps,
+            trunk=trunk,
+            **sample_kwargs,
+        )
+
+    # Every device runs the whole sampler on its own copy. Left to the
+    # partitioner the sampler communicates once per diffusion step, and that
+    # is what produced structures 34 A from the single-device answer with
+    # every array in them finite.
+    sample_out = without_communication(sample, key)
     sample_atom_coords = sample_out["sample_atom_coords"]
 
     out: dict[str, object] = {"sample_atom_coords": sample_atom_coords}
+    # The trunk's own outputs, for downstream work that wants what the
+    # model saw rather than only where it put the atoms. Off by default:
+    # the pair representation is quadratic in token count and an entry
+    # output stays resident for the whole run.
+    for name, value in (
+        ("single_inputs", s_inputs),
+        ("single", s),
+        ("pair", z),
+    ):
+        if name in return_representations:
+            out[name] = value
 
     pdistogram = None
     if run_distogram or run_confidence:

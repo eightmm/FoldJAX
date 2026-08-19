@@ -30,7 +30,8 @@ from dataclasses import dataclass, field, replace
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._cp import shard_pair_rows
+from foldjax.models import _capture
+from foldjax.models._cp import shard_pair_rows, without_communication
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models.atom import atom_encoder, one_hot_atom_features
@@ -499,6 +500,8 @@ def predict(
     initial_pair_state: jnp.ndarray | None = None,
     n_chains: int | None = None,
     preserve_prefix_rng: bool = False,
+    return_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -784,21 +787,48 @@ def predict(
         n_tokens=n_tokens,
         trunk_dtype=compute,
     )
-    coords, _ = diffusion.sample(
-        sample_key,
-        x_inputs,
-        cache,
-        params,
-        "structure_head.diffusion_module",
-        settings=settings.diffusion,
-        token_mask=token_mask,
-        num_samples=n_samples,
-        preserve_prefix_rng=preserve_prefix_rng,
-    )
+    def draw(sample_key):
+        return diffusion.sample(
+            sample_key,
+            x_inputs,
+            cache,
+            params,
+            "structure_head.diffusion_module",
+            settings=settings.diffusion,
+            token_mask=token_mask,
+            num_samples=n_samples,
+            preserve_prefix_rng=preserve_prefix_rng,
+        )
+
+    x_inputs = _capture.capture("single", x_inputs)
+    z = _capture.capture("pair", z)
+
+    if stop_after_trunk:
+        # The representations exist; the sampler and the confidence head are
+        # the rest of the run.
+        return {
+            name: value
+            for name, value in (("single", x_inputs), ("pair", z))
+            if name in return_representations
+        }
+
+    # Every device runs the whole sampler on its own copy, so the region
+    # contains no collective. The sibling ports' context-parallel runs went
+    # wrong in what their samplers communicated per diffusion step.
+    coords, _ = without_communication(draw, sample_key)
 
     if n_chains is None:
         n_chains = int(features["asym_id"].max()) + 1
+    # ESMFold2 carries one single stream rather than an input embedding and
+    # a separate trunk output, so it fills two of the three shared roles. Off
+    # by default: the pair state is quadratic in token count.
+    representations = {
+        name: value
+        for name, value in (("single", x_inputs), ("pair", z))
+        if name in return_representations
+    }
     output = {
+        **representations,
         "distogram_logits": distogram_logits,
         "sample_atom_coords": coords,
         "atom_pad_mask": atom_mask,

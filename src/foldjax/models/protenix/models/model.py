@@ -9,10 +9,12 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models import _capture
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
     shard_pair_rows,
+    without_communication,
 )
 from foldjax.models._cp import (
     cp_layout as _active_cp_layout,
@@ -166,6 +168,8 @@ def protenix_infer_static(
     #: the library API keeps its shape; the CLI passes what its output format
     #: actually consumes.
     return_trunk: bool = True,
+    stop_after_trunk: bool = False,
+    capture_names: tuple[str, ...] = (),
     return_confidence_logits: bool = True,
     #: Score each sample's logits inside the per-sample confidence loop instead
     #: of stacking [n_sample, N, N, 64] first. Bit-identical outputs; the False
@@ -267,6 +271,16 @@ def protenix_infer_static(
         triangle_attention_backend=trunk_triangle_attention_backend,
         cycle_msa_features=cycle_msa_features,
     )
+    s_inputs = _capture.capture("single_inputs", s_inputs)
+    s_trunk = _capture.capture("single", s_trunk)
+    z_trunk = _capture.capture("pair", z_trunk)
+
+    if stop_after_trunk:
+        # The representations exist; the sampler and the confidence heads
+        # are the rest of the cost, and a caller who wants embeddings
+        # should not pay for a structure they will discard.
+        return dict(_capture.collected())
+
     diffusion_s_inputs = s_inputs.astype(jnp.float32)
     diffusion_s_trunk = s_trunk.astype(jnp.float32)
     diffusion_z_trunk = z_trunk.astype(jnp.float32)
@@ -296,49 +310,60 @@ def protenix_infer_static(
         n_queries=n_queries,
         n_keys=n_keys,
     )
-    coordinates = sample_diffusion_with_module(
-        input_feature_dict,
-        diffusion_s_inputs,
-        diffusion_s_trunk,
-        diffusion_z_trunk,
-        params.diffusion,
-        noise_schedule,
-        n_sample=n_sample,
-        key=key,
-        pair_z=pair_z,
-        p_lm=p_lm,
-        c_l=c_l,
-        atom_encoder_heads=atom_encoder_heads,
-        token_heads=token_heads,
-        atom_decoder_heads=atom_decoder_heads,
-        n_queries=n_queries,
-        n_keys=n_keys,
-        sigma_data=sigma_data,
-        use_scan=use_diffusion_scan,
-        use_sampler_scan=use_sampler_scan,
-        use_denoiser_jit=use_denoiser_jit,
-        use_efficient_fusion=use_diffusion_efficient_fusion,
-        attention_backend=diffusion_attention_backend,
-        token_q_chunk_size=token_q_chunk_size,
-        diffusion_chunk_size=diffusion_chunk_size,
-        gamma0=gamma0,
-        gamma_min=gamma_min,
-        noise_scale_lambda=noise_scale_lambda,
-        step_scale_eta=step_scale_eta,
-        centre_each_step=centre_each_step,
-        init_noise=init_noise,
-        step_noises=step_noises,
-        guidance_config=guidance_config,
-        guidance_features=(
-            input_feature_dict if guidance_features is None else guidance_features
-        ),
-    )
+
+    def sample(key, init_noise, step_noises):
+        return sample_diffusion_with_module(
+            input_feature_dict,
+            diffusion_s_inputs,
+            diffusion_s_trunk,
+            diffusion_z_trunk,
+            params.diffusion,
+            noise_schedule,
+            n_sample=n_sample,
+            key=key,
+            pair_z=pair_z,
+            p_lm=p_lm,
+            c_l=c_l,
+            atom_encoder_heads=atom_encoder_heads,
+            token_heads=token_heads,
+            atom_decoder_heads=atom_decoder_heads,
+            n_queries=n_queries,
+            n_keys=n_keys,
+            sigma_data=sigma_data,
+            use_scan=use_diffusion_scan,
+            use_sampler_scan=use_sampler_scan,
+            use_denoiser_jit=use_denoiser_jit,
+            use_efficient_fusion=use_diffusion_efficient_fusion,
+            attention_backend=diffusion_attention_backend,
+            token_q_chunk_size=token_q_chunk_size,
+            diffusion_chunk_size=diffusion_chunk_size,
+            gamma0=gamma0,
+            gamma_min=gamma_min,
+            noise_scale_lambda=noise_scale_lambda,
+            step_scale_eta=step_scale_eta,
+            centre_each_step=centre_each_step,
+            init_noise=init_noise,
+            step_noises=step_noises,
+            guidance_config=guidance_config,
+            guidance_features=(
+                input_feature_dict if guidance_features is None else guidance_features
+            ),
+        )
+
+    # Every device runs the whole sampler on its own copy: left to the
+    # partitioner it communicates once per diffusion step, which is where
+    # context-parallel runs of this model went wrong.
+    coordinates = without_communication(sample, key, init_noise, step_noises)
     distogram_logits = distogram_head(diffusion_z_trunk, params.distogram)
     output = {"coordinate": coordinates}
     if return_trunk:
+        # The historical names, kept because the native writers and the
+        # parity harnesses read them; the shared vocabulary arrives
+        # through the taps below.
         output["s_inputs"] = s_inputs
         output["s_trunk"] = s_trunk
         output["z_trunk"] = z_trunk
+    output.update(_capture.collected())
     if return_confidence_logits:
         output["distogram_logits"] = distogram_logits
     if run_confidence:
@@ -460,6 +485,8 @@ GRAPH_STATIC_ARGNAMES = (
     "run_confidence_scores",
     "confidence_sample_sequential",
     "return_trunk",
+    "stop_after_trunk",
+    "capture_names",
     "return_confidence_logits",
     "sigma_data",
     "opm_chunk_size",
@@ -563,7 +590,10 @@ def protenix_infer_compiled(
         # flips once the square grid has its own GPU parity and memory
         # evidence.
         layout = "1d"
-    with context_parallel(cp, layout=layout):
+    # The capture set has to be live while the program is *traced*: a tap
+    # records a tracer of the graph being built, not a value from a run.
+    capture_names = tuple(kwargs.get("capture_names", ()))
+    with _capture.capturing(capture_names), context_parallel(cp, layout=layout):
         if cp > 1:
             # A checkpoint committed to one device fails the multi-device
             # jit's device-assignment check; everything token-linear is

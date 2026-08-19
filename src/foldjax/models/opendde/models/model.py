@@ -10,10 +10,12 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models import _capture
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
     shard_pair_rows,
+    without_communication,
 )
 from foldjax.models._cp import (
     cp_layout as _active_cp_layout,
@@ -455,6 +457,8 @@ def opendde_infer_static(
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     validate_feature_values: bool = True,
     return_representations: bool = False,
+    stop_after_trunk: bool = False,
+    capture_names: tuple[str, ...] = (),
     trunk_dtype: jnp.dtype | None = None,
     #: Context-parallel shard count. More than one requires an active
     #: `foldjax.models._cp.context_parallel` mesh of the same size; the value
@@ -633,6 +637,22 @@ def opendde_infer_static(
         triangle_attention_backend=structural_triangle_attention_backend,
     )
 
+    s_inputs_residue = _capture.capture("single_inputs", s_inputs_residue)
+    s_residue = _capture.capture("single", s_residue)
+    z_residue = _capture.capture("pair", z_residue)
+    s_inputs_structural = _capture.capture(
+        "structural_single_inputs", s_inputs_structural
+    )
+    s_structural = _capture.capture("structural_single", s_structural)
+    z_structural = _capture.capture("structural_pair", z_structural)
+
+    if stop_after_trunk:
+        # Everything a capture request can ask for on the trunk exists by
+        # now, and the diffusion sampler plus the confidence heads are most
+        # of the run's cost. Stopping here is the difference between an
+        # embedding and a structure nobody asked for.
+        return dict(_capture.collected())
+
     def as_float32(value: jnp.ndarray) -> jnp.ndarray:
         return value if value.dtype == jnp.float32 else value.astype(jnp.float32)
 
@@ -703,23 +723,32 @@ def opendde_infer_static(
             atom_mask=atom_mask,
         )
 
-    coordinates = sample_diffusion(
-        denoise_fn,
-        noise_schedule,
-        n_sample=n_sample,
-        n_atom=n_atom,
-        key=key,
-        init_noise=init_noise,
-        step_noises=step_noises,
-        rotations=rotations,
-        translations=translations,
-        batch_shape=(),
-        gamma0=gamma0,
-        gamma_min=gamma_min,
-        noise_scale_lambda=noise_scale_lambda,
-        step_scale_eta=step_scale_eta,
-        use_scan=use_sampler_scan,
-        atom_mask=atom_mask,
+    def sample(key, init_noise, step_noises, rotations, translations):
+        return sample_diffusion(
+            denoise_fn,
+            noise_schedule,
+            n_sample=n_sample,
+            n_atom=n_atom,
+            key=key,
+            init_noise=init_noise,
+            step_noises=step_noises,
+            rotations=rotations,
+            translations=translations,
+            batch_shape=(),
+            gamma0=gamma0,
+            gamma_min=gamma_min,
+            noise_scale_lambda=noise_scale_lambda,
+            step_scale_eta=step_scale_eta,
+            use_scan=use_sampler_scan,
+            atom_mask=atom_mask,
+        )
+
+    # Every device runs the whole sampler on its own copy. Left to the
+    # partitioner the sampler communicates once per diffusion step -- an
+    # all-gather of the token attention operands and an all-reduce over the
+    # atom window -- and those were where context-parallel runs went wrong.
+    coordinates = without_communication(
+        sample, key, init_noise, step_noises, rotations, translations
     )
 
     head_s_inputs = as_float32(s_inputs_residue)
@@ -733,13 +762,16 @@ def opendde_infer_static(
         ),
     }
     if return_representations:
+        # The historical names, unchanged: parity harnesses and the native
+        # writers read them. The shared vocabulary arrives separately, through
+        # the taps, so neither spelling has to move for the other.
+        #
         # Off by default because these are the largest buffers the program can
         # hand back and nothing downstream reads them: the structural pair
         # representation alone is [946, 946, 384] float32 -- 1,311 MiB on a
         # 488-residue job, most of the 1,869 MiB output. Returning it also
         # keeps it live to the end of the program, so the refiner's working
-        # buffer cannot be reused by anything after it. Scores and structures
-        # need only `coordinate`, `distogram_logits`, and the confidence heads.
+        # buffer cannot be reused by anything after it.
         output.update(
             s_inputs=s_inputs_residue,
             s_trunk=s_residue,
@@ -748,6 +780,7 @@ def opendde_infer_static(
             structural_s_trunk=s_structural,
             structural_z_trunk=z_structural,
         )
+    output.update(_capture.collected())
     if run_confidence:
         output.update(
             confidence_head(
@@ -813,6 +846,8 @@ GRAPH_STATIC_ARGNAMES = (
     "n_sample",
     "noise_scale_lambda",
     "return_representations",
+    "stop_after_trunk",
+    "capture_names",
     "run_confidence",
     "sigma_data",
     "single_att_q_chunk_size",
@@ -896,7 +931,12 @@ def opendde_infer_compiled(
         # flips once the square grid has its own GPU parity and memory
         # evidence.
         layout = "1d"
-    with context_parallel(cp, layout=layout):
+    # The capture set has to be live while the program is *traced*, not
+    # while it runs: a tap records a tracer of the graph being built. On a
+    # cache hit nothing is traced and the compiled program already returns
+    # what was asked for, so entering this is harmless either way.
+    capture_names = tuple(kwargs.get("capture_names", ()))
+    with _capture.capturing(capture_names), context_parallel(cp, layout=layout):
         if cp > 1:
             # A checkpoint committed to one device fails the multi-device
             # jit's device-assignment check; everything token-linear is
