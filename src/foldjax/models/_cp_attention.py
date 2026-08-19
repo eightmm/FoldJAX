@@ -1,20 +1,9 @@
-"""Gather-free 2-D Fold-CP attention primitives.
+"""Gather-free two-dimensional Fold-CP attention primitives.
 
-The pair representation is laid out on a square ``cp_row x cp_col`` mesh.
-Triangle attention contains three token roles (outer row, query and key), so a
-plain SPMD annotation cannot keep all three local. The official Fold-CP
-schedule keeps the query tile resident, redistributes the pair bias onto the
-query/key diagonal, and rotates key/value/mask tiles in a ring while updating a
-numerically stable online softmax accumulator. This module expresses that
-schedule with ``jax.shard_map`` and ``lax.ppermute``.
-
-No operation in :func:`ring_triangle_attention_2d` materialises a full token
-axis on one device. ``shard_map`` needs both sharded axes to divide evenly, so
-axes that do not are padded here and sliced back, exactly as the 1-D row
-schedule already does. Padding a global array before it is sharded costs
-``O(N^2/P)`` a device and gathers nothing, so the memory bound the ring exists
-for is untouched -- and callers keep the contract they had, where a 253-residue
-chain runs on a 2x2 mesh.
+The pair representation is tiled over a square ``cp_row x cp_col`` mesh.
+Queries stay resident while key, value, mask and pair-bias tiles rotate through
+a ring.  An fp32 online-softmax accumulator makes the result mathematically
+equivalent to dense attention without materialising a full token axis.
 """
 
 from __future__ import annotations
@@ -36,20 +25,14 @@ from foldjax.models._cp import (
 
 
 def _flat(
-    pairs: Sequence[tuple[tuple[int, int], tuple[int, int]]], side: int
+    pairs: Sequence[tuple[tuple[int, int], tuple[int, int]]],
+    side: int,
 ) -> list[tuple[int, int]]:
-    """Flatten 2-D grid-coordinate permutations in row-major rank order."""
-
     return [(a * side + b, c * side + d) for (a, b), (c, d) in pairs]
 
 
 def triangle_bias_stage0_perm(side: int) -> list[tuple[int, int]]:
-    """Flatten lower diagonals onto rows: ``(r, c) -> (r-c, c)``.
-
-    This is stage one of ``Ring2DCommTriAttn`` for starting-node attention.
-    Keeping it separate from stage two preserves the official topology-aware
-    schedule instead of replacing it with one arbitrary cross-grid exchange.
-    """
+    """Flatten lower diagonals onto rows: ``(r, c) -> (r-c, c)``."""
 
     return _flat(
         [
@@ -62,7 +45,7 @@ def triangle_bias_stage0_perm(side: int) -> list[tuple[int, int]]:
 
 
 def triangle_bias_stage1_perm(side: int) -> list[tuple[int, int]]:
-    """Rotate the flattened diagonals: ``(r, c) -> (r, c+r)``."""
+    """Rotate flattened diagonals: ``(r, c) -> (r, c+r)``."""
 
     return _flat(
         [
@@ -75,13 +58,13 @@ def triangle_bias_stage1_perm(side: int) -> list[tuple[int, int]]:
 
 
 def triangle_kv_initial_perm(side: int) -> list[tuple[int, int]]:
-    """Offset K/V tiles onto the same diagonal as the redistributed bias."""
+    """Offset K/V tiles onto the redistributed bias diagonal."""
 
     return triangle_bias_stage1_perm(side)
 
 
 def triangle_kv_ring_perm(side: int) -> list[tuple[int, int]]:
-    """Advance K/V/mask one key tile around each device-grid row."""
+    """Advance K/V/mask one key tile around each grid row."""
 
     return _flat(
         [
@@ -94,7 +77,7 @@ def triangle_kv_ring_perm(side: int) -> list[tuple[int, int]]:
 
 
 def triangle_bias_ring_perm(side: int) -> list[tuple[int, int]]:
-    """Advance bias one matching key tile up each device-grid column."""
+    """Advance bias one matching key tile up each grid column."""
 
     return _flat(
         [
@@ -135,15 +118,36 @@ def fold_cp_pad_width(size: int) -> int:
     return 0 if side <= 1 else (-size) % side
 
 
-def _widen(array: jax.Array, pads: Sequence[tuple[int, int]]) -> jax.Array:
-    """Append zeros on the given axes; identity when every width is zero."""
-
+def _widen(
+    array: jax.Array,
+    pads: Sequence[tuple[int, int]],
+) -> jax.Array:
     if not any(width for _, width in pads):
         return array
     widths = [(0, 0)] * array.ndim
     for axis, width in pads:
         widths[_resolve_axis(axis, array.ndim, name="pad axis")] = (0, width)
     return jnp.pad(array, widths)
+
+
+def _softmax_rescale(
+    source_maximum: jax.Array,
+    next_maximum: jax.Array,
+) -> jax.Array:
+    """Stable rescale, including an empty ``-inf`` block.
+
+    ``exp(-inf - -inf)`` is NaN.  An all-masked block carries no softmax mass,
+    so its scale is exactly zero instead.
+    """
+
+    finite = jnp.isfinite(source_maximum) & jnp.isfinite(next_maximum)
+    positive_infinity = jnp.isposinf(source_maximum) & jnp.isposinf(next_maximum)
+    difference = jnp.where(finite, source_maximum - next_maximum, 0.0)
+    return jnp.where(
+        positive_infinity,
+        jnp.ones_like(difference),
+        jnp.where(finite, jnp.exp(difference), jnp.zeros_like(difference)),
+    )
 
 
 def online_softmax_update(
@@ -154,16 +158,11 @@ def online_softmax_update(
     block_normalizer: jax.Array,
     block_maximum: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Merge one key tile into an unnormalised online-softmax accumulator.
-
-    ``output`` and ``block_output`` contain ``sum(exp(score-max) * value)``;
-    ``normalizer`` contains the matching exponential sum. All accumulator
-    arithmetic is fp32 even when Q/K/V are bf16.
-    """
+    """Merge one key tile into an unnormalised online-softmax accumulator."""
 
     next_maximum = jnp.maximum(maximum, block_maximum)
-    previous_scale = jnp.exp(maximum - next_maximum)
-    block_scale = jnp.exp(block_maximum - next_maximum)
+    previous_scale = _softmax_rescale(maximum, next_maximum)
+    block_scale = _softmax_rescale(block_maximum, next_maximum)
     return (
         previous_scale * output + block_scale * block_output,
         previous_scale * normalizer + block_scale * block_normalizer,
@@ -180,25 +179,19 @@ def ring_triangle_attention_2d(
     *,
     precision: jax.lax.Precision | None = None,
 ) -> jax.Array:
-    """Run exact gather-free triangle attention on a square 2-D CP mesh.
+    """Run exact gather-free triangle attention on a square two-dimensional mesh.
 
-    Expected semantic layouts are::
+    Semantic layouts::
 
         query/key/value  [..., outer, heads, token, channels]
         triangle_bias   [..., 1, heads, query_token, key_token]
         mask_bias       [..., outer, 1, 1, key_token]
-
-    The global arrays remain ordinary JAX arrays; ``shard_map`` assigns
-    ``outer``/``query_token`` and ``query_token``/``key_token`` to the two mesh
-    axes. Inside each device the resident query tile never moves. K/V/mask and
-    the pair-bias tile rotate for ``sqrt(P)`` steps, and
-    :func:`online_softmax_update` combines the partial softmaxes exactly.
     """
 
     if cp_layout() != "2d":
         raise RuntimeError("ring_triangle_attention_2d requires an active 2-D CP mesh")
     mesh = cp_mesh()
-    if mesh is None:  # defensive; cp_layout() already excludes this
+    if mesh is None:
         raise RuntimeError("context-parallel mesh is not active")
     side_row, side_col = cp_grid()
     if side_row != side_col:
@@ -233,11 +226,7 @@ def ring_triangle_attention_2d(
             "mask-bias outer/key axes do not match Q/K: "
             f"shape={mask_bias.shape}, outer={outer}, tokens={tokens}"
         )
-    # Pad both sharded axes up to the mesh side and slice the result back.
-    # Padded query rows attend over real keys and are discarded, so nothing
-    # they compute reaches a kept row. Padded keys are the case the 1-D
-    # schedule never had: they sit on the axis the softmax spans, so they are
-    # pushed below every score already present rather than merely zeroed.
+
     pad_outer = fold_cp_pad_width(outer)
     pad_tokens = fold_cp_pad_width(tokens)
     if pad_outer or pad_tokens:
@@ -245,14 +234,19 @@ def ring_triangle_attention_2d(
         key = _widen(key, ((-4, pad_outer), (-2, pad_tokens)))
         value = _widen(value, ((-4, pad_outer), (-2, pad_tokens)))
         triangle_bias = _widen(
-            triangle_bias, ((-2, pad_tokens), (-1, pad_tokens))
+            triangle_bias,
+            ((-2, pad_tokens), (-1, pad_tokens)),
         )
         mask_bias = _widen(mask_bias, ((-4, pad_outer),))
         if pad_tokens:
-            # A constant would have to out-negative whatever convention the
-            # caller masks with, so take it from the mask itself.
+            finite_mask = jnp.where(
+                jnp.isfinite(mask_bias),
+                mask_bias,
+                jnp.asarray(0.0, mask_bias.dtype),
+            )
             floor = jnp.minimum(
-                jnp.min(mask_bias), jnp.zeros((), mask_bias.dtype)
+                jnp.min(finite_mask),
+                jnp.zeros((), mask_bias.dtype),
             ) - jnp.asarray(1.0e9, mask_bias.dtype)
             mask_bias = jnp.concatenate(
                 [
@@ -276,18 +270,17 @@ def ring_triangle_attention_2d(
     bias_hop = triangle_bias_ring_perm(side)
 
     def local_ring(q_l, k_l, v_l, bias_l, mask_l):
-        # Official two-stage pair-bias redistribution. After these two
-        # permutations, device (r, c) owns bias(query=c, key=c-r).
         bias_l = permute(bias_l, bias_init0)
         bias_l = permute(bias_l, diagonal_init)
-
-        # Device (r, c) originally owns K/V key tile c. Shifting by row r
-        # aligns it to key c-r, matching the redistributed bias.
         k_l = permute(k_l, diagonal_init)
         v_l = permute(v_l, diagonal_init)
         mask_l = permute(mask_l, diagonal_init)
 
-        maximum = jnp.full(q_l.shape[:-1] + (1,), -jnp.inf, dtype=jnp.float32)
+        maximum = jnp.full(
+            q_l.shape[:-1] + (1,),
+            -jnp.inf,
+            dtype=jnp.float32,
+        )
         normalizer = jnp.zeros_like(maximum)
         output = jnp.zeros(q_l.shape, dtype=jnp.float32)
 
@@ -304,8 +297,18 @@ def ring_triangle_attention_2d(
                 + mask_l.astype(jnp.float32)
             )
             block_maximum = jnp.max(scores, axis=-1, keepdims=True)
-            probabilities = jnp.exp(scores - block_maximum)
-            block_normalizer = jnp.sum(probabilities, axis=-1, keepdims=True)
+            valid_block = jnp.isfinite(block_maximum)
+            shifted = jnp.where(
+                valid_block,
+                scores - block_maximum,
+                -jnp.inf,
+            )
+            probabilities = jnp.exp(shifted)
+            block_normalizer = jnp.sum(
+                probabilities,
+                axis=-1,
+                keepdims=True,
+            )
             block_output = jnp.einsum(
                 "...hqk,...hkd->...hqd",
                 probabilities,
@@ -328,7 +331,12 @@ def ring_triangle_attention_2d(
                 bias_l = permute(bias_l, bias_hop)
 
         tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
-        return (output / jnp.maximum(normalizer, tiny)).astype(v_l.dtype)
+        result = jnp.where(
+            normalizer > 0,
+            output / jnp.maximum(normalizer, tiny),
+            jnp.zeros_like(output),
+        )
+        return result.astype(v_l.dtype)
 
     out = jax.shard_map(
         local_ring,
@@ -341,9 +349,8 @@ def ring_triangle_attention_2d(
     if pad_tokens:
         out = jax.lax.slice_in_dim(out, 0, tokens, axis=-2)
     if pad_outer or pad_tokens:
-        # Slicing would otherwise let the partitioner fall back to a
-        # replicated result, the same way it does on the 1-D path.
         out = jax.lax.with_sharding_constraint(
-            out, NamedSharding(mesh, qkv_spec)
+            out,
+            NamedSharding(mesh, qkv_spec),
         )
     return out

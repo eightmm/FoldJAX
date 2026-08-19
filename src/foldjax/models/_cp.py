@@ -1,41 +1,22 @@
-"""Context-parallel sharding for the AF3-family pair representations.
+"""Context-parallel sharding for AF3-family pair representations.
 
-Fold-CP -- NVIDIA's context-parallel design for biomolecular folding, which
-OpenDDE vendors -- shards the ``[N, N, C]`` pair representation across devices
-so no single device holds the whole quadratic state. Their torch
-implementation hand-writes the whole communication stack because torch has no
-automatic partitioner; the JAX form keeps the *layout* and lets XLA's SPMD
-partitioner place the collectives wherever a plain sharding constraint
-suffices, dropping to ``shard_map`` + ``lax.ppermute`` only where a schedule
-has to be spelled out.
+Fold-CP shards the quadratic ``[N, N, C]`` pair state across a JAX mesh.  The
+one-dimensional layout splits pair rows; the two-dimensional layout uses a
+square row/column grid and supports gather-free Cannon and ring schedules.
 
-Two layouts live here:
-
-``1d``
-    Pair rows split across one axis, columns whole. Every device holds
-    ``[N/P, N, C]``. Simple, and enough to move a job that does not fit one
-    card, but the column axis stays full width, so a per-device buffer is
-    still ``O(N^2/P)`` with the constant of a whole row of tiles.
-
-``2d``
-    Fold-CP's own layout: a square ``Pr x Pc`` grid with rows on one mesh axis
-    and columns on the other, so a device holds ``[N/Pr, N/Pc, C]`` and the
-    per-device pair cost is ``O(N^2/P_total)``. The ring algorithms this
-    enables (Cannon multiplication, rotating-bias attention) never
-    materialise a full-width operand.
-
-State is a module global read at trace time, the same pattern as the
-``PROTENIX_TRIANGLE_BACKEND`` environment default. It is safe under ``jit``
-because every entry point that activates a mesh also carries the shard count
-as a static argument, so a change of mesh is a retrace, never a stale cache
-hit.
+The active runtime is context-local rather than module-global.  That matters
+for serving and tests: concurrent requests may use different device meshes, and
+an ambient process-wide mesh can otherwise leak into an unrelated JIT trace.
 """
 
 from __future__ import annotations
 
 import contextlib
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any
 
 import jax
 import numpy as np
@@ -47,44 +28,140 @@ CP_AXIS = "cp"
 CP_ROW_AXIS = "cp_row"
 CP_COL_AXIS = "cp_col"
 
-_MESH: Mesh | None = None
+#: Input feature names whose two token axes may safely enter the program already
+#: pair-sharded.  Atom and single-stream features are deliberately absent:
+#: those paths are still replicated unless a model supplies an explicit
+#: distributed atom-window implementation.
+PAIR_FEATURE_NAMES = frozenset(
+    {
+        "contact_conditioning",
+        "contact_threshold",
+        "disto_target",
+        "pair_mask",
+        "relp",
+        "token_bonds",
+        "token_pair_pad_mask",
+        "type_bonds",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CPRuntime:
+    """Immutable identity of one active context-parallel program."""
+
+    mesh: Mesh
+    layout: str
+
+    @property
+    def shards(self) -> int:
+        return int(self.mesh.devices.size)
+
+    @property
+    def grid(self) -> tuple[int, int]:
+        shape = self.mesh.devices.shape
+        if len(shape) == 2:
+            return (int(shape[0]), int(shape[1]))
+        return (int(shape[0]), 1)
+
+    @property
+    def identity(self) -> tuple[str, int, tuple[int, int], tuple[str, ...]]:
+        """Hashable topology identity suitable for logs and cache profiles."""
+
+        return (
+            self.layout,
+            self.shards,
+            self.grid,
+            tuple(str(axis) for axis in self.mesh.axis_names),
+        )
+
+
+_RUNTIME: ContextVar[CPRuntime | None] = ContextVar(
+    "foldjax_context_parallel_runtime",
+    default=None,
+)
+
+
+def cp_runtime() -> CPRuntime | None:
+    """Return the active immutable runtime, or ``None`` outside CP."""
+
+    return _RUNTIME.get()
 
 
 def cp_mesh() -> Mesh | None:
     """Return the active context-parallel mesh, or ``None`` outside one."""
-    return _MESH
+
+    runtime = cp_runtime()
+    return None if runtime is None else runtime.mesh
 
 
 def cp_shards() -> int:
-    """Total device count of the active mesh; 1 when none is active."""
-    return 1 if _MESH is None else int(_MESH.devices.size)
+    """Total device count of the active mesh; one when none is active."""
+
+    runtime = cp_runtime()
+    return 1 if runtime is None else runtime.shards
 
 
 def cp_row_shards() -> int:
-    """Devices along the pair-row axis.
+    """Devices along the pair-row axis."""
 
-    The row-sharded schedules (the 1-D triangle attention, which stays
-    row-only even under a 2-D mesh because its softmax spans whole columns)
-    pad to this, not to the total device count.
-    """
     return cp_grid()[0]
 
 
 def cp_layout() -> str | None:
-    """``"1d"``, ``"2d"``, or ``None`` when no mesh is active."""
-    if _MESH is None:
-        return None
-    return "2d" if len(_MESH.axis_names) == 2 else "1d"
+    """Return ``"1d"``, ``"2d"``, or ``None`` when no mesh is active."""
+
+    runtime = cp_runtime()
+    return None if runtime is None else runtime.layout
 
 
 def cp_grid() -> tuple[int, int]:
-    """``(rows, cols)`` of the active grid; ``(P, 1)`` for the 1-D layout."""
-    if _MESH is None:
-        return (1, 1)
-    shape = _MESH.devices.shape
-    if len(shape) == 2:
-        return (int(shape[0]), int(shape[1]))
-    return (int(shape[0]), 1)
+    """Return ``(rows, cols)``; ``(P, 1)`` for the one-dimensional layout."""
+
+    runtime = cp_runtime()
+    return (1, 1) if runtime is None else runtime.grid
+
+
+def cp_identity() -> tuple[str, int, tuple[int, int], tuple[str, ...]]:
+    """Stable identity of the current topology.
+
+    The serial identity is explicit rather than ``None`` so callers can place
+    it directly in diagnostics or a JSON-normalised compilation profile.
+    """
+
+    runtime = cp_runtime()
+    if runtime is None:
+        return ("serial", 1, (1, 1), ())
+    return runtime.identity
+
+
+def resolve_cp_layout(layout: str, n_devices: int, *, auto: str = "1d") -> str:
+    """Validate and resolve a public CP layout request.
+
+    ``auto`` intentionally defaults to ``"1d"`` until a model has recorded its
+    own two-dimensional GPU evidence.  A caller with such evidence may pass
+    ``auto="2d"`` explicitly.  Two-dimensional layouts require a non-trivial
+    perfect-square device count.
+    """
+
+    if isinstance(n_devices, bool) or not isinstance(n_devices, int):
+        raise ValueError("context-parallel device count must be an integer")
+    if n_devices < 1:
+        raise ValueError("context-parallel device count must be positive")
+    if layout not in {"auto", "1d", "2d"}:
+        raise ValueError(
+            f"context-parallel layout must be 'auto', '1d', or '2d'; got {layout!r}"
+        )
+    if auto not in {"1d", "2d"}:
+        raise ValueError(f"auto layout must resolve to '1d' or '2d'; got {auto!r}")
+    resolved = auto if layout == "auto" else layout
+    side = math.isqrt(n_devices)
+    if resolved == "2d" and (n_devices <= 1 or side * side != n_devices):
+        raise ValueError(
+            "the two-dimensional layout needs a perfect-square device count "
+            f"greater than one; got {n_devices}"
+        )
+    return resolved
 
 
 @contextlib.contextmanager
@@ -94,30 +171,21 @@ def context_parallel(
     layout: str = "1d",
     devices: list[jax.Device] | None = None,
 ) -> Iterator[Mesh | None]:
-    """Activate a context-parallel mesh over the first ``n_devices`` devices.
+    """Activate a task-local context-parallel mesh.
 
-    ``layout="2d"`` builds Fold-CP's square grid and therefore requires a
-    perfect-square device count; ``"1d"`` splits rows only. ``n_devices <= 1``
-    is a null context either way, so callers can pass their shard count
-    through unconditionally.
+    ``layout="2d"`` builds Fold-CP's square grid.  ``n_devices == 1`` is a
+    serial null context.  Contexts never nest, including a nominal one-device
+    context inside a distributed one: allowing that would make the yielded
+    value disagree with what :func:`cp_mesh` reports.
     """
-    global _MESH
-    if layout not in {"1d", "2d"}:
-        raise ValueError(f"unsupported context-parallel layout: {layout!r}")
-    if n_devices <= 1:
+
+    if cp_runtime() is not None:
+        raise RuntimeError("context_parallel does not nest")
+    resolved_layout = resolve_cp_layout(layout, n_devices)
+    if n_devices == 1:
         yield None
         return
-    if _MESH is not None:
-        raise RuntimeError("context_parallel does not nest")
-    side = math.isqrt(n_devices)
-    if layout == "2d" and side * side != n_devices:
-        # Checked before the device pool: squareness is a property of the
-        # request, so the error should not depend on what machine it runs on.
-        raise ValueError(
-            "the two-dimensional layout needs a square device count; "
-            f"got {n_devices}. Fold-CP's ring schedules assume a square "
-            "grid, so a rectangle is refused rather than silently degraded."
-        )
+
     pool = list(jax.devices()) if devices is None else list(devices)
     if len(pool) < n_devices:
         raise ValueError(
@@ -125,15 +193,17 @@ def context_parallel(
             f"{len(pool)} JAX device(s) are visible"
         )
     chosen = np.asarray(pool[:n_devices])
-    if layout == "2d":
+    if resolved_layout == "2d":
+        side = math.isqrt(n_devices)
         mesh = Mesh(chosen.reshape(side, side), (CP_ROW_AXIS, CP_COL_AXIS))
     else:
         mesh = Mesh(chosen, (CP_AXIS,))
-    _MESH = mesh
+
+    token = _RUNTIME.set(CPRuntime(mesh=mesh, layout=resolved_layout))
     try:
         yield mesh
     finally:
-        _MESH = None
+        _RUNTIME.reset(token)
 
 
 def _resolve_axis(axis: int, ndim: int, *, what: str) -> int:
@@ -149,22 +219,23 @@ def pair_spec(
     row_axis: int = -3,
     col_axis: int | None = None,
 ) -> PartitionSpec:
-    """Partition spec for a pair-shaped tensor under the active layout.
+    """Partition spec for a pair-shaped tensor under the active layout."""
 
-    Under ``1d`` only ``row_axis`` is split. Under ``2d`` the column axis is
-    split too; it defaults to the axis just after the rows, which is the
-    ``j`` of ``[..., i, j, C]`` and of a channel-less ``[..., i, j]`` mask.
-    Tensors whose ``j`` sits elsewhere (attention biases carrying head and
-    broadcast axes) pass ``col_axis`` explicitly.
-    """
     entries: list[str | None] = [None] * ndim
     row = _resolve_axis(row_axis, ndim, what="row axis")
     if cp_layout() == "2d":
-        column = row + 1 if col_axis is None else _resolve_axis(
-            col_axis, ndim, what="column axis"
+        column = (
+            row + 1
+            if col_axis is None
+            else _resolve_axis(col_axis, ndim, what="column axis")
         )
         if column == row:
             raise ValueError("row and column axes must differ")
+        if column >= ndim:
+            raise ValueError(
+                "default pair column axis falls outside the tensor; "
+                "pass col_axis explicitly"
+            )
         entries[row] = CP_ROW_AXIS
         entries[column] = CP_COL_AXIS
     else:
@@ -173,11 +244,8 @@ def pair_spec(
 
 
 def pair_row_spec(ndim: int, *, row_axis: int = -3) -> PartitionSpec:
-    """Spec splitting only ``row_axis``, whatever the layout.
+    """Spec splitting only ``row_axis``, whatever the active layout."""
 
-    The ``shard_map`` bodies of the 1-D schedules take whole rows, so they
-    need this even when a 2-D mesh names two axes.
-    """
     entries: list[str | None] = [None] * ndim
     entries[_resolve_axis(row_axis, ndim, what="row axis")] = (
         CP_ROW_AXIS if cp_layout() == "2d" else CP_AXIS
@@ -186,12 +254,8 @@ def pair_row_spec(ndim: int, *, row_axis: int = -3) -> PartitionSpec:
 
 
 def single_spec(ndim: int, *, token_axis: int = -2) -> PartitionSpec:
-    """Spec for a single (per-token) representation: tokens on the row axis.
+    """Spec for a per-token representation on the pair-row mesh axis."""
 
-    Fold-CP keeps the single stream sharded on the same mesh axis as the pair
-    rows and replicated on the other, so a pair-row-local block of the single
-    representation is already resident where the pair rows are.
-    """
     entries: list[str | None] = [None] * ndim
     entries[_resolve_axis(token_axis, ndim, what="token axis")] = (
         CP_ROW_AXIS if cp_layout() == "2d" else CP_AXIS
@@ -205,70 +269,64 @@ def shard_pair_rows(
     row_axis: int = -3,
     col_axis: int | None = None,
 ) -> jax.Array:
-    """Constrain a pair-shaped tensor to the active layout.
+    """Constrain a pair tensor to the active layout; identity outside CP."""
 
-    Identity when no mesh is active, so call sites need no branching. Under
-    the 2-D layout this splits the column axis as well -- the name is kept
-    because every existing call site means "lay this pair tensor out the
-    standard way".
-    """
-    if _MESH is None:
+    mesh = cp_mesh()
+    if mesh is None:
         return x
     return jax.lax.with_sharding_constraint(
         x,
-        NamedSharding(_MESH, pair_spec(x.ndim, row_axis=row_axis, col_axis=col_axis)),
+        NamedSharding(
+            mesh,
+            pair_spec(x.ndim, row_axis=row_axis, col_axis=col_axis),
+        ),
     )
 
 
 def shard_single(x: jax.Array, *, token_axis: int = -2) -> jax.Array:
-    """Constrain a per-token representation to the single-stream layout."""
-    if _MESH is None:
+    """Constrain a per-token representation; identity outside CP."""
+
+    mesh = cp_mesh()
+    if mesh is None:
         return x
     return jax.lax.with_sharding_constraint(
-        x, NamedSharding(_MESH, single_spec(x.ndim, token_axis=token_axis))
+        x,
+        NamedSharding(mesh, single_spec(x.ndim, token_axis=token_axis)),
     )
 
 
 # --- ring primitives -------------------------------------------------------
-#
-# Every Fold-CP schedule is a *static* permutation of grid coordinates, so all
-# of them are one `lax.ppermute` each. These helpers build the permutation
-# lists; they are only meaningful inside a `shard_map` whose mesh carries the
-# named axes.
 
 
 def grid_axes() -> tuple[str, str]:
-    """The ``(row, column)`` mesh axis names of the 2-D layout."""
+    """The ``(row, column)`` mesh-axis names of the two-dimensional layout."""
+
     if cp_layout() != "2d":
         raise RuntimeError("grid axes are only defined for the 2-D layout")
     return (CP_ROW_AXIS, CP_COL_AXIS)
 
 
 def _flat(
-    pairs: Sequence[tuple[tuple[int, int], tuple[int, int]]], side: int
+    pairs: Sequence[tuple[tuple[int, int], tuple[int, int]]],
+    side: int,
 ) -> list[tuple[int, int]]:
-    """Row-major flatten of coordinate pairs.
+    """Row-major flatten of coordinate permutations for ``lax.ppermute``."""
 
-    ``lax.ppermute`` over a tuple of mesh axes indexes their product in
-    row-major order, not by coordinate, so every schedule below is written in
-    coordinates for legibility and flattened here.
-    """
     return [(a * side + b, c * side + d) for (a, b), (c, d) in pairs]
 
 
 def transpose_perm(side: int) -> list[tuple[int, int]]:
-    """``(i, j) -> (j, i)``: the grid transpose, an involution."""
+    """``(i, j) -> (j, i)``: the grid transpose."""
+
     return _flat(
-        [((i, j), (j, i)) for i in range(side) for j in range(side)], side
+        [((i, j), (j, i)) for i in range(side) for j in range(side)],
+        side,
     )
 
 
 def row_skew_perm(side: int, *, sign: int = -1) -> list[tuple[int, int]]:
-    """Cannon's initial LHS alignment: shift row ``i`` along columns by ``i``.
+    """Cannon initial LHS alignment along mesh columns."""
 
-    ``sign=-1`` is the standard left-skew that puts ``A[i, (j + i) % P]`` on
-    device ``(i, j)``; ``sign=+1`` is its inverse.
-    """
     return _flat(
         [
             ((i, j), (i, (j + sign * i) % side))
@@ -280,7 +338,8 @@ def row_skew_perm(side: int, *, sign: int = -1) -> list[tuple[int, int]]:
 
 
 def col_skew_perm(side: int, *, sign: int = -1) -> list[tuple[int, int]]:
-    """Cannon's initial RHS alignment: shift column ``j`` along rows by ``j``."""
+    """Cannon initial RHS alignment along mesh rows."""
+
     return _flat(
         [
             ((i, j), ((i + sign * j) % side, j))
@@ -292,7 +351,8 @@ def col_skew_perm(side: int, *, sign: int = -1) -> list[tuple[int, int]]:
 
 
 def ring_perm(side: int, *, axis: str, delta: int = 1) -> list[tuple[int, int]]:
-    """One ring hop of ``delta`` along ``axis`` of the 2-D grid."""
+    """One ring hop along one axis of the two-dimensional grid."""
+
     if axis == CP_ROW_AXIS:
         pairs = [
             ((i, j), ((i + delta) % side, j))
@@ -310,36 +370,162 @@ def ring_perm(side: int, *, axis: str, delta: int = 1) -> list[tuple[int, int]]:
     return _flat(pairs, side)
 
 
-def permute(x: jax.Array, perm: Sequence) -> jax.Array:
-    """Apply a grid permutation to ``x`` inside a ``shard_map`` body."""
+def permute(x: jax.Array, perm: Sequence[Any]) -> jax.Array:
+    """Apply a grid permutation inside a ``shard_map`` body."""
+
     return jax.lax.ppermute(x, axis_name=grid_axes(), perm=list(perm))
 
 
-def replicate_tree(tree):
-    """Place every array leaf of ``tree`` replicated on the active mesh.
+# --- input placement -------------------------------------------------------
 
-    Inputs to a context-parallel program must live on the mesh's device set;
-    a checkpoint committed to one device would otherwise fail the jit call's
-    device-assignment check. Identity when no mesh is active.
+
+def _is_movable_array(value: Any) -> bool:
+    if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+        return False
+    kind = getattr(value.dtype, "kind", None)
+    return kind not in ("U", "S", "O")
+
+
+def _pair_axes_for_feature(name: str, value: Any) -> tuple[int, int] | None:
+    """Infer the two square token axes for a whitelisted feature."""
+
+    if name not in PAIR_FEATURE_NAMES or not _is_movable_array(value):
+        return None
+    shape = tuple(int(size) for size in value.shape)
+    if len(shape) >= 3 and shape[-3] == shape[-2] and shape[-3] > 0:
+        return (-3, -2)
+    if len(shape) >= 2 and shape[-2] == shape[-1] and shape[-2] > 0:
+        return (-2, -1)
+    return None
+
+
+def _axes_divide_mesh(
+    shape: tuple[int, ...],
+    row_axis: int,
+    col_axis: int,
+) -> bool:
+    row = _resolve_axis(row_axis, len(shape), what="row axis")
+    col = _resolve_axis(col_axis, len(shape), what="column axis")
+    rows, cols = cp_grid()
+    if shape[row] % rows:
+        return False
+    if cp_layout() == "2d" and shape[col] % cols:
+        return False
+    return True
+
+
+def feature_spec(name: str, value: Any) -> PartitionSpec | None:
+    """Return a safe entry sharding for one known input feature.
+
+    Uneven inputs stay replicated.  Model-level padding may later create a
+    divisible pair state, but entry placement must never ask JAX to construct
+    unequal device buffers.
     """
-    if _MESH is None:
+
+    if cp_mesh() is None:
+        return None
+    axes = _pair_axes_for_feature(name, value)
+    if axes is None:
+        return None
+    shape = tuple(int(size) for size in value.shape)
+    if not _axes_divide_mesh(shape, *axes):
+        return None
+    return pair_spec(value.ndim, row_axis=axes[0], col_axis=axes[1])
+
+
+def _replicated_sharding() -> NamedSharding:
+    mesh = cp_mesh()
+    if mesh is None:
+        raise RuntimeError("no context-parallel mesh is active")
+    return NamedSharding(mesh, PartitionSpec())
+
+
+def _place_leaf(value: Any, *, spec: PartitionSpec | None = None) -> Any:
+    if not _is_movable_array(value):
+        return value
+    mesh = cp_mesh()
+    if mesh is None:
+        return value
+    return jax.device_put(
+        value,
+        NamedSharding(mesh, spec) if spec is not None else _replicated_sharding(),
+    )
+
+
+def _rebuild_mapping(original: Mapping[Any, Any], values: dict[Any, Any]) -> Any:
+    if type(original) is dict:
+        return values
+    try:
+        return type(original)(values)
+    except (TypeError, ValueError):
+        return values
+
+
+def _place_tree(node: Any, *, shard_pair_features: bool) -> Any:
+    if isinstance(node, Mapping):
+        placed: dict[Any, Any] = {}
+        for key, value in node.items():
+            spec = (
+                feature_spec(str(key), value)
+                if shard_pair_features and isinstance(key, str)
+                else None
+            )
+            if spec is not None:
+                placed[key] = _place_leaf(value, spec=spec)
+            else:
+                placed[key] = _place_tree(
+                    value,
+                    shard_pair_features=shard_pair_features,
+                )
+        return _rebuild_mapping(node, placed)
+
+    if isinstance(node, tuple) and hasattr(node, "_fields"):
+        return type(node)(
+            *(
+                _place_tree(value, shard_pair_features=shard_pair_features)
+                for value in node
+            )
+        )
+    if isinstance(node, tuple):
+        return tuple(
+            _place_tree(value, shard_pair_features=shard_pair_features)
+            for value in node
+        )
+    if isinstance(node, list):
+        return [
+            _place_tree(value, shard_pair_features=shard_pair_features)
+            for value in node
+        ]
+
+    if _is_movable_array(node):
+        return _place_leaf(node)
+
+    # Preserve registered custom pytrees while retaining the historical
+    # "replicate every numeric leaf" behaviour for model parameter containers.
+    try:
+        leaves, treedef = jax.tree.flatten(node)
+    except TypeError:
+        return node
+    if len(leaves) == 1 and leaves[0] is node:
+        return node
+    return jax.tree.unflatten(
+        treedef,
+        [_place_leaf(leaf) for leaf in leaves],
+    )
+
+
+def replicate_tree(tree: Any, *, shard_pair_features: bool = True) -> Any:
+    """Place a pytree on the active mesh.
+
+    Parameters and all unrecognised inputs are replicated, preserving the old
+    contract.  Exact, whitelisted pair features are placed directly on the
+    pair mesh when their axes divide evenly.  Atom and single-stream features
+    remain replicated; this function never invents an atom-window CP contract.
+
+    Pass ``shard_pair_features=False`` for strict historical replication.
+    Identity when no mesh is active.
+    """
+
+    if cp_mesh() is None:
         return tree
-    sharding = NamedSharding(_MESH, PartitionSpec())
-
-    def place(leaf):
-        # Trees such as call kwargs and feature dicts mix numeric arrays with
-        # strings, flags, and string-dtype numpy arrays; only numeric or bool
-        # arrays have a device to move.
-        # Excluding by kind rather than including by `np.number`: the custom
-        # ml_dtypes (bfloat16 and friends) register as kind 'V', which
-        # `issubdtype` refuses, and skipping a bfloat16 checkpoint here would
-        # fail the multi-device call's device-assignment check later. JAX
-        # extended dtypes (typed PRNG keys) have no `kind` at all and are
-        # device-movable, so a missing kind means "place it".
-        if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
-            kind = getattr(leaf.dtype, "kind", None)
-            if kind not in ("U", "S", "O"):
-                return jax.device_put(leaf, sharding)
-        return leaf
-
-    return jax.tree.map(place, tree)
+    return _place_tree(tree, shard_pair_features=shard_pair_features)
