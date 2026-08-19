@@ -6,6 +6,8 @@ on:
     paths:
       - .github/workflows/finalize-fold-cp-atom.yml
       - tools/finalize_fold_cp_atom.py
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -19,6 +21,7 @@ env:
 
 jobs:
   finalize:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -124,6 +127,7 @@ jobs:
             tests/models/boltz2/test_bucket.py
 
       - name: Commit validated atom-window runtime
+        if: github.event_name == 'push'
         run: |
           rm -f tools/finalize_fold_cp_atom.py
           rm -f .github/workflows/finalize-fold-cp-atom.yml
