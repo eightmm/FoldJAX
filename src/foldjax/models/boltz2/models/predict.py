@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models import _capture
-from foldjax.models._cp import cp_mesh, without_communication
+from foldjax.models._cp import cp_mesh
 from foldjax.models.boltz2.models.heads.affinity import affinity_module_forward
 from foldjax.models.boltz2.models.heads.bfactor import bfactor_forward
 from foldjax.models.boltz2.models.heads.confidence import confidence_module_forward
@@ -180,11 +180,7 @@ def boltz2_predict(
             **sample_kwargs,
         )
 
-    # Every device runs the whole sampler on its own copy. Left to the
-    # partitioner the sampler communicates once per diffusion step, and that
-    # is what produced structures 34 A from the single-device answer with
-    # every array in them finite.
-    sample_out = without_communication(sample, key)
+    sample_out = sample(key)
     sample_atom_coords = sample_out["sample_atom_coords"]
 
     out: dict[str, object] = {"sample_atom_coords": sample_atom_coords}

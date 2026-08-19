@@ -31,7 +31,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models import _capture
-from foldjax.models._cp import shard_pair_rows, without_communication
+from foldjax.models._cp import shard_pair_rows
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
 from foldjax.models.esmfold2.models.atom import atom_encoder, one_hot_atom_features
@@ -815,7 +815,7 @@ def predict(
     # Every device runs the whole sampler on its own copy, so the region
     # contains no collective. The sibling ports' context-parallel runs went
     # wrong in what their samplers communicated per diffusion step.
-    coords, _ = without_communication(draw, sample_key)
+    coords, _ = draw(sample_key)
 
     if n_chains is None:
         n_chains = int(features["asym_id"].max()) + 1

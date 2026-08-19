@@ -862,3 +862,39 @@ before the measurement that would have killed them. The pattern is stable
 enough to name: a mechanism that explains the evidence is not thereby the
 mechanism, and the cheap experiment that discriminates it from its rivals is
 always worth running before it goes in a document.
+
+**The eleventh hypothesis, and the first one with a guarantee behind it:
+also wrong.** Every ablation before this changed a *preference*. A sharding
+constraint tells the partitioner what layout is wanted; it does not promise
+that a region contains no communication, which is why pinning all five
+tensors that cross into the diffusion to a replicated sharding left both
+per-step collectives in the compiled program and left the failure rate
+untouched. `shard_map` with every spec replicated is the promise instead --
+each device runs the whole sampler on its own copy -- and the compiled HLO
+confirms it: the two sampler regions that carried collectives are gone.
+
+Measured against the unmodified code in one job, alternating, twelve rounds
+each at the released sampling defaults (five samples, two hundred steps):
+
+    unmodified   7 of 12 non-finite
+    shard_map    4 of 12 non-finite      (p = 0.41; not a difference)
+
+and re-scoring the modified arm's survivors by whether they agree with each
+other found a pair 9.8 Å apart, so one of the runs it called clean was
+corrupted anyway. Reverted: it costs the pair tensor on every device and
+buys nothing that can be measured.
+
+Two things are worth carrying forward. The corruption is not in anything the
+sampler communicates -- that is now excluded by construction rather than by
+another rate comparison. And the finiteness check has to go: Boltz-2 produced
+structures 34 Å from the single-device answer with every array finite, and
+this experiment produced another at 9.8 Å, so every "clean" verdict in this
+log that rests on `isfinite` alone rests on nothing. Mutual agreement between
+repeats of one seed is the gate that catches both shapes of failure, and it
+needs no reference run.
+
+The score after two days: eleven hypotheses proposed, eleven measured,
+eleven closed. The cause is still unknown. What has been bought is a much
+smaller search space and a test that can tell a corrupted run from a clean
+one -- neither of which existed when the investigation started, and the
+second of which is why several earlier "fixed" verdicts were wrong.

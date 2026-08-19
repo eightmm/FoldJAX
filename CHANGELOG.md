@@ -67,16 +67,21 @@ command predicts unless it says so here, in its own paragraph.
   asynchronous collectives, and pinning the trunk/diffusion handover
   replicated.
 
-  The sampler now runs inside a fully replicated `shard_map`, so the
-  diffusion region provably contains no collective: a sharding constraint is
-  a preference the partitioner may route around, which is why pinning those
-  tensors replicated left the per-step collectives in the compiled program
-  untouched, and `shard_map` is the guarantee instead. **The evidence for
-  this is structural and single-device-equivalent, not yet a demonstrated
-  fix**: the compiled HLO loses both sampler collectives, the CPU-mesh
-  structure is unchanged to 0.0002 Å, and twelve GPU runs with and without it
-  agree to 0.0002 Å -- but no session has yet been measured in which the
-  unmodified arm fails and this one does not. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
+  One candidate has been tried and measured: running the sampler inside a
+  fully replicated `shard_map`, which the compiled HLO confirms removes every
+  collective from the diffusion region and which reproduces the single-device
+  structure to 0.0002 Å. Against the unmodified code in the same job, on the
+  same cards, twelve rounds each at the released sampling defaults, it did
+  not fix anything -- seven failures against four, which at that sample size
+  is not a difference (p = 0.41) -- and the surviving runs of the modified
+  arm still contained one 9.8 Å from its own siblings. It has been reverted:
+  it costs the pair tensor's memory on every device and buys nothing
+  measurable. What it did establish is worth keeping: a sharding constraint
+  is a preference the partitioner may route around, `shard_map` is the
+  guarantee, and the corruption survives the guarantee -- so it is not in
+  anything the sampler communicates.
+
+  Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
   3x 96 GB because the fp32 diffusion side's atom-window gathers pull full
   pair tensors per device. Sharding those consumers was the planned next
   lever and is now on hold: the evidence above says that sharding *into*

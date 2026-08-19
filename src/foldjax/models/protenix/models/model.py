@@ -14,7 +14,6 @@ from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
     shard_pair_rows,
-    without_communication,
 )
 from foldjax.models._cp import (
     cp_layout as _active_cp_layout,
@@ -350,10 +349,7 @@ def protenix_infer_static(
             ),
         )
 
-    # Every device runs the whole sampler on its own copy: left to the
-    # partitioner it communicates once per diffusion step, which is where
-    # context-parallel runs of this model went wrong.
-    coordinates = without_communication(sample, key, init_noise, step_noises)
+    coordinates = sample(key, init_noise, step_noises)
     distogram_logits = distogram_head(diffusion_z_trunk, params.distogram)
     output = {"coordinate": coordinates}
     if return_trunk:

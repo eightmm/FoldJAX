@@ -23,7 +23,6 @@ from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
     shard_pair_rows,
-    without_communication,
 )
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
@@ -532,10 +531,7 @@ def predict(
             noise_mask=noise_mask,
         )
 
-    # Every device runs the whole sampler on its own copy. Left to the
-    # partitioner the sampler communicates once per diffusion step, which
-    # is where context-parallel runs of the sibling ports went wrong.
-    coordinates = without_communication(sample, key, noise_tape, noise_mask)
+    coordinates = sample(key, noise_tape, noise_mask)
 
     # The distogram head is the only one that reads the trunk pair embedding.
     disto_logits = distogram_head(z, params.distogram_head)

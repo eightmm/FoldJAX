@@ -15,7 +15,6 @@ from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
     shard_pair_rows,
-    without_communication,
 )
 from foldjax.models._cp import (
     cp_layout as _active_cp_layout,
@@ -743,13 +742,7 @@ def opendde_infer_static(
             atom_mask=atom_mask,
         )
 
-    # Every device runs the whole sampler on its own copy. Left to the
-    # partitioner the sampler communicates once per diffusion step -- an
-    # all-gather of the token attention operands and an all-reduce over the
-    # atom window -- and those were where context-parallel runs went wrong.
-    coordinates = without_communication(
-        sample, key, init_noise, step_noises, rotations, translations
-    )
+    coordinates = sample(key, init_noise, step_noises, rotations, translations)
 
     head_s_inputs = as_float32(s_inputs_residue)
     head_s_trunk = as_float32(s_residue)

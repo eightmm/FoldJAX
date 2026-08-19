@@ -315,42 +315,6 @@ def permute(x: jax.Array, perm: Sequence) -> jax.Array:
     return jax.lax.ppermute(x, axis_name=grid_axes(), perm=list(perm))
 
 
-def without_communication(function, *operands):
-    """Run ``function`` on every device independently, with no collectives.
-
-    A sharding constraint states a preference the partitioner may route
-    around: pinning a tensor replicated does not stop the program from
-    communicating about what is computed from it. ``shard_map`` with every
-    spec replicated is the guarantee instead -- each device runs the whole
-    body on its own copy, so the region provably contains no collective.
-
-    The diffusion sampler is the caller. Fold-CP's memory saving is in the
-    trunk, whose pair state is quadratic in token count; the sampler works
-    per atom window and gains little from being split, while the collectives
-    the partitioner inserted there were the ones the port could not make
-    reliable. Upstream reaches the same place from the other direction, by
-    hand-writing the atom-window communication instead of leaving the stage
-    to a partitioner.
-
-    Identity when no mesh is active, so call sites need no branching.
-    """
-    if _MESH is None:
-        return function(*operands)
-    from jax.experimental.shard_map import shard_map
-
-    replicated = PartitionSpec()
-    return shard_map(
-        function,
-        mesh=_MESH,
-        in_specs=(replicated,) * len(operands),
-        out_specs=replicated,
-        # Every device computes the same values from the same inputs, but
-        # they are equal by construction rather than by a rule the checker
-        # can derive, so its replication proof would reject the body.
-        check_rep=False,
-    )(*operands)
-
-
 def replicate_tree(tree):
     """Place every array leaf of ``tree`` replicated on the active mesh.
 
