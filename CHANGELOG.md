@@ -92,8 +92,8 @@ command predicts unless it says so here, in its own paragraph.
   run as Cannon's algorithm -- skew both operands once, then one local
   product per ring hop. Per-device pair cost falls from `O(N^2/P_rows)` with
   a full-width column axis to `O(N^2/P_total)`, and no all-gather appears in
-  the contraction: the transient is two tiles. Triangle attention stays
-  row-sharded under the grid, because its softmax spans whole columns.
+  the contraction: the transient is two tiles. Triangle attention no longer
+  falls back to row sharding under the grid; see the next entry.
   **`--cp-layout auto` deliberately stays on the 1-D layout**: every
   published number for context parallelism was measured there, and a default
   that silently changed the program would make those numbers describe a
@@ -104,6 +104,27 @@ command predicts unless it says so here, in its own paragraph.
   schedule. Every context-parallel parity gate is now mutation-tested and
   asserts from a trace-time witness that the sharded program really was
   traced.
+
+- **Gather-free triangle attention on the square grid.** Under `--cp-layout
+  2d`, Boltz-2, Protenix and OpenFold3 now run triangle attention as Fold-CP's
+  own ring instead of gathering the column axis back into whole rows. The
+  query tile stays resident; key, value, mask and the pair bias rotate through
+  `lax.ppermute` for `sqrt(P)` hops while an online softmax accumulator folds
+  each partial exactly. This closes the hole the grid entry above used to
+  admit: the contraction was `O(N^2/P_total)` but attention rebuilt an
+  `O(N^2/P_rows)` tensor immediately after it, so the grid's memory bound did
+  not survive a whole block. It now does. Axes that do not divide the mesh
+  side are padded at the `shard_map` boundary and sliced back -- a global
+  array padded before it is sharded gathers nothing -- so a 253-residue chain
+  still runs on a 2x2 mesh, and the padded columns are pushed below the
+  smallest score the caller's mask already carries rather than zeroed, since
+  they sit on the axis the softmax spans. Verified on forced CPU meshes at
+  2x2 and 3x3, at token counts that divide the grid and at thirteen, which
+  divides neither; each gate reads the compiled HLO and fails if an
+  `all-gather` appears or the ring's `collective-permute` does not. **No GPU
+  measurement yet**: the memory this is supposed to save has not been weighed
+  on real cards, and `--cp-layout auto` still stays on the 1-D layout.
+  OpenDDE and ESMFold2 are not wired to the ring.
 
 - **Trunk representations (`representations=`, `stop_after="trunk"`).** Every
   model here builds a per-token *single* stream and a token-pair state before
