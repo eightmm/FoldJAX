@@ -180,9 +180,10 @@ _CANNON_PROBE = _PREAMBLE + textwrap.dedent(
 _GRID_STACK_PROBE = _PREAMBLE + textwrap.dedent(
     """
     # The complete pair stack on the square grid. Both pair axes remain tiled:
-    # multiplication uses Cannon and attention uses the Fold-CP ring. Data-layer
-    # padding is part of that contract, so use a size divisible by 2 and 3.
-    N = 12
+    # multiplication uses Cannon and attention uses the Fold-CP ring. Thirteen
+    # divides neither grid, which is the point: both schedules pad to their own
+    # side and slice back, so parity here covers the padded path as well.
+    N = 13
     params = {"layers": [layer(), layer()]}
     z = arr(1, N, N, C)
     pair_mask = pair_mask_for(N)

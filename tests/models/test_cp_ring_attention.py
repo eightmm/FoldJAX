@@ -76,31 +76,6 @@ _PREAMBLE = textwrap.dedent(
     """
 )
 
-_DIVISIBILITY_PROBE = textwrap.dedent(
-    r"""
-    import jax
-    import jax.numpy as jnp
-
-    from foldjax.models._cp import context_parallel
-    from foldjax.models._cp_attention import ring_triangle_attention_2d
-
-    n = 13
-    q = jnp.zeros((1, n, 2, n, 4), dtype=jnp.float32)
-    bias = jnp.zeros((1, 1, 2, n, n), dtype=jnp.float32)
-    mask = jnp.zeros((1, n, 1, 1, n), dtype=jnp.float32)
-    with context_parallel(4, layout="2d"):
-        try:
-            ring_triangle_attention_2d(q, q, q, bias, mask)
-        except ValueError as error:
-            message = str(error)
-            assert "Pad semantic" in message and "divisible" in message, message
-        else:
-            raise AssertionError("non-divisible 2-D attention was accepted")
-    print("DIVISIBILITY_GUARD_OK")
-    """
-)
-
-
 def _run(source: str, *, devices: int, tokens: int | None = None) -> str:
     env = {
         "JAX_PLATFORMS": "cpu",
@@ -135,10 +110,18 @@ def test_ring_triangle_attention_matches_dense_without_all_gather(
     )
 
 
-def test_ring_refuses_hidden_pad_gather_fallback() -> None:
-    """Uneven shards must be fixed at the data boundary, never in the hot path."""
+@pytest.mark.parametrize("devices", [4, 9])
+def test_ring_pads_an_indivisible_axis_without_gathering(devices: int) -> None:
+    """Thirteen tokens split neither grid, and must still work.
 
-    assert "DIVISIBILITY_GUARD_OK" in _run(_DIVISIBILITY_PROBE, devices=4)
+    Refusing them would forfeit the contract the 1-D path already keeps, and
+    real chains are the indivisible case far more often than not. The pad
+    happens at the ``shard_map`` boundary on a global array, so the HLO
+    assertion inside the probe is what shows it bought its evenness without a
+    full-axis gather.
+    """
+
+    assert "RING_PARITY_AND_HLO_OK" in _run(_PREAMBLE, devices=devices, tokens=13)
 # --- appended to tests/models/test_cp_ring_attention.py ---------------------
 # Three properties the landed gates leave open.
 

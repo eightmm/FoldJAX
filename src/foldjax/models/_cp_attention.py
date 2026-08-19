@@ -9,9 +9,12 @@ numerically stable online softmax accumulator. This module expresses that
 schedule with ``jax.shard_map`` and ``lax.ppermute``.
 
 No operation in :func:`ring_triangle_attention_2d` materialises a full token
-axis on one device. Inputs must therefore already be padded so both pair axes
-split evenly over the square mesh; data-layer padding is an explicit part of
-the Fold-CP contract rather than a hidden gather-and-slice fallback.
+axis on one device. ``shard_map`` needs both sharded axes to divide evenly, so
+axes that do not are padded here and sliced back, exactly as the 1-D row
+schedule already does. Padding a global array before it is sharded costs
+``O(N^2/P)`` a device and gathers nothing, so the memory bound the ring exists
+for is untouched -- and callers keep the contract they had, where a 253-residue
+chain runs on a 2x2 mesh.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from collections.abc import Sequence
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import PartitionSpec
+from jax.sharding import NamedSharding, PartitionSpec
 
 from foldjax.models._cp import (
     CP_COL_AXIS,
@@ -125,16 +128,22 @@ def _two_axis_spec(
     return PartitionSpec(*entries)
 
 
-def require_fold_cp_divisible(size: int, *, what: str = "token axis") -> None:
-    """Fail before tracing when a 2-D Fold-CP axis is not evenly shardable."""
+def fold_cp_pad_width(size: int) -> int:
+    """Rows to append so ``size`` divides the square mesh side."""
 
     side = cp_grid()[0]
-    if side > 1 and size % side:
-        raise ValueError(
-            f"2-D Fold-CP requires {what}={size} to be divisible by the "
-            f"mesh side {side}. Pad semantic token/atom axes at the data layer; "
-            "an internal gather-and-slice fallback would forfeit the memory bound."
-        )
+    return 0 if side <= 1 else (-size) % side
+
+
+def _widen(array: jax.Array, pads: Sequence[tuple[int, int]]) -> jax.Array:
+    """Append zeros on the given axes; identity when every width is zero."""
+
+    if not any(width for _, width in pads):
+        return array
+    widths = [(0, 0)] * array.ndim
+    for axis, width in pads:
+        widths[_resolve_axis(axis, array.ndim, name="pad axis")] = (0, width)
+    return jnp.pad(array, widths)
 
 
 def online_softmax_update(
@@ -224,8 +233,38 @@ def ring_triangle_attention_2d(
             "mask-bias outer/key axes do not match Q/K: "
             f"shape={mask_bias.shape}, outer={outer}, tokens={tokens}"
         )
-    require_fold_cp_divisible(outer, what="outer token axis")
-    require_fold_cp_divisible(tokens, what="attended token axis")
+    # Pad both sharded axes up to the mesh side and slice the result back.
+    # Padded query rows attend over real keys and are discarded, so nothing
+    # they compute reaches a kept row. Padded keys are the case the 1-D
+    # schedule never had: they sit on the axis the softmax spans, so they are
+    # pushed below every score already present rather than merely zeroed.
+    pad_outer = fold_cp_pad_width(outer)
+    pad_tokens = fold_cp_pad_width(tokens)
+    if pad_outer or pad_tokens:
+        query = _widen(query, ((-4, pad_outer), (-2, pad_tokens)))
+        key = _widen(key, ((-4, pad_outer), (-2, pad_tokens)))
+        value = _widen(value, ((-4, pad_outer), (-2, pad_tokens)))
+        triangle_bias = _widen(
+            triangle_bias, ((-2, pad_tokens), (-1, pad_tokens))
+        )
+        mask_bias = _widen(mask_bias, ((-4, pad_outer),))
+        if pad_tokens:
+            # A constant would have to out-negative whatever convention the
+            # caller masks with, so take it from the mask itself.
+            floor = jnp.minimum(
+                jnp.min(mask_bias), jnp.zeros((), mask_bias.dtype)
+            ) - jnp.asarray(1.0e9, mask_bias.dtype)
+            mask_bias = jnp.concatenate(
+                [
+                    mask_bias,
+                    jnp.full(
+                        mask_bias.shape[:-1] + (pad_tokens,),
+                        floor,
+                        dtype=mask_bias.dtype,
+                    ),
+                ],
+                axis=-1,
+            )
 
     qkv_spec = _two_axis_spec(query.ndim, -4, -2)
     bias_spec = _two_axis_spec(triangle_bias.ndim, -2, -1)
@@ -291,9 +330,20 @@ def ring_triangle_attention_2d(
         tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
         return (output / jnp.maximum(normalizer, tiny)).astype(v_l.dtype)
 
-    return jax.shard_map(
+    out = jax.shard_map(
         local_ring,
         mesh=mesh,
         in_specs=(qkv_spec, qkv_spec, qkv_spec, bias_spec, mask_spec),
         out_specs=qkv_spec,
     )(query, key, value, triangle_bias, mask_bias)
+    if pad_outer:
+        out = jax.lax.slice_in_dim(out, 0, outer, axis=-4)
+    if pad_tokens:
+        out = jax.lax.slice_in_dim(out, 0, tokens, axis=-2)
+    if pad_outer or pad_tokens:
+        # Slicing would otherwise let the partitioner fall back to a
+        # replicated result, the same way it does on the 1-D path.
+        out = jax.lax.with_sharding_constraint(
+            out, NamedSharding(mesh, qkv_spec)
+        )
+    return out
