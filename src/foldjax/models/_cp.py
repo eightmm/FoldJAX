@@ -355,15 +355,11 @@ def ring_perm(side: int, *, axis: str, delta: int = 1) -> list[tuple[int, int]]:
 
     if axis == CP_ROW_AXIS:
         pairs = [
-            ((i, j), ((i + delta) % side, j))
-            for i in range(side)
-            for j in range(side)
+            ((i, j), ((i + delta) % side, j)) for i in range(side) for j in range(side)
         ]
     elif axis == CP_COL_AXIS:
         pairs = [
-            ((i, j), (i, (j + delta) % side))
-            for i in range(side)
-            for j in range(side)
+            ((i, j), (i, (j + delta) % side)) for i in range(side) for j in range(side)
         ]
     else:
         raise ValueError(f"unknown grid axis: {axis!r}")

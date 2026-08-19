@@ -6,7 +6,6 @@ import subprocess
 import sys
 import textwrap
 
-
 _PROBE = textwrap.dedent(
     r"""
     from concurrent.futures import ThreadPoolExecutor

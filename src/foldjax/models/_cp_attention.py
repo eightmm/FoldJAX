@@ -310,11 +310,7 @@ def ring_triangle_attention_2d(
                 jnp.swapaxes(k_l.astype(jnp.float32), -1, -2),
                 precision=precision,
             )
-            scores = (
-                scores
-                + bias_l.astype(jnp.float32)
-                + mask_l.astype(jnp.float32)
-            )
+            scores = scores + bias_l.astype(jnp.float32) + mask_l.astype(jnp.float32)
             block_maximum = jnp.max(scores, axis=-1, keepdims=True)
             next_maximum = jnp.maximum(maximum, block_maximum)
             previous_scale = _softmax_rescale(maximum, next_maximum)

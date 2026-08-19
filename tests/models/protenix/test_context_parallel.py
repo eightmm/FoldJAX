@@ -8,7 +8,6 @@ import textwrap
 
 import pytest
 
-
 _PROBE = textwrap.dedent(
     r"""
     import os
