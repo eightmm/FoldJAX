@@ -1,24 +1,20 @@
 """Context parallelism must not change what the Boltz-2 stack computes.
 
-Same contract as the OpenDDE test: the CP path reroutes triangle attention
-through ``shard_map``, forces the triangle multiplication onto the unchunked
-XLA einsum, and disables the row chunks that would slice the sharded axis --
-so the property to hold is numerical parity against the unsharded program on
-a mesh whose size does not divide the token count. Under the 2-D layout the
-multiplication is rerouted again, onto Cannon's algorithm, while attention
-stays row-sharded. The parity checks run in a subprocess with forced CPU
-devices because the device count is fixed at process start; the grid probes
-run at 2x2 and again at 3x3, since a side of two is its own inverse under
-every shift in the schedule and so cannot falsify a sign.
+The one-dimensional path reroutes triangle attention through ``shard_map`` and
+runs triangle multiplication as an unchunked distributed contraction.  The
+square-grid path keeps both pair axes tiled: triangle multiplication uses
+Cannon's algorithm and triangle attention uses the Fold-CP bias/KV ring with an
+online softmax, so neither operation materialises a full pair axis.
 
-``jax.jit`` caches its jaxpr on the callable, and the mesh lives in a module
-global that the trace reads, so a second ``jit`` of the same function object
-replays the unsharded program and compares it against itself. Written that way
-these probes passed against a triangle contraction whose max absolute error
-exceeded the result's own scale. Clearing the cache fixes that, but nothing
-then checks it stayed fixed, so every probe here also jits a freshly built
-closure and asserts, through the ``traced`` witness, which layout each trace
-actually saw. The witness is the part that makes a green run evidence.
+The parity checks run in subprocesses with forced CPU devices because the
+device count is fixed at process start.  Grid probes run at 2x2 and 3x3: a
+side of two is its own inverse under every unit shift and therefore cannot
+falsify a wrong ring direction.
+
+``jax.jit`` caches its jaxpr on the callable, while the mesh is ambient state
+read at trace time.  A second ``jit`` of the same function object can replay an
+unsharded executable and compare it against itself.  Every probe therefore
+jits a fresh closure and records which layout the trace actually observed.
 """
 
 from __future__ import annotations
@@ -113,13 +109,7 @@ _PREAMBLE = textwrap.dedent(
     traced = []
 
     def compiled(fn):
-        \"\"\"Jit a brand-new closure and record the layout its trace saw.
-
-        Two independent guards against replaying the unsharded graph: the
-        wrapper is a fresh function object every call, so `jax.jit` has nothing
-        to hit, and `traced` records what `cp_layout()` actually returned while
-        the body was being traced.
-        \"\"\"
+        \"\"\"Jit a brand-new closure and record the layout its trace saw.\"\"\"
 
         def run(*args):
             traced.append(cp_layout())
@@ -131,7 +121,7 @@ _PREAMBLE = textwrap.dedent(
 
 _PARITY_PROBE = _PREAMBLE + textwrap.dedent(
     """
-    N = 13  # 13 rows over 4 shards: padding path exercised
+    N = 13  # 13 rows over 4 shards: the 1-D padding path is exercised
     params = {"layers": [layer(), layer()]}
     z = arr(1, N, N, C)
     pair_mask = pair_mask_for(N)
@@ -147,8 +137,8 @@ _PARITY_PROBE = _PREAMBLE + textwrap.dedent(
     assert traced == [None, "1d"], traced
     np.testing.assert_allclose(ref, got, atol=3e-5, rtol=3e-5)
 
-    # cueq attention runs per-shard inside `shard_map` and is accepted; the
-    # pallas flash kernel has no per-shard story here and is refused.
+    # cueq attention runs per-shard in the 1-D path and is accepted; pallas has
+    # no distributed partitioning contract and is refused.
     with context_parallel(DEVICES):
         with pytest.raises(ValueError, match="supports"):
             triangle_attention_forward(
@@ -161,8 +151,8 @@ _PARITY_PROBE = _PREAMBLE + textwrap.dedent(
 
 _CANNON_PROBE = _PREAMBLE + textwrap.dedent(
     """
-    # 12 divides the 2x2 grid on both pair axes; 13 forces the pad-and-slice
-    # path, which is where a ring schedule fails separately from its algebra.
+    # 12 divides both tested square grids; 13 exercises Cannon's own
+    # pad-and-slice contraction path independently of ring attention.
     for N in (12, 13):
         params = tri_mult()
         z = arr(1, N, N, C)
@@ -189,11 +179,10 @@ _CANNON_PROBE = _PREAMBLE + textwrap.dedent(
 
 _GRID_STACK_PROBE = _PREAMBLE + textwrap.dedent(
     """
-    # The whole pair stack on the square grid. Triangle multiplication runs
-    # Cannon; triangle attention stays row-sharded by design, because its
-    # softmax spans a whole column axis, so its `shard_map` asks for whole rows
-    # and the partitioner gathers the column axis around it.
-    N = 13
+    # The complete pair stack on the square grid. Both pair axes remain tiled:
+    # multiplication uses Cannon and attention uses the Fold-CP ring. Data-layer
+    # padding is part of that contract, so use a size divisible by 2 and 3.
+    N = 12
     params = {"layers": [layer(), layer()]}
     z = arr(1, N, N, C)
     pair_mask = pair_mask_for(N)
@@ -205,14 +194,18 @@ _GRID_STACK_PROBE = _PREAMBLE + textwrap.dedent(
 
     ref = jax.device_get(compiled(run)(z))
     with context_parallel(DEVICES, layout="2d"):
-        got = jax.device_get(compiled(run)(z))
+        compiled_ring = compiled(run)
+        got_array = compiled_ring(z)
+        got = jax.device_get(got_array)
+        hlo = compiled_ring.lower(z).compiler_ir(dialect="hlo").as_hlo_text().lower()
     assert traced == [None, "2d"], traced
     np.testing.assert_allclose(ref, got, atol=3e-5, rtol=3e-5)
+    assert "collective-permute" in hlo or "collective_permute" in hlo, hlo
+    assert "all-gather" not in hlo and "all_gather" not in hlo, hlo
 
-    # The trunk pins the single stream and the pair rows itself, by axis
-    # *name*. The 2-D grid calls its axes `cp_row`/`cp_col`, so a trunk still
-    # asking for `cp` would build a constraint against a mesh axis that does
-    # not exist -- a hard failure, and one no pair-block test would reach.
+    # The trunk pins the single stream and pair state by axis name. The 2-D
+    # grid calls its axes cp_row/cp_col, so a stale literal cp constraint would
+    # fail before reaching any pair block.
     from foldjax.models._cp import CP_ROW_AXIS
     from foldjax.models.boltz2.models.trunk_blocks.trunk import (
         _shard_pair, _shard_single,
@@ -245,6 +238,7 @@ def _run_probe(source: str, devices: int = 4) -> str:
             "FOLDJAX_CP_PROBE_DEVICES": str(devices),
             "PATH": "/usr/bin",
         },
+        timeout=240,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return completed.stdout
@@ -255,26 +249,19 @@ def test_context_parallel_matches_the_unsharded_program() -> None:
 
 
 def test_cannon_triangle_multiplication_matches_the_unsharded_form() -> None:
-    """Both directions, on a mesh that splits rows *and* columns."""
+    """Both directions, on a mesh that splits rows and columns."""
     assert "CANNON_PARITY_OK" in _run_probe(_CANNON_PROBE)
 
 
 def test_cannon_holds_on_a_three_by_three_grid() -> None:
-    """The 2x2 grid is blind to every sign in the schedule.
-
-    Each skew shifts by the device's own coordinate and each ring hop by one,
-    so on a side of two ``(x + 1) % 2 == (x - 1) % 2`` and a schedule that
-    skewed or hopped the wrong way is indistinguishable from the right one.
-    A side of three separates them, which is what pins ``row_skew_perm`` /
-    ``col_skew_perm`` / ``ring_perm`` as correct rather than as coincidence.
-    Nine forced CPU devices; N=12 divides three, N=13 pads to fifteen.
-    """
+    """The 2x2 grid is blind to every sign in the schedule."""
     assert "CANNON_PARITY_OK" in _run_probe(_CANNON_PROBE, devices=9)
 
 
-def test_square_grid_pair_stack_matches_the_unsharded_program() -> None:
-    """Cannon multiplication and row-sharded attention in one stack."""
-    assert "GRID_PARITY_OK" in _run_probe(_GRID_STACK_PROBE)
+@pytest.mark.parametrize("devices", [4, 9])
+def test_square_grid_pair_stack_matches_without_full_axis_gather(devices: int) -> None:
+    """Cannon multiplication and ring attention remain tiled in one stack."""
+    assert "GRID_PARITY_OK" in _run_probe(_GRID_STACK_PROBE, devices=devices)
 
 
 def test_single_shard_predict_flag_is_validated() -> None:
@@ -301,13 +288,7 @@ def test_single_shard_predict_flag_is_validated() -> None:
     ],
 )
 def test_cp_layout_resolution(layout: str, devices: int, expected: str) -> None:
-    """"auto" must not silently change the program anyone has measured.
-
-    The grid is the better layout and is gated above, but every published
-    number for this feature came from the 1-D layout, so "auto" stays there
-    until the grid has its own GPU evidence. Flipping the default should
-    require editing this test.
-    """
+    """``auto`` stays reproducible until square-grid GPU evidence is recorded."""
     from foldjax.models.boltz2.api import _resolve_cp_layout
 
     assert _resolve_cp_layout(layout, devices) == expected
