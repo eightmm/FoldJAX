@@ -1,0 +1,25 @@
+name: Materialize FoldJAX source
+
+on:
+  push:
+    branches:
+      - agent/fold-cp-materialize-20260819
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Pack source tree
+        run: tar --exclude=.git -czf /tmp/foldjax-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foldjax-source
+          path: /tmp/foldjax-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
