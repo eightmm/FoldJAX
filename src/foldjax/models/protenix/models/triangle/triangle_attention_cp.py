@@ -54,7 +54,11 @@ def triangle_attention(
             q_chunk_size=q_chunk_size,
             attention_backend=attention_backend,
         )
-    backend = "xla" if attention_backend is None else attention_backend.removesuffix("_jit")
+    backend = (
+        "xla"
+        if attention_backend is None
+        else attention_backend.removesuffix("_jit")
+    )
     if backend != "xla":
         raise ValueError(
             "2-D context-parallel Protenix triangle attention requires the "
