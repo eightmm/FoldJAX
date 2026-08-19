@@ -898,3 +898,35 @@ eleven closed. The cause is still unknown. What has been bought is a much
 smaller search space and a test that can tell a corrupted run from a clean
 one -- neither of which existed when the investigation started, and the
 second of which is why several earlier "fixed" verdicts were wrong.
+
+**The replacement gate does not hold either, and the reason is a clue.** The
+entry above retires `isfinite` in favour of mutual agreement between repeats
+of one seed, on the grounds that it needs no reference run. Measuring the two
+Boltz-2 runs that were 34 A from the single-device answer:
+
+    corrupted p4_5 vs corrupted p4_7    rmsd 0.2240 A
+    either one vs the single-device p1_1   rmsd 34.4363 A
+    clean rerun floor                   rmsd 0.05 - 0.20 A
+
+The two corrupted runs agree with each other as closely as two clean runs do.
+So a group of repeats that are all corrupted looks perfectly consistent, and
+mutual agreement is only a gate when at least one member is clean -- which is
+exactly what cannot be assumed. The sound gate is agreement with a
+single-device run, and that costs the memory context parallelism exists to
+avoid.
+
+The clue is the same measurement read the other way. A race, a torn buffer or
+a corrupted collective would put two bad runs in two different wrong places.
+These land in the *same* wrong place, to within the rerun floor. Whatever
+goes wrong is a deterministic computation -- a specific wrong answer, not
+noise -- and what varies between runs is only whether that path is taken.
+That points at selection rather than at timing: an algorithm chosen per
+process or per call, wrong when chosen, and correct otherwise. The autotune
+ablations tested the *flags*, not the hypothesis that the selection varies
+inside a level; they do not close this.
+
+Next measurement, and it is cheap: whether the wrong answer is the same wrong
+answer across jobs, nodes and card models. If one corrupted structure from
+gpu3 matches one from gpu4, the corruption has a single deterministic form,
+and the search narrows to which kernel produces it. If they differ, the
+selection idea is wrong too.
