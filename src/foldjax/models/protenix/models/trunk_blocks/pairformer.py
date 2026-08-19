@@ -21,8 +21,10 @@ from foldjax.models.protenix.models.primitives.primitives import (
 from foldjax.models.protenix.models.triangle.triangle import (
     TriangleAttentionParams,
     TriangleMultiplicationParams,
-    triangle_attention,
     triangle_multiplication,
+)
+from foldjax.models.protenix.models.triangle.triangle_attention_cp import (
+    triangle_attention,
 )
 
 
