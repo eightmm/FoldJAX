@@ -6,6 +6,8 @@ on:
     paths:
       - .github/workflows/finalize-fold-cp.yml
       - tools/finalize_fold_cp.py
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -83,5 +85,3 @@ jobs:
           git add -A
           git commit -m "feat: complete gather-free Fold-CP pair runtime"
           git push origin HEAD:agent/fold-cp-jax-complete
-
-# This second push intentionally triggers the workflow after the file exists.
