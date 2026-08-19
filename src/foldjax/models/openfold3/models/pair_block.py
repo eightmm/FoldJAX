@@ -28,17 +28,15 @@ from foldjax.models.openfold3.models.triangle import (
     TriangleMultiplicationParams,
     triangle_multiplication,
 )
-from foldjax.models.openfold3.models.triangle_attention import (
-    TriangleAttentionParams,
-    triangle_attention,
-)
+from foldjax.models.openfold3.models.triangle_attention import TriangleAttentionParams
+from foldjax.models.openfold3.models.triangle_attention_cp import triangle_attention
 
 
 class PairBlockParams(NamedTuple):
     """Parameters for ``PairBlock`` with a SwiGLU transition.
 
     The ReLU transition variant (AF2) and the fused triangular multiplication
-    variant are not mapped; only the AF3 SwiGLU / non-fused layout is.
+    variant are not mapped; only the AF3 SwiGLU / non-fused layout is mapped.
     """
 
     tri_mul_out: TriangleMultiplicationParams
