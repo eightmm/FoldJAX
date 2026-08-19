@@ -21,6 +21,7 @@ from foldjax.redaction import public_options
 from foldjax.registry import available_models, capabilities, model_info
 from foldjax.schema import (
     MSA_POLICIES,
+    STOP_POINTS,
     BatchReport,
     PaddingConfig,
     PredictionError,
@@ -174,6 +175,26 @@ def _add_predict_arguments(
         "an alignment, or 'required' to fail rather than fall back. auto and "
         "required SEND THE SEQUENCE to the public ColabFold MMseqs2 server "
         "(FOLDJAX_MSA_SERVER_URL points at your own instead)",
+    )
+    parser.add_argument(
+        "--representations",
+        help=(
+            "hand back the trunk arrays as well: a comma-separated list, or "
+            "'all'. `foldjax capabilities --model M` lists what each model "
+            "produces. These are the largest arrays a run makes -- a pair "
+            "representation is quadratic in token count -- so they are never "
+            "written unless asked for."
+        ),
+    )
+    parser.add_argument(
+        "--stop-after",
+        choices=STOP_POINTS,
+        default="full",
+        help=(
+            "'trunk' stops once the representations exist, skipping the "
+            "diffusion sampler and the confidence heads. It writes no "
+            "structure, so it only makes sense with --representations."
+        ),
     )
     sampling.add_argument(
         "--num-samples", type=int, help="how many structures to generate"
@@ -636,6 +657,8 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         options=_options(args.option),
         padding=padding,
         msa=args.msa,
+        representations=getattr(args, "representations", None),
+        stop_after=getattr(args, "stop_after", "full"),
         resume=getattr(args, "resume", False),
         on_error="continue" if getattr(args, "keep_going", False) else "stop",
     )

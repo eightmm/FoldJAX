@@ -7,7 +7,9 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.models import _representations
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -227,6 +229,7 @@ class ProtenixBackend(Backend):
             )
         )
         return ModelCapabilities(
+            representations=_representations.available("protenix"),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "protenix", "foldjax"),
@@ -275,6 +278,15 @@ class ProtenixBackend(Backend):
         argv.extend(cli_args)
         if options:
             raise ValueError(f"unsupported Protenix options: {', '.join(options)}")
+        wanted = _representations.resolve(
+            request.representations, _representations.specs_for("protenix")
+        )
+        if wanted:
+            argv.extend(("--representations", ",".join(wanted)))
+            # Pinned so every backend puts the archive in the same place.
+            argv.extend(("--representations-dir", str(request.output_dir)))
+        if request.stop_after == "trunk":
+            argv.extend(("--stop-after", "trunk"))
         padding_plans: list[dict[str, Any]] = []
         module = import_module("foldjax.models.protenix.cli.predict")
         if request.padding is None:
@@ -317,6 +329,9 @@ class ProtenixBackend(Backend):
             output_dir=request.output_dir,
             raw=raw,
             shape_profile=shape_profile,
+            representations=_representations_result(
+                self.name, request.output_dir, wanted
+            ),
         )
 
 

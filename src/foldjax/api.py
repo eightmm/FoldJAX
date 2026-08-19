@@ -649,6 +649,7 @@ def _predict_once(
         backend=backend,
         output_dir=request.output_dir,
         expected_seed=request.seed,
+        stop_after=request.stop_after,
     )
     if request.padding is not None and result.shape_profile is None:
         raise PredictionOutputError(
@@ -723,6 +724,7 @@ def _validate_result(
     backend: Backend,
     output_dir: Path,
     expected_seed: int,
+    stop_after: str = "full",
 ) -> PredictionResult:
     """Refuse a nominally successful backend call that produced no prediction."""
     if not isinstance(result, PredictionResult):
@@ -744,6 +746,16 @@ def _validate_result(
             f"{backend.name} returned samples as {type(result.samples).__name__}; "
             "PredictionResult.samples must be a tuple"
         )
+    if stop_after == "trunk":
+        # A run that stopped at the trunk predicted no structure on purpose,
+        # so "no samples" is the expected shape and the representations are
+        # what has to be there instead.
+        if result.representations is None:
+            raise PredictionOutputError(
+                f"{backend.name} stopped after the trunk but returned no "
+                f"representations in {output_dir}"
+            )
+        return result
     if not result.samples:
         raise PredictionOutputError(
             f"{backend.name} returned no prediction samples in {output_dir}"

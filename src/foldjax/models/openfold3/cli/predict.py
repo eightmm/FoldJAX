@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from foldjax.models import _representations
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -24,6 +26,30 @@ def _parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("features", type=Path, help="feature .npz")
+    parser.add_argument(
+        "--stop-after",
+        choices=("full", "trunk"),
+        default="full",
+        help=(
+            "'trunk' stops once the representations exist, skipping the "
+            "sampler and the confidence heads."
+        ),
+    )
+    parser.add_argument(
+        "--representations-dir",
+        type=Path,
+        default=None,
+        help="where to write the archive; the common API pins this.",
+    )
+    parser.add_argument(
+        "--representations",
+        default=None,
+        help=(
+            "comma-separated trunk representations to write beside the "
+            "structures, or 'all'. Quadratic in token count, so nothing "
+            "is written unless asked for. Names: single_inputs, single, pair."
+        ),
+    )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--name", default=None, help="defaults to the features' stem")
@@ -174,6 +200,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         overrides["cp_shards"] = args.cp_devices
         overrides["cp_layout"] = args.cp_layout
+    wanted_representations = _representations.resolve(
+        args.representations, _representations.specs_for("openfold3")
+    )
+    overrides["returned_representations"] = wanted_representations
+    overrides["stop_after_trunk"] = args.stop_after == "trunk"
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
     # Keep a full alignment on the host only. At long sequences it can be
     # several GiB, so converting before this cut defeats the memory saving.
@@ -227,6 +258,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _report_peak_memory(jax, config)
 
+    if args.stop_after == "trunk":
+        archive = _representations.save(
+            args.representations_dir or args.output,
+            {
+                name: getattr(prediction, name)
+                for name in wanted_representations
+                if getattr(prediction, name, None) is not None
+            },
+            _representations.specs_for("openfold3"),
+            model="openfold3",
+        )
+        if archive is not None:
+            print(f"wrote {archive}")
+        return 0
+
     coordinates = np.asarray(prediction.coordinates)
     if not np.isfinite(coordinates).all():
         print("non-finite coordinates; refusing to write a structure")
@@ -244,6 +290,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"wrote {path}")
     print(f"wrote {written['scores']}")
     print(f"wrote {written['arrays']}")
+    if wanted_representations:
+        archive = _representations.save(
+            args.representations_dir or args.output,
+            {
+                name: getattr(prediction, name)
+                for name in wanted_representations
+                if getattr(prediction, name, None) is not None
+            },
+            _representations.specs_for("openfold3"),
+            model="openfold3",
+        )
+        if archive is not None:
+            print(f"wrote {archive}")
     if written.get("omitted_arrays"):
         names = ", ".join(written["omitted_arrays"])
         print(

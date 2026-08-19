@@ -8,7 +8,9 @@ from pathlib import Path
 
 import numpy as np
 
+from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.models import _representations
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -218,6 +220,7 @@ class Boltz2Backend(Backend):
             )
         )
         return ModelCapabilities(
+            representations=_representations.available("boltz2"),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "boltz", "foldjax"),
@@ -246,7 +249,13 @@ class Boltz2Backend(Backend):
                 "the weights, or pass --option mols=/path/to/mols"
             )
         native = _native_module()
+        wanted = _representations.resolve(
+            request.representations, _representations.specs_for("boltz2")
+        )
         output = native.predict(
+            representations=wanted or None,
+            representations_dir=request.output_dir,
+            stop_after=request.stop_after,
             input=request.input,
             weights=request.weights,
             mols=Path(mols),
@@ -257,6 +266,17 @@ class Boltz2Backend(Backend):
             write_fmt=options.pop("write_fmt", "cif"),
             **options,
         )
+        if request.stop_after == "trunk":
+            # Nothing was folded, so there are no samples to describe.
+            return PredictionResult(
+                model=self.name,
+                samples=(),
+                output_dir=request.output_dir,
+                raw=output,
+                representations=_representations_result(
+                    self.name, request.output_dir, wanted
+                ),
+            )
         coords = np.asarray(output["coords"])
         plddt = np.asarray(output.get("plddt", []))
         sample_count = coords.shape[0] if coords.ndim == 3 else 1
@@ -279,4 +299,7 @@ class Boltz2Backend(Backend):
             output_dir=request.output_dir,
             raw=output,
             shape_profile=shape_profile,
+            representations=_representations_result(
+                self.name, request.output_dir, wanted
+            ),
         )

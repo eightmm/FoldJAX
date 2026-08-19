@@ -61,3 +61,8 @@ _archive/
 src/foldjax/models/alphafold3/_upstream/alphafold3/**/*.so
 src/foldjax/models/alphafold3/_upstream/alphafold3/**/*.pickle
 src/foldjax/models/alphafold3/_upstream/share/
+
+# Scratch inputs and outputs from cluster experiments; the runs themselves are
+# recorded in EXPERIMENT_LOG.md, and the job scripts live in the session
+# scratchpad rather than in the package.
+/cluster/

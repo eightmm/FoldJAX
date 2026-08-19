@@ -52,9 +52,35 @@ command predicts unless it says so here, in its own paragraph.
   coin-flip base rate. A second node of the same card model returned six
   finite runs from six. Whether the difference is that node's hardware or a
   timing-sensitive defect in the context-parallel path is under
-  investigation; single-device runs are unaffected either way. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
+  investigation; single-device runs are unaffected either way.
+
+  What the search has settled so far: the corruption appears after the trunk.
+  In a failing run every trunk array is finite and bit-identical to the ones
+  the passing runs used -- so nothing the sharded pair code computes is wrong
+  -- and only the diffusion coordinates are bad. It is also not always loud:
+  Boltz-2 produced structures 34 Å from the single-device answer with every
+  array in them finite, so **a finiteness check is the wrong gate** and the
+  runs called clean by one should be re-scored by whether repeats of a seed
+  agree with each other. Ten hypotheses have been measured and closed --
+  autotune flags, a bad node, the step count, the diffusion-side sharding
+  constraints, the sampler's `lax.scan`, NCCL's transport, the allocator,
+  asynchronous collectives, and pinning the trunk/diffusion handover
+  replicated.
+
+  The sampler now runs inside a fully replicated `shard_map`, so the
+  diffusion region provably contains no collective: a sharding constraint is
+  a preference the partitioner may route around, which is why pinning those
+  tensors replicated left the per-step collectives in the compiled program
+  untouched, and `shard_map` is the guarantee instead. **The evidence for
+  this is structural and single-device-equivalent, not yet a demonstrated
+  fix**: the compiled HLO loses both sampler collectives, the CPU-mesh
+  structure is unchanged to 0.0002 Å, and twelve GPU runs with and without it
+  agree to 0.0002 Å -- but no session has yet been measured in which the
+  unmodified arm fails and this one does not. Known v1 boundary: OpenDDE at ~3,000 residues still exceeds
   3x 96 GB because the fp32 diffusion side's atom-window gathers pull full
-  pair tensors per device; sharding those consumers is the next lever.
+  pair tensors per device. Sharding those consumers was the planned next
+  lever and is now on hold: the evidence above says that sharding *into*
+  the diffusion is what the port cannot yet make reliable.
 - **The square context-parallel grid (`--cp-layout 2d`).** Fold-CP's own
   layout, on OpenDDE, Protenix, Boltz-2 and OpenFold3: pair rows *and*
   columns split across a square device grid, with the triangle contraction
@@ -74,6 +100,38 @@ command predicts unless it says so here, in its own paragraph.
   asserts from a trace-time witness that the sharded program really was
   traced.
 
+- **Trunk representations (`representations=`, `stop_after="trunk"`).** Every
+  model here builds a per-token *single* stream and a token-pair state before
+  it predicts coordinates, and until now only two of them could hand those
+  back, each under its own name and only through its native command line.
+  `PredictionRequest(representations=("single", "pair"))` returns them from
+  all five, and `stop_after="trunk"` stops once they exist rather than paying
+  for a structure that will be discarded. The result carries a
+  `Representations` handle: `result.representations["pair"]` reads one array
+  from disk on access, `describe` gives its shape, dtype, axis names and --
+  the part that keeps a cross-model comparison honest -- the *space* those
+  axes count. Two models both call their pair state `pair`, but OpenDDE's
+  `structural_pair` indexes a structural-token space its residue space does
+  not cover, and nothing about the array says so. `foldjax capabilities
+  --model M` lists what each model produces; ESMFold2 offers two names rather
+  than three because it carries one single stream, not an input embedding and
+  a trunk output.
+
+  Underneath is a capture mechanism rather than a flag per tensor: a model
+  annotates a value with `capture("pair", z)` and the traced program hands
+  back the ones that were asked for. Off is free -- an un-requested tap leaves
+  no trace in the jaxpr -- and the requested set is a static argument, so a
+  different set is a different program rather than a stale cache hit. On costs
+  liveness rather than bytes: a captured value becomes an entry output, and
+  the temp arena is reused across a run where an entry output is not, which is
+  the whole of the 15.2 GiB that returning Protenix's confidence logits used
+  to cost at 3,012 tokens. **Nothing is returned by default**, because a pair
+  representation is quadratic in token count -- half a gigabyte at a thousand
+  tokens, nearly five at three thousand. A tap inside a scanned loop is
+  refused unless the caller says what it is willing to spend: stacking
+  OpenDDE's structural pair state over 48 refiner blocks is 63 GiB at 488
+  residues, and learning that from an OOM twenty minutes in is much worse than
+  learning it from the error.
 - **Alignment search.** `--msa auto` (`PredictionRequest(msa="auto")`) searches
   for a protein chain that arrived without one and caches the result under
   `$FOLDJAX_HOME/msa/`, keyed by sequence and search provenance rather than by

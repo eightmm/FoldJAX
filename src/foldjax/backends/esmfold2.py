@@ -38,7 +38,9 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import (
     InputRequirement,
@@ -229,6 +231,7 @@ class ESMFold2Backend(Backend):
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
+            representations=_representations.available("esmfold2"),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("foldjax",),
@@ -268,6 +271,13 @@ class ESMFold2Backend(Backend):
             if cp_devices < 1:
                 raise ValueError("cp_devices must be positive")
             overrides["cp_shards"] = cp_devices
+        wanted = _representations.resolve(
+            request.representations, _representations.specs_for("esmfold2")
+        )
+        if wanted:
+            overrides["return_representations"] = wanted
+        if request.stop_after == "trunk":
+            overrides["stop_after_trunk"] = True
         # The managed download profile answers *where* ESMC comes from, not
         # whether the model uses it.  An external ESMC checkpoint selects the
         # structure-only managed bundle while still running the released LM
@@ -368,12 +378,29 @@ class ESMFold2Backend(Backend):
                     "chains": int(np.asarray(features["asym_id"]).max()) + 1
                 },
             }
+        _representations.save(
+            request.output_dir,
+            {name: prediction[name] for name in wanted if name in prediction},
+            _representations.specs_for("esmfold2"),
+            model="esmfold2",
+        )
         raw = {
             "overrides": overrides,
             "language_model": model.has_language_model,
         }
         if shape_profile is not None:
             raw["padding"] = shape_profile
+        if request.stop_after == "trunk":
+            # Nothing was folded, so there are no samples to describe.
+            return PredictionResult(
+                model=self.name,
+                samples=(),
+                output_dir=request.output_dir,
+                raw=raw,
+                representations=_representations_result(
+                    self.name, request.output_dir, wanted
+                ),
+            )
         return PredictionResult(
             model=self.name,
             samples=tuple(
@@ -391,6 +418,9 @@ class ESMFold2Backend(Backend):
             output_dir=request.output_dir,
             raw=raw,
             shape_profile=shape_profile,
+            representations=_representations_result(
+                self.name, request.output_dir, wanted
+            ),
         )
 
 

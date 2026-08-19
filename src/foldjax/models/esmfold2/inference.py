@@ -22,6 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models import _capture
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -159,6 +160,8 @@ def predict(
     #: requires the compiled path, and replicates everything token-linear --
     #: the ESMC hidden states and the checkpoint included.
     cp_shards: int = 1,
+    return_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -188,12 +191,17 @@ def predict(
             "compile_it=False or cp_shards"
         )
     runner = (
-        compiled_predict(settings, n_chains, preserve_prefix_rng, cp_shards)
+        compiled_predict(
+            settings, n_chains, preserve_prefix_rng, cp_shards,
+            return_representations, stop_after_trunk,
+        )
         if compile_it
         else _run
     )
     parameters = model.parameters
-    with context_parallel(cp_shards):
+    # A tap records a tracer of the graph being built, so the capture set
+    # has to be live while the program is traced, not while it runs.
+    with _capture.capturing(return_representations), context_parallel(cp_shards):
         if cp_shards > 1:
             # A checkpoint committed to one device fails the multi-device
             # jit's device-assignment check; everything token-linear is
@@ -212,6 +220,8 @@ def predict(
             n_chains,
             preserve_prefix_rng,
             cp_shards,
+            return_representations,
+            stop_after_trunk,
         )
 
 
@@ -224,6 +234,8 @@ def _run(
     n_chains: int,
     preserve_prefix_rng: bool,
     cp_shards: int = 1,
+    return_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -239,6 +251,8 @@ def _run(
         lm_hidden_states=lm_hidden_states,
         n_chains=n_chains,
         preserve_prefix_rng=preserve_prefix_rng,
+        return_representations=return_representations,
+        stop_after_trunk=stop_after_trunk,
     )
 
 
@@ -248,6 +262,8 @@ def compiled_predict(
     n_chains: int,
     preserve_prefix_rng: bool = False,
     cp_shards: int = 1,
+    return_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -258,7 +274,7 @@ def compiled_predict(
     never a stale cache hit. The real token and atom counts remain data in the
     masks and never enter this cache key.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6, 7))
+    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9))
 
 
 def predict_job(

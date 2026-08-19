@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from foldjax.models import _representations
 from foldjax.models.protenix.chunking import ChunkPolicyName
 from foldjax.schema import PaddingConfig
 
@@ -53,6 +54,9 @@ def _predict(
     # was asked for. `_score` passes precomputed summaries straight through.
     run_confidence_scores: bool = True,
     return_confidence_logits: bool = False,
+    return_representations: bool = False,
+    stop_after_trunk: bool = False,
+    capture_names: tuple[str, ...] = (),
     n_chain: int | None = None,
     cycle_msa_features: tuple[dict[str, Any], ...] | None = None,
     init_noise: Any = None,
@@ -175,6 +179,9 @@ def _predict(
         trunk_dtype=trunk_dtype,
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
+        return_representations=return_representations,
+        capture_names=capture_names,
+        stop_after_trunk=stop_after_trunk,
         n_chain=n_chain,
         init_noise=init_noise,
         step_noises=step_noises,
@@ -220,6 +227,19 @@ def _job_seeds(job: Mapping[str, Any], explicit_seed: int | None) -> list[int]:
     if len(set(result)) != len(result):
         raise ValueError("modelSeeds must be unique")
     return result
+
+
+#: OpenDDE's own names for the arrays, against the shared vocabulary. The
+#: structural-token trio is kept because it is what the diffusion module
+#: conditions on, and it lives in a different space from the residue trio --
+#: the manifest says which, so the two are not mistaken for each other.
+def _collect_representations(output, wanted):
+    """Pull the requested arrays out of the model output.
+
+    The model records them under the shared names already -- the tap is the
+    name -- so this only filters to what survived.
+    """
+    return {name: output[name] for name in wanted if name in output}
 
 
 def main(
@@ -298,6 +318,38 @@ def main(
         "sampler and the output heads stay FP32 either way",
     )
     parser.add_argument("--include-raw", action="store_true")
+    parser.add_argument(
+        "--representations-dir",
+        type=Path,
+        default=None,
+        help=(
+            "where to write the representation archive; defaults to the "
+            "run's own prediction directory. The common API pins this so "
+            "that every model puts it in the same place."
+        ),
+    )
+    parser.add_argument(
+        "--stop-after",
+        choices=("full", "trunk"),
+        default="full",
+        help=(
+            "'trunk' stops once the representations exist, skipping the "
+            "diffusion sampler and the confidence heads. Only useful with "
+            "--representations, since it writes no structure."
+        ),
+    )
+    parser.add_argument(
+        "--representations",
+        default=None,
+        help=(
+            "comma-separated representation names to write beside the "
+            "structures, or 'all'. These are the largest arrays a run "
+            "produces -- the pair representation is quadratic in token "
+            "count -- so nothing is written unless asked for. Names: "
+            "single_inputs, single, pair, structural_single_inputs, "
+            "structural_single, structural_pair."
+        ),
+    )
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument("--compile-cache", type=Path)
     parser.add_argument(
@@ -411,6 +463,9 @@ def main(
     # to recover them by globbing the output tree, which cannot tell a
     # structure written now from one left by an earlier run into the same
     # directory.
+    wanted_representations = _representations.resolve(
+        args.representations, _representations.specs_for("opendde")
+    )
     written: list[Path] = []
     try:
         jobs = _load_jobs(args.input_json)
@@ -533,10 +588,26 @@ def main(
                     return_confidence_logits=(
                         args.include_raw or "asym_id" not in model_features
                     ),
+                    capture_names=wanted_representations,
                     n_chain=n_chain,
                     cycle_msa_features=cycle_msa_features,
+                    stop_after_trunk=args.stop_after == "trunk",
                     **random_tapes,
                 )
+                if args.stop_after == "trunk":
+                    destination = args.representations_dir or (
+                        args.out / job_name / f"seed_{seed}" / "predictions"
+                    )
+                    archive = _representations.save(
+                        destination,
+                        _collect_representations(output, wanted_representations),
+                        _representations.specs_for("opendde"),
+                        model="opendde",
+                    )
+                    if archive is not None:
+                        written.append(archive)
+                        print(f"wrote: {archive}")
+                    continue
                 if padding_plan is not None:
                     from foldjax.models.opendde.data.padding import (
                         crop_opendde_outputs,
@@ -557,6 +628,15 @@ def main(
                     include_raw=args.include_raw,
                     include_trunk=False,
                 )
+                if wanted_representations:
+                    archive = _representations.save(
+                        args.representations_dir or paths[0].parent,
+                        _collect_representations(output, wanted_representations),
+                        _representations.specs_for("opendde"),
+                        model="opendde",
+                    )
+                    if archive is not None:
+                        written.append(archive)
                 written.extend(paths)
                 print(f"wrote: {paths[0].parent}")
     except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:

@@ -28,6 +28,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.models import _capture, _representations
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
 from foldjax.schema import PaddingConfig
@@ -227,6 +228,9 @@ def predict(
     affinity_weights: str | Path | None = None,
     mols: str | Path,
     out_dir: str | Path | None = None,
+    representations: Sequence[str] | str | None = None,
+    stop_after: str = "full",
+    representations_dir: str | Path | None = None,
     steps: int = 200,
     recycling: int = 3,
     diffusion_samples: int = 1,
@@ -417,12 +421,17 @@ def predict(
         if padding is not None and padding_plan is not None
         else None
     )
+    wanted_representations = _representations.resolve(
+        representations, _representations.specs_for("boltz2")
+    )
     predict_kwargs = {
         "recycling_steps": recycling,
         "num_sampling_steps": steps,
         "augmentation": False,
         "steering_args": steering_args,
         "run_confidence": True,
+        "return_representations": wanted_representations,
+        "stop_after_trunk": stop_after == "trunk",
         "run_distogram": return_confidence_logits,
         "return_confidence_logits": return_confidence_logits,
         "run_bfactor": True,
@@ -486,7 +495,11 @@ def predict(
     from foldjax.models._cp import context_parallel, replicate_tree
 
     runner = run_model if steering_active else jax.jit(run_model)
-    with context_parallel(cp_devices, layout=resolved_cp_layout):
+    # A tap records a tracer of the graph being built, so the capture set
+    # has to be live while the program is traced, not while it runs.
+    with _capture.capturing(wanted_representations), context_parallel(
+        cp_devices, layout=resolved_cp_layout
+    ):
         if cp_devices > 1:
             # A single-device-committed checkpoint fails the multi-device
             # jit's device-assignment check; everything token-linear is
@@ -637,6 +650,27 @@ def predict(
         if padding_plan is not None
         else out
     )
+    if stop_after == "trunk":
+        # No coordinates were predicted, so everything below -- cropping,
+        # confidence, the structure writers -- has nothing to work on.
+        destination = (
+            Path(representations_dir)
+            if representations_dir is not None
+            else (Path(out_dir) if out_dir is not None else struct_dir.parent)
+        )
+        archive = _representations.save(
+            destination,
+            {name: public_out[name] for name in wanted_representations
+             if name in public_out},
+            _representations.specs_for("boltz2"),
+            model="boltz2",
+        )
+        return {
+            "record_id": record_id,
+            "raw": public_out,
+            "representations": archive,
+        }
+
     public_coords_batched = (
         coords_batched[:, :public_atoms]
         if padding_plan is not None
@@ -679,6 +713,24 @@ def predict(
             if key.startswith("affinity_")
         }
     )
+    if wanted_representations:
+        destination = (
+            Path(representations_dir)
+            if representations_dir is not None
+            else (Path(out_dir) if out_dir is not None else struct_dir.parent)
+        )
+        archive = _representations.save(
+            destination,
+            {
+                name: public_out[name]
+                for name in wanted_representations
+                if name in public_out
+            },
+            _representations.specs_for("boltz2"),
+            model="boltz2",
+        )
+        if archive is not None:
+            print(f"wrote {archive}")
     if write_fmt is not None:
         from foldjax.models.boltz2.data.write.structure import write_prediction
 

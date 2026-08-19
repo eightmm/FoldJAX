@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,10 @@ def _coordinate_shape(value: Any) -> list[int] | None:
 MSA_POLICIES = ("none", "auto", "required")
 
 #: What a failing run does to the rest of the request.
+#: Where a run may stop. ``trunk`` exists so that downstream work can take
+#: the representations without paying for a structure it will discard.
+STOP_POINTS: tuple[str, ...] = ("full", "trunk")
+
 ERROR_POLICIES = ("stop", "continue")
 
 
@@ -126,6 +130,11 @@ class ModelCapabilities:
     # writer that decides. See `foldjax.input.native_only_features`.
     common_schema_features: tuple[str, ...] = ()
     native_only_features: tuple[str, ...] = ()
+    # Trunk arrays this model can hand back, in the order it builds them.
+    # The tables differ by model: OpenDDE folds in a structural-token
+    # space its residue space does not cover, and ESMFold2 carries one
+    # single stream rather than an input embedding and a trunk output.
+    representations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +200,7 @@ class ModelInfo:
             "padding_axes": list(capabilities.padding_axes),
             "common_schema_features": list(capabilities.common_schema_features),
             "native_only_features": list(capabilities.native_only_features),
+            "representations": list(capabilities.representations),
             "sampling": dict(capabilities.sampling),
             "input_requirements": {
                 name: requirement.summary()
@@ -347,6 +357,20 @@ class PredictionRequest:
     # change what a recorded command predicts. ``auto`` searches and caches;
     # ``required`` additionally refuses to fall back. See `foldjax.input`.
     msa: str = "none"
+    # Trunk representations to hand back: the per-token single stream and the
+    # token-pair state every model in this package builds before it predicts
+    # coordinates. Names come from `foldjax.models._representations`; "all"
+    # takes everything the chosen model has. Off by default because a pair
+    # representation is quadratic in token count -- half a gigabyte at a
+    # thousand tokens, nearly five at three thousand -- and asking for one
+    # silently would change what a recorded command costs.
+    representations: tuple[str, ...] | str | None = None
+    # ``full`` runs the whole model. ``trunk`` stops once the representations
+    # exist, skipping diffusion and the confidence heads: the point is to get
+    # the embeddings for downstream work without paying for a structure
+    # nobody asked for. A ``trunk`` run returns no samples, so it is only
+    # meaningful together with `representations`.
+    stop_after: str = "full"
 
     def __post_init__(self) -> None:
         padding = self.padding
@@ -377,6 +401,21 @@ class PredictionRequest:
             raise ValueError(
                 f"msa must be one of {', '.join(MSA_POLICIES)}; got {self.msa!r}"
             )
+        if self.stop_after not in STOP_POINTS:
+            raise ValueError(
+                f"stop_after must be one of {', '.join(STOP_POINTS)}; "
+                f"got {self.stop_after!r}"
+            )
+        if self.stop_after == "trunk" and not self.representations:
+            raise ValueError(
+                "stop_after='trunk' stops before any structure is predicted, "
+                "so it produces nothing unless representations are requested; "
+                "pass representations=('single', 'pair') or 'all'"
+            )
+        if isinstance(self.representations, str):
+            object.__setattr__(self, "representations", (self.representations,))
+        elif self.representations is not None:
+            object.__setattr__(self, "representations", tuple(self.representations))
         if self.on_error not in ERROR_POLICIES:
             raise ValueError(
                 f"on_error must be one of {', '.join(ERROR_POLICIES)}; "
@@ -540,11 +579,77 @@ class PredictionSample:
 
 
 @dataclass(frozen=True, slots=True)
+class Representations:
+    """The trunk arrays a run produced, and what their axes count.
+
+    Arrays are read from disk on access rather than held: a pair
+    representation is quadratic in token count, and a five-model comparison
+    that loaded every one of them eagerly would need the memory of all five
+    at once for no reason. ``result.representations["pair"]`` reads one.
+
+    ``describe`` is the part that keeps a comparison honest. Two models both
+    call their pair state ``pair``, but one may index residues and another
+    structural tokens, and nothing about the array says which -- so the space
+    each axis counts travels with it.
+    """
+
+    model: str
+    path: Path
+    manifest: Mapping[str, Any] = field(default_factory=dict)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.manifest)
+
+    def __len__(self) -> int:
+        return len(self.manifest)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self.manifest
+
+    def names(self) -> tuple[str, ...]:
+        """Every representation this run wrote, in the order it built them."""
+        return tuple(self.manifest)
+
+    def describe(self, name: str) -> Mapping[str, Any]:
+        """Shape, dtype, axis names and the space those axes count."""
+        if name not in self.manifest:
+            raise KeyError(
+                f"{name!r} was not written by this run; it has: "
+                + ", ".join(self.manifest)
+            )
+        return self.manifest[name]
+
+    def __getitem__(self, name: str):
+        import numpy as np
+
+        self.describe(name)
+        with np.load(self.path) as data:
+            return data[name]
+
+    def load(self) -> dict[str, Any]:
+        """Every array at once, for callers that want them all in memory."""
+        import numpy as np
+
+        with np.load(self.path) as data:
+            return {name: data[name] for name in data.files}
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "path": str(self.path),
+            "names": list(self.manifest),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PredictionResult:
     model: str
     samples: tuple[PredictionSample, ...] = ()
     output_dir: Path | None = None
     raw: Any = None
+    #: Present when the request asked for them. A ``stop_after='trunk'``
+    #: run has these and no samples.
+    representations: Representations | None = None
     # Present only for opt-in padding. This is the concrete profile that ran,
     # not the requested policy, so cache warm can report exactly one executable
     # shape without pretending that it populated an entire grid.
@@ -558,6 +663,8 @@ class PredictionResult:
         }
         if self.shape_profile is not None:
             summary["shape_profile"] = dict(self.shape_profile)
+        if self.representations is not None:
+            summary["representations"] = self.representations.summary()
         return summary
 
 

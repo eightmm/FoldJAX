@@ -10,6 +10,17 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from foldjax.models import _representations
+
+
+def _collect_representations(output, wanted):
+    """Filter the model output to the requested names.
+
+    The model records them under the shared names already -- the tap is the
+    name -- so nothing has to be translated here.
+    """
+    return {name: output[name] for name in wanted if name in output}
+
 
 def main(
     argv: Sequence[str] | None = None,
@@ -219,6 +230,36 @@ def main(
         "2d when the device count is a perfect square.",
     )
     parser.add_argument("--include-trunk", action="store_true")
+    parser.add_argument(
+        "--representations-dir",
+        type=Path,
+        default=None,
+        help=(
+            "where to write the representation archive; defaults beside "
+            "the run's own output. The common API pins this so that every "
+            "model puts it in the same place."
+        ),
+    )
+    parser.add_argument(
+        "--stop-after",
+        choices=("full", "trunk"),
+        default="full",
+        help=(
+            "'trunk' stops once the representations exist, skipping the "
+            "diffusion sampler and the confidence heads."
+        ),
+    )
+    parser.add_argument(
+        "--representations",
+        default=None,
+        help=(
+            "comma-separated representation names to write beside the "
+            "structures, or 'all'. These are the largest arrays a run "
+            "produces -- the pair representation is quadratic in token "
+            "count -- so nothing is written unless asked for. Names: "
+            "single_inputs, single, pair."
+        ),
+    )
     parser.add_argument("--cpu-only", action="store_true")
     parser.add_argument(
         "--compile-cache",
@@ -710,6 +751,9 @@ def main(
     # to recover them by globbing the output tree, which cannot tell a
     # structure written now from one left by an earlier run into the same
     # directory.
+    wanted_representations = _representations.resolve(
+        args.representations, _representations.specs_for("protenix")
+    )
     written: list[Path] = []
     # Only the raw-npz path reads the trunk representations or the full-bin
     # logits; the protenix cif+JSON path consumes the in-graph summaries alone.
@@ -791,7 +835,12 @@ def main(
                 ),
                 run_confidence=not args.no_confidence,
                 run_confidence_scores=not args.no_confidence_scores,
-                return_trunk=wants_raw and args.include_trunk,
+                stop_after_trunk=args.stop_after == "trunk",
+                capture_names=wanted_representations,
+                return_trunk=(
+                    (wants_raw and args.include_trunk)
+                    or bool(wanted_representations)
+                ),
                 return_confidence_logits=wants_raw,
                 triangle_mul_chunk_size=chunk_config.triangle_mul_chunk_size,
                 triangle_att_q_chunk_size=chunk_config.triangle_att_q_chunk_size,
@@ -827,6 +876,25 @@ def main(
                 )
 
                 output = crop_protenix_outputs(output, padding_plan)
+            if args.stop_after == "trunk":
+                destination = args.representations_dir or (
+                    args.out
+                    if legacy_npz
+                    else args.out
+                    / sanitize_job_name(job["name"])
+                    / f"seed_{seed}"
+                    / "predictions"
+                )
+                archive = _representations.save(
+                    destination,
+                    _collect_representations(output, wanted_representations),
+                    _representations.specs_for("protenix"),
+                    model="protenix",
+                )
+                if archive is not None:
+                    written.append(archive)
+                    print(f"wrote: {archive}")
+                continue
             if args.output_format in ("protenix", "both"):
                 paths = write_protenix_outputs(
                     args.out,
@@ -837,6 +905,15 @@ def main(
                     include_raw=args.output_format == "both",
                     include_trunk=args.include_trunk,
                 )
+                if wanted_representations:
+                    archive = _representations.save(
+                        args.representations_dir or paths[0].parent,
+                        _collect_representations(output, wanted_representations),
+                        _representations.specs_for("protenix"),
+                        model="protenix",
+                    )
+                    if archive is not None:
+                        written.append(archive)
                 written.extend(paths)
                 print(f"wrote: {paths[0].parent}")
             else:
@@ -863,6 +940,15 @@ def main(
                         "outputs are quadratic in token count, and at this size the "
                         "copy to host costs more than the prediction did"
                     )
+                if wanted_representations:
+                    archive = _representations.save(
+                        args.representations_dir or output_path.parent,
+                        _collect_representations(output, wanted_representations),
+                        _representations.specs_for("protenix"),
+                        model="protenix",
+                    )
+                    if archive is not None:
+                        written.append(archive)
                 written.append(output_path)
                 print(f"wrote: {output_path}")
     return written

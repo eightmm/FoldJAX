@@ -23,7 +23,9 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import (
     InputRequirement,
@@ -207,6 +209,7 @@ class OpenFold3Backend(Backend):
             ),
         )
         return ModelCapabilities(
+            representations=_representations.available("openfold3"),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=(
@@ -283,6 +286,11 @@ class OpenFold3Backend(Backend):
         cp_layout = options.pop("cp_layout", None)
         if cp_layout is not None:
             overrides["cp_layout"] = str(cp_layout)
+        wanted = _representations.resolve(
+            request.representations, _representations.specs_for("openfold3")
+        )
+        overrides["returned_representations"] = wanted
+        overrides["stop_after_trunk"] = request.stop_after == "trunk"
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
         # Upstream subsamples inside `MSAModuleEmbedder.forward`; this port does it
         # on the host, before the alignment reaches the device. Unconditional, so
@@ -404,6 +412,16 @@ class OpenFold3Backend(Backend):
         }
         if shape_profile is not None:
             raw["padding"] = shape_profile
+        _representations.save(
+            request.output_dir,
+            {
+                name: getattr(prediction, name)
+                for name in wanted
+                if getattr(prediction, name, None) is not None
+            },
+            _representations.specs_for("openfold3"),
+            model="openfold3",
+        )
         return PredictionResult(
             model=self.name,
             samples=tuple(
@@ -417,6 +435,9 @@ class OpenFold3Backend(Backend):
             output_dir=request.output_dir,
             raw=raw,
             shape_profile=shape_profile,
+            representations=_representations_result(
+                self.name, request.output_dir, wanted
+            ),
         )
 
 

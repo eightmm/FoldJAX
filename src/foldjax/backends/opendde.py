@@ -8,7 +8,9 @@ from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 
+from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.models import _representations
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -93,6 +95,7 @@ class OpenDDEBackend(Backend):
             )
         )
         return ModelCapabilities(
+            representations=_representations.available("opendde"),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "opendde", "foldjax"),
@@ -136,6 +139,16 @@ class OpenDDEBackend(Backend):
                 argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))
         if include_raw:
             argv.append("--include-raw")
+        wanted = _representations.resolve(
+            request.representations, _representations.specs_for("opendde")
+        )
+        if wanted:
+            argv.extend(("--representations", ",".join(wanted)))
+            # Pinned so that every backend puts the archive in the same place;
+            # each model's own output tree is shaped differently.
+            argv.extend(("--representations-dir", str(request.output_dir)))
+        if request.stop_after == "trunk":
+            argv.extend(("--stop-after", "trunk"))
         if options:
             raise ValueError(f"unsupported OpenDDE options: {', '.join(options)}")
 
@@ -182,6 +195,9 @@ class OpenDDEBackend(Backend):
             output_dir=request.output_dir,
             raw=raw,
             shape_profile=shape_profile,
+            representations=_representations_result(
+                self.name, request.output_dir, wanted
+            ),
         )
 
 
