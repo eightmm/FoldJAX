@@ -1,12 +1,6 @@
 name: Finalize Fold-CP atom windows
 
 on:
-  push:
-    branches: [agent/fold-cp-jax-complete]
-    paths:
-      - .github/workflows/finalize-fold-cp-atom.yml
-      - tools/finalize_fold_cp_atom.py
-      - src/foldjax/models/_cp_attention.py
   pull_request:
     branches: [main]
 
@@ -14,7 +8,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: finalize-fold-cp-atom
+  group: finalize-fold-cp-atom-publish
   cancel-in-progress: false
 
 env:
@@ -31,10 +25,11 @@ jobs:
           ref: agent/fold-cp-jax-complete
           fetch-depth: 0
 
-      - name: Normalize staged patch and apply implementation
+      - name: Apply the staged implementation
         run: |
           python - <<'PY'
           from pathlib import Path
+
           path = Path('tools/finalize_fold_cp_atom.py')
           text = path.read_text()
           old = '''# Two calls inside scan/eager.
@@ -61,169 +56,49 @@ jobs:
           )
           '''
           if old not in text:
-              raise SystemExit('staged scan/eager patch block was not found')
+              raise SystemExit('scan/eager patch block was not found')
           text = text.replace(old, new, 1)
 
-          method_old = '''replace_in_function(
+          old = '''replace_in_function(
               "src/foldjax/backends/boltz2.py",
               "validate_native_options",
               \'''            "affinity_mw_correction",\\n            "bucket",\\n\''',
               \'''            "affinity_mw_correction",\\n            "bucket",\\n            "cp_atom_windows",\\n\''',
           )
           '''
-          method_new = '''replace_once(
+          new = '''replace_once(
               "src/foldjax/backends/boltz2.py",
               \'''            "affinity_mw_correction",\\n            "bucket",\\n\''',
               \'''            "affinity_mw_correction",\\n            "bucket",\\n            "cp_atom_windows",\\n\''',
           )
           '''
-          if method_old not in text:
+          if old not in text:
               raise SystemExit('backend method patch block was not found')
-          path.write_text(text.replace(method_old, method_new, 1))
+          path.write_text(text.replace(old, new, 1))
           PY
           python tools/finalize_fold_cp_atom.py
           python - <<'PY'
           from pathlib import Path
 
-          test_path = Path('tests/models/boltz2/test_atom_context_parallel.py')
-          text = test_path.read_text()
+          path = Path('tests/models/boltz2/test_atom_context_parallel.py')
+          text = path.read_text()
           old = '''    np.testing.assert_allclose(scatter_ref, jax.device_get(scatter_out), atol=2e-6, rtol=2e-6)\n'''
           new = '''    np.testing.assert_allclose(\n        scatter_ref,\n        jax.device_get(scatter_out),\n        atol=2e-6,\n        rtol=2e-6,\n    )\n'''
           if old not in text:
               raise SystemExit('generated scatter assertion was not found')
-          test_path.write_text(text.replace(old, new, 1))
-
-          atom_path = Path('src/foldjax/models/_cp_atom.py')
-          text = atom_path.read_text()
-          old = '''        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)\n        out = jnp.where(\n            denominator > 0,\n            numerator / jnp.maximum(jnp.swapaxes(denominator, 1, 2), tiny),\n            jnp.zeros_like(numerator),\n        )\n'''
-          new = '''        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)\n        denominator_qh = jnp.swapaxes(denominator, 1, 2)\n        out = jnp.where(\n            denominator_qh > 0,\n            numerator / jnp.maximum(denominator_qh, tiny),\n            jnp.zeros_like(numerator),\n        )\n'''
-          if old not in text:
-              raise SystemExit('pair-bias denominator block was not found')
-          atom_path.write_text(text.replace(old, new, 1))
-
-          attention_path = Path('src/foldjax/models/_cp_attention.py')
-          text = attention_path.read_text()
-          start = text.index('    def local_ring(q_l, k_l, v_l, bias_l, mask_l):')
-          end = text.index('\n    out = jax.shard_map(', start)
-          replacement = '''    def local_ring(q_l, k_l, v_l, bias_l, mask_l):
-        bias_initial = permute(bias_l, bias_init0)
-        bias_initial = permute(bias_initial, diagonal_init)
-        key_initial = permute(k_l, diagonal_init)
-        value_initial = permute(v_l, diagonal_init)
-        mask_initial = permute(mask_l, diagonal_init)
-
-        # Pass one computes the exact row maximum over every resident key tile.
-        # Keeping that maximum fixed in pass two removes the repeated online
-        # rescaling that otherwise amplifies fp32 ordering differences on 3x3
-        # and larger meshes.
-        maximum = jnp.full(
-            q_l.shape[:-1] + (1,),
-            -jnp.inf,
-            dtype=jnp.float32,
-        )
-        key_work = key_initial
-        bias_work = bias_initial
-        mask_work = mask_initial
-        for step in range(side):
-            scores = jnp.matmul(
-                q_l.astype(jnp.float32),
-                jnp.swapaxes(key_work.astype(jnp.float32), -1, -2),
-                precision=precision,
-            )
-            scores = (
-                scores
-                + bias_work.astype(jnp.float32)
-                + mask_work.astype(jnp.float32)
-            )
-            maximum = jnp.maximum(
-                maximum,
-                jnp.max(scores, axis=-1, keepdims=True),
-            )
-            if step + 1 < side:
-                key_work = permute(key_work, kv_hop)
-                mask_work = permute(mask_work, kv_hop)
-                bias_work = permute(bias_work, bias_hop)
-
-        normalizer = jnp.zeros_like(maximum)
-        normalizer_correction = jnp.zeros_like(maximum)
-        output = jnp.zeros(q_l.shape, dtype=jnp.float32)
-        output_correction = jnp.zeros_like(output)
-        key_work = key_initial
-        value_work = value_initial
-        bias_work = bias_initial
-        mask_work = mask_initial
-
-        for step in range(side):
-            scores = jnp.matmul(
-                q_l.astype(jnp.float32),
-                jnp.swapaxes(key_work.astype(jnp.float32), -1, -2),
-                precision=precision,
-            )
-            scores = (
-                scores
-                + bias_work.astype(jnp.float32)
-                + mask_work.astype(jnp.float32)
-            )
-            finite_maximum = jnp.isfinite(maximum)
-            positive_infinity = jnp.isposinf(maximum)
-            shifted = jnp.where(
-                finite_maximum,
-                scores - maximum,
-                -jnp.inf,
-            )
-            probabilities = jnp.where(
-                positive_infinity,
-                jnp.isposinf(scores).astype(jnp.float32),
-                jnp.exp(shifted),
-            )
-            block_normalizer = jnp.sum(
-                probabilities,
-                axis=-1,
-                keepdims=True,
-            )
-            block_output = jnp.matmul(
-                probabilities,
-                value_work.astype(jnp.float32),
-                precision=precision,
-            )
-            output, output_correction = _compensated_add(
-                output,
-                output_correction,
-                block_output,
-            )
-            normalizer, normalizer_correction = _compensated_add(
-                normalizer,
-                normalizer_correction,
-                block_normalizer,
-            )
-
-            if step + 1 < side:
-                key_work = permute(key_work, kv_hop)
-                value_work = permute(value_work, kv_hop)
-                mask_work = permute(mask_work, kv_hop)
-                bias_work = permute(bias_work, bias_hop)
-
-        output = output + output_correction
-        normalizer = normalizer + normalizer_correction
-        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
-        result = jnp.where(
-            normalizer > 0,
-            output / jnp.maximum(normalizer, tiny),
-            jnp.zeros_like(output),
-        )
-        return result.astype(value_initial.dtype)
-'''
-          attention_path.write_text(text[:start] + replacement + text[end:])
+          path.write_text(text.replace(old, new, 1))
           PY
 
-      - name: Install uv and test environment
+      - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           version: "0.10.3"
           enable-cache: true
-      - run: uv sync --group dev --frozen
 
-      - name: Format and lint implementation
+      - name: Install the test environment
+        run: uv sync --group dev --frozen
+
+      - name: Format, lint, and compile
         run: |
           uv run --no-sync ruff format \
             src/foldjax/models/_cp_attention.py \
@@ -238,6 +113,7 @@ jobs:
             src/foldjax/models/boltz2/models/heads/confidence.py \
             src/foldjax/models/boltz2/models/predict.py \
             src/foldjax/models/boltz2/models/trunk_blocks/trunk.py \
+            src/foldjax/models/boltz2/models/triangle/triangle.py \
             tests/models/boltz2/test_atom_context_parallel.py \
             tests/models/boltz2/test_atom_cp_padding.py
           uv run --no-sync ruff check --fix \
@@ -253,12 +129,13 @@ jobs:
             src/foldjax/models/boltz2/models/heads/confidence.py \
             src/foldjax/models/boltz2/models/predict.py \
             src/foldjax/models/boltz2/models/trunk_blocks/trunk.py \
+            src/foldjax/models/boltz2/models/triangle/triangle.py \
             tests/models/boltz2/test_atom_context_parallel.py \
             tests/models/boltz2/test_atom_cp_padding.py
           git diff --check
           uv run --no-sync python -m compileall -q src/foldjax
 
-      - name: Run atom-window proof gates
+      - name: Run Fold-CP proof gates
         run: |
           uv run --no-sync pytest -q \
             tests/models/boltz2/test_atom_context_parallel.py \
@@ -272,20 +149,23 @@ jobs:
             tests/models/openfold3/test_context_parallel.py \
             tests/models/esmfold2/test_context_parallel.py
 
-      - name: Run API and padding regression gates
+      - name: Run API and padding regressions
         run: |
           uv run --no-sync pytest -q \
             tests/test_backends.py \
             tests/test_padding.py \
             tests/models/boltz2/test_bucket.py
 
-      - name: Commit validated atom-window runtime
-        if: github.event_name == 'push'
+      - name: Publish the validated implementation
         run: |
+          # Stage diagnostics were injected only to localise numerical drift.
+          git restore --source=HEAD -- tests/models/boltz2/test_context_parallel.py
           rm -f tools/finalize_fold_cp_atom.py
+          rm -f tools/textwrap.py
           rm -f .github/workflows/finalize-fold-cp-atom.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git diff --cached --check
           git commit -m "feat: complete Fold-CP atom-window runtime"
           git push origin HEAD:agent/fold-cp-jax-complete
