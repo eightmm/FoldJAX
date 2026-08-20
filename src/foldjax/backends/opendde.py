@@ -36,6 +36,7 @@ _CLI_OPTIONS = {
     "ccd_rdkit_cache",
     "components_cif",
     "cp_devices",
+    "cp_layout",
     "diffusion_attention_backend",
     "kalign_binary",
     "max_msa_rows",
