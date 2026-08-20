@@ -717,6 +717,8 @@ def released_config(
     msa_depth: int | None = 1024,
     cp_shards: int = 1,
     cp_layout: str = "auto",
+    returned_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -773,6 +775,8 @@ def released_config(
         msa_depth=msa_depth,
         cp_shards=cp_shards,
         cp_layout=cp_layout,
+        returned_representations=returned_representations,
+        stop_after_trunk=stop_after_trunk,
     )
 
 
