@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/finalize-fold-cp-atom.yml
       - tools/finalize_fold_cp_atom.py
+      - src/foldjax/models/_cp_attention.py
   pull_request:
     branches: [main]
 
@@ -83,13 +84,136 @@ jobs:
           python tools/finalize_fold_cp_atom.py
           python - <<'PY'
           from pathlib import Path
-          path = Path('tests/models/boltz2/test_atom_context_parallel.py')
-          text = path.read_text()
+
+          test_path = Path('tests/models/boltz2/test_atom_context_parallel.py')
+          text = test_path.read_text()
           old = '''    np.testing.assert_allclose(scatter_ref, jax.device_get(scatter_out), atol=2e-6, rtol=2e-6)\n'''
           new = '''    np.testing.assert_allclose(\n        scatter_ref,\n        jax.device_get(scatter_out),\n        atol=2e-6,\n        rtol=2e-6,\n    )\n'''
           if old not in text:
               raise SystemExit('generated scatter assertion was not found')
-          path.write_text(text.replace(old, new, 1))
+          test_path.write_text(text.replace(old, new, 1))
+
+          atom_path = Path('src/foldjax/models/_cp_atom.py')
+          text = atom_path.read_text()
+          old = '''        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)\n        out = jnp.where(\n            denominator > 0,\n            numerator / jnp.maximum(jnp.swapaxes(denominator, 1, 2), tiny),\n            jnp.zeros_like(numerator),\n        )\n'''
+          new = '''        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)\n        denominator_qh = jnp.swapaxes(denominator, 1, 2)\n        out = jnp.where(\n            denominator_qh > 0,\n            numerator / jnp.maximum(denominator_qh, tiny),\n            jnp.zeros_like(numerator),\n        )\n'''
+          if old not in text:
+              raise SystemExit('pair-bias denominator block was not found')
+          atom_path.write_text(text.replace(old, new, 1))
+
+          attention_path = Path('src/foldjax/models/_cp_attention.py')
+          text = attention_path.read_text()
+          start = text.index('    def local_ring(q_l, k_l, v_l, bias_l, mask_l):')
+          end = text.index('\n    out = jax.shard_map(', start)
+          replacement = '''    def local_ring(q_l, k_l, v_l, bias_l, mask_l):
+        bias_initial = permute(bias_l, bias_init0)
+        bias_initial = permute(bias_initial, diagonal_init)
+        key_initial = permute(k_l, diagonal_init)
+        value_initial = permute(v_l, diagonal_init)
+        mask_initial = permute(mask_l, diagonal_init)
+
+        # Pass one computes the exact row maximum over every resident key tile.
+        # Keeping that maximum fixed in pass two removes the repeated online
+        # rescaling that otherwise amplifies fp32 ordering differences on 3x3
+        # and larger meshes.
+        maximum = jnp.full(
+            q_l.shape[:-1] + (1,),
+            -jnp.inf,
+            dtype=jnp.float32,
+        )
+        key_work = key_initial
+        bias_work = bias_initial
+        mask_work = mask_initial
+        for step in range(side):
+            scores = jnp.matmul(
+                q_l.astype(jnp.float32),
+                jnp.swapaxes(key_work.astype(jnp.float32), -1, -2),
+                precision=precision,
+            )
+            scores = (
+                scores
+                + bias_work.astype(jnp.float32)
+                + mask_work.astype(jnp.float32)
+            )
+            maximum = jnp.maximum(
+                maximum,
+                jnp.max(scores, axis=-1, keepdims=True),
+            )
+            if step + 1 < side:
+                key_work = permute(key_work, kv_hop)
+                mask_work = permute(mask_work, kv_hop)
+                bias_work = permute(bias_work, bias_hop)
+
+        normalizer = jnp.zeros_like(maximum)
+        normalizer_correction = jnp.zeros_like(maximum)
+        output = jnp.zeros(q_l.shape, dtype=jnp.float32)
+        output_correction = jnp.zeros_like(output)
+        key_work = key_initial
+        value_work = value_initial
+        bias_work = bias_initial
+        mask_work = mask_initial
+
+        for step in range(side):
+            scores = jnp.matmul(
+                q_l.astype(jnp.float32),
+                jnp.swapaxes(key_work.astype(jnp.float32), -1, -2),
+                precision=precision,
+            )
+            scores = (
+                scores
+                + bias_work.astype(jnp.float32)
+                + mask_work.astype(jnp.float32)
+            )
+            finite_maximum = jnp.isfinite(maximum)
+            positive_infinity = jnp.isposinf(maximum)
+            shifted = jnp.where(
+                finite_maximum,
+                scores - maximum,
+                -jnp.inf,
+            )
+            probabilities = jnp.where(
+                positive_infinity,
+                jnp.isposinf(scores).astype(jnp.float32),
+                jnp.exp(shifted),
+            )
+            block_normalizer = jnp.sum(
+                probabilities,
+                axis=-1,
+                keepdims=True,
+            )
+            block_output = jnp.matmul(
+                probabilities,
+                value_work.astype(jnp.float32),
+                precision=precision,
+            )
+            output, output_correction = _compensated_add(
+                output,
+                output_correction,
+                block_output,
+            )
+            normalizer, normalizer_correction = _compensated_add(
+                normalizer,
+                normalizer_correction,
+                block_normalizer,
+            )
+
+            if step + 1 < side:
+                key_work = permute(key_work, kv_hop)
+                value_work = permute(value_work, kv_hop)
+                mask_work = permute(mask_work, kv_hop)
+                bias_work = permute(bias_work, bias_hop)
+
+        output = output + output_correction
+        normalizer = normalizer + normalizer_correction
+        tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
+        result = jnp.where(
+            normalizer > 0,
+            output / jnp.maximum(normalizer, tiny),
+            jnp.zeros_like(output),
+        )
+        return result.astype(value_initial.dtype)
+'''
+          attention_path.write_text(text[:start] + replacement + text[end:])
           PY
 
       - name: Install uv and test environment
@@ -102,6 +226,7 @@ jobs:
       - name: Format and lint implementation
         run: |
           uv run --no-sync ruff format \
+            src/foldjax/models/_cp_attention.py \
             src/foldjax/models/_cp_atom.py \
             src/foldjax/models/boltz2/api.py \
             src/foldjax/backends/boltz2.py \
@@ -116,6 +241,7 @@ jobs:
             tests/models/boltz2/test_atom_context_parallel.py \
             tests/models/boltz2/test_atom_cp_padding.py
           uv run --no-sync ruff check --fix \
+            src/foldjax/models/_cp_attention.py \
             src/foldjax/models/_cp_atom.py \
             src/foldjax/models/boltz2/api.py \
             src/foldjax/backends/boltz2.py \
