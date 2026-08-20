@@ -82,6 +82,18 @@ def shard_atoms(array: jax.Array, *, atom_axis: int = -2) -> jax.Array:
     )
 
 
+def replicate_atoms(array: jax.Array) -> jax.Array:
+    """Replicate a linear atom result explicitly at a post-CP boundary."""
+
+    mesh = cp_mesh()
+    if mesh is None:
+        return array
+    return jax.lax.with_sharding_constraint(
+        array,
+        NamedSharding(mesh, PartitionSpec()),
+    )
+
+
 def shard_windows(array: jax.Array, *, window_axis: int = -3) -> jax.Array:
     """Constrain a window-batched tensor to CP-row ownership."""
 
@@ -142,7 +154,7 @@ def _dense_single_to_keys(
     )
 
 
-def _single_to_keys_local(
+def single_to_keys_local(
     single: jax.Array,
     *,
     query_window: int,
@@ -231,7 +243,7 @@ def single_to_keys_cp(
     axis_name = atom_axis_name()
 
     def local(single_local):
-        return _single_to_keys_local(
+        return single_to_keys_local(
             single_local,
             query_window=query_window,
             key_window=key_window,
@@ -375,6 +387,7 @@ def scatter_atoms_to_tokens_mean_cp(
 
     mesh = cp_mesh()
     if mesh is None:
+
         def one(indices_b, valid_b, values_b):
             values_b = values_b * valid_b[:, None].astype(values_b.dtype)
             sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=values_b.dtype)
@@ -577,9 +590,9 @@ def pair_bias_attention_2d(
         )
         logits = logits * jnp.asarray(scale, dtype=jnp.float32)
         logits = logits + bias_local.astype(jnp.float32)
-        logits = logits + (
-            1.0 - mask_local[:, None, None, :].astype(jnp.float32)
-        ) * -inf
+        logits = (
+            logits + (1.0 - mask_local[:, None, None, :].astype(jnp.float32)) * -inf
+        )
 
         local_maximum = jnp.max(logits, axis=-1, keepdims=True)
         maximum = jax.lax.pmax(local_maximum, CP_COL_AXIS)
@@ -604,9 +617,10 @@ def pair_bias_attention_2d(
             CP_COL_AXIS,
         )
         tiny = jnp.asarray(jnp.finfo(jnp.float32).tiny, dtype=jnp.float32)
+        denominator_qh = jnp.swapaxes(denominator, 1, 2)
         out = jnp.where(
-            denominator > 0,
-            numerator / jnp.maximum(jnp.swapaxes(denominator, 1, 2), tiny),
+            denominator_qh > 0,
+            numerator / jnp.maximum(denominator_qh, tiny),
             jnp.zeros_like(numerator),
         )
         return out.astype(value.dtype)

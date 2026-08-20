@@ -70,9 +70,7 @@ def triangle_multiplication_forward(
             cueq_triangle_multiplication_forward,
         )
 
-        return cueq_triangle_multiplication_forward(
-            params, x, mask, direction, eps=eps
-        )
+        return cueq_triangle_multiplication_forward(params, x, mask, direction, eps=eps)
     if backend not in ("xla", "cueq"):
         msg = f"Unsupported triangle multiplication backend: {backend!r}"
         raise ValueError(msg)

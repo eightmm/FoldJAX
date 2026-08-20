@@ -17,7 +17,7 @@ Its regression tests inspect HLO and reject an `all-gather`.
 
 | Model | 1D pair CP | 2D pair CP | Notes |
 |---|---:|---:|---|
-| Boltz-2 | yes | yes | Cannon multiplication and ring triangle attention |
+| Boltz-2 | yes | yes | Cannon/ring pair core plus CP-row atom windows and halo exchange |
 | Protenix | yes | yes | The same pair core is used by its trunk and confidence path |
 | OpenDDE | yes | yes | Uses the Protenix pair primitives for structural-token refinement |
 | OpenFold3 | yes | yes | Pair stack, template stack, and confidence re-embedding |
@@ -33,13 +33,16 @@ reproducible until the square-grid path has been measured on the target GPUs.
 The active CP runtime is task-local, so concurrent requests cannot overwrite
 one another's mesh. Model parameters and unrecognised inputs remain
 replicated. A small, explicit registry places known pair features directly on
-the pair mesh when both axes divide evenly. Uneven pair features and every
-atom/single-stream feature stay replicated at entry.
+the pair mesh when both axes divide evenly.
 
-That last point is deliberate: FoldJAX currently distributes the quadratic
-pair trunk, not the complete atom-window diffusion graph. No capability flag
-claims otherwise. Atom-window tensors remain a linear-memory replicated stage
-until a model-specific halo-exchange implementation is validated.
+Boltz-2 additionally shards atom/query windows over CP rows. Fixed-width
+half-window halos use `collective-permute`; token-to-atom gathers rotate linear
+source shards; atom-to-token means use reduce-scatter; and token-pair values are
+looked up from rotating 2-D tiles. Inputs are padded to a complete query-window
+partition and halo width, then cropped back to the biological prefix. The
+confidence frame stage explicitly replicates only its linear atom coordinate
+stream; the quadratic pair state remains distributed. Other models currently
+retain pair-level CP unless their atom graph has a model-specific adapter.
 
 ## Numerical contracts
 
@@ -61,6 +64,8 @@ uv run pytest -q \
   tests/models/test_cp_ring_attention.py \
   tests/models/test_cp_masked_ring.py \
   tests/models/boltz2/test_context_parallel.py \
+  tests/models/boltz2/test_atom_context_parallel.py \
+  tests/models/boltz2/test_atom_cp_padding.py \
   tests/models/protenix/test_context_parallel.py \
   tests/models/opendde/test_context_parallel.py \
   tests/models/openfold3/test_context_parallel.py \
@@ -83,6 +88,8 @@ measure on the deployment topology:
    diffusion;
 5. 2, 4, and 8 GPUs, plus multi-node runs when those are intended.
 
-The absence of atom-window CP should be included when interpreting end-to-end
-memory scaling: the quadratic trunk scales with CP, while the later linear
-atom stage does not yet scale across devices.
+For Boltz-2, report pair and atom stages separately: the pair trunk scales over
+both mesh axes, while atom windows scale over CP rows and are replicated over
+CP columns. The confidence frame calculation performs one explicit O(A) gather.
+For the other model adapters, the atom stage remains replicated until a
+model-specific window contract is validated.

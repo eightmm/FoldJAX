@@ -45,27 +45,52 @@ _FEATURE_AXES: dict[str, tuple[tuple[int, str], ...]] = {
     **{
         key: ((1, _TOKEN),)
         for key in (
-            "token_index", "residue_index", "asym_id", "entity_id", "sym_id",
-            "mol_type", "res_type", "disto_center", "token_pad_mask",
-            "token_resolved_mask", "token_disto_mask", "method_feature",
-            "modified", "cyclic_period", "affinity_token_mask", "deletion_mean",
-            "profile", "deletion_mean_affinity", "profile_affinity",
+            "token_index",
+            "residue_index",
+            "asym_id",
+            "entity_id",
+            "sym_id",
+            "mol_type",
+            "res_type",
+            "disto_center",
+            "token_pad_mask",
+            "token_resolved_mask",
+            "token_disto_mask",
+            "method_feature",
+            "modified",
+            "cyclic_period",
+            "affinity_token_mask",
+            "deletion_mean",
+            "profile",
+            "deletion_mean_affinity",
+            "profile_affinity",
         )
     },
     # Per-token-pair features.
     **{
         key: ((1, _TOKEN), (2, _TOKEN))
         for key in (
-            "token_bonds", "type_bonds", "contact_conditioning", "contact_threshold",
+            "token_bonds",
+            "type_bonds",
+            "contact_conditioning",
+            "contact_threshold",
         )
     },
     # Per-atom features.
     **{
         key: ((1, _ATOM),)
         for key in (
-            "ref_pos", "atom_resolved_mask", "ref_atom_name_chars", "ref_element",
-            "ref_charge", "ref_chirality", "atom_backbone_feat", "ref_space_uid",
-            "atom_pad_mask", "bfactor", "plddt",
+            "ref_pos",
+            "atom_resolved_mask",
+            "ref_atom_name_chars",
+            "ref_element",
+            "ref_charge",
+            "ref_chirality",
+            "atom_backbone_feat",
+            "ref_space_uid",
+            "atom_pad_mask",
+            "bfactor",
+            "plddt",
         )
     },
     "coords": ((2, _ATOM),),
@@ -84,10 +109,7 @@ _FEATURE_AXES: dict[str, tuple[tuple[int, str], ...]] = {
         for key in ("msa", "msa_paired", "deletion_value", "has_deletion", "msa_mask")
     },
     # Template features: (batch, template, token, ...).
-    **{
-        key: ((2, _TOKEN),)
-        for key in _TEMPLATE_FEATURES
-    },
+    **{key: ((2, _TOKEN),) for key in _TEMPLATE_FEATURES},
 }
 
 # These variable-length index lists are consumed only by the eager steering
@@ -224,8 +246,7 @@ def select_model_features_for_padding(
     template_rows = {
         int(np.shape(value)[1])
         for key, value in feats.items()
-        if key in _TEMPLATE_FEATURES
-        and np.ndim(value) >= 2
+        if key in _TEMPLATE_FEATURES and np.ndim(value) >= 2
     }
     if len(template_rows) > 1:
         raise ValueError("Boltz2 template features disagree on their row dimension")
@@ -310,6 +331,59 @@ def resolve_legacy_padding_plan(feats: Mapping[str, object]) -> PaddingPlan:
             "atoms": target_atoms,
             "msa": target_msa,
         },
+    )
+
+
+def align_padding_plan_for_context_parallel(
+    feats: Mapping[str, object],
+    plan: PaddingPlan | None,
+    *,
+    cp_rows: int,
+    cp_cols: int,
+    query_window: int = 32,
+    key_window: int = 128,
+) -> PaddingPlan:
+    """Align token/atom axes for pair tiles and local atom halos."""
+
+    if cp_rows < 1 or cp_cols < 1:
+        raise ValueError("CP grid dimensions must be positive")
+    actual, storage = _feature_sizes(feats)
+    if plan is None:
+        target = dict(storage)
+        base_actual = actual
+        base_storage = storage
+    else:
+        target = dict(plan.target)
+        base_actual = dict(plan.actual)
+        base_storage = dict(plan.storage or plan.actual)
+
+    token_alignment = int(np.lcm(cp_rows, cp_cols))
+    target["tokens"] = (
+        (target["tokens"] + token_alignment - 1) // token_alignment
+    ) * token_alignment
+
+    half_window = query_window // 2
+    if query_window <= 0 or query_window % 2:
+        raise ValueError("query_window must be positive and even")
+    if key_window <= 0 or key_window % half_window:
+        raise ValueError("key_window must divide into query half-windows")
+    half_windows_per_key = key_window // half_window
+    if half_windows_per_key % 2:
+        raise ValueError("key_window must contain an even number of half-windows")
+    halo_radius = half_windows_per_key // 2 - 1
+    min_local_windows = max(1, (halo_radius + 1) // 2)
+    atom_alignment = query_window * cp_rows
+    target["atoms"] = (
+        (target["atoms"] + atom_alignment - 1) // atom_alignment
+    ) * atom_alignment
+    target["atoms"] = max(
+        target["atoms"],
+        query_window * cp_rows * min_local_windows,
+    )
+    return PaddingPlan(
+        actual=base_actual,
+        storage=base_storage,
+        target=target,
     )
 
 

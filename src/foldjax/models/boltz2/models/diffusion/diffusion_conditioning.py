@@ -7,8 +7,16 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows, shard_single
+from foldjax.models._cp_atom import (
+    gather_token_pairs_to_atom_windows_cp,
+    gather_tokens_to_atoms_cp,
+    shard_atoms,
+    shard_windows,
+    single_to_keys_cp,
+)
 from foldjax.models.boltz2.models.diffusion.atom import (
-    atom_to_token_index,
+    atom_to_token_index_from_feats,
     gather_token_pairs_to_atom_windows,
     gather_tokens_to_atoms,
     get_indexing_matrix,
@@ -34,15 +42,25 @@ def diffusion_conditioning_forward(
     atoms_per_window_keys: int = 128,
     eps: float = 1e-5,
     lazy_token_trans_bias: bool = False,
+    atom_context_parallel: bool = False,
 ) -> dict[str, jnp.ndarray]:
-    """Run Boltz DiffusionConditioning."""
+    """Run diffusion conditioning, optionally retaining CP atom ownership."""
 
+    active = atom_context_parallel and cp_mesh() is not None
     z = pairwise_conditioning_forward(
         params["pairwise_conditioner"],
         z_trunk,
         relative_position_encoding,
         eps=eps,
     )
+    if active:
+        z = shard_pair_rows(z)
+    atom_index = atom_to_token_index_from_feats(feats)
+    if active:
+        atom_index = (
+            shard_atoms(atom_index[0], atom_axis=1),
+            shard_atoms(atom_index[1], atom_axis=1),
+        )
     q, c, p = atom_encoder_forward(
         params["atom_encoder"],
         feats,
@@ -51,6 +69,8 @@ def diffusion_conditioning_forward(
         atoms_per_window_queries=atoms_per_window_queries,
         atoms_per_window_keys=atoms_per_window_keys,
         eps=eps,
+        atom_to_token_idx=atom_index,
+        atom_context_parallel=active,
     )
     token_proj = params["token_trans_proj_z"]
     if token_layers is not None:
@@ -58,12 +78,18 @@ def diffusion_conditioning_forward(
     atoms = feats["ref_pos"].shape[1]
     w = atoms_per_window_queries
     h_keys = atoms_per_window_keys
-    indexing = get_indexing_matrix(k=atoms // w, w=w, h_keys=h_keys)
+    indexing = None if active else get_indexing_matrix(k=atoms // w, w=w, h_keys=h_keys)
+
+    def to_keys(x: jnp.ndarray) -> jnp.ndarray:
+        if active:
+            return single_to_keys_cp(x, query_window=w, key_window=h_keys)
+        return single_to_keys(x, indexing, w=w, h_keys=h_keys)
+
     out = {
         "q": q,
         "c": c,
-        "atom_to_token_idx": atom_to_token_index(feats["atom_to_token"]),
-        "to_keys": lambda x: single_to_keys(x, indexing, w=w, h_keys=h_keys),
+        "atom_to_token_idx": atom_index,
+        "to_keys": to_keys,
         "atom_enc_bias": _projection_list_forward(params["atom_enc_proj_z"], p, eps),
         "atom_dec_bias": _projection_list_forward(params["atom_dec_proj_z"], p, eps),
     }
@@ -84,20 +110,37 @@ def atom_encoder_forward(
     atoms_per_window_queries: int = 32,
     atoms_per_window_keys: int = 128,
     eps: float = 1e-5,
+    atom_to_token_idx: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+    atom_context_parallel: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Run Boltz AtomEncoder for structure diffusion conditioning."""
+    """Run Boltz AtomEncoder with sparse CP token and pair routing."""
 
-    atom_ref_pos = feats["ref_pos"]
+    active = atom_context_parallel and cp_mesh() is not None
+
+    def atom_feature(name: str) -> jnp.ndarray:
+        value = feats[name]
+        return shard_atoms(value, atom_axis=1) if active else value
+
+    atom_ref_pos = atom_feature("ref_pos")
     batch, atoms, _ = atom_ref_pos.shape
-    atom_mask = feats["atom_pad_mask"].astype(bool)
-    atom_uid = feats["ref_space_uid"]
+    atom_mask = atom_feature("atom_pad_mask").astype(bool)
+    atom_uid = atom_feature("ref_space_uid")
+    atom_index = atom_to_token_idx or atom_to_token_index_from_feats(feats)
+    if active:
+        atom_index = (
+            shard_atoms(atom_index[0], atom_axis=1),
+            shard_atoms(atom_index[1], atom_axis=1),
+        )
 
     atom_feats = jnp.concatenate(
         (
             atom_ref_pos,
-            feats["ref_charge"][..., None],
-            feats["ref_element"],
-            jnp.reshape(feats["ref_atom_name_chars"], (batch, atoms, 4 * 64)),
+            atom_feature("ref_charge")[..., None],
+            atom_feature("ref_element"),
+            jnp.reshape(
+                atom_feature("ref_atom_name_chars"),
+                (batch, atoms, 4 * 64),
+            ),
         ),
         axis=-1,
     )
@@ -106,18 +149,28 @@ def atom_encoder_forward(
         params["embed_atom_features"]["kernel"],
         params["embed_atom_features"]["bias"],
     )
+    if active:
+        c = shard_atoms(c, atom_axis=1)
 
     w = atoms_per_window_queries
     h_keys = atoms_per_window_keys
     num_windows = atoms // w
-    indexing = get_indexing_matrix(k=num_windows, w=w, h_keys=h_keys)
+    indexing = (
+        None if active else get_indexing_matrix(k=num_windows, w=w, h_keys=h_keys)
+    )
 
     def to_keys(x: jnp.ndarray) -> jnp.ndarray:
+        if active:
+            return single_to_keys_cp(x, query_window=w, key_window=h_keys)
         return single_to_keys(x, indexing, w=w, h_keys=h_keys)
 
-    atom_ref_pos_queries = jnp.reshape(atom_ref_pos, (batch, num_windows, w, 1, 3))
+    atom_ref_pos_queries = jnp.reshape(
+        atom_ref_pos,
+        (batch, num_windows, w, 1, 3),
+    )
     atom_ref_pos_keys = jnp.reshape(
-        to_keys(atom_ref_pos), (batch, num_windows, 1, h_keys, 3)
+        to_keys(atom_ref_pos),
+        (batch, num_windows, 1, h_keys, 3),
     )
     d = atom_ref_pos_keys - atom_ref_pos_queries
     d_norm = 1.0 / (1.0 + jnp.sum(d * d, axis=-1, keepdims=True))
@@ -129,7 +182,7 @@ def atom_encoder_forward(
     ).astype(bool)
     atom_uid_queries = jnp.reshape(atom_uid, (batch, num_windows, w, 1))
     atom_uid_keys = jnp.reshape(
-        to_keys(atom_uid[..., None].astype(jnp.float32)),
+        to_keys(atom_uid[..., None]),
         (batch, num_windows, 1, h_keys),
     )
     valid = (
@@ -141,12 +194,15 @@ def atom_encoder_forward(
     p = _linear(d, params["embed_atompair_ref_pos"]["kernel"]) * valid
     p = p + _linear(d_norm, params["embed_atompair_ref_dist"]["kernel"]) * valid
     p = p + _linear(valid, params["embed_atompair_mask"]["kernel"]) * valid
+    if active:
+        p = shard_windows(p, window_axis=1)
 
     q = c
     if structure_prediction:
         if s_trunk is None or z is None:
-            msg = "s_trunk and z are required when structure_prediction=True"
-            raise ValueError(msg)
+            raise ValueError(
+                "s_trunk and z are required when structure_prediction=True"
+            )
         s_to_c = params["s_to_c_trans"]
         s_to_c_out = _linear(
             _layer_norm(
@@ -157,10 +213,18 @@ def atom_encoder_forward(
             ),
             s_to_c["linear"]["kernel"],
         )
-        c = c + gather_tokens_to_atoms(
-            feats["atom_to_token"].astype(jnp.float32),
-            s_to_c_out,
-        ).astype(c.dtype)
+        if active:
+            s_to_c_out = shard_single(s_to_c_out, token_axis=1)
+            c = c + gather_tokens_to_atoms_cp(
+                s_to_c_out,
+                atom_index[0],
+                atom_index[1],
+            ).astype(c.dtype)
+        else:
+            c = c + gather_tokens_to_atoms(
+                feats["atom_to_token"].astype(jnp.float32),
+                s_to_c_out,
+            ).astype(c.dtype)
 
         z_to_p = params["z_to_p_trans"]
         z_to_p_out = _linear(
@@ -172,16 +236,33 @@ def atom_encoder_forward(
             ),
             z_to_p["linear"]["kernel"],
         )
-        atom_to_token_queries = jnp.reshape(
-            feats["atom_to_token"].astype(jnp.float32),
-            (batch, num_windows, w, feats["atom_to_token"].shape[-1]),
-        )
-        atom_to_token_keys = to_keys(feats["atom_to_token"].astype(jnp.float32))
-        p = p + gather_token_pairs_to_atom_windows(
-            z_to_p_out,
-            atom_to_token_queries,
-            atom_to_token_keys,
-        ).astype(p.dtype)
+        if active:
+            z_to_p_out = shard_pair_rows(z_to_p_out)
+            query_indices = atom_index[0].reshape(batch, num_windows, w)
+            query_valid = atom_index[1].reshape(batch, num_windows, w)
+            key_indices = jnp.squeeze(to_keys(atom_index[0][..., None]), axis=-1)
+            key_valid = jnp.squeeze(
+                to_keys(atom_index[1][..., None].astype(jnp.float32)),
+                axis=-1,
+            ).astype(bool)
+            p = p + gather_token_pairs_to_atom_windows_cp(
+                z_to_p_out,
+                query_indices,
+                query_valid,
+                key_indices,
+                key_valid,
+            ).astype(p.dtype)
+        else:
+            atom_to_token_queries = jnp.reshape(
+                feats["atom_to_token"].astype(jnp.float32),
+                (batch, num_windows, w, feats["atom_to_token"].shape[-1]),
+            )
+            atom_to_token_keys = to_keys(feats["atom_to_token"].astype(jnp.float32))
+            p = p + gather_token_pairs_to_atom_windows(
+                z_to_p_out,
+                atom_to_token_queries,
+                atom_to_token_keys,
+            ).astype(p.dtype)
 
     p = p + _linear(
         jax.nn.relu(jnp.reshape(c, (batch, num_windows, w, 1, c.shape[-1]))),
@@ -189,11 +270,20 @@ def atom_encoder_forward(
     )
     p = p + _linear(
         jax.nn.relu(
-            jnp.reshape(to_keys(c), (batch, num_windows, 1, h_keys, c.shape[-1]))
+            jnp.reshape(
+                to_keys(c),
+                (batch, num_windows, 1, h_keys, c.shape[-1]),
+            )
         ),
         params["c_to_p_trans_k"]["kernel"],
     )
     p = p + _p_mlp_forward(params["p_mlp"], p)
+    if active:
+        return (
+            shard_atoms(q, atom_axis=1),
+            shard_atoms(c, atom_axis=1),
+            shard_windows(p, window_axis=1),
+        )
     return q, c, p
 
 

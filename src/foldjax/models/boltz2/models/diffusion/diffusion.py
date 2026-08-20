@@ -6,6 +6,8 @@ from collections.abc import Mapping
 
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh
+from foldjax.models._cp_atom import single_to_keys_cp
 from foldjax.models.boltz2.models.diffusion.atom import (
     atom_attention_decoder_forward,
     atom_attention_encoder_forward,
@@ -39,13 +41,9 @@ def diffusion_score_model_forward(
     attention_backend: str = "xla",
     token_attention_chunk: int | None = None,
     token_layers: int | None = None,
+    atom_context_parallel: bool = False,
 ) -> jnp.ndarray:
-    """Run Boltz DiffusionModule.forward using precomputed conditioning.
-
-    ``token_attention_chunk`` (default ``None``) query-chunks the token
-    transformer self-attention so the ``[b, heads, N, N]`` score buffer never
-    fully materializes. Bit-exact; required to run large token counts.
-    """
+    """Run Boltz DiffusionModule.forward using precomputed conditioning."""
 
     compute_dtype = r_noisy.dtype
     s, _ = single_conditioning_forward(
@@ -69,6 +67,7 @@ def diffusion_score_model_forward(
         eps=eps,
         attention_backend=attention_backend,
         atom_to_token_idx=atom_to_token_idx,
+        atom_context_parallel=atom_context_parallel,
     )
 
     s_to_a = params["s_to_a_linear"]
@@ -115,6 +114,7 @@ def diffusion_score_model_forward(
         eps=eps,
         attention_backend=attention_backend,
         atom_to_token_idx=atom_to_token_idx,
+        atom_context_parallel=atom_context_parallel,
     )
 
 
@@ -136,9 +136,11 @@ def conditioned_diffusion_score_forward(
     attention_backend: str = "xla",
     token_attention_chunk: int | None = None,
     lazy_token_trans_bias: bool = False,
+    atom_context_parallel: bool = False,
 ) -> jnp.ndarray:
     """Run diffusion conditioning and score model as one JAX graph."""
 
+    active = atom_context_parallel and cp_mesh() is not None
     conditioning = diffusion_conditioning_forward(
         params["diffusion_conditioning"],
         s_trunk=s_trunk,
@@ -150,20 +152,33 @@ def conditioned_diffusion_score_forward(
         atoms_per_window_keys=atoms_per_window_keys,
         eps=eps,
         lazy_token_trans_bias=lazy_token_trans_bias,
+        atom_context_parallel=active,
     )
     atoms = feats["ref_pos"].shape[1]
     num_windows = atoms // atoms_per_window_queries
-    indexing = get_indexing_matrix(
-        k=num_windows,
-        w=atoms_per_window_queries,
-        h_keys=atoms_per_window_keys,
-    )
-    conditioning["to_keys"] = lambda x: single_to_keys(
-        x,
-        indexing,
-        w=atoms_per_window_queries,
-        h_keys=atoms_per_window_keys,
-    )
+    indexing = None
+    if not active:
+        indexing = get_indexing_matrix(
+            k=num_windows,
+            w=atoms_per_window_queries,
+            h_keys=atoms_per_window_keys,
+        )
+
+    def to_keys(x: jnp.ndarray) -> jnp.ndarray:
+        if active:
+            return single_to_keys_cp(
+                x,
+                query_window=atoms_per_window_queries,
+                key_window=atoms_per_window_keys,
+            )
+        return single_to_keys(
+            x,
+            indexing,
+            w=atoms_per_window_queries,
+            h_keys=atoms_per_window_keys,
+        )
+
+    conditioning["to_keys"] = to_keys
     return diffusion_score_model_forward(
         params["score_model"],
         s_inputs=s_inputs,
@@ -178,4 +193,5 @@ def conditioned_diffusion_score_forward(
         attention_backend=attention_backend,
         token_attention_chunk=token_attention_chunk,
         token_layers=token_layers,
+        atom_context_parallel=active,
     )

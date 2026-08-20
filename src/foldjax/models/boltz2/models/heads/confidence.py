@@ -15,7 +15,8 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._cp import shard_pair_rows
+from foldjax.models._cp import cp_mesh, shard_pair_rows
+from foldjax.models._cp_atom import replicate_atoms
 from foldjax.models.boltz2.models.diffusion.atom import (
     gather_rep_atoms_to_tokens,
     gather_tokens_to_atoms,
@@ -95,8 +96,15 @@ def confidence_module_forward(
     glu_backend: str = "xla",
     return_pair_chains_iptm: bool = True,
     recompute_nonpolymer_frames: bool = True,
+    atom_context_parallel: bool = False,
 ) -> dict[str, Any]:
     """Run ConfidenceModule (real boltz2_conf config) in eval mode."""
+
+    # Confidence frame construction currently consumes a global linear
+    # atom stream. Make that O(A) gather explicit at the stage boundary; the
+    # quadratic pair state remains context-parallel throughout the head.
+    if atom_context_parallel and cp_mesh() is not None:
+        x_pred = replicate_atoms(x_pred)
 
     s_inputs = _layer_norm(
         s_inputs,
@@ -370,10 +378,7 @@ def _compute_frame_pred_inference(
     atom_pad_mask = feats["atom_pad_mask"]
 
     if recompute_nonpolymer_frames:
-        delta = (
-            pred_atom_coords[:, :, :, None, :]
-            - pred_atom_coords[:, :, None, :, :]
-        )
+        delta = pred_atom_coords[:, :, :, None, :] - pred_atom_coords[:, :, None, :, :]
         dist_mat = jnp.sqrt(jnp.maximum(jnp.sum(delta * delta, axis=-1), 0.0))
         same_chain = asym_id_atom[:, :, None] == asym_id_atom[:, None, :]
         valid_atom_pair = (
@@ -401,9 +406,7 @@ def _compute_frame_pred_inference(
             asym_id_token[:, :, None] == asym_id_token[:, None, :]
         ) & token_pad_mask[:, None, :].astype(bool)
         first_chain_token = jnp.argmax(same_chain_token, axis=-1)
-        first_chain_mol_type = jnp.take_along_axis(
-            mol_type, first_chain_token, axis=1
-        )
+        first_chain_mol_type = jnp.take_along_axis(mol_type, first_chain_token, axis=1)
         use_nonpolymer_frame = (
             (first_chain_mol_type == _NONPOLYMER)
             & (chain_atom_count >= 3)
