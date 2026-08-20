@@ -6,12 +6,14 @@ on:
     paths:
       - tools/finalize_fold_cp_followup.py
       - tools/finalize_fold_cp_precision.py
+      - tools/finalize_fold_cp_cannon.py
       - .github/workflows/finalize-fold-cp-followup.yml
   pull_request:
     branches: [main]
     paths:
       - tools/finalize_fold_cp_followup.py
       - tools/finalize_fold_cp_precision.py
+      - tools/finalize_fold_cp_cannon.py
       - .github/workflows/finalize-fold-cp-followup.yml
   workflow_dispatch:
 
@@ -56,12 +58,15 @@ jobs:
             set -x
             python tools/finalize_fold_cp_followup.py
             python tools/finalize_fold_cp_precision.py
+            python tools/finalize_fold_cp_cannon.py
             uv run --no-sync ruff format \
               src/foldjax/models/_cp.py \
               src/foldjax/models/_cp_attention.py \
               src/foldjax/models/_cp_atom.py \
               src/foldjax/models/boltz2/api.py \
               src/foldjax/models/boltz2/data/bucket.py \
+              src/foldjax/models/boltz2/models/triangle/triangle.py \
+              src/foldjax/models/protenix/models/triangle/triangle.py \
               tests/models/test_cp_runtime.py \
               tests/models/boltz2/test_atom_context_parallel.py \
               tests/models/boltz2/test_api.py
@@ -71,6 +76,8 @@ jobs:
               src/foldjax/models/_cp_atom.py \
               src/foldjax/models/boltz2/api.py \
               src/foldjax/models/boltz2/data/bucket.py \
+              src/foldjax/models/boltz2/models/triangle/triangle.py \
+              src/foldjax/models/protenix/models/triangle/triangle.py \
               tests/models/test_cp_runtime.py \
               tests/models/boltz2/test_atom_context_parallel.py \
               tests/models/boltz2/test_api.py
@@ -79,7 +86,9 @@ jobs:
               src/foldjax/models/_cp_attention.py \
               src/foldjax/models/_cp_atom.py \
               src/foldjax/models/boltz2/api.py \
-              src/foldjax/models/boltz2/data/bucket.py
+              src/foldjax/models/boltz2/data/bucket.py \
+              src/foldjax/models/boltz2/models/triangle/triangle.py \
+              src/foldjax/models/protenix/models/triangle/triangle.py
             git diff --check
             uv run --no-sync pytest -q \
               tests/models/test_cp_runtime.py \
@@ -106,6 +115,7 @@ jobs:
         run: |
           rm -f tools/finalize_fold_cp_followup.py
           rm -f tools/finalize_fold_cp_precision.py
+          rm -f tools/finalize_fold_cp_cannon.py
           rm -f .github/workflows/finalize-fold-cp-followup.yml
           rm -f foldcp_finalize_failure.log
           git config user.name "github-actions[bot]"
