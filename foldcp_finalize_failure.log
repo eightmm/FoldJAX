@@ -2,11 +2,13 @@
 final Fold-CP follow-up implementation applied
 + python tools/finalize_fold_cp_precision.py
 two-pass Fold-CP ring precision patch applied
-+ uv run --no-sync ruff format src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py tests/models/test_cp_runtime.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_api.py
-4 files reformatted, 4 files left unchanged
-+ uv run --no-sync ruff check --fix src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py tests/models/test_cp_runtime.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_api.py
++ python tools/finalize_fold_cp_cannon.py
+compensated Cannon tile reduction applied
++ uv run --no-sync ruff format src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py src/foldjax/models/boltz2/models/triangle/triangle.py src/foldjax/models/protenix/models/triangle/triangle.py tests/models/test_cp_runtime.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_api.py
+5 files reformatted, 5 files left unchanged
++ uv run --no-sync ruff check --fix src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py src/foldjax/models/boltz2/models/triangle/triangle.py src/foldjax/models/protenix/models/triangle/triangle.py tests/models/test_cp_runtime.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_api.py
 All checks passed!
-+ python -m compileall -q src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py
++ python -m compileall -q src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py src/foldjax/models/boltz2/models/triangle/triangle.py src/foldjax/models/protenix/models/triangle/triangle.py
 + git diff --check
 + uv run --no-sync pytest -q tests/models/test_cp_runtime.py tests/models/test_cp_ring_attention.py tests/models/test_cp_masked_ring.py tests/models/boltz2/test_context_parallel.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_atom_cp_padding.py tests/models/boltz2/test_api.py tests/models/protenix/test_context_parallel.py tests/models/opendde/test_context_parallel.py tests/models/openfold3/test_context_parallel.py tests/models/esmfold2/test_context_parallel.py
 .............FF...................................................       [100%]
@@ -110,17 +112,17 @@ E         AssertionError:
 E         Not equal to tolerance rtol=3e-05, atol=3e-05
 E         
 E         Mismatched elements: 3 / 1352 (0.222%)
-E         Max absolute difference among violations: 8.535385e-05
-E         Max relative difference among violations: 0.00020786
+E         Max absolute difference among violations: 6.03199e-05
+E         Max relative difference among violations: 0.00014691
 E          ACTUAL: array([[[[ -0.749088,   4.441977,  -2.624717, ...,   1.856404,
 E                    -1.591875,  -1.629143],
 E                  [  0.585154,   3.108455,  -3.898092, ...,   3.894099,...
-E          DESIRED: array([[[[ -0.74909 ,   4.441966,  -2.624714, ...,   1.856402,
-E                    -1.591874,  -1.62915 ],
-E                  [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...
+E          DESIRED: array([[[[ -0.749092,   4.441963,  -2.624705, ...,   1.856409,
+E                    -1.591874,  -1.629154],
+E                  [  0.585153,   3.108455,  -3.898102, ...,   3.894099,...
 E         
 E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856402,\n           -1.591874,  -1.62915 ],\n         [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...\n').returncode
+E        +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856409,\n           -1.591874,  -1.629154],\n         [  0.585153,   3.108455,  -3.898102, ...,   3.894099,...\n').returncode
 
 tests/models/boltz2/test_context_parallel.py:244: AssertionError
 =========================== short test summary info ============================
@@ -161,15 +163,15 @@ FAILED tests/models/boltz2/test_context_parallel.py::test_square_grid_pair_stack
   Not equal to tolerance rtol=3e-05, atol=3e-05
   
   Mismatched elements: 3 / 1352 (0.222%)
-  Max absolute difference among violations: 8.535385e-05
-  Max relative difference among violations: 0.00020786
+  Max absolute difference among violations: 6.03199e-05
+  Max relative difference among violations: 0.00014691
    ACTUAL: array([[[[ -0.749088,   4.441977,  -2.624717, ...,   1.856404,
              -1.591875,  -1.629143],
            [  0.585154,   3.108455,  -3.898092, ...,   3.894099,...
-   DESIRED: array([[[[ -0.74909 ,   4.441966,  -2.624714, ...,   1.856402,
-             -1.591874,  -1.62915 ],
-           [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...
+   DESIRED: array([[[[ -0.749092,   4.441963,  -2.624705, ...,   1.856409,
+             -1.591874,  -1.629154],
+           [  0.585153,   3.108455,  -3.898102, ...,   3.894099,...
   
 assert 1 == 0
- +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856402,\n           -1.591874,  -1.62915 ],\n         [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...\n').returncode
-2 failed, 64 passed in 76.45s (0:01:16)
+ +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856409,\n           -1.591874,  -1.629154],\n         [  0.585153,   3.108455,  -3.898102, ...,   3.894099,...\n').returncode
+2 failed, 64 passed in 78.90s (0:01:18)
