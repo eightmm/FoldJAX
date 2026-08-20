@@ -39,8 +39,37 @@ command predicts unless it says so here, in its own paragraph.
   fp32 peak, the gap to 4x being the triangle-mult all-gather that a future
   ring pass reclaims. Multi-GPU runs need `NCCL_P2P_DISABLE=1` on the tested
   nodes, and homogeneous cards (a mixed H100/RTX mesh is refused by XLA).
-  **Multi-GPU runs can return silently non-finite output, and the cause is
-  not yet established -- check every one.** Two things are known. A node
+  **Multi-GPU context parallelism is not usable, and no result from it should
+  be trusted without a single-device run beside it.** Measured 2026-08-20 on
+  four RTX A5000s: sixteen context-parallel runs of one fixed Boltz-2 command
+  -- a 254-residue target with its alignment, at the released sampling
+  defaults -- returned sixteen structures 34-41 Å from the single-device
+  answer, against a 0.36-0.60 Å floor between reruns of the single-device
+  command itself, with complex pLDDT 0.96 falling to 0.09-0.44. Both layouts
+  fail, with and without an alignment, at two diffusion steps as at two
+  hundred, at one recycle as at three, and the trunk representations the same
+  runs capture differ from the single-device ones by about the magnitude of
+  the arrays. OpenFold3 fails the same way, so it is not one port's mistake.
+  Every one of those outputs was finite.
+
+  It is intermittent and the rate depends on the node: four RTX 6000 Ada cards
+  gave three good runs and three ruined ones out of six for Boltz-2, and three
+  good and one ruined out of four for OpenFold3, while the A5000 node ruined
+  everything. The ruined runs agree with *each other* rather than scattering,
+  so this is a deterministic wrong computation that is sometimes selected, not
+  noise.
+
+  The distributed algorithms are not what is wrong. On four forced CPU devices
+  the same released configuration -- real alignment, 200 steps, three recycles
+  -- reproduces the single-device summary to four decimals in both layouts, at
+  the same token count where four GPUs do not. The fault is in the GPU
+  execution of the sharded program.
+
+  The older reservation this replaces is kept below, because its observations
+  still stand and one of them is now explained: silently non-finite output was
+  the visible tail of this, and a finiteness check never was the gate.
+
+  Two things are known. A node
   that hands out four cards where only three initialise returns NaN from
   every run on it, so `jax.device_count()` must equal the requested shard
   count before a result is worth reading; that check is necessary and not
