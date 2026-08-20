@@ -59,11 +59,18 @@ command predicts unless it says so here, in its own paragraph.
   so this is a deterministic wrong computation that is sometimes selected, not
   noise.
 
-  The distributed algorithms are not what is wrong. On four forced CPU devices
-  the same released configuration -- real alignment, 200 steps, three recycles
-  -- reproduces the single-device summary to four decimals in both layouts, at
-  the same token count where four GPUs do not. The fault is in the GPU
-  execution of the sharded program.
+  The distributed algorithms are not what is wrong, and neither is this
+  package. On four forced CPU devices the same released configuration -- real
+  alignment, 200 steps, three recycles -- reproduces the single-device summary
+  to four decimals in both layouts. And twenty lines of JAX containing no
+  FoldJAX at all -- one `float32[N, 256]` split by rows across two GPUs of the
+  A5000 node and gathered by a single replication constraint -- return the
+  second half wrong from 0.25 MiB upward and identically zero from 4 MiB
+  upward, on the N/2 boundary every time. That node hangs with NCCL
+  peer-to-peer enabled and silently drops half the payload with it disabled.
+  So the multi-GPU numbers above measure that machine, not this code. Until
+  context parallelism has been exercised on hardware that passes that
+  reproduction, it is neither claimed nor condemned at GPU level.
 
   The older reservation this replaces is kept below, because its observations
   still stand and one of them is now explained: silently non-finite output was
