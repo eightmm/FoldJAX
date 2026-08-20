@@ -23,8 +23,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: finalize-fold-cp-followup
-  cancel-in-progress: true
+  group: finalize-fold-cp-followup-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   JAX_PLATFORMS: cpu
