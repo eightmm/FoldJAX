@@ -5,11 +5,13 @@ on:
     branches: [agent/fold-cp-jax-complete]
     paths:
       - tools/finalize_fold_cp_followup.py
+      - tools/finalize_fold_cp_precision.py
       - .github/workflows/finalize-fold-cp-followup.yml
   pull_request:
     branches: [main]
     paths:
       - tools/finalize_fold_cp_followup.py
+      - tools/finalize_fold_cp_precision.py
       - .github/workflows/finalize-fold-cp-followup.yml
   workflow_dispatch:
 
@@ -49,11 +51,14 @@ jobs:
         run: |
           set +e
           log=/tmp/foldcp-finalize.log
-          {
+          (
+            set -e
             set -x
             python tools/finalize_fold_cp_followup.py
+            python tools/finalize_fold_cp_precision.py
             uv run --no-sync ruff format \
               src/foldjax/models/_cp.py \
+              src/foldjax/models/_cp_attention.py \
               src/foldjax/models/_cp_atom.py \
               src/foldjax/models/boltz2/api.py \
               src/foldjax/models/boltz2/data/bucket.py \
@@ -62,6 +67,7 @@ jobs:
               tests/models/boltz2/test_api.py
             uv run --no-sync ruff check --fix \
               src/foldjax/models/_cp.py \
+              src/foldjax/models/_cp_attention.py \
               src/foldjax/models/_cp_atom.py \
               src/foldjax/models/boltz2/api.py \
               src/foldjax/models/boltz2/data/bucket.py \
@@ -70,6 +76,7 @@ jobs:
               tests/models/boltz2/test_api.py
             python -m compileall -q \
               src/foldjax/models/_cp.py \
+              src/foldjax/models/_cp_attention.py \
               src/foldjax/models/_cp_atom.py \
               src/foldjax/models/boltz2/api.py \
               src/foldjax/models/boltz2/data/bucket.py
@@ -86,7 +93,7 @@ jobs:
               tests/models/opendde/test_context_parallel.py \
               tests/models/openfold3/test_context_parallel.py \
               tests/models/esmfold2/test_context_parallel.py
-          } 2>&1 | tee "$log"
+          ) 2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
           echo "status=$status" >> "$GITHUB_OUTPUT"
           if [[ $status -ne 0 ]]; then
@@ -98,6 +105,7 @@ jobs:
         if: steps.proof.outputs.status == '0'
         run: |
           rm -f tools/finalize_fold_cp_followup.py
+          rm -f tools/finalize_fold_cp_precision.py
           rm -f .github/workflows/finalize-fold-cp-followup.yml
           rm -f foldcp_finalize_failure.log
           git config user.name "github-actions[bot]"
@@ -111,7 +119,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add foldcp_finalize_failure.log
+          git add -f foldcp_finalize_failure.log
           git commit -m "ci: record Fold-CP finalization failure"
           git push origin HEAD:agent/fold-cp-jax-complete
           exit 1
