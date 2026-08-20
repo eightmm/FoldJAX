@@ -89,6 +89,31 @@ def resolve(
     return tuple(names)
 
 
+def _conform(
+    name: str, value: np.ndarray, spec: RepresentationSpec | None
+) -> np.ndarray:
+    """Return the array shaped the way its spec says it is shaped.
+
+    Three of the five producers hand back a leading batch axis of one, which
+    made the manifest contradict itself: four numbers in ``shape`` beside three
+    names in ``axes``, so a consumer reading the axes to know what it had was
+    reading a claim the file disproved one line earlier. A batch of one carries
+    no information, so it is dropped here rather than in each producer, and
+    anything else that does not match the spec is refused instead of written
+    under a description that does not fit it.
+    """
+    if spec is None:
+        return value
+    if value.ndim == len(spec.axes) + 1 and value.shape[0] == 1:
+        return value[0]
+    if value.ndim != len(spec.axes):
+        raise ValueError(
+            f"{name} has {value.ndim} axes {value.shape}, but its spec names "
+            f"{len(spec.axes)}: {spec.axes}"
+        )
+    return value
+
+
 def save(
     directory: Path,
     arrays: Mapping[str, Any],
@@ -105,7 +130,10 @@ def save(
         return None
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    materialised = {name: np.asarray(value) for name, value in arrays.items()}
+    materialised = {
+        name: _conform(name, np.asarray(value), specs.get(name))
+        for name, value in arrays.items()
+    }
     archive = directory / ARCHIVE_NAME
     np.savez(archive, **materialised)
     manifest = {

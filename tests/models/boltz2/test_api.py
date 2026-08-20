@@ -600,8 +600,12 @@ def test_stop_after_trunk_crops_and_saves_representations(
     assert result["representations"] == destination / "representations.npz"
     assert result["representations"].is_file()
     with np.load(result["representations"]) as archive:
-        assert archive["single"].shape == (1, 2, 4)
-        assert archive["pair"].shape == (1, 2, 2, 2)
+        # The archive carries the axes its spec names -- `("token", "channel")`
+        # and `("token", "token", "channel")` -- so the batch of one the raw
+        # result still holds is not written. Keeping it made the manifest say
+        # four numbers in `shape` beside three names in `axes`.
+        assert archive["single"].shape == (2, 4)
+        assert archive["pair"].shape == (2, 2, 2)
     assert result["padding"]["primary"]["target"] == {
         "tokens": 8,
         "atoms": 32,
