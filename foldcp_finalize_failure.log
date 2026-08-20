@@ -1,0 +1,175 @@
++ python tools/finalize_fold_cp_followup.py
+final Fold-CP follow-up implementation applied
++ python tools/finalize_fold_cp_precision.py
+two-pass Fold-CP ring precision patch applied
++ uv run --no-sync ruff format src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py tests/models/test_cp_runtime.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_api.py
+4 files reformatted, 4 files left unchanged
++ uv run --no-sync ruff check --fix src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py tests/models/test_cp_runtime.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_api.py
+All checks passed!
++ python -m compileall -q src/foldjax/models/_cp.py src/foldjax/models/_cp_attention.py src/foldjax/models/_cp_atom.py src/foldjax/models/boltz2/api.py src/foldjax/models/boltz2/data/bucket.py
++ git diff --check
++ uv run --no-sync pytest -q tests/models/test_cp_runtime.py tests/models/test_cp_ring_attention.py tests/models/test_cp_masked_ring.py tests/models/boltz2/test_context_parallel.py tests/models/boltz2/test_atom_context_parallel.py tests/models/boltz2/test_atom_cp_padding.py tests/models/boltz2/test_api.py tests/models/protenix/test_context_parallel.py tests/models/opendde/test_context_parallel.py tests/models/openfold3/test_context_parallel.py tests/models/esmfold2/test_context_parallel.py
+.............FF...................................................       [100%]
+=================================== FAILURES ===================================
+_______ test_square_grid_pair_stack_matches_without_full_axis_gather[4] ________
+
+devices = 4
+
+    @pytest.mark.parametrize("devices", [4, 9])
+    def test_square_grid_pair_stack_matches_without_full_axis_gather(devices: int) -> None:
+        """Cannon multiplication and ring attention remain tiled in one stack."""
+>       assert "GRID_PARITY_OK" in _run_probe(_GRID_STACK_PROBE, devices=devices)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/models/boltz2/test_context_parallel.py:265: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = '\nimport os\nos.environ["BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"] = "xla"\n\nimport jax\nimport jax.numpy as jnp\n....shape == (1, N, C), pinned_s.shape\n    assert pinned_z.shape == z.shape, pinned_z.shape\n\nprint("GRID_PARITY_OK")\n'
+devices = 4
+
+    def _run_probe(source: str, devices: int = 4) -> str:
+        completed = subprocess.run(
+            [sys.executable, "-c", source],
+            capture_output=True,
+            text=True,
+            env={
+                "JAX_PLATFORMS": "cpu",
+                "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
+                "FOLDJAX_CP_PROBE_DEVICES": str(devices),
+                "PATH": "/usr/bin",
+            },
+            timeout=240,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "<string>", line 113, in <module>
+E           File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 1691, in assert_allclose
+E             assert_array_compare(compare, actual, desired, err_msg=str(err_msg),
+E           File "/usr/lib/python3.12/contextlib.py", line 81, in inner
+E             return func(*args, **kwds)
+E                    ^^^^^^^^^^^^^^^^^^^
+E           File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 889, in assert_array_compare
+E             raise AssertionError(msg)
+E         AssertionError: 
+E         Not equal to tolerance rtol=3e-05, atol=3e-05
+E         
+E         Mismatched elements: 1 / 1352 (0.074%)
+E         Max absolute difference among violations: 4.1365623e-05
+E         Max relative difference among violations: 0.00011855
+E          ACTUAL: array([[[[ -0.749088,   4.441977,  -2.624717, ...,   1.856404,
+E                    -1.591875,  -1.629143],
+E                  [  0.585154,   3.108455,  -3.898092, ...,   3.894099,...
+E          DESIRED: array([[[[ -0.749091,   4.441967,  -2.624715, ...,   1.856406,
+E                    -1.591876,  -1.629142],
+E                  [  0.585154,   3.108452,  -3.898107, ...,   3.894104,...
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856406,\n           -1.591876,  -1.629142],\n         [  0.585154,   3.108452,  -3.898107, ...,   3.894104,...\n').returncode
+
+tests/models/boltz2/test_context_parallel.py:244: AssertionError
+_______ test_square_grid_pair_stack_matches_without_full_axis_gather[9] ________
+
+devices = 9
+
+    @pytest.mark.parametrize("devices", [4, 9])
+    def test_square_grid_pair_stack_matches_without_full_axis_gather(devices: int) -> None:
+        """Cannon multiplication and ring attention remain tiled in one stack."""
+>       assert "GRID_PARITY_OK" in _run_probe(_GRID_STACK_PROBE, devices=devices)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/models/boltz2/test_context_parallel.py:265: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = '\nimport os\nos.environ["BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"] = "xla"\n\nimport jax\nimport jax.numpy as jnp\n....shape == (1, N, C), pinned_s.shape\n    assert pinned_z.shape == z.shape, pinned_z.shape\n\nprint("GRID_PARITY_OK")\n'
+devices = 9
+
+    def _run_probe(source: str, devices: int = 4) -> str:
+        completed = subprocess.run(
+            [sys.executable, "-c", source],
+            capture_output=True,
+            text=True,
+            env={
+                "JAX_PLATFORMS": "cpu",
+                "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
+                "FOLDJAX_CP_PROBE_DEVICES": str(devices),
+                "PATH": "/usr/bin",
+            },
+            timeout=240,
+        )
+>       assert completed.returncode == 0, completed.stdout + completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "<string>", line 113, in <module>
+E           File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 1691, in assert_allclose
+E             assert_array_compare(compare, actual, desired, err_msg=str(err_msg),
+E           File "/usr/lib/python3.12/contextlib.py", line 81, in inner
+E             return func(*args, **kwds)
+E                    ^^^^^^^^^^^^^^^^^^^
+E           File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 889, in assert_array_compare
+E             raise AssertionError(msg)
+E         AssertionError: 
+E         Not equal to tolerance rtol=3e-05, atol=3e-05
+E         
+E         Mismatched elements: 3 / 1352 (0.222%)
+E         Max absolute difference among violations: 8.535385e-05
+E         Max relative difference among violations: 0.00020786
+E          ACTUAL: array([[[[ -0.749088,   4.441977,  -2.624717, ...,   1.856404,
+E                    -1.591875,  -1.629143],
+E                  [  0.585154,   3.108455,  -3.898092, ...,   3.894099,...
+E          DESIRED: array([[[[ -0.74909 ,   4.441966,  -2.624714, ...,   1.856402,
+E                    -1.591874,  -1.62915 ],
+E                  [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856402,\n           -1.591874,  -1.62915 ],\n         [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...\n').returncode
+
+tests/models/boltz2/test_context_parallel.py:244: AssertionError
+=========================== short test summary info ============================
+FAILED tests/models/boltz2/test_context_parallel.py::test_square_grid_pair_stack_matches_without_full_axis_gather[4] - AssertionError: Traceback (most recent call last):
+    File "<string>", line 113, in <module>
+    File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 1691, in assert_allclose
+      assert_array_compare(compare, actual, desired, err_msg=str(err_msg),
+    File "/usr/lib/python3.12/contextlib.py", line 81, in inner
+      return func(*args, **kwds)
+             ^^^^^^^^^^^^^^^^^^^
+    File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 889, in assert_array_compare
+      raise AssertionError(msg)
+  AssertionError: 
+  Not equal to tolerance rtol=3e-05, atol=3e-05
+  
+  Mismatched elements: 1 / 1352 (0.074%)
+  Max absolute difference among violations: 4.1365623e-05
+  Max relative difference among violations: 0.00011855
+   ACTUAL: array([[[[ -0.749088,   4.441977,  -2.624717, ...,   1.856404,
+             -1.591875,  -1.629143],
+           [  0.585154,   3.108455,  -3.898092, ...,   3.894099,...
+   DESIRED: array([[[[ -0.749091,   4.441967,  -2.624715, ...,   1.856406,
+             -1.591876,  -1.629142],
+           [  0.585154,   3.108452,  -3.898107, ...,   3.894104,...
+  
+assert 1 == 0
+ +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856406,\n           -1.591876,  -1.629142],\n         [  0.585154,   3.108452,  -3.898107, ...,   3.894104,...\n').returncode
+FAILED tests/models/boltz2/test_context_parallel.py::test_square_grid_pair_stack_matches_without_full_axis_gather[9] - AssertionError: Traceback (most recent call last):
+    File "<string>", line 113, in <module>
+    File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 1691, in assert_allclose
+      assert_array_compare(compare, actual, desired, err_msg=str(err_msg),
+    File "/usr/lib/python3.12/contextlib.py", line 81, in inner
+      return func(*args, **kwds)
+             ^^^^^^^^^^^^^^^^^^^
+    File "/home/runner/work/FoldJAX/FoldJAX/.venv/lib/python3.12/site-packages/numpy/testing/_private/utils.py", line 889, in assert_array_compare
+      raise AssertionError(msg)
+  AssertionError: 
+  Not equal to tolerance rtol=3e-05, atol=3e-05
+  
+  Mismatched elements: 3 / 1352 (0.222%)
+  Max absolute difference among violations: 8.535385e-05
+  Max relative difference among violations: 0.00020786
+   ACTUAL: array([[[[ -0.749088,   4.441977,  -2.624717, ...,   1.856404,
+             -1.591875,  -1.629143],
+           [  0.585154,   3.108455,  -3.898092, ...,   3.894099,...
+   DESIRED: array([[[[ -0.74909 ,   4.441966,  -2.624714, ...,   1.856402,
+             -1.591874,  -1.62915 ],
+           [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...
+  
+assert 1 == 0
+ +  where 1 = CompletedProcess(args=['/home/runner/work/FoldJAX/FoldJAX/.venv/bin/python', '-c', '\nimport os\nos.environ["BOLTZ_JAX...   1.856402,\n           -1.591874,  -1.62915 ],\n         [  0.585155,   3.108457,  -3.898097, ...,   3.894102,...\n').returncode
+2 failed, 64 passed in 76.45s (0:01:16)
