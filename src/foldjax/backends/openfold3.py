@@ -390,14 +390,6 @@ class OpenFold3Backend(Backend):
                 )
 
         name = query_id or Path(request.input).stem
-        written = output.write_prediction_outputs(
-            prediction,
-            features,
-            request.output_dir,
-            name=name,
-            output_metadata=output_metadata,
-        )
-        scores = _scores(written["scores"])
         shape_profile = None
         if padding_plan is not None:
             shape_profile = {
@@ -412,6 +404,8 @@ class OpenFold3Backend(Backend):
         }
         if shape_profile is not None:
             raw["padding"] = shape_profile
+        # Saved before the structures because a trunk-only run has no
+        # structures: the archive is the whole product of that graph.
         _representations.save(
             request.output_dir,
             {
@@ -422,6 +416,28 @@ class OpenFold3Backend(Backend):
             _representations.specs_for("openfold3"),
             model="openfold3",
         )
+        if request.stop_after == "trunk":
+            # The trunk graph returns before the sampler and the confidence
+            # heads, so `prediction` carries no coordinates to write and there
+            # are no samples to describe. Reading them raised IndexError.
+            return PredictionResult(
+                model=self.name,
+                samples=(),
+                output_dir=request.output_dir,
+                raw=raw,
+                shape_profile=shape_profile,
+                representations=_representations_result(
+                    self.name, request.output_dir, wanted
+                ),
+            )
+        written = output.write_prediction_outputs(
+            prediction,
+            features,
+            request.output_dir,
+            name=name,
+            output_metadata=output_metadata,
+        )
+        scores = _scores(written["scores"])
         return PredictionResult(
             model=self.name,
             samples=tuple(

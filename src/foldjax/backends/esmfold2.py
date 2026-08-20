@@ -366,10 +366,6 @@ class ESMFold2Backend(Backend):
             )
 
         name = Path(request.input).stem
-        written = output_module.write_prediction_outputs(
-            prediction, features, request.output_dir, name=name
-        )
-        scores = {entry["sample"]: entry for entry in written["summary"]}
         shape_profile = None
         if padding_plan is not None:
             shape_profile = {
@@ -391,7 +387,10 @@ class ESMFold2Backend(Backend):
         if shape_profile is not None:
             raw["padding"] = shape_profile
         if request.stop_after == "trunk":
-            # Nothing was folded, so there are no samples to describe.
+            # Nothing was folded, so there are no samples to describe -- and
+            # the writer must stay below this line, not above it. It reads
+            # `sample_atom_coords`, which the trunk graph never produces, so
+            # reaching it at all raised KeyError before the branch was tested.
             return PredictionResult(
                 model=self.name,
                 samples=(),
@@ -401,6 +400,10 @@ class ESMFold2Backend(Backend):
                     self.name, request.output_dir, wanted
                 ),
             )
+        written = output_module.write_prediction_outputs(
+            prediction, features, request.output_dir, name=name
+        )
+        scores = {entry["sample"]: entry for entry in written["summary"]}
         return PredictionResult(
             model=self.name,
             samples=tuple(
