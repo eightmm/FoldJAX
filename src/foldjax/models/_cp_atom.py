@@ -411,14 +411,16 @@ def scatter_atoms_to_tokens_mean_cp(
 
     mesh = cp_mesh()
     if mesh is None:
+        output_dtype = atom_values.dtype
 
         def one(indices_b, valid_b, values_b):
-            values_b = values_b * valid_b[:, None].astype(values_b.dtype)
-            sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=values_b.dtype)
-            counts = jnp.zeros((num_tokens,), dtype=values_b.dtype)
-            sums = sums.at[indices_b].add(values_b)
-            counts = counts.at[indices_b].add(valid_b.astype(values_b.dtype))
-            return sums / (counts[:, None] + eps)
+            values_f = values_b.astype(jnp.float32)
+            values_f = values_f * valid_b[:, None].astype(jnp.float32)
+            sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=jnp.float32)
+            counts = jnp.zeros((num_tokens,), dtype=jnp.float32)
+            sums = sums.at[indices_b].add(values_f)
+            counts = counts.at[indices_b].add(valid_b.astype(jnp.float32))
+            return (sums / (counts[:, None] + eps)).astype(output_dtype)
 
         return jax.vmap(one)(token_indices, valid, atom_values)
     rows = cp_row_shards()
@@ -427,12 +429,15 @@ def scatter_atoms_to_tokens_mean_cp(
     axis_name = atom_axis_name()
 
     def local(values_local, indices_local, valid_local):
+        output_dtype = values_local.dtype
+
         def one(indices_b, valid_b, values_b):
-            values_b = values_b * valid_b[:, None].astype(values_b.dtype)
-            sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=values_b.dtype)
-            counts = jnp.zeros((num_tokens,), dtype=values_b.dtype)
-            sums = sums.at[indices_b].add(values_b)
-            counts = counts.at[indices_b].add(valid_b.astype(values_b.dtype))
+            values_f = values_b.astype(jnp.float32)
+            values_f = values_f * valid_b[:, None].astype(jnp.float32)
+            sums = jnp.zeros((num_tokens, values_b.shape[-1]), dtype=jnp.float32)
+            counts = jnp.zeros((num_tokens,), dtype=jnp.float32)
+            sums = sums.at[indices_b].add(values_f)
+            counts = counts.at[indices_b].add(valid_b.astype(jnp.float32))
             return sums, counts
 
         sums, counts = jax.vmap(one)(indices_local, valid_local, values_local)
@@ -448,7 +453,7 @@ def scatter_atoms_to_tokens_mean_cp(
             scatter_dimension=1,
             tiled=True,
         )
-        return sums / (counts[..., None] + eps)
+        return (sums / (counts[..., None] + eps)).astype(output_dtype)
 
     return jax.shard_map(
         local,
@@ -614,9 +619,10 @@ def pair_bias_attention_2d(
         )
         logits = logits * jnp.asarray(scale, dtype=jnp.float32)
         logits = logits + bias_local.astype(jnp.float32)
-        logits = (
-            logits + (1.0 - mask_local[:, None, None, :].astype(jnp.float32)) * -inf
-        )
+        # A true -inf mask preserves the empty-row contract. A finite
+        # surrogate would turn an all-masked row into a uniform distribution.
+        key_valid = mask_local[:, None, None, :].astype(bool)
+        logits = jnp.where(key_valid, logits, -jnp.inf)
 
         local_maximum = jnp.max(logits, axis=-1, keepdims=True)
         maximum = jax.lax.pmax(local_maximum, CP_COL_AXIS)
