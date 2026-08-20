@@ -131,6 +131,7 @@ class Boltz2Backend(Backend):
             "affinity_steps",
             "affinity_weights",
             "bucket",
+            "cp_atom_windows",
             "cp_devices",
             "cp_layout",
             "feature_cache",
@@ -171,6 +172,7 @@ class Boltz2Backend(Backend):
         "steps",
         "recycling",
         "diffusion_samples",
+        "cp_atom_windows",
         "cp_devices",
         "cp_layout",
         "affinity_steps",
@@ -200,6 +202,7 @@ class Boltz2Backend(Backend):
         for name in (
             "affinity_mw_correction",
             "bucket",
+            "cp_atom_windows",
             "return_confidence_logits",
             "use_msa_server",
         ):

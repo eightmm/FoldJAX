@@ -27,6 +27,7 @@ from foldjax.models._cp import (
     shard_pair_rows,
     transpose_perm,
 )
+from foldjax.models._cp_attention import ring_triangle_attention_2d
 from foldjax.models.protenix.models.primitives.attention import AttentionParams
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
@@ -68,6 +69,7 @@ def _triangle_attention_backend() -> str:
     if backend not in {"xla", "xla_jit", "tokamax", "cueq", "cueq_jit"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
     return backend
+
 
 TriangleDirection = Literal["outgoing", "incoming"]
 
@@ -125,16 +127,13 @@ def triangle_multiplication(
         )
     if mask is None:
         mask = jnp.ones(z.shape[:-1], dtype=z.dtype)
-    backend = os.environ.get(
-        "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
-    ).lower()
+    backend = os.environ.get("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq").lower()
     # Upstream carries the same guard and falls back the same way: the kernel
     # requires the hidden width to equal the pair width (Protenix says so at
     # triangular.py:491). The template stack has c_z=64, c_hidden=128, so both
     # sides run the unfused path there -- that is a shape fact, not a policy.
     cueq_supported = (
-        params.linear_a_p.weight.shape[0] == z.shape[-1]
-        and z.shape[-1] % 32 == 0
+        params.linear_a_p.weight.shape[0] == z.shape[-1] and z.shape[-1] % 32 == 0
     )
     if backend == "cueq" and cueq_supported and not cp_active:
         from foldjax.models.protenix.models.triangle.triangle_cueq import (
@@ -306,18 +305,23 @@ def _cannon_contract(
         rows = lhs.shape[1] if direction == "incoming" else lhs.shape[0]
         cols = rhs.shape[1] if direction == "incoming" else rhs.shape[0]
         total = jnp.zeros((rows, cols) + lhs.shape[2:], dtype=jnp.float32)
+        correction = jnp.zeros_like(total)
         for step in range(side):
-            total = total + jnp.einsum(
-                equation, lhs, rhs, preferred_element_type=jnp.float32
+            partial = jnp.einsum(equation, lhs, rhs, preferred_element_type=jnp.float32)
+            updated = total + partial
+            residual = jnp.where(
+                jnp.abs(total) >= jnp.abs(partial),
+                (total - updated) + partial,
+                (partial - updated) + total,
             )
+            total = updated
+            correction = correction + residual
             if step + 1 < side:
                 lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
                 rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
-        return total
+        return total + correction
 
-    out = jax.shard_map(
-        body, mesh=mesh, in_specs=(spec, spec), out_specs=spec
-    )(a, b)
+    out = jax.shard_map(body, mesh=mesh, in_specs=(spec, spec), out_specs=spec)(a, b)
     if pad:
         out = out[:n, :n]
     return shard_pair_rows(out)
@@ -543,6 +547,36 @@ _compiled_triangle_attention = jax.jit(
 )
 
 
+def _triangle_attention_ring_2d(
+    x: jnp.ndarray,
+    params: TriangleAttentionParams,
+    num_heads: int,
+    mask_bias: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+) -> jnp.ndarray:
+    """Two-dimensional Protenix attention without a full-column gather."""
+
+    scale = float(params.attention.linear_k.weight.shape[0] // num_heads) ** -0.5
+    q = _project_heads(x, params.attention.linear_q, num_heads)
+    k = _project_heads(x, params.attention.linear_k, num_heads)
+    v = _project_heads(x, params.attention.linear_v, num_heads)
+    q = q * jnp.asarray(scale, dtype=q.dtype)
+    out = ring_triangle_attention_2d(
+        q,
+        k,
+        v,
+        triangle_bias,
+        mask_bias,
+    )
+    out = jnp.swapaxes(out, -2, -3)
+    if params.attention.linear_g is not None:
+        gate = sigmoid(linear(x, params.attention.linear_g))
+        gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
+        out = out * gate
+    out = out.reshape(out.shape[:-2] + (-1,))
+    return linear(out, params.attention.linear_o)
+
+
 def _triangle_attention_cp(
     x: jnp.ndarray,
     mask: jnp.ndarray | None,
@@ -588,6 +622,18 @@ def _triangle_attention_cp(
     triangle_bias = linear(x, params.linear)
     triangle_bias = jnp.moveaxis(triangle_bias, -1, -3)
     triangle_bias = jnp.expand_dims(triangle_bias, axis=-4)
+
+    if cp_layout() == "2d":
+        out = _triangle_attention_ring_2d(
+            x,
+            params,
+            num_heads,
+            mask_bias,
+            triangle_bias,
+        )
+        if not starting:
+            out = jnp.swapaxes(out, -2, -3)
+        return shard_pair_rows(out, row_axis=-3)
 
     # `shard_map` requires the sharded axis to divide evenly; pad the rows and
     # slice them back. Padded rows attend over real columns and are discarded,

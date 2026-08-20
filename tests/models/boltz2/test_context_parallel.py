@@ -62,35 +62,40 @@ _PREAMBLE = textwrap.dedent(
     def norm(c):
         return {"scale": arr(c) * 0.1 + 1.0, "bias": arr(c) * 0.1}
 
+    def weight(fan_in, fan_out, gain=1.0):
+        # Match ordinary fan-in scaling. The former fixed sigma=0.5 made
+        # widened synthetic transitions an artificial error amplifier.
+        return arr(fan_in, fan_out) * (gain / (0.5 * np.sqrt(fan_in)))
+
     def tri_mult():
         return {
             "norm_in": norm(C),
             "norm_out": norm(C),
-            "g_in": {"kernel": arr(C, 2 * C)},
-            "p_in": {"kernel": arr(C, 2 * C)},
-            "p_out": {"kernel": arr(C, C)},
-            "g_out": {"kernel": arr(C, C)},
+            "g_in": {"kernel": weight(C, 2 * C)},
+            "p_in": {"kernel": weight(C, 2 * C)},
+            "p_out": {"kernel": weight(C, C)},
+            "g_out": {"kernel": weight(C, C)},
         }
 
     def tri_att():
         return {
             "layer_norm": norm(C),
-            "linear": {"kernel": arr(C, HEADS)},
+            "linear": {"kernel": weight(C, HEADS)},
             "mha": {
-                "linear_q": {"kernel": arr(C, C)},
-                "linear_k": {"kernel": arr(C, C)},
-                "linear_v": {"kernel": arr(C, C)},
-                "linear_g": {"kernel": arr(C, C)},
-                "linear_o": {"kernel": arr(C, C)},
+                "linear_q": {"kernel": weight(C, C)},
+                "linear_k": {"kernel": weight(C, C)},
+                "linear_v": {"kernel": weight(C, C)},
+                "linear_g": {"kernel": weight(C, C)},
+                "linear_o": {"kernel": weight(C, C)},
             },
         }
 
     def transition():
         return {
             "norm": norm(C),
-            "fc1": {"kernel": arr(C, 4 * C)},
-            "fc2": {"kernel": arr(C, 4 * C)},
-            "fc3": {"kernel": arr(4 * C, C)},
+            "fc1": {"kernel": weight(C, 4 * C)},
+            "fc2": {"kernel": weight(C, 4 * C)},
+            "fc3": {"kernel": weight(4 * C, C)},
         }
 
     def layer():
@@ -269,8 +274,9 @@ def test_single_shard_predict_flag_is_validated() -> None:
     from foldjax.models.boltz2 import api
 
     try:
-        api.predict(seq=["ACD"], weights="/nonexistent", mols="/nonexistent",
-                    cp_devices=0)
+        api.predict(
+            seq=["ACD"], weights="/nonexistent", mols="/nonexistent", cp_devices=0
+        )
     except ValueError as error:
         assert "cp_devices" in str(error)
     else:  # pragma: no cover - the guard must fire before any file access

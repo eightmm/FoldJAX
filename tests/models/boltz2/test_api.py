@@ -112,9 +112,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
                 "glu_backend",
             )
         }
-        controls["noise_tape"] = (
-            "init_noise" in kwargs or "step_noises" in kwargs
-        )
+        controls["noise_tape"] = "init_noise" in kwargs or "step_noises" in kwargs
         second_stage = "affinity" in params
         seen.append((second_stage, controls))
         if second_stage:
@@ -156,14 +154,17 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     )
 
     assert loaded == [confidence_weights, affinity_weights]
-    assert seen[0] == (False, {
-        "steering_args": {"fk_steering": False},
-        "multiplicity": 2,
-        "attention_backend": "xla",
-        "triangle_backend": "xla",
-        "glu_backend": "xla",
-        "noise_tape": False,
-    })
+    assert seen[0] == (
+        False,
+        {
+            "steering_args": {"fk_steering": False},
+            "multiplicity": 2,
+            "attention_backend": "xla",
+            "triangle_backend": "xla",
+            "glu_backend": "xla",
+            "noise_tape": False,
+        },
+    )
     assert seen[1][0] is True
     assert seen[1][1]["multiplicity"] == 5
     assert seen[1][1]["noise_tape"] is False
@@ -329,16 +330,12 @@ def test_padding_noise_tapes_use_each_stage_storage_stride(
     affinity_weights = tmp_path / "boltz2_aff"
     affinity_weights.with_suffix(".npz").touch()
     primary = _fake_features(affinity=True)
-    primary["atom_pad_mask"] = np.asarray(
-        [[1.0, 1.0, 1.0, 0.0, 0.0]], dtype=np.float32
-    )
+    primary["atom_pad_mask"] = np.asarray([[1.0, 1.0, 1.0, 0.0, 0.0]], dtype=np.float32)
     affinity = _fake_features(affinity=True)
     affinity["atom_pad_mask"] = np.asarray(
         [[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32
     )
-    monkeypatch.setattr(
-        api, "featurize", lambda **kwargs: (primary, "job", tmp_path)
-    )
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (primary, "job", tmp_path))
 
     def fake_load_params(path):
         if Path(path) == affinity_weights:
@@ -348,9 +345,7 @@ def test_padding_noise_tapes_use_each_stage_storage_stride(
     monkeypatch.setattr(
         "foldjax.models.boltz2.bridge.native.load_params", fake_load_params
     )
-    monkeypatch.setattr(
-        api, "_prepare_affinity_features", lambda **kwargs: affinity
-    )
+    monkeypatch.setattr(api, "_prepare_affinity_features", lambda **kwargs: affinity)
     tape_calls = []
 
     def fake_tape(key, *, multiplicity, storage_atoms, target_atoms, steps):
@@ -476,9 +471,7 @@ def test_affinity_feature_recovery_threads_the_primary_msa_cap(
     assert seen == {"regeneration_cap": 17, "affinity_cap": 17}
 
 
-def test_affinity_dataset_receives_the_requested_msa_cap(
-    tmp_path, monkeypatch
-) -> None:
+def test_affinity_dataset_receives_the_requested_msa_cap(tmp_path, monkeypatch) -> None:
     import foldjax.models.boltz2.data.featurize as module
 
     atom_dtype = np.dtype([("coords", np.float32, (3,))])
@@ -545,9 +538,7 @@ def test_backend_shape_profile_reports_both_compiled_affinity_stages() -> None:
 
     assert primary["target"] == affinity["target"]
     assert primary != affinity
-    assert _padding_shape_profile(
-        {"primary": primary, "affinity": affinity}
-    ) == {
+    assert _padding_shape_profile({"primary": primary, "affinity": affinity}) == {
         "primary": primary,
         "affinity": affinity,
     }
@@ -562,3 +553,57 @@ def test_api_rejects_nonpositive_diffusion_samples(tmp_path) -> None:
             mols=tmp_path,
             diffusion_samples=0,
         )
+
+
+def test_stop_after_trunk_crops_and_saves_representations(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: (_fake_features(affinity=True), "job", tmp_path),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params",
+        lambda path: {"trunk": {}},
+    )
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        assert kwargs["stop_after_trunk"] is True
+        tokens = model_feats["token_pad_mask"].shape[-1]
+        return {
+            "single": jnp.ones((1, tokens, 4), dtype=jnp.float32),
+            "pair": jnp.ones((1, tokens, tokens, 2), dtype=jnp.float32),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict",
+        fake_predict,
+    )
+    destination = tmp_path / "representations"
+    result = api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        stop_after="trunk",
+        representations=("single", "pair"),
+        representations_dir=destination,
+        padding=PaddingConfig(tokens=8, atoms=32, msa=1),
+        write_fmt=None,
+    )
+
+    assert "coords" not in result
+    assert "plddt" not in result
+    assert result["raw"]["single"].shape == (1, 2, 4)
+    assert result["raw"]["pair"].shape == (1, 2, 2, 2)
+    assert result["representations"] == destination / "representations.npz"
+    assert result["representations"].is_file()
+    with np.load(result["representations"]) as archive:
+        assert archive["single"].shape == (1, 2, 4)
+        assert archive["pair"].shape == (1, 2, 2, 2)
+    assert result["padding"]["primary"]["target"] == {
+        "tokens": 8,
+        "atoms": 32,
+        "msa": 1,
+    }

@@ -9,11 +9,13 @@ import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 
 from foldjax.models._cp import (
+    cp_layout,
     cp_mesh,
     cp_row_shards,
     pair_row_spec,
     shard_pair_rows,
 )
+from foldjax.models._cp_attention import ring_triangle_attention_2d
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 
 TriangleAttentionParams = Mapping[
@@ -213,6 +215,21 @@ def _triangle_attention_cp(
     triangle_bias = jnp.transpose(triangle_bias, (0, 3, 1, 2))
     triangle_bias = jnp.expand_dims(triangle_bias, axis=1)
 
+    if cp_layout() == "2d":
+        # Keep both pair axes tiled for the whole softmax. Q stays resident;
+        # K/V, mask and triangle bias rotate through the square mesh.
+        out = _attention_ring_2d(
+            params["mha"],
+            q_x=x,
+            kv_x=x,
+            tri_bias=triangle_bias,
+            mask_bias=mask_bias,
+            precision=precision,
+        )
+        if not starting:
+            out = jnp.swapaxes(out, -2, -3)
+        return shard_pair_rows(out, row_axis=-3)
+
     # `shard_map` needs the sharded axis to divide evenly; pad the rows and
     # slice them back. Padded rows attend over real columns and are
     # discarded, so their values never reach a kept output.
@@ -261,6 +278,69 @@ def _triangle_attention_cp(
     if not starting:
         out = jnp.swapaxes(out, -2, -3)
     return out
+
+
+def _attention_ring_2d(
+    params: Mapping[str, Mapping[str, jnp.ndarray]],
+    q_x: jnp.ndarray,
+    kv_x: jnp.ndarray,
+    tri_bias: jnp.ndarray,
+    mask_bias: jnp.ndarray,
+    *,
+    precision: jax.lax.Precision,
+) -> jnp.ndarray:
+    """Project and run the exact two-dimensional Fold-CP attention ring."""
+
+    no_heads = tri_bias.shape[2]
+    c_hidden = params["linear_g"]["kernel"].shape[-1] // no_heads
+    qg = _linear(
+        q_x,
+        jnp.concatenate(
+            (params["linear_q"]["kernel"], params["linear_g"]["kernel"]),
+            axis=-1,
+        ),
+        precision,
+    )
+    q, gate = jnp.split(qg, 2, axis=-1)
+    kv = _linear(
+        kv_x,
+        jnp.concatenate(
+            (params["linear_k"]["kernel"], params["linear_v"]["kernel"]),
+            axis=-1,
+        ),
+        precision,
+    )
+    k, v = jnp.split(kv, 2, axis=-1)
+    q = jnp.swapaxes(
+        q.reshape(q.shape[:-1] + (no_heads, c_hidden)),
+        -2,
+        -3,
+    )
+    k = jnp.swapaxes(
+        k.reshape(k.shape[:-1] + (no_heads, c_hidden)),
+        -2,
+        -3,
+    )
+    v = jnp.swapaxes(
+        v.reshape(v.shape[:-1] + (no_heads, c_hidden)),
+        -2,
+        -3,
+    )
+    q = q / jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
+    out = ring_triangle_attention_2d(
+        q,
+        k,
+        v,
+        tri_bias,
+        mask_bias,
+        precision=precision,
+    )
+    out = jnp.swapaxes(out, -2, -3)
+    gate = jax.nn.sigmoid(gate)
+    gate = gate.reshape(gate.shape[:-1] + (no_heads, c_hidden))
+    out = out * gate
+    out = out.reshape(out.shape[:-2] + (c_hidden * no_heads,))
+    return _linear(out, params["linear_o"]["kernel"], precision)
 
 
 def _attention(

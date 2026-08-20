@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from foldjax.models._cp import CP_AXIS, CP_ROW_AXIS
 from foldjax.models._cp import cp_layout as _cp_layout
 from foldjax.models._cp import cp_mesh as _cp_mesh
+from foldjax.models._cp_atom import shard_atoms
 from foldjax.models.boltz2.models.diffusion.diffusion import (
     conditioned_diffusion_score_forward,
     diffusion_score_model_forward,
@@ -172,6 +173,7 @@ def boltz2_graph_score_forward(
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     lazy_token_trans_bias: bool = True,
+    atom_context_parallel: bool = False,
 ) -> jnp.ndarray:
     """Run non-template Boltz-2 trunk, conditioning, and score in one JAX graph."""
 
@@ -215,6 +217,7 @@ def boltz2_graph_score_forward(
         token_attention_chunk=chunks["token_attention_chunk"],
         token_layers=token_layers,
         lazy_token_trans_bias=lazy_token_trans_bias,
+        atom_context_parallel=atom_context_parallel,
     )
 
 
@@ -261,6 +264,7 @@ def boltz2_sample_forward(
     token_axis: str = "tok",
     shard_tokens: bool = True,
     lazy_token_trans_bias: bool = True,
+    atom_context_parallel: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """Run a JAX inference sampler.
 
@@ -362,6 +366,7 @@ def boltz2_sample_forward(
         token_layers=token_layers,
         eps=eps,
         lazy_token_trans_bias=lazy_token_trans_bias,
+        atom_context_parallel=atom_context_parallel,
     )
     sigmas = _sample_schedule(
         num_sampling_steps,
@@ -393,12 +398,16 @@ def boltz2_sample_forward(
             )
 
     atom_mask = jnp.repeat(feats["atom_pad_mask"], multiplicity, axis=0)
+    if atom_context_parallel:
+        atom_mask = shard_atoms(atom_mask, atom_axis=1)
     shape = (*atom_mask.shape, 3)
     key, init_key = jax.random.split(key)
     if init_noise is not None:
         atom_coords = sigmas[0] * jnp.asarray(init_noise, dtype=jnp.float32)
     else:
         atom_coords = sigmas[0] * jax.random.normal(init_key, shape, dtype=jnp.float32)
+    if atom_context_parallel:
+        atom_coords = shard_atoms(atom_coords, atom_axis=1)
     gammas = jnp.where(sigmas > gamma_min, gamma_0, 0.0)
     atom_coords_denoised = None
 
@@ -463,6 +472,7 @@ def boltz2_sample_forward(
                 attention_backend=attention_backend,
                 token_attention_chunk=chunks["token_attention_chunk"],
                 token_layers=token_layers,
+                atom_context_parallel=atom_context_parallel,
             )
             if alignment_reverse_diff:
                 atom_coords_noisy = _weighted_rigid_align(
@@ -551,6 +561,7 @@ def boltz2_sample_forward(
             attention_backend=attention_backend,
             token_attention_chunk=chunks["token_attention_chunk"],
             token_layers=token_layers,
+            atom_context_parallel=atom_context_parallel,
         )
 
         if steering_on:
@@ -1129,6 +1140,7 @@ def _preconditioned_score_forward(
     attention_backend: str = "xla",
     token_attention_chunk: int | None = None,
     token_layers: int | None = None,
+    atom_context_parallel: bool = False,
 ) -> jnp.ndarray:
     padded_sigma = jnp.reshape(sigma, (1, 1, 1))
     scaled_input = r_noisy / jnp.sqrt(padded_sigma**2 + sigma_data**2)
@@ -1155,6 +1167,7 @@ def _preconditioned_score_forward(
         attention_backend=attention_backend,
         token_attention_chunk=token_attention_chunk,
         token_layers=token_layers,
+        atom_context_parallel=atom_context_parallel,
     )
     r_update = r_update.astype(jnp.float32)
     c_skip = sigma_data**2 / (padded_sigma**2 + sigma_data**2)

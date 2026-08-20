@@ -7,7 +7,18 @@ from collections.abc import Callable, Mapping
 import jax
 import jax.nn
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec
 
+from foldjax.models._cp import cp_mesh, cp_row_shards, shard_single
+from foldjax.models._cp_atom import (
+    atom_axis_name,
+    atom_spec,
+    gather_tokens_to_atoms_cp,
+    scatter_atoms_to_tokens_mean_cp,
+    shard_atoms,
+    single_to_keys_local,
+    window_spec,
+)
 from foldjax.models._stacking import take_layers
 from foldjax.models.boltz2.models.diffusion.diffusion_transformer import (
     diffusion_transformer_layer_apply,
@@ -153,6 +164,20 @@ def atom_to_token_index(
     """
 
     return _one_hot_index(atom_to_token.astype(jnp.float32))
+
+
+def atom_to_token_index_from_feats(
+    feats: Mapping[str, jnp.ndarray],
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Read compact global token IDs, falling back to the legacy one-hot map."""
+
+    if "atom_to_token_ids_global" in feats:
+        indices = feats["atom_to_token_ids_global"].astype(jnp.int32)
+        valid = feats.get("atom_to_token_valid")
+        if valid is None:
+            valid = indices >= 0
+        return jnp.maximum(indices, 0), valid.astype(bool)
+    return atom_to_token_index(feats["atom_to_token"])
 
 
 def _repeat_index(
@@ -320,8 +345,23 @@ def atom_transformer_forward(
     multiplicity: int = 1,
     eps: float = 1e-5,
     attention_backend: str = "xla",
+    atom_context_parallel: bool = False,
 ) -> jnp.ndarray:
-    """Run Boltz AtomTransformer with window reshaping."""
+    """Run Boltz AtomTransformer with serial or halo-sharded windows."""
+
+    if atom_context_parallel and cp_mesh() is not None:
+        return _atom_transformer_forward_cp(
+            params,
+            q,
+            c,
+            bias,
+            mask,
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys,
+            multiplicity=multiplicity,
+            eps=eps,
+            attention_backend=attention_backend,
+        )
 
     w = attn_window_queries
     h_keys = attn_window_keys
@@ -332,7 +372,10 @@ def atom_transformer_forward(
     c = jnp.reshape(c, (batch * num_windows, w, c.shape[-1]))
     mask = jnp.reshape(mask, (batch * num_windows, w))
     bias = jnp.repeat(bias, multiplicity, axis=0)
-    bias = jnp.reshape(bias, (bias.shape[0] * num_windows, w, h_keys, bias.shape[-1]))
+    bias = jnp.reshape(
+        bias,
+        (bias.shape[0] * num_windows, w, h_keys, bias.shape[-1]),
+    )
 
     def to_keys_new(x: jnp.ndarray) -> jnp.ndarray:
         x = jnp.reshape(x, (batch, num_windows * w, -1))
@@ -352,6 +395,91 @@ def atom_transformer_forward(
     return jnp.reshape(q, (batch, num_windows * w, dim))
 
 
+def _atom_transformer_forward_cp(
+    params: Params,
+    q: jnp.ndarray,
+    c: jnp.ndarray,
+    bias: jnp.ndarray,
+    mask: jnp.ndarray,
+    *,
+    attn_window_queries: int,
+    attn_window_keys: int,
+    multiplicity: int,
+    eps: float,
+    attention_backend: str,
+) -> jnp.ndarray:
+    """Run each device's owned query windows with neighbour halo exchange."""
+
+    mesh = cp_mesh()
+    if mesh is None:
+        raise RuntimeError("atom CP adapter requires an active mesh")
+    if q.ndim != 3 or c.ndim != 3 or mask.ndim != 2 or bias.ndim != 5:
+        raise ValueError(
+            "atom CP expects q/c [B,A,C], mask [B,A], and bias [B,K,W,H,C]"
+        )
+    w = attn_window_queries
+    h_keys = attn_window_keys
+    axis_name = atom_axis_name()
+    rows = cp_row_shards()
+
+    def local(params_l, q_l, c_l, bias_l, mask_l):
+        batch, local_atoms, dim = q_l.shape
+        if local_atoms % w:
+            raise ValueError("local atom shard is not query-window aligned")
+        local_windows = local_atoms // w
+        q_flat = q_l.reshape(batch * local_windows, w, dim)
+        c_flat = c_l.reshape(batch * local_windows, w, c_l.shape[-1])
+        mask_flat = mask_l.reshape(batch * local_windows, w)
+        bias_l = jnp.repeat(bias_l, multiplicity, axis=0)
+        if bias_l.shape[0] != batch:
+            raise ValueError(
+                "atom bias multiplicity does not match the atom activation batch"
+            )
+        bias_flat = bias_l.reshape(
+            batch * local_windows,
+            w,
+            h_keys,
+            bias_l.shape[-1],
+        )
+
+        def to_keys_local(x: jnp.ndarray) -> jnp.ndarray:
+            x = x.reshape(batch, local_atoms, -1)
+            keys = single_to_keys_local(
+                x,
+                query_window=w,
+                key_window=h_keys,
+                axis_name=axis_name,
+                axis_size=rows,
+            )
+            return keys.reshape(batch * local_windows, h_keys, -1)
+
+        out = diffusion_transformer_forward(
+            params_l["diffusion_transformer"],
+            a=q_flat,
+            s=c_flat,
+            bias=bias_flat,
+            mask=mask_flat.astype(jnp.float32),
+            to_keys=to_keys_local,
+            multiplicity=1,
+            eps=eps,
+            attention_backend=attention_backend,
+        )
+        return out.reshape(batch, local_atoms, dim)
+
+    return jax.shard_map(
+        local,
+        mesh=mesh,
+        in_specs=(
+            PartitionSpec(),
+            atom_spec(3, atom_axis=1),
+            atom_spec(3, atom_axis=1),
+            window_spec(5, window_axis=1),
+            atom_spec(2, atom_axis=1),
+        ),
+        out_specs=atom_spec(3, atom_axis=1),
+    )(params, q, c, bias, mask)
+
+
 def atom_attention_encoder_forward(
     params: Params,
     feats: Mapping[str, jnp.ndarray],
@@ -367,14 +495,22 @@ def atom_attention_encoder_forward(
     eps: float = 1e-5,
     attention_backend: str = "xla",
     atom_to_token_idx: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+    atom_context_parallel: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Run Boltz AtomAttentionEncoder using precomputed atom conditioning."""
+    """Run AtomAttentionEncoder with dense or CP-row atom ownership."""
 
+    active = atom_context_parallel and cp_mesh() is not None
     atom_mask = feats["atom_pad_mask"].astype(bool)
+    if active:
+        atom_mask = shard_atoms(atom_mask, atom_axis=1)
+        q = shard_atoms(q, atom_axis=1)
+        c = shard_atoms(c, atom_axis=1)
+        atom_enc_bias = atom_enc_bias
     if structure_prediction:
         if r is None:
-            msg = "r is required when structure_prediction=True"
-            raise ValueError(msg)
+            raise ValueError("r is required when structure_prediction=True")
+        if active:
+            r = shard_atoms(r, atom_axis=1)
         q = jnp.repeat(q, multiplicity, axis=0)
         q = q + _linear(r, params["r_to_q_trans"]["kernel"])
     c = jnp.repeat(c, multiplicity, axis=0)
@@ -392,16 +528,33 @@ def atom_attention_encoder_forward(
         multiplicity=multiplicity,
         eps=eps,
         attention_backend=attention_backend,
+        atom_context_parallel=active,
     )
 
-    atom_to_token = jnp.repeat(
-        feats["atom_to_token"].astype(jnp.float32), multiplicity, axis=0
-    )
     q_to_a = jax.nn.relu(_linear(q, params["atom_to_token_trans"]["kernel"])).astype(
         q.dtype
     )
-    idx = _repeat_index(atom_to_token_idx, multiplicity)
-    a = scatter_atoms_to_tokens_mean(atom_to_token, q_to_a, index=idx).astype(q.dtype)
+    idx = _repeat_index(
+        atom_to_token_idx or atom_to_token_index_from_feats(feats),
+        multiplicity,
+    )
+    if active:
+        a = scatter_atoms_to_tokens_mean_cp(
+            q_to_a,
+            idx[0],
+            idx[1],
+            num_tokens=feats["token_pad_mask"].shape[1],
+        ).astype(q.dtype)
+        a = shard_single(a, token_axis=1)
+    else:
+        atom_to_token = jnp.repeat(
+            feats["atom_to_token"].astype(jnp.float32), multiplicity, axis=0
+        )
+        a = scatter_atoms_to_tokens_mean(
+            atom_to_token,
+            q_to_a,
+            index=idx,
+        ).astype(q.dtype)
     return a, q, c
 
 
@@ -419,19 +572,35 @@ def atom_attention_decoder_forward(
     eps: float = 1e-5,
     attention_backend: str = "xla",
     atom_to_token_idx: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+    atom_context_parallel: bool = False,
 ) -> jnp.ndarray:
-    """Run Boltz AtomAttentionDecoder using precomputed atom conditioning."""
+    """Run AtomAttentionDecoder with explicit token-to-atom routing."""
 
-    atom_to_token = jnp.repeat(
-        feats["atom_to_token"].astype(jnp.float32), multiplicity, axis=0
+    active = atom_context_parallel and cp_mesh() is not None
+    idx = _repeat_index(
+        atom_to_token_idx or atom_to_token_index_from_feats(feats),
+        multiplicity,
     )
-    a_to_q = gather_tokens_to_atoms(
-        atom_to_token,
-        _linear(a.astype(q.dtype), params["a_to_q_trans"]["kernel"]),
-        index=_repeat_index(atom_to_token_idx, multiplicity),
-    )
+    projected = _linear(a.astype(q.dtype), params["a_to_q_trans"]["kernel"])
+    if active:
+        a = shard_single(a, token_axis=1)
+        projected = shard_single(projected, token_axis=1)
+        q = shard_atoms(q, atom_axis=1)
+        c = shard_atoms(c, atom_axis=1)
+        a_to_q = gather_tokens_to_atoms_cp(projected, idx[0], idx[1])
+    else:
+        atom_to_token = jnp.repeat(
+            feats["atom_to_token"].astype(jnp.float32), multiplicity, axis=0
+        )
+        a_to_q = gather_tokens_to_atoms(
+            atom_to_token,
+            projected,
+            index=idx,
+        )
     q = q + a_to_q.astype(q.dtype)
     atom_mask = jnp.repeat(feats["atom_pad_mask"], multiplicity, axis=0)
+    if active:
+        atom_mask = shard_atoms(atom_mask, atom_axis=1)
 
     q = atom_transformer_forward(
         params["atom_decoder"],
@@ -445,8 +614,10 @@ def atom_attention_decoder_forward(
         multiplicity=multiplicity,
         eps=eps,
         attention_backend=attention_backend,
+        atom_context_parallel=active,
     )
 
     update = params["atom_feat_to_atom_pos_update"]
     q = _layer_norm(q, update["norm"]["scale"], update["norm"]["bias"], eps)
-    return _linear(q, update["linear"]["kernel"])
+    out = _linear(q, update["linear"]["kernel"])
+    return shard_atoms(out, atom_axis=1) if active else out

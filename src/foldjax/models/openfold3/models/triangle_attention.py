@@ -16,7 +16,14 @@ import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
 
-from foldjax.models._cp import cp_mesh, cp_row_shards, pair_row_spec, shard_pair_rows
+from foldjax.models._cp import (
+    cp_layout,
+    cp_mesh,
+    cp_row_shards,
+    pair_row_spec,
+    shard_pair_rows,
+)
+from foldjax.models._cp_attention import ring_triangle_attention_2d
 from foldjax.models.openfold3.models.attention import (
     AttentionParams,
     attention,
@@ -270,9 +277,7 @@ def _chunked_attention(
         # with zeros, not with -inf: a fully masked row makes softmax divide by zero
         # and returns NaN, which would propagate out of the slice that drops it.
         flat_x = jnp.pad(flat_x, ((0, 0), (0, padding), (0, 0), (0, 0)))
-        flat_mask = jnp.pad(
-            flat_mask, ((0, 0), (0, padding), (0, 0), (0, 0), (0, 0))
-        )
+        flat_mask = jnp.pad(flat_mask, ((0, 0), (0, padding), (0, 0), (0, 0), (0, 0)))
 
     def one_chunk(index: jnp.ndarray) -> jnp.ndarray:
         start = index * chunk_size
@@ -293,6 +298,33 @@ def _chunked_attention(
         (flat_x.shape[0], n_chunks * chunk_size, *chunks.shape[-2:])
     )
     return merged[:, :rows].reshape((*lead, rows, *chunks.shape[-2:]))
+
+
+def _ring_attention(
+    x: jnp.ndarray,
+    mask_bias: jnp.ndarray,
+    triangle_bias: jnp.ndarray,
+    params: AttentionParams,
+    *,
+    no_heads: int,
+) -> jnp.ndarray:
+    """Exact two-dimensional ring counterpart of dense AF3 attention."""
+
+    query = jnp.swapaxes(split_heads(linear(x, params.linear_q), no_heads), -2, -3)
+    key = jnp.swapaxes(split_heads(linear(x, params.linear_k), no_heads), -2, -3)
+    value = jnp.swapaxes(split_heads(linear(x, params.linear_v), no_heads), -2, -3)
+    query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
+    out = ring_triangle_attention_2d(
+        query,
+        key,
+        value,
+        triangle_bias,
+        mask_bias,
+    )
+    out = jnp.swapaxes(out, -2, -3)
+    if params.linear_g is not None:
+        out = out * split_heads(jax_sigmoid(linear(x, params.linear_g)), no_heads)
+    return linear(flatten_heads(out), params.linear_o)
 
 
 def _triangle_attention_cp(
@@ -339,6 +371,18 @@ def _triangle_attention_cp(
     mask_bias = (inf * (mask - 1.0))[..., :, None, None, :]
     triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
+
+    if cp_layout() == "2d":
+        out = _ring_attention(
+            x,
+            mask_bias,
+            triangle_bias,
+            params.mha,
+            no_heads=no_heads,
+        )
+        if not starting:
+            out = jnp.swapaxes(out, -2, -3)
+        return shard_pair_rows(out, row_axis=-3)
 
     # `shard_map` requires the sharded axis to divide evenly; pad the rows and
     # slice them back. The mask bias is padded with zeros, not -inf: a fully

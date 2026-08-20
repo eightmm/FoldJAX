@@ -221,6 +221,9 @@ def boltz2_predict(
             glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
             return_pair_chains_iptm=return_pair_chains_iptm,
             recompute_nonpolymer_frames=recompute_nonpolymer_frames,
+            atom_context_parallel=bool(
+                sample_kwargs.get("atom_context_parallel", False)
+            ),
         )
 
         def confidence_call(x_pred: jnp.ndarray, conf_multiplicity: int):
@@ -250,9 +253,7 @@ def boltz2_predict(
             conf = confidence_call(sample_atom_coords, multiplicity)
         if not return_confidence_logits:
             conf = {
-                key: value
-                for key, value in conf.items()
-                if not key.endswith("_logits")
+                key: value for key, value in conf.items() if not key.endswith("_logits")
             }
         out.update(conf)
 

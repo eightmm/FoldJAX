@@ -157,12 +157,18 @@ def featurize(
         input = work / "job.yaml"
         Path(input).write_text(
             build_job_yaml(
-                seq, ligand_ccd, dna=dna, rna=rna,
-                ligands_smiles=ligand_smiles, use_msa_server=use_msa_server,
+                seq,
+                ligand_ccd,
+                dna=dna,
+                rna=rna,
+                ligands_smiles=ligand_smiles,
+                use_msa_server=use_msa_server,
             )
         )
     feats, manifest, struct_dir = featurize_yaml(
-        Path(input), work, Path(mols),
+        Path(input),
+        work,
+        Path(mols),
         use_msa_server=use_msa_server,
         msa_server_url=msa_server_url,
         msa_pairing_strategy=msa_pairing_strategy,
@@ -194,9 +200,7 @@ def _resolve_cp_layout(layout: str, cp_devices: int) -> str:
     shape.
     """
     if layout not in ("auto", "1d", "2d"):
-        raise ValueError(
-            f"cp_layout must be one of 'auto', '1d', '2d'; got {layout!r}"
-        )
+        raise ValueError(f"cp_layout must be one of 'auto', '1d', '2d'; got {layout!r}")
     side = math.isqrt(cp_devices)
     square = cp_devices > 1 and side * side == cp_devices
     if layout == "auto":
@@ -270,6 +274,9 @@ def predict(
     #: grid has GPU evidence of its own; pass "2d" to ask for the grid, which
     #: then requires a square `cp_devices`.
     cp_layout: str = "auto",
+    #: Distribute Boltz-2 atom query windows over CP rows. The required atom
+    #: and token alignment is padded automatically and cropped from outputs.
+    cp_atom_windows: bool = True,
     steering_args: Mapping[str, object] | None = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
@@ -306,7 +313,12 @@ def predict(
         raise ValueError("padding and legacy bucket=True cannot be used together")
     if cp_devices < 1:
         raise ValueError("cp_devices must be positive")
+    if not isinstance(cp_atom_windows, bool):
+        raise ValueError("cp_atom_windows must be a boolean")
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_devices)
+    cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after != "trunk"
+    cp_rows = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else cp_devices
+    cp_cols = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else 1
     if cp_devices > 1 and glu_backend != "xla":
         raise ValueError(
             "context parallelism requires glu_backend='xla'; a fused GLU "
@@ -314,10 +326,17 @@ def predict(
         )
 
     feats_np, record_id, struct_dir = featurize(
-        input=input, seq=seq, dna=dna, rna=rna,
-        ligand_ccd=ligand_ccd, ligand_smiles=ligand_smiles,
-        mols=mols, out_dir=out_dir, use_msa_server=use_msa_server,
-        msa_server_url=msa_server_url, msa_pairing_strategy=msa_pairing_strategy,
+        input=input,
+        seq=seq,
+        dna=dna,
+        rna=rna,
+        ligand_ccd=ligand_ccd,
+        ligand_smiles=ligand_smiles,
+        mols=mols,
+        out_dir=out_dir,
+        use_msa_server=use_msa_server,
+        msa_server_url=msa_server_url,
+        msa_pairing_strategy=msa_pairing_strategy,
         msa_server_username=msa_server_username,
         msa_server_password=msa_server_password,
         msa_api_key_header=msa_api_key_header,
@@ -340,7 +359,9 @@ def predict(
     confidence_weights = Path(weights)
     params = load_params(confidence_weights)
     affinity_model_params = None
-    affinity_requested = bool(np.any(feats_np["affinity_token_mask"]))
+    affinity_requested = stop_after != "trunk" and bool(
+        np.any(feats_np["affinity_token_mask"])
+    )
     if affinity_requested:
         affinity_path = (
             Path(affinity_weights)
@@ -392,7 +413,6 @@ def predict(
     padding_plan = None
     if padding is not None or bucket:
         from foldjax.models.boltz2.data.bucket import (
-            pad_feats,
             resolve_legacy_padding_plan,
             resolve_padding_plan,
         )
@@ -402,12 +422,35 @@ def predict(
             if padding is not None
             else resolve_legacy_padding_plan(feats_np)
         )
+    if cp_atom_active:
+        from foldjax.models.boltz2.data.bucket import (
+            align_padding_plan_for_context_parallel,
+        )
+
+        padding_plan = align_padding_plan_for_context_parallel(
+            feats_np,
+            padding_plan,
+            cp_rows=cp_rows,
+            cp_cols=cp_cols,
+        )
+    if padding_plan is not None:
+        from foldjax.models.boltz2.data.bucket import pad_feats
+
         feats_np, _ = pad_feats(
             feats_np,
             padding_plan.target["tokens"],
             padding_plan.target["atoms"],
             target_msa=padding_plan.target["msa"],
         )
+
+    if cp_atom_active:
+        atom_to_token = np.asarray(feats_np["atom_to_token"])
+        atom_valid = np.any(atom_to_token > 0, axis=-1)
+        atom_ids = np.argmax(atom_to_token, axis=-1).astype(np.int32)
+        feats_np["atom_to_token_ids_global"] = np.where(
+            atom_valid, atom_ids, -1
+        ).astype(np.int32)
+        feats_np["atom_to_token_valid"] = atom_valid
 
     feats = {k: jnp.asarray(v) for k, v in feats_np.items()}
     padding_noise_tape = (
@@ -418,7 +461,11 @@ def predict(
             target_atoms=padding_plan.target["atoms"],
             steps=steps,
         )
-        if padding is not None and padding_plan is not None
+        if (
+            stop_after != "trunk"
+            and padding_plan is not None
+            and padding_plan.target["atoms"] > padding_plan.storage["atoms"]
+        )
         else None
     )
     wanted_representations = _representations.resolve(
@@ -440,13 +487,12 @@ def predict(
         "trunk_use_scan": True,
         "score_use_scan": True,
         "multiplicity": diffusion_samples,
+        "atom_context_parallel": cp_atom_active,
         "attention_backend": attention_backend,
         "triangle_backend": (
             # The fused default cannot be partitioned; unset-equivalent
             # resolves to the blocked XLA path under context parallelism.
-            "xla"
-            if cp_devices > 1 and triangle_backend == "cueq"
-            else triangle_backend
+            "xla" if cp_devices > 1 and triangle_backend == "cueq" else triangle_backend
         ),
         "glu_backend": glu_backend,
         "confidence_sequentially": diffusion_samples > 1,
@@ -459,15 +505,11 @@ def predict(
     }
     primary_static = {
         "use_template": predict_kwargs["use_template"],
-        "recompute_nonpolymer_frames": predict_kwargs[
-            "recompute_nonpolymer_frames"
-        ],
+        "recompute_nonpolymer_frames": predict_kwargs["recompute_nonpolymer_frames"],
     }
     if padding_noise_tape is not None:
 
-        def run_model(
-            model_params, model_feats, model_key, init_noise, step_noises
-        ):
+        def run_model(model_params, model_feats, model_key, init_noise, step_noises):
             return boltz2_predict(
                 model_params,
                 model_feats,
@@ -493,20 +535,82 @@ def predict(
         model_args = (params, feats, jax.random.PRNGKey(seed))
 
     from foldjax.models._cp import context_parallel, replicate_tree
+    from foldjax.models._cp_atom import place_atoms
 
     runner = run_model if steering_active else jax.jit(run_model)
     # A tap records a tracer of the graph being built, so the capture set
     # has to be live while the program is traced, not while it runs.
-    with _capture.capturing(wanted_representations), context_parallel(
-        cp_devices, layout=resolved_cp_layout
+    with (
+        _capture.capturing(wanted_representations),
+        context_parallel(cp_devices, layout=resolved_cp_layout),
     ):
         if cp_devices > 1:
-            # A single-device-committed checkpoint fails the multi-device
-            # jit's device-assignment check; everything token-linear is
-            # replicated onto the mesh and the graph's own constraints shard
-            # the pair-shaped state.
-            model_args = replicate_tree(model_args)
+            # Place each semantic input at its production ownership boundary.
+            # Parameters and RNG keys are replicated, pair inputs may use the
+            # pair mesh, and safe Boltz atom features/noise tapes enter already
+            # sharded over CP rows. Dense coupled atom/token maps stay replicated.
+            placed_args = list(model_args)
+            placed_args[0] = replicate_tree(
+                placed_args[0],
+                shard_pair_features=False,
+            )
+            placed_args[1] = replicate_tree(
+                placed_args[1],
+                shard_atom_features=cp_atom_active,
+            )
+            placed_args[2] = replicate_tree(
+                placed_args[2],
+                shard_pair_features=False,
+            )
+            if cp_atom_active and len(placed_args) == 5:
+                placed_args[3] = place_atoms(placed_args[3], atom_axis=-2)
+                placed_args[4] = place_atoms(placed_args[4], atom_axis=-2)
+            model_args = tuple(placed_args)
         out = runner(*model_args)
+    if stop_after == "trunk":
+        # The trunk-only graph intentionally has no sampler or confidence
+        # outputs. Crop captured padded representations before touching any
+        # coordinate field, persist them, and return immediately.
+        from foldjax.models.boltz2.data.bucket import crop_prediction_outputs
+
+        public_tokens = (
+            padding_plan.actual["tokens"]
+            if padding_plan is not None
+            else original_tokens
+        )
+        public_atoms = (
+            padding_plan.actual["atoms"] if padding_plan is not None else original_atoms
+        )
+        public_out = (
+            crop_prediction_outputs(out, public_tokens, public_atoms)
+            if padding_plan is not None
+            else out
+        )
+        destination = (
+            Path(representations_dir)
+            if representations_dir is not None
+            else (Path(out_dir) if out_dir is not None else struct_dir.parent)
+        )
+        archive = _representations.save(
+            destination,
+            {
+                name: public_out[name]
+                for name in wanted_representations
+                if name in public_out
+            },
+            _representations.specs_for("boltz2"),
+            model="boltz2",
+        )
+        result: dict[str, Any] = {
+            "record_id": record_id,
+            "raw": public_out,
+            "representations": archive,
+        }
+        if padding_plan is not None:
+            primary_summary = padding_plan.summary()
+            primary_summary["static"] = primary_static
+            result["padding"] = {"primary": primary_summary}
+        return result
     coords_batched = np.asarray(
         jax.block_until_ready(out["sample_atom_coords"])
     ).reshape(diffusion_samples, -1, 3)
@@ -571,11 +675,7 @@ def predict(
             "recompute_nonpolymer_frames": True,
             "affinity_mw_correction": affinity_mw_correction,
             "use_template": (
-                bool(
-                    np.any(
-                        affinity_feats_np.get("template_mask", np.zeros(1)) != 0
-                    )
-                )
+                bool(np.any(affinity_feats_np.get("template_mask", np.zeros(1)) != 0))
                 if padding is not None
                 else predict_kwargs["use_template"]
             ),
@@ -638,9 +738,7 @@ def predict(
     from foldjax.models.boltz2.data.bucket import crop_prediction_outputs
 
     public_tokens = (
-        padding_plan.actual["tokens"]
-        if padding_plan is not None
-        else original_tokens
+        padding_plan.actual["tokens"] if padding_plan is not None else original_tokens
     )
     public_atoms = (
         padding_plan.actual["atoms"] if padding_plan is not None else original_atoms
@@ -650,46 +748,17 @@ def predict(
         if padding_plan is not None
         else out
     )
-    if stop_after == "trunk":
-        # No coordinates were predicted, so everything below -- cropping,
-        # confidence, the structure writers -- has nothing to work on.
-        destination = (
-            Path(representations_dir)
-            if representations_dir is not None
-            else (Path(out_dir) if out_dir is not None else struct_dir.parent)
-        )
-        archive = _representations.save(
-            destination,
-            {name: public_out[name] for name in wanted_representations
-             if name in public_out},
-            _representations.specs_for("boltz2"),
-            model="boltz2",
-        )
-        return {
-            "record_id": record_id,
-            "raw": public_out,
-            "representations": archive,
-        }
-
     public_coords_batched = (
-        coords_batched[:, :public_atoms]
-        if padding_plan is not None
-        else coords_batched
+        coords_batched[:, :public_atoms] if padding_plan is not None else coords_batched
     )
     public_plddt_batched = (
-        plddt_batched[:, :public_tokens]
-        if padding_plan is not None
-        else plddt_batched
+        plddt_batched[:, :public_tokens] if padding_plan is not None else plddt_batched
     )
     public_coords = (
-        public_coords_batched[0]
-        if diffusion_samples == 1
-        else public_coords_batched
+        public_coords_batched[0] if diffusion_samples == 1 else public_coords_batched
     )
     public_plddt = (
-        public_plddt_batched[0]
-        if diffusion_samples == 1
-        else public_plddt_batched
+        public_plddt_batched[0] if diffusion_samples == 1 else public_plddt_batched
     )
     result: dict[str, Any] = {
         "coords": public_coords,
@@ -707,11 +776,7 @@ def predict(
             padding_summary["affinity"] = affinity_summary
         result["padding"] = padding_summary
     result.update(
-        {
-            key: value
-            for key, value in public_out.items()
-            if key.startswith("affinity_")
-        }
+        {key: value for key, value in public_out.items() if key.startswith("affinity_")}
     )
     if wanted_representations:
         destination = (

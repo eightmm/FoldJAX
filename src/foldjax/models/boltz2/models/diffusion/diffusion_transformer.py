@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_layout, shard_pair_rows, shard_single
+from foldjax.models._cp_atom import pair_bias_attention_2d
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.primitives.attention_backend import (
@@ -166,6 +168,7 @@ def diffusion_transformer_layer_apply(
         inf=inf,
         attention_backend=attention_backend,
         chunk_size=chunk_size,
+        distributed_pair_bias=to_keys is None,
     )
     b = attn_gate * b
 
@@ -189,6 +192,7 @@ def _attention_pair_bias_no_proj_z_forward(
     inf: float,
     attention_backend: str = "xla",
     chunk_size: int | None = None,
+    distributed_pair_bias: bool = True,
 ) -> jnp.ndarray:
     batch, _, c_s = s.shape
     num_heads = bias.shape[-1]
@@ -215,7 +219,22 @@ def _attention_pair_bias_no_proj_z_forward(
 
     bias = jnp.transpose(bias, (0, 3, 1, 2))
     bias = jnp.repeat(bias, multiplicity, axis=0)
-    if attention_backend in ("tokamax", "flash"):
+    if distributed_pair_bias and cp_layout() == "2d":
+        q = shard_single(q, token_axis=1)
+        k = shard_single(k, token_axis=1)
+        v = shard_single(v, token_axis=1)
+        mask = shard_single(mask, token_axis=1)
+        bias = shard_pair_rows(bias, row_axis=-2, col_axis=-1)
+        out = pair_bias_attention_2d(
+            q,
+            k,
+            v,
+            bias,
+            mask,
+            scale=float(head_dim) ** -0.5,
+            inf=inf,
+        )
+    elif attention_backend in ("tokamax", "flash"):
         out = tokamax_dot_product_attention(
             q,
             k,

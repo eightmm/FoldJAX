@@ -227,7 +227,7 @@ def main(
         default="auto",
         help="how the pair axes are split: '2d' is Fold-CP's square grid "
         "(needs a square device count), '1d' splits rows only, 'auto' picks "
-        "2d when the device count is a perfect square.",
+        "2d only when requested explicitly; 'auto' currently selects 1d.",
     )
     parser.add_argument("--include-trunk", action="store_true")
     parser.add_argument(
