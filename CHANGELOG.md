@@ -223,6 +223,39 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3 predicted nothing at all.** Every OpenFold3 run raised
+  `TypeError: released_config() got an unexpected keyword argument
+  'returned_representations'` before the model was reached, with no option
+  needed to trigger it and through both `foldjax predict --model openfold3`
+  and `openfold3-jax-predict`. The backend passed the trunk-representation
+  request into a constructor that had never been given the two parameters,
+  though `InferenceConfig` carried both fields already. Weights are
+  access-gated, so no test that runs a prediction could have caught it; the
+  gate that now does reads the two sources and asserts every key one passes is
+  a parameter the other accepts.
+- **A run that stopped at the trunk still tried to write a structure.** The
+  trunk graph returns before the sampler, so there are no coordinates:
+  OpenFold3 raised `IndexError` reading an empty coordinate shape and ESMFold2
+  raised `KeyError: 'sample_atom_coords'`. Both are backends that write
+  structures themselves rather than delegating to their model's command line,
+  and both are now fixed -- ESMFold2 had the branch but below the writer, which
+  is the same as not having it, so the new gate checks the order and not just
+  the presence.
+- **The square context-parallel grid was unreachable for OpenDDE through the
+  common option.** `opendde-jax-predict --cp-layout 2d` ran while `foldjax
+  --model opendde --option cp_layout=2d` was refused as an unsupported option,
+  because the backend's option set was missing the entry the other three
+  two-dimensional models had.
+- **A representation archive disagreed with its own manifest.** Boltz-2,
+  OpenFold3 and ESMFold2 wrote a leading batch axis of one, so `shape` carried
+  four numbers beside three names in `axes`, while Protenix and OpenDDE wrote
+  three of each -- one feature with two contracts, in the file a consumer reads
+  to learn what it is holding. Arrays are now conformed to the axes their spec
+  names, and an array that is not its spec is refused rather than written under
+  a description that does not fit it.
+- `python -m foldjax.cli` runs the command line. It used to import the module,
+  define `main`, call nothing, and exit 0 with no output, which reads as a
+  prediction that produced nothing rather than as a command that never ran.
 - Ctrl-C ends a run with one line and exit code 130 instead of a traceback
   through FoldJAX's internals.
 - A read-only output directory, a full disk and other `OSError`s are reported
