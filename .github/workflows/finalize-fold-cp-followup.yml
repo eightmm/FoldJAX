@@ -6,6 +6,11 @@ on:
     paths:
       - tools/finalize_fold_cp_followup.py
       - .github/workflows/finalize-fold-cp-followup.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - tools/finalize_fold_cp_followup.py
+      - .github/workflows/finalize-fold-cp-followup.yml
   workflow_dispatch:
 
 permissions:
