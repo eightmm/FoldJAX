@@ -1,8 +1,8 @@
 """One-shot patch hook for the Fold-CP atom finalizer.
 
-The finalizer imports ``textwrap`` from its own directory.  This temporary
-module applies two fixes before delegating every public name to the standard
-library module, then deletes itself so a successful validation commit contains
+The finalizer imports ``textwrap`` from its own directory. This temporary
+module applies numerical fixes before delegating every public name to the
+standard library module, then deletes itself so the validated commit contains
 no import shim.
 """
 
@@ -60,10 +60,6 @@ _replacement = '''    def local_ring(q_l, k_l, v_l, bias_l, mask_l):
         value_initial = permute(v_l, diagonal_init)
         mask_initial = permute(mask_l, diagonal_init)
 
-        # First obtain one fixed global row maximum over all resident key
-        # tiles. The second ring then accumulates exp(score - maximum), which
-        # avoids repeated online rescaling and its fp32 ordering drift on 3x3
-        # and larger meshes.
         maximum = jnp.full(
             q_l.shape[:-1] + (1,),
             -jnp.inf,
@@ -164,6 +160,47 @@ _replacement = '''    def local_ring(q_l, k_l, v_l, bias_l, mask_l):
 _attention_path.write_text(
     _attention_text[:_start] + _replacement + _attention_text[_end:]
 )
+
+
+_triangle_path = (
+    _ROOT / "src/foldjax/models/boltz2/models/triangle/triangle.py"
+)
+_triangle_text = _triangle_path.read_text()
+_triangle_old = '''        total = jnp.zeros(
+            lhs.shape[:2] + rhs.shape[2:3] + lhs.shape[3:], dtype=jnp.float32
+        )
+        for step in range(side):
+            total = total + jnp.einsum(
+                "bikd,bkjd->bijd", lhs, rhs, preferred_element_type=jnp.float32
+            )
+            if step + 1 < side:
+                lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
+                rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
+        return total
+'''
+_triangle_new = '''        total = jnp.zeros(
+            lhs.shape[:2] + rhs.shape[2:3] + lhs.shape[3:], dtype=jnp.float32
+        )
+        correction = jnp.zeros_like(total)
+        for step in range(side):
+            term = jnp.einsum(
+                "bikd,bkjd->bijd", lhs, rhs, preferred_element_type=jnp.float32
+            )
+            updated = total + term
+            correction = correction + jnp.where(
+                jnp.abs(total) >= jnp.abs(term),
+                (total - updated) + term,
+                (term - updated) + total,
+            )
+            total = updated
+            if step + 1 < side:
+                lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
+                rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
+        return total + correction
+'''
+if _triangle_old not in _triangle_text:
+    raise RuntimeError("Cannon accumulation block was not found")
+_triangle_path.write_text(_triangle_text.replace(_triangle_old, _triangle_new, 1))
 
 # The loaded module remains usable after unlinking; deletion is intentionally
 # visible to git so the validated finalizer commit removes this temporary hook.
