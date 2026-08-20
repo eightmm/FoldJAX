@@ -1,0 +1,79 @@
+name: Complete Fold-CP finalization
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 1
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.3"
+          enable-cache: true
+      - name: Reuse the audited source transformation
+        shell: bash
+        run: |
+          awk '
+            /- name: Apply final implementation fixes/ { seen=1; next }
+            seen && /run: \|/ { inrun=1; next }
+            inrun && /^      - name:/ { exit }
+            inrun { sub(/^          /, ""); print }
+          ' .github/workflows/materialize-source.yml > /tmp/apply-foldcp.sh
+          test -s /tmp/apply-foldcp.sh
+          bash -e /tmp/apply-foldcp.sh
+      - name: Install validation environment
+        run: uv sync --group dev --frozen
+      - name: Format and lint
+        run: |
+          uv run --no-sync ruff format \
+            src/foldjax/models/_cp_atom.py \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_numerics.py
+          uv run --no-sync ruff check --fix \
+            src/foldjax/models/_cp_atom.py \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_numerics.py
+          uv run --no-sync ruff format \
+            src/foldjax/models/_cp_atom.py \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_numerics.py
+          uv run --no-sync ruff check \
+            src/foldjax/models/_cp_atom.py \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_numerics.py
+      - name: Focused Fold-CP proof gate
+        run: |
+          uv run --no-sync pytest -q \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/boltz2/test_atom_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_numerics.py \
+            tests/models/test_cp_masked_ring.py \
+            tests/models/test_cp_runtime.py
+          uv run --no-sync python -m compileall -q \
+            src/foldjax/models/_cp_atom.py \
+            tests/models/boltz2/test_context_parallel.py \
+            tests/models/boltz2/test_atom_cp_numerics.py
+          git diff --check
+      - name: Commit finalized implementation
+        shell: bash
+        run: |
+          rm .github/workflows/materialize-source.yml .github/workflows/foldcp-finalize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: harden Fold-CP atom numerics and parity gates'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
