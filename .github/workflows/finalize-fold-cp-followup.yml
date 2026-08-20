@@ -7,6 +7,7 @@ on:
       - tools/finalize_fold_cp_followup.py
       - tools/finalize_fold_cp_precision.py
       - tools/finalize_fold_cp_cannon.py
+      - tools/probe_fold_cp_stages.py
       - .github/workflows/finalize-fold-cp-followup.yml
   pull_request:
     branches: [main]
@@ -14,6 +15,7 @@ on:
       - tools/finalize_fold_cp_followup.py
       - tools/finalize_fold_cp_precision.py
       - tools/finalize_fold_cp_cannon.py
+      - tools/probe_fold_cp_stages.py
       - .github/workflows/finalize-fold-cp-followup.yml
   workflow_dispatch:
 
@@ -90,6 +92,7 @@ jobs:
               src/foldjax/models/boltz2/models/triangle/triangle.py \
               src/foldjax/models/protenix/models/triangle/triangle.py
             git diff --check
+            uv run --no-sync python tools/probe_fold_cp_stages.py
             uv run --no-sync pytest -q \
               tests/models/test_cp_runtime.py \
               tests/models/test_cp_ring_attention.py \
@@ -116,6 +119,7 @@ jobs:
           rm -f tools/finalize_fold_cp_followup.py
           rm -f tools/finalize_fold_cp_precision.py
           rm -f tools/finalize_fold_cp_cannon.py
+          rm -f tools/probe_fold_cp_stages.py
           rm -f .github/workflows/finalize-fold-cp-followup.yml
           rm -f foldcp_finalize_failure.log
           git config user.name "github-actions[bot]"
