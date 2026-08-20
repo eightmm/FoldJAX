@@ -1,0 +1,23 @@
+name: Materialize FoldJAX source
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack source tree
+        run: tar --exclude=.git -czf /tmp/foldjax-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foldjax-source-${{ github.sha }}
+          path: /tmp/foldjax-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
