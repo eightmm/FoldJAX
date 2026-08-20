@@ -81,6 +81,16 @@ jobs:
           path.write_text(text.replace(method_old, method_new, 1))
           PY
           python tools/finalize_fold_cp_atom.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/models/boltz2/test_atom_context_parallel.py')
+          text = path.read_text()
+          old = '''    np.testing.assert_allclose(scatter_ref, jax.device_get(scatter_out), atol=2e-6, rtol=2e-6)\n'''
+          new = '''    np.testing.assert_allclose(\n        scatter_ref,\n        jax.device_get(scatter_out),\n        atol=2e-6,\n        rtol=2e-6,\n    )\n'''
+          if old not in text:
+              raise SystemExit('generated scatter assertion was not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Install uv and test environment
         uses: astral-sh/setup-uv@v5
