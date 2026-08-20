@@ -294,16 +294,41 @@ def ring_triangle_attention_2d(
         v_l = permute(v_l, diagonal_init)
         mask_l = permute(mask_l, diagonal_init)
 
+        # Pass 1 fixes one global row maximum before any exponentials are
+        # accumulated. Rotating K/bias/mask through a complete cycle returns
+        # every tile to its initial owner, so pass 2 needs no saved full-width
+        # operand and the per-device memory remains O(N^2 / P).
         maximum = jnp.full(
             q_l.shape[:-1] + (1,),
             -jnp.inf,
             dtype=jnp.float32,
         )
+        for _ in range(side):
+            scores = jnp.matmul(
+                q_l.astype(jnp.float32),
+                jnp.swapaxes(k_l.astype(jnp.float32), -1, -2),
+                precision=precision,
+            )
+            scores = scores + bias_l.astype(jnp.float32) + mask_l.astype(jnp.float32)
+            maximum = jnp.maximum(
+                maximum,
+                jnp.max(scores, axis=-1, keepdims=True),
+            )
+            # A full cycle restores the initial tile ownership. V is not used
+            # in the max pass and therefore stays at its initial owner.
+            k_l = permute(k_l, kv_hop)
+            mask_l = permute(mask_l, kv_hop)
+            bias_l = permute(bias_l, bias_hop)
+
         normalizer = jnp.zeros_like(maximum)
         normalizer_correction = jnp.zeros_like(maximum)
         output = jnp.zeros(q_l.shape, dtype=jnp.float32)
         output_correction = jnp.zeros_like(output)
 
+        # Pass 2 evaluates every tile against the same maximum and combines
+        # tile-local numerator/denominator terms with Neumaier compensation.
+        # This removes the repeated online-rescaling error that becomes visible
+        # after a 3x3 Pairformer stack while preserving the gather-free ring.
         for step in range(side):
             scores = jnp.matmul(
                 q_l.astype(jnp.float32),
@@ -311,15 +336,11 @@ def ring_triangle_attention_2d(
                 precision=precision,
             )
             scores = scores + bias_l.astype(jnp.float32) + mask_l.astype(jnp.float32)
-            block_maximum = jnp.max(scores, axis=-1, keepdims=True)
-            next_maximum = jnp.maximum(maximum, block_maximum)
-            previous_scale = _softmax_rescale(maximum, next_maximum)
-
-            finite_maximum = jnp.isfinite(next_maximum)
-            positive_infinity = jnp.isposinf(next_maximum)
+            finite_maximum = jnp.isfinite(maximum)
+            positive_infinity = jnp.isposinf(maximum)
             shifted = jnp.where(
                 finite_maximum,
-                scores - next_maximum,
+                scores - maximum,
                 -jnp.inf,
             )
             probabilities = jnp.where(
@@ -337,22 +358,16 @@ def ring_triangle_attention_2d(
                 v_l.astype(jnp.float32),
                 precision=precision,
             )
-
-            output = previous_scale * output
-            output_correction = previous_scale * output_correction
             output, output_correction = _compensated_add(
                 output,
                 output_correction,
                 block_output,
             )
-            normalizer = previous_scale * normalizer
-            normalizer_correction = previous_scale * normalizer_correction
             normalizer, normalizer_correction = _compensated_add(
                 normalizer,
                 normalizer_correction,
                 block_normalizer,
             )
-            maximum = next_maximum
 
             if step + 1 < side:
                 k_l = permute(k_l, kv_hop)

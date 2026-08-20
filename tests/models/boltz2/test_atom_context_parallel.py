@@ -33,13 +33,15 @@ _HALO_PROBE = textwrap.dedent(
     import numpy as np
 
     from foldjax.models._cp import context_parallel
-    from foldjax.models._cp_atom import single_to_keys_cp
+    from foldjax.models._cp_atom import place_atoms, single_to_keys_cp
 
     assert jax.device_count() == 4
     rng = np.random.default_rng(20260820)
     x = jnp.asarray(rng.normal(size=(2, 256, 3)), dtype=jnp.float32)
     reference = jax.device_get(single_to_keys_cp(x, query_window=32, key_window=128))
     with context_parallel(4, layout="2d"):
+        x_distributed = place_atoms(x, atom_axis=1)
+        assert x_distributed.sharding.shard_shape(x.shape) == (2, 128, 3)
         compiled = jax.jit(
             lambda value: single_to_keys_cp(
                 value,
@@ -47,9 +49,11 @@ _HALO_PROBE = textwrap.dedent(
                 key_window=128,
             )
         )
-        out = compiled(x)
+        out = compiled(x_distributed)
         got = jax.device_get(out)
-        hlo = compiled.lower(x).compiler_ir(dialect="hlo").as_hlo_text().lower()
+        hlo = compiled.lower(x_distributed).compiler_ir(
+            dialect="hlo"
+        ).as_hlo_text().lower()
     np.testing.assert_array_equal(reference, got)
     assert "collective-permute" in hlo or "collective_permute" in hlo, hlo
     assert "all-gather" not in hlo and "all_gather" not in hlo, hlo

@@ -443,6 +443,10 @@ def pad_feats(
 
 
 _TOKEN_OUTPUT_AXES: dict[str, tuple[int, ...]] = {
+    # Optional trunk captures use the same padded token axes as the model.
+    "single_inputs": (1,),
+    "single": (1,),
+    "pair": (1, 2),
     "plddt": (1,),
     "plddt_logits": (1,),
     "resolved_logits": (1,),

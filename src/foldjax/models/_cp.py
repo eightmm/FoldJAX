@@ -46,6 +46,28 @@ PAIR_FEATURE_NAMES = frozenset(
 )
 
 
+#: Boltz-2 atom features that are linear in the atom count and may enter an
+#: atom-window CP program already sharded over CP rows. Coupled atom/token
+#: matrices are deliberately absent: they need a model-specific sparse
+#: contract rather than independent axis sharding.
+ATOM_FEATURE_AXES: dict[str, int] = {
+    "atom_backbone_feat": 1,
+    "atom_pad_mask": 1,
+    "atom_resolved_mask": 1,
+    "atom_to_token_ids_global": 1,
+    "atom_to_token_valid": 1,
+    "bfactor": 1,
+    "coords": 2,
+    "plddt": 1,
+    "ref_atom_name_chars": 1,
+    "ref_charge": 1,
+    "ref_chirality": 1,
+    "ref_element": 1,
+    "ref_pos": 1,
+    "ref_space_uid": 1,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class CPRuntime:
     """Immutable identity of one active context-parallel program."""
@@ -410,23 +432,47 @@ def _axes_divide_mesh(
     return True
 
 
-def feature_spec(name: str, value: Any) -> PartitionSpec | None:
-    """Return a safe entry sharding for one known input feature.
+def _atom_spec_for_feature(name: str, value: Any) -> PartitionSpec | None:
+    """Return entry sharding for one explicitly safe linear atom feature."""
 
-    Uneven inputs stay replicated.  Model-level padding may later create a
-    divisible pair state, but entry placement must never ask JAX to construct
-    unequal device buffers.
+    if not _is_movable_array(value):
+        return None
+    atom_axis = ATOM_FEATURE_AXES.get(name)
+    if atom_axis is None:
+        return None
+    resolved = _resolve_axis(atom_axis, value.ndim, what="atom axis")
+    shape = tuple(int(size) for size in value.shape)
+    if shape[resolved] <= 0 or shape[resolved] % cp_row_shards():
+        return None
+    entries: list[str | None] = [None] * value.ndim
+    entries[resolved] = CP_ROW_AXIS if cp_layout() == "2d" else CP_AXIS
+    return PartitionSpec(*entries)
+
+
+def feature_spec(
+    name: str,
+    value: Any,
+    *,
+    shard_atom_features: bool = False,
+) -> PartitionSpec | None:
+    """Return a safe semantic entry sharding for one known input feature.
+
+    Uneven inputs stay replicated. Pair features use both mesh axes when the
+    layout is two-dimensional. Linear atom features are only considered when
+    the caller explicitly enables the Boltz-2 atom-window contract; coupled
+    atom/token matrices remain replicated.
     """
 
     if cp_mesh() is None:
         return None
     axes = _pair_axes_for_feature(name, value)
-    if axes is None:
-        return None
-    shape = tuple(int(size) for size in value.shape)
-    if not _axes_divide_mesh(shape, *axes):
-        return None
-    return pair_spec(value.ndim, row_axis=axes[0], col_axis=axes[1])
+    if axes is not None:
+        shape = tuple(int(size) for size in value.shape)
+        if _axes_divide_mesh(shape, *axes):
+            return pair_spec(value.ndim, row_axis=axes[0], col_axis=axes[1])
+    if shard_atom_features:
+        return _atom_spec_for_feature(name, value)
+    return None
 
 
 def _replicated_sharding() -> NamedSharding:
@@ -457,39 +503,68 @@ def _rebuild_mapping(original: Mapping[Any, Any], values: dict[Any, Any]) -> Any
         return values
 
 
-def _place_tree(node: Any, *, shard_pair_features: bool) -> Any:
+def _place_tree(
+    node: Any,
+    *,
+    shard_pair_features: bool,
+    shard_atom_features: bool,
+) -> Any:
     if isinstance(node, Mapping):
         placed: dict[Any, Any] = {}
         for key, value in node.items():
             spec = (
-                feature_spec(str(key), value)
-                if shard_pair_features and isinstance(key, str)
+                feature_spec(
+                    str(key),
+                    value,
+                    shard_atom_features=shard_atom_features,
+                )
+                if isinstance(key, str) and (shard_pair_features or shard_atom_features)
                 else None
             )
             if spec is not None:
-                placed[key] = _place_leaf(value, spec=spec)
-            else:
-                placed[key] = _place_tree(
-                    value,
-                    shard_pair_features=shard_pair_features,
-                )
+                # Do not place a pair feature when only atom entry sharding was
+                # requested, or vice versa. The semantic registry is explicit
+                # so this remains a local decision rather than a shape guess.
+                is_pair = _pair_axes_for_feature(str(key), value) is not None
+                if (is_pair and shard_pair_features) or (
+                    not is_pair and shard_atom_features
+                ):
+                    placed[key] = _place_leaf(value, spec=spec)
+                    continue
+            placed[key] = _place_tree(
+                value,
+                shard_pair_features=shard_pair_features,
+                shard_atom_features=shard_atom_features,
+            )
         return _rebuild_mapping(node, placed)
 
     if isinstance(node, tuple) and hasattr(node, "_fields"):
         return type(node)(
             *(
-                _place_tree(value, shard_pair_features=shard_pair_features)
+                _place_tree(
+                    value,
+                    shard_pair_features=shard_pair_features,
+                    shard_atom_features=shard_atom_features,
+                )
                 for value in node
             )
         )
     if isinstance(node, tuple):
         return tuple(
-            _place_tree(value, shard_pair_features=shard_pair_features)
+            _place_tree(
+                value,
+                shard_pair_features=shard_pair_features,
+                shard_atom_features=shard_atom_features,
+            )
             for value in node
         )
     if isinstance(node, list):
         return [
-            _place_tree(value, shard_pair_features=shard_pair_features)
+            _place_tree(
+                value,
+                shard_pair_features=shard_pair_features,
+                shard_atom_features=shard_atom_features,
+            )
             for value in node
         ]
 
@@ -510,18 +585,28 @@ def _place_tree(node: Any, *, shard_pair_features: bool) -> Any:
     )
 
 
-def replicate_tree(tree: Any, *, shard_pair_features: bool = True) -> Any:
-    """Place a pytree on the active mesh.
+def replicate_tree(
+    tree: Any,
+    *,
+    shard_pair_features: bool = True,
+    shard_atom_features: bool = False,
+) -> Any:
+    """Place a pytree on the active mesh using explicit semantic registries.
 
-    Parameters and all unrecognised inputs are replicated, preserving the old
-    contract.  Exact, whitelisted pair features are placed directly on the
-    pair mesh when their axes divide evenly.  Atom and single-stream features
-    remain replicated; this function never invents an atom-window CP contract.
+    Parameters and all unrecognised inputs are replicated. Exact, whitelisted
+    pair features are placed on the pair mesh when divisible. Linear atom
+    features are placed over CP rows only when ``shard_atom_features=True``;
+    the default is false so Protenix, OpenDDE and OpenFold3 keep their current
+    pair-only contract. Coupled dense atom/token maps are never independently
+    sharded here.
 
-    Pass ``shard_pair_features=False`` for strict historical replication.
     Identity when no mesh is active.
     """
 
     if cp_mesh() is None:
         return tree
-    return _place_tree(tree, shard_pair_features=shard_pair_features)
+    return _place_tree(
+        tree,
+        shard_pair_features=shard_pair_features,
+        shard_atom_features=shard_atom_features,
+    )

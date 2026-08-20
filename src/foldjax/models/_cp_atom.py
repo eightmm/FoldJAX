@@ -82,6 +82,30 @@ def shard_atoms(array: jax.Array, *, atom_axis: int = -2) -> jax.Array:
     )
 
 
+def place_atoms(array: jax.Array, *, atom_axis: int = -2) -> jax.Array:
+    """Place a host/replicated atom array directly on CP-row shards.
+
+    Unlike :func:`shard_atoms`, which constrains an array inside a traced graph,
+    this is an entry-placement operation. It is used for precomputed diffusion
+    noise tapes so a large ``[steps, samples, atoms, 3]`` input is never first
+    copied in full to every device.
+    """
+
+    mesh = cp_mesh()
+    if mesh is None:
+        return array
+    resolved = _resolve_axis(atom_axis, array.ndim, name="atom axis")
+    if array.shape[resolved] % cp_row_shards():
+        raise ValueError(
+            f"atom axis {array.shape[resolved]} is not divisible by "
+            f"{cp_row_shards()} CP row shards"
+        )
+    return jax.device_put(
+        array,
+        NamedSharding(mesh, atom_spec(array.ndim, atom_axis=atom_axis)),
+    )
+
+
 def replicate_atoms(array: jax.Array) -> jax.Array:
     """Replicate a linear atom result explicitly at a post-CP boundary."""
 

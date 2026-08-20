@@ -50,6 +50,27 @@ _PROBE = textwrap.dedent(
         assert placed["odd"].sharding.shard_shape(odd.shape) == odd.shape
         assert feature_spec("relp", odd) is None
 
+        atom_map = jnp.zeros((1, 8, 8), dtype=jnp.float32)
+        coords = jnp.zeros((1, 2, 8, 3), dtype=jnp.float32)
+        atom_placed = replicate_tree(
+            {
+                "ref_pos": atom,
+                "coords": coords,
+                "atom_to_token": atom_map,
+            },
+            shard_atom_features=True,
+        )
+        assert atom_placed["ref_pos"].sharding.shard_shape(atom.shape) == (1, 4, 3)
+        assert atom_placed["coords"].sharding.shard_shape(coords.shape) == (1, 2, 4, 3)
+        # Coupled dense atom/token maps have no generic independent sharding.
+        assert (
+            atom_placed["atom_to_token"].sharding.shard_shape(atom_map.shape)
+            == atom_map.shape
+        )
+        assert feature_spec(
+            "ref_pos", atom, shard_atom_features=True
+        ) is not None
+
         strict = replicate_tree(
             {"relp": relp},
             shard_pair_features=False,

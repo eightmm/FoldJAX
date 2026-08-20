@@ -359,7 +359,9 @@ def predict(
     confidence_weights = Path(weights)
     params = load_params(confidence_weights)
     affinity_model_params = None
-    affinity_requested = bool(np.any(feats_np["affinity_token_mask"]))
+    affinity_requested = stop_after != "trunk" and bool(
+        np.any(feats_np["affinity_token_mask"])
+    )
     if affinity_requested:
         affinity_path = (
             Path(affinity_weights)
@@ -460,7 +462,8 @@ def predict(
             steps=steps,
         )
         if (
-            padding_plan is not None
+            stop_after != "trunk"
+            and padding_plan is not None
             and padding_plan.target["atoms"] > padding_plan.storage["atoms"]
         )
         else None
@@ -532,6 +535,7 @@ def predict(
         model_args = (params, feats, jax.random.PRNGKey(seed))
 
     from foldjax.models._cp import context_parallel, replicate_tree
+    from foldjax.models._cp_atom import place_atoms
 
     runner = run_model if steering_active else jax.jit(run_model)
     # A tap records a tracer of the graph being built, so the capture set
@@ -541,12 +545,72 @@ def predict(
         context_parallel(cp_devices, layout=resolved_cp_layout),
     ):
         if cp_devices > 1:
-            # A single-device-committed checkpoint fails the multi-device
-            # jit's device-assignment check; everything token-linear is
-            # replicated onto the mesh and the graph's own constraints shard
-            # the pair-shaped state.
-            model_args = replicate_tree(model_args)
+            # Place each semantic input at its production ownership boundary.
+            # Parameters and RNG keys are replicated, pair inputs may use the
+            # pair mesh, and safe Boltz atom features/noise tapes enter already
+            # sharded over CP rows. Dense coupled atom/token maps stay replicated.
+            placed_args = list(model_args)
+            placed_args[0] = replicate_tree(
+                placed_args[0],
+                shard_pair_features=False,
+            )
+            placed_args[1] = replicate_tree(
+                placed_args[1],
+                shard_atom_features=cp_atom_active,
+            )
+            placed_args[2] = replicate_tree(
+                placed_args[2],
+                shard_pair_features=False,
+            )
+            if cp_atom_active and len(placed_args) == 5:
+                placed_args[3] = place_atoms(placed_args[3], atom_axis=-2)
+                placed_args[4] = place_atoms(placed_args[4], atom_axis=-2)
+            model_args = tuple(placed_args)
         out = runner(*model_args)
+    if stop_after == "trunk":
+        # The trunk-only graph intentionally has no sampler or confidence
+        # outputs. Crop captured padded representations before touching any
+        # coordinate field, persist them, and return immediately.
+        from foldjax.models.boltz2.data.bucket import crop_prediction_outputs
+
+        public_tokens = (
+            padding_plan.actual["tokens"]
+            if padding_plan is not None
+            else original_tokens
+        )
+        public_atoms = (
+            padding_plan.actual["atoms"] if padding_plan is not None else original_atoms
+        )
+        public_out = (
+            crop_prediction_outputs(out, public_tokens, public_atoms)
+            if padding_plan is not None
+            else out
+        )
+        destination = (
+            Path(representations_dir)
+            if representations_dir is not None
+            else (Path(out_dir) if out_dir is not None else struct_dir.parent)
+        )
+        archive = _representations.save(
+            destination,
+            {
+                name: public_out[name]
+                for name in wanted_representations
+                if name in public_out
+            },
+            _representations.specs_for("boltz2"),
+            model="boltz2",
+        )
+        result: dict[str, Any] = {
+            "record_id": record_id,
+            "raw": public_out,
+            "representations": archive,
+        }
+        if padding_plan is not None:
+            primary_summary = padding_plan.summary()
+            primary_summary["static"] = primary_static
+            result["padding"] = {"primary": primary_summary}
+        return result
     coords_batched = np.asarray(
         jax.block_until_ready(out["sample_atom_coords"])
     ).reshape(diffusion_samples, -1, 3)
@@ -684,30 +748,6 @@ def predict(
         if padding_plan is not None
         else out
     )
-    if stop_after == "trunk":
-        # No coordinates were predicted, so everything below -- cropping,
-        # confidence, the structure writers -- has nothing to work on.
-        destination = (
-            Path(representations_dir)
-            if representations_dir is not None
-            else (Path(out_dir) if out_dir is not None else struct_dir.parent)
-        )
-        archive = _representations.save(
-            destination,
-            {
-                name: public_out[name]
-                for name in wanted_representations
-                if name in public_out
-            },
-            _representations.specs_for("boltz2"),
-            model="boltz2",
-        )
-        return {
-            "record_id": record_id,
-            "raw": public_out,
-            "representations": archive,
-        }
-
     public_coords_batched = (
         coords_batched[:, :public_atoms] if padding_plan is not None else coords_batched
     )

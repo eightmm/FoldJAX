@@ -305,14 +305,21 @@ def _cannon_contract(
         rows = lhs.shape[1] if direction == "incoming" else lhs.shape[0]
         cols = rhs.shape[1] if direction == "incoming" else rhs.shape[0]
         total = jnp.zeros((rows, cols) + lhs.shape[2:], dtype=jnp.float32)
+        correction = jnp.zeros_like(total)
         for step in range(side):
-            total = total + jnp.einsum(
-                equation, lhs, rhs, preferred_element_type=jnp.float32
+            partial = jnp.einsum(equation, lhs, rhs, preferred_element_type=jnp.float32)
+            updated = total + partial
+            residual = jnp.where(
+                jnp.abs(total) >= jnp.abs(partial),
+                (total - updated) + partial,
+                (partial - updated) + total,
             )
+            total = updated
+            correction = correction + residual
             if step + 1 < side:
                 lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
                 rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
-        return total
+        return total + correction
 
     out = jax.shard_map(body, mesh=mesh, in_specs=(spec, spec), out_specs=spec)(a, b)
     if pad:
