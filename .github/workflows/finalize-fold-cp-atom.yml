@@ -61,7 +61,24 @@ jobs:
           '''
           if old not in text:
               raise SystemExit('staged scan/eager patch block was not found')
-          path.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+
+          method_old = '''replace_in_function(
+              "src/foldjax/backends/boltz2.py",
+              "validate_native_options",
+              \'''            "affinity_mw_correction",\\n            "bucket",\\n\''',
+              \'''            "affinity_mw_correction",\\n            "bucket",\\n            "cp_atom_windows",\\n\''',
+          )
+          '''
+          method_new = '''replace_once(
+              "src/foldjax/backends/boltz2.py",
+              \'''            "affinity_mw_correction",\\n            "bucket",\\n\''',
+              \'''            "affinity_mw_correction",\\n            "bucket",\\n            "cp_atom_windows",\\n\''',
+          )
+          '''
+          if method_old not in text:
+              raise SystemExit('backend method patch block was not found')
+          path.write_text(text.replace(method_old, method_new, 1))
           PY
           python tools/finalize_fold_cp_atom.py
 
