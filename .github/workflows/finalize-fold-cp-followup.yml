@@ -6,13 +6,14 @@ on:
     paths:
       - tools/finalize_fold_cp_followup.py
       - .github/workflows/finalize-fold-cp-followup.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
   group: finalize-fold-cp-followup
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   JAX_PLATFORMS: cpu
@@ -28,9 +29,6 @@ jobs:
           ref: agent/fold-cp-jax-complete
           fetch-depth: 0
 
-      - name: Apply final runtime fixes
-        run: python tools/finalize_fold_cp_followup.py
-
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -40,52 +38,75 @@ jobs:
       - name: Install test environment
         run: uv sync --group dev --frozen
 
-      - name: Format and lint changed code
+      - name: Apply, format, and run strict proof gates
+        id: proof
+        shell: bash
         run: |
-          uv run --no-sync ruff format \
-            src/foldjax/models/_cp.py \
-            src/foldjax/models/_cp_atom.py \
-            src/foldjax/models/boltz2/api.py \
-            src/foldjax/models/boltz2/data/bucket.py \
-            tests/models/test_cp_runtime.py \
-            tests/models/boltz2/test_atom_context_parallel.py \
-            tests/models/boltz2/test_api.py
-          uv run --no-sync ruff check --fix \
-            src/foldjax/models/_cp.py \
-            src/foldjax/models/_cp_atom.py \
-            src/foldjax/models/boltz2/api.py \
-            src/foldjax/models/boltz2/data/bucket.py \
-            tests/models/test_cp_runtime.py \
-            tests/models/boltz2/test_atom_context_parallel.py \
-            tests/models/boltz2/test_api.py
-          python -m compileall -q \
-            src/foldjax/models/_cp.py \
-            src/foldjax/models/_cp_atom.py \
-            src/foldjax/models/boltz2/api.py \
-            src/foldjax/models/boltz2/data/bucket.py
-          git diff --check
-
-      - name: Run strict Fold-CP proof gates
-        run: |
-          uv run --no-sync pytest -q \
-            tests/models/test_cp_runtime.py \
-            tests/models/test_cp_ring_attention.py \
-            tests/models/test_cp_masked_ring.py \
-            tests/models/boltz2/test_context_parallel.py \
-            tests/models/boltz2/test_atom_context_parallel.py \
-            tests/models/boltz2/test_atom_cp_padding.py \
-            tests/models/boltz2/test_api.py \
-            tests/models/protenix/test_context_parallel.py \
-            tests/models/opendde/test_context_parallel.py \
-            tests/models/openfold3/test_context_parallel.py \
-            tests/models/esmfold2/test_context_parallel.py
+          set +e
+          log=/tmp/foldcp-finalize.log
+          {
+            set -x
+            python tools/finalize_fold_cp_followup.py
+            uv run --no-sync ruff format \
+              src/foldjax/models/_cp.py \
+              src/foldjax/models/_cp_atom.py \
+              src/foldjax/models/boltz2/api.py \
+              src/foldjax/models/boltz2/data/bucket.py \
+              tests/models/test_cp_runtime.py \
+              tests/models/boltz2/test_atom_context_parallel.py \
+              tests/models/boltz2/test_api.py
+            uv run --no-sync ruff check --fix \
+              src/foldjax/models/_cp.py \
+              src/foldjax/models/_cp_atom.py \
+              src/foldjax/models/boltz2/api.py \
+              src/foldjax/models/boltz2/data/bucket.py \
+              tests/models/test_cp_runtime.py \
+              tests/models/boltz2/test_atom_context_parallel.py \
+              tests/models/boltz2/test_api.py
+            python -m compileall -q \
+              src/foldjax/models/_cp.py \
+              src/foldjax/models/_cp_atom.py \
+              src/foldjax/models/boltz2/api.py \
+              src/foldjax/models/boltz2/data/bucket.py
+            git diff --check
+            uv run --no-sync pytest -q \
+              tests/models/test_cp_runtime.py \
+              tests/models/test_cp_ring_attention.py \
+              tests/models/test_cp_masked_ring.py \
+              tests/models/boltz2/test_context_parallel.py \
+              tests/models/boltz2/test_atom_context_parallel.py \
+              tests/models/boltz2/test_atom_cp_padding.py \
+              tests/models/boltz2/test_api.py \
+              tests/models/protenix/test_context_parallel.py \
+              tests/models/opendde/test_context_parallel.py \
+              tests/models/openfold3/test_context_parallel.py \
+              tests/models/esmfold2/test_context_parallel.py
+          } 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          if [[ $status -ne 0 ]]; then
+            cp "$log" foldcp_finalize_failure.log
+          fi
+          exit 0
 
       - name: Commit validated implementation
+        if: steps.proof.outputs.status == '0'
         run: |
           rm -f tools/finalize_fold_cp_followup.py
           rm -f .github/workflows/finalize-fold-cp-followup.yml
+          rm -f foldcp_finalize_failure.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "fix: finalize Fold-CP API and entry placement"
           git push origin HEAD:agent/fold-cp-jax-complete
+
+      - name: Publish failure receipt
+        if: steps.proof.outputs.status != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add foldcp_finalize_failure.log
+          git commit -m "ci: record Fold-CP finalization failure"
+          git push origin HEAD:agent/fold-cp-jax-complete
+          exit 1
