@@ -61,7 +61,8 @@ Boltz-2 distributes the atom diffusion graph rather than only the pair trunk:
 
 - fixed-width half-window halos use `collective-permute`;
 - token-to-atom gathers rotate linear source shards;
-- atom-to-token means use reduce-scatter semantics;
+- atom-to-token means use reduce-scatter semantics and accumulate sums/counts in
+  fp32 before restoring the model dtype;
 - token-pair values are looked up from rotating two-dimensional pair tiles;
 - query-window outputs remain CP-row sharded through the atom transformer;
 - the confidence frame boundary performs one explicit linear-size coordinate
@@ -83,12 +84,15 @@ persisted.
 
 - pair and atom padding are masked and sliced away;
 - reductions that combine communication tiles accumulate in fp32;
+- atom-to-token BF16 reductions accumulate in fp32 and cast only the final mean
+  back to BF16;
 - ring attention uses one global maximum before exponentiation;
 - compensated summation limits tile-order drift without changing the
   gather-free communication schedule;
 - an all-masked ring tile contributes zero mass rather than evaluating
   `exp(-inf - -inf)`;
-- a globally all-masked query returns a finite zero output;
+- pair-biased attention uses an exact `-inf` key mask, so a globally all-masked
+  query returns a finite zero output rather than a uniform distribution;
 - 2x2 and 3x3 meshes are tested because modulo two cannot distinguish opposite
   ring directions;
 - serial, 1D, and 2D programs are traced through fresh closures to prevent a
@@ -106,6 +110,7 @@ uv run pytest -q \
   tests/models/test_cp_masked_ring.py \
   tests/models/boltz2/test_context_parallel.py \
   tests/models/boltz2/test_atom_context_parallel.py \
+  tests/models/boltz2/test_atom_cp_numerics.py \
   tests/models/boltz2/test_atom_cp_padding.py \
   tests/models/boltz2/test_api.py \
   tests/models/protenix/test_context_parallel.py \
@@ -114,11 +119,11 @@ uv run pytest -q \
   tests/models/esmfold2/test_context_parallel.py
 ```
 
-On August 20, 2026, the final branch gate passed all 66 tests. Separate staged
-probes compared every residual sub-step of a two-layer Boltz-2 Pairformer on
-4-device and 9-device CPU meshes; all reported zero tolerance violations. The
-gate also passed Ruff formatting/linting, Python compilation, and
-`git diff --check`.
+On August 20, 2026, the cross-model branch gate passed 66 tests. The subsequent
+atom-numerics hardening gate passed 20 focused tests, including forced 4-device
+and 9-device Pairformer parity, BF16 reduce-scatter parity, and an all-masked
+pair-bias attention case. Ruff formatting/linting, Python compilation, and
+`git diff --check` also passed. No numerical tolerance was loosened.
 
 These gates prove numerical parity, padding behavior, model wiring, entry
 placement, and HLO collective structure on multi-device CPU meshes. They do not
