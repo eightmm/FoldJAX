@@ -1441,3 +1441,10 @@ def entrypoint() -> None:
     except _USER_ERRORS as error:
         print(f"foldjax: {_with_hint(error)}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess
+    # Without this, `python -m foldjax.cli` imports the module, defines
+    # `main`, calls nothing, and exits 0 with no output -- which reads as a
+    # prediction that produced nothing rather than as a command that never ran.
+    entrypoint()
