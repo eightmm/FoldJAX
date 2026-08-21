@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import contextlib
 import math
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
@@ -186,6 +188,74 @@ def resolve_cp_layout(layout: str, n_devices: int, *, auto: str = "1d") -> str:
     return resolved
 
 
+#: Bytes exchanged by :func:`verify_mesh_exchange`. A node has been seen to
+#: deliver eight rows correctly and drop everything from a quarter of a
+#: mebibyte upward, so the check has to move more than a token amount to mean
+#: anything; four mebibytes is far above that threshold and still under a
+#: hundredth of what a single pair tensor costs.
+_EXCHANGE_PROBE_BYTES = 4 << 20
+
+
+def verify_mesh_exchange(mesh: Mesh) -> None:
+    """Fail now if this mesh does not actually move data between its devices.
+
+    A device count is not a working interconnect. On one tested node every
+    context-parallel run compiled, ran to completion, and returned finite
+    numbers in which one shard's rows were correct and the rest were zero --
+    a prediction nobody would question until they compared it with a
+    single-device run. The cost of learning that here is a few milliseconds;
+    the cost of learning it later is every result the node ever produced.
+
+    Shards an array whose value encodes its own row index, asks for it back
+    replicated, and checks that the rows another device owned came home.
+    """
+
+    rows = max(int(np.prod(mesh.devices.shape)), 1) * 64
+    cols = max(_EXCHANGE_PROBE_BYTES // (rows * 4), 1)
+    axis = mesh.axis_names[0]
+    expected = jnp.arange(rows, dtype=jnp.float32)[:, None] * jnp.ones(
+        (rows, cols), dtype=jnp.float32
+    )
+    sharded = jax.device_put(
+        expected, NamedSharding(mesh, PartitionSpec(axis, None))
+    )
+    gathered = jax.jit(
+        lambda value: jax.lax.with_sharding_constraint(
+            value, NamedSharding(mesh, PartitionSpec())
+        )
+    )(sharded)
+    failure = exchange_failure(
+        np.asarray(gathered), np.asarray(expected), devices=mesh.devices.size
+    )
+    if failure is not None:
+        raise RuntimeError(
+            f"{failure} Devices: {[str(d) for d in mesh.devices.flat]}."
+        )
+
+
+def exchange_failure(
+    gathered: np.ndarray, expected: np.ndarray, *, devices: int
+) -> str | None:
+    """Describe how a gathered probe differs from what was sent, or None.
+
+    Split out from :func:`verify_mesh_exchange` so the judgement can be tested
+    without a broken interconnect to hand: the failure this guards against was
+    found on a machine, and a test that needs that machine guards nothing.
+    """
+
+    delta = np.abs(gathered - expected).mean(axis=-1)
+    wrong = int((delta > 1e-6).sum())
+    if not wrong:
+        return None
+    first = int(np.argmax(delta > 1e-6))
+    return (
+        f"the {devices}-device context-parallel mesh does not exchange data: "
+        f"{wrong} of {len(delta)} rows came back wrong, from row {first}, over "
+        f"{_EXCHANGE_PROBE_BYTES >> 20} MiB. Every result from this mesh would "
+        "be silently incomplete."
+    )
+
+
 @contextlib.contextmanager
 def context_parallel(
     n_devices: int,
@@ -220,6 +290,9 @@ def context_parallel(
         mesh = Mesh(chosen.reshape(side, side), (CP_ROW_AXIS, CP_COL_AXIS))
     else:
         mesh = Mesh(chosen, (CP_AXIS,))
+
+    if os.environ.get("FOLDJAX_SKIP_MESH_CHECK", "") not in ("1", "true", "TRUE"):
+        verify_mesh_exchange(mesh)
 
     token = _RUNTIME.set(CPRuntime(mesh=mesh, layout=resolved_layout))
     try:
