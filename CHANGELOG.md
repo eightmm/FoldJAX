@@ -78,9 +78,18 @@ command predicts unless it says so here, in its own paragraph.
   second half wrong from 0.25 MiB upward and identically zero from 4 MiB
   upward, on the N/2 boundary every time. That node hangs with NCCL
   peer-to-peer enabled and silently drops half the payload with it disabled.
-  So the multi-GPU numbers above measure that machine, not this code. Until
-  context parallelism has been exercised on hardware that passes that
-  reproduction, it is neither claimed nor condemned at GPU level.
+  So the multi-GPU numbers above measure that machine, not this code.
+
+  On hardware that passes that reproduction, it works. The one card pair here
+  that delivers every probe size is a 2080ti pair; on four of those cards
+  Boltz-2 returned four complete predictions -- two at `1d`, two at `2d` --
+  agreeing with the single-card run to 0.14-0.52 Å CA RMSD against a 0.14 Å
+  floor between two single-card runs, and to four decimals of complex pLDDT,
+  with the grid's best run sitting exactly on that floor. That is the first
+  measurement of either layout on a working interconnect. It is narrow -- one
+  node, four shards, 254 tokens, float32 with fused kernels off because Turing
+  has none -- and it claims nothing about per-device memory or speed, which
+  that hardware cannot represent. What it settles is which layer to suspect.
 
   The older reservation this replaces is kept below, because its observations
   still stand and one of them is now explained: silently non-finite output was
