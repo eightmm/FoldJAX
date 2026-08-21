@@ -12,6 +12,16 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **A context-parallel mesh proves it moves data before anything runs on it.**
+  Entering `--cp-devices P` now shards a four-mebibyte array whose rows carry
+  their own index, asks for it back replicated, and refuses to continue if the
+  rows another device owned did not come home. A device count is not an
+  interconnect: on one tested node every context-parallel run compiled, ran to
+  completion, and returned finite numbers with one shard's rows correct and the
+  rest zero, while `jax.device_count()` reported four the whole time. The check
+  costs about twelve milliseconds after the first mesh of a given shape, and
+  `FOLDJAX_SKIP_MESH_CHECK=1` turns it off for anyone who would rather have the
+  silence.
 - **Context parallelism (`--cp-devices P` / `cp_devices`).** Five backends --
   OpenDDE, Protenix, Boltz-2, OpenFold3, and ESMFold2 -- can shard their pair
   representations across `P` local JAX devices, the JAX form of OpenDDE
