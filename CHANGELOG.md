@@ -80,16 +80,21 @@ command predicts unless it says so here, in its own paragraph.
   peer-to-peer enabled and silently drops half the payload with it disabled.
   So the multi-GPU numbers above measure that machine, not this code.
 
-  On hardware that passes that reproduction, it works. The one card pair here
-  that delivers every probe size is a 2080ti pair; on four of those cards
-  Boltz-2 returned four complete predictions -- two at `1d`, two at `2d` --
-  agreeing with the single-card run to 0.14-0.52 Å CA RMSD against a 0.14 Å
-  floor between two single-card runs, and to four decimals of complex pLDDT,
-  with the grid's best run sitting exactly on that floor. That is the first
-  measurement of either layout on a working interconnect. It is narrow -- one
-  node, four shards, 254 tokens, float32 with fused kernels off because Turing
-  has none -- and it claims nothing about per-device memory or speed, which
-  that hardware cannot represent. What it settles is which layer to suspect.
+  On hardware that passes that reproduction, it works. Four 2080ti returned
+  four complete Boltz-2 predictions -- two at `1d`, two at `2d` -- within
+  0.14-0.52 Å CA RMSD of the single-card run against a 0.14 Å floor between two
+  single-card runs, the grid's best run landing exactly on that floor. Two RTX
+  6000 Pro, which is hardware anyone would deploy on -- 96 GB, bfloat16, fused
+  kernels, the released sampling defaults, a real target with its alignment --
+  returned three context-parallel runs at 0.130, 0.295 and 0.342 Å against a
+  0.379 Å floor, complex pLDDT agreeing to four decimals in every one, and
+  trunk arrays 1.40e-2 relative from the single-card run where two single-card
+  runs differ from each other by 1.4e-2. Not distinguishable from the machine's
+  own noise.
+
+  Neither run claims memory or speed: 254 tokens is below the size where
+  splitting a pair tensor pays, and the 6000 Pro node holds three identical
+  cards, so the square grid is out of reach there.
 
   The older reservation this replaces is kept below, because its observations
   still stand and one of them is now explained: silently non-finite output was
