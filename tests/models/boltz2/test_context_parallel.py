@@ -25,6 +25,8 @@ import textwrap
 
 import pytest
 
+from tests.models.cp_probe_env import inherited_environment
+
 _PREAMBLE = textwrap.dedent(
     """
     import os
@@ -242,7 +244,7 @@ def _run_probe(source: str, devices: int = 4) -> str:
             "JAX_PLATFORMS": "cpu",
             "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
             "FOLDJAX_CP_PROBE_DEVICES": str(devices),
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
         timeout=240,
     )

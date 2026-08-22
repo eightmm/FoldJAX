@@ -24,6 +24,7 @@ import numpy as np
 
 from foldjax.models.opendde.models.msa_sampling import sample_opendde_msa_cycle_features
 from foldjax.models.protenix.models.trunk_blocks.trunk import _stacked_cycle_msa
+from tests.models.cp_probe_env import inherited_environment
 
 # Enough names that hash order agreeing with sorted order by luck is not a
 # thing that happens: 4 features leave a 1-in-24 chance, 8 leave 1 in 40,320.
@@ -53,7 +54,11 @@ def _trace_under(hash_seed: str) -> str:
         capture_output=True,
         text=True,
         check=True,
-        env={"PYTHONHASHSEED": hash_seed, "JAX_PLATFORMS": "cpu", "PATH": "/usr/bin"},
+        env={
+            "PYTHONHASHSEED": hash_seed,
+            "JAX_PLATFORMS": "cpu",
+            **inherited_environment(),
+        },
     )
     return completed.stdout
 

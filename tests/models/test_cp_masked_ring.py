@@ -8,6 +8,8 @@ import textwrap
 
 import pytest
 
+from tests.models.cp_probe_env import inherited_environment
+
 _PROBE = textwrap.dedent(
     r"""
     import os
@@ -100,7 +102,7 @@ def test_empty_ring_tiles_remain_finite_and_exact(devices: int) -> None:
             "JAX_PLATFORMS": "cpu",
             "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
             "FOLDJAX_CP_PROBE_DEVICES": str(devices),
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
         timeout=180,
     )

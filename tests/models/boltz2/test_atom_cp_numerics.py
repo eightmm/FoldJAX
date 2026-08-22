@@ -6,6 +6,8 @@ import subprocess
 import sys
 import textwrap
 
+from tests.models.cp_probe_env import inherited_environment
+
 _PROBE = textwrap.dedent(
     r"""
     import jax
@@ -65,7 +67,7 @@ def test_atom_cp_reductions_and_empty_attention_are_stable() -> None:
         env={
             "JAX_PLATFORMS": "cpu",
             "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
         timeout=240,
     )

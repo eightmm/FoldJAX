@@ -8,12 +8,14 @@ import textwrap
 
 import pytest
 
+from tests.models.cp_probe_env import inherited_environment
+
 
 def _run(source: str, *, devices: int) -> str:
     env = {
         "JAX_PLATFORMS": "cpu",
         "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
-        "PATH": "/usr/bin",
+        **inherited_environment(),
     }
     completed = subprocess.run(
         [sys.executable, "-c", source],

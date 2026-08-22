@@ -8,6 +8,8 @@ import textwrap
 
 import pytest
 
+from tests.models.cp_probe_env import inherited_environment
+
 _PROBE = textwrap.dedent(
     r"""
     import os
@@ -169,7 +171,7 @@ def test_protenix_pair_core_matches_serial(
             "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
             "FOLDJAX_CP_PROBE_DEVICES": str(devices),
             "FOLDJAX_CP_PROBE_LAYOUT": layout,
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
         timeout=240,
     )

@@ -15,6 +15,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from tests.models.cp_probe_env import inherited_environment
+
 
 def test_public_api_is_importable_and_complete() -> None:
     import foldjax.models.openfold3
@@ -41,7 +43,7 @@ def test_importing_does_not_change_global_matmul_precision() -> None:
         capture_output=True,
         text=True,
         check=True,
-        env={"JAX_PLATFORMS": "cpu", "PATH": "/usr/bin:/bin"},
+        env={"JAX_PLATFORMS": "cpu", **inherited_environment()},
     )
     before, after = result.stdout.split()
     assert before == after == "None"
@@ -89,7 +91,7 @@ def test_allocator_env_is_set_on_import() -> None:
         capture_output=True,
         text=True,
         check=True,
-        env={"JAX_PLATFORMS": "cpu", "PATH": "/usr/bin:/bin"},
+        env={"JAX_PLATFORMS": "cpu", **inherited_environment()},
     )
     assert result.stdout.split() == ["false", "0.90"]
 
@@ -106,8 +108,10 @@ def test_explicit_env_settings_are_not_overridden() -> None:
         text=True,
         check=True,
         env={
+            **inherited_environment(),
             "JAX_PLATFORMS": "cpu",
-            "PATH": "/usr/bin:/bin",
+            # Splatted first on purpose: this test asserts an operator's
+            # explicit setting survives, so nothing inherited may outrank it.
             "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.55",
         },
     )

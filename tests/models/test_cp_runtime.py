@@ -6,6 +6,8 @@ import subprocess
 import sys
 import textwrap
 
+from tests.models.cp_probe_env import inherited_environment
+
 _PROBE = textwrap.dedent(
     r"""
     from concurrent.futures import ThreadPoolExecutor
@@ -107,7 +109,7 @@ def test_runtime_is_context_local_and_places_only_safe_pair_features() -> None:
         env={
             "JAX_PLATFORMS": "cpu",
             "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
         timeout=180,
     )

@@ -8,6 +8,8 @@ import textwrap
 
 import pytest
 
+from tests.models.cp_probe_env import inherited_environment
+
 _PREAMBLE = textwrap.dedent(
     r"""
     import os
@@ -81,7 +83,7 @@ def _run(source: str, *, devices: int, tokens: int | None = None) -> str:
         "JAX_PLATFORMS": "cpu",
         "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
         "FOLDJAX_CP_PROBE_DEVICES": str(devices),
-        "PATH": "/usr/bin",
+        **inherited_environment(),
     }
     if tokens is not None:
         env["FOLDJAX_CP_PROBE_TOKENS"] = str(tokens)

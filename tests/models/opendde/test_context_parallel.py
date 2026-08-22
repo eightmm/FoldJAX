@@ -18,6 +18,7 @@ import textwrap
 import pytest
 
 from foldjax.models._cp import context_parallel, cp_shards
+from tests.models.cp_probe_env import inherited_environment
 
 
 def test_single_shard_context_is_a_no_op() -> None:
@@ -345,7 +346,7 @@ def _run_probe(source: str, *, devices: int = 4) -> str:
             "JAX_PLATFORMS": "cpu",
             "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
             "FOLDJAX_CP_PROBE_DEVICES": str(devices),
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
@@ -486,7 +487,7 @@ def test_context_parallel_matches_the_unsharded_program() -> None:
         env={
             "JAX_PLATFORMS": "cpu",
             "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
-            "PATH": "/usr/bin",
+            **inherited_environment(),
         },
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
