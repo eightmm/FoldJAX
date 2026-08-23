@@ -555,12 +555,7 @@ command predicts unless it says so here, in its own paragraph.
   (`common.py:573-575`) and restores the caller's dtype after the context
   einsum; the port did neither, so every atom-attention call ran float32. That
   is a parity defect on its own terms. It is worth 65,485 -> 35,945 MiB of temp
-  arena at 1,003 residues and the released 32 diffusion samples -- and at that
-  configuration it is also the difference between fitting and not fitting the
-  pool the CLI reserves. Measured under the shipped allocator, the pre-cast tree
-  needs ~91.5 GiB against an 88,098 MiB pool: inside the card's 97,887 MiB, but
-  not inside the fraction that leaves room for the cuBLAS, cuDNN and cueq
-  workspaces taken outside it.
+  arena at 1,003 residues and the released 32 diffusion samples.
 
   The attention is a sliding window of +-64 in packed rank and was computed as
   a full `[batch, heads, atoms, atoms]` score matrix with the window applied as
