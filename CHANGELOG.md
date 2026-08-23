@@ -123,6 +123,18 @@ command predicts unless it says so here, in its own paragraph.
   per-token means differed by at most two unit-scale epsilons, and historical
   NaN/infinity propagation is preserved. Released-weight GPU latency and
   whole-model peak memory remain deployment gates.
+- **Protenix and OpenDDE build local atom windows with one indexed gather.**
+  Their shared encoder, decoder, and local-attention paths previously cloned
+  one static slice into the JAX graph for every query block and concatenated
+  those slices. One axis-aware primitive now produces the identical overlapping
+  windows, including bfloat16 and non-finite values, without changing masks or
+  attention arithmetic. In a 2,048-atom, 4-head, 64-channel CPU local-attention
+  graph, outputs were bitwise equal while StableHLO text fell from 172,987 to
+  142,929 bytes, compile time from 125.3 to 46.8 ms, and warm median time from
+  1.380 to 1.327 ms. The isolated window extraction's 8,388,608-byte temporary
+  disappeared, although the complete graph's 10,485,760-byte temporary arena
+  was unchanged. Released-weight GPU compile, latency, and whole-model peak
+  memory remain deployment gates.
 - **AlphaFold 3 reuses one managed ModelRunner inside a request.** Multi-seed
   and multi-input managed runs now load the selected parameter generation and
   construct its shape-keyed JIT owner once, while scalar runs and explicit

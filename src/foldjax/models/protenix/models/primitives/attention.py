@@ -16,6 +16,9 @@ from foldjax.models.protenix.models.primitives.primitives import (
     linear,
     sigmoid,
 )
+from foldjax.models.protenix.models.primitives.windows import (
+    gather_overlapping_windows,
+)
 
 
 class AttentionParams(NamedTuple):
@@ -463,9 +466,17 @@ def _local_qk_trunks(
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
     if q.shape != k.shape:
         raise ValueError("local attention requires q and kv to share shape")
-    if n_keys < n_queries or n_queries % 2 or n_keys % 2:
+    if (
+        n_queries <= 0
+        or n_keys <= 0
+        or n_keys < n_queries
+        or n_queries % 2
+        or n_keys % 2
+    ):
         raise ValueError("invalid local attention window sizes")
     n = q.shape[-2]
+    if n == 0:
+        raise ValueError("local attention requires at least one atom")
     n_trunks = (n + n_queries - 1) // n_queries
     q_pad = n_trunks * n_queries - n
     pad_left = (n_keys - n_queries) // 2
@@ -477,12 +488,12 @@ def _local_qk_trunks(
     q_trunked = q_padded.reshape(
         q.shape[:-2] + (n_trunks, n_queries, q.shape[-1])
     )
-    k_trunked = jnp.stack(
-        [
-            k_padded[..., i * n_queries : i * n_queries + n_keys, :]
-            for i in range(n_trunks)
-        ],
-        axis=-3,
+    k_trunked = gather_overlapping_windows(
+        k_padded,
+        axis=-2,
+        n_windows=n_trunks,
+        window_size=n_keys,
+        stride=n_queries,
     )
     q_abs = jnp.arange(n_trunks * n_queries).reshape(n_trunks, n_queries)
     k_abs = (

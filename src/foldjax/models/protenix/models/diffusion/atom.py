@@ -18,6 +18,9 @@ from foldjax.models.protenix.models.primitives.primitives import (
     layer_norm,
     linear,
 )
+from foldjax.models.protenix.models.primitives.windows import (
+    gather_overlapping_windows,
+)
 
 
 class AtomAttentionEncoderCacheParams(NamedTuple):
@@ -78,12 +81,16 @@ def rearrange_qk_to_dense_trunk(
     dimension is the leading axis of ``q``/``k``.
     """
 
+    if n_queries <= 0 or n_keys <= 0:
+        raise ValueError("n_queries and n_keys must be positive")
     if n_keys < n_queries:
         raise ValueError("n_keys must be >= n_queries")
     if n_queries % 2 or n_keys % 2:
         raise ValueError("n_queries and n_keys must be even")
     if q.shape[0] != k.shape[0]:
         raise ValueError("q and k must have matching atom dimensions")
+    if q.shape[0] == 0:
+        raise ValueError("q and k must contain at least one atom")
 
     n = q.shape[0]
     n_trunks = int(math.ceil(n / n_queries))
@@ -94,12 +101,12 @@ def rearrange_qk_to_dense_trunk(
     q_padded = _pad_leading_dim(q, 0, q_pad)
     k_padded = _pad_leading_dim(k, pad_left, pad_right)
     q_trunked = q_padded.reshape((n_trunks, n_queries) + q.shape[1:])
-    k_trunked = jnp.stack(
-        [
-            k_padded[i * n_queries : i * n_queries + n_keys]
-            for i in range(n_trunks)
-        ],
+    k_trunked = gather_overlapping_windows(
+        k_padded,
         axis=0,
+        n_windows=n_trunks,
+        window_size=n_keys,
+        stride=n_queries,
     )
 
     mask_trunked = None
@@ -445,12 +452,16 @@ def _rearrange_qk_to_dense_trunk_atom_axis(
     n_queries: int,
     n_keys: int,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    if n_queries <= 0 or n_keys <= 0:
+        raise ValueError("n_queries and n_keys must be positive")
     if n_keys < n_queries:
         raise ValueError("n_keys must be >= n_queries")
     if n_queries % 2 or n_keys % 2:
         raise ValueError("n_queries and n_keys must be even")
     if q.shape[-2] != k.shape[-2]:
         raise ValueError("q and k must have matching atom dimensions")
+    if q.shape[-2] == 0:
+        raise ValueError("q and k must contain at least one atom")
 
     n = q.shape[-2]
     n_trunks = int(math.ceil(n / n_queries))
@@ -465,12 +476,12 @@ def _rearrange_qk_to_dense_trunk_atom_axis(
     q_trunked = q_padded.reshape(
         q.shape[:-2] + (n_trunks, n_queries, q.shape[-1])
     )
-    k_trunked = jnp.stack(
-        [
-            k_padded[..., i * n_queries : i * n_queries + n_keys, :]
-            for i in range(n_trunks)
-        ],
-        axis=-3,
+    k_trunked = gather_overlapping_windows(
+        k_padded,
+        axis=-2,
+        n_windows=n_trunks,
+        window_size=n_keys,
+        stride=n_queries,
     )
     return q_trunked, k_trunked
 
