@@ -548,6 +548,30 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2's atom attention runs at the width upstream runs it, and windows
+  instead of scoring densely.** Two changes, both on the diffusion atom stack.
+
+  Upstream casts q/k/v to bfloat16 unconditionally right after the rotary
+  (`common.py:573-575`) and restores the caller's dtype after the context
+  einsum; the port did neither, so every atom-attention call ran float32. That
+  is a parity defect on its own terms. It is worth 65,485 -> 35,945 MiB of temp
+  arena at 1,003 residues and the released 32 diffusion samples.
+
+  The attention is a sliding window of +-64 in packed rank and was computed as
+  a full `[batch, heads, atoms, atoms]` score matrix with the window applied as
+  a mask -- 59,049 MiB, 90.2% of that arena, to carry at most 129 non-zero
+  terms per row. It is now a `lax.scan` over row blocks with a `dynamic_slice`
+  of `R + 2*half_window` keys, so the window falls out of the slice bounds:
+  35,945 -> 11,312 MiB. **Behind `ESMFOLD2_ATOM_ATTENTION_BACKEND`, defaulting
+  to `dense`**, because flipping a default should follow a timing measurement
+  and that is not taken yet.
+
+  Together 65,485 -> 11,312 MiB, 82.7%. The blocked path is not bit-identical
+  to the dense one -- the two contract over different widths, so XLA tiles the
+  reductions differently -- and it is gated by asking whether it is ever
+  *worse* than the dense path against a float64 reference rather than by a
+  tolerance. It never is, and once it is better.
+
 - **ESMFold2 no longer returns confidence logits nothing reads.** The model
   handed back `pae_logits`, `pde_logits`, `plddt_logits`, `resolved_logits`,
   `pae` and `pde`; `write_prediction_outputs` consumes three arrays and four
