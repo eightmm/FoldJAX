@@ -113,16 +113,20 @@ def test_the_two_paths_are_not_bit_identical_and_here_is_the_measurement() -> No
     assert np.abs(reference - blocked).max() < 1e-5
 
 
-def test_blocked_is_no_less_accurate_than_dense() -> None:
-    """The gate that needs no tolerance at all.
+def test_blocked_stays_within_the_dense_accuracy_scale() -> None:
+    """Separate harmless reduction tiling from a wrong attention window.
 
-    Comparing the two paths to each other needs a margin, and a margin is what
-    hid the rotary dtype divergence behind `atol=3e-3`. This asks a question
-    with no margin in it: measured against the same computation in float64, is
-    the blocked path ever *worse* than the one it replaces? A rounding
-    difference leaves the two errors comparable; a logic error -- wrong keys, a
-    window off by one -- makes the blocked error jump by orders of magnitude
-    and cannot hide inside anything.
+    A max-error ratio is an unstable comparison between two single extreme
+    entries: across CPU lowerings the same seed made the blocked/dense ratio
+    move from 0.976 to 1.063 even though both errors stayed near 5e-7. A
+    ten-seed sweep is much steadier in RMS. The blocked/dense RMS ratio was
+    0.951--1.204 across the shapes below, while an indexing or masking error
+    moves both RMS and max error by orders of magnitude.
+
+    Keep a generous but bounded RMS-ratio gate and an independent max-error
+    backstop derived from float32 epsilon and the output scale. This records
+    the real numerical contract without pretending that a different reduction
+    tree must always beat the dense tree at its single worst element.
     """
     jax.config.update("jax_enable_x64", True)
     try:
@@ -132,41 +136,57 @@ def test_blocked_is_no_less_accurate_than_dense() -> None:
             (500, 437, 64, 128),
             (512, 512, 1, 8),
         ]:
-            rng = np.random.default_rng(0)
-            shape = (1, length, 2, 32)
-            wide = [
-                jnp.asarray(rng.standard_normal(shape), jnp.float64) for _ in range(3)
-            ]
-            valid64 = jnp.asarray((np.arange(length) < n_real).astype(np.float64))[None]
-            scale = 32**-0.5
-            exact = np.asarray(_dense_reference(*wide, valid64, half_window, scale))[
-                :, :n_real
-            ]
-
-            narrow = [a.astype(jnp.float32) for a in wide]
-            valid = valid64.astype(jnp.float32)
-            dense_error = np.abs(
-                np.asarray(_dense_reference(*narrow, valid, half_window, scale))[
-                    :, :n_real
+            for seed in range(10):
+                rng = np.random.default_rng(seed)
+                shape = (1, length, 2, 32)
+                wide = [
+                    jnp.asarray(rng.standard_normal(shape), jnp.float64)
+                    for _ in range(3)
                 ]
-                - exact
-            ).max()
-            blocked_error = np.abs(
-                np.asarray(
-                    atom._windowed_attention(
-                        *narrow,
-                        valid,
-                        half_window=half_window,
-                        rows_per_block=rows_per_block,
-                        scale=scale,
-                    )
+                valid64 = jnp.asarray(
+                    (np.arange(length) < n_real).astype(np.float64)
+                )[None]
+                scale = 32**-0.5
+                exact = np.asarray(
+                    _dense_reference(*wide, valid64, half_window, scale)
                 )[:, :n_real]
-                - exact
-            ).max()
-            assert blocked_error <= dense_error * 1.05, (
-                f"L={length} R={rows_per_block}: blocked {blocked_error:.3e} "
-                f"against dense {dense_error:.3e}"
-            )
+
+                narrow = [a.astype(jnp.float32) for a in wide]
+                valid = valid64.astype(jnp.float32)
+                dense_delta = (
+                    np.asarray(
+                        _dense_reference(*narrow, valid, half_window, scale)
+                    )[:, :n_real]
+                    - exact
+                )
+                blocked_delta = (
+                    np.asarray(
+                        atom._windowed_attention(
+                            *narrow,
+                            valid,
+                            half_window=half_window,
+                            rows_per_block=rows_per_block,
+                            scale=scale,
+                        )
+                    )[:, :n_real]
+                    - exact
+                )
+                dense_rms = np.sqrt(np.mean(np.square(dense_delta)))
+                blocked_rms = np.sqrt(np.mean(np.square(blocked_delta)))
+                output_scale = np.abs(exact).max()
+                max_error_budget = (
+                    32 * np.finfo(np.float32).eps * output_scale
+                )
+
+                assert blocked_rms <= dense_rms * 1.5, (
+                    f"L={length} R={rows_per_block} seed={seed}: blocked RMS "
+                    f"{blocked_rms:.3e} against dense {dense_rms:.3e}"
+                )
+                assert np.abs(blocked_delta).max() <= max_error_budget, (
+                    f"L={length} R={rows_per_block} seed={seed}: blocked max "
+                    f"{np.abs(blocked_delta).max():.3e} exceeds the float32 "
+                    f"scale budget {max_error_budget:.3e}"
+                )
     finally:
         jax.config.update("jax_enable_x64", False)
 

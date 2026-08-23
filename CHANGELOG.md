@@ -633,9 +633,11 @@ command predicts unless it says so here, in its own paragraph.
 
   Together 65,485 -> 11,312 MiB, 82.7%. The blocked path is not bit-identical
   to the dense one -- the two contract over different widths, so XLA tiles the
-  reductions differently -- and it is gated by asking whether it is ever
-  *worse* than the dense path against a float64 reference rather than by a
-  tolerance. It never is, and once it is better.
+  reductions differently. Against a float64 reference in a ten-seed CPU sweep
+  over four window/block shapes, its RMS error was 0.951--1.204 times the dense
+  path's; the largest blocked error was 9.1e-7. The gate therefore checks both
+  a bounded RMS ratio and a float32-epsilon/output-scale max-error budget,
+  rather than comparing two runner-sensitive extreme errors by a fixed ratio.
 
 - **ESMFold2 no longer returns confidence logits nothing reads.** The model
   handed back `pae_logits`, `pde_logits`, `plddt_logits`, `resolved_logits`,
