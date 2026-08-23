@@ -2917,11 +2917,16 @@ def _relative_position_features(
     chain_delta = np.clip(sym_id[:, None] - sym_id[None, :] + s_max, 0, 2 * s_max)
     chain_bins = np.where(same_entity, chain_delta, 2 * s_max + 1)
 
-    rel_pos = np.eye(2 * (r_max + 1), dtype=np.float32)[residue_bins]
-    rel_token = np.eye(2 * (r_max + 1), dtype=np.float32)[token_bins]
-    rel_chain = np.eye(2 * (s_max + 1), dtype=np.float32)[chain_bins]
+    # This [N_token, N_token, 139] feature is three 0/1 one-hot blocks plus a
+    # 0/1 same-entity indicator. Keep those exact values compact while they
+    # cross the host/device boundary. Each projection promotes them through its
+    # weights: bfloat16 in the default trunk and float32 in diffusion, matching
+    # the dtypes that the former float32 host feature reached at those sites.
+    rel_pos = np.eye(2 * (r_max + 1), dtype=np.int8)[residue_bins]
+    rel_token = np.eye(2 * (r_max + 1), dtype=np.int8)[token_bins]
+    rel_chain = np.eye(2 * (s_max + 1), dtype=np.int8)[chain_bins]
     return np.concatenate(
-        [rel_pos, rel_token, same_entity[..., None].astype(np.float32), rel_chain],
+        [rel_pos, rel_token, same_entity[..., None].astype(np.int8), rel_chain],
         axis=-1,
     )
 

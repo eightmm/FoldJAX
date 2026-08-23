@@ -12,6 +12,16 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Protenix carries its relative-position one-hot compactly without changing
+  trunk or diffusion arithmetic.** The `[N_token, N_token, 139]` feature contains
+  only exact zeroes and ones, so its host/device representation is now int8
+  (4.70 GiB to 1.17 GiB at 3,012 tokens). Promotion through the projection
+  weights preserves the historical split: bfloat16 in the default trunk and
+  float32 in diffusion. A compile-only GPU probe at 1,003 tokens reduced total
+  reported memory from 1,056.7 to 624.6 MiB; released-weight peak memory remains
+  a deployment gate, and the CPU compiler may materialize the widening
+  conversion instead of fusing it.
+
 - **OpenDDE warns before a job that probably will not fit.** OpenDDE ships
   float32, and float32 has a wall near 1,400 residues on a 96 GB card that no
   backend choice rescues -- at 1,531 residues the fused path asks 93.40 GiB and

@@ -23,6 +23,7 @@ from foldjax.models.protenix.models.triangle.triangle import (
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     ConstraintEmbedderParams,
     RelativePositionParams,
+    relative_position_encoding,
 )
 from foldjax.models.protenix.models.trunk_blocks.msa import MSAModuleParams
 from foldjax.models.protenix.models.trunk_blocks.pairformer import (
@@ -84,6 +85,52 @@ def test_trunk_initial_embeddings_match_protenix_formula() -> None:
 
     np.testing.assert_allclose(np.asarray(s_init), expected_s, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(np.asarray(z_init), expected_z, rtol=1e-6, atol=1e-6)
+
+
+def _compact_relative_positions() -> np.ndarray:
+    rng = np.random.default_rng(7)
+    relp = np.zeros((8, 8, 139), dtype=np.int8)
+    for start, width in ((0, 66), (66, 66), (133, 6)):
+        bins = rng.integers(0, width, size=(8, 8))
+        np.put_along_axis(relp[..., start : start + width], bins[..., None], 1, -1)
+    relp[..., 132] = rng.integers(0, 2, size=(8, 8))
+    return relp
+
+
+def test_compact_relative_positions_keep_the_bfloat16_trunk_projection() -> None:
+    """Model entry used to narrow the float32 host feature to trunk BF16."""
+    rng = np.random.default_rng(8)
+    relp = _compact_relative_positions()
+    weight = rng.normal(size=(32, 139)).astype(np.float32).astype(jnp.bfloat16)
+    params = RelativePositionParams(
+        linear_no_bias=LinearParams(weight=weight, bias=None)
+    )
+
+    actual = relative_position_encoding(jnp.asarray(relp), params)
+    historical = relative_position_encoding(
+        jnp.asarray(relp, dtype=jnp.bfloat16), params
+    )
+
+    assert actual.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(np.asarray(actual), np.asarray(historical))
+
+
+def test_compact_relative_positions_keep_the_float32_diffusion_projection() -> None:
+    """Diffusion consumes the original feature with its float32 weights."""
+    rng = np.random.default_rng(9)
+    relp = _compact_relative_positions()
+    weight = rng.normal(size=(32, 139)).astype(np.float32)
+    params = RelativePositionParams(
+        linear_no_bias=LinearParams(weight=jnp.asarray(weight), bias=None)
+    )
+
+    actual = relative_position_encoding(jnp.asarray(relp), params)
+    historical = relative_position_encoding(
+        jnp.asarray(relp, dtype=jnp.float32), params
+    )
+
+    assert actual.dtype == jnp.float32
+    np.testing.assert_array_equal(np.asarray(actual), np.asarray(historical))
 
 
 def test_recycle_embeddings_match_protenix_projection_formula() -> None:

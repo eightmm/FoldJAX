@@ -639,3 +639,28 @@ def test_featurize_ion_residue_index() -> None:
     assert features["restype"].shape[0] == 1
     assert features["residue_index"][0] == 1
     assert features["ref_charge"][0] == 2.0
+
+
+def test_relative_position_features_are_exactly_zero_or_one_int8() -> None:
+    from foldjax.models.protenix.data.featurize_json import (
+        _relative_position_features,
+    )
+
+    rng = np.random.default_rng(0)
+    n = 24
+    relp = _relative_position_features(
+        asym_id=rng.integers(0, 3, n),
+        residue_index=rng.integers(0, 40, n),
+        entity_id=rng.integers(0, 2, n),
+        sym_id=rng.integers(0, 4, n),
+        token_index=rng.integers(0, 40, n),
+    )
+
+    assert relp.dtype == np.int8
+    assert relp.shape == (n, n, 139)
+    assert set(np.unique(relp).tolist()) <= {0, 1}
+    np.testing.assert_array_equal(relp[..., :66].sum(-1), np.ones((n, n), np.int8))
+    np.testing.assert_array_equal(
+        relp[..., 66:132].sum(-1), np.ones((n, n), np.int8)
+    )
+    np.testing.assert_array_equal(relp[..., 133:].sum(-1), np.ones((n, n), np.int8))
