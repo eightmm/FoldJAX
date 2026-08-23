@@ -218,6 +218,7 @@ def triangle_multiplication(
         b,
         contract_direction,
         chunk_size,
+        z.dtype,
     )
     # Pin the contraction result to the pair layout before the epilogue; the
     # partitioner otherwise sometimes materialises it replicated.
@@ -334,6 +335,7 @@ def _triangle_contract(
     b: jnp.ndarray,
     direction: TriangleDirection,
     chunk_size: int | None,
+    out_dtype: jnp.dtype,
 ) -> jnp.ndarray:
     """Contract ``a`` against ``b``, building ``a`` whole or one block at a time.
 
@@ -341,14 +343,28 @@ def _triangle_contract(
     matching mask slice and returns that slice of ``a``. Blocking the output
     rows only ever needs the matching rows of ``a``, so when the contraction is
     blocked the full projection is never materialised.
+
+    ``out_dtype`` is the caller's ``z.dtype``. The blocked destination is held
+    at that width, not at float32.
     """
     n = z_norm.shape[-3]
     if chunk_size is None or chunk_size <= 0 or chunk_size >= n:
         return _triangle_contract_block(project_a(z_norm, mask), b, direction)
 
-    # The blocks accumulate in float32 regardless of the operand dtype, so the
-    # destination has to be float32 too or every block would be rounded back
-    # down on the way in.
+    # The destination is held at the trunk's own width, not at float32. Each
+    # einsum still accumulates in float32 (`preferred_element_type`), and each
+    # output element is written exactly once -- a row block reduces over the
+    # whole of `b`, so no element is ever revisited by a later block. The
+    # narrowing rounding is therefore the same single rounding the caller
+    # performs on the next line (`out.astype(z.dtype)`), applied at the same
+    # point in the arithmetic. This comment used to claim the opposite, that a
+    # narrow destination would round "every block on the way in" -- true, but
+    # it is the rounding that was going to happen anyway.
+    #
+    # A float32 destination cost a bfloat16 trunk the largest buffer in the
+    # blocked program: on OpenDDE's structural branch at 1,003 tokens it is
+    # f32[384, 1902, 1920], 5,349 MiB, twice over. With a float32 trunk
+    # `out_dtype` is float32 and nothing here changes.
     axis = -3 if direction == "outgoing" else -2
     # A real `lax.scan` over the row blocks, not an unrolled Python loop. The
     # unrolled form -- whether it concatenated the block outputs or wrote them
@@ -377,7 +393,7 @@ def _triangle_contract(
             jax.lax.dynamic_slice_in_dim(z_blocked, start, chunk_size, axis=axis),
             jax.lax.dynamic_slice_in_dim(mask_blocked, start, chunk_size, axis=axis),
         )
-        block = _triangle_contract_block(a_block, b, direction).astype(jnp.float32)
+        block = _triangle_contract_block(a_block, b, direction).astype(out_dtype)
         return (
             jax.lax.dynamic_update_slice_in_dim(out, block, start, axis=-3),
             None,
@@ -388,7 +404,7 @@ def _triangle_contract(
     shape[-1] = b.shape[-1]
     out, _ = jax.lax.scan(
         body,
-        jnp.zeros(shape, dtype=jnp.float32),
+        jnp.zeros(shape, dtype=out_dtype),
         jnp.arange(0, n + pad, chunk_size),
     )
     if pad:

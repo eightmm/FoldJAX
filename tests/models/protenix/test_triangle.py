@@ -328,3 +328,78 @@ def _project_heads(x, params, num_heads: int) -> jnp.ndarray:
     y = linear(x, params)
     y = y.reshape(y.shape[:-1] + (num_heads, -1))
     return jnp.swapaxes(y, -2, -3)
+
+
+def test_blocked_triangle_destination_width_does_not_change_the_result(
+    monkeypatch,
+) -> None:
+    """A narrow blocked destination is the caller's own cast, moved earlier.
+
+    Each row block reduces over the whole of ``b`` and is written once, so the
+    only rounding a ``z.dtype`` destination adds is the one
+    ``triangle_multiplication`` performs on the next line. Bit equality is the
+    claim; if a future edit ever made the blocks accumulate into the
+    destination instead of writing it, that claim would stop holding and this
+    test is what fails.
+    """
+    from foldjax.models.protenix.models.triangle import triangle as triangle_mod
+
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+    rng = np.random.default_rng(11)
+    n = 7
+    chunk = 2
+    z = jnp.asarray(rng.normal(size=(1, n, n, 4)).astype(np.float32), jnp.bfloat16)
+    mask = jnp.asarray(rng.integers(0, 2, size=(1, n, n)).astype(np.float32))
+    params = map_triangle_multiplication_state_dict(
+        _triangle_state(rng, c_z=4, c_hidden=5), "tri"
+    )
+
+    real = triangle_mod._triangle_contract
+    seen: dict[str, object] = {}
+
+    def spy(project_a, z_norm, mask_arg, b, direction, chunk_size, out_dtype):
+        narrow = real(project_a, z_norm, mask_arg, b, direction, chunk_size, out_dtype)
+        seen["chunk_size"] = chunk_size
+        seen["out_dtype"] = out_dtype
+        seen["narrow"] = narrow
+        # The pre-change code, exactly: a float32 destination the caller casts.
+        seen["wide"] = real(
+            project_a, z_norm, mask_arg, b, direction, chunk_size, jnp.float32
+        )
+        return narrow
+
+    monkeypatch.setattr(triangle_mod, "_triangle_contract", spy)
+    for direction in ("outgoing", "incoming"):
+        seen.clear()
+        triangle_multiplication(z, mask, params, direction, chunk_size=chunk)
+
+        # The blocked branch really ran: a chunk smaller than the row count,
+        # carried at the trunk's width rather than float32.
+        assert seen["chunk_size"] == chunk < n
+        assert seen["out_dtype"] == jnp.bfloat16
+        assert seen["narrow"].dtype == jnp.bfloat16
+        assert seen["wide"].dtype == jnp.float32
+        assert not np.all(np.asarray(seen["wide"], dtype=np.float32) == 0.0)
+
+        np.testing.assert_array_equal(
+            np.asarray(seen["narrow"].astype(jnp.float32)),
+            np.asarray(seen["wide"].astype(jnp.bfloat16).astype(jnp.float32)),
+        )
+
+
+def test_blocked_triangle_matches_the_unblocked_contraction(monkeypatch) -> None:
+    """Blocking is a schedule, not a different function."""
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+    rng = np.random.default_rng(13)
+    z = jnp.asarray(rng.normal(size=(1, 7, 7, 4)).astype(np.float32))
+    mask = jnp.asarray(rng.integers(0, 2, size=(1, 7, 7)).astype(np.float32))
+    params = map_triangle_multiplication_state_dict(
+        _triangle_state(rng, c_z=4, c_hidden=5), "tri"
+    )
+
+    for direction in ("outgoing", "incoming"):
+        whole = triangle_multiplication(z, mask, params, direction)
+        blocked = triangle_multiplication(z, mask, params, direction, chunk_size=2)
+        np.testing.assert_allclose(
+            np.asarray(blocked), np.asarray(whole), rtol=1e-6, atol=1e-6
+        )
