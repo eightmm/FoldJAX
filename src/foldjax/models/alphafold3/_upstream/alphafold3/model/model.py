@@ -205,6 +205,34 @@ def _broadcast_pae_single_mask(frame_mask: np.ndarray) -> np.ndarray:
   return np.broadcast_to(frame_mask[:, None], (size, size))
 
 
+def _compute_global_ptm_metrics(
+    result: ModelResult,
+    num_tokens: int,
+    asym_ids: np.ndarray,
+    pae_single_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+  """Compute pTM and only compute interface TM when an interface exists."""
+  is_multimer = np.unique(asym_ids).size > 1
+  ptm = _compute_ptm(
+      result=result,
+      num_tokens=num_tokens,
+      asym_id=asym_ids,
+      pae_single_mask=pae_single_mask,
+      interface=False,
+  )
+  if is_multimer:
+    iptm = _compute_ptm(
+        result=result,
+        num_tokens=num_tokens,
+        asym_id=asym_ids,
+        pae_single_mask=pae_single_mask,
+        interface=True,
+    )
+  else:
+    iptm = np.full_like(ptm, np.nan)
+  return ptm, iptm, is_multimer
+
+
 def _compute_chain_pair_iptm(
     num_tokens: int,
     asym_ids: np.ndarray,
@@ -393,23 +421,15 @@ class Model(hk.Module):
     pae_single_mask = _broadcast_pae_single_mask(
         batch.frames.mask  # pyrefly: ignore[missing-attribute]
     )
-    ptm = _compute_ptm(
+    asym_ids = batch.token_features.asym_id[:num_tokens]  # pyrefly: ignore[missing-attribute]
+    ptm, iptm, is_multimer = _compute_global_ptm_metrics(
         result=result,
         num_tokens=num_tokens,
-        asym_id=batch.token_features.asym_id[:num_tokens],  # pyrefly: ignore[missing-attribute]
+        asym_ids=asym_ids,
         pae_single_mask=pae_single_mask,
-        interface=False,
-    )
-    iptm = _compute_ptm(
-        result=result,
-        num_tokens=num_tokens,
-        asym_id=batch.token_features.asym_id[:num_tokens],  # pyrefly: ignore[missing-attribute]
-        pae_single_mask=pae_single_mask,
-        interface=True,
     )
     ptm_iptm_average = 0.8 * iptm + 0.2 * ptm
 
-    asym_ids = batch.token_features.asym_id[:num_tokens]  # pyrefly: ignore[missing-attribute]
     # Map asym IDs back to chain IDs. Asym IDs are constructed from chain IDs by
     # iterating over the chain IDs, and for each unique chain ID incrementing
     # the asym ID by 1 and mapping it to the particular chain ID. Asym IDs are
@@ -417,7 +437,7 @@ class Model(hk.Module):
     chain_ids = [pred_structure.chains[asym_id - 1] for asym_id in asym_ids]
     res_ids = batch.token_features.residue_index[:num_tokens]  # pyrefly: ignore[missing-attribute]
 
-    if len(np.unique(asym_ids[:num_tokens])) > 1:
+    if is_multimer:
       # There is more than one chain, hence interface pTM (i.e. ipTM) defined,
       # so use it.
       ranking_confidence = ptm_iptm_average

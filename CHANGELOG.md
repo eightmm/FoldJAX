@@ -127,6 +127,14 @@ command predicts unless it says so here, in its own paragraph.
   exactly. At 3,072 tokens this removes a 9,437,184-byte square data buffer,
   replacing it with an O(1) NumPy view. This is a host postprocessing
   allocation reduction and does not change model predictions.
+- **AlphaFold 3 skips host interface-TM scoring when no interface exists.**
+  Monomer ipTM is defined by the existing implementation as a same-shaped NaN
+  vector, so postprocessing now emits that value after pTM validation instead
+  of constructing and reducing an all-false pair mask for every sample.
+  Multimer scoring is unchanged. For five samples at 3,072 tokens, an isolated
+  CPU host-stage probe reduced median time from 23.938 to 0.022 ms and peak
+  traced allocation from 9,569,504 to 19,231 bytes. This does not affect model
+  compilation, device memory, or forward-pass numerics.
 - **Boltz-2 reuses its verified parameters and JIT owners inside a request.**
   Multi-seed and multi-input runs now load the confidence checkpoint once and
   retain one bounded compiled owner. Consecutive affinity runs do the same for

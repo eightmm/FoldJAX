@@ -67,6 +67,48 @@ def test_pae_single_mask_is_an_exact_zero_copy_broadcast() -> None:
         )
 
 
+def test_monomer_skips_interface_tm_but_multimer_keeps_it(monkeypatch) -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import model as af3_model
+
+    calls = []
+
+    def fake_ptm(*, interface, **unused):
+        calls.append(interface)
+        return np.asarray([0.7 if interface else 0.8], dtype=np.float32)
+
+    monkeypatch.setattr(af3_model, "_compute_ptm", fake_ptm)
+    mask = np.ones((2, 2), dtype=bool)
+
+    ptm, iptm, is_multimer = af3_model._compute_global_ptm_metrics(
+        result={},
+        num_tokens=2,
+        asym_ids=np.asarray([1, 1], dtype=np.int32),
+        pae_single_mask=mask,
+    )
+    assert calls == [False]
+    assert is_multimer is False
+    np.testing.assert_array_equal(ptm, np.asarray([0.8], dtype=np.float32))
+    assert iptm.shape == ptm.shape
+    assert iptm.dtype == ptm.dtype
+    assert np.isnan(iptm).all()
+
+    calls.clear()
+    ptm, iptm, is_multimer = af3_model._compute_global_ptm_metrics(
+        result={},
+        num_tokens=2,
+        asym_ids=np.asarray([1, 2], dtype=np.int32),
+        pae_single_mask=mask,
+    )
+    assert calls == [False, True]
+    assert is_multimer is True
+    np.testing.assert_array_equal(ptm, np.asarray([0.8], dtype=np.float32))
+    np.testing.assert_array_equal(iptm, np.asarray([0.7], dtype=np.float32))
+
+
 def test_atom_cross_attention_pads_a_shorter_than_key_window_layout() -> None:
     """Four-residue jobs work without forcing the released 256-token bucket."""
     from foldjax.models.alphafold3 import build
