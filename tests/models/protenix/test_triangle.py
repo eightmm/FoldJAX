@@ -436,7 +436,9 @@ def test_inert_multiplication_chunk_size_says_so_and_says_what_it_costs(
     # number: it must name the buffer and offer the escape without promising it.
     assert "materialises both full projections" in text
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla" in text
-    assert "measure it" in text
+    # The escape is now the measured memory winner, but only on memory: the
+    # text must not read as a blanket recommendation while time is unresolved.
+    assert "unresolved" in text
 
     # Once, not once per layer.
     with warnings.catch_warnings():

@@ -516,20 +516,28 @@ def _warn_unchunkable_multiplication(
     next to a buffer it appears to promise to bound is worse than a knob that is
     inert next to nothing.
 
-    What the escape is worth, measured. Switching to the blocked path on OpenDDE
-    at 1,003 tokens cost 2.6 GiB rather than saving any: 25.185 GiB against
-    22.535, two passes per arm within 0.05%. The arithmetic said so in advance
-    and is the reason to expect it at every size -- two fused bf16 ``2*c``
-    projections and two blocked float32 ``c`` accumulators are the same bytes
-    per pair element, so the blocked path was the fused path plus one padded
-    copy of the pair tensor, pure overhead. Predicted 2,775 MiB against measured
-    2,585 at N_st=1902.
+    What the escape is worth, measured, and it changed sign once the blocked
+    destination stopped being float32. Per pair element, with ``s`` the width of
+    ``z`` and ``Npad/N`` the row padding::
 
-    That parity no longer holds as written: the blocked destination is now kept
-    at the trunk's own width, which halves the accumulators on a bfloat16 trunk
-    and has not been re-measured against the fused path. So the warning points
-    at the escape without promising a direction -- measure before believing
-    either one.
+        fused projections   2*(2c)*s        -- 768 concatenated channels
+        blocked accumulator 2*c*s*(Npad/N)  -- only the 384 output channels
+        blocked input copy  1*c*s*(Npad/N)
+        ratio = 0.75 * (Npad/N) ~= 0.76
+
+    So the blocked path is about 24% cheaper **at any dtype**, and the two
+    looked equal only while the destination was float32 against a bfloat16
+    fused path -- 4 bytes against 2, cancelling the 0.75 exactly. Measured on
+    OpenDDE, two passes per arm: at 1,003 tokens bf16, peak 25.185 -> 19.944
+    GiB across that change, putting the blocked arena at 17,147 MiB against
+    fused's 19,797. The identity predicts the gap as one ``c``-wide pair tensor,
+    2,650 MiB; measured 2,650.
+
+    Which is why this says to measure rather than naming a winner: the fused
+    path is still the default, the memory evidence now favours the escape, and
+    the time evidence does not resolve -- 166.2 s fused against 190.6 and 145.2
+    s blocked, a spread that straddles the comparison on a card that swings that
+    far under throttle.
     """
     global _WARNED_UNCHUNKABLE_MUL
     if _WARNED_UNCHUNKABLE_MUL:
@@ -543,8 +551,8 @@ def _warn_unchunkable_multiplication(
         f"materialises both full projections ({projections_mib:,} MiB here), "
         "which is what the chunk size looks like it would bound. Set "
         "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla for the blocked path "
-        "that honours it -- but measure it, because it has not been a memory "
-        "win at any size tested so far.",
+        "that honours it -- measured about 24% cheaper on memory at every size "
+        "tried, with the time comparison unresolved.",
         RuntimeWarning,
         stacklevel=2,
     )
