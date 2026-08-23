@@ -113,6 +113,12 @@ command predicts unless it says so here, in its own paragraph.
   cleanup, cache/config/device splits, mutation, resume and cancellation.
   Released-weight GPU latency, memory and numerical parity remain deployment
   gates, so no production speedup is claimed here.
+- **AlphaFold 3 broadcasts its host PAE frame mask instead of copying its
+  square.** The postprocessing path only reads this mask, so a zero-stride
+  NumPy view preserves its shape, dtype, values, and downstream pTM/PAE metrics
+  exactly. At 3,072 tokens this removes a 9,437,184-byte square data buffer,
+  replacing it with an O(1) NumPy view. This is a host postprocessing
+  allocation reduction and does not change model predictions.
 - **Boltz-2 reuses its verified parameters and JIT owners inside a request.**
   Multi-seed and multi-input runs now load the confidence checkpoint once and
   retain one bounded compiled owner. Consecutive affinity runs do the same for

@@ -7,6 +7,66 @@ from types import SimpleNamespace
 import numpy as np
 
 
+def test_pae_single_mask_is_an_exact_zero_copy_broadcast() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import model as af3_model
+
+    frame_mask = np.asarray([True, False, True, True], dtype=bool)
+    expected = np.tile(frame_mask[:, None], [1, frame_mask.shape[0]])
+
+    actual = af3_model._broadcast_pae_single_mask(frame_mask)
+
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.shape == (4, 4)
+    assert actual.dtype == frame_mask.dtype
+    assert np.shares_memory(actual, frame_mask)
+    assert not actual.flags.owndata
+    assert not actual.flags.writeable
+
+    rng = np.random.default_rng(0)
+    asym_id = np.asarray([1, 1, 2, 2], dtype=np.int32)
+    tm_adjusted_pae = rng.random((2, 4, 4), dtype=np.float32)
+    full_pae = rng.random((2, 4, 4), dtype=np.float32)
+    contact_probs = rng.random((4, 4), dtype=np.float32)
+    for interface in (False, True):
+        tiled_score = af3_model.confidences.predicted_tm_score(
+            tm_adjusted_pae[0], expected, asym_id, interface=interface
+        )
+        broadcast_score = af3_model.confidences.predicted_tm_score(
+            tm_adjusted_pae[0], actual, asym_id, interface=interface
+        )
+        np.testing.assert_array_equal(broadcast_score, tiled_score)
+
+    tiled_metrics = af3_model.confidences.pae_metrics(
+        num_tokens=4,
+        asym_ids=asym_id,
+        full_pae=full_pae,
+        mask=expected,
+        contact_probs=contact_probs,
+        tm_adjusted_pae=tm_adjusted_pae,
+    )
+    broadcast_metrics = af3_model.confidences.pae_metrics(
+        num_tokens=4,
+        asym_ids=asym_id,
+        full_pae=full_pae,
+        mask=actual,
+        contact_probs=contact_probs,
+        tm_adjusted_pae=tm_adjusted_pae,
+    )
+    assert broadcast_metrics.keys() == tiled_metrics.keys()
+    for name in broadcast_metrics:
+        np.testing.assert_array_equal(
+            np.isnan(broadcast_metrics[name]), np.isnan(tiled_metrics[name])
+        )
+        np.testing.assert_array_equal(
+            np.nan_to_num(broadcast_metrics[name], nan=np.inf),
+            np.nan_to_num(tiled_metrics[name], nan=np.inf),
+        )
+
+
 def test_atom_cross_attention_pads_a_shorter_than_key_window_layout() -> None:
     """Four-residue jobs work without forcing the released 256-token bucket."""
     from foldjax.models.alphafold3 import build

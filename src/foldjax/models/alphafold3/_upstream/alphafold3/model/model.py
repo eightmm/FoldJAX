@@ -199,6 +199,12 @@ def _compute_ptm(
   )
 
 
+def _broadcast_pae_single_mask(frame_mask: np.ndarray) -> np.ndarray:
+  """Expand one frame-validity vector without allocating its square copy."""
+  size = frame_mask.shape[0]
+  return np.broadcast_to(frame_mask[:, None], (size, size))
+
+
 def _compute_chain_pair_iptm(
     num_tokens: int,
     asym_ids: np.ndarray,
@@ -384,9 +390,8 @@ class Model(hk.Module):
 
     num_tokens = batch.token_features.seq_length.item()  # pyrefly: ignore[missing-attribute]
 
-    pae_single_mask = np.tile(
-        batch.frames.mask[:, None],  # pyrefly: ignore[missing-attribute]
-        [1, batch.frames.mask.shape[0]],  # pyrefly: ignore[missing-attribute]
+    pae_single_mask = _broadcast_pae_single_mask(
+        batch.frames.mask  # pyrefly: ignore[missing-attribute]
     )
     ptm = _compute_ptm(
         result=result,
