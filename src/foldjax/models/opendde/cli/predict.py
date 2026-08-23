@@ -10,6 +10,7 @@ from typing import Any
 
 from foldjax.models import _representations
 from foldjax.models.protenix.chunking import ChunkPolicyName
+from foldjax.models.protenix.data.template_features import dedup_templates
 from foldjax.schema import PaddingConfig
 
 
@@ -554,6 +555,17 @@ def main(
                     if padding_profiles is not None:
                         padding_profiles.append(profile)
                     print(padding_plan.message("opendde"))
+                # The residue trunk is Protenix's, template stack included, so
+                # the four rows a template-free query is padded to are the same
+                # four -- one all-gap row and three zero-padded ones identical
+                # to each other. `template_embedder` already weights by
+                # `template_multiplicity`; this is the call site that produces
+                # it, which is per-port even though the mechanism is shared.
+                # After padding, because `pad_opendde_features` delegates to
+                # `pad_protenix_features`, which requires the native depth of
+                # four. OpenDDE reads the templates every recycle, so the stack
+                # evaluations come off once per cycle rather than once.
+                model_features = dedup_templates(model_features)
                 output = _predict(
                     model_features,
                     params,

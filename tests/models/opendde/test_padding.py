@@ -615,3 +615,31 @@ def _opendde_features(*, msa_depth: int) -> dict[str, np.ndarray]:
         "structural_seq_pos": np.arange(n_token, dtype=np.int64),
         "chemical_bond_atom_indices": np.zeros((0, 2), dtype=np.int64),
     }
+
+
+def test_the_model_feature_filter_keeps_template_multiplicity() -> None:
+    """The dedup's multiplicity must reach the graph, or the divisor is wrong.
+
+    `select_opendde_model_features` keeps a name when it is in `_MODEL_FEATURES`
+    *or* starts with `template_`, and it is the second clause that carries
+    `template_multiplicity` through. That is incidental: Protenix's equivalent
+    filter is an explicit set, and there the key had to be added to
+    `_PADDED_MODEL_FEATURES` by hand. Tightening this filter to a list would
+    reintroduce the trap it currently avoids by accident -- the key would be
+    dropped with no error, `template_embedder` would fall back to
+    `num_templates = shape[0]`, and a four-row query deduplicated to two would
+    be divided by two instead of four, on the padded path only.
+    """
+    from foldjax.models.opendde.data.padding import select_opendde_model_features
+
+    kept = select_opendde_model_features(
+        {
+            "template_multiplicity": np.asarray([1.0, 3.0], dtype=np.float32),
+            "template_distogram": np.zeros((2, 3, 3, 39), dtype=np.float32),
+            "not_a_model_feature": np.zeros((3,), dtype=np.float32),
+        }
+    )
+
+    assert "template_multiplicity" in kept
+    assert "template_distogram" in kept
+    assert "not_a_model_feature" not in kept

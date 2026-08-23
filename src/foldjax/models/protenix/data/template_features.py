@@ -273,8 +273,10 @@ def dedup_templates(features: Any) -> dict[str, Any]:
 
     Returns:
         A new mapping carrying only the distinct template rows plus
-        ``template_multiplicity``; or the same entries, shared not copied, when
-        every row is already distinct.
+        ``template_multiplicity``. When there is nothing to deduplicate the
+        input mapping is returned **unchanged and by identity** -- a no-op
+        that returns a copy is not a no-op, and OpenDDE's CLI wiring test
+        asserts the featurizer's own dict reaches the model.
     """
     present = {
         name: np.asarray(features[name])
@@ -282,7 +284,7 @@ def dedup_templates(features: Any) -> dict[str, Any]:
         if name in features
     }
     if not present:
-        return dict(features)
+        return features
 
     rows = {array.shape[0] for array in present.values()}
     if len(rows) != 1:
@@ -291,7 +293,7 @@ def dedup_templates(features: Any) -> dict[str, Any]:
         )
     (n_templates,) = rows
     if n_templates <= 1:
-        return dict(features)
+        return features
 
     # Smallest first, so a distinct pair of restypes -- the field that actually
     # discriminates on the default path -- answers the question before the
@@ -314,7 +316,7 @@ def dedup_templates(features: Any) -> dict[str, Any]:
             multiplicity.append(1)
 
     if len(keep) == n_templates:
-        return dict(features)
+        return features
 
     out = dict(features)
     for name, array in present.items():

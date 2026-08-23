@@ -222,3 +222,28 @@ def test_what_actually_diverges_is_the_association_not_the_multiply() -> None:
     )
     deduped = (f0 + (np.float32(3.0) * f1).astype(np.float32)).astype(np.float32)
     assert (loop != deduped).mean() > 0.1
+
+
+def test_a_no_op_returns_the_input_by_identity() -> None:
+    """A no-op that returns a copy is not a no-op.
+
+    All three declining paths return the caller's own mapping: no template
+    fields, a single row, and every row already distinct. OpenDDE's CLI wiring
+    test asserts the featurizer's dict reaches the model by identity, and a
+    defensive `dict(features)` here would break it while changing nothing about
+    the values. No caller mutates the result.
+    """
+    without = {"restype": np.zeros((N_TOKEN, 32), np.float32)}
+    assert dedup_templates(without) is without
+
+    single = _templates(n_template=1)
+    assert dedup_templates(single) is single
+
+    distinct = _templates()
+    for index in range(MAX_TEMPLATES):
+        distinct["template_distogram"][index, 0, 0, index] = 1.0
+    assert dedup_templates(distinct) is distinct
+
+    # And the case that does something still returns a new mapping.
+    assert dedup_templates(_as_featurized()) is not None
+    assert "template_multiplicity" in dedup_templates(_as_featurized())
