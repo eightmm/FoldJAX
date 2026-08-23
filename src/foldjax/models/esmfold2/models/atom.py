@@ -34,6 +34,12 @@ Params = Mapping[str, jnp.ndarray]
 #: the tensor is float32. Callers running bfloat16 must pass bfloat16's.
 FLOAT32_EPS = float(jnp.finfo(jnp.float32).eps)
 
+#: Query rows per block in the windowed attention. The block reads
+#: `rows_per_block + 2 * half_window` keys, so a smaller block wastes less of
+#: what it reads (1.98x at 128 against 2.98x at 256, for `half_window=64`) and
+#: pays for it in scan steps and smaller matmuls. Zero selects the dense path.
+ATOM_ROWS_PER_BLOCK = 256
+
 
 def rms_norm(x: jnp.ndarray, eps: float = FLOAT32_EPS) -> jnp.ndarray:
     """`F.rms_norm` with no affine terms."""
@@ -46,9 +52,7 @@ def _rotate_half(x: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([-x[..., half:], x[..., :half]], axis=-1)
 
 
-def apply_rotary_3d(
-    x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray
-) -> jnp.ndarray:
+def apply_rotary_3d(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -> jnp.ndarray:
     """Rotate `[B, L, H, D]` by per-position `cos`/`sin` of width `D/2`."""
     width = cos.shape[-1] * 2
     cos = jnp.concatenate([cos, cos], axis=-1)[:, :, None, :]
@@ -88,7 +92,14 @@ def build_3d_rope(
     freqs = jnp.concatenate([spatial, uid], axis=-1)
     if freqs.shape[-1] < half:
         freqs = jnp.pad(freqs, ((0, 0), (0, 0), (0, half - freqs.shape[-1])))
-    return jnp.cos(freqs), jnp.sin(freqs)
+    # Angles in float32, tables in bfloat16, exactly as upstream
+    # (`modeling_esmfold2_common.py:513-514`) -- hardcoded there, not a knob.
+    # Returning float32 tables here promoted `q` and `k` inside the rotary, so
+    # a bfloat16 caller got float32 back out of the attention block. That is a
+    # separate defect from the missing q/k/v cast below: this one decides the
+    # dtype the block *returns*, that one decides the dtype the scores are
+    # *computed* at.
+    return jnp.cos(freqs).astype(jnp.bfloat16), jnp.sin(freqs).astype(jnp.bfloat16)
 
 
 def sliding_window_mask(valid: jnp.ndarray, half_window: int) -> jnp.ndarray:
@@ -105,6 +116,92 @@ def sliding_window_mask(valid: jnp.ndarray, half_window: int) -> jnp.ndarray:
     return allowed | eye
 
 
+def _windowed_attention(
+    q: jnp.ndarray,
+    k: jnp.ndarray,
+    v: jnp.ndarray,
+    valid: jnp.ndarray,
+    *,
+    half_window: int,
+    rows_per_block: int,
+    scale: float,
+) -> jnp.ndarray:
+    """Sliding-window attention that never materialises the full score matrix.
+
+    The dense path builds `[batch, heads, atoms, atoms]` and then throws away
+    everything outside a band 129 wide. At the released 32 samples and 7,776
+    atoms that tensor is 14,762 MiB, twice over with its softmax, against a
+    35,945 MiB arena. This walks the query rows in blocks instead, so only one
+    block's scores exist at a time.
+
+    **Exactness rests on `atom_attention_mask` being a prefix**, which it is:
+    `features.py` has a single writer and sets `mask[index] = True` for every
+    real atom in order. That makes `rank[i] == i` throughout the valid region,
+    so the window in packed rank -- which is what the model means -- coincides
+    with a window in raw index, and a slice of `rows_per_block + 2 *
+    half_window` keys provably contains every key a query in the block may
+    attend to. The mask inside the block is still computed from `rank`, so if
+    that precondition ever breaks the block masks correctly over the keys it
+    holds rather than silently changing the semantics.
+
+    Upstream leans on the same packing: its fast path is `flash_attn_varlen`
+    with `cu_seqlens`, and it keeps a dense fallback for when that is
+    unavailable. `swa_attention` keeps one for the same reason.
+
+    `dynamic_slice` clamps an out-of-range start rather than truncating, which
+    *shifts* the window. That is safe here and the clamp is written out rather
+    than left to the primitive, because the mask has to be built against the
+    indices actually taken: at the low edge the needed keys are `[0, R + h)`
+    and at the high edge `[bR - h, atoms)`, both inside a slice of this width.
+    """
+    batch, length, n_heads, head_dim = q.shape
+    keys_per_block = rows_per_block + 2 * half_window
+    n_blocks = -(-length // rows_per_block)
+    padded = n_blocks * rows_per_block
+
+    rank = jnp.cumsum(valid.astype(jnp.int32), axis=1) - 1
+    pad = ((0, 0), (0, padded - length), (0, 0), (0, 0))
+    q_padded = jnp.pad(q, pad)
+    rank_padded = jnp.pad(rank, pad[:2])
+    valid_padded = jnp.pad(valid, pad[:2])
+    # The last start that still leaves a full slice; `length >= keys_per_block`
+    # is the caller's static precondition for taking this path at all.
+    last_start = length - keys_per_block
+    offsets = jnp.arange(keys_per_block)
+
+    def one_block(_, block: jnp.ndarray):
+        row = block * rows_per_block
+        start = jnp.clip(row - half_window, 0, last_start)
+
+        def take_q(t):
+            return jax.lax.dynamic_slice_in_dim(t, row, rows_per_block, 1)
+
+        def take_k(t):
+            return jax.lax.dynamic_slice_in_dim(t, start, keys_per_block, 1)
+
+        logits = jnp.einsum("bihd,bjhd->bhij", take_q(q_padded), take_k(k)) * scale
+        rank_q, rank_k = take_q(rank_padded), take_k(rank)
+        within = jnp.abs(rank_q[:, :, None] - rank_k[:, None, :]) <= half_window
+        allowed = (
+            within
+            & take_q(valid_padded)[:, :, None].astype(bool)
+            & take_k(valid)[:, None, :].astype(bool)
+        )
+        # The diagonal, in absolute index. A padded query has no key to match
+        # and masks out entirely; softmax subtracts the row max first, so the
+        # row is uniform rather than NaN, and it is discarded below.
+        diagonal = (row + jnp.arange(rows_per_block))[:, None] == start + offsets
+        logits = jnp.where(
+            (allowed | diagonal)[:, None], logits, jnp.finfo(logits.dtype).min
+        )
+        attention = jax.nn.softmax(logits, axis=-1)
+        return None, jnp.einsum("bhij,bjhd->bihd", attention, take_k(v))
+
+    _, blocks = jax.lax.scan(one_block, None, jnp.arange(n_blocks))
+    context = blocks.swapaxes(0, 1).reshape(batch, padded, n_heads, head_dim)
+    return context[:, :length]
+
+
 def swa_attention(
     x: jnp.ndarray,
     params: Params,
@@ -115,6 +212,7 @@ def swa_attention(
     valid: jnp.ndarray,
     n_heads: int,
     half_window: int,
+    rows_per_block: int = ATOM_ROWS_PER_BLOCK,
     eps: float = FLOAT32_EPS,
 ) -> jnp.ndarray:
     """`SWA3DRoPEAttention`.
@@ -132,13 +230,52 @@ def swa_attention(
     q = apply_rotary_3d(rms_norm(q, eps), cos, sin)
     k = apply_rotary_3d(rms_norm(k, eps), cos, sin)
 
-    logits = jnp.einsum("bihd,bjhd->bhij", q, k) * (head_dim**-0.5)
-    allowed = sliding_window_mask(valid, half_window)[:, None]
-    logits = jnp.where(allowed, logits, jnp.finfo(logits.dtype).min)
-    attention = jax.nn.softmax(logits, axis=-1)
-    context = jnp.einsum("bhij,bjhd->bihd", attention, v)
+    # Upstream casts the attention inputs to bfloat16 here unconditionally
+    # (`modeling_esmfold2_common.py:573-575`) and restores the entering dtype
+    # after the context (`:632`). Both halves are needed, and this port had
+    # neither.
+    #
+    # `trunk_dtype` does not reach this module: `TRUNK_PREFIXES` scopes it to
+    # the trunk and deliberately excludes the diffusion stack, so `Wqkv` runs
+    # float32 @ float32 and `q` is float32 before the rotary is ever applied.
+    # The scores inherit that -- `f32[128, 7776, 7776]` is 29,524 MiB at the
+    # released 32 samples and 7776 atoms, and the softmax of it is another,
+    # together 90% of the whole temp arena.
+    #
+    # The softmax still accumulates at the narrowed dtype, where upstream's
+    # `scaled_dot_product_attention` accumulates in float32 without ever
+    # materialising the scores. Matching that needs a fused kernel rather than
+    # a cast; the window is +-`half_window`, so at most 129 terms are summed.
+    input_dtype = q.dtype
+    if input_dtype not in (jnp.float16, jnp.bfloat16):
+        q = q.astype(jnp.bfloat16)
+        k = k.astype(jnp.bfloat16)
+        v = v.astype(jnp.bfloat16)
+
+    # Blocked when there are enough atoms for a whole key slice to exist, dense
+    # otherwise -- the comparison is on static shapes, so one of the two is
+    # traced and the other is not. Short inputs take the dense path because a
+    # slice wider than the array cannot be clamped into range, not because the
+    # blocked result would differ.
+    if rows_per_block and length >= rows_per_block + 2 * half_window:
+        context = _windowed_attention(
+            q,
+            k,
+            v,
+            valid,
+            half_window=half_window,
+            rows_per_block=rows_per_block,
+            scale=head_dim**-0.5,
+        )
+    else:
+        logits = jnp.einsum("bihd,bjhd->bhij", q, k) * (head_dim**-0.5)
+        allowed = sliding_window_mask(valid, half_window)[:, None]
+        logits = jnp.where(allowed, logits, jnp.finfo(logits.dtype).min)
+        attention = jax.nn.softmax(logits, axis=-1)
+        context = jnp.einsum("bhij,bjhd->bihd", attention, v)
     context = context.reshape(batch, length, width)
     context = context * valid[..., None].astype(context.dtype)
+    context = context.astype(input_dtype)
 
     gate = jax.nn.sigmoid(linear(x, params, f"{dot}gate_proj"))
     return linear(context * gate, params, f"{dot}out_proj")
@@ -441,7 +578,5 @@ def atom_decoder(
         half_window=half_window,
         eps=eps,
     )
-    normed = layer_norm(
-        queries, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"]
-    )
+    normed = layer_norm(queries, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"])
     return linear(normed, params, f"{dot}output_linear")
