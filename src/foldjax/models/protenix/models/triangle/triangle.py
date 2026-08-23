@@ -369,10 +369,22 @@ def _triangle_contract(
     # narrow destination would round "every block on the way in" -- true, but
     # it is the rounding that was going to happen anyway.
     #
-    # A float32 destination cost a bfloat16 trunk the largest buffer in the
-    # blocked program: on OpenDDE's structural branch at 1,003 tokens it is
-    # f32[384, 1902, 1920], 5,349 MiB, twice over. With a float32 trunk
-    # `out_dtype` is float32 and nothing here changes.
+    # What it is worth, measured on Protenix at 3,012 tokens, where the
+    # template stack runs this path because c_z=64 != c_hidden=128 keeps it off
+    # the fused kernel. The destination went f32[128, 3012, 3040] 4,471 MiB ->
+    # bf16 2,235 MiB, exactly half, with every other entry in the arena cover
+    # byte-identical and no new buffer taking its place. The temp arena went
+    # 39.102 -> 37.367 GiB.
+    #
+    # Note those two do not agree: the buffer shrank 2,236 MiB and the arena
+    # only 1,777, so **21% of the freed space was reabsorbed by repacking**.
+    # Neither all-or-nothing prediction was right, and a width change is worth
+    # measuring at the arena rather than at the buffer.
+    #
+    # With a float32 trunk `out_dtype` is float32 and nothing here changes,
+    # which is the whole story on OpenDDE: its CLI default is fp32, faithful to
+    # upstream's own fp32 storage, so this is live there only on the opt-in
+    # bfloat16 path. Protenix defaults to bf16 and gets it by default.
     axis = -3 if direction == "outgoing" else -2
     # A real `lax.scan` over the row blocks, not an unrolled Python loop. The
     # unrolled form -- whether it concatenated the block outputs or wrote them
