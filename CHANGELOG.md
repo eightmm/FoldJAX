@@ -18,12 +18,26 @@ command predicts unless it says so here, in its own paragraph.
   arrived at `jit` as one argument per layer, so XLA emitted `concatenate`
   copies of the weights into its temporary arena. Mapping now keeps checkpoint
   arrays on the host, stacks each homogeneous sequence once, and transfers only
-  the stacked tree. A 4-layer CPU compilation drops both parameter
-  concatenates and at least one full stacked copy from temporary memory while
-  remaining bitwise identical. This trades a host-side stacked copy during
-  checkpoint mapping for the smaller compiled device arena. The heterogeneous
-  four-block MSA path and the two unscanned conditioning-transition loops keep
-  their original layouts.
+  the stacked tree. The in-graph copies really do go: a 1,003-token lowering
+  carries 18 concatenate operations with pre-stacking against 491 without it,
+  436 of them parameter-shaped. What that does *not* buy is peak memory. At
+  1,003 and 3,012 tokens the compiled arena, arguments and output are identical
+  to four decimals either way, and eight measured runs all peaked at 9,997 MiB
+  -- at real sizes the peak is set elsewhere, and a copy removed underneath it
+  does not move it. Both statements hold at once; the earlier "drops a full
+  stacked copy from temporary memory", measured on a 4-layer CPU compilation,
+  is true there and does not surface at model scale.
+
+  What it does buy is time: about 1.5 s of a 21.6 s warm run at 1,003 tokens,
+  roughly 7%, with the arms disjoint and the slower arm slower in both orders
+  including when it ran first on a cooler card. The mechanism is unproven -- a
+  single 1.35 GiB copy is milliseconds at HBM bandwidth, so what fits is the
+  24-block diffusion transformer being re-stacked inside the sampling loop and
+  paid once per rollout step. Separately, it costs about 0.16 s per process on
+  the host at checkpoint mapping; that is a different machine and a different
+  frequency from the device saving and the two should not be netted. The
+  heterogeneous four-block MSA path and the two unscanned
+  conditioning-transition loops keep their original layouts.
 - **AlphaFold 3 parameters follow the explicitly selected device.** A run on
   device 1 used to load the 1,146,811,260-byte checkpoint on JAX's implicit
   device 0 before the device-pinned model copied it across. Native prediction
