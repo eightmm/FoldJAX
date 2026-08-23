@@ -58,6 +58,18 @@ command predicts unless it says so here, in its own paragraph.
   trace reuse and eviction, distinct 1-D/2-D HLO, cache repair and partitioning.
   Released-weight GPU compile latency and memory remain deployment gates, so no
   GPU speedup is claimed here.
+- **OpenFold3 omits atomized-frame neighbour search for polymer-only inputs.**
+  Protein, RNA and DNA frame atoms come from their named atoms, but the generic
+  confidence path also built sample-by-token-by-atom distances and a `top_k`
+  for atomized ligands and modified residues even when no active token needed
+  it. Production entry points now derive that graph choice from masked host
+  features and carry it in the compilation identity; direct callers retain the
+  conservative generic default. A three-sample, 128-token, 1,024-atom CPU
+  stage probe kept frame positions and validity bitwise equal while reducing
+  compiled temporary memory from 3,214,032 to 63,888 bytes, warm median time
+  from 58.0 to 1.17 ms, and `top_k` operations from one to zero. These are
+  confidence-frame stage measurements; released-weight full-model GPU latency
+  and peak memory remain deployment gates.
 - **ESMFold2 keeps one verified model and one input's ESMC states for a
   request.** A multi-seed or multi-input batch used to construct a fresh
   backend for every scalar run, reload the 26,347,754,143-byte released bundle,
@@ -513,6 +525,30 @@ command predicts unless it says so here, in its own paragraph.
   now see it instead of `Any`.
 
 ### Changed
+
+- **ESMFold2 no longer returns confidence logits nothing reads.** The model
+  handed back `pae_logits`, `pde_logits`, `plddt_logits`, `resolved_logits`,
+  `pae` and `pde`; `write_prediction_outputs` consumes three arrays and four
+  scalars, `representations` offers only single and pair, and no option exposed
+  them, so a caller could not have asked for them. They are now behind
+  `return_confidence_logits`, defaulting False, named after Boltz-2's flag of
+  the same name and default.
+
+  Measured at 1,003 tokens and the released 32 diffusion samples: entry outputs
+  fall 16,264 -> 250 MiB. **The net saving is 12,189 MiB, not the 16,014 the
+  outputs column suggests** -- the arena rises 3,826 MiB in exchange, because
+  dropping the logits does not delete them. `ptm` and `iptm` come from
+  `softmax(pae_logits)` and `complex_plddt` from `plddt_logits`, so the tensors
+  migrate out of the output allocation and into the arena, where XLA overlaps
+  them with other tenants. An earlier estimate of 15.36 GiB counted the outputs
+  and not the exchange.
+
+  `distogram_logits` is deliberately outside the flag: it is 245 MiB, flat in
+  sample count, and read by a torch-gated parity test that cannot run here.
+  `pae` and `pde` are derived matrices rather than raw logits, and in this
+  family of tools a PAE matrix is something users want -- so the flag is also
+  how to turn them back on, and PAE from ESMFold2 is one argument away rather
+  than unsupported.
 
 - **AlphaFold 3 reuses chain confidence aggregates during host
   postprocessing.** `pae_metrics` already computes the minimum chain-pair PAE,
