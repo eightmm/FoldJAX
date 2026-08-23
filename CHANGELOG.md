@@ -409,6 +409,45 @@ command predicts unless it says so here, in its own paragraph.
   setting; the new one spies the trunk and asserts the dtypes the graph
   actually built, in both bfloat16 and float32, because pinning one would pass
   for a port that hard-coded it.
+- **Resume now proves what it reuses.** A finished manifest must match the
+  exact scalar request, lexical and resolved input path, input and referenced
+  local-asset content, checkpoint file/tree content, padding, representation
+  selection, and stop point. The recorded structure must remain non-empty with
+  the same SHA-256; representation archives must remain contained beneath the
+  run root with the same names, order, shapes, logical dtypes, ZIP metadata,
+  and stat identity. Legacy/incomplete records rerun conservatively. Trunk and
+  BF16 archives are restored lazily, and a failure from an earlier batch pair
+  no longer suppresses a later successful multi-seed manifest.
+- **Built-in writers refuse non-finite public coordinates.** Boltz-2,
+  ESMFold2, OpenFold3, Protenix, and the Protenix writer shared by OpenDDE now
+  fail before creating a structure when any exposed atom is NaN or infinite.
+  Serving-padding atoms remain outside that check, and Boltz-2's guard is an
+  explicit exception that remains active under optimized Python.
+- **Distributed attention and Cannon accumulation keep their numerical
+  contracts at edge cases.** Boltz-2's serial, chunked, fused, 1-D, and 2-D
+  pair-biased attention paths return finite zero for an all-masked key set
+  instead of a uniform mean or NaN. OpenFold3's 2-D Cannon reduction now uses
+  compensated fp32 tile accumulation like the other supported pair trunks. A
+  forced four-device model-level gate exercises Boltz-2 conditioning through
+  its atom encoder, token transformer, and atom decoder without an all-gather.
+- **Unsupported representation requests now fail during request validation.**
+  Capability validation understands comma-separated names and `all`, so an
+  unsupported array is rejected by `plan`/resolution before model weights or a
+  native runtime are loaded. A backend that exposes no representations rejects
+  `all`, and an empty comma/whitespace-only selector is refused instead of
+  running a trunk graph that returns no arrays. Representation capture is also
+  single-seed until the public result can carry more than one archive handle;
+  multi-seed capture now fails early instead of silently losing handles.
+- **OpenDDE common inputs no longer advertise fields its released runtime
+  discards.** Mapped templates and RNA MSAs now fail in compatibility checking
+  and materialization; protein MSAs are unchanged. Native OpenDDE passthrough
+  retains the existing `templatesPath`/RNA `unpairedMsaPath` warning/drop
+  behavior required to match the shipped `use_template=False` and
+  `use_rna_msa=False` defaults.
+- **The hermetic CI gate no longer waits on RCSB.** Tests marked `network`
+  remain available as an opt-in integration surface, but the canonical CPU
+  suite excludes them instead of depending on an external service and its
+  120-second timeout.
 - **OpenFold3 predicted nothing at all.** Every OpenFold3 run raised
   `TypeError: released_config() got an unexpected keyword argument
   'returned_representations'` before the model was reached, with no option

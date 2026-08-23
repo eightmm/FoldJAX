@@ -216,6 +216,12 @@ Nothing is sent anywhere on this path. The version string is part of the cache
 key, so upgrading a database invalidates the alignments it produced instead of
 mixing generations. `foldjax doctor` prints which search is configured.
 
+OpenDDE's released inference configuration sets `use_rna_msa=False`. A
+FoldJAX common-schema job therefore rejects an RNA `unpaired_msa` or
+`paired_msa` instead of materializing a file the model will discard; protein
+MSAs remain supported. Native OpenDDE input keeps the upstream-compatibility
+policy and emits a warning when it drops an RNA `unpairedMsaPath`.
+
 ### Templates and binding affinity
 
 ```yaml
@@ -233,13 +239,18 @@ properties:
 ```
 
 The two forms of a template are different inputs, not one input in two
-spellings. AlphaFold 3, Protenix and OpenDDE require the query→template residue
-map and refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a
-map it would have to ignore. Affinity reaches Boltz-2 alone — it is the only
-carried model with that head. OpenFold3 builds template features from its own
-pipeline and has no per-job field, so a template addressed to it is refused.
-`foldjax capabilities --model MODEL` reports both `common_schema_features` and
-`native_only_features` for exactly this reason.
+spellings. AlphaFold 3 and Protenix require the query→template residue map and
+refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a map it
+would have to ignore. OpenDDE has native template machinery, but its released
+inference configuration sets `use_template=False`: common-schema templates are
+rejected instead of being converted to a `templatesPath` that will be dropped.
+Its runtime capability therefore reports `supports_templates=false`; native
+OpenDDE input retains the compatibility warning/drop policy. Affinity
+reaches Boltz-2 alone — it is the only carried model with that head. OpenFold3
+builds template features from its own pipeline and has no per-job field, so a
+template addressed to it is refused. `foldjax capabilities --model MODEL`
+reports both `common_schema_features` and `native_only_features` for exactly
+this reason.
 
 ## CLI
 
@@ -306,11 +317,15 @@ Batches get two flags that only make sense per model/input pair:
 uv run foldjax predict --model boltz2 --input jobs/ --resume --keep-going
 ```
 
-`--resume` skips any run whose output directory already holds a finished
-`foldjax_run.json` — the manifest is written after the run, so its presence
-already means the run completed and no separate state file is needed. It works
-at **seed** granularity: every seed writes its own manifest, so a five-seed job
-that died on the fourth repeats only what is missing rather than all five.
+`--resume` skips a run only when its finished `foldjax_run.json` matches the
+exact request, input and referenced local assets, checkpoint content, and the
+persisted structure/representation artifacts. Legacy or incomplete manifests
+rerun conservatively; a manifest's presence alone is not evidence that today's
+request produced it. Matching works at **seed** granularity: every seed writes
+its own manifest, so a five-seed job that died on the fourth repeats only what
+is missing rather than all five. Trunk archives are restored lazily, including
+their logical BF16 dtype, without loading a quadratic pair array just to decide
+whether it is reusable.
 `--keep-going` runs the rest of the batch when one run fails and exits 3 if any
 did, instead of losing seventeen good predictions to the third one's OOM; what
 failed is recorded in `foldjax_failures.json` beside the runs that did not,
@@ -580,6 +595,13 @@ results = predict(
 )  # 3 models x 2 inputs -> 6 results, each holding 3 seeds x 5 samples
 ```
 
+Representation capture is single-seed: `PredictionResult` carries one
+`Representations` archive handle, so combining `representations=...` with more
+than one resolved seed is rejected during request resolution instead of
+silently retaining only one archive. Run one seed per request when capturing
+trunk arrays. Empty selectors such as `representations=(",",)` are also
+rejected; name at least one array or use `"all"`.
+
 The CLI spells it the same way: `foldjax predict --model boltz2 protenix
 --input kinase.yaml complex.yaml`.
 
@@ -627,14 +649,17 @@ on Boltz-2 and you are asking more of it than `boltz predict` does. ESMFold2 is
 not on that chart: it has no evolutionary trunk and no comparable schedule, so
 putting it on the same axes would compare two different questions.
 
-`foldjax.capabilities(model)` reports the scientific input and sampling
-surface. Two of its fields describe the *common schema* rather than the model:
+`foldjax.capabilities(model)` reports the runnable backend's scientific input
+and sampling surface. A dormant code path disabled by the shipped inference
+configuration is not a capability; for example, OpenDDE reports
+`supports_templates=false` because its fixed `use_template=False` path drops
+template input. Two fields further describe the *common schema* route:
 `common_schema_features` is what this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
-that the common document has no field for. Templates are the case that matters
-— five of the six backends support them and the common schema cannot express
-one, so those jobs need the model's native input format. `supports_templates`
-alone used to imply otherwise. Its `input_requirements` mapping distinguishes
+but the common adapter cannot safely reach. Templates are the case that
+matters: backend support does not imply that every input route honours a
+per-job template.
+Its `input_requirements` mapping distinguishes
 dependencies by input format — for example, OpenFold3's `openfold3-features` archive is JAX-only,
 while its raw `native`, `openfold3`, and `foldjax` formats require the
 non-Torch `openfold3-preprocess` chemistry extra for JAX featurization.

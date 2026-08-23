@@ -111,6 +111,7 @@ uv run pytest -q \
   tests/models/boltz2/test_context_parallel.py \
   tests/models/boltz2/test_atom_context_parallel.py \
   tests/models/boltz2/test_atom_cp_numerics.py \
+  tests/models/boltz2/test_atom_cp_model_integration.py \
   tests/models/boltz2/test_atom_cp_padding.py \
   tests/models/boltz2/test_api.py \
   tests/models/protenix/test_context_parallel.py \
@@ -126,8 +127,11 @@ pair-bias attention case. Ruff formatting/linting, Python compilation, and
 `git diff --check` also passed. No numerical tolerance was loosened.
 
 These gates prove numerical parity, padding behavior, model wiring, entry
-placement, and HLO collective structure on multi-device CPU meshes. They do not
-claim CUDA/NCCL throughput or multi-node reliability.
+placement, and HLO collective structure on multi-device CPU meshes. The
+model-level atom gate composes conditioning, the atom encoder, token
+transformer, and atom decoder under both layouts rather than testing only the
+routing primitives. These gates do not claim CUDA/NCCL throughput or
+multi-node reliability.
 
 ## Deployment validation still required
 
