@@ -7,10 +7,10 @@ scientifically native to each model").
 
 ## 3차 구현 (2026-08-23, 요청 범위 세션)
 
-2.1(c)의 공통 `Backend.session()` 계약과 ESMFold2 구현을 추가했다. 세션 재사용은
-명시적으로 opt-in한 백엔드만 적용되며, 나머지 백엔드는 기존처럼 scalar run마다 새
-인스턴스를 받는다. ESMFold2는 같은 요청의 seed/input 사이에서 checkpoint를 한 번만
-로드하고, 정규화·패딩된 입력이 같은 동안 seed-independent ESMC hidden state를 한
+2.1(c)의 공통 `Backend.session()` 계약과 ESMFold2·AlphaFold3·Boltz-2 구현을 추가했다.
+세션 재사용은 명시적으로 opt-in한 백엔드만 적용되며, 나머지 백엔드는 기존처럼 scalar
+run마다 새 인스턴스를 받는다. ESMFold2는 같은 요청의 seed/input 사이에서 checkpoint를
+한 번만 로드하고, 정규화·패딩된 입력이 같은 동안 seed-independent ESMC hidden state를 한
 번만 계산한다. 한 input의 hidden만 보유하며 model group이 끝나면 모두 해제한다.
 
 재사용은 weight 경로만으로 판단하지 않는다. 실제 loader가 읽는 structure checkpoint,
@@ -18,7 +18,14 @@ ESMC config/index/shard와 device placement를 고정하고 resume·load·predic
 경계마다 다시 확인한다. 중간에 파일 세대가 바뀌면 과거 seed와 새 seed를 섞지 않고
 세션을 실패시킨다. all-resume은 stat 검증만 하고 26 GB bundle을 로드하지 않는다.
 
-Boltz-2 loader도 nested parameter tree 생성 직후 flat checkpoint mapping을 놓아,
+Boltz-2도 같은 request session에 opt-in했다. 실제 loader가 선택한 confidence/affinity
+checkpoint와 scalar sidecar, device·CP topology, compile cache, trace-time option이
+모두 같을 때만 파라미터와 JIT owner를 재사용한다. role별 JIT cache는 최대 8개 shape로
+제한하고, continued failure 뒤에는 다음 seed가 fresh load/trace하며, all-resume은
+native runtime을 import하지 않는다. CPU mock에서 같은 2개 seed의 primary load/trace가
+2회에서 1회로, affinity job은 primary/affinity 각각 2회에서 1회로 줄었다.
+
+Boltz-2 loader는 nested parameter tree 생성 직후 flat checkpoint mapping도 놓아,
 pre-stack/device transfer 동안 두 소유자가 unstacked 배열을 붙잡지 않게 했다. 로컬
 released confidence checkpoint에서 max RSS는 6,687,764 KiB에서 4,848,852 KiB로
 1,838,912 KiB(27.5%) 줄었고 최종 parameter bytes와 값은 동일했다. 두 변경 모두 CPU
@@ -320,12 +327,14 @@ class Backend:
 
 따라서 (a) → (b) → boltz2·esmfold2부터 (c), 나머지는 측정 결과가 정당화할 때.
 
-**현재 구현 상태.** 공통 프로토콜과 ESMFold2·AlphaFold3 세션은 구현됐다. dispatcher는
-모델별로 한 세션만 순서대로 열고, ESMFold2는 verified checkpoint snapshot이 같은 동안
-model과 ESMC hidden state를 재사용한다. AlphaFold3는 managed runtime의 weights, runner,
+**현재 구현 상태.** 공통 프로토콜과 ESMFold2·AlphaFold3·Boltz-2 세션은 구현됐다.
+dispatcher는 모델별로 한 세션만 순서대로 열고, ESMFold2는 verified checkpoint
+snapshot이 같은 동안 model과 ESMC hidden state를 재사용한다. AlphaFold3는 managed runtime의 weights, runner,
 vendored source generation이 고정된 동안 하나의 `ModelRunner`와 그 JIT owner를
 재사용한다. 명시적 외부 `source=`와 단일 scalar 호출은 기존 fresh-instance 경로를
-유지한다. Boltz-2를 포함한 나머지 backend는 아직 opt-in하지 않았다. 위의 native
+유지한다. Boltz-2는 confidence/affinity parameter tree와 role별 bounded JIT owner를
+실제 checkpoint bundle·device·CP·compile identity가 고정된 동안 재사용한다. 나머지
+backend는 아직 opt-in하지 않았다. 위의 native
 fan-out 제안 (b)는 출력/seed 계약을 바꾸지 않고도 같은 지배적 낭비를 제거했기 때문에
 당장 필요하지 않다.
 
@@ -524,12 +533,12 @@ OOM → 이 job에 **실제로 유효한** knob만 나열(모델별로 다르다
   건드리므로 실제 가중치로 GPU에서 한 번은 돌려봐야 하고, 이 세션에서는 GPU 작업을
   큐에 넣지 않았다. 선행 조건인 2.1(a) 계측이 방금 들어갔으니, 다음 실행에서
   `cost.phases`가 로드 비용을 얼마로 보고하는지 보고 판단하는 것이 순서다.
-- **2.1(c)의 나머지 백엔드** — 공통 프로토콜과 ESMFold2·AlphaFold3는 구현했다.
+- **2.1(c)의 나머지 백엔드** — 공통 프로토콜과 ESMFold2·AlphaFold3·Boltz-2는
+  구현했다.
   AlphaFold3는 upstream `ModelRunner`를 직접 보유하는 adapter라 native API를 바꾸지
   않고 managed route에 한해 안전한 load-once 경계를 만들 수 있었다.
   protenix/opendde/openfold3는 `module.main(argv)` 구조라 포트마다 load-once 진입점을
-  새로 열어야 한다. Boltz-2도 loader lifetime은 줄였지만 아직 request session에는
-  opt-in하지 않았다. 실제 반복 비용이 정당화할 때 백엔드별로 추가한다.
+  새로 열어야 한다. 실제 반복 비용이 정당화할 때 백엔드별로 추가한다.
 - **2.2 버킷 정렬** — 실행 순서를 바꾸는 최적화라, 결과 순서 계약이 유지되는지
   패딩을 켠 실제 배치로 확인해야 의미가 있다.
 - **2.3 `warm --grid`** — 구현은 짧지만 각 격자점이 진짜 실행이라, 검증에 GPU 시간이

@@ -253,6 +253,132 @@ def _resolve_cp_layout(layout: str, cp_devices: int) -> str:
     return layout
 
 
+def _static_runtime_identity(value: Any) -> Any:
+    """Freeze one trace-time value without accepting an unsafe cache collision."""
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return ("path", str(value.absolute()))
+    if isinstance(value, Mapping):
+        return (
+            "mapping",
+            tuple(
+                (str(key), _static_runtime_identity(child))
+                for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+            ),
+        )
+    if isinstance(value, (list, tuple)):
+        return (
+            type(value).__name__,
+            tuple(_static_runtime_identity(child) for child in value),
+        )
+    try:
+        dtype = np.dtype(value)
+    except TypeError:
+        # An unfamiliar future option gets a per-object key. That may miss a
+        # reuse opportunity, but can never replay a graph traced for a
+        # semantically different value merely because their reprs collide.
+        return ("opaque", type(value).__module__, type(value).__qualname__, id(value))
+    return ("dtype", dtype.str, dtype.name)
+
+
+def _device_runtime_identity(device: Any) -> tuple[Any, ...]:
+    return tuple(
+        getattr(device, name, None)
+        for name in (
+            "platform",
+            "process_index",
+            "id",
+            "local_hardware_id",
+            "device_kind",
+        )
+    )
+
+
+def _parameter_runtime_identity(
+    jax_module: Any,
+    *,
+    cp_devices: int,
+    cp_layout: str,
+) -> tuple[Any, ...]:
+    """Settings that change the loaded dtype or retained mesh placement."""
+
+    devices = tuple(
+        _device_runtime_identity(device)
+        for device in list(jax_module.devices())[:cp_devices]
+    )
+    return (
+        ("cp_layout", cp_layout),
+        ("cp_devices", cp_devices),
+        ("devices", devices),
+        ("default_device", str(jax_module.config.jax_default_device)),
+        ("enable_x64", bool(jax_module.config.jax_enable_x64)),
+    )
+
+
+def _runtime_identity(
+    jax_module: Any,
+    *,
+    cp_devices: int,
+    cp_layout: str,
+    compile_cache: Path | None,
+    parameter_identity: tuple[Any, ...] | None = None,
+) -> tuple[Any, ...]:
+    """Complete identity of values captured while tracing one model graph."""
+
+    triangle_multiplication_backend = os.environ.get(
+        "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
+    )
+    if triangle_multiplication_backend not in {"cueq", "xla"}:
+        raise ValueError(
+            "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND must be 'cueq' or "
+            f"'xla'; got {triangle_multiplication_backend!r}"
+        )
+    if cp_devices > 1:
+        triangle_multiplication_backend = "xla"
+    if parameter_identity is None:
+        parameter_identity = _parameter_runtime_identity(
+            jax_module,
+            cp_devices=cp_devices,
+            cp_layout=cp_layout,
+        )
+    return (
+        *parameter_identity,
+        ("default_prng_impl", str(jax_module.config.jax_default_prng_impl)),
+        (
+            "dtype_promotion",
+            str(jax_module.config.jax_numpy_dtype_promotion),
+        ),
+        ("rank_promotion", str(jax_module.config.jax_numpy_rank_promotion)),
+        ("matmul_precision", str(jax_module.config.jax_default_matmul_precision)),
+        ("triangle_multiplication_backend", triangle_multiplication_backend),
+        (
+            "compile_cache",
+            str(compile_cache.resolve()) if compile_cache is not None else None,
+        ),
+    )
+
+
+def _runner_identity(
+    *,
+    predict_function: Any,
+    predict_kwargs: Mapping[str, Any],
+    noise_tape: bool,
+    runtime: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    """Everything captured by one retained ``jax.jit`` wrapper."""
+
+    return (
+        ("model_function", id(predict_function)),
+        ("noise_tape", noise_tape),
+        ("kwargs", _static_runtime_identity(predict_kwargs)),
+        ("runtime", runtime),
+    )
+
+
 @_pinned_matmul_precision
 def predict(
     *,
@@ -325,6 +451,7 @@ def predict(
     padding: PaddingConfig | None = None,
     write_fmt: str | None = None,
     max_msa_depth: int | None = None,
+    _runtime: Any | None = None,
 ) -> dict[str, Any]:
     """Run end-to-end Boltz-2 inference.
 
@@ -379,6 +506,7 @@ def predict(
         max_msa_depth=max_msa_depth,
     )
 
+    cache = None
     if compile_cache is not None:
         cache = Path(compile_cache).expanduser().resolve()
         cache.mkdir(parents=True, exist_ok=True)
@@ -390,12 +518,35 @@ def predict(
             f"compute_dtype must be one of {COMPUTE_DTYPES}, got {compute_dtype!r}"
         )
     dtype = {"float32": jnp.float32, "bfloat16": jnp.bfloat16}[compute_dtype]
+    parameter_identity = _parameter_runtime_identity(
+        jax,
+        cp_devices=cp_devices,
+        cp_layout=resolved_cp_layout,
+    )
+    runtime_identity = _runtime_identity(
+        jax,
+        cp_devices=cp_devices,
+        cp_layout=resolved_cp_layout,
+        compile_cache=cache,
+        parameter_identity=parameter_identity,
+    )
     confidence_weights = Path(weights)
-    params = load_params(confidence_weights)
-    affinity_model_params = None
     affinity_requested = stop_after != "trunk" and bool(
         np.any(feats_np["affinity_token_mask"])
     )
+    if _runtime is not None:
+        _runtime.prepare(affinity_requested=affinity_requested)
+    params = (
+        load_params(confidence_weights)
+        if _runtime is None
+        else _runtime.load_params(
+            "primary",
+            confidence_weights,
+            load_params,
+            placement=parameter_identity,
+        )
+    )
+    affinity_model_params = None
     if affinity_requested:
         affinity_path = (
             Path(affinity_weights)
@@ -407,7 +558,16 @@ def predict(
                 "affinity weights are required for an affinity job; "
                 f"not found: {affinity_path}(.safetensors|.npz)"
             )
-        affinity_model_params = load_params(affinity_path)
+        affinity_model_params = (
+            load_params(affinity_path)
+            if _runtime is None
+            else _runtime.load_params(
+                "affinity",
+                affinity_path,
+                load_params,
+                placement=parameter_identity,
+            )
+        )
         if not {"trunk", "affinity"} <= affinity_model_params.keys():
             raise ValueError(
                 "native affinity weights use the obsolete head-only format; "
@@ -574,7 +734,22 @@ def predict(
     from foldjax.models._cp import context_parallel, replicate_tree
     from foldjax.models._cp_atom import place_atoms
 
-    runner = run_model if steering_active else jax.jit(run_model)
+    if steering_active:
+        runner = run_model
+    elif _runtime is None:
+        runner = jax.jit(run_model)
+    else:
+        runner = _runtime.jit_runner(
+            "primary",
+            _runner_identity(
+                predict_function=boltz2_predict,
+                predict_kwargs=predict_kwargs,
+                noise_tape=padding_noise_tape is not None,
+                runtime=runtime_identity,
+            ),
+            run_model,
+            jax.jit,
+        )
     # A tap records a tracer of the graph being built, so the capture set
     # has to be live while the program is traced, not while it runs.
     with (
@@ -587,10 +762,23 @@ def predict(
             # pair mesh, and safe Boltz atom features/noise tapes enter already
             # sharded over CP rows. Dense coupled atom/token maps stay replicated.
             placed_args = list(model_args)
-            placed_args[0] = replicate_tree(
-                placed_args[0],
+            place_params = lambda tree: replicate_tree(  # noqa: E731
+                tree,
                 shard_pair_features=False,
             )
+            placed_args[0] = (
+                place_params(placed_args[0])
+                if _runtime is None
+                else _runtime.place_params(
+                    "primary",
+                    placed_args[0],
+                    placement=parameter_identity,
+                    placer=place_params,
+                )
+            )
+            # On the first seed this drops the loader's single-device owner as
+            # soon as the mesh-placed tree has replaced it in the session.
+            params = placed_args[0]
             placed_args[1] = replicate_tree(
                 placed_args[1],
                 shard_atom_features=cp_atom_active,
@@ -765,7 +953,22 @@ def predict(
                 jax.random.PRNGKey(seed),
             )
 
-        affinity_out = jax.jit(run_affinity)(*affinity_args)
+        affinity_runner = (
+            jax.jit(run_affinity)
+            if _runtime is None
+            else _runtime.jit_runner(
+                "affinity",
+                _runner_identity(
+                    predict_function=boltz2_predict,
+                    predict_kwargs=affinity_kwargs,
+                    noise_tape=len(affinity_args) == 5,
+                    runtime=runtime_identity,
+                ),
+                run_affinity,
+                jax.jit,
+            )
+        )
+        affinity_out = affinity_runner(*affinity_args)
         out.update(
             {
                 key: value
@@ -862,9 +1065,9 @@ def predict(
 
 
 def _native_weights_exist(path: Path) -> bool:
-    return path.is_file() or any(
-        path.with_suffix(suffix).is_file() for suffix in (".safetensors", ".npz")
-    )
+    from foldjax.models.boltz2.weights import resolve_native_weight_bundle
+
+    return resolve_native_weight_bundle(path) is not None
 
 
 def _prepare_affinity_features(

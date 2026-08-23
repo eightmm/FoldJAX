@@ -78,6 +78,23 @@ command predicts unless it says so here, in its own paragraph.
   cleanup, cache/config/device splits, mutation, resume and cancellation.
   Released-weight GPU latency, memory and numerical parity remain deployment
   gates, so no production speedup is claimed here.
+- **Boltz-2 reuses its verified parameters and JIT owners inside a request.**
+  Multi-seed and multi-input runs now load the confidence checkpoint once and
+  retain one bounded compiled owner. Consecutive affinity runs do the same for
+  the complete affinity model; that optional tree is released before a later
+  primary-only input. Reuse is lazy, so an all-resumed request does not import
+  the native runtime or load either checkpoint. The session
+  binds the loader's selected `.safetensors`/`.npz` file, scalar sidecar and
+  sidecar absence, device/CP topology, cache namespace and every trace-time
+  model option, including JAX dtype/PRNG mode and the effective triangle
+  multiplication backend. A changed or newly preferred checkpoint generation
+  poisons the session instead of mixing seeds, while a continued ordinary
+  failure drops params and executables before the next seed. Each role retains
+  at most eight compiled shapes and all state is released at the model-group
+  boundary. CPU JAX tests cover primary and affinity load/trace reuse, resume
+  without runtime import, mutation, continued failure and executable eviction.
+  Released-weight CUDA latency, peak memory and numerical parity remain
+  deployment gates, so no GPU speedup is claimed here.
 - **Boltz-2 drops the flat host checkpoint mapping before layer stacking.** The
   nested parameter tree already owns the same NumPy leaves; retaining the flat
   dictionary kept the unstacked per-layer arrays alive while their stacked

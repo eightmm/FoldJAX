@@ -511,7 +511,7 @@ def _implicit_ccd_assets(request: PredictionRequest) -> list[Path]:
     return assets
 
 
-def _document_uses_key(request: PredictionRequest, wanted: str) -> bool:
+def document_uses_key(request: PredictionRequest, wanted: str) -> bool:
     """Whether one structured input contains a non-empty semantic field."""
     try:
         from foldjax.input import read_job_document
@@ -578,16 +578,14 @@ def _boltz_weight_bundle(
     input state: an unchanged sidecar-free export can resume, while adding the
     sidecar later invalidates the manifest.
     """
-    path = Path(path)
-    candidates = [path]
-    if path.suffix not in {".safetensors", ".npz"}:
-        candidates = [path.with_suffix(".safetensors"), path.with_suffix(".npz")]
-    weights = next((candidate for candidate in candidates if candidate.is_file()), None)
-    if weights is None:
+    from foldjax.models.boltz2.weights import resolve_native_weight_bundle
+
+    bundle = resolve_native_weight_bundle(path)
+    if bundle is None:
         # A real Boltz run will fail before producing a manifest. Keep backend
         # overrides and third-party test doubles with unrelated formats usable.
         return [], []
-    sidecar = weights.with_suffix(weights.suffix + ".json")
+    weights, sidecar = bundle
     if sidecar.exists():
         return ([weights, sidecar], []) if sidecar.is_file() else None
     return [weights], [sidecar]
@@ -615,7 +613,7 @@ def _implicit_weight_assets(
             if recorded_weight is None or path.resolve() != recorded_weight
         )
         missing.extend(primary_missing)
-        affinity_requested = request.stop_after != "trunk" and _document_uses_key(
+        affinity_requested = request.stop_after != "trunk" and document_uses_key(
             request, "affinity"
         )
         if affinity_requested:

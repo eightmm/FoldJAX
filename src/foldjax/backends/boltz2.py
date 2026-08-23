@@ -2,24 +2,105 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
+from foldjax.models.boltz2.weights import resolve_native_weight_bundle
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
+    PredictionError,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
     _strict_boolean,
     _strict_integer,
 )
+
+
+def _weight_bundle_snapshot(path: Path) -> tuple[Any, ...] | None:
+    """Cheap identity of the exact payload/sidecar selected by ``load_params``."""
+
+    bundle = resolve_native_weight_bundle(path)
+    if bundle is None:
+        return None
+    weights, sidecar = bundle
+    if sidecar.exists() and not sidecar.is_file():
+        return None
+    paths = [weights, *([sidecar] if sidecar.is_file() else [])]
+    records: list[tuple[str, str, str]] = []
+    for candidate in paths:
+        identity = path_stat_identity(candidate)
+        if identity is None:
+            return None
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        records.append(
+            (
+                str(candidate.absolute()),
+                str(resolved),
+                json.dumps(identity, sort_keys=True, separators=(",", ":")),
+            )
+        )
+    missing: tuple[str, ...] = ()
+    if not sidecar.exists():
+        try:
+            missing_sidecar = sidecar.parent.resolve(strict=True) / sidecar.name
+        except (OSError, RuntimeError):
+            return None
+        if missing_sidecar.exists():
+            return None
+        missing = (str(missing_sidecar),)
+    return (
+        ("requested", str(Path(path))),
+        ("selected", str(weights.absolute())),
+        ("assets", tuple(records)),
+        ("missing", missing),
+    )
+
+
+def _weight_source_key(role: str, path: Path) -> tuple[str, str]:
+    """Keep a relative spelling stable even if an embedding process changes cwd."""
+
+    return role, str(Path(path))
+
+
+class _BoundedJitRunner:
+    """Keep a request from retaining an executable for every input shape."""
+
+    _MAX_EXECUTABLES = 8
+
+    def __init__(self, runner: Any) -> None:
+        self._runner = runner
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        result = self._runner(*args, **kwargs)
+        cache_size = getattr(self._runner, "_cache_size", None)
+        clear = getattr(self._runner, "clear_cache", None)
+        if callable(cache_size) and callable(clear):
+            try:
+                if int(cache_size()) >= self._MAX_EXECUTABLES:
+                    clear()
+            except Exception:  # noqa: BLE001 - accounting must not hide a result
+                pass
+        return result
+
+    def clear_cache(self) -> None:
+        clear = getattr(self._runner, "clear_cache", None)
+        if callable(clear):
+            clear()
 
 
 def _native_module():
@@ -123,6 +204,7 @@ def _padding_shape_profile(metadata: object) -> dict[str, object] | None:
 
 class Boltz2Backend(Backend):
     name = "boltz2"
+    session_reuse = True
     padding_axes = ("tokens", "atoms", "msa")
     native_options = frozenset(
         {
@@ -185,6 +267,204 @@ class Boltz2Backend(Backend):
         "bucket",
     )
 
+    def __init__(self) -> None:
+        self._session_open = False
+        self._session_active = False
+        self._session_poisoned: str | None = None
+        self._asset_anchors: dict[
+            tuple[str, str], tuple[Any, ...] | None
+        ] = {}
+        self._params: dict[
+            str, tuple[tuple[Any, ...], tuple[Any, ...] | None, Any]
+        ] = {}
+        self._runners: dict[str, tuple[tuple[Any, ...], Any]] = {}
+
+    @contextmanager
+    def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
+        """Retain one primary tree, one affinity tree, and their JIT wrappers."""
+
+        if self._session_open:
+            raise RuntimeError("nested Boltz2 backend sessions are not supported")
+        self._session_open = True
+        attempts = sum(len(request.resolved_seeds) for request in requests)
+        self._session_active = attempts > 1
+        try:
+            yield self
+        finally:
+            self.invalidate_session()
+            self._asset_anchors.clear()
+            self._session_poisoned = None
+            self._session_active = False
+            self._session_open = False
+
+    def invalidate_session(self) -> None:
+        self._params.clear()
+        for role in tuple(self._runners):
+            self._drop_runner(role)
+
+    def _drop_runner(self, role: str) -> None:
+        cached = self._runners.pop(role, None)
+        if cached is None:
+            return
+        clear = getattr(cached[1], "clear_cache", None)
+        if callable(clear):
+            try:
+                clear()
+            except Exception:  # noqa: BLE001 - cleanup must never hide a result
+                pass
+
+    def prepare(self, *, affinity_requested: bool) -> None:
+        """Drop the optional second model before a primary-only prediction."""
+
+        if not self._session_active or affinity_requested:
+            return
+        self._params.pop("affinity", None)
+        self._drop_runner("affinity")
+
+    def _raise_if_poisoned(self) -> None:
+        if self._session_poisoned is not None:
+            raise PredictionError(self._session_poisoned)
+
+    def _poison(self, message: str) -> None:
+        self.invalidate_session()
+        self._session_poisoned = message
+        raise PredictionError(message)
+
+    def _request_weight_paths(
+        self, request: PredictionRequest
+    ) -> tuple[Path, Path | None]:
+        self._raise_if_poisoned()
+        assert request.weights is not None
+        primary = Path(request.weights)
+        affinity = None
+        if request.stop_after != "trunk" and document_uses_key(request, "affinity"):
+            configured = self.apply_sampling(request).get("affinity_weights")
+            affinity = (
+                Path(configured)
+                if configured is not None
+                else primary.with_name("boltz2_aff")
+            )
+        return primary, affinity
+
+    def _anchor_weight(
+        self,
+        role: str,
+        path: Path,
+        *,
+        require_verifiable: bool = False,
+    ) -> tuple[tuple[str, str], tuple[Any, ...] | None]:
+        self._raise_if_poisoned()
+        source = _weight_source_key(role, path)
+        snapshot = _weight_bundle_snapshot(path)
+        missing = object()
+        expected = self._asset_anchors.get(source, missing)
+        if expected is missing:
+            self._asset_anchors[source] = snapshot
+        elif expected is None:
+            snapshot = None
+        elif snapshot != expected:
+            self._poison(
+                f"Boltz2 {role} weights changed while a prediction batch was active"
+            )
+        if require_verifiable and snapshot is None:
+            self._poison(
+                f"Boltz2 cannot verify {role} weights used by a resumed prediction"
+            )
+        return source, snapshot
+
+    def validate_session(self, request: PredictionRequest) -> None:
+        if not self._session_active:
+            return
+        primary, affinity = self._request_weight_paths(request)
+        self._anchor_weight("primary", primary)
+        if affinity is not None:
+            self._anchor_weight("affinity", affinity)
+
+    def observe_resumed(self, request: PredictionRequest) -> None:
+        if not self._session_active:
+            return
+        primary, affinity = self._request_weight_paths(request)
+        self._anchor_weight("primary", primary, require_verifiable=True)
+        if affinity is not None:
+            self._anchor_weight("affinity", affinity, require_verifiable=True)
+
+    def load_params(
+        self,
+        role: str,
+        path: Path,
+        loader: Callable[[Path], Any],
+        *,
+        placement: tuple[Any, ...],
+    ) -> Any:
+        """Load lazily and retain only an exactly revalidated native bundle."""
+
+        if not self._session_active:
+            return loader(path)
+        source, snapshot = self._anchor_weight(role, path)
+        key = (source, snapshot, placement)
+        cached = self._params.get(role)
+        if cached is not None:
+            if snapshot is not None and cached[0] == key:
+                return cached[2]
+            self._params.pop(role, None)
+            self._drop_runner(role)
+            # Do not keep the evicted multi-gigabyte tree alive in this local
+            # while the replacement loader builds another one.
+            del cached
+
+        params = loader(path)
+        after = _weight_bundle_snapshot(path)
+        if snapshot is None or after is None:
+            return params
+        if after != snapshot:
+            self._poison(f"Boltz2 {role} weights changed while they were loading")
+        self._params[role] = (key, None, params)
+        return params
+
+    def place_params(
+        self,
+        role: str,
+        params: Any,
+        *,
+        placement: tuple[Any, ...],
+        placer: Callable[[Any], Any],
+    ) -> Any:
+        """Retain the mesh-placed tree instead of re-transferring it per seed."""
+
+        if not self._session_active:
+            return placer(params)
+        self._raise_if_poisoned()
+        cached = self._params.get(role)
+        if cached is None or cached[2] is not params:
+            # Unverifiable bundles deliberately never enter the parameter
+            # cache. Preserve their historical fresh placement as well.
+            return placer(params)
+        if cached[1] == placement:
+            return cached[2]
+        placed = placer(params)
+        self._params[role] = (cached[0], placement, placed)
+        return placed
+
+    def jit_runner(
+        self,
+        role: str,
+        key: tuple[Any, ...],
+        function: Callable[..., Any],
+        jit_factory: Callable[[Callable[..., Any]], Any],
+    ) -> Any:
+        """Reuse one exact graph owner per primary/affinity role."""
+
+        if not self._session_active:
+            return jit_factory(function)
+        self._raise_if_poisoned()
+        cached = self._runners.get(role)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        self._drop_runner(role)
+        runner = _BoundedJitRunner(jit_factory(function))
+        self._runners[role] = (key, runner)
+        return runner
+
     def validate_native_options(self, options: dict[str, object]) -> None:
         if "steps" in options:
             # The published Karras schedule divides by ``steps - 1``.  One
@@ -243,6 +523,14 @@ class Boltz2Backend(Backend):
         super().validate_request(request)
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
+        self._raise_if_poisoned()
+        if self._session_active:
+            self.validate_session(request)
+            # The native API confirms this from realized features, but the
+            # structured job already lets a primary-only run release the
+            # optional second model before featurization starts.
+            _primary, affinity = self._request_weight_paths(request)
+            self.prepare(affinity_requested=affinity is not None)
         options = self.apply_sampling(request)
         mols = options.pop("mols", None) or _default_mols(request.weights)
         if mols is None:
@@ -255,7 +543,7 @@ class Boltz2Backend(Backend):
         wanted = _representations.resolve(
             request.representations, _representations.specs_for("boltz2")
         )
-        output = native.predict(
+        native_options: dict[str, Any] = dict(
             representations=wanted or None,
             representations_dir=request.output_dir,
             stop_after=request.stop_after,
@@ -269,6 +557,9 @@ class Boltz2Backend(Backend):
             write_fmt=options.pop("write_fmt", "cif"),
             **options,
         )
+        if self._session_active:
+            native_options["_runtime"] = self
+        output = native.predict(**native_options)
         if request.stop_after == "trunk":
             # Nothing was folded, so there are no samples to describe.
             return PredictionResult(
