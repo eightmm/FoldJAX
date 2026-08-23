@@ -630,9 +630,14 @@ command predicts unless it says so here, in its own paragraph.
   a mask -- 59,049 MiB, 90.2% of that arena, to carry at most 129 non-zero
   terms per row. It is now a `lax.scan` over row blocks with a `dynamic_slice`
   of `R + 2*half_window` keys, so the window falls out of the slice bounds:
-  35,945 -> 11,312 MiB. **Behind `ESMFOLD2_ATOM_ATTENTION_BACKEND`, defaulting
-  to `dense`**, because flipping a default should follow a timing measurement
-  and that is not taken yet.
+  35,945 -> 11,312 MiB. **Behind `ESMFOLD2_ATOM_ATTENTION_BACKEND`, and now the
+  default**: at 1,003 residues and 32 samples it is 46.73 s against dense's
+  49.30 and 24.460 GiB against 48.516, three timed runs per arm with the arms
+  alternating and warmups discarded. The separation is clean rather than a
+  difference of means -- the slowest blocked run beats the fastest dense one --
+  and dense held the higher mean SM clock and still lost, so the margin
+  understates. It shipped defaulting to `dense`, because flipping a default
+  should follow a timing measurement rather than precede one.
 
   Together 65,485 -> 11,312 MiB, 82.7%. The blocked path is not bit-identical
   to the dense one -- the two contract over different widths, so XLA tiles the
