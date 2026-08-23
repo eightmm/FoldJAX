@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax.numpy as jnp
 import numpy as np
 
@@ -394,4 +396,73 @@ def _zero_effect_atom_block(
             linear_b=LinearParams(weight=jnp.zeros((c_atom, 2 * c_atom)), bias=None),
             linear_s=zero_atom_atom_bias,
         ),
+    )
+
+
+def test_the_pair_conditioning_cache_stays_float32_on_a_bfloat16_trunk() -> None:
+    """Upstream's fp32 island around diffusion, and what actually anchors it here.
+
+    Upstream builds this cache with autocast DISABLED and every floating input
+    explicitly upcast: `protenix.py:538-542` wraps
+    `diffusion_conditioning.prepare_cache` in
+    `autocasting_disable_decorator(configs.skip_amp.sample_diffusion)`,
+    `configs_base.py:137` sets that flag True, and `torch_utils.py:199-215`
+    both disables autocast and runs `tensor.to(dtype=torch.float32)` on each
+    floating argument. So float32 here is a decision, not a consequence.
+
+    This port holds the same invariant by a different and *sufficient*
+    mechanism: `cast_trunk_params` narrows only `input_embedder` and
+    `pairformer_output`, deliberately "preserving FP32 output-head islands", so
+    the diffusion conditioning weights stay float32 and `linear` promotes to
+    float32 whatever dtype the activations arrive in. The island is anchored by
+    the parameters, not by the storage dtype of any feature -- which is why
+    this test passes with both inputs in bfloat16.
+
+    It is a regression test, not a fix: it fails if someone extends
+    `cast_trunk_params` to the diffusion parameters, which is the one edit that
+    would actually narrow the island. Narrowing `relp` alone would not.
+
+    OpenDDE reaches this same function and inherits the same guarantee.
+    """
+    state = _diffusion_conditioning_state(c_z=2, c_s=3, c_s_inputs=2, c_noise=4)
+    params = map_diffusion_conditioning_state_dict(state, "dc")
+    relp = jnp.ones((2, 2, 2), dtype=jnp.bfloat16)
+    z_trunk = jnp.ones((2, 2, 2), dtype=jnp.bfloat16)
+
+    cache = diffusion_conditioning_prepare_cache(relp, z_trunk, params)
+
+    assert cache.dtype == jnp.float32
+
+
+class _ParamsForCastTest(NamedTuple):
+    """Minimal stand-in: `cast_trunk_params` rebuilds through `_replace`."""
+
+    input_embedder: jnp.ndarray
+    pairformer_output: jnp.ndarray
+    diffusion: jnp.ndarray
+
+
+def test_cast_trunk_params_leaves_the_diffusion_island_alone() -> None:
+    """The other half of the invariant above, asserted where it is decided.
+
+    `--trunk-dtype bf16` must not reach the diffusion conditioning weights: they
+    are what keeps the pair conditioning cache in float32, matching upstream's
+    explicit upcast. Extending this function to the diffusion parameters is the
+    edit that would narrow the island, and it fails here.
+    """
+    from foldjax.models.protenix.models.model import cast_trunk_params
+
+    narrowed = cast_trunk_params(
+        _ParamsForCastTest(
+            input_embedder=jnp.ones((2, 2), jnp.float32),
+            pairformer_output=jnp.ones((2, 2), jnp.float32),
+            diffusion=jnp.ones((2, 2), jnp.float32),
+        ),
+        jnp.bfloat16,
+    )
+
+    assert narrowed.input_embedder.dtype == jnp.bfloat16
+    assert narrowed.pairformer_output.dtype == jnp.bfloat16
+    assert narrowed.diffusion.dtype == jnp.float32, (
+        "the diffusion island must survive --trunk-dtype bf16"
     )
