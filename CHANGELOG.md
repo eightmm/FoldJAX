@@ -723,13 +723,18 @@ command predicts unless it says so here, in its own paragraph.
 
 - **ESMFold2's released configuration did not run.** At 32 diffusion samples --
   what `config.json` ships and `backends/esmfold2.py` carries -- a 1,003-residue
-  job terminated with an allocation failure after 71 minutes, under default
-  preallocation and under `XLA_PYTHON_CLIENT_PREALLOCATE=false` alike. The
+  job terminated with an allocation failure after 71 minutes. The
   confidence head runs its own folding trunk on the spread pair, and batched
   over 32 samples that trunk builds `bf16[32, L^2, 2048]` at **122.8 GiB on a
-  95.6 GiB device** -- 27.2 GiB over on a single buffer, so no allocator setting
-  could rescue it. `confidence_sample_sequential` now defaults to on, which
-  divides that and every other batched intermediate by the sample count.
+  95.6 GiB device** -- 27.2 GiB over on a single buffer. That is arithmetic
+  rather than fragmentation, so it holds whatever the allocator does: no
+  rearrangement makes one allocation fit that is larger than the device. The
+  terminal run was taken under `XLA_PYTHON_CLIENT_PREALLOCATE=false`; there is
+  no completed-or-failed run of that configuration under default preallocation,
+  and the arithmetic is what makes one unnecessary.
+
+  `confidence_sample_sequential` now defaults to on, which divides that and
+  every other batched intermediate by the sample count.
 
 
 - **ESMFold2's folding trunk ran in float32 while every setting said
