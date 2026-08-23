@@ -112,14 +112,37 @@ def _with_cueq_triangle_defaults(function):
     the part that was wrong. OpenDDE peaks at 10,552 MiB on a 490-token job and
     34,408 MiB on a 970-token one; there is 60+ GiB spare in both.
 
+    **Those are float32 numbers**, which is the CLI default and faithful to
+    upstream's own float32 storage (`inference_defaults.py:24`). Everything
+    below is measured in bfloat16 unless it says otherwise; the two regimes
+    have different answers and reading one for the other is how the paragraph
+    after this one came to be wrong.
+
     Upstream resolves `auto` to cuequivariance for both kernels
     (config/model_base.py:31-32) and OpenDDE's `c_hidden == c_z == 384` clears
     the kernel's guard, so fused is what upstream actually runs. Protenix, which
-    shares this triangle module, went 254.5 -> 167.1 s on the same switch.
+    shares this triangle module, went 254.5 -> 167.1 s on the same switch --
+    **Protenix's figure, not OpenDDE's**, and not transferable: OpenDDE's
+    structural pair space is ~1.9x residues, a different shape with a different
+    answer.
 
-    `setdefault` with a restore: an explicit environment still wins, which is
-    how a job too large for the fused arena asks for the blocked path, and
+    `setdefault` with a restore: an explicit environment still wins, and
     nothing leaks into the process for the next model to inherit.
+
+    This used to add "which is how a job too large for the fused arena asks for
+    the blocked path". **That is false and was pointing users into a second
+    OOM.** Measured at 1,531 tokens in float32, neither path runs: fused asks
+    for 93.40 GiB and dies, blocked asks for 80.72 GiB and dies. The blocked
+    path moves the wall; it does not rescue the job. In float32 the backend
+    choice cannot save an oversized job and no size threshold makes it possible
+    -- the lever there is bfloat16, where both paths run at 1,531 (fused 53,068
+    MiB, blocked 46,596).
+
+    So any adaptive policy here keys on **dtype first**, then size. Blocked is
+    now the cheaper arm at every size measured -- about 24% by the identity in
+    `protenix/models/triangle/triangle.py`, once its destination stopped being
+    float32 -- but the default stays fused until a clocked A/B settles the time
+    question, which single warm samples on this card cannot.
     """
 
     @wraps(function)
