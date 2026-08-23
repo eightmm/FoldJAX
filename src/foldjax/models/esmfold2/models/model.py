@@ -115,12 +115,44 @@ class ModelSettings:
     #: packed pair transition, on top of 64.6 GiB already resident. Batched,
     #: that single buffer would have been five times as large.
     #:
+    #: **Everything above was measured at five samples. The release ships
+    #: thirty-two, and at thirty-two the batched path does not run at all.**
+    #: That inverts the decision, so the default is now on.
+    #:
+    #: The head runs its own `folding_trunk` over the spread pair
+    #: (`heads.py`), and batching puts a sample axis on every one of that
+    #: trunk's intermediates. At 1,003 residues and 32 samples, measured as
+    #: the allocator's own failing requests:
+    #:
+    #:     bf16[32, L^2,  512]    30.701 GiB
+    #:     bf16[32, L^2, 1024]    61.402 GiB
+    #:     bf16[32, L^2, 2048]   122.804 GiB   <- 27.2 GiB past the card
+    #:     f32 pae+pde logits     15.350 GiB
+    #:
+    #: The largest single intermediate needs 122.8 GiB on a 95.6 GiB device,
+    #: so this is a capacity impossibility rather than a fragmentation one and
+    #: no allocator setting reaches it -- confirmed by failing under both
+    #: preallocation on and off, at different points, for the same reason.
+    #: Sequencing divides every one of those by the sample count, giving an
+    #: 11,312 MiB arena that has run to completion four times.
+    #:
+    #: So the justification is not that this saves memory. It is that the
+    #: released configuration is arithmetically impossible without it. The
+    #: saving is a consequence.
+    #:
+    #: The earlier note that this "does not raise the size this model can
+    #: reach" stands for the length axis and is beside the point here: what
+    #: was out of reach is the released *sample count* at a length the model
+    #: otherwise handles.
+    #:
+    #: `lax.map` reorders execution and not arithmetic -- `spread` is a
+    #: `jnp.repeat` and no operation in the head crosses the sample axis, so
+    #: every reduction there is over bins, tokens or atoms. The 1e-5 of pLDDT
+    #: is bfloat16 reduction-order rounding from the changed matmul shapes,
+    #: and it was never a reason to prefer a configuration that cannot run.
+    #:
     #: Protenix carries the same switch and defaults it on
-    #: (`models/protenix/models/model.py`). Whether this one should follow is
-    #: a decision about that 1e-5, not about the memory -- and the 1e-5 was
-    #: measured on one target at one seed. It is not a bound: a target where
-    #: the confidence head is less well determined could move further, and
-    #: nobody has looked.
+    #: (`models/protenix/models/model.py`) -- corroboration, not the argument.
     #:
     #: One exposure a reader should know about. Rebuilding the batched result
     #: from the mapped one keys on a size-1 second axis: a leaf with one is
@@ -130,7 +162,7 @@ class ModelSettings:
     #: output whose second axis happened to be size one would be collapsed
     #: silently rather than loudly. Protenix's copy of the rule carries the
     #: same exposure.
-    confidence_sample_sequential: bool = False
+    confidence_sample_sequential: bool = True
     #: Return the confidence head's full-bin logits and the PAE/PDE matrices.
     #: False by default, mirroring Boltz-2's flag of the same name and default
     #: -- that argument was had once already on the other port and this is the
@@ -209,9 +241,7 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
             number(config, "n_relative_residx_bins", base.n_residue_bins)
         ),
         n_chain_bins=int(number(config, "n_relative_chain_bins", base.n_chain_bins)),
-        inputs_atom_n_blocks=int(
-            number(atom, "n_blocks", base.inputs_atom_n_blocks)
-        ),
+        inputs_atom_n_blocks=int(number(atom, "n_blocks", base.inputs_atom_n_blocks)),
         inputs_atom_n_heads=int(number(atom, "n_heads", base.inputs_atom_n_heads)),
         inputs_half_window=int(
             number(atom, "swa_window_size", base.inputs_half_window * 2)
@@ -249,6 +279,32 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
 #: inside the confidence head from tensors the head keeps, so the scalars that
 #: *are* read -- `ptm` comes from `softmax(pae_logits)` -- are unaffected: this
 #: withholds the arrays, it does not skip the arithmetic.
+def rebuild_batched_confidence(
+    mapped: Mapping[str, jnp.ndarray],
+) -> dict[str, jnp.ndarray]:
+    """Reshape `lax.map`'s per-sample results into what batching would return.
+
+    Each leaf gained a leading map axis over its single-sample shape. A leaf
+    whose next axis is that size-1 sample axis collapses back onto it; a
+    sample-independent leaf was produced identically once per sample and only
+    one copy belongs in the result.
+
+    Module level rather than inline so the test can exercise *this* function.
+    It used to be a dict comprehension inside `run`, and the test that guards
+    it held a second copy of the rule -- which passes when the copy is right
+    and the original is wrong, the failure mode those two can always produce
+    between them.
+    """
+    return {
+        name: (
+            jnp.squeeze(value, axis=1)
+            if value.ndim > 1 and value.shape[1] == 1
+            else value[0]
+        )
+        for name, value in mapped.items()
+    }
+
+
 CONFIDENCE_LOGIT_OUTPUTS = (
     "pae_logits",
     "pde_logits",
@@ -378,9 +434,7 @@ def _dropout(
         if valid_mask is None:
             raise ValueError("prefix-preserving dropout requires a validity mask")
         keep = masked_prefix_draw(
-            lambda draw_key, shape: jax.random.bernoulli(
-                draw_key, 1.0 - rate, shape
-            ),
+            lambda draw_key, shape: jax.random.bernoulli(draw_key, 1.0 - rate, shape),
             key,
             valid_mask,
             trailing_shape=x.shape[valid_mask.ndim :],
@@ -402,9 +456,7 @@ def _initial_pair_state_draw(
 
     shape = (*pair_mask.shape, width)
     if not preserve_prefix_rng:
-        return jax.random.truncated_normal(
-            key, -3.0, 3.0, shape, dtype=jnp.float32
-        )
+        return jax.random.truncated_normal(key, -3.0, 3.0, shape, dtype=jnp.float32)
     return masked_prefix_draw(
         lambda draw_key, draw_shape: jax.random.truncated_normal(
             draw_key, -3.0, 3.0, draw_shape, dtype=jnp.float32
@@ -535,18 +587,16 @@ def run_loops(
                     NUM_RES_TYPES,
                     dtype=z_init.dtype,
                 )
-                one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(
-                    loop_mask, 1, 2
-                )[..., None].astype(z_init.dtype)
+                one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(loop_mask, 1, 2)[
+                    ..., None
+                ].astype(z_init.dtype)
                 msa_mask = jnp.swapaxes(loop_mask, 1, 2)
                 # Concatenated onto `one_hot`, which is `z_init.dtype`; a
                 # float32 here would widen the whole MSA encoder.
-                has_deletion = jnp.swapaxes(
-                    loop_has_deletion, 1, 2
-                ).astype(z_init.dtype)
-                deletion_value = jnp.swapaxes(loop_deletion, 1, 2).astype(
+                has_deletion = jnp.swapaxes(loop_has_deletion, 1, 2).astype(
                     z_init.dtype
                 )
+                deletion_value = jnp.swapaxes(loop_deletion, 1, 2).astype(z_init.dtype)
             msa_pair = msa_encoder(
                 injected,
                 msa_inputs["x_inputs"],
@@ -577,9 +627,7 @@ def run_loops(
         )
         return (z, key), None
 
-    (z, _), _ = jax.lax.scan(
-        body, (z, key), loop_tape, length=total_steps
-    )
+    (z, _), _ = jax.lax.scan(body, (z, key), loop_tape, length=total_steps)
     return z
 
 
@@ -633,9 +681,7 @@ def predict(
         msa_one_hot = jax.nn.one_hot(msa.astype(jnp.int32), NUM_RES_TYPES)
         if msa_mask is not None:
             msa_one_hot = msa_one_hot * msa_mask[..., None].astype(jnp.float32)
-            counts = jnp.clip(
-                jnp.sum(msa_mask.astype(jnp.float32), axis=1), min=1.0
-            )
+            counts = jnp.clip(jnp.sum(msa_mask.astype(jnp.float32), axis=1), min=1.0)
             profile = jnp.sum(msa_one_hot, axis=1) / counts[..., None]
         else:
             profile = jnp.mean(msa_one_hot, axis=1)
@@ -653,8 +699,8 @@ def predict(
         max_atomic_number=MAX_ATOMIC_NUMBER,
         char_vocab=CHAR_VOCAB_SIZE,
     )
-    atom_to_token = (
-        features["atom_to_token"] * atom_mask.astype(features["atom_to_token"].dtype)
+    atom_to_token = features["atom_to_token"] * atom_mask.astype(
+        features["atom_to_token"].dtype
     )
 
     # Upstream opens its bfloat16 autocast here and closes it after the coda;
@@ -739,10 +785,9 @@ def predict(
             language_model_pair(lm_hidden_states.astype(compute), trunk_params)
         )
 
-    pair_mask = (
-        token_mask[:, :, None].astype(jnp.float32)
-        * token_mask[:, None, :].astype(jnp.float32)
-    )
+    pair_mask = token_mask[:, :, None].astype(jnp.float32) * token_mask[
+        :, None, :
+    ].astype(jnp.float32)
 
     key, state_key, column_key, loop_key, sample_key = jax.random.split(key, 5)
     # Upstream draws the initial pair state from a truncated normal; it is not
@@ -794,9 +839,7 @@ def predict(
                     settings.msa_column_mask_rate,
                     preserve_prefix_rng=preserve_prefix_rng,
                 )
-                keep = jnp.broadcast_to(
-                    keep[None, :, None, :], tape_mask.shape
-                )
+                keep = jnp.broadcast_to(keep[None, :, None, :], tape_mask.shape)
                 keep = keep.at[:, :, 0, :].set(True)
                 tape_mask = tape_mask.astype(bool) & keep
             tape_mask = tape_mask.astype(jnp.float32)
@@ -848,16 +891,12 @@ def predict(
                 "has_deletion": (
                     zeros
                     if features.get("has_deletion") is None
-                    else jnp.swapaxes(features["has_deletion"], 1, 2).astype(
-                        compute
-                    )
+                    else jnp.swapaxes(features["has_deletion"], 1, 2).astype(compute)
                 ),
                 "deletion_value": (
                     zeros
                     if features.get("deletion_value") is None
-                    else jnp.swapaxes(features["deletion_value"], 1, 2).astype(
-                        compute
-                    )
+                    else jnp.swapaxes(features["deletion_value"], 1, 2).astype(compute)
                 ),
                 "x_inputs": pair_inputs,
             }
@@ -886,9 +925,7 @@ def predict(
     rel_pos = rel_pos.astype(jnp.float32)
     token_bonds_encoding = token_bonds_encoding.astype(jnp.float32)
 
-    distogram_logits = linear(
-        z + jnp.swapaxes(z, -2, -3), params, "distogram_head"
-    )
+    distogram_logits = linear(z + jnp.swapaxes(z, -2, -3), params, "distogram_head")
 
     cache = diffusion.build_cache(
         features["ref_pos"],
@@ -907,6 +944,7 @@ def predict(
         n_tokens=n_tokens,
         trunk_dtype=compute,
     )
+
     def draw(sample_key):
         return diffusion.sample(
             sample_key,
@@ -955,6 +993,7 @@ def predict(
         "residue_index": features["residue_index"],
         "entity_id": features["entity_id"],
     }
+
     def _confidence(sample_coords: jnp.ndarray, samples: int) -> dict:
         return confidence_head(
             x_inputs,
@@ -981,18 +1020,9 @@ def predict(
         # Protenix's `confidence_sample_sequential`, same shape of answer: map
         # over the sample axis with a size-1 sample axis kept, so the head's
         # own shapes are untouched and only the batch factor disappears.
-        conf = jax.lax.map(lambda one: _confidence(one[None], 1), coords)
-        # Each leaf gained a leading map axis over its single-sample shape. A
-        # leaf whose next axis is that size-1 sample axis collapses back onto
-        # it; a sample-independent leaf keeps one copy, as batching produced.
-        conf = {
-            name: (
-                jnp.squeeze(value, axis=1)
-                if value.ndim > 1 and value.shape[1] == 1
-                else value[0]
-            )
-            for name, value in conf.items()
-        }
+        conf = rebuild_batched_confidence(
+            jax.lax.map(lambda one: _confidence(one[None], 1), coords)
+        )
     else:
         conf = _confidence(coords, n_samples)
     output.update(conf)
