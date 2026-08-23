@@ -423,3 +423,34 @@ def _features() -> dict[str, np.ndarray]:
         "template_unit_vector": np.zeros((4, n_token, n_token, 3), np.float32),
         "template_backbone_frame_mask": template_mask.copy(),
     }
+
+
+def test_padding_pads_exactly_the_fields_that_carry_a_template_axis() -> None:
+    """The list has one owner, so the two modules cannot drift apart.
+
+    `_pad_templates` iterates `_TEMPLATE_FIELDS`; the axis itself is created by
+    `_as_protenix_dict` in `template_features`. A field added there and not here
+    would silently go unpadded, and the resulting shape error would surface
+    downstream with nothing about templates in it.
+    """
+    from foldjax.models.protenix.data.padding import _TEMPLATE_FIELDS
+    from foldjax.models.protenix.data.template_features import (
+        TEMPLATE_FIELDS,
+        _as_protenix_dict,
+    )
+
+    # Comparing the two names would prove nothing: padding builds its set *from*
+    # TEMPLATE_FIELDS, so they agree by construction and cannot drift apart in
+    # the direction this test exists to catch. The drift that can happen is a
+    # field appearing in the producer and not in the list, so ask the producer.
+    num_templates, num_residues, num_atoms = 2, 3, 24
+    produced = _as_protenix_dict(
+        np.zeros((num_templates, num_residues), dtype=np.int32),
+        np.zeros((num_templates, num_residues, num_atoms, 3), dtype=np.float32),
+        np.zeros((num_templates, num_residues, num_atoms), dtype=np.float32),
+    )
+
+    assert set(produced) == set(TEMPLATE_FIELDS)
+    assert set(_TEMPLATE_FIELDS) == set(TEMPLATE_FIELDS)
+    for name, value in produced.items():
+        assert value.shape[0] == num_templates, name

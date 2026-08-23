@@ -205,6 +205,19 @@ _DGRAM_MAX_BIN = 50.75
 _DGRAM_NUM_BINS = 39
 MAX_TEMPLATES = 4
 
+#: Every field ``_as_protenix_dict`` produces with a leading template axis.
+#: Named here rather than in the padding module because this is where the
+#: template axis is created; padding imports it so the two cannot drift.
+TEMPLATE_FIELDS = (
+    "template_aatype",
+    "template_atom_positions",
+    "template_atom_mask",
+    "template_pseudo_beta_mask",
+    "template_distogram",
+    "template_unit_vector",
+    "template_backbone_frame_mask",
+)
+
 
 def _encode_template_restype(sequence: str) -> np.ndarray:
     return np.array(

@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.models.protenix.data.template_features import TEMPLATE_FIELDS
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import PaddingConfig
 
@@ -56,15 +57,8 @@ _ATOM_FIELDS = {
     "output_atom_res_id",
     "output_atom_polymer_type",
 }
-_TEMPLATE_FIELDS = {
-    "template_aatype",
-    "template_atom_positions",
-    "template_atom_mask",
-    "template_pseudo_beta_mask",
-    "template_distogram",
-    "template_unit_vector",
-    "template_backbone_frame_mask",
-}
+# Owned by the module that creates the template axis, so the two cannot drift.
+_TEMPLATE_FIELDS = frozenset(TEMPLATE_FIELDS)
 _MSA_FIELDS = ("msa", "has_deletion", "deletion_value")
 
 
