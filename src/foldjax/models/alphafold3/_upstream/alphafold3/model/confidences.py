@@ -20,14 +20,13 @@
 """Functions for extracting and processing confidences from model outputs."""
 import warnings
 
+import jax.numpy as jnp
+import numpy as np
 from absl import logging
 from alphafold3 import structure
 from alphafold3.constants import residue_names
 from alphafold3.cpp import mkdssp
-import jax.numpy as jnp
-import numpy as np
 from scipy import spatial
-
 
 # From Sander & Rost 1994 https://doi.org/10.1002/prot.340200303
 MAX_ACCESSIBLE_SURFACE_AREA = {
@@ -224,6 +223,15 @@ def rank_metric(
     raise ValueError('full_pde and contact_probs must be of the same type.')
 
   if isinstance(full_pde, np.ndarray):
+    if full_pde.shape[0] > 1 and full_pde.flags.c_contiguous:
+      # Multiplying the full sample stack materialises another [S, N, N]
+      # array. Each sample is independent, and NumPy preserves the same
+      # per-sample reduction when those products are formed one at a time.
+      weighted_sum = np.asarray([
+          np.sum(sample * contact_probs, axis=(-2, -1))
+          for sample in full_pde
+      ])
+      return -weighted_sum / (np.sum(contact_probs) + 1e-6)
     sum_fn = np.sum
   elif isinstance(full_pde, jnp.ndarray):
     sum_fn = jnp.sum
@@ -377,19 +385,65 @@ def chain_pair_pae(
   """
   if mask is None:
     mask = np.ones(shape=full_pae.shape[1:], dtype=bool)
-  if contact_probs is None:
-    contact_probs = np.ones(shape=full_pae.shape[1:], dtype=float)
   assert mask.shape == full_pae.shape[1:]
 
-  full_pae = full_pae[:, :num_tokens, :num_tokens]
-  mask = mask[:num_tokens, :num_tokens]
-  asym_ids = asym_ids[:num_tokens]
-  contact_probs = contact_probs[:num_tokens, :num_tokens]
-  unique_asym_ids = np.unique(asym_ids)
+  active_asym_ids = asym_ids[:num_tokens]
+  unique_asym_ids = np.unique(active_asym_ids)
   num_chains = len(unique_asym_ids)
   num_samples = full_pae.shape[0]
   chain_pair_pred_err_mean = np.zeros((num_samples, num_chains, num_chains))
   chain_pair_pred_err_min = np.zeros((num_samples, num_chains, num_chains))
+
+  if num_chains == 1:
+    # Advanced indexing the row and column axes in succession copies the full
+    # [S, N, N] monomer twice. Flatten once, select the valid pair indices in
+    # one operation, and keep weighted_mean's exact vectorised reduction.
+    active_mask = mask[:num_tokens, :num_tokens]
+    flat_mask_idxs = np.flatnonzero(active_mask.reshape(-1) > 0)
+    if not flat_mask_idxs.size:
+      chain_pair_pred_err_mean[:] = np.nan
+      chain_pair_pred_err_min[:] = np.nan
+      return (
+          chain_pair_pred_err_mean,
+          chain_pair_pred_err_min,
+          unique_asym_ids,
+      )
+
+    all_pairs_are_valid = flat_mask_idxs.size == num_tokens * num_tokens
+    rows, columns = np.divmod(flat_mask_idxs, num_tokens)
+    source_idxs = rows * full_pae.shape[-1] + columns
+    # Keep the historical advanced-index buffer and therefore NumPy's exact
+    # reduction order. The win is removing the two preceding full-width axis
+    # selections, not changing the final selected array into a reshape view.
+    flat_subsubset = full_pae.reshape(num_samples, -1)[:, source_idxs]
+
+    if contact_probs is None:
+      flat_contact_probs = np.ones(flat_mask_idxs.size, dtype=float)
+    else:
+      active_contact_probs = contact_probs[:num_tokens, :num_tokens]
+      flat_contact_probs = active_contact_probs.reshape(-1)
+      if not all_pairs_are_valid:
+        flat_contact_probs = flat_contact_probs[flat_mask_idxs]
+
+    chain_pair_pred_err_min[:, 0, 0] = np.min(flat_subsubset, axis=1)
+    chain_pair_pred_err_mean[:, 0, 0] = weighted_mean(
+        mask=flat_contact_probs,
+        value=flat_subsubset,
+        axis=-1,
+    )
+    return (
+        chain_pair_pred_err_mean,
+        chain_pair_pred_err_min,
+        unique_asym_ids,
+    )
+
+  full_pae = full_pae[:, :num_tokens, :num_tokens]
+  mask = mask[:num_tokens, :num_tokens]
+  asym_ids = active_asym_ids
+  if contact_probs is None:
+    contact_probs = np.ones(shape=full_pae.shape[1:], dtype=float)
+  else:
+    contact_probs = contact_probs[:num_tokens, :num_tokens]
 
   for idx1, asym_id_1 in enumerate(unique_asym_ids):
     subset = full_pae[:, asym_ids == asym_id_1, :]

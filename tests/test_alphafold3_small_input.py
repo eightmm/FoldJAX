@@ -7,6 +7,286 @@ from types import SimpleNamespace
 import numpy as np
 
 
+def _generic_chain_pair_pae_reference(
+    confidences,
+    *,
+    num_tokens,
+    asym_ids,
+    full_pae,
+    mask=None,
+    contact_probs=None,
+):
+    """The pre-specialisation chain loop, retained as an independent oracle."""
+    if mask is None:
+        mask = np.ones(shape=full_pae.shape[1:], dtype=bool)
+    if contact_probs is None:
+        contact_probs = np.ones(shape=full_pae.shape[1:], dtype=float)
+    full_pae = full_pae[:, :num_tokens, :num_tokens]
+    mask = mask[:num_tokens, :num_tokens]
+    asym_ids = asym_ids[:num_tokens]
+    contact_probs = contact_probs[:num_tokens, :num_tokens]
+    unique_asym_ids = np.unique(asym_ids)
+    num_samples = full_pae.shape[0]
+    num_chains = len(unique_asym_ids)
+    means = np.zeros((num_samples, num_chains, num_chains))
+    minima = np.zeros((num_samples, num_chains, num_chains))
+
+    for row, asym_id_1 in enumerate(unique_asym_ids):
+        subset = full_pae[:, asym_ids == asym_id_1, :]
+        subset_mask = mask[asym_ids == asym_id_1, :]
+        subset_contact = contact_probs[asym_ids == asym_id_1, :]
+        for column, asym_id_2 in enumerate(unique_asym_ids):
+            subsubset = subset[:, :, asym_ids == asym_id_2]
+            submask = subset_mask[:, asym_ids == asym_id_2]
+            subcontact = subset_contact[:, asym_ids == asym_id_2]
+            (valid,) = np.where(submask.flatten() > 0)
+            values = subsubset.reshape([num_samples, -1])
+            weights = subcontact.flatten()
+            if not valid.size:
+                means[:, row, column] = np.nan
+                minima[:, row, column] = np.nan
+            else:
+                minima[:, row, column] = np.min(values[:, valid], axis=1)
+                means[:, row, column] = confidences.weighted_mean(
+                    mask=weights[valid], value=values[:, valid], axis=-1
+                )
+    return means, minima, unique_asym_ids
+
+
+def _assert_nan_exact(actual, expected) -> None:
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
+    np.testing.assert_array_equal(
+        np.nan_to_num(actual, nan=np.inf), np.nan_to_num(expected, nan=np.inf)
+    )
+
+
+def test_monomer_chain_pair_pae_avoids_the_duplicate_axis_copy() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(31)
+    for dtype in (np.float32, np.float64):
+        for samples in (1, 5):
+            num_tokens, padding = 7, 3
+            full_pae = rng.normal(
+                size=(samples, num_tokens + padding, num_tokens + padding)
+            ).astype(dtype)
+            asym_ids = np.ones(num_tokens + padding, dtype=np.int32)
+            mask = rng.random((num_tokens + padding, num_tokens + padding)) > 0.2
+            contact_probs = rng.random(
+                (num_tokens + padding, num_tokens + padding)
+            ).astype(dtype)
+            for contacts in (contact_probs, None):
+                for frame_mask in (mask, np.ones_like(mask)):
+                    expected = _generic_chain_pair_pae_reference(
+                        confidences,
+                        num_tokens=num_tokens,
+                        asym_ids=asym_ids,
+                        full_pae=full_pae,
+                        mask=frame_mask,
+                        contact_probs=contacts,
+                    )
+                    actual = confidences.chain_pair_pae(
+                        num_tokens=num_tokens,
+                        asym_ids=asym_ids,
+                        full_pae=full_pae,
+                        mask=frame_mask,
+                        contact_probs=contacts,
+                    )
+                    for actual_leaf, expected_leaf in zip(
+                        actual, expected, strict=True
+                    ):
+                        _assert_nan_exact(actual_leaf, expected_leaf)
+
+            empty_mask = np.zeros_like(mask)
+            actual = confidences.chain_pair_pae(
+                num_tokens=num_tokens,
+                asym_ids=asym_ids,
+                full_pae=full_pae,
+                mask=empty_mask,
+                contact_probs=contact_probs,
+            )
+            assert np.isnan(actual[0]).all()
+            assert np.isnan(actual[1]).all()
+
+
+def test_monomer_chain_pair_pae_routes_through_one_flat_selection(
+    monkeypatch,
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(35)
+    full_pae = rng.random((2, 5, 5), dtype=np.float32)
+    asym_ids = np.ones(5, dtype=np.int32)
+    expected = _generic_chain_pair_pae_reference(
+        confidences,
+        num_tokens=5,
+        asym_ids=asym_ids,
+        full_pae=full_pae,
+        mask=None,
+        contact_probs=None,
+    )
+    real_divmod = confidences.np.divmod
+    calls = []
+
+    def tracked_divmod(*args, **kwargs):
+        calls.append(np.shape(args[0]))
+        return real_divmod(*args, **kwargs)
+
+    monkeypatch.setattr(confidences.np, "divmod", tracked_divmod)
+    actual = confidences.chain_pair_pae(
+        num_tokens=5,
+        asym_ids=asym_ids,
+        full_pae=full_pae,
+    )
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        _assert_nan_exact(actual_leaf, expected_leaf)
+    assert calls == [(25,)]
+
+    calls.clear()
+    confidences.chain_pair_pae(
+        num_tokens=5,
+        asym_ids=np.asarray([1, 1, 1, 2, 2], dtype=np.int32),
+        full_pae=full_pae,
+    )
+    assert calls == []
+
+
+def test_empty_chain_pair_pae_keeps_the_empty_shapes() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    mean, minimum, chain_ids = confidences.chain_pair_pae(
+        num_tokens=0,
+        asym_ids=np.zeros(0, dtype=np.int32),
+        full_pae=np.zeros((3, 0, 0), dtype=np.float32),
+    )
+    assert mean.shape == (3, 0, 0)
+    assert minimum.shape == (3, 0, 0)
+    assert chain_ids.shape == (0,)
+
+
+def test_multimer_chain_pair_pae_keeps_the_generic_path() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(32)
+    full_pae = rng.random((3, 8, 8), dtype=np.float32)
+    asym_ids = np.asarray([1, 1, 1, 1, 2, 2, 2, 2], dtype=np.int32)
+    mask = rng.random((8, 8)) > 0.15
+    contact_probs = rng.random((8, 8), dtype=np.float32)
+    expected = _generic_chain_pair_pae_reference(
+        confidences,
+        num_tokens=8,
+        asym_ids=asym_ids,
+        full_pae=full_pae,
+        mask=mask,
+        contact_probs=contact_probs,
+    )
+    actual = confidences.chain_pair_pae(
+        num_tokens=8,
+        asym_ids=asym_ids,
+        full_pae=full_pae,
+        mask=mask,
+        contact_probs=contact_probs,
+    )
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        _assert_nan_exact(actual_leaf, expected_leaf)
+
+
+def test_numpy_rank_metric_reduces_each_sample_separately(monkeypatch) -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(33)
+    full_pde = rng.random((5, 17, 17), dtype=np.float32)
+    contact_probs = rng.random((17, 17), dtype=np.float32)
+    expected = -np.sum(full_pde * contact_probs[None], axis=(-2, -1)) / (
+        np.sum(contact_probs) + 1e-6
+    )
+
+    real_sum = np.sum
+    reduced_shapes = []
+
+    def tracked_sum(value, *args, **kwargs):
+        reduced_shapes.append(np.shape(value))
+        return real_sum(value, *args, **kwargs)
+
+    monkeypatch.setattr(confidences.np, "sum", tracked_sum)
+    actual = confidences.rank_metric(full_pde, contact_probs)
+
+    np.testing.assert_array_equal(actual, expected)
+    assert full_pde.shape not in reduced_shapes
+    assert reduced_shapes.count(contact_probs.shape) == full_pde.shape[0] + 1
+
+
+def test_rank_metric_keeps_single_sample_and_jax_semantics(monkeypatch) -> None:
+    import jax.numpy as jnp
+
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(34)
+    full_pde = rng.random((1, 9, 9), dtype=np.float32)
+    contact_probs = rng.random((9, 9), dtype=np.float32)
+    expected = -np.sum(full_pde * contact_probs[None], axis=(-2, -1)) / (
+        np.sum(contact_probs) + 1e-6
+    )
+    np.testing.assert_array_equal(
+        confidences.rank_metric(full_pde, contact_probs), expected
+    )
+
+    jax_full_pde = jnp.asarray(np.repeat(full_pde, 3, axis=0))
+    jax_contacts = jnp.asarray(contact_probs)
+    jax_expected = -jnp.sum(
+        jax_full_pde * jax_contacts[None], axis=(-2, -1)
+    ) / (jnp.sum(jax_contacts) + 1e-6)
+    np.testing.assert_array_equal(
+        np.asarray(confidences.rank_metric(jax_full_pde, jax_contacts)),
+        np.asarray(jax_expected),
+    )
+
+    # NumPy can choose a different summation traversal for a Fortran-order
+    # sample stack. Such uncommon direct inputs retain the literal historical
+    # vectorised expression rather than taking the C-order streaming path.
+    fortran_full_pde = np.asfortranarray(np.repeat(full_pde, 3, axis=0))
+    fortran_expected = -np.sum(
+        fortran_full_pde * contact_probs[None], axis=(-2, -1)
+    ) / (np.sum(contact_probs) + 1e-6)
+    real_sum = np.sum
+    reduced_shapes = []
+
+    def tracked_sum(value, *args, **kwargs):
+        reduced_shapes.append(np.shape(value))
+        return real_sum(value, *args, **kwargs)
+
+    monkeypatch.setattr(confidences.np, "sum", tracked_sum)
+    np.testing.assert_array_equal(
+        confidences.rank_metric(fortran_full_pde, contact_probs), fortran_expected
+    )
+    assert fortran_full_pde.shape in reduced_shapes
+
+
 def test_pae_single_mask_is_an_exact_zero_copy_broadcast() -> None:
     from foldjax.models.alphafold3 import build
 

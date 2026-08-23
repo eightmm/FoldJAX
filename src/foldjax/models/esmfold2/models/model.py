@@ -595,6 +595,7 @@ def predict(
     preserve_prefix_rng: bool = False,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    contiguous_atom_groups: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -973,6 +974,7 @@ def predict(
             num_samples=samples,
             relative_position_encoding=rel_pos,
             token_bonds_encoding=token_bonds_encoding,
+            contiguous_atom_groups=contiguous_atom_groups,
         )
 
     if settings.confidence_sample_sequential and n_samples > 1:

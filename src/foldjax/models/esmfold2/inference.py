@@ -35,6 +35,7 @@ from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
 from foldjax.models.esmfold2.data import features as featurisation
 from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
+from foldjax.models.esmfold2.models.segments import MAX_ATOMS_PER_TOKEN
 
 #: Where `assets.py` stages the language model beside the structure weights.
 ESMC_SUBDIRECTORY = "esmc"
@@ -150,6 +151,50 @@ def language_model_length(features: Mapping[str, np.ndarray]) -> int:
     )
 
 
+def _has_contiguous_atom_groups(features: Mapping[str, np.ndarray]) -> bool:
+    """Whether the confidence head may use its bounded grouped reducer."""
+
+    try:
+        owners = np.asarray(features["atom_to_token"])
+        raw_mask = np.asarray(features["atom_attention_mask"])
+        mask = raw_mask.astype(bool)
+        token_mask = np.asarray(features["token_attention_mask"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (
+        owners.ndim != 2
+        or mask.shape != owners.shape
+        or token_mask.ndim != 2
+        or token_mask.shape[0] != owners.shape[0]
+        or not np.issubdtype(owners.dtype, np.integer)
+        or not np.array_equal(raw_mask, mask)
+    ):
+        return False
+
+    n_tokens = token_mask.shape[-1]
+    # `sum_by_token` reserves the value `n_tokens` as its inactive sentinel,
+    # so that value itself (not only the last token ID) must fit this dtype.
+    if n_tokens < 1 or n_tokens > np.iinfo(owners.dtype).max:
+        return False
+    prefix = np.arange(owners.shape[-1])[None, :] < np.sum(mask, axis=-1)[:, None]
+    if not np.array_equal(mask, prefix):
+        return False
+    for row, row_mask in zip(owners, mask, strict=True):
+        active = row[row_mask]
+        if active.size == 0:
+            continue
+        if (
+            np.any(active < 0)
+            or np.any(active >= n_tokens)
+            or np.any(active[1:] < active[:-1])
+        ):
+            return False
+        index = active.astype(np.intp, copy=False)
+        if np.bincount(index, minlength=n_tokens).max() > MAX_ATOMS_PER_TOKEN:
+            return False
+    return True
+
+
 def predict(
     key: jnp.ndarray,
     features: Mapping[str, np.ndarray],
@@ -194,6 +239,9 @@ def predict(
     # Read on the host: it sizes the confidence head's per-chain matrix, and a
     # traced maximum cannot size anything.
     n_chains = int(np.asarray(features["asym_id"]).max()) + 1
+    contiguous_atom_groups = (
+        False if stop_after_trunk else _has_contiguous_atom_groups(features)
+    )
 
     if cp_shards > 1 and not compile_it:
         raise ValueError(
@@ -203,7 +251,7 @@ def predict(
     runner = (
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
-            return_representations, stop_after_trunk,
+            return_representations, stop_after_trunk, contiguous_atom_groups,
         )
         if compile_it
         else _run
@@ -232,6 +280,7 @@ def predict(
             cp_shards,
             return_representations,
             stop_after_trunk,
+            contiguous_atom_groups,
         )
 
 
@@ -246,6 +295,7 @@ def _run(
     cp_shards: int = 1,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    contiguous_atom_groups: bool = False,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -263,6 +313,7 @@ def _run(
         preserve_prefix_rng=preserve_prefix_rng,
         return_representations=return_representations,
         stop_after_trunk=stop_after_trunk,
+        contiguous_atom_groups=contiguous_atom_groups,
     )
 
 
@@ -274,6 +325,7 @@ def compiled_predict(
     cp_shards: int = 1,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    contiguous_atom_groups: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -282,9 +334,11 @@ def compiled_predict(
     exact-shape calls or masked serving draws, and `cp_shards` decides whether
     the trace carries sharding constraints -- a mesh change must be a retrace,
     never a stale cache hit. The real token and atom counts remain data in the
-    masks and never enter this cache key.
+    masks and never enter this cache key. The final boolean selects the
+    normalized contiguous-atom reducer; external feature mappings that do not
+    satisfy its host-checked contract receive a distinct generic graph.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9))
+    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10))
 
 
 def predict_job(

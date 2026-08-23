@@ -30,6 +30,10 @@ import jax.numpy as jnp
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.esmfold2.models.embedders import row_attention_pooling
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear
+from foldjax.models.esmfold2.models.segments import (
+    MAX_ATOMS_PER_TOKEN,
+    sum_by_token,
+)
 from foldjax.models.esmfold2.models.trunk import folding_trunk
 
 Params = Mapping[str, jnp.ndarray]
@@ -38,11 +42,6 @@ Params = Mapping[str, jnp.ndarray]
 #: rather than an inferred one.
 NONPOLYMER_ID = 4
 EPS = 1e-6
-#: `plddt_weight` and `resolved_weight` are indexed by an atom's rank inside
-#: its token, and upstream sizes both for the widest standard residue.
-MAX_ATOMS_PER_TOKEN = 23
-
-
 def gather_token_to_atom(
     token_features: jnp.ndarray, atom_to_token: jnp.ndarray
 ) -> jnp.ndarray:
@@ -86,8 +85,56 @@ def intra_token_index(atom_to_token: jnp.ndarray) -> jnp.ndarray:
 
 
 def _scatter_sum(
-    values: jnp.ndarray, atom_to_token: jnp.ndarray, n_tokens: int
+    values: jnp.ndarray,
+    atom_to_token: jnp.ndarray,
+    n_tokens: int,
+    atom_mask: jnp.ndarray,
+    *,
+    contiguous_atom_groups: bool = False,
 ) -> jnp.ndarray:
+    if contiguous_atom_groups:
+        reduced = sum_by_token(values, atom_to_token, n_tokens, atom_mask)
+        if values.shape[1] == 0 or not jnp.issubdtype(values.dtype, jnp.floating):
+            return reduced
+
+        # The historical dense product evaluates ``0 * nonfinite`` for every
+        # atom that a token does not own. Preserve that invalid-value behavior
+        # without retaining the owner matrix in the normal finite case.
+        has_nan = jnp.any(jnp.isnan(values), axis=1)
+        positive_inf = jnp.any(jnp.isposinf(values), axis=1)
+        negative_inf = jnp.any(jnp.isneginf(values), axis=1)
+        is_inf = jnp.isinf(values)
+        first_inf_owner = jnp.min(
+            jnp.where(
+                is_inf,
+                atom_to_token,
+                jnp.full_like(atom_to_token, n_tokens),
+            ),
+            axis=1,
+        )
+        last_inf_owner = jnp.max(
+            jnp.where(is_inf, atom_to_token, jnp.zeros_like(atom_to_token)),
+            axis=1,
+        )
+        one_inf_owner = first_inf_owner == last_inf_owner
+        token = jnp.arange(n_tokens, dtype=atom_to_token.dtype)[None]
+        owns_every_inf = one_inf_owner[:, None] & (token == first_inf_owner[:, None])
+        nan = jnp.asarray(jnp.nan, dtype=values.dtype)
+        infinity = jnp.where(
+            positive_inf & negative_inf,
+            nan,
+            jnp.where(
+                positive_inf,
+                jnp.asarray(jnp.inf, dtype=values.dtype),
+                jnp.asarray(-jnp.inf, dtype=values.dtype),
+            ),
+        )
+        dense_nonfinite = jnp.where(owns_every_inf, infinity[:, None], nan)
+        return jnp.where(
+            has_nan[:, None],
+            nan,
+            jnp.where((positive_inf | negative_inf)[:, None], dense_nonfinite, reduced),
+        )
     one_hot = jax.nn.one_hot(atom_to_token, n_tokens, dtype=values.dtype)
     return jnp.einsum("ba,bat->bt", values, one_hot)
 
@@ -111,6 +158,7 @@ def confidence_head(
     trunk_dtype: object = jnp.float32,
     relative_position_encoding: jnp.ndarray | None = None,
     token_bonds_encoding: jnp.ndarray | None = None,
+    contiguous_atom_groups: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """`ConfidenceHead`, returning upstream's dictionary key for key.
 
@@ -204,8 +252,21 @@ def confidence_head(
     plddt_per_atom = categorical_mean(plddt_logits, 0.0, 1.0)
 
     weighted = plddt_per_atom * atom_mask
-    plddt = _scatter_sum(weighted, atom_to_token, n_tokens) / jnp.clip(
-        _scatter_sum(atom_mask, atom_to_token, n_tokens), min=1e-6
+    plddt = _scatter_sum(
+        weighted,
+        atom_to_token,
+        n_tokens,
+        atom_mask,
+        contiguous_atom_groups=contiguous_atom_groups,
+    ) / jnp.clip(
+        _scatter_sum(
+            atom_mask,
+            atom_to_token,
+            n_tokens,
+            atom_mask,
+            contiguous_atom_groups=contiguous_atom_groups,
+        ),
+        min=1e-6,
     )
     complex_plddt = jnp.sum(weighted, axis=-1) / (jnp.sum(atom_mask, axis=-1) + EPS)
 

@@ -110,6 +110,19 @@ command predicts unless it says so here, in its own paragraph.
   128 MiB CPU transfer probe the bfloat16 path's maximum RSS fell from 909,652
   to 598,180 KiB (34.2%); released-checkpoint GPU peak memory remains a
   deployment gate.
+- **ESMFold2 confidence gathers each token's contiguous atom scores instead of
+  materializing an atom-by-token one-hot matrix.** The normalized production
+  featurizer guarantees a masked suffix, sorted owners, and at most 23 atoms
+  per token, so the pLDDT head can use a fixed-order streaming gather with no
+  colliding scatter-add. Direct low-level confidence calls retain the generic
+  dense fallback. In a one-batch, 8,256-atom, 1,024-token float32 CPU stage
+  probe, compiled temporary memory fell from 33,857,792 to 103,912 bytes and
+  warm median time from 6.230 to 0.046 ms. At the released 32-sample,
+  7,776-atom, 1,003-token shape, the avoided float32 owner matrix alone is
+  998,313,984 bytes. Bfloat16 was bitwise equal in focused probes; float32
+  per-token means differed by at most two unit-scale epsilons, and historical
+  NaN/infinity propagation is preserved. Released-weight GPU latency and
+  whole-model peak memory remain deployment gates.
 - **AlphaFold 3 reuses one managed ModelRunner inside a request.** Multi-seed
   and multi-input managed runs now load the selected parameter generation and
   construct its shape-keyed JIT owner once, while scalar runs and explicit
@@ -127,6 +140,19 @@ command predicts unless it says so here, in its own paragraph.
   exactly. At 3,072 tokens this removes a 9,437,184-byte square data buffer,
   replacing it with an O(1) NumPy view. This is a host postprocessing
   allocation reduction and does not change model predictions.
+- **AlphaFold 3 avoids repeated full-square host copies while summarizing a
+  monomer's PAE.** The monomer path now builds the same final advanced-index
+  buffer directly instead of first selecting both square axes separately, so
+  NumPy keeps the historical reduction order and bitwise result. For five
+  samples at 2,048 tokens, an isolated float32-contact CPU stage fell from
+  692.9 to 171.6 ms and from 507,546,480 to 302,025,716 peak traced bytes.
+  Multimer processing is unchanged.
+- **AlphaFold 3 ranks NumPy samples without retaining their products
+  together.** C-contiguous multi-sample PDE results are reduced one sample at
+  a time; unusual non-C direct inputs and the JAX path retain the original
+  vectorized expression. For an isolated five-sample, 2,048-token CPU stage
+  with float32 contact probabilities, peak traced bytes fell from 83,920,368
+  to 16,811,696 and time from 19.1 to 13.5 ms, with bitwise-identical scores.
 - **AlphaFold 3 skips host interface-TM scoring when no interface exists.**
   Monomer ipTM is defined by the existing implementation as a same-shaped NaN
   vector, so postprocessing now emits that value after pTM validation instead
