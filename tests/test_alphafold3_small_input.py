@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 
 
@@ -176,3 +178,119 @@ def test_diffusion_padding_preserves_multisample_noise_across_every_step(
         atol=1e-3,
     )
     assert not np.any(np.asarray(padded[:, 3:]))
+
+
+def test_inference_result_reuses_pae_metric_chain_aggregates(monkeypatch) -> None:
+    """Host postprocessing does not recompute aggregates from ``pae_metrics``."""
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import model as af3_model
+
+    batch = SimpleNamespace(
+        token_features=SimpleNamespace(
+            seq_length=np.asarray(2),
+            asym_id=np.asarray([1, 2]),
+            residue_index=np.asarray([10, 20]),
+        ),
+        frames=SimpleNamespace(mask=np.ones(2, dtype=np.float32)),
+    )
+    predicted_sample = object()
+    predicted_structure = SimpleNamespace(
+        chains=("A", "B"),
+        unstack=lambda: [predicted_sample],
+    )
+    monkeypatch.setattr(
+        af3_model.feat_batch.Batch,
+        "from_data_dict",
+        lambda unused: batch,
+    )
+    monkeypatch.setattr(
+        af3_model,
+        "get_predicted_structure",
+        lambda **unused: predicted_structure,
+    )
+
+    def fake_ptm(*, interface, **unused):
+        return np.asarray([0.7 if interface else 0.8], dtype=np.float32)
+
+    monkeypatch.setattr(af3_model, "_compute_ptm", fake_ptm)
+    monkeypatch.setattr(
+        af3_model.confidences,
+        "chain_pair_pde",
+        lambda **unused: (
+            np.zeros((1, 2, 2), dtype=np.float32),
+            np.zeros((1, 2, 2), dtype=np.float32),
+        ),
+    )
+    monkeypatch.setattr(
+        af3_model.confidences,
+        "pde_single",
+        lambda *unused: (
+            np.zeros((1, 2), dtype=np.float32),
+            np.zeros((1, 2), dtype=np.float32),
+            np.zeros((1, 2), dtype=np.float32),
+        ),
+    )
+    sentinels = {
+        "chain_pair_pae_min": np.asarray([[[11.0, 12.0], [13.0, 14.0]]]),
+        "chain_pair_iptm": np.asarray([[[21.0, 22.0], [23.0, 24.0]]]),
+        "iptm_ichain": np.asarray([[31.0, 32.0]]),
+        "iptm_xchain": np.asarray([[41.0, 42.0]]),
+        "pae_ichain": np.asarray([[51.0, 52.0]]),
+        "pae_xchain": np.asarray([[61.0, 62.0]]),
+    }
+    monkeypatch.setattr(
+        af3_model.confidences,
+        "pae_metrics",
+        lambda **unused: sentinels,
+    )
+    monkeypatch.setattr(
+        af3_model.confidences,
+        "rank_metric",
+        lambda *unused: np.asarray([0.6], dtype=np.float32),
+    )
+    monkeypatch.setattr(af3_model.confidences, "has_clash", lambda unused: False)
+    monkeypatch.setattr(
+        af3_model.confidences,
+        "fraction_disordered",
+        lambda unused: 0.1,
+    )
+    monkeypatch.setattr(
+        af3_model.confidences,
+        "get_ranking_score",
+        lambda **unused: 0.9,
+    )
+
+    def fail_duplicate(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("aggregate was recomputed instead of reused")
+
+    monkeypatch.setattr(af3_model.confidences, "chain_pair_pae", fail_duplicate)
+    monkeypatch.setattr(af3_model, "_compute_chain_pair_iptm", fail_duplicate)
+    monkeypatch.setattr(af3_model.confidences, "get_iptm_xchain", fail_duplicate)
+
+    result = {
+        "distogram": {"contact_probs": np.ones((2, 2), dtype=np.float32)},
+        "full_pae": np.zeros((1, 2, 2), dtype=np.float32),
+        "full_pde": np.zeros((1, 2, 2), dtype=np.float32),
+        "tmscore_adjusted_pae_interface": np.zeros(
+            (1, 2, 2), dtype=np.float32
+        ),
+        "average_pde": np.asarray([0.25], dtype=np.float32),
+        "__identifier__": b"test-model",
+    }
+    [inference_result] = af3_model.Model.get_inference_result({}, result)
+
+    assert inference_result.predicted_structure is predicted_sample
+    for name in (
+        "chain_pair_pae_min",
+        "chain_pair_iptm",
+        "iptm_ichain",
+        "iptm_xchain",
+    ):
+        np.testing.assert_array_equal(
+            inference_result.metadata[name],
+            sentinels[name][0],
+        )

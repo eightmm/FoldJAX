@@ -422,12 +422,6 @@ class Model(hk.Module):
 
     contact_probs = result['distogram']['contact_probs']
     # Compute PAE related summaries.
-    _, chain_pair_pae_min, _ = confidences.chain_pair_pae(
-        num_tokens=num_tokens,
-        asym_ids=batch.token_features.asym_id,  # pyrefly: ignore[missing-attribute]
-        full_pae=result['full_pae'],
-        mask=pae_single_mask,
-    )
     chain_pair_pde_mean, chain_pair_pde_min = confidences.chain_pair_pde(
         num_tokens=num_tokens,
         asym_ids=batch.token_features.asym_id,  # pyrefly: ignore[missing-attribute]
@@ -447,31 +441,14 @@ class Model(hk.Module):
         contact_probs=contact_probs,
         tm_adjusted_pae=result['tmscore_adjusted_pae_interface'],
     )
+    chain_pair_pae_min = pae_metrics['chain_pair_pae_min']
+    chain_pair_iptm = pae_metrics['chain_pair_iptm']
+    iptm_ichain = pae_metrics['iptm_ichain']
+    iptm_xchain = pae_metrics['iptm_xchain']
     ranking_confidence_pae = confidences.rank_metric(
         result['full_pae'],
         contact_probs * batch.frames.mask[:, None].astype(float),  # pyrefly: ignore[missing-attribute]
     )
-    chain_pair_iptm = _compute_chain_pair_iptm(
-        num_tokens=num_tokens,
-        asym_ids=batch.token_features.asym_id,  # pyrefly: ignore[missing-attribute]
-        mask=pae_single_mask,
-        tm_adjusted_pae=result['tmscore_adjusted_pae_interface'],
-    )
-    # iptm_ichain is a vector of per-chain ptm values. iptm_ichain[0],
-    # for example, is just the zeroth diagonal entry of the chain pair iptm
-    # matrix:
-    # [[x, , ],
-    #  [ , , ],
-    #  [ , , ]]]
-    iptm_ichain = chain_pair_iptm.diagonal(axis1=-2, axis2=-1)
-    # iptm_xchain is a vector of cross-chain interactions for each chain.
-    # iptm_xchain[0], for example, is an average of chain 0's interactions with
-    # other chains:
-    # [[ ,x,x],
-    #  [x, , ],
-    #  [x, , ]]]
-    iptm_xchain = confidences.get_iptm_xchain(chain_pair_iptm)
-
     predicted_distance_errors = result['average_pde']
 
     # Computing solvent accessible area with dssp can be slow for large

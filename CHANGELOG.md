@@ -470,6 +470,16 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **AlphaFold 3 reuses chain confidence aggregates during host
+  postprocessing.** `pae_metrics` already computes the minimum chain-pair PAE,
+  chain-pair ipTM, per-chain ipTM and cross-chain ipTM that the result writer
+  needs; the same arrays were then computed a second time and discarded. The
+  writer now consumes the first results directly. On a 3,012-token four-chain
+  result with the default five samples, the duplicate PAE and ipTM passes took
+  1.34 s on the measured CPU. The reused arrays are exactly equal, including
+  masked and NaN cases. This removes transient allocation churn but does not
+  claim a lower process peak, because the necessary first pass remains.
+
 - **Protenix and OpenDDE compute each distinct template once instead of once
   per row.** A query with fewer than four template hits is padded up to four,
   and the padding is zeros rather than the gap restype, so a query with no hits
