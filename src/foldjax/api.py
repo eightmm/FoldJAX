@@ -14,6 +14,7 @@ import math
 import os
 import time
 from collections.abc import Mapping
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -244,6 +245,24 @@ _RESUMABLE_ERRORS = (
 #: Where a batch records what did not work. A successful run has
 #: `foldjax_run.json`; this is the other half of that story.
 FAILURES_NAME = "foldjax_failures.json"
+
+
+class _ScalarBackendSource:
+    """Fresh non-session backends, with the dispatcher probe consumed once."""
+
+    def __init__(self, model: str, first: Backend) -> None:
+        self._model = model
+        self._first: Backend | None = first
+
+    def take(self) -> Backend:
+        backend = self._first
+        self._first = None
+        return backend if backend is not None else get_backend(self._model)
+
+    def discard_probe(self) -> None:
+        """Release an unused probe when resume avoids execution entirely."""
+
+        self._first = None
 
 
 def _nonempty_file(path: Path) -> bool:
@@ -623,12 +642,39 @@ def predict_batch(request: PredictionRequest) -> BatchReport:
     results: list[PredictionResult] = []
     failures: list[PredictionFailure] = []
     skipped: list[Path] = []
-    for item in resolved:
-        outcome = _predict_resolved(
-            item, output_root=output_root, failures=failures, skipped=skipped
-        )
-        if outcome is not None:
-            results.append(outcome)
+    # Resolution orders the cross product model-first. Keep only one backend
+    # session alive at a time: a session may own tens of gigabytes of weights,
+    # so opening every model up front would trade repeated I/O for a larger and
+    # less predictable peak. Adapters opt in explicitly; every other backend
+    # keeps the historical fresh-instance-per-scalar contract.
+    for _model, grouped in groupby(resolved, key=lambda item: item.model):
+        items = tuple(grouped)
+        backend = get_backend(items[0].model)
+        if not backend.session_reuse:
+            backend_source = _ScalarBackendSource(items[0].model, backend)
+            del backend
+            for item in items:
+                outcome = _predict_resolved(
+                    item,
+                    backend_source=backend_source,
+                    output_root=output_root,
+                    failures=failures,
+                    skipped=skipped,
+                )
+                if outcome is not None:
+                    results.append(outcome)
+            continue
+        with backend.session(items) as active_backend:
+            for item in items:
+                outcome = _predict_resolved(
+                    item,
+                    backend=active_backend,
+                    output_root=output_root,
+                    failures=failures,
+                    skipped=skipped,
+                )
+                if outcome is not None:
+                    results.append(outcome)
     _write_failures(
         Path(request.output_dir) if request.output_dir is not None else Path.cwd(),
         failures,
@@ -652,9 +698,8 @@ def predict(
     ``seed_<n>`` subdirectory each, and returns every structure in one result.
     The loop lives here rather than in each adapter because only three of the
     six models take a seed list natively, and a knob that works on half the
-    models is not a neutral knob. Each pass reloads the weights; the compiled
-    program is read back from the cache, so the repeat cost is the load, not
-    the compile.
+    models is not a neutral knob. Backends may retain request-scoped model state
+    across these passes; they never retain it globally or across model groups.
     """
     report = predict_batch(request)
     plural = request.models is not None or request.inputs is not None
@@ -713,33 +758,56 @@ def _attempt(
     seed: int,
     directory: Path,
     *,
+    backend: Backend | None,
+    backend_source: _ScalarBackendSource | None,
     layout_root: Path | None,
     allowed_root: Path | None,
     failures: list[PredictionFailure],
     skipped: list[Path],
 ) -> PredictionResult | None:
     """One seed, honouring the request's resume and error policies."""
-    if request.resume:
-        reused = _result_from_manifest(
-            directory,
-            request,
-            seed=seed,
-            allowed_root=layout_root or directory,
-        )
-        if reused is not None:
-            skipped.append(Path(directory))
-            return reused
     try:
+        if request.resume:
+            if backend is not None:
+                # Anchor the live resources *before* checking the persisted
+                # request.  Otherwise a checkpoint replaced between manifest
+                # validation and ``observe_resumed`` could bind the reused
+                # seed to generation A and the active session to generation B.
+                backend.validate_session(request)
+            reused = _result_from_manifest(
+                directory,
+                request,
+                seed=seed,
+                allowed_root=layout_root or directory,
+            )
+            if reused is not None:
+                if backend is not None:
+                    backend.observe_resumed(request)
+                elif backend_source is not None:
+                    backend_source.discard_probe()
+                skipped.append(Path(directory))
+                return reused
+        attempt_backend = backend
+        session_managed = attempt_backend is not None
+        if attempt_backend is None and backend_source is not None:
+            attempt_backend = backend_source.take()
         return _predict_once(
             request,
             seed,
             directory,
+            backend=attempt_backend,
+            session_managed=session_managed,
             layout_root=layout_root,
             allowed_root=allowed_root,
         )
     except _RESUMABLE_ERRORS as error:
         if request.on_error != "continue":
             raise
+        # A continued batch historically started the next scalar run with a
+        # fresh backend. Preserve that isolation when an adapter now keeps
+        # request-scoped weights or derived state alive.
+        if backend is not None:
+            backend.invalidate_session()
         failures.append(
             PredictionFailure(
                 model=request.model,
@@ -756,6 +824,8 @@ def _attempt(
 def _predict_resolved(
     request: PredictionRequest,
     *,
+    backend: Backend | None = None,
+    backend_source: _ScalarBackendSource | None = None,
     output_root: Path | None = None,
     failures: list[PredictionFailure] | None = None,
     skipped: list[Path] | None = None,
@@ -777,6 +847,8 @@ def _predict_resolved(
             request,
             seeds[0],
             request.output_dir,
+            backend=backend,
+            backend_source=backend_source,
             layout_root=None,
             allowed_root=None,
             failures=failures,
@@ -785,22 +857,21 @@ def _predict_resolved(
         return outcome
 
     started = time.perf_counter()
-    results = [
-        outcome
-        for seed in seeds
-        if (
-            outcome := _attempt(
-                request,
-                seed,
-                request.output_dir / f"seed_{seed}",
-                layout_root=request.output_dir,
-                allowed_root=request.output_dir,
-                failures=failures,
-                skipped=skipped,
-            )
+    results: list[PredictionResult] = []
+    for seed in seeds:
+        outcome = _attempt(
+            request,
+            seed,
+            request.output_dir / f"seed_{seed}",
+            backend=backend,
+            backend_source=backend_source,
+            layout_root=request.output_dir,
+            allowed_root=request.output_dir,
+            failures=failures,
+            skipped=skipped,
         )
-        is not None
-    ]
+        if outcome is not None:
+            results.append(outcome)
     if not results:
         return None
     combined = PredictionResult(
@@ -825,15 +896,32 @@ def _predict_resolved(
     # the recorded request identity and artifacts, but a partial top-level
     # manifest would still falsely claim that the missing seeds had finished.
     if len(failures) == entry_failure_count:
-        write_manifest(
-            request,
-            combined,
-            request.output_dir,
-            cost={
-                "seconds": round(time.perf_counter() - started, 2),
-                "peak_bytes": device_peak_bytes(),
-            },
-        )
+        try:
+            _write_session_manifest(
+                backend,
+                request,
+                combined,
+                request.output_dir,
+                cost={
+                    "seconds": round(time.perf_counter() - started, 2),
+                    "peak_bytes": device_peak_bytes(),
+                },
+            )
+        except _RESUMABLE_ERRORS as error:
+            if request.on_error != "continue":
+                raise
+            if backend is not None:
+                backend.invalidate_session()
+            failures.append(
+                PredictionFailure(
+                    model=request.model,
+                    input=Path(request.input),
+                    seed=None,
+                    output_dir=Path(request.output_dir),
+                    error=str(error),
+                    error_type=type(error).__name__,
+                )
+            )
     return combined
 
 
@@ -861,6 +949,8 @@ def _predict_once(
     seed: int,
     output_dir: Path,
     *,
+    backend: Backend | None = None,
+    session_managed: bool = False,
     layout_root: Path | None = None,
     allowed_root: Path | None = None,
 ) -> PredictionResult:
@@ -882,7 +972,7 @@ def _predict_once(
     # file: the generated one lives inside the output directory it describes,
     # so a manifest naming it says nothing about which job was run.
     asked = request
-    backend = get_backend(request.model)
+    backend = backend if backend is not None else get_backend(request.model)
     capabilities = backend.capabilities()
 
     # Keep direct execution and ``foldjax plan`` on the same cheap validation
@@ -947,6 +1037,12 @@ def _predict_once(
         if explanation is None:
             raise
         raise MemoryError(f"{backend.name} ran out of memory: {explanation}") from error
+    if session_managed:
+        try:
+            backend.validate_session(request)
+        except BaseException:
+            _discard_manifest(request.output_dir)
+            raise
     result = _validate_result(
         result,
         backend=backend,
@@ -980,7 +1076,8 @@ def _predict_once(
     # the directory this scalar request actually ran in.
     result = dataclasses.replace(result, output_dir=request.output_dir)
     # Written after the run, so its presence also says the run finished.
-    write_manifest(
+    _write_session_manifest(
+        backend if session_managed else None,
         asked,
         result,
         request.output_dir,
@@ -988,6 +1085,49 @@ def _predict_once(
         cost=cost,
     )
     return result
+
+
+def _write_session_manifest(
+    backend: Backend | None,
+    request: PredictionRequest,
+    result: PredictionResult,
+    directory: Path,
+    **kwargs: Any,
+) -> None:
+    """Write only while the session's actual runtime assets stay unchanged."""
+
+    try:
+        if backend is not None:
+            backend.validate_session(request)
+    except BaseException:
+        _discard_manifest(directory)
+        raise
+    written = write_manifest(request, result, directory, **kwargs)
+    if written is None:
+        # ``write_manifest`` intentionally preserves a successful prediction
+        # on provenance errors.  It must not, however, leave an older manifest
+        # advertising output files that this run may just have overwritten.
+        _discard_manifest(directory)
+    if backend is None:
+        return
+    try:
+        backend.validate_session(request)
+    except BaseException:
+        # The manifest may have observed a different checkpoint generation in
+        # the narrow interval between validation and its own stat snapshot.
+        # Keep the native outputs for diagnosis, but never advertise them as a
+        # resumable completed run.
+        _discard_manifest(directory)
+        raise
+
+
+def _discard_manifest(directory: Path) -> None:
+    """Best-effort removal of a completion marker that is no longer sound."""
+
+    try:
+        (Path(directory) / MANIFEST_NAME).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _has_coordinates(value: Any) -> bool:

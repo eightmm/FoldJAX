@@ -257,6 +257,11 @@ def load_params(path: str | Path, dtype: Any = None, prestack: bool = True) -> A
     # briefly hold both the per-layer arrays and the stacked copy on the
     # device -- twice the checkpoint, for nothing.
     params = unflatten_pytree(arrays, meta.get("scalars", {}), to_device=False)
+    # The nested tree now owns every array leaf. Drop the flat loader mapping
+    # before stacking so the unstacked tree can be reclaimed as soon as its
+    # stacked replacement is ready, rather than retaining both forms through
+    # the device transfer below.
+    del arrays
     params = prestack_layer_lists(params)
     return jax.tree.map(
         lambda leaf: jnp.asarray(leaf) if isinstance(leaf, np.ndarray) else leaf,

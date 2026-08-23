@@ -12,6 +12,33 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **ESMFold2 keeps one verified model and one input's ESMC states for a
+  request.** A multi-seed or multi-input batch used to construct a fresh
+  backend for every scalar run, reload the 26,347,754,143-byte released bundle,
+  and repeat the seed-independent ESMC-6B forward. Backends can now opt into a
+  single-threaded, request-scoped session; ESMFold2 loads lazily, retains at
+  most one input's final scattered language-model state, and releases both
+  model and state before the next model group. At 1,000 tokens that retained
+  BF16 state is 414,720,000 bytes, against 25,408,148,888 source bytes for the
+  ESMC checkpoint. An all-resumed request loads no weights.
+
+  Reuse is deliberately narrower than path equality. The session binds every
+  structure-model file, ESMC config/index/shard, device placement and the exact
+  normalized feature bytes; it refuses to combine seeds if those assets change
+  during resume, load, prediction or manifest writing. Backends that do not opt
+  in keep the historical fresh-instance-per-scalar behavior. CPU contract tests
+  cover two inputs by three seeds, lazy resume, checkpoint replacement,
+  continued failures, cleanup and wrapper compatibility. Released-weight
+  CUDA latency, peak-memory and numerical parity remain deployment gates, so
+  no end-to-end GPU speedup is claimed here.
+- **Boltz-2 drops the flat host checkpoint mapping before layer stacking.** The
+  nested parameter tree already owns the same NumPy leaves; retaining the flat
+  dictionary kept the unstacked per-layer arrays alive while their stacked
+  replacements were built and transferred. On the local released confidence
+  checkpoint, the loader's maximum RSS fell from 6,687,764 KiB to 4,848,852 KiB
+  (1,838,912 KiB, 27.5%) while the resulting parameter tree remained
+  2,026,900,352 bytes and value-identical. A lifetime regression test verifies
+  that the flat owner is gone before every pre-stack operation.
 - **OpenFold3 repeated-layer weights are stacked before device transfer.**
   The released checkpoint contains seven homogeneous scanned stacks whose
   parameter leaves total 1,444,290,304 bytes (1.35 GiB). They previously

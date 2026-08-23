@@ -5,6 +5,26 @@
 않는 선**에서만 제안한다 (PROJECT.md "Prediction and preprocessing stay
 scientifically native to each model").
 
+## 3차 구현 (2026-08-23, 요청 범위 세션)
+
+2.1(c)의 공통 `Backend.session()` 계약과 ESMFold2 구현을 추가했다. 세션 재사용은
+명시적으로 opt-in한 백엔드만 적용되며, 나머지 백엔드는 기존처럼 scalar run마다 새
+인스턴스를 받는다. ESMFold2는 같은 요청의 seed/input 사이에서 checkpoint를 한 번만
+로드하고, 정규화·패딩된 입력이 같은 동안 seed-independent ESMC hidden state를 한
+번만 계산한다. 한 input의 hidden만 보유하며 model group이 끝나면 모두 해제한다.
+
+재사용은 weight 경로만으로 판단하지 않는다. 실제 loader가 읽는 structure checkpoint,
+ESMC config/index/shard와 device placement를 고정하고 resume·load·predict·manifest
+경계마다 다시 확인한다. 중간에 파일 세대가 바뀌면 과거 seed와 새 seed를 섞지 않고
+세션을 실패시킨다. all-resume은 stat 검증만 하고 26 GB bundle을 로드하지 않는다.
+
+Boltz-2 loader도 nested parameter tree 생성 직후 flat checkpoint mapping을 놓아,
+pre-stack/device transfer 동안 두 소유자가 unstacked 배열을 붙잡지 않게 했다. 로컬
+released confidence checkpoint에서 max RSS는 6,687,764 KiB에서 4,848,852 KiB로
+1,838,912 KiB(27.5%) 줄었고 최종 parameter bytes와 값은 동일했다. 두 변경 모두 CPU
+계약 검증 결과이며, released-weight CUDA latency/peak/parity는 별도 배치 검증 전까지
+주장하지 않는다.
+
 ## 2차 구현 (2026-08-15, 후속)
 
 1차 이후 코드를 다시 훑어 찾은 결함과 남은 기능 공백을 전부 처리했다.
@@ -44,8 +64,8 @@ README가 스스로 정한 "CLI 전용 철자는 없다" 규칙을 지키기 위
 않았다. 사내 서열은 `FOLDJAX_MSA_SERVER_URL`로 자체 인스턴스를 가리킬 것.
 
 **미구현 (근거 부족 또는 포트 수술 필요)** — 2.1(b) 네이티브 시드·잡 팬아웃 /
-2.1(c) 세션 프로토콜 / 2.2 버킷 정렬 / 2.3 `warm --grid` / 2.4 `plan --estimate` /
-2.6 feature 캐시 / 2.7 장치 샤딩. 이유는 각 절 끝에 적었다.
+2.1(c)의 ESMFold2 외 백엔드 / 2.2 버킷 정렬 / 2.3 `warm --grid` /
+2.4 `plan --estimate` / 2.6 feature 캐시 / 2.7 장치 샤딩. 이유는 각 절 끝에 적었다.
 
 ---
 
@@ -300,6 +320,12 @@ class Backend:
 
 따라서 (a) → (b) → boltz2·esmfold2부터 (c), 나머지는 측정 결과가 정당화할 때.
 
+**현재 구현 상태.** 공통 프로토콜과 ESMFold2 세션은 구현됐다. dispatcher는 모델별로
+한 세션만 순서대로 열고, ESMFold2는 verified checkpoint snapshot이 같은 동안 model과
+ESMC hidden state를 재사용한다. Boltz-2를 포함한 나머지 backend는 아직 opt-in하지
+않았으므로 fresh-instance fallback을 그대로 탄다. 위의 native fan-out 제안 (b)는
+출력/seed 계약을 바꾸지 않고도 같은 지배적 낭비를 제거했기 때문에 당장 필요하지 않다.
+
 ---
 
 ### 2.2 배치 스케줄러: 패딩 버킷으로 정렬
@@ -495,9 +521,11 @@ OOM → 이 job에 **실제로 유효한** knob만 나열(모델별로 다르다
   건드리므로 실제 가중치로 GPU에서 한 번은 돌려봐야 하고, 이 세션에서는 GPU 작업을
   큐에 넣지 않았다. 선행 조건인 2.1(a) 계측이 방금 들어갔으니, 다음 실행에서
   `cost.phases`가 로드 비용을 얼마로 보고하는지 보고 판단하는 것이 순서다.
-- **2.1(c) 세션 프로토콜** — protenix/opendde/openfold3/alphafold3가
-  `module.main(argv)` 구조라 포트마다 load-once 진입점을 새로 열어야 한다. 범위가
-  이번 작업(오케스트레이션 레이어)을 넘어선다.
+- **2.1(c)의 나머지 백엔드** — 공통 프로토콜과 ESMFold2는 구현했다.
+  protenix/opendde/openfold3/alphafold3는 `module.main(argv)` 구조라 포트마다
+  load-once 진입점을 새로 열어야 한다. Boltz-2도 loader lifetime은 줄였지만 아직
+  request session에는 opt-in하지 않았다. 실제 반복 비용이 정당화할 때 백엔드별로
+  추가한다.
 - **2.2 버킷 정렬** — 실행 순서를 바꾸는 최적화라, 결과 순서 계약이 유지되는지
   패딩을 켠 실제 배치로 확인해야 의미가 있다.
 - **2.3 `warm --grid`** — 구현은 짧지만 각 격자점이 진짜 실행이라, 검증에 GPU 시간이

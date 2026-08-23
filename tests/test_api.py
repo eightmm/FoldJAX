@@ -1,4 +1,7 @@
+import dataclasses
 import json
+import weakref
+from contextlib import contextmanager
 from pathlib import Path
 from types import MappingProxyType
 
@@ -6,6 +9,7 @@ import numpy as np
 import pytest
 
 import foldjax
+import foldjax.api as api_module
 from foldjax.backends.base import Backend
 from foldjax.registry import backend_override
 from foldjax.schema import (
@@ -43,6 +47,39 @@ class DummyBackend(Backend):
             output_dir=request.output_dir,
             raw={"called": True},
         )
+
+
+class SessionBackend(DummyBackend):
+    """Records the dispatcher-owned lifetime around several scalar runs."""
+
+    session_reuse = True
+
+    def __init__(
+        self, name: str = "boltz2", lifecycle: list[str] | None = None
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.events: list[object] = []
+        self.lifecycle = lifecycle
+
+    @contextmanager
+    def session(self, requests):
+        self.events.append(("open", tuple(request.input.name for request in requests)))
+        if self.lifecycle is not None:
+            self.lifecycle.append(f"{self.name}:open")
+        try:
+            yield self
+        finally:
+            self.events.append("close")
+            if self.lifecycle is not None:
+                self.lifecycle.append(f"{self.name}:close")
+
+    def invalidate_session(self) -> None:
+        self.events.append("invalidate")
+
+    def predict(self, request: PredictionRequest) -> PredictionResult:
+        self.events.append(("predict", request.input.name, request.seed))
+        return super().predict(request)
 
 
 def _request(tmp_path: Path, **overrides) -> PredictionRequest:
@@ -669,6 +706,359 @@ def test_predict_dispatches_a_validated_request(tmp_path: Path) -> None:
     assert result.samples[0].scores["iptm"] == 0.8
     assert result.raw == {"called": True}
     assert (tmp_path / "out").is_dir()
+
+
+def test_predict_batch_reuses_one_backend_session_across_seeds(tmp_path: Path) -> None:
+    backend = SessionBackend()
+    with backend_override("boltz2", lambda: backend):
+        result = foldjax.predict(_request(tmp_path, num_seeds=3))
+
+    assert len(result.samples) == 3
+    assert backend.events == [
+        ("open", ("job.yaml",)),
+        ("predict", "job.yaml", 7),
+        ("predict", "job.yaml", 8),
+        ("predict", "job.yaml", 9),
+        "close",
+    ]
+
+
+def test_backend_reuse_is_opt_in_for_third_party_factories(tmp_path: Path) -> None:
+    live: weakref.WeakSet[DummyBackend] = weakref.WeakSet()
+    observed_live: list[int] = []
+    created = 0
+
+    class FreshOnlyBackend(DummyBackend):
+        def __init__(self) -> None:
+            nonlocal created
+            super().__init__()
+            self.calls = 0
+            created += 1
+            live.add(self)
+
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            self.calls += 1
+            observed_live.append(len(live))
+            if self.calls > 1:
+                raise RuntimeError("backend instance was reused")
+            return super().predict(request)
+
+        def validate_session(self, request: PredictionRequest) -> None:
+            raise AssertionError("non-opt-in backend received a session hook")
+
+        def observe_resumed(self, request: PredictionRequest) -> None:
+            raise AssertionError("non-opt-in backend received a session hook")
+
+    with backend_override("boltz2", FreshOnlyBackend):
+        result = foldjax.predict(_request(tmp_path, num_seeds=3))
+
+    assert len(result.samples) == 3
+    # One extra construction belongs to side-effect-free request resolution;
+    # its instance and every scalar backend are released before the next model
+    # state is created.
+    assert created == 4
+    assert observed_live == [1, 1, 1]
+
+
+def test_non_session_resume_does_not_construct_scalar_backends(tmp_path: Path) -> None:
+    class PersistingBackend(DummyBackend):
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            request.output_dir.mkdir(parents=True, exist_ok=True)
+            structure = request.output_dir / "prediction.cif"
+            structure.write_text("data_prediction\n")
+            return PredictionResult(
+                model=self.name,
+                samples=(
+                    PredictionSample(
+                        seed=request.seed,
+                        structure_path=structure,
+                        scores={"iptm": 0.8},
+                    ),
+                ),
+                output_dir=request.output_dir,
+            )
+
+    request = _request(tmp_path, seed=0, num_seeds=2)
+    with backend_override("boltz2", PersistingBackend):
+        foldjax.predict(request)
+
+    created = 0
+
+    class ResumeOnlyBackend(PersistingBackend):
+        def __init__(self) -> None:
+            nonlocal created
+            super().__init__()
+            created += 1
+
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            raise AssertionError("a resumed scalar constructed an execution backend")
+
+        def validate_session(self, request: PredictionRequest) -> None:
+            raise AssertionError("non-opt-in backend received a session hook")
+
+        def observe_resumed(self, request: PredictionRequest) -> None:
+            raise AssertionError("non-opt-in backend received a session hook")
+
+    with backend_override("boltz2", ResumeOnlyBackend):
+        report = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(report.skipped) == 2
+    # Request resolution and the one lightweight session-capability probe only.
+    assert created == 2
+
+
+def test_predict_batch_closes_each_model_before_opening_the_next(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first = tmp_path / "a.yaml"
+    second = tmp_path / "b.yaml"
+    first.write_text("version: 1\n")
+    second.write_text("version: 1\n")
+    lifecycle: list[str] = []
+    boltz = SessionBackend("boltz2", lifecycle)
+    opendde = SessionBackend("opendde", lifecycle)
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    monkeypatch.setattr(
+        "foldjax.assets.resolve_weights", lambda *args, **kwargs: weights
+    )
+    request = PredictionRequest(
+        models=("boltz2", "opendde"),
+        inputs=(first, second),
+        output_dir=tmp_path / "out",
+    )
+
+    with (
+        backend_override("boltz2", lambda: boltz),
+        backend_override("opendde", lambda: opendde),
+    ):
+        results = foldjax.predict(request)
+
+    assert len(results) == 4
+    assert boltz.events[0] == ("open", ("a.yaml", "b.yaml"))
+    assert boltz.events[-1] == "close"
+    assert opendde.events[0] == ("open", ("a.yaml", "b.yaml"))
+    assert opendde.events[-1] == "close"
+    assert lifecycle == [
+        "boltz2:open",
+        "boltz2:close",
+        "opendde:open",
+        "opendde:close",
+    ]
+
+
+def test_continued_failure_invalidates_reusable_backend_state(tmp_path: Path) -> None:
+    class FailsOnce(SessionBackend):
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            if request.seed == 0:
+                self.events.append(("predict", request.input.name, request.seed))
+                raise ValueError("bad first seed")
+            return super().predict(request)
+
+    backend = FailsOnce()
+    with backend_override("boltz2", lambda: backend):
+        report = foldjax.predict_batch(
+            _request(tmp_path, seed=0, num_seeds=2, on_error="continue")
+        )
+
+    assert len(report.failures) == 1
+    assert len(report.results) == 1
+    assert backend.events == [
+        ("open", ("job.yaml",)),
+        ("predict", "job.yaml", 0),
+        "invalidate",
+        ("predict", "job.yaml", 1),
+        "close",
+    ]
+
+
+def test_resume_anchors_session_before_manifest_validation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class Anchored(SessionBackend):
+        def validate_session(self, request: PredictionRequest) -> None:
+            del request
+            self.events.append("validate")
+
+        def observe_resumed(self, request: PredictionRequest) -> None:
+            del request
+            self.events.append("observe")
+
+    backend = Anchored()
+    restored = PredictionResult(
+        model="boltz2", samples=(), output_dir=tmp_path / "out"
+    )
+
+    def fake_restore(*args, **kwargs):
+        del args, kwargs
+        backend.events.append("manifest")
+        return restored
+
+    monkeypatch.setattr(api_module, "_result_from_manifest", fake_restore)
+    with backend_override("boltz2", lambda: backend):
+        report = foldjax.predict_batch(_request(tmp_path, resume=True))
+
+    assert report.results == (restored,)
+    assert backend.events == [
+        ("open", ("job.yaml",)),
+        "validate",
+        "manifest",
+        "observe",
+        "close",
+    ]
+
+
+def test_poisoned_session_records_every_failure_instead_of_aborting(
+    tmp_path: Path,
+) -> None:
+    class Poisoned(SessionBackend):
+        def predict(self, request: PredictionRequest) -> PredictionResult:
+            self.events.append(("predict", request.input.name, request.seed))
+            raise foldjax.PredictionError("session resources changed")
+
+    backend = Poisoned()
+    request = _request(
+        tmp_path,
+        seed=0,
+        num_seeds=2,
+        on_error="continue",
+        output_dir=tmp_path / "out",
+    )
+    with backend_override("boltz2", lambda: backend):
+        report = foldjax.predict_batch(request)
+
+    assert len(report.failures) == 2
+    assert not report.results
+    assert (tmp_path / "out" / "foldjax_failures.json").is_file()
+
+
+def test_top_manifest_session_failure_honours_continue_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class TopManifestRace(SessionBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.checks = 0
+
+        def validate_session(self, request: PredictionRequest) -> None:
+            del request
+            self.checks += 1
+            # Two seeds each validate after predict and around their manifest.
+            # The seventh check is the first input's combined manifest.
+            if self.checks == 7:
+                raise foldjax.PredictionError("top manifest race")
+
+    first = tmp_path / "first.yaml"
+    second = tmp_path / "second.yaml"
+    first.write_text("version: 1\n")
+    second.write_text("version: 1\n")
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    monkeypatch.setattr(
+        "foldjax.assets.resolve_weights", lambda *args, **kwargs: weights
+    )
+    backend = TopManifestRace()
+    request = PredictionRequest(
+        model="boltz2",
+        inputs=(first, second),
+        output_dir=tmp_path / "out",
+        seed=0,
+        num_seeds=2,
+        on_error="continue",
+    )
+
+    with backend_override("boltz2", lambda: backend):
+        report = foldjax.predict_batch(request)
+
+    assert len(report.results) == 2
+    assert len(report.failures) == 1
+    assert report.failures[0].seed is None
+    assert report.failures[0].error == "top manifest race"
+    assert len([event for event in backend.events if event[0] == "predict"]) == 4
+    assert not (tmp_path / "out" / "boltz2" / "first" / "foldjax_run.json").exists()
+    assert (tmp_path / "out" / "boltz2" / "second" / "foldjax_run.json").is_file()
+
+
+def test_manifest_is_removed_if_session_assets_change_during_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class Guarded(DummyBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.checks = 0
+
+        def validate_session(self, request: PredictionRequest) -> None:
+            self.checks += 1
+            if self.checks == 2:
+                raise foldjax.PredictionError("weights changed during manifest write")
+
+    def fake_write(request, result, directory, **kwargs) -> Path:
+        del request, result, kwargs
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "foldjax_run.json"
+        path.write_text("{}")
+        return path
+
+    backend = Guarded()
+    request = _request(tmp_path)
+    result = backend.predict(request)
+    monkeypatch.setattr(api_module, "write_manifest", fake_write)
+
+    with pytest.raises(foldjax.PredictionError, match="weights changed"):
+        api_module._write_session_manifest(
+            backend, request, result, request.output_dir
+        )
+
+    assert not (request.output_dir / "foldjax_run.json").exists()
+
+
+def test_stale_manifest_is_removed_if_session_is_invalid_before_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class Invalid(DummyBackend):
+        def validate_session(self, request: PredictionRequest) -> None:
+            del request
+            raise foldjax.PredictionError("weights already changed")
+
+    request = _request(tmp_path)
+    request.output_dir.mkdir()
+    manifest = request.output_dir / "foldjax_run.json"
+    manifest.write_text("old")
+    wrote = False
+
+    def fake_write(*args, **kwargs):
+        nonlocal wrote
+        del args, kwargs
+        wrote = True
+
+    monkeypatch.setattr(api_module, "write_manifest", fake_write)
+    backend = Invalid()
+
+    with pytest.raises(foldjax.PredictionError, match="already changed"):
+        api_module._write_session_manifest(
+            backend, request, backend.predict(request), request.output_dir
+        )
+
+    assert not wrote
+    assert not manifest.exists()
+
+
+def test_failed_manifest_write_removes_an_older_completion_marker(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    request.output_dir.mkdir()
+    manifest = request.output_dir / "foldjax_run.json"
+    manifest.write_text("old")
+    backend = DummyBackend()
+    monkeypatch.setattr(api_module, "write_manifest", lambda *args, **kwargs: None)
+
+    api_module._write_session_manifest(
+        None, request, backend.predict(request), request.output_dir
+    )
+
+    assert not manifest.exists()
 
 
 def test_predict_namespaces_the_compilation_cache_per_backend(tmp_path: Path) -> None:

@@ -39,6 +39,16 @@ from foldjax.models.esmfold2.models import model as structure_model
 #: Where `assets.py` stages the language model beside the structure weights.
 ESMC_SUBDIRECTORY = "esmc"
 
+# Single authority for the semantic arrays consumed by ESMC.  The backend
+# hashes this exact vocabulary when it reuses seed-independent hidden states.
+LANGUAGE_MODEL_FEATURES = (
+    "input_ids",
+    "asym_id",
+    "residue_index",
+    "mol_type",
+    "token_attention_mask",
+)
+
 
 @dataclass(frozen=True)
 class LoadedModel:
@@ -119,12 +129,9 @@ def language_model_states(
     """ESMC's stacked hidden states for these tokens, or `None` without it."""
     if model.esmc_parameters is None or model.esmc_settings is None:
         return None
+    values = [np.asarray(features[name]) for name in LANGUAGE_MODEL_FEATURES]
     return esmc_model.lm_hidden_states(
-        np.asarray(features["input_ids"]),
-        np.asarray(features["asym_id"]),
-        np.asarray(features["residue_index"]),
-        np.asarray(features["mol_type"]),
-        np.asarray(features["token_attention_mask"]),
+        *values,
         model.esmc_parameters,
         settings=model.esmc_settings,
         packed_length=packed_length,
@@ -153,6 +160,7 @@ def predict(
     num_steps: int | None = None,
     msa_max_depth: int | None = None,
     language_model_tokens: int | None = None,
+    precomputed_lm_states: jnp.ndarray | None = None,
     compile_it: bool = True,
     preserve_prefix_rng: bool = False,
     #: Context-parallel shard count; same contract as the other ports. More
@@ -178,9 +186,11 @@ def predict(
         msa_max_depth=msa_max_depth,
     )
     arrays = {name: jnp.asarray(value) for name, value in features.items()}
-    hidden = language_model_states(
-        features, model, packed_length=language_model_tokens
-    )
+    hidden = precomputed_lm_states
+    if hidden is None:
+        hidden = language_model_states(
+            features, model, packed_length=language_model_tokens
+        )
     # Read on the host: it sizes the confidence head's per-chain matrix, and a
     # traced maximum cannot size anything.
     n_chains = int(np.asarray(features["asym_id"]).max()) + 1
@@ -400,6 +410,7 @@ def seed_key(seed: int) -> jnp.ndarray:
 
 __all__ = [
     "ESMC_SUBDIRECTORY",
+    "LANGUAGE_MODEL_FEATURES",
     "LoadedModel",
     "build_job_features",
     "esmc_directory",

@@ -30,8 +30,10 @@ reads upstream's 417 MB `ccd.pkl`.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -40,12 +42,14 @@ import numpy as np
 
 from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
+from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
     PaddingConfig,
+    PredictionError,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
@@ -62,6 +66,130 @@ DEFAULTS = {
     "num_diffusion_samples": 32,
     "msa_max_depth": 1024,
 }
+
+
+def _esmc_asset_paths(directory: Path) -> list[Path] | None:
+    """Mirror the ESMC loader's index/single/glob checkpoint resolution."""
+
+    config = directory / "config.json"
+    index = directory / "model.safetensors.index.json"
+    if index.is_file():
+        try:
+            document = json.loads(index.read_text(encoding="utf-8"))
+            mapping = document["weight_map"]
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
+            return None
+        if not isinstance(mapping, Mapping) or any(
+            not isinstance(value, str) or not value for value in mapping.values()
+        ):
+            return None
+        shards = [
+            directory / name for name in sorted(set(mapping.values()))
+        ]
+        return [config, index, *shards]
+    single = directory / "model.safetensors"
+    if single.is_file():
+        return [config, single]
+    shards = sorted(directory.glob("*.safetensors"))
+    return [config, *shards] if shards else None
+
+
+def _model_asset_snapshot(
+    weights: Path,
+    *,
+    esmc: str | Path | None,
+    language_model: bool,
+) -> tuple[tuple[str, str], ...] | None:
+    """Metadata identity of exactly the files ``inference.load`` will read.
+
+    Reading 26 GB merely to decide whether an already-loaded model is reusable
+    would erase most of the win.  The manifest layer's stat/tree identity binds
+    mode, device, inode, size, mtime and ctime for every relevant entry and
+    rejects symlinked/special trees it cannot prove.  Re-stat before every reuse
+    catches ordinary replacement or in-place edits without touching payloads.
+    """
+
+    weights = Path(weights)
+    root = weights.parent if weights.is_file() else weights
+    paths = [root / "model.safetensors", root / "config.json"]
+    if language_model:
+        lm_paths = _esmc_asset_paths(
+            Path(esmc) if esmc is not None else root / "esmc"
+        )
+        if lm_paths is None:
+            return None
+        paths.extend(lm_paths)
+
+    records: list[tuple[str, str]] = []
+    for path in paths:
+        identity = path_stat_identity(path)
+        if identity is None:
+            return None
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        records.append(
+            (
+                str(resolved),
+                json.dumps(identity, sort_keys=True, separators=(",", ":")),
+            )
+        )
+    return tuple(records)
+
+
+def _language_model_feature_key(
+    features: Mapping[str, np.ndarray],
+    packed_length: int | None,
+    names: Sequence[str],
+) -> str:
+    """Content identity of every semantic input read by the ESMC adapter."""
+
+    digest = hashlib.sha256()
+    digest.update(f"packed_length={packed_length!r}\n".encode())
+    for name in names:
+        value = np.ascontiguousarray(np.asarray(features[name]))
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(value.dtype.str.encode())
+        digest.update(b"\0")
+        digest.update(json.dumps(value.shape, separators=(",", ":")).encode())
+        digest.update(b"\0")
+        digest.update(memoryview(value).cast("B"))
+    return digest.hexdigest()
+
+
+def _model_source_key(
+    weights: Path,
+    *,
+    esmc: str | Path | None,
+    language_model: bool,
+) -> tuple[bool, str, str | None]:
+    """Stable lexical identity; symlink retargeting must not create a new key."""
+
+    weights = Path(weights)
+    return (
+        language_model,
+        str(weights.absolute()),
+        str(Path(esmc).absolute()) if language_model and esmc is not None else None,
+    )
+
+
+def _runtime_placement_key(inference: Any) -> tuple[str, ...]:
+    """Identity of the JAX devices on which checkpoint arrays are created."""
+
+    jax_module = getattr(inference, "jax", None)
+    if jax_module is None:
+        return ("unknown",)
+    try:
+        configured = str(getattr(jax_module.config, "jax_default_device", None))
+        devices = tuple(
+            f"{device.platform}:{device.id}:{device.device_kind}"
+            for device in jax_module.devices()
+        )
+    except Exception:  # noqa: BLE001 - placement becomes conservatively unique
+        return ("unavailable", str(id(jax_module)))
+    return (configured, *devices)
 
 
 def _padding_plan(
@@ -199,6 +327,7 @@ def apply_managed_profile(
 
 class ESMFold2Backend(Backend):
     name = "esmfold2"
+    session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "language_model_tokens")
     native_options = frozenset({"cp_devices", "esmc_weights", "no_language_model"})
     # The neutral names, against the port's. `max_msa_depth` is the one that is
@@ -225,6 +354,196 @@ class ESMFold2Backend(Backend):
         "no_language_model",
         "cp_devices",
     )
+
+    def __init__(self) -> None:
+        self._session_open = False
+        self._session_active = False
+        self._session_poisoned: str | None = None
+        self._asset_anchors: dict[
+            tuple[bool, str, str | None], tuple[tuple[str, str], ...] | None
+        ] = {}
+        self._loaded_model: Any | None = None
+        self._loaded_model_key: (
+            tuple[
+                tuple[bool, str, str | None],
+                tuple[str, ...],
+                tuple[tuple[str, str], ...],
+            ]
+            | None
+        ) = None
+        self._lm_state: Any | None = None
+        self._lm_state_key: str | None = None
+
+    @contextmanager
+    def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
+        """Reuse one model and one input's ESMC states within this API call."""
+
+        if self._session_open:
+            raise RuntimeError("nested ESMFold2 backend sessions are not supported")
+        self._session_open = True
+        attempts = sum(len(request.resolved_seeds) for request in requests)
+        # A scalar run has nothing to reuse and keeps the historical direct
+        # ``predict_job`` route, including compatibility with small wrappers.
+        self._session_active = attempts > 1
+        try:
+            yield self
+        finally:
+            self.invalidate_session()
+            self._asset_anchors.clear()
+            self._session_poisoned = None
+            self._session_active = False
+            self._session_open = False
+
+    def invalidate_session(self) -> None:
+        self._lm_state = None
+        self._lm_state_key = None
+        self._loaded_model = None
+        self._loaded_model_key = None
+
+    def _poison(self, message: str) -> None:
+        self.invalidate_session()
+        self._session_poisoned = message
+        raise PredictionError(message)
+
+    def _request_model_source(
+        self, request: PredictionRequest
+    ) -> tuple[Path, str | Path | None, bool]:
+        options = self.apply_sampling(request)
+        managed_asset_profile(options)
+        without_lm = _strict_boolean(
+            options.get("no_language_model", False), name="no_language_model"
+        )
+        esmc = options.get("esmc_weights")
+        assert request.weights is not None
+        return request.weights, esmc, not without_lm
+
+    def _anchor_assets(
+        self,
+        weights: Path,
+        *,
+        esmc: str | Path | None,
+        language_model: bool,
+        require_verifiable: bool = False,
+    ) -> tuple[
+        tuple[bool, str, str | None], tuple[tuple[str, str], ...] | None
+    ]:
+        if self._session_poisoned is not None:
+            raise PredictionError(self._session_poisoned)
+        source = _model_source_key(
+            weights, esmc=esmc, language_model=language_model
+        )
+        snapshot = _model_asset_snapshot(
+            weights, esmc=esmc, language_model=language_model
+        )
+        missing = object()
+        expected = self._asset_anchors.get(source, missing)
+        if expected is missing:
+            self._asset_anchors[source] = snapshot
+        elif expected is None:
+            # Once this source is unverifiable, keep the entire session on the
+            # uncached compatibility path even if its layout later changes.
+            snapshot = None
+        elif expected is not None and snapshot != expected:
+            self._poison(
+                "ESMFold2 weights changed while a prediction batch was active"
+            )
+        if require_verifiable and snapshot is None:
+            self._poison(
+                "ESMFold2 cannot verify weights used by a resumed prediction"
+            )
+        return source, snapshot
+
+    def observe_resumed(self, request: PredictionRequest) -> None:
+        if not self._session_active:
+            return
+        weights, esmc, language_model = self._request_model_source(request)
+        self._anchor_assets(
+            weights,
+            esmc=esmc,
+            language_model=language_model,
+            require_verifiable=True,
+        )
+
+    def validate_session(self, request: PredictionRequest) -> None:
+        if not self._session_active:
+            return
+        weights, esmc, language_model = self._request_model_source(request)
+        self._anchor_assets(
+            weights, esmc=esmc, language_model=language_model
+        )
+
+    def _load_model(
+        self,
+        inference: Any,
+        weights: Path,
+        *,
+        esmc: str | Path | None,
+        language_model: bool,
+    ) -> Any:
+        """Load lazily, and reuse only while the exact asset snapshot matches."""
+
+        if not self._session_active:
+            return inference.load(weights, esmc=esmc, language_model=language_model)
+
+        source, snapshot = self._anchor_assets(
+            weights,
+            esmc=esmc,
+            language_model=language_model,
+        )
+        placement = _runtime_placement_key(inference)
+        key = (source, placement, snapshot) if snapshot is not None else None
+        if self._loaded_model is not None:
+            if key is not None and self._loaded_model_key == key:
+                return self._loaded_model
+            self.invalidate_session()
+
+        model = inference.load(weights, esmc=esmc, language_model=language_model)
+        after = _model_asset_snapshot(weights, esmc=esmc, language_model=language_model)
+        if snapshot is None or after is None:
+            # Unverifiable trees are still runnable, but not retained.
+            return model
+        if snapshot != after:
+            self._poison("ESMFold2 weights changed while they were being loaded")
+        self._loaded_model = model
+        self._loaded_model_key = key
+        return model
+
+    def _language_model_states(
+        self,
+        inference: Any,
+        features: Mapping[str, np.ndarray],
+        model: Any,
+        *,
+        packed_length: int | None,
+    ) -> Any | None:
+        """Return seed-independent ESMC states, retaining at most one input."""
+
+        if not model.has_language_model:
+            return None
+        # Derived state is reusable only when this session owns the exact model
+        # object that produced it. Unverifiable checkpoints are deliberately
+        # loaded afresh and must never participate in an identity cache.
+        if not self._session_active or self._loaded_model is not model:
+            return inference.language_model_states(
+                features, model, packed_length=packed_length
+            )
+        key = _language_model_feature_key(
+            features,
+            packed_length,
+            inference.LANGUAGE_MODEL_FEATURES,
+        )
+        if self._lm_state is not None and self._lm_state_key == key:
+            return self._lm_state
+        # Do not hold two full 81-layer token-state stacks while computing the
+        # next input. At 1,000 tokens one BF16 state is about 415 MB.
+        self._lm_state = None
+        self._lm_state_key = None
+        state = inference.language_model_states(
+            features, model, packed_length=packed_length
+        )
+        self._lm_state = state
+        self._lm_state_key = key
+        return state
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         managed_asset_profile(options)
@@ -300,16 +619,30 @@ class ESMFold2Backend(Backend):
         if options:
             raise ValueError(f"unsupported ESMFold2 options: {', '.join(options)}")
 
-        model = inference.load(
-            request.weights, esmc=esmc, language_model=not without_lm
+        model = self._load_model(
+            inference,
+            request.weights,
+            esmc=esmc,
+            language_model=not without_lm,
         )
         padding_plan = None
         lm_target = None
-        if request.padding is None:
+        cached_lm_api = all(
+            hasattr(inference, name)
+            for name in (
+                "LANGUAGE_MODEL_FEATURES",
+                "build_job_features",
+                "language_model_states",
+                "predict",
+            )
+        )
+        if request.padding is None and (
+            not self._session_active or not cached_lm_api
+        ):
             # Preserve the original, public no-padding path exactly.  Besides
-            # avoiding an unnecessary API split for ordinary callers, this
-            # keeps third-party wrappers that implement ``predict_job`` but do
-            # not expose the newer host-side feature helpers compatible.
+            # avoiding an unnecessary API split for ordinary callers, wrappers
+            # that expose only ``predict_job`` keep working in a session; they
+            # reuse weights but deliberately forgo the derived-state cache.
             prediction, features = inference.predict_job(
                 inference.seed_key(request.seed),
                 chains,
@@ -322,7 +655,7 @@ class ESMFold2Backend(Backend):
             prediction_key = inference.seed_key(request.seed)
             lm_tokens = (
                 inference.language_model_length(features)
-                if model.has_language_model
+                if model.has_language_model and request.padding is not None
                 else None
             )
             configured_msa_depth = overrides.get(
@@ -333,35 +666,43 @@ class ESMFold2Backend(Backend):
                 if model.settings.msa_n_layers is not None
                 else None
             )
-            padding_plan = _padding_plan(
+            if request.padding is not None:
+                padding_plan = _padding_plan(
+                    features,
+                    request.padding,
+                    msa_max_depth=active_msa_depth,
+                    language_model_tokens=lm_tokens,
+                )
+                features = inference.normalize_msa_features(
+                    prediction_key,
+                    features,
+                    n_msa=padding_plan.target["msa"],
+                    msa_max_depth=active_msa_depth,
+                    total_steps=max(
+                        1,
+                        overrides.get("num_loops", model.settings.num_loops) + 1,
+                    ),
+                )
+                features = inference.pad_features(
+                    features,
+                    n_token=padding_plan.target["tokens"],
+                    n_atom=padding_plan.target["atoms"],
+                    n_msa=padding_plan.target["msa"],
+                )
+                lm_target = padding_plan.target.get("language_model_tokens")
+            hidden = self._language_model_states(
+                inference,
                 features,
-                request.padding,
-                msa_max_depth=active_msa_depth,
-                language_model_tokens=lm_tokens,
+                model,
+                packed_length=lm_target,
             )
-            features = inference.normalize_msa_features(
-                prediction_key,
-                features,
-                n_msa=padding_plan.target["msa"],
-                msa_max_depth=active_msa_depth,
-                total_steps=max(
-                    1,
-                    overrides.get("num_loops", model.settings.num_loops) + 1,
-                ),
-            )
-            features = inference.pad_features(
-                features,
-                n_token=padding_plan.target["tokens"],
-                n_atom=padding_plan.target["atoms"],
-                n_msa=padding_plan.target["msa"],
-            )
-            lm_target = padding_plan.target.get("language_model_tokens")
             prediction = inference.predict(
                 prediction_key,
                 features,
                 model,
                 language_model_tokens=lm_target,
-                preserve_prefix_rng=True,
+                precomputed_lm_states=hidden,
+                preserve_prefix_rng=request.padding is not None,
                 **overrides,
             )
 
