@@ -26,7 +26,10 @@ carried in the result object, and never requested by default.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +59,131 @@ class RepresentationSpec:
     axes: tuple[str, ...]
     space: str
     description: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArrayHeader:
+    """Shape and dtype read from one NPZ member without loading its payload."""
+
+    shape: tuple[int, ...]
+    dtype: str
+    crc32: int
+    file_size: int
+    compressed_size: int
+
+
+def archive_headers(path: Path) -> dict[str, ArrayHeader]:
+    """Inspect representation ``.npy`` headers without materialising arrays.
+
+    Pair representations can be several gigabytes.  ``numpy.load()[name]``
+    would allocate the whole array just to decide whether a resume artifact is
+    usable; the ZIP member and NPY headers already contain the exact names,
+    shapes, dtypes, and uncompressed payload sizes needed for that decision.
+    """
+    from numpy.lib import format as npy_format
+
+    headers: dict[str, ArrayHeader] = {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                filename = info.filename
+                if info.is_dir() or not filename.endswith(".npy"):
+                    raise ValueError(
+                        f"representation archive has a non-NPY member: {filename!r}"
+                    )
+                name = filename[:-4]
+                if not name or "/" in name or "\\" in name or name in headers:
+                    raise ValueError(
+                        f"representation archive has an invalid member: {filename!r}"
+                    )
+                with archive.open(info) as member:
+                    version = npy_format.read_magic(member)
+                    if version == (1, 0):
+                        shape, _fortran, dtype = npy_format.read_array_header_1_0(
+                            member
+                        )
+                    elif version == (2, 0):
+                        shape, _fortran, dtype = npy_format.read_array_header_2_0(
+                            member
+                        )
+                    else:
+                        raise ValueError(
+                            f"unsupported NPY header version {version} for {name!r}"
+                        )
+                    dtype = np.dtype(dtype)
+                    if dtype.hasobject:
+                        raise ValueError(
+                            f"representation {name!r} has an object dtype"
+                        )
+                    shape = tuple(int(dimension) for dimension in shape)
+                    payload_bytes = math.prod(shape) * dtype.itemsize
+                    if payload_bytes <= 0:
+                        raise ValueError(
+                            f"representation {name!r} is empty: shape {shape}"
+                        )
+                    if member.tell() + payload_bytes != info.file_size:
+                        raise ValueError(
+                            f"representation {name!r} has a truncated payload"
+                        )
+                headers[name] = ArrayHeader(
+                    shape=shape,
+                    dtype=str(dtype),
+                    crc32=info.CRC,
+                    file_size=info.file_size,
+                    compressed_size=info.compress_size,
+                )
+    except (
+        EOFError,
+        NotImplementedError,
+        OSError,
+        RuntimeError,
+        zipfile.BadZipFile,
+    ) as error:
+        raise ValueError(f"invalid representation archive: {path}") from error
+    return headers
+
+
+def archive_identity(headers: Mapping[str, ArrayHeader]) -> str:
+    """Content-derived NPZ identity from headers and ZIP member CRCs.
+
+    ZIP stores a CRC of every uncompressed member.  Including it with the NPY
+    shape/dtype and sizes detects payload changes without rereading a pair array
+    that may be several gigabytes.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"foldjax-representations-v1\0")
+    for name, header in headers.items():
+        payload = json.dumps(
+            {
+                "name": name,
+                "shape": header.shape,
+                "dtype": header.dtype,
+                "crc32": header.crc32,
+                "file_size": header.file_size,
+                "compressed_size": header.compressed_size,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def restore_logical_dtype(value: np.ndarray, dtype: Any) -> np.ndarray:
+    """Restore NumPy's opaque encoding of an ml_dtypes bfloat16 array.
+
+    NPY has no native bfloat16 descriptor. NumPy therefore persists those bits
+    as ``|V2``; viewing the same two bytes through ml_dtypes recovers the exact
+    values without doubling a pair representation on disk or casting to f32.
+    Genuine void arrays stay void unless their manifest explicitly says the
+    logical dtype was bfloat16.
+    """
+    if value.dtype == np.dtype("|V2") and str(dtype) == "bfloat16":
+        import ml_dtypes
+
+        return value.view(ml_dtypes.bfloat16)
+    return value
 
 
 def resolve(
@@ -158,8 +286,24 @@ def load(directory: Path) -> dict[str, np.ndarray]:
     archive = Path(directory) / ARCHIVE_NAME
     if not archive.is_file():
         archive = Path(directory)
+    sidecar = archive.with_name(MANIFEST_NAME)
+    descriptions: Mapping[str, Any] = {}
+    if sidecar.is_file():
+        document = json.loads(sidecar.read_text(encoding="utf-8"))
+        if isinstance(document, Mapping) and isinstance(
+            document.get("representations"), Mapping
+        ):
+            descriptions = document["representations"]
     with np.load(archive) as data:
-        return {name: data[name] for name in data.files}
+        return {
+            name: restore_logical_dtype(
+                data[name],
+                descriptions.get(name, {}).get("dtype")
+                if isinstance(descriptions.get(name), Mapping)
+                else None,
+            )
+            for name in data.files
+        }
 
 
 def describe(directory: Path) -> dict[str, Any]:

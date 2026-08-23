@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import os
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -27,8 +28,15 @@ from foldjax.cache import (
     weight_identity,
 )
 from foldjax.input import materialize_native_input, read_job_document
-from foldjax.manifest import MANIFEST_NAME, device_peak_bytes
+from foldjax.manifest import (
+    MANIFEST_NAME,
+    device_peak_bytes,
+    file_content_digest,
+    matches_request,
+    stat_identity_matches,
+)
 from foldjax.manifest import write as write_manifest
+from foldjax.models._representations import archive_headers, archive_identity
 from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
@@ -41,6 +49,7 @@ from foldjax.schema import (
     PredictionRequest,
     PredictionResult,
     PredictionSample,
+    Representations,
 )
 
 #: Suffixes that can hold the common FoldJAX schema.
@@ -237,7 +246,228 @@ _RESUMABLE_ERRORS = (
 FAILURES_NAME = "foldjax_failures.json"
 
 
-def _result_from_manifest(directory: Path) -> PredictionResult | None:
+def _nonempty_file(path: Path) -> bool:
+    """Whether an artifact is a regular, non-empty file right now."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _resolve_artifact_path(
+    directory: Path,
+    recorded: str,
+    *,
+    allowed_root: Path,
+) -> Path:
+    """Resolve a manifest-relative artifact inside its generated run boundary."""
+    relative = Path(recorded)
+    if relative.is_absolute():
+        raise PredictionOutputError("run manifest artifact path must be relative")
+    root = Path(os.path.normpath(Path(allowed_root).absolute()))
+    directory = Path(os.path.normpath(Path(directory).absolute()))
+    candidate = Path(os.path.normpath(directory / relative))
+    try:
+        child = candidate.relative_to(root)
+    except ValueError as error:
+        raise PredictionOutputError(
+            f"run manifest artifact escapes its output root: {recorded}"
+        ) from error
+    cursor = root
+    for part in child.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise PredictionOutputError(
+                f"run manifest artifact path is a symlink: {cursor}"
+            )
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise PredictionOutputError(
+            f"run manifest artifact is missing: {recorded}"
+        ) from error
+    if not resolved.is_relative_to(resolved_root):
+        raise PredictionOutputError(
+            f"run manifest artifact escapes its output root: {recorded}"
+        )
+    return candidate
+
+
+def _requested_representation_names(
+    requested: tuple[str, ...] | None,
+    available: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Resolve the request vocabulary exactly as the backend adapters do."""
+    if not requested:
+        return ()
+    names: list[str] = []
+    for entry in requested:
+        for name in (part.strip() for part in entry.split(",")):
+            if not name:
+                continue
+            if name == "all":
+                return available
+            if name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+def _representation_artifact_error(
+    value: Any,
+    *,
+    expected_model: str,
+    expected_names: tuple[str, ...] | None,
+    expected_identity: str | None = None,
+    expected_artifact: Mapping[str, Any] | None = None,
+    allowed_root: Path | None = None,
+) -> str | None:
+    """Return why a representation result is not a restorable NPZ artifact."""
+    if not isinstance(value, Representations):
+        return f"has type {type(value).__name__}, not Representations"
+    if value.model != expected_model:
+        return f"is labelled {value.model!r}, not {expected_model!r}"
+    if not isinstance(value.path, Path) or not _nonempty_file(value.path):
+        return f"archive is missing or empty: {value.path!r}"
+    if allowed_root is not None:
+        try:
+            recorded = os.path.relpath(
+                value.path.absolute(), Path(allowed_root).absolute()
+            )
+            _resolve_artifact_path(
+                Path(allowed_root),
+                recorded,
+                allowed_root=Path(allowed_root),
+            )
+        except (OSError, ValueError, PredictionOutputError) as error:
+            return f"archive is outside its output root: {error}"
+    if not isinstance(value.manifest, Mapping) or not value.manifest:
+        return "manifest is empty or not a mapping"
+
+    names = tuple(value.manifest)
+    if not all(isinstance(name, str) and name for name in names):
+        return "manifest names must be non-empty strings"
+    if expected_names is not None and names != expected_names:
+        return f"names {names!r} do not match requested {expected_names!r}"
+    try:
+        headers = archive_headers(value.path)
+    except ValueError as error:
+        return str(error)
+    if tuple(headers) != names:
+        return f"archive names {tuple(headers)!r} do not match manifest {names!r}"
+    if (
+        expected_identity is not None
+        and archive_identity(headers) != expected_identity
+    ):
+        return "archive content identity does not match the run manifest"
+    if expected_artifact is not None and not stat_identity_matches(
+        value.path, expected_artifact
+    ):
+        return "archive stat identity does not match the run manifest"
+
+    for name, header in headers.items():
+        entry = value.manifest[name]
+        if not isinstance(entry, Mapping):
+            return f"manifest entry {name!r} is not a mapping"
+        shape = entry.get("shape")
+        if (
+            not isinstance(shape, (list, tuple))
+            or any(
+                isinstance(dimension, bool) or not isinstance(dimension, int)
+                for dimension in shape
+            )
+            or tuple(shape) != header.shape
+        ):
+            return (
+                f"manifest shape for {name!r} is {shape!r}, "
+                f"archive reports {header.shape!r}"
+            )
+        dtype = entry.get("dtype")
+        if dtype == "bfloat16":
+            # NumPy learns this logical dtype only after ml_dtypes/JAX is
+            # imported. The persisted NPY descriptor is stable regardless.
+            recorded_dtype = "bfloat16"
+        else:
+            try:
+                recorded_dtype = str(np.dtype(dtype))
+            except (TypeError, ValueError):
+                return f"manifest dtype for {name!r} is invalid: {dtype!r}"
+        dtype_matches = recorded_dtype == header.dtype or (
+            recorded_dtype == "bfloat16" and header.dtype == "|V2"
+        )
+        if not dtype_matches:
+            return (
+                f"manifest dtype for {name!r} is {recorded_dtype!r}, "
+                f"archive reports {header.dtype!r}"
+            )
+    return None
+
+
+def _representations_from_manifest(
+    document: Mapping[str, Any],
+    request: PredictionRequest,
+    *,
+    directory: Path,
+    allowed_root: Path,
+) -> tuple[Representations | None, bool]:
+    """Restore a lazy representation handle without loading its arrays."""
+    record = document.get("representations")
+    if record is None:
+        return None, not request.representations
+    if not isinstance(record, Mapping):
+        return None, False
+
+    path_value = record.get("path")
+    names = record.get("names")
+    entries = record.get("entries")
+    identity = record.get("identity")
+    artifact = record.get("artifact")
+    if (
+        not isinstance(path_value, str)
+        or not path_value
+        or not isinstance(names, list)
+        or not names
+        or not all(isinstance(name, str) and name for name in names)
+        or len(set(names)) != len(names)
+        or not isinstance(entries, Mapping)
+        or set(entries) != set(names)
+        or not isinstance(identity, str)
+        or not identity
+        or not isinstance(artifact, Mapping)
+    ):
+        return None, False
+    try:
+        path = _resolve_artifact_path(
+            directory, path_value, allowed_root=allowed_root
+        )
+    except PredictionOutputError:
+        return None, False
+    restored = Representations(
+        model=record.get("model"),
+        path=path,
+        manifest={name: entries[name] for name in names},
+    )
+    available = get_backend(request.model).capabilities().representations
+    expected_names = _requested_representation_names(
+        request.representations, available
+    )
+    error = _representation_artifact_error(
+        restored,
+        expected_model=request.model,
+        expected_names=expected_names or None,
+        expected_identity=identity,
+        expected_artifact=artifact,
+    )
+    return (restored, True) if error is None else (None, False)
+
+
+def _result_from_manifest(
+    directory: Path,
+    request: PredictionRequest,
+    *,
+    seed: int,
+    allowed_root: Path,
+) -> PredictionResult | None:
     """Rebuild a finished run's result from the manifest it left behind.
 
     A resumed run returns what is on disk rather than nothing, so a caller sees
@@ -248,33 +478,106 @@ def _result_from_manifest(directory: Path) -> PredictionResult | None:
     path = Path(directory) / MANIFEST_NAME
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
-    if not isinstance(document, Mapping):
+    if not isinstance(document, Mapping) or not matches_request(
+        document, request, seed=seed
+    ):
         return None
-    samples = []
-    for entry in document.get("samples") or []:
+    representations, valid_representations = _representations_from_manifest(
+        document,
+        request,
+        directory=Path(directory),
+        allowed_root=Path(allowed_root),
+    )
+    if not valid_representations:
+        return None
+
+    sample_records = document["samples"]
+    if not isinstance(sample_records, list):
+        return None
+    if request.stop_after == "trunk":
+        if sample_records or representations is None:
+            return None
+    elif not sample_records:
+        return None
+
+    samples: list[PredictionSample] = []
+    restored_structures: set[tuple[int, int]] = set()
+    restored_slots: set[tuple[int, int]] = set()
+    for entry in sample_records:
         if not isinstance(entry, Mapping):
-            continue
+            return None
+        recorded_seed = entry.get("seed")
         structure = entry.get("structure_path")
-        samples.append(
-            PredictionSample(
-                seed=int(entry.get("seed", 0)),
-                structure_path=Path(structure) if structure else None,
-                scores={
-                    str(key): float(value)
-                    for key, value in (entry.get("scores") or {}).items()
-                },
-                metadata=dict(entry.get("metadata") or {}),
+        structure_digest = entry.get("structure_sha256")
+        scores = entry.get("scores")
+        metadata = entry.get("metadata")
+        try:
+            structure_path = (
+                _resolve_artifact_path(
+                    Path(directory), structure, allowed_root=Path(allowed_root)
+                )
+                if isinstance(structure, str) and structure
+                else None
             )
+        except PredictionOutputError:
+            return None
+        if (
+            isinstance(recorded_seed, bool)
+            or not isinstance(recorded_seed, int)
+            or recorded_seed != seed
+            or not isinstance(structure, str)
+            or not structure
+            or structure_path is None
+            or not _nonempty_file(structure_path)
+            or not isinstance(structure_digest, str)
+            or not structure_digest
+            or file_content_digest(structure_path) != structure_digest
+            or not isinstance(scores, Mapping)
+            or not isinstance(metadata, Mapping)
+        ):
+            return None
+        if any(
+            not isinstance(key, str)
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            for key, value in scores.items()
+        ):
+            return None
+        try:
+            restored_scores = {key: float(value) for key, value in scores.items()}
+        except (OverflowError, TypeError, ValueError):
+            return None
+        if any(not math.isfinite(value) for value in restored_scores.values()):
+            return None
+        sample = PredictionSample(
+            seed=recorded_seed,
+            structure_path=structure_path,
+            scores=restored_scores,
+            metadata=dict(metadata),
         )
-    if not samples:
+        try:
+            structure_info = structure_path.stat()
+            sample_number = _sample_index(sample, len(samples))
+        except (OSError, ValueError):
+            return None
+        structure_identity = (structure_info.st_dev, structure_info.st_ino)
+        slot = (seed, sample_number)
+        if structure_identity in restored_structures or slot in restored_slots:
+            return None
+        restored_structures.add(structure_identity)
+        restored_slots.add(slot)
+        samples.append(sample)
+    shape_profile = document.get("shape_profile")
+    if shape_profile is not None and not isinstance(shape_profile, Mapping):
         return None
     return PredictionResult(
-        model=str(document.get("model") or ""),
+        model=request.model,
         samples=tuple(samples),
         output_dir=Path(directory),
-        shape_profile=document.get("shape_profile"),
+        representations=representations,
+        shape_profile=dict(shape_profile) if shape_profile is not None else None,
     )
 
 
@@ -405,11 +708,6 @@ def _prepare_output_directory(
         )
 
 
-def _finished(directory: Path) -> bool:
-    """Whether a completed run already left its manifest in ``directory``."""
-    return (Path(directory) / MANIFEST_NAME).is_file()
-
-
 def _attempt(
     request: PredictionRequest,
     seed: int,
@@ -421,8 +719,13 @@ def _attempt(
     skipped: list[Path],
 ) -> PredictionResult | None:
     """One seed, honouring the request's resume and error policies."""
-    if request.resume and _finished(directory):
-        reused = _result_from_manifest(directory)
+    if request.resume:
+        reused = _result_from_manifest(
+            directory,
+            request,
+            seed=seed,
+            allowed_root=layout_root or directory,
+        )
         if reused is not None:
             skipped.append(Path(directory))
             return reused
@@ -466,6 +769,7 @@ def _predict_resolved(
     """
     failures = [] if failures is None else failures
     skipped = [] if skipped is None else skipped
+    entry_failure_count = len(failures)
     _prepare_output_directory(request.output_dir, boundary=output_root)
     seeds = request.resolved_seeds
     if len(seeds) == 1:
@@ -517,11 +821,10 @@ def _predict_resolved(
     # peak is the process high-water mark, so it already spans every seed --
     # summing the per-seed peaks would report memory that was never held at once.
     #
-    # Written only when every seed succeeded. The manifest's presence means "this
-    # run finished", and `resume` reads it as exactly that: writing one for a
-    # partial run would make the next attempt skip the pair and never produce
-    # the seeds that are still missing.
-    if not failures:
+    # Written only when every seed in this pair succeeded.  Resume also checks
+    # the recorded request identity and artifacts, but a partial top-level
+    # manifest would still falsely claim that the missing seeds had finished.
+    if len(failures) == entry_failure_count:
         write_manifest(
             request,
             combined,
@@ -650,6 +953,7 @@ def _predict_once(
         output_dir=request.output_dir,
         expected_seed=request.seed,
         stop_after=request.stop_after,
+        requested_representations=request.representations,
     )
     if request.padding is not None and result.shape_profile is None:
         raise PredictionOutputError(
@@ -725,6 +1029,7 @@ def _validate_result(
     output_dir: Path,
     expected_seed: int,
     stop_after: str = "full",
+    requested_representations: tuple[str, ...] | None = None,
 ) -> PredictionResult:
     """Refuse a nominally successful backend call that produced no prediction."""
     if not isinstance(result, PredictionResult):
@@ -746,15 +1051,37 @@ def _validate_result(
             f"{backend.name} returned samples as {type(result.samples).__name__}; "
             "PredictionResult.samples must be a tuple"
         )
-    if stop_after == "trunk":
-        # A run that stopped at the trunk predicted no structure on purpose,
-        # so "no samples" is the expected shape and the representations are
-        # what has to be there instead.
-        if result.representations is None:
+    if result.representations is None:
+        if stop_after == "trunk":
             raise PredictionOutputError(
                 f"{backend.name} stopped after the trunk but returned no "
                 f"representations in {output_dir}"
             )
+        if requested_representations:
+            raise PredictionOutputError(
+                f"{backend.name} returned no requested representations in "
+                f"{output_dir}"
+            )
+    else:
+        requested_names = _requested_representation_names(
+            requested_representations,
+            backend.capabilities().representations,
+        )
+        representation_error = _representation_artifact_error(
+            result.representations,
+            expected_model=backend.name,
+            expected_names=requested_names or None,
+            allowed_root=output_dir,
+        )
+        if representation_error is not None:
+            raise PredictionOutputError(
+                f"{backend.name} returned invalid representations: "
+                f"{representation_error}"
+            )
+    if stop_after == "trunk":
+        # A run that stopped at the trunk predicted no structure on purpose,
+        # so "no samples" is the expected shape and the representations are
+        # what has to be there instead.
         return result
     if not result.samples:
         raise PredictionOutputError(

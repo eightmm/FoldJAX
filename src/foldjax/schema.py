@@ -340,11 +340,11 @@ class PredictionRequest:
     # Appended to preserve the positional request layout. ``None``/False keeps
     # exact historical shapes; True selects a backend's standard profile.
     padding: PaddingConfig | Mapping[str, Any] | bool | None = None
-    # Skip any run whose output directory already holds a finished manifest.
-    # The manifest is written after a run completes, so its presence is already
-    # the evidence; this needs no state file of its own. Seeds are checked
-    # individually -- a five-seed job that died on the fourth must not repeat
-    # the three that finished, which is hours on a real checkpoint.
+    # Reuse a run only when its finished manifest proves the exact request and
+    # the persisted structures/representation archive still match their
+    # recorded identities. Seeds are checked individually -- a five-seed job
+    # that died on the fourth must not repeat the three that finished, which is
+    # hours on a real checkpoint.
     resume: bool = False
     # ``stop`` (the default, and the historical behaviour) lets the first
     # failure end the whole request. ``continue`` finishes every other run and
@@ -622,16 +622,30 @@ class Representations:
     def __getitem__(self, name: str):
         import numpy as np
 
-        self.describe(name)
+        description = self.describe(name)
         with np.load(self.path) as data:
-            return data[name]
+            value = data[name]
+        from foldjax.models._representations import restore_logical_dtype
+
+        return restore_logical_dtype(value, description.get("dtype"))
 
     def load(self) -> dict[str, Any]:
         """Every array at once, for callers that want them all in memory."""
         import numpy as np
 
         with np.load(self.path) as data:
-            return {name: data[name] for name in data.files}
+            values = {name: data[name] for name in data.files}
+        from foldjax.models._representations import restore_logical_dtype
+
+        return {
+            name: restore_logical_dtype(
+                value,
+                self.manifest.get(name, {}).get("dtype")
+                if isinstance(self.manifest.get(name), Mapping)
+                else None,
+            )
+            for name, value in values.items()
+        }
 
     def summary(self) -> dict[str, Any]:
         return {
