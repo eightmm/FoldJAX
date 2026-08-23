@@ -91,6 +91,7 @@ _PADDED_MODEL_FEATURES = frozenset(
         "template_aatype",
         "template_backbone_frame_mask",
         "template_distogram",
+        "template_multiplicity",
         "template_pseudo_beta_mask",
         "template_unit_vector",
         "token_bonds",

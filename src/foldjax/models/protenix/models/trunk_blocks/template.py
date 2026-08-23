@@ -123,8 +123,14 @@ def template_embedder(
     num_templates = int(input_feature_dict["template_aatype"].shape[0])
     z_norm = layer_norm(z, params.layernorm_z)
     u = jnp.zeros(z.shape[:-1] + (params.linear_z.weight.shape[0],), dtype=z.dtype)
+    # Identical template rows are deduplicated on the host, and each survivor
+    # carries how many it stands for. Weighting by that and dividing by their
+    # sum is the same average over the original rows, computed once per
+    # *distinct* template instead of once per row. Absent -- legacy archives,
+    # and any caller that did not deduplicate -- every row stands for itself.
+    multiplicity = input_feature_dict.get("template_multiplicity")
     for template_id in range(num_templates):
-        u = u + single_template_embedding(
+        contribution = single_template_embedding(
             input_feature_dict,
             z_norm,
             pair_mask,
@@ -134,5 +140,15 @@ def template_embedder(
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
         )
-    u = u / (1e-7 + num_templates)
+        if multiplicity is not None:
+            contribution = contribution * multiplicity[template_id].astype(
+                contribution.dtype
+            )
+        u = u + contribution
+    total = (
+        num_templates
+        if multiplicity is None
+        else jnp.sum(multiplicity).astype(u.dtype)
+    )
+    u = u / (1e-7 + total)
     return linear(jnp.maximum(u, 0.0), params.linear_u)

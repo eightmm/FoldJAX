@@ -388,6 +388,9 @@ def main(
         load_static_feature_npz,
         save_output_npz,
     )
+    from foldjax.models.protenix.data.template_features import (
+        dedup_templates,
+    )
     from foldjax.models.protenix.models.model import cast_trunk_params
     from foldjax.models.protenix.models.predict import protenix_predict_static
     from foldjax.models.protenix.models.trunk_blocks.msa import (
@@ -730,6 +733,14 @@ def main(
                         padding_plan,
                         {"chains": int(jnp.max(valid_asym)) + 1},
                     )
+            # A query with fewer than four template hits is padded up to four,
+            # and the embedder runs the whole pairformer stack once per row.
+            # The padded rows are identical to each other, so deduplicating
+            # here buys their stack evaluations back; the survivors carry a
+            # multiplicity so the average is unchanged. After padding, because
+            # `pad_protenix_features` requires the native depth of four.
+            # `output_features` was snapshotted above and keeps its rows.
+            job["features"] = dedup_templates(job["features"])
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 

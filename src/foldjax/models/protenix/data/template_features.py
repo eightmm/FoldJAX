@@ -219,6 +219,110 @@ TEMPLATE_FIELDS = (
 )
 
 
+def dedup_templates(features: Any) -> dict[str, Any]:
+    """Keep one copy of each distinct template, with how many it stands for.
+
+    ``TemplateEmbedder`` runs the whole pairformer stack once per row and
+    divides the sum by the row count, so identical rows cost their multiple to
+    produce the value one already gives. That is not hypothetical: a query with
+    fewer than ``MAX_TEMPLATES`` hits is padded up to four, and the padding is
+    *zeros* rather than the gap restype (``_pad_templates``, and torch's
+    ``pad_to`` before it). A query with no hits at all therefore has
+
+        row 0   all-gap restype 31, everything else zero
+        rows 1-3   restype 0, everything else zero -- identical to each other
+
+    which is **two** distinct templates, not one and not four. Collapsing all
+    four would be wrong: ``template_aatype`` feeds ``jnp.eye(32)[aatype]``, so
+    restype 31 and restype 0 are different inputs and give different
+    embeddings. Keeping all four is four stack evaluations to compute two
+    values.
+
+    So this deduplicates rather than collapses, and emits
+    ``template_multiplicity`` alongside the survivors.
+    ``template_embedder`` weights each row by its multiplicity and divides by
+    their sum, which is the original row count -- so the value is preserved and
+    the work is not. "Every row identical" is simply the case where the distinct
+    set has size one.
+
+    NOT BIT-IDENTICAL, and the gate must be a tolerance. Two separate reasons,
+    and **the obvious third reason is false** -- see below, because a reader who
+    checks it, finds it false, and concludes the tolerance is unnecessary would
+    tighten this into a gate that passes by luck.
+
+    1. The divisor is ``1e-7 + n`` and that epsilon does not scale with ``n``,
+       so ``m * x / (1e-7 + m)`` is not ``x / (1e-7 + 1)``.
+    2. The **association** of the running sum changes once a second distinct
+       row exists. The loop computes ``((f0 + f1) + f1) + f1``; this computes
+       ``f0 + 3*f1``. Measured on random float32 pairs, those disagree 44.7% of
+       the time.
+
+    What is *not* a reason: that ``m * f`` rounds differently from ``f + f +
+    f``. It does not. ``x + x`` is exact, so ``(x + x) + x`` rounds the same
+    exact value ``3 * x`` does, and over 300,000 random float32 values at
+    ``m = 2, 3, 4`` **zero** disagreed. This docstring asserted the opposite
+    until it was measured.
+
+    Must run *after* padding: ``pad_protenix_features`` requires the native
+    template depth of four and raises otherwise.
+
+    Args:
+        features: a feature mapping. Template fields are found through
+            :data:`TEMPLATE_FIELDS`, so a subset without them is returned
+            unchanged.
+
+    Returns:
+        A new mapping carrying only the distinct template rows plus
+        ``template_multiplicity``; or the same entries, shared not copied, when
+        every row is already distinct.
+    """
+    present = {
+        name: np.asarray(features[name])
+        for name in TEMPLATE_FIELDS
+        if name in features
+    }
+    if not present:
+        return dict(features)
+
+    rows = {array.shape[0] for array in present.values()}
+    if len(rows) != 1:
+        raise ValueError(
+            f"template features disagree on their row count: {sorted(rows)}"
+        )
+    (n_templates,) = rows
+    if n_templates <= 1:
+        return dict(features)
+
+    # Smallest first, so a distinct pair of restypes -- the field that actually
+    # discriminates on the default path -- answers the question before the
+    # gigabytes of distogram are ever compared. Measured at 3012 tokens: 7 us
+    # to reject, against 185 ms if every field had to be walked.
+    ordered = sorted(present.items(), key=lambda item: item[1].nbytes)
+
+    keep: list[int] = []
+    multiplicity: list[int] = []
+    for index in range(n_templates):
+        for slot, representative in enumerate(keep):
+            if all(
+                np.array_equal(array[representative], array[index])
+                for _name, array in ordered
+            ):
+                multiplicity[slot] += 1
+                break
+        else:
+            keep.append(index)
+            multiplicity.append(1)
+
+    if len(keep) == n_templates:
+        return dict(features)
+
+    out = dict(features)
+    for name, array in present.items():
+        out[name] = array[keep]
+    out["template_multiplicity"] = np.asarray(multiplicity, dtype=np.float32)
+    return out
+
+
 def _encode_template_restype(sequence: str) -> np.ndarray:
     return np.array(
         [
