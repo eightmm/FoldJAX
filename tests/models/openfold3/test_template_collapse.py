@@ -212,9 +212,10 @@ def test_the_model_computes_the_same_update_from_the_collapsed_axis(
     four against ``x`` -- and they take different branches getting there: four
     rows scan the stack, one row does not.
 
-    The tolerance is absolute and one ulp wide at this scale, not a comfortable
-    ``rtol``: the claim being checked is that the collapse changes the value by
-    rounding alone, and a relative tolerance would pass a change that is not.
+    The tolerance is absolute and exactly one float32 machine epsilon, not a
+    comfortable ``rtol``. CPU lowerings have put the largest difference at one
+    epsilon (two representable values below 1.0), so this still confines the
+    change to rounding instead of permitting magnitude-scaled drift.
     """
     monkeypatch.setenv("OPENFOLD3_TRIANGLE_BACKEND", "xla")
     channels, heads = 8, 2
@@ -237,4 +238,9 @@ def test_the_model_computes_the_same_update_from_the_collapsed_axis(
             no_heads=heads,
         )
 
-    np.testing.assert_allclose(run(features), run(collapsed), rtol=0, atol=1e-7)
+    np.testing.assert_allclose(
+        run(features),
+        run(collapsed),
+        rtol=0,
+        atol=np.finfo(np.float32).eps,
+    )
