@@ -21,9 +21,9 @@ import os
 import re
 import stat
 import tempfile
+import warnings
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -83,15 +83,12 @@ def _weight_stat_signature(path: Path) -> tuple[Any, ...] | None:
                 elif stat.S_ISDIR(mode):
                     kind = "directory"
                     detail = None
-                elif stat.S_ISLNK(mode):
-                    # Nested links are recorded in the signature, but content
-                    # hashing rejects them below: following arbitrary directory
-                    # links would make a deterministic, cycle-free tree unclear.
-                    kind = "symlink"
-                    detail = os.readlink(child)
                 else:
-                    kind = "other"
-                    detail = None
+                    # A model loader may follow nested links or interpret a
+                    # special entry. Metadata for the directory entry alone
+                    # cannot bind that external content, so do not claim this
+                    # tree is resumable.
+                    return None
                 entries.append(
                     (relative, kind, _stat_fields(info), detail)
                 )
@@ -113,55 +110,6 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _hash_weight_contents(path: Path, signature: tuple[Any, ...]) -> str | None:
-    """Hash a file or directory tree using only entries in ``signature``."""
-    kind = signature[0]
-    if kind == "file":
-        try:
-            return _sha256_file(path)
-        except OSError:
-            return None
-    if kind != "directory":
-        return None
-
-    digest = hashlib.sha256()
-    digest.update(b"foldjax-weight-tree-v1\0")
-    try:
-        for relative, entry_kind, _fields, _detail in signature[3]:
-            encoded = relative.encode("utf-8", errors="surrogateescape")
-            digest.update(len(encoded).to_bytes(8, "big"))
-            digest.update(encoded)
-            digest.update(entry_kind.encode("ascii") + b"\0")
-            if entry_kind == "file":
-                content = bytes.fromhex(_sha256_file(path / relative))
-                digest.update(content)
-            elif entry_kind == "directory":
-                continue
-            else:
-                # Do not claim a complete content identity for links, devices,
-                # or other entries a model loader could interpret differently.
-                return None
-    except (OSError, ValueError):
-        return None
-    return digest.hexdigest()
-
-
-@lru_cache(maxsize=32)
-def _cached_weight_content_digest(
-    path: str, signature: tuple[Any, ...]
-) -> str | None:
-    """Avoid rereading multi-gigabyte weights for every seed manifest."""
-    return _hash_weight_contents(Path(path), signature)
-
-
-@lru_cache(maxsize=256)
-def _cached_path_content_digest(
-    path: str, signature: tuple[Any, ...]
-) -> str | None:
-    """Cache ordinary dependency/artifact hashes separately from checkpoints."""
-    return _hash_weight_contents(Path(path), signature)
-
-
 def _signature_record(signature: tuple[Any, ...]) -> dict[str, Any]:
     """Compact JSON-safe identity of all stat fields in one tree snapshot."""
     record: dict[str, Any] = {
@@ -180,56 +128,6 @@ def _signature_record(signature: tuple[Any, ...]) -> dict[str, Any]:
     return record
 
 
-def path_content_identity(
-    path: Path,
-    *,
-    trusted: Mapping[str, Any] | None = None,
-    weight: bool = False,
-) -> dict[str, Any] | None:
-    """Content SHA and persistent stat/tree identity for one local path.
-
-    An unchanged stat signature can trust the SHA already written to a previous
-    manifest, so resuming in a new process does not reread multi-gigabyte model
-    weights or referenced assets. If anything in that signature changed --
-    including a same-size overwrite's ctime -- bytes are hashed again.
-    """
-    try:
-        resolved = Path(path).resolve(strict=True)
-    except (OSError, RuntimeError):
-        return None
-    for _attempt in range(2):
-        before = _weight_stat_signature(resolved)
-        if before is None:
-            return None
-        signature_record = _signature_record(before)
-        trusted_sha = trusted.get("sha256") if trusted is not None else None
-        trusted_signature = (
-            trusted.get("stat_signature") if trusted is not None else None
-        )
-        if (
-            isinstance(trusted_sha, str)
-            and trusted_sha
-            and isinstance(trusted_signature, Mapping)
-            and _exact_value(trusted_signature, signature_record)
-        ):
-            digest = trusted_sha
-        else:
-            cache = (
-                _cached_weight_content_digest
-                if weight
-                else _cached_path_content_digest
-            )
-            digest = cache(str(resolved), before)
-        after = _weight_stat_signature(resolved)
-        if before == after and digest is not None:
-            return {
-                "kind": before[0],
-                "stat_signature": signature_record,
-                "sha256": digest,
-            }
-    return None
-
-
 def path_stat_identity(path: Path) -> dict[str, Any] | None:
     """Cheap persisted identity without reading a potentially huge payload."""
     signature = _weight_stat_signature(path)
@@ -245,37 +143,6 @@ def stat_identity_matches(path: Path, expected: Mapping[str, Any]) -> bool:
     """Whether mode/device/inode/size/mtime/ctime and tree entries are unchanged."""
     current = path_stat_identity(path)
     return current is not None and _exact_value(current, expected)
-
-
-def content_identity_matches(
-    path: Path, expected: Mapping[str, Any], *, weight: bool = False
-) -> bool:
-    """Whether a path still has the exact bytes recorded in ``expected``."""
-    if (
-        expected.get("kind") not in {"file", "directory"}
-        or not isinstance(expected.get("stat_signature"), Mapping)
-        or not isinstance(expected.get("sha256"), str)
-        or not expected.get("sha256")
-    ):
-        return False
-    current = path_content_identity(path, trusted=expected, weight=weight)
-    return (
-        current is not None
-        and current["kind"] == expected["kind"]
-        and current["sha256"] == expected["sha256"]
-    )
-
-
-def weight_content_digest(path: Path) -> str | None:
-    """SHA-256 content identity for one weight file or deterministic tree.
-
-    The cache key contains every relevant stat field.  A same-size in-place
-    rewrite therefore invalidates it, while a multi-seed run reads the large
-    checkpoint bytes only once.  The second signature closes the race where a
-    checkpoint changes while it is being hashed.
-    """
-    identity = path_content_identity(path, weight=True)
-    return identity["sha256"] if identity is not None else None
 
 
 def device_peak_bytes() -> int | None:
@@ -840,10 +707,8 @@ def _implicit_weight_assets(
 
 def _input_dependencies(
     request: PredictionRequest,
-    *,
-    recorded: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Content identities outside the primary input that preprocessing reads.
+    """Stat/tree identities outside the primary input that preprocessing reads.
 
     Native dialects are intentionally conservative: FoldJAX cannot infer every
     file a model-specific document references.  Common jobs have a bounded
@@ -908,36 +773,19 @@ def _input_dependencies(
     paths.extend(weight_assets)
     paths.extend(_implicit_ccd_assets(request))
 
-    recorded_artifacts: dict[str, Mapping[str, Any]] = {}
-    if recorded is not None and isinstance(recorded.get("artifacts"), list):
-        for item in recorded["artifacts"]:
-            if isinstance(item, Mapping) and isinstance(item.get("path"), str):
-                recorded_artifacts[item["path"]] = item
-
     artifacts: dict[str, dict[str, Any]] = {}
     for path in paths:
         try:
             resolved = Path(path).resolve(strict=True)
         except (OSError, RuntimeError):
             return {"verifiable": False, "artifacts": []}
-        previous = recorded_artifacts.get(str(resolved))
-        identity = path_content_identity(resolved, trusted=previous)
+        identity = path_stat_identity(resolved)
         if identity is None:
             return {"verifiable": False, "artifacts": []}
         artifact = {
             "path": str(resolved),
             **identity,
         }
-        if (
-            previous is not None
-            and previous.get("path") == str(resolved)
-            and previous.get("kind") == identity["kind"]
-            and previous.get("sha256") == identity["sha256"]
-        ):
-            # A metadata-only change caused a full byte recheck and proved the
-            # same content. Preserve the recorded identity so exact comparison
-            # remains content-based rather than rerunning after a harmless touch.
-            artifact = dict(previous)
         artifacts[str(resolved)] = artifact
 
     missing: set[str] = set()
@@ -965,7 +813,7 @@ def _input_dependencies(
 def _artifact_path(path: Path, directory: Path | None) -> str:
     """Record an artifact relative to the manifest that owns it."""
     if directory is None:
-        return str(path)
+        return str(Path(path).resolve())
     return os.path.relpath(Path(path).resolve(), Path(directory).resolve())
 
 
@@ -1042,9 +890,7 @@ def matches_request(
         return False
     if recorded_dependencies.get("verifiable") is not True:
         return False
-    current_dependencies = _input_dependencies(
-        request, recorded=recorded_dependencies
-    )
+    current_dependencies = _input_dependencies(request)
     if current_dependencies.get("verifiable") is not True:
         return False
 
@@ -1080,10 +926,15 @@ def matches_request(
         "profile",
         "kind",
         "stat_signature",
-        "sha256",
     }.issubset(weights_record):
         return False
-    if not content_identity_matches(request.weights, weights_record, weight=True):
+    if not stat_identity_matches(
+        request.weights,
+        {
+            "kind": weights_record["kind"],
+            "stat_signature": weights_record["stat_signature"],
+        },
+    ):
         return False
 
     return all(
@@ -1133,10 +984,10 @@ def describe_run(
 
     weights = request.weights
     label = identity = None
-    weights_content: dict[str, Any] | None = None
+    weights_stat: dict[str, Any] | None = None
     if weights is not None:
         label, identity = weight_identity(weights)
-        weights_content = path_content_identity(weights, weight=True)
+        weights_stat = path_stat_identity(weights)
 
     options = public_options(request.options)
     best = best_sample(result)
@@ -1146,7 +997,9 @@ def describe_run(
         )
     manifest = {
         "schema": MANIFEST_SCHEMA,
-        "artifact_paths": "manifest-relative",
+        "artifact_paths": (
+            "manifest-relative" if directory is not None else "absolute"
+        ),
         "foldjax": __version__,
         "finished": datetime.now(UTC).isoformat(timespec="seconds"),
         "model": request.model,
@@ -1167,7 +1020,7 @@ def describe_run(
             "profile": request.profile,
             "label": label,
             "identity": identity,
-            **(weights_content or {}),
+            **(weights_stat or {}),
         },
         "seeds": list(request.resolved_seeds),
         # Whether the alignments were the caller's or FoldJAX searched for them
@@ -1241,4 +1094,15 @@ def write(
             os.replace(staged, path)
         return path
     except Exception:  # noqa: BLE001 - provenance must never erase a valid result
+        try:
+            warnings.warn(
+                "FoldJAX could not record run provenance; prediction output "
+                "is preserved, but this run cannot be resumed safely.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        except Exception:  # noqa: BLE001 - reporting cannot invalidate output
+            # Warning filters may promote warnings to exceptions. Provenance
+            # reporting must still never invalidate a successful prediction.
+            pass
         return None

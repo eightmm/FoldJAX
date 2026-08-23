@@ -274,7 +274,8 @@ def test_editing_the_input_in_place_forces_a_rerun(tmp_path: Path) -> None:
         "input_dependencies",
         "weights.identity",
         "weights.profile",
-        "weights.sha256",
+        "weights.kind",
+        "weights.stat_signature",
         "seeds",
         "msa",
         "sampling",
@@ -450,13 +451,13 @@ def test_same_size_weight_overwrite_forces_a_rerun(tmp_path: Path) -> None:
         foldjax.predict(request)
         before = json.loads(
             (request.output_dir / MANIFEST_NAME).read_text(encoding="utf-8")
-        )["weights"]["sha256"]
+        )["weights"]["stat_signature"]
         request.weights.write_bytes(b"weights-b\n")
         resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
 
     after = json.loads(
         (request.output_dir / MANIFEST_NAME).read_text(encoding="utf-8")
-    )["weights"]["sha256"]
+    )["weights"]["stat_signature"]
     assert len(calls) == 2
     assert resumed.skipped == ()
     assert before != after
@@ -478,53 +479,93 @@ def test_nested_weight_tree_overwrite_forces_a_rerun(tmp_path: Path) -> None:
     assert resumed.skipped == ()
 
 
-def test_multiseed_hashes_a_checkpoint_once_even_with_many_assets(
+def test_symlinked_weight_tree_is_conservatively_not_reused(
+    tmp_path: Path,
+) -> None:
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    target = _file(tmp_path / "external-shard.bin", b"version-a")
+    try:
+        (weights / "params.bin").symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlinks are unavailable: {type(error).__name__}")
+    request = _request(tmp_path, weights=weights)
+    calls: list[tuple[str, str, int]] = []
+
+    with _backends(calls):
+        foldjax.predict(request)
+        target.write_bytes(b"version-b")
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    document = json.loads(
+        (request.output_dir / MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    assert "stat_signature" not in document["weights"]
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+
+
+def test_manifest_identity_never_reads_weight_or_dependency_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from foldjax import manifest
 
-    request = _request(
-        tmp_path,
-        representations=None,
-        seed=0,
-        seeds=(0, 1),
+    weights = _file(tmp_path / "boltz2_conf.npz", b"checkpoint-payload")
+    sidecar = _file(tmp_path / "boltz2_conf.npz.json", b'{"scalars": {}}')
+    mols = tmp_path / "mols"
+    mols.mkdir()
+    component = _file(mols / "ATP.pkl", b"component-payload")
+    request = _request(tmp_path, weights=weights, representations=None)
+    request.output_dir.mkdir()
+    structure = _file(request.output_dir / "sample.cif", b"data_mock\n#\n")
+    result = PredictionResult(
+        model="boltz2",
+        samples=(
+            PredictionSample(
+                seed=request.seed,
+                structure_path=structure,
+                scores={"confidence": 0.75},
+            ),
+        ),
+        output_dir=request.output_dir,
     )
-    document = json.loads(request.input.read_text(encoding="utf-8"))
-    entities = []
-    for index in range(40):
-        alignment = _file(
-            tmp_path / f"alignment-{index}.a3m",
-            f">query-{index}\nAAAA\n".encode(),
-        )
-        entities.append(
-            {
-                "type": "protein",
-                "id": f"A{index}",
-                "sequence": "AAAA",
-                "unpaired_msa": alignment.name,
-            }
-        )
-    document["entities"] = entities
-    request.input.write_text(json.dumps(document), encoding="utf-8")
+    forbidden = {
+        weights.resolve(),
+        sidecar.resolve(),
+        component.resolve(),
+        (tmp_path / "alignment.a3m").resolve(),
+    }
+    original_open = Path.open
+    opened: list[Path] = []
 
-    manifest._cached_weight_content_digest.cache_clear()
-    manifest._cached_path_content_digest.cache_clear()
-    original = manifest._hash_weight_contents
-    weight_hashes = 0
+    def reject_dependency_reads(path: Path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if "r" in mode or "+" in mode:
+            resolved = Path(path).resolve()
+            opened.append(resolved)
+            assert resolved not in forbidden
+        return original_open(path, *args, **kwargs)
 
-    def counted(path: Path, signature):
-        nonlocal weight_hashes
-        if Path(path).resolve() == request.weights.resolve():
-            weight_hashes += 1
-        return original(path, signature)
+    monkeypatch.setattr(Path, "open", reject_dependency_reads)
+    document = manifest.describe_run(request, result, directory=request.output_dir)
 
-    monkeypatch.setattr(manifest, "_hash_weight_contents", counted)
-    calls: list[tuple[str, str, int]] = []
-    with _backends(calls):
-        foldjax.predict(request)
-
-    assert len(calls) == 2
-    assert weight_hashes == 1
+    assert manifest.matches_request(document, request, seed=request.seed)
+    assert "sha256" not in document["weights"]
+    assert all(
+        "sha256" not in artifact
+        for artifact in document["input_dependencies"]["artifacts"]
+    )
+    dependency_paths = {
+        Path(artifact["path"]).resolve()
+        for artifact in document["input_dependencies"]["artifacts"]
+    }
+    assert {
+        sidecar.resolve(),
+        mols.resolve(),
+        (tmp_path / "alignment.a3m").resolve(),
+    } <= dependency_paths
+    assert request.input.resolve() in opened
+    assert structure.resolve() in opened
 
 
 def test_same_content_at_a_different_input_path_is_not_reused(

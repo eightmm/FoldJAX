@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import foldjax
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.manifest import MANIFEST_NAME
@@ -195,10 +197,55 @@ def test_a_manifest_that_cannot_be_written_does_not_fail_the_run(
     )
 
     def refuse(*args, **kwargs):
-        raise OSError("read-only")
+        raise OSError("do-not-leak-this-secret")
 
     monkeypatch.setattr(Path, "write_text", refuse)
-    assert manifest.write(request, PredictionResult(model="opendde"), tmp_path) is None
+    with pytest.warns(RuntimeWarning) as caught:
+        assert (
+            manifest.write(request, PredictionResult(model="opendde"), tmp_path)
+            is None
+        )
+    warning = str(caught[0].message)
+    assert "could not record run provenance" in warning
+    assert "do-not-leak-this-secret" not in warning
+
+
+def test_describe_run_without_directory_uses_absolute_artifact_paths(
+    tmp_path: Path,
+) -> None:
+    from foldjax import manifest
+
+    output = tmp_path / "out"
+    structure = output / "sample.cif"
+    native = output / "opendde_input.json"
+    output.mkdir()
+    structure.write_text("data_mock\n#\n", encoding="utf-8")
+    native.write_text("{}\n", encoding="utf-8")
+    request = PredictionRequest(
+        model="opendde",
+        input=_job(tmp_path),
+        weights=_weights(tmp_path),
+        output_dir=output,
+        use_compile_cache=False,
+    )
+    result = PredictionResult(
+        model="opendde",
+        samples=(
+            PredictionSample(
+                seed=0,
+                structure_path=structure,
+                scores={"ranking_score": 0.5},
+            ),
+        ),
+        output_dir=output,
+    )
+
+    payload = manifest.describe_run(request, result, native_input=native)
+
+    assert payload["artifact_paths"] == "absolute"
+    assert payload["input"]["native"] == str(native.resolve())
+    assert payload["samples"][0]["structure_path"] == str(structure.resolve())
+    assert payload["best"]["structure_path"] == str(structure.resolve())
 
 
 def test_a_manifest_symlink_cannot_rewrite_an_external_file(tmp_path: Path) -> None:
@@ -326,15 +373,16 @@ def test_manifest_serialization_failure_does_not_fail_a_prediction(
     )
     result = PredictionResult(model="opendde", samples=(), output_dir=tmp_path)
 
-    assert (
-        manifest.write(
-            request,
-            result,
-            tmp_path / "out",
-            cost={"seconds": object()},
+    with pytest.warns(RuntimeWarning, match="could not record run provenance"):
+        assert (
+            manifest.write(
+                request,
+                result,
+                tmp_path / "out",
+                cost={"seconds": object()},
+            )
+            is None
         )
-        is None
-    )
     assert not (tmp_path / "out" / manifest.MANIFEST_NAME).exists()
 
 
@@ -357,7 +405,8 @@ def test_manifest_runtime_introspection_failure_does_not_fail_a_prediction(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("probe failed")),
     )
 
-    assert manifest.write(request, result, tmp_path / "out") is None
+    with pytest.warns(RuntimeWarning, match="could not record run provenance"):
+        assert manifest.write(request, result, tmp_path / "out") is None
 
 
 def test_nested_credentials_are_redacted_without_erasing_public_types(

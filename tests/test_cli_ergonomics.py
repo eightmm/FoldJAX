@@ -25,7 +25,10 @@ def _isolated_store(tmp_path: Path, monkeypatch) -> None:
 
 def _weights(tmp_path: Path) -> Path:
     path = tmp_path / "weights.safetensors"
-    path.write_bytes(b"not a real checkpoint")
+    # Building a second CLI argv must not rewrite the checkpoint and change its
+    # stat identity; real CLI parsing only names an existing weight file too.
+    if not path.exists():
+        path.write_bytes(b"not a real checkpoint")
     return path
 
 

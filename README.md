@@ -285,8 +285,8 @@ name is an error, and `--option KEY=VALUE` passes anything native straight
 through. Seeds fan out the same way — `--seeds 0 1 2` (or `--num-seeds 3`)
 runs the job once per seed into `seed_<n>` directories and returns every
 structure together. Every run writes `foldjax_run.json` beside its structures:
-model, input SHA-256, resolved weights, the knobs actually used, and each
-structure's confidence.
+model, input SHA-256, resolved weights and their stat/tree identity, the knobs
+actually used, and each structure's confidence.
 
 A run reports its stages on stderr and its results as a table on stdout:
 
@@ -318,14 +318,22 @@ uv run foldjax predict --model boltz2 --input jobs/ --resume --keep-going
 ```
 
 `--resume` skips a run only when its finished `foldjax_run.json` matches the
-exact request, input and referenced local assets, checkpoint content, and the
-persisted structure/representation artifacts. Legacy or incomplete manifests
-rerun conservatively; a manifest's presence alone is not evidence that today's
-request produced it. Matching works at **seed** granularity: every seed writes
+exact request, input, checkpoint and referenced-local-asset stat/tree
+identities, and the persisted structure/representation artifacts. Any relevant
+metadata or directory-tree change triggers a conservative rerun; FoldJAX does
+not reread large checkpoint or asset payloads merely to write or check a
+manifest. Checkpoint trees containing symlinks or special entries are likewise
+treated as non-resumable. Legacy or incomplete manifests rerun conservatively;
+a manifest's presence alone is not evidence that today's request produced it.
+Matching works at **seed** granularity: every seed writes
 its own manifest, so a five-seed job that died on the fourth repeats only what
 is missing rather than all five. Trunk archives are restored lazily, including
 their logical BF16 dtype, without loading a quadratic pair array just to decide
 whether it is reusable.
+
+Inputs, checkpoints, and referenced local assets must remain immutable while a
+prediction is running. Resume detects changes observed between runs; it does
+not lock files against concurrent replacement during backend execution.
 `--keep-going` runs the rest of the batch when one run fails and exits 3 if any
 did, instead of losing seventeen good predictions to the third one's OOM; what
 failed is recorded in `foldjax_failures.json` beside the runs that did not,

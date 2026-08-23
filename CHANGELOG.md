@@ -411,13 +411,18 @@ command predicts unless it says so here, in its own paragraph.
   for a port that hard-coded it.
 - **Resume now proves what it reuses.** A finished manifest must match the
   exact scalar request, lexical and resolved input path, input and referenced
-  local-asset content, checkpoint file/tree content, padding, representation
-  selection, and stop point. The recorded structure must remain non-empty with
-  the same SHA-256; representation archives must remain contained beneath the
-  run root with the same names, order, shapes, logical dtypes, ZIP metadata,
-  and stat identity. Legacy/incomplete records rerun conservatively. Trunk and
-  BF16 archives are restored lazily, and a failure from an earlier batch pair
-  no longer suppresses a later successful multi-seed manifest.
+  input content, checkpoint and referenced-local-asset stat/tree identities,
+  padding, representation selection, and stop point. Any relevant metadata or
+  tree change triggers a conservative rerun without rereading large checkpoint
+  or asset payloads merely to write or check a manifest. The recorded structure
+  must remain non-empty with the same SHA-256; representation archives must
+  remain contained beneath the run root with the same names, order, shapes,
+  logical dtypes, ZIP metadata, and stat identity. Legacy/incomplete records
+  rerun conservatively. Trunk and BF16 archives are restored lazily, and a
+  failure from an earlier batch pair no longer suppresses a later successful
+  multi-seed manifest. Inputs, checkpoints, and referenced assets must remain
+  immutable during backend execution; resume detects changes between runs but
+  does not lock those files against concurrent replacement.
 - **Built-in writers refuse non-finite public coordinates.** Boltz-2,
   ESMFold2, OpenFold3, Protenix, and the Protenix writer shared by OpenDDE now
   fail before creating a structure when any exposed atom is NaN or infinite.
