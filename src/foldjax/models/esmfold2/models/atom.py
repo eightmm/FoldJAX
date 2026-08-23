@@ -38,9 +38,20 @@ FLOAT32_EPS = float(jnp.finfo(jnp.float32).eps)
 #: Query rows per block in the windowed attention. The block reads
 #: `rows_per_block + 2 * half_window` keys, so a smaller block wastes less of
 #: what it reads (1.98x at 128 against 2.98x at 256, for `half_window=64`) and
-#: pays for it in scan steps and smaller matmuls. Measured at 1,003 residues
-#: and 32 samples, 128 and 256 give the *same* arena to the MiB -- the block is
-#: not what sets the peak there -- so this is a time knob, not a memory one.
+#: pays for it in scan steps and smaller matmuls.
+#:
+#: **Measured, it is neither a memory knob nor a time one.** At 1,003 residues
+#: and 32 samples, 128 and 256 give the same arena to the MiB and the same peak
+#: to three decimals (24.460 GiB), and their times differ by 0.17 s -- 0.4%,
+#: against run-to-run spreads of 0.60 and 2.10 s, so the arms overlap. Less
+#: wasted arithmetic and fewer scan steps evidently cancel, or both sit under
+#: the noise. An earlier version of this comment called it "a time knob, not a
+#: memory one"; that was inference from the arithmetic and the timing does not
+#: support it.
+#:
+#: So 256 is the default because nothing distinguishes it, not because it won.
+#: The environment override exists as an escape hatch for a size nobody has
+#: measured, and it should not be reached for expecting a result here.
 ATOM_ROWS_PER_BLOCK = 256
 
 ATOM_ATTENTION_BACKENDS = frozenset({"dense", "blocked"})
@@ -54,19 +65,33 @@ def _atom_attention_backend() -> str:
     and never materialises more than one block's scores: at 1,003 residues and
     the released 32 samples that is 35,945 -> 11,312 MiB, 68.5%.
 
-    **The default is `dense` even though `blocked` is exact**, because the two
-    have not been timed against each other yet and flipping a default is a
-    decision that should follow a measurement rather than an argument. The
-    blocked form trades one large matmul for 31 scanned small ones, so its cost
-    grows where the memory win shrinks -- and this repository has a measured
-    case of exactly that shape: the atom-attention narrowing saved 29,540 MiB
-    at 1,003 residues and *exactly zero* at 250.
+    **The default is `blocked`, and it was `dense` until the two were timed.**
+    That was the right default to set at the time and the wrong one to keep:
+    it was set pending a measurement, and the measurement arrived. Shipped
+    settings, shipped allocator, 1,003 residues, 32 samples, three timed runs
+    per arm with arms alternating and warmups discarded:
+
+        dense    49.30 s  +-0.20   48.516 GiB
+        blk256   46.73 s  +-0.60   24.460 GiB
+        blk128   46.90 s  +-2.10   24.460 GiB
+
+    Blocked wins both axes: 5.2% faster and 24.056 GiB smaller. The time
+    separation is clean rather than marginal -- the slowest blocked run beats
+    the fastest dense one, so no pairing of individual runs reverses it -- and
+    the clock control points the conservative way, since dense held the
+    *highest* mean SM clock (1749 against 1711) and still lost. The card
+    favoured the loser, so the margin understates.
+
+    The worry that motivated the cautious default was real and did not
+    materialise: the blocked form trades one large matmul for 31 scanned small
+    ones, so its cost should grow where its memory win shrinks. It may still,
+    at a size nobody has run; it does not at the released one.
 
     There is no `auto`. A mode that picked a path from a probe would put two
     machines on two kernels under one name, which is the failure this
     repository keeps paying for.
     """
-    backend = os.environ.get("ESMFOLD2_ATOM_ATTENTION_BACKEND", "dense").lower()
+    backend = os.environ.get("ESMFOLD2_ATOM_ATTENTION_BACKEND", "blocked").lower()
     if backend not in ATOM_ATTENTION_BACKENDS:
         raise ValueError(
             f"unsupported atom attention backend: {backend!r}; "

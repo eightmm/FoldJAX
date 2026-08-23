@@ -143,9 +143,9 @@ def test_blocked_stays_within_the_dense_accuracy_scale() -> None:
                     jnp.asarray(rng.standard_normal(shape), jnp.float64)
                     for _ in range(3)
                 ]
-                valid64 = jnp.asarray(
-                    (np.arange(length) < n_real).astype(np.float64)
-                )[None]
+                valid64 = jnp.asarray((np.arange(length) < n_real).astype(np.float64))[
+                    None
+                ]
                 scale = 32**-0.5
                 exact = np.asarray(
                     _dense_reference(*wide, valid64, half_window, scale)
@@ -154,9 +154,9 @@ def test_blocked_stays_within_the_dense_accuracy_scale() -> None:
                 narrow = [a.astype(jnp.float32) for a in wide]
                 valid = valid64.astype(jnp.float32)
                 dense_delta = (
-                    np.asarray(
-                        _dense_reference(*narrow, valid, half_window, scale)
-                    )[:, :n_real]
+                    np.asarray(_dense_reference(*narrow, valid, half_window, scale))[
+                        :, :n_real
+                    ]
                     - exact
                 )
                 blocked_delta = (
@@ -174,9 +174,7 @@ def test_blocked_stays_within_the_dense_accuracy_scale() -> None:
                 dense_rms = np.sqrt(np.mean(np.square(dense_delta)))
                 blocked_rms = np.sqrt(np.mean(np.square(blocked_delta)))
                 output_scale = np.abs(exact).max()
-                max_error_budget = (
-                    32 * np.finfo(np.float32).eps * output_scale
-                )
+                max_error_budget = 32 * np.finfo(np.float32).eps * output_scale
 
                 assert blocked_rms <= dense_rms * 1.5, (
                     f"L={length} R={rows_per_block} seed={seed}: blocked RMS "
@@ -272,19 +270,64 @@ def test_the_atom_mask_really_is_a_prefix() -> None:
         assert (rank[:n_real] == index[:n_real]).all()
 
 
-def test_the_default_is_the_dense_path(monkeypatch) -> None:
-    """The kernel ships off.
+def test_the_default_is_blocked_because_it_won_on_both_axes(monkeypatch) -> None:
+    """This shipped as `dense`, and that was correct until it was measured.
 
-    It is exact and it saves 24,633 MiB at 1,003 residues, and neither of those
-    is a reason to flip a default before the two paths have been timed against
-    each other. The blocked form trades one large matmul for 31 scanned small
-    ones, so its cost grows in the sizes where its benefit shrinks -- the same
-    shape as the narrowing that saved 29,540 MiB at 1,003 residues and exactly
-    zero at 250.
+    The old name here was `test_the_default_is_the_dense_path`, and its
+    argument was that being exact and saving 24,633 MiB are not reasons to flip
+    a default before the two paths have been timed -- the blocked form trades
+    one large matmul for 31 scanned small ones, so its cost should grow where
+    its benefit shrinks. **That was a reason to wait, not a finding, and the
+    measurement arrived.** Shipped settings, shipped allocator, 1,003 residues,
+    32 samples, three timed runs per arm, arms alternating, warmups discarded:
+
+        dense    49.30 s  +-0.20   48.516 GiB
+        blk256   46.73 s  +-0.60   24.460 GiB
+
+    5.2% faster and 24.056 GiB smaller. Clean rather than marginal: the slowest
+    blocked run beat the fastest dense one, so no pairing of runs reverses it.
+    And the clock control points the conservative way -- dense held the highest
+    mean SM clock, 1749 against 1711, and lost anyway, so the margin
+    understates.
+
+    Kept and renamed rather than flipped in place, so the next reader finds
+    that the cautious default was chosen deliberately and retired on evidence.
     """
     monkeypatch.delenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", raising=False)
+    assert atom._atom_attention_backend() == "blocked"
+    assert atom._resolve_rows_per_block(None) == atom.ATOM_ROWS_PER_BLOCK
+
+
+def test_the_environment_can_still_reach_the_dense_path(monkeypatch) -> None:
+    """`blocked` is a default, not a lock, and dense is now the escape hatch.
+
+    While dense was the default this direction was free -- doing nothing got
+    you the safe path. Now the safe path has to be asked for, so the way back
+    is load-bearing in a way it was not before: a size where the scan
+    misbehaves, or a backend where `lax.scan` lowers badly, needs a route out
+    that does not involve editing the source.
+    """
+    monkeypatch.setenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", "dense")
     assert atom._atom_attention_backend() == "dense"
     assert atom._resolve_rows_per_block(None) == 0
+
+
+def test_the_block_size_is_not_a_knob_that_does_anything(monkeypatch) -> None:
+    """Both block sizes were measured and neither wins; 256 is arbitrary.
+
+    R=128 reads 256 keys per 128 rows against R=256's 384 per 256 -- a third
+    less wasted score arithmetic -- and pays for it in twice the scan steps.
+    Measured, those cancel or both sit under the noise: 46.90 s +-2.10 against
+    46.73 s +-0.60, arms overlapping, and an identical peak of 24.460 GiB.
+
+    **That is a result, not a missing measurement**, and the reason to pin it
+    here is that the arithmetic argues loudly for 128 and the card disagrees.
+    The override stays as an escape hatch for a size nobody has run; it is not
+    a tuning knob and this test exists so nobody documents it as one.
+    """
+    monkeypatch.delenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.delenv("ESMFOLD2_ATOM_ROWS_PER_BLOCK", raising=False)
+    assert atom.ATOM_ROWS_PER_BLOCK == 256
 
 
 def test_the_environment_selects_the_blocked_path(monkeypatch) -> None:
