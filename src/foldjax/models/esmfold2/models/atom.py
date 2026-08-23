@@ -21,6 +21,7 @@ subtly wrong, so each convention is stated where it is used:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 
 import jax
@@ -37,8 +38,54 @@ FLOAT32_EPS = float(jnp.finfo(jnp.float32).eps)
 #: Query rows per block in the windowed attention. The block reads
 #: `rows_per_block + 2 * half_window` keys, so a smaller block wastes less of
 #: what it reads (1.98x at 128 against 2.98x at 256, for `half_window=64`) and
-#: pays for it in scan steps and smaller matmuls. Zero selects the dense path.
+#: pays for it in scan steps and smaller matmuls. Measured at 1,003 residues
+#: and 32 samples, 128 and 256 give the *same* arena to the MiB -- the block is
+#: not what sets the peak there -- so this is a time knob, not a memory one.
 ATOM_ROWS_PER_BLOCK = 256
+
+ATOM_ATTENTION_BACKENDS = frozenset({"dense", "blocked"})
+
+
+def _atom_attention_backend() -> str:
+    """Return the configured atom-attention backend.
+
+    `dense` builds the whole `[batch, heads, atoms, atoms]` score matrix and
+    masks a band 129 wide out of it. `blocked` walks the query rows in blocks
+    and never materialises more than one block's scores: at 1,003 residues and
+    the released 32 samples that is 35,945 -> 11,312 MiB, 68.5%.
+
+    **The default is `dense` even though `blocked` is exact**, because the two
+    have not been timed against each other yet and flipping a default is a
+    decision that should follow a measurement rather than an argument. The
+    blocked form trades one large matmul for 31 scanned small ones, so its cost
+    grows where the memory win shrinks -- and this repository has a measured
+    case of exactly that shape: the atom-attention narrowing saved 29,540 MiB
+    at 1,003 residues and *exactly zero* at 250.
+
+    There is no `auto`. A mode that picked a path from a probe would put two
+    machines on two kernels under one name, which is the failure this
+    repository keeps paying for.
+    """
+    backend = os.environ.get("ESMFOLD2_ATOM_ATTENTION_BACKEND", "dense").lower()
+    if backend not in ATOM_ATTENTION_BACKENDS:
+        raise ValueError(
+            f"unsupported atom attention backend: {backend!r}; "
+            f"expected one of {sorted(ATOM_ATTENTION_BACKENDS)}"
+        )
+    return backend
+
+
+def _resolve_rows_per_block(rows_per_block: int | None) -> int:
+    """Rows per block, or zero for the dense path.
+
+    An explicit argument wins over the environment, so a caller that has
+    measured its own size is not overridden by a process-wide setting.
+    """
+    if rows_per_block is not None:
+        return rows_per_block
+    if _atom_attention_backend() == "dense":
+        return 0
+    return int(os.environ.get("ESMFOLD2_ATOM_ROWS_PER_BLOCK", ATOM_ROWS_PER_BLOCK))
 
 
 def rms_norm(x: jnp.ndarray, eps: float = FLOAT32_EPS) -> jnp.ndarray:
@@ -212,7 +259,7 @@ def swa_attention(
     valid: jnp.ndarray,
     n_heads: int,
     half_window: int,
-    rows_per_block: int = ATOM_ROWS_PER_BLOCK,
+    rows_per_block: int | None = None,
     eps: float = FLOAT32_EPS,
 ) -> jnp.ndarray:
     """`SWA3DRoPEAttention`.
@@ -257,6 +304,7 @@ def swa_attention(
     # traced and the other is not. Short inputs take the dense path because a
     # slice wider than the array cannot be clamped into range, not because the
     # blocked result would differ.
+    rows_per_block = _resolve_rows_per_block(rows_per_block)
     if rows_per_block and length >= rows_per_block + 2 * half_window:
         context = _windowed_attention(
             q,
