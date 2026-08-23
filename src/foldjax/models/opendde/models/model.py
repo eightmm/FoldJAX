@@ -144,10 +144,30 @@ def _with_cueq_triangle_defaults(function):
     MiB, blocked 46,596).
 
     So any adaptive policy here keys on **dtype first**, then size. Blocked is
-    now the cheaper arm at every size measured -- about 24% by the identity in
-    `protenix/models/triangle/triangle.py`, once its destination stopped being
-    float32 -- and the clocked A/B below settled the time question that
-    single warm samples on this card could not.
+    the cheaper arm at every size and dtype measured, and the ratio is a
+    *whole-arena* one:
+
+        bf16 1,003   17,147 / 19,797 = 0.8661
+        bf16 1,531   41,945 / 48,440 = 0.8659
+        fp32 1,003   33,967 / 39,097 = 0.8688
+        fp32 1,531   82,657 / 95,642 = 0.8642
+
+    Two dtypes, two sizes, all 0.864-0.869 -- so the ratio is dtype-independent
+    as measured, not merely as argued. **Do not quote the identity in
+    `protenix/models/triangle/triangle.py` here.** Its `0.75 * (Npad/N) ~= 0.757`
+    is a *sub-ratio over the projection family only*; the arena is `P + R`,
+    where `R` is everything both arms share -- the `as_float32` pair tensor,
+    the residue pair `z`, the triangle-attention row stats -- and `R` dilutes
+    it toward 1. Applying 0.757 to a whole fp32 arena predicted a 9.5 GiB
+    saving; decomposing into `P + R` predicted 33,948 MiB and the measurement
+    came back **33,967 -- 19 MiB, 0.06% off**, for 5.01 GiB. Half the wrong
+    number, and the wrong number was one step from being published.
+
+    The bf16 default is flipped on that plus a clocked A/B. **The fp32 default
+    is not**, because its timing is unresolved: one paired arm straddled two
+    commits, one run failed outright, and the arms overlapped with the card's
+    mean SM clock drifting 1612 -> 1392 MHz across ~250 s runs. Memory alone
+    does not move a shipped default away from the kernel upstream runs.
     """
 
     @wraps(function)
