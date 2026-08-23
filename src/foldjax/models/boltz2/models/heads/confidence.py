@@ -345,6 +345,44 @@ def _compute_collinear_mask(v1: jnp.ndarray, v2: jnp.ndarray) -> jnp.ndarray:
     return mask_angle & mask_overlap1 & mask_overlap2
 
 
+def _nearest_nonpolymer_frames(
+    pred_atom_coords: jnp.ndarray,
+    asym_id_atom: jnp.ndarray,
+    atom_pad_mask: jnp.ndarray,
+    token_to_rep_atom: jnp.ndarray,
+) -> jnp.ndarray:
+    """Find each token representative's three nearest same-chain atoms."""
+
+    rep_atom_idx = jnp.argmax(token_to_rep_atom, axis=-1)
+    rep_coord_idx = jnp.broadcast_to(
+        rep_atom_idx[:, None, :, None],
+        (
+            pred_atom_coords.shape[0],
+            pred_atom_coords.shape[1],
+            rep_atom_idx.shape[1],
+            pred_atom_coords.shape[-1],
+        ),
+    )
+    rep_atom_coords = jnp.take_along_axis(pred_atom_coords, rep_coord_idx, axis=2)
+    rep_atom_pad_mask = jnp.take_along_axis(atom_pad_mask, rep_atom_idx, axis=1)
+    rep_asym_id_atom = jnp.take_along_axis(asym_id_atom, rep_atom_idx, axis=1)
+
+    # Only representative-atom rows are consumed by confidence frames. Retain
+    # the historical full atom-axis sort for each such row, including its tie
+    # order, while avoiding the unused atom-by-atom distance matrix.
+    delta = rep_atom_coords[:, :, :, None, :] - pred_atom_coords[:, :, None, :, :]
+    dist_mat = jnp.sqrt(jnp.maximum(jnp.sum(delta * delta, axis=-1), 0.0))
+    same_chain = rep_asym_id_atom[:, :, None] == asym_id_atom[:, None, :]
+    valid_atom_pair = (
+        same_chain
+        & rep_atom_pad_mask[:, :, None].astype(bool)
+        & atom_pad_mask[:, None, :].astype(bool)
+    )
+    dist_mat = jnp.where(valid_atom_pair[:, None, :, :], dist_mat, jnp.inf)
+    nearest = jnp.argsort(dist_mat, axis=-1)[..., :3]
+    return nearest[..., jnp.array([1, 0, 2])]
+
+
 def _compute_frame_pred_inference(
     pred_atom_coords: jnp.ndarray,
     frames_idx_true: jnp.ndarray,
@@ -378,25 +416,12 @@ def _compute_frame_pred_inference(
     atom_pad_mask = feats["atom_pad_mask"]
 
     if recompute_nonpolymer_frames:
-        delta = pred_atom_coords[:, :, :, None, :] - pred_atom_coords[:, :, None, :, :]
-        dist_mat = jnp.sqrt(jnp.maximum(jnp.sum(delta * delta, axis=-1), 0.0))
-        same_chain = asym_id_atom[:, :, None] == asym_id_atom[:, None, :]
-        valid_atom_pair = (
-            same_chain
-            & atom_pad_mask[:, :, None].astype(bool)
-            & atom_pad_mask[:, None, :].astype(bool)
+        nonpolymer_frames = _nearest_nonpolymer_frames(
+            pred_atom_coords,
+            asym_id_atom,
+            atom_pad_mask,
+            feats["token_to_rep_atom"],
         )
-        dist_mat = jnp.where(valid_atom_pair[:, None, :, :], dist_mat, jnp.inf)
-        nearest = jnp.argsort(dist_mat, axis=-1)[..., :3]
-        nearest = nearest[..., jnp.array([1, 0, 2])]
-
-        rep_atom_idx = jnp.argmax(feats["token_to_rep_atom"], axis=-1)
-        gather_idx = rep_atom_idx[:, None, :, None]
-        gather_idx = jnp.broadcast_to(
-            gather_idx,
-            (frames_idx_pred.shape[0], multiplicity, rep_atom_idx.shape[1], 3),
-        )
-        nonpolymer_frames = jnp.take_along_axis(nearest, gather_idx, axis=2)
         chain_atom_count = jnp.sum(
             (asym_id_token[:, :, None] == asym_id_atom[:, None, :])
             * atom_pad_mask[:, None, :],

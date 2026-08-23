@@ -31,6 +31,20 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Boltz-2 confidence constructs ligand frames from representative atom rows.**
+  The inference head previously formed every atom-by-atom distance row and then
+  gathered the one row selected by each token's existing representative-atom
+  `argmax`. It now gathers those representative coordinates, masks, and
+  atom-derived chain IDs first, while retaining the full atom-axis stable sort,
+  `[:3]` selection, and `[1, 0, 2]` frame order. Dense-reference tests keep
+  representative ties and all-zero rows, malformed low-level mappings, padded
+  atoms, batch/sample axes, and non-finite coordinate behaviour bitwise equal.
+  In an isolated three-sample, 128-token, 1,024-atom CPU frame-selection probe,
+  compiled temporary memory fell from 25,166,416 to 3,147,344 bytes and warm
+  median time from 197.1 to 25.2 ms. These are confidence-frame stage CPU
+  measurements; released-weight GPU latency and whole-model peak memory remain
+  deployment gates.
+
 - **Padding no longer rebuilds a 200-leaf diffusion-noise tuple inside the
   scanned OpenDDE and Protenix samplers.** Both padding producers now preserve
   the historical per-key draws, sample-chunk order, and real-atom prefix while
