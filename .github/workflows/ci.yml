@@ -61,9 +61,14 @@ jobs:
       # vendored ports were built against upstream torch parity rather than
       # line coverage, so holding them to a line number would measure the
       # wrong thing.
+      #
+      # RCSB deposition checks are a separately marked integration surface.
+      # Running them here made the otherwise hermetic gate depend on an
+      # external service and its 120-second request timeout.
       - name: Tests
         run: >
           uv run --no-sync pytest -q
+          -m 'not network'
           --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 
   imports:
