@@ -30,6 +30,30 @@ command predicts unless it says so here, in its own paragraph.
   now runs inside the selected default-device context, so lazy parameter loads
   and other unpinned allocations start on the requested device. A forced
   two-device probe places all 405 checkpoint array leaves directly on device 1.
+- **The MSA outer product carries a byte ceiling, like every other widening
+  operation here.** `outer_product_mean` widens `[M, N, C]` into `[N, N, C, C]`
+  before `linear_out` narrows it, and at 1,003 tokens that intermediate is
+  1,965 MiB and exists twice. It was the one widening operation without a
+  ceiling of its own -- the transitions and the triangle projections both have
+  one -- and it blocked only when the chunk policy handed it a size, which
+  upstream's table does not do at or below 1,024 tokens. So the sizes where
+  this tensor dominated were exactly the sizes that built it whole. The
+  program's buffers at or above 512 MiB fall from 15 totalling 16.30 GiB to 12
+  totalling 10.55 GiB, and measured peak at 1,003 tokens falls 8.25 to 7.79 GiB
+  with warm time unchanged at 57.5 s. The chunk table is untouched: a policy
+  asking for a smaller block still gets it, and `chunk_size=0` still builds it
+  whole.
+
+  The blocks are sequenced by a loop rather than emitted as a list, and that is
+  the saving rather than a style choice -- measured, the list form leaves 1,281
+  MiB simultaneously live against the loop's 519 MiB, although both name the
+  same tensors. Blocking is bit-identical to the dense form in float64 across
+  60 shape-and-block pairs including non-multiples and the clamped last block;
+  in float32 it differs by 1-2 ulp from GEMM re-tiling, which moves a
+  1,003-token structure 0.119 Å against a 0.197 Å floor between two runs of the
+  unchanged code. Under a context-parallel mesh the ceiling is deliberately
+  inert: turning it on there halves the widest per-device buffer and doubles the
+  collective traffic, a trade an interconnect has to settle.
 - **Features the graph never reads are no longer copied to the device.**
   Boltz-2's featurizer produces 78 arrays and the compiled program reads 31.
   `jax.jit` already dropped the other 47 from the program -- and drops them

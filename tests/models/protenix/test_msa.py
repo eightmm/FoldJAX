@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -69,6 +70,128 @@ def test_outer_product_mean_chunking_changes_nothing() -> None:
             np.asarray(chunked), np.asarray(reference), rtol=1e-6, atol=1e-6,
             err_msg=f"chunk_size={chunk_size}",
         )
+
+
+def test_outer_product_mean_bounds_the_widened_outer_product(monkeypatch) -> None:
+    """A tensor too wide to hold is blocked even when nothing asked for it.
+
+    Upstream's chunk table asks for no chunking at or below 1,024 tokens, so the
+    ``[N, N, C, C]`` outer product ran whole at exactly the sizes where it is the
+    largest tensor in the trunk. Every other widening operation in this port
+    already carries a byte ceiling; this one did not.
+
+    The budget is monkeypatched down rather than the shapes up, because a shape
+    that overruns the real budget is a shape no unit test can afford.
+    """
+    rng = np.random.default_rng(9)
+    n_token, c_hidden = 7, 2
+    state = _outer_product_mean_state(rng, "opm", c_m=3, c_hidden=c_hidden, c_z=4)
+    params = map_outer_product_mean_state_dict(state, "opm")
+    m = jnp.asarray(rng.normal(size=(2, n_token, 3)).astype(np.float32))
+    mask = jnp.asarray((rng.random((2, n_token)) > 0.25).astype(np.float32))
+
+    # ``chunk_size=0`` opts out of the ceiling as well as out of the policy.
+    unblocked = outer_product_mean(m, mask, params, chunk_size=0)
+
+    per_row = n_token * c_hidden * c_hidden * 4
+    monkeypatch.setattr(msa_blocks, "_OPM_WIDE_BUDGET_BYTES", 2 * per_row)
+
+    # Equal values alone would pass with the ceiling switched off entirely, so
+    # assert the program blocked as well as that it agrees.
+    emitted = jax.make_jaxpr(lambda x, k: outer_product_mean(x, k, params))(m, mask)
+    assert "scan" in str(emitted), "the ceiling did not block anything"
+
+    blocked = outer_product_mean(m, mask, params)
+    np.testing.assert_allclose(
+        np.asarray(blocked), np.asarray(unblocked), rtol=1e-6, atol=1e-6
+    )
+    assert np.asarray(outer_product_mean(m, mask, params, chunk_size=0)).shape == (
+        n_token,
+        n_token,
+        4,
+    )
+
+
+def test_outer_product_mean_blocks_are_sequenced_by_a_loop() -> None:
+    """Blocking has to be a loop, not a list of independent subgraphs.
+
+    A Python list hands XLA one subgraph per block, and its scheduler may run
+    every widening contraction before any of the narrowing dots -- which keeps
+    every block's widened tensor live at once and bounds nothing. Compiling the
+    module alone on CPU at 1,003 tokens put the unblocked form at 7.68 GiB, the
+    list at 5.80 and the loop at 2.08. The difference is invisible in the
+    values, so only the emitted program can assert it.
+    """
+    rng = np.random.default_rng(12)
+    n_token = 8
+    state = _outer_product_mean_state(rng, "opm", c_m=3, c_hidden=2, c_z=4)
+    params = map_outer_product_mean_state_dict(state, "opm")
+    m = jnp.asarray(rng.normal(size=(2, n_token, 3)).astype(np.float32))
+    mask = jnp.asarray((rng.random((2, n_token)) > 0.25).astype(np.float32))
+
+    blocked = jax.make_jaxpr(
+        lambda x, k: outer_product_mean(x, k, params, chunk_size=3)
+    )(m, mask)
+    assert "scan" in str(blocked)
+    np.testing.assert_allclose(
+        np.asarray(outer_product_mean(m, mask, params, chunk_size=3)),
+        np.asarray(outer_product_mean(m, mask, params, chunk_size=0)),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_outer_product_mean_budget_never_widens_a_request() -> None:
+    """The ceiling narrows a block size; it never hands back a larger one."""
+    a = jnp.zeros((2, 1024, 32), dtype=jnp.bfloat16)
+    allowed = msa_blocks._opm_block_rows(a, None)
+    assert allowed is not None and 1 <= allowed < 1024
+    assert msa_blocks._opm_block_rows(a, 1) == 1
+    assert msa_blocks._opm_block_rows(a, 4096) == allowed
+    # Small enough to fit whole: the request passes through untouched, `None`
+    # included, so a short job compiles the same program it always did.
+    small = jnp.zeros((2, 8, 2), dtype=jnp.float32)
+    assert msa_blocks._opm_block_rows(small, None) is None
+    assert msa_blocks._opm_block_rows(small, 3) == 3
+
+
+def test_outer_product_mean_keeps_the_unrolled_blocks_under_a_mesh(
+    monkeypatch,
+) -> None:
+    """A context-parallel mesh keeps the form it had, loop and ceiling included.
+
+    The loop writes its blocks at a traced offset, which a row-sharded carry
+    cannot survive, so the mesh keeps the unrolled list -- and the automatic
+    ceiling stays out of the way, because under a mesh the pair tensor is split
+    across devices already. Selecting the branch is what changed here; the
+    arithmetic on either side of it did not.
+    """
+    rng = np.random.default_rng(11)
+    n_token, c_hidden = 8, 2
+    state = _outer_product_mean_state(rng, "opm", c_m=3, c_hidden=c_hidden, c_z=4)
+    params = map_outer_product_mean_state_dict(state, "opm")
+    m = jnp.asarray(rng.normal(size=(2, n_token, 3)).astype(np.float32))
+    mask = jnp.asarray((rng.random((2, n_token)) > 0.25).astype(np.float32))
+
+    dense = outer_product_mean(m, mask, params, chunk_size=0)
+    monkeypatch.setattr(msa_blocks, "_OPM_WIDE_BUDGET_BYTES", 4)
+    monkeypatch.setattr(msa_blocks, "cp_mesh", lambda: object())
+
+    # The ceiling would have blocked this at one row; under a mesh it does not
+    # fire at all, so nothing asks for blocks and the dense form runs.
+    unasked = jax.make_jaxpr(lambda x, k: outer_product_mean(x, k, params))(m, mask)
+    assert "scan" not in str(unasked), "the ceiling must not fire under a mesh"
+
+    asked = jax.make_jaxpr(
+        lambda x, k: outer_product_mean(x, k, params, chunk_size=3)
+    )(m, mask)
+    assert "scan" not in str(asked), "the mesh must keep the unrolled blocks"
+    np.testing.assert_allclose(
+        np.asarray(outer_product_mean(m, mask, params, chunk_size=3)),
+        np.asarray(dense),
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
 
 def test_msa_block_gives_the_outer_product_mean_its_chunk_size(monkeypatch) -> None:

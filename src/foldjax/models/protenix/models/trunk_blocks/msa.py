@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import nn as jnn
 
+from foldjax.models._cp import cp_mesh
 from foldjax.models._stacking import stacked_or_stack
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
@@ -150,6 +151,59 @@ def sample_msa_cycle_features(
     return tuple(cycles)
 
 
+# The outer product widens ``[M, N, C]`` into ``[N, N, C, C]`` before
+# ``linear_out`` narrows it back to ``[N, N, C_z]``. At 1,003 tokens and the
+# released widths that intermediate is 1,965 MiB, and it exists twice: the
+# contraction emits ``[i, c, j, d]`` and the reshape that feeds ``linear_out``
+# needs ``[i, j, c, d]``. Two buffers of 1,965 MiB, in a trunk whose whole pair
+# representation is 246 MiB a copy.
+#
+# ``chunk_size`` already blocks this, but only when the chunk policy hands it
+# one, and upstream's table asks for no chunking at or below 1,024 tokens -- so
+# the sizes where this tensor is largest relative to everything else are
+# precisely the sizes that build it whole. Every other widening operation here
+# already carries a ceiling of its own: the transitions have
+# ``_TRANSITION_WIDE_BUDGET_BYTES`` and the triangle projections have
+# ``_PROJECTION_BUDGET_BYTES``. This is the same ceiling for the one that was
+# missing it, and it does not touch the chunk table: a policy that asks for a
+# smaller block still gets it, and ``chunk_size=0`` still means "build it
+# whole".
+#
+# KNOWN BOUNDARY -- this ceiling is inert under a context-parallel mesh, which
+# is the one place memory is scarcest, so it is worth saying what that costs.
+# Measured on a forced four-device mesh at 1,003 tokens (compile only, sizes
+# read off the partitioned shapes at bfloat16):
+#
+#   ceiling inert, as shipped     492 MiB/device widest buffer,  6 all-gathers
+#   ceiling on, guard removed     246 MiB/device widest buffer, 12 all-gathers
+#   `a` row-sharded first         492 MiB/device widest buffer,  6 all-gathers
+#                                                              + 6 all-to-alls
+#
+# So the operands arriving replicated does not leave the widened tensor whole:
+# the partitioner already splits it without help. Turning the ceiling on under a
+# mesh would halve the widest buffer and double the collective traffic, which is
+# a trade an interconnect has to settle, not a shape count. Sharding `a` before
+# the contraction -- the obvious fix -- buys no memory and adds an all-to-all.
+#
+# It can only bite between 513 and 1,024 tokens anyway: below that the ceiling
+# would not fire, and above it the chunk policy supplies a block size, so the
+# mesh already takes the unrolled path below. Context parallelism is for jobs
+# far larger than 1,024 tokens, so this band is not why anyone reaches for it.
+_OPM_WIDE_BUDGET_BYTES = 512 * 1024**2
+
+
+def _opm_block_rows(a: jnp.ndarray, requested: int | None) -> int | None:
+    """Token rows whose widened outer product fits the budget, or the request."""
+    # Both token axes of the outer product come from `a`, so one of its rows
+    # costs `n_token * c_hidden ** 2` elements.
+    n_token, hidden = a.shape[-2], a.shape[-1]
+    per_row = n_token * hidden * hidden * a.dtype.itemsize
+    if per_row <= 0 or n_token < 2 or per_row * n_token <= _OPM_WIDE_BUDGET_BYTES:
+        return requested
+    allowed = max(1, _OPM_WIDE_BUDGET_BYTES // per_row)
+    return allowed if requested is None else min(requested, allowed)
+
+
 def outer_product_mean(
     m: jnp.ndarray,
     mask: jnp.ndarray | None,
@@ -167,6 +221,9 @@ def outer_product_mean(
     ``C ** 2 / C_z`` times the size of the result -- eight times over at the
     released widths. Projecting inside the block is the part that matters; a
     chunked einsum whose projection stays outside saves nothing.
+
+    When nothing asks for a block size, one is chosen from
+    ``_OPM_WIDE_BUDGET_BYTES``; ``chunk_size=0`` opts out and builds it whole.
     """
 
     if mask is None:
@@ -182,14 +239,21 @@ def outer_product_mean(
         outer = outer.reshape(outer.shape[:-2] + (-1,))
         return linear(outer, params.linear_out)
 
+    # The token axis is a pure batch axis of the output -- the sum runs over the
+    # MSA rows -- so the blocks are independent and reassembling them reproduces
+    # the dense result, whichever way they are sequenced.
     n_token = a.shape[-2]
+    cp_active = cp_mesh() is not None
+    if not cp_active and (chunk_size is None or chunk_size > 0):
+        chunk_size = _opm_block_rows(a, chunk_size)
     if chunk_size is None or chunk_size <= 0 or chunk_size >= n_token:
         outer = project(a)
-    else:
-        # Blocked the same way the triangle contractions above are: an explicit
-        # loop over dynamic slices. The token axis is a pure batch axis of the
-        # output -- the sum runs over the MSA rows -- so the blocks are
-        # independent and concatenating them reproduces the dense result.
+    elif cp_active:
+        # A context-parallel mesh keeps the unrolled form it has always had: the
+        # loop below writes its blocks at a traced offset, and the partitioner
+        # cannot hold a row-sharded carry across that. Under a mesh the pair
+        # tensor is split across devices anyway, which is most of what the block
+        # was bounding.
         blocks = [
             project(
                 jax.lax.dynamic_slice_in_dim(
@@ -199,6 +263,34 @@ def outer_product_mean(
             for start in range(0, n_token, chunk_size)
         ]
         outer = jnp.concatenate(blocks, axis=-3)
+    else:
+        # Sequenced by a loop rather than emitted as a Python list, and that is
+        # the whole saving rather than a style choice. A list hands XLA one
+        # independent subgraph per block and its scheduler is free to run every
+        # widening contraction before any of the narrowing dots, which keeps
+        # every block's widened tensor live at once and bounds nothing.
+        #
+        # The last block's start is clamped rather than the array padded, so a
+        # token count that is not a multiple of the block size recomputes a few
+        # rows and writes them again with the same values.
+        block = min(chunk_size, n_token)
+
+        def body(index, out):
+            start = jnp.minimum(index * block, n_token - block)
+            rows = jax.lax.dynamic_slice_in_dim(a, start, block, axis=-2)
+            return jax.lax.dynamic_update_slice_in_dim(
+                out, project(rows), start, axis=-3
+            )
+
+        outer = jax.lax.fori_loop(
+            0,
+            -(-n_token // block),
+            body,
+            jnp.zeros(
+                a.shape[:-3] + (n_token, n_token, params.linear_out.weight.shape[0]),
+                dtype=a.dtype,
+            ),
+        )
 
     norm = jnp.einsum("...mi,...mj->...ij", mask, mask)[..., None] + eps
     return outer / norm
