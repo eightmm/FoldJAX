@@ -30,6 +30,25 @@ command predicts unless it says so here, in its own paragraph.
   now runs inside the selected default-device context, so lazy parameter loads
   and other unpinned allocations start on the requested device. A forced
   two-device probe places all 405 checkpoint array leaves directly on device 1.
+- **OpenFold3 compiles 3 programs before predicting instead of 104.** Every
+  `jnp.asarray` on a NumPy array is a traced operation, so it compiles one
+  `jit(stage)` program per distinct shape and dtype -- and none of them is
+  slow enough to clear `jax_persistent_cache_min_compile_time_secs`, which
+  FoldJAX leaves at JAX's one-second default, so they are compiled again on
+  every process start rather than served from the persistent cache. Loading
+  weights accounted for 86 of them and the CLI's feature dictionary for 15.
+  Mapping the checkpoint now uses `jax.device_put`, which transfers rather than
+  traces, and the CLI hands its features to the jitted call as NumPy, placing
+  them only under `--no-compile`, which dispatches per operation and would
+  otherwise re-transfer. Around 0.55 s comes off every process start.
+
+  Read that as startup latency and not as throughput: the cost is per distinct
+  shape, not per byte, so it is a fixed half-second -- about 8% of a 76-token
+  job and about 0.25% of a 3,012-token one. The parameter tree hashes
+  identically to before, dtype canonicalisation is unchanged, and the arrays
+  stay uncommitted with the sharding they had, so the context-parallel path is
+  untouched. The lowered StableHLO of the CLI's graph is identical with placed
+  and with NumPy features, and both entry points write byte-identical outputs.
 - **A query with no templates no longer runs the template stack four times.**
   Upstream's released width is four templates, so a query without any is
   featurized as four *identical* empty ones -- the same all-gap restype, the

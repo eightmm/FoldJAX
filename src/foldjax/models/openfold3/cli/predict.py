@@ -216,7 +216,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     # entry points compile the same program from the same archive.
     raw = collapse_identical_templates(raw)
     raw, n_chain = normalize_asym_ids(raw)
-    features = {name: jnp.asarray(value) for name, value in raw.items()}
+    # `jax.jit` stages host arrays itself, once for the whole argument tree.
+    # Placing them here instead compiles a `jit_stage` program per distinct
+    # shape and dtype, and none of them survive `enable_compilation_cache`'s
+    # one-second floor -- so a compiled run pays that set again in every new
+    # process, for a transfer jit was going to do anyway. The eager path does
+    # keep the placement: it dispatches operation by operation and would
+    # otherwise re-transfer the same host array once per operation.
+    features = (
+        {name: jnp.asarray(value) for name, value in raw.items()}
+        if args.no_compile
+        else raw
+    )
     print(
         f"{n_token} tokens, {n_atom} atoms | {config.num_samples} samples x "
         f"{config.no_rollout_steps} steps, {config.num_cycles} cycles"

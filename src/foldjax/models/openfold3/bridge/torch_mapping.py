@@ -12,7 +12,6 @@ from collections.abc import Mapping
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models._stacking import prestack_layer_lists
@@ -962,8 +961,15 @@ def map_inference_params(
     )
     if prestack:
         params = _prestack_scanned_blocks(params)
+    # `device_put`, not `jnp.asarray`: the latter is a traced operation, so it
+    # compiles one `jit(stage)` program per distinct shape and dtype in the
+    # tree -- 86 of them once the blocks are stacked. None is large enough to
+    # clear `enable_compilation_cache`'s one-second floor, so every process
+    # that loads weights compiles the whole set again before it can predict.
+    # `device_put` is a transfer, canonicalises dtypes identically, and moves
+    # the tree in one call.
     return jax.tree.map(
-        lambda leaf: jnp.asarray(leaf) if isinstance(leaf, np.ndarray) else leaf,
+        lambda leaf: jax.device_put(leaf) if isinstance(leaf, np.ndarray) else leaf,
         params,
         is_leaf=lambda leaf: leaf is None,
     )
