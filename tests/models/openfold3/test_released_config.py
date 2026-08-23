@@ -132,7 +132,13 @@ def test_no_field_is_left_unchecked(upstream) -> None:
     # which is a different mechanism (it chunks more than the pair attention).
     # returned_pair_logits is likewise FoldJAX's own: which [.., N, N, bins]
     # logits stay entry outputs, decided by the npz writer's budget.
-    shapes = {"n_token", "n_atom", "pair_chunk_size", "returned_pair_logits"}
+    shapes = {
+        "n_token",
+        "n_atom",
+        "pair_chunk_size",
+        "returned_pair_logits",
+        "has_atomized_tokens",
+    }
     unchecked = set(config._fields) - set(_expected(upstream)) - shapes
     assert not unchecked, f"fields not compared against upstream: {sorted(unchecked)}"
 

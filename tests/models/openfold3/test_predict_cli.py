@@ -221,6 +221,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         "token_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
         "atom_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
         "asym_id": np.asarray([[7, 42, 999]], dtype=np.int64),
+        "is_atomized": np.asarray([[0, 0, 1]], dtype=np.int32),
     }
     params = SimpleNamespace(
         trunk=SimpleNamespace(pairformer_stack=SimpleNamespace(blocks=())),
@@ -237,16 +238,21 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         data, "load_feature_archive", lambda path: (raw, object(), None)
     )
     monkeypatch.setattr(data, "subsample_msa_rows", lambda features, depth: features)
-    monkeypatch.setattr(
-        inference,
-        "released_config",
-        lambda **kwargs: SimpleNamespace(
+
+    def fake_released_config(**kwargs):
+        seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
+        return SimpleNamespace(
             msa_depth=1024,
             num_samples=5,
             no_rollout_steps=200,
             num_cycles=4,
             pair_chunk_size=None,
-        ),
+        )
+
+    monkeypatch.setattr(
+        inference,
+        "released_config",
+        fake_released_config,
     )
 
     def fake_predict(key, features, params, config, table, *, n_chain=None):
@@ -304,6 +310,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
 
     assert main(argv) == 0
     assert seen["n_chain"] == 2
+    assert seen["has_atomized_tokens"] is False
     if not eager:
         assert seen["compile_options"] == {"cache_scope": None}
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])

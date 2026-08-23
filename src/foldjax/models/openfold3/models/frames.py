@@ -50,6 +50,7 @@ def token_frame_atoms(
     *,
     angle_threshold: float = 25.0,
     eps: float = 1e-8,
+    has_atomized_tokens: bool = True,
 ) -> tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], jnp.ndarray]:
     """Select frame atoms and their validity from predicted coordinates.
 
@@ -63,6 +64,9 @@ def token_frame_atoms(
     The distance calculation is ``[sample, token, atom]`` instead of upstream's
     full ``[sample, atom, atom]`` matrix; only rows for token start atoms are ever
     consumed, so the selected neighbors are identical with much lower memory.
+    Production entry points derive ``has_atomized_tokens`` from masked host
+    features. False makes the expensive neighbour-search graph disappear
+    entirely; the conservative True default preserves generic direct callers.
     """
     n_atom = coordinates.shape[-2]
     token_mask = batch["token_mask"].astype(bool)
@@ -81,44 +85,60 @@ def token_frame_atoms(
     c1_index, c1_present = _named_atom_indices(batch, "C1'", n_atom=n_atom)
     c4_index, c4_present = _named_atom_indices(batch, "C4'", n_atom=n_atom)
 
-    start = batch["start_atom_index"].astype(jnp.int32)
-    safe_start = jnp.clip(start, 0, n_atom - 1)
-    start_position = jnp.take_along_axis(coordinates, safe_start[..., None], axis=-2)
-
     atom_owner = batch["atom_to_token_index"].astype(jnp.int32)
     safe_owner = jnp.clip(atom_owner, 0, token_mask.shape[-1] - 1)
     atom_chain = jnp.take_along_axis(batch["asym_id"], safe_owner, axis=-1)
-    same_chain = batch["asym_id"][..., :, None] == atom_chain[..., None, :]
-    candidate = atom_mask.astype(bool)[..., None, :] & same_chain
-    square_distance = jnp.sum(
-        (start_position[..., :, None, :] - coordinates[..., None, :, :]) ** 2,
-        axis=-1,
-    )
-    distance = jnp.where(candidate, jnp.sqrt(square_distance + eps), jnp.inf)
-    # The first result is the start atom itself; the next two are the frame's
-    # neighbors. ``top_k`` on the negated distances is a bounded partial sort.
-    # ``lax.top_k`` requires ``k <= n_atom``. Tiny ligands can contain only one
-    # or two atoms, so pad the candidate axis rather than failing before their
-    # (correctly invalid) frame mask can be returned. Dummy candidates remain
-    # at infinity and are explicitly marked absent below.
-    pad_atoms = max(0, 3 - n_atom)
-    padded_distance = jnp.pad(
-        distance,
-        [(0, 0)] * (distance.ndim - 1) + [(0, pad_atoms)],
-        constant_values=jnp.inf,
-    )
-    closest_values, closest = jax.lax.top_k(-padded_distance, 3)
-    atomized_a = closest[..., 1]
-    atomized_c = closest[..., 2]
-    atomized_a_present = jnp.isfinite(-closest_values[..., 1]) & (
-        atomized_a < n_atom
-    )
-    atomized_c_present = jnp.isfinite(-closest_values[..., 2]) & (
-        atomized_c < n_atom
-    )
+
+    # This must be a Python branch. A dynamic ``lax.cond`` still leaves XLA's
+    # arena sized for the expensive branch, defeating the point of proving on
+    # the host that every active token is a standard polymer token.
+    if has_atomized_tokens:
+        start = batch["start_atom_index"].astype(jnp.int32)
+        safe_start = jnp.clip(start, 0, n_atom - 1)
+        start_position = jnp.take_along_axis(
+            coordinates, safe_start[..., None], axis=-2
+        )
+        same_chain = batch["asym_id"][..., :, None] == atom_chain[..., None, :]
+        candidate = atom_mask.astype(bool)[..., None, :] & same_chain
+        square_distance = jnp.sum(
+            (start_position[..., :, None, :] - coordinates[..., None, :, :]) ** 2,
+            axis=-1,
+        )
+        distance = jnp.where(candidate, jnp.sqrt(square_distance + eps), jnp.inf)
+        # The first result is the start atom itself; the next two are the frame's
+        # neighbors. ``top_k`` on the negated distances is a bounded partial sort.
+        # ``lax.top_k`` requires ``k <= n_atom``. Tiny ligands can contain only one
+        # or two atoms, so pad the candidate axis rather than failing before their
+        # (correctly invalid) frame mask can be returned. Dummy candidates remain
+        # at infinity and are explicitly marked absent below.
+        pad_atoms = max(0, 3 - n_atom)
+        padded_distance = jnp.pad(
+            distance,
+            [(0, 0)] * (distance.ndim - 1) + [(0, pad_atoms)],
+            constant_values=jnp.inf,
+        )
+        closest_values, closest = jax.lax.top_k(-padded_distance, 3)
+        atomized_a = closest[..., 1]
+        atomized_b = start
+        atomized_c = closest[..., 2]
+        atomized_a_present = jnp.isfinite(-closest_values[..., 1]) & (
+            atomized_a < n_atom
+        )
+        atomized_c_present = jnp.isfinite(-closest_values[..., 2]) & (
+            atomized_c < n_atom
+        )
+    else:
+        # These values are never selected because the host-side specialization
+        # proved ``atomized`` false for every active token. Shape-compatible
+        # placeholders keep the common standard-polymer gather below simple.
+        atomized_a = n_index
+        atomized_b = ca_index
+        atomized_c = c_index_standard
+        atomized_a_present = jnp.zeros_like(atomized)
+        atomized_c_present = jnp.zeros_like(atomized)
 
     a_index = jnp.where(atomized, atomized_a, jnp.where(protein, n_index, c3_index))
-    b_index = jnp.where(atomized, start, jnp.where(protein, ca_index, c1_index))
+    b_index = jnp.where(atomized, atomized_b, jnp.where(protein, ca_index, c1_index))
     c_index = jnp.where(
         atomized, atomized_c, jnp.where(protein, c_index_standard, c4_index)
     )
@@ -149,14 +169,20 @@ def token_frame_atoms(
     b, b_mask, b_chain = gather(b_index)
     c, c_mask, c_chain = gather(c_index)
 
-    u = a - b
-    v = c - b
-    cosine = jnp.sum(u * v, axis=-1) / jnp.sqrt(
-        (jnp.sum(u**2, axis=-1) + eps) * (jnp.sum(v**2, axis=-1) + eps)
-    )
-    radians = jnp.deg2rad(angle_threshold)
-    valid_angle = (cosine < jnp.cos(radians)) & (cosine > jnp.cos(jnp.pi - radians))
-    valid_angle = jnp.where(atomized, valid_angle, True)
+    if has_atomized_tokens:
+        u = a - b
+        v = c - b
+        cosine = jnp.sum(u * v, axis=-1) / jnp.sqrt(
+            (jnp.sum(u**2, axis=-1) + eps) * (jnp.sum(v**2, axis=-1) + eps)
+        )
+        radians = jnp.deg2rad(angle_threshold)
+        valid_angle = (cosine < jnp.cos(radians)) & (cosine > jnp.cos(jnp.pi - radians))
+        valid_angle = jnp.where(atomized, valid_angle, True)
+    else:
+        # ``coordinates`` may carry a diffusion-sample axis while host features
+        # retain batch size one. The gathered frame already has the exact
+        # broadcast leading shape the generic angle calculation would produce.
+        valid_angle = jnp.ones_like(a[..., 0], dtype=bool)
     same_selected_chain = (a_chain == b_chain) & (b_chain == c_chain)
     valid = (
         token_mask

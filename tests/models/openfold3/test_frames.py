@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models.openfold3.data import has_atomized_tokens
 from foldjax.models.openfold3.models.frames import token_frame_atoms
 
 
@@ -54,6 +56,76 @@ def test_standard_protein_and_nucleotide_frames_use_named_atoms() -> None:
     np.testing.assert_allclose(np.asarray(a), np.asarray(coordinates[:, [0, 5]]))
     np.testing.assert_allclose(np.asarray(b), np.asarray(coordinates[:, [1, 6]]))
     np.testing.assert_allclose(np.asarray(c), np.asarray(coordinates[:, [2, 7]]))
+
+
+def test_polymer_specialization_is_exact_and_omits_neighbour_search() -> None:
+    names = ["N", "CA", "C", "C3'", "C1'", "C4'", "X1", "X2"]
+    one_sample = jnp.asarray(
+        [
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 0, 1],
+                [0, 1, 1],
+                [1, 1, 1],
+                [2, 2, 2],
+                [3, 3, 3],
+            ]
+        ],
+        dtype=jnp.float32,
+    )
+    coordinates = jnp.broadcast_to(one_sample, (3, *one_sample.shape[1:]))
+    batch = {
+        "token_mask": jnp.asarray([[1, 1, 1, 0]]),
+        "atom_mask": jnp.asarray([[1, 1, 1, 1, 1, 1, 1, 0]]),
+        "atom_to_token_index": jnp.asarray([[0, 0, 0, 1, 1, 1, 2, 3]]),
+        "num_atoms_per_token": jnp.asarray([[3, 3, 1, 1]]),
+        "start_atom_index": jnp.asarray([[0, 3, 6, 7]]),
+        "asym_id": jnp.asarray([[0, 1, 2, 3]]),
+        # A dirty padded suffix must not select the atomized graph.
+        "is_atomized": jnp.asarray([[0, 0, 0, 1]]),
+        "is_protein": jnp.asarray([[1, 0, 0, 0]]),
+        "is_dna": jnp.zeros((1, 4)),
+        "is_rna": jnp.asarray([[0, 1, 0, 0]]),
+        "ref_atom_name_chars": _names(names),
+    }
+    atom_mask = batch["atom_mask"]
+
+    assert not has_atomized_tokens(batch)
+    active_atomized = dict(batch)
+    active_atomized["is_atomized"] = jnp.asarray([[0, 0, 1, 0]])
+    assert has_atomized_tokens(active_atomized)
+
+    generic = token_frame_atoms(batch, coordinates, atom_mask)
+    polymer = token_frame_atoms(
+        batch,
+        coordinates,
+        atom_mask,
+        has_atomized_tokens=False,
+    )
+    for expected, actual in zip(
+        jax.tree.leaves(generic), jax.tree.leaves(polymer), strict=True
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(
+        np.asarray(polymer[1]),
+        np.broadcast_to([[True, True, False, False]], (3, 4)),
+    )
+
+    def lower(flag: bool) -> str:
+        graph = jax.jit(
+            lambda dynamic_batch, dynamic_coordinates, dynamic_mask: token_frame_atoms(
+                dynamic_batch,
+                dynamic_coordinates,
+                dynamic_mask,
+                has_atomized_tokens=flag,
+            )
+        )
+        return str(graph.lower(batch, coordinates, atom_mask).compiler_ir()).lower()
+
+    assert "top_k" in lower(True)
+    assert "top_k" not in lower(False)
 
 
 def test_atomized_frame_uses_nearest_same_chain_atoms_and_angle() -> None:

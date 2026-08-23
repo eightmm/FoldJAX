@@ -158,6 +158,12 @@ class InferenceConfig(NamedTuple):
     #: better layout is not yet the default. ``"2d"`` needs a square shard
     #: count, which is the only shape the ring schedules accept.
     cp_layout: str = "auto"
+    #: Whether any active token needs the geometry-dependent atomized frame.
+    #: This is derived from host features by production entry points. Keeping it
+    #: static removes the sample-by-token-by-atom nearest-neighbour graph for
+    #: ordinary protein, RNA and DNA inputs; True is the conservative direct-API
+    #: default.
+    has_atomized_tokens: bool = True
 
 
 class InferenceParams(NamedTuple):
@@ -651,6 +657,7 @@ def predict(
         sampled_batch,
         coordinates,
         sampled_batch["atom_mask"],
+        has_atomized_tokens=config.has_atomized_tokens,
     )
     pae_for_ptm = jnp.broadcast_to(
         pae_logits, (config.num_samples, *pae_logits.shape[-3:])
@@ -720,6 +727,7 @@ def released_config(
     cp_layout: str = "auto",
     returned_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    has_atomized_tokens: bool = True,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -778,6 +786,7 @@ def released_config(
         cp_layout=cp_layout,
         returned_representations=returned_representations,
         stop_after_trunk=stop_after_trunk,
+        has_atomized_tokens=has_atomized_tokens,
     )
 
 

@@ -1371,12 +1371,16 @@ def test_openfold3_no_compile_boolean_is_consumed() -> None:
 def test_openfold3_backend_passes_normalized_static_chain_count(
     tmp_path: Path, monkeypatch, eager: bool
 ) -> None:
-    from foldjax.models.openfold3.data import normalize_asym_ids
+    from foldjax.models.openfold3.data import (
+        has_atomized_tokens,
+        normalize_asym_ids,
+    )
 
     features = {
         "token_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
         "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
         "asym_id": np.asarray([[5, 20, 999]], dtype=np.int64),
+        "is_atomized": np.asarray([[0, 0, 1]], dtype=np.int32),
     }
     prediction = object()
     output_metadata = object()
@@ -1401,6 +1405,10 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         seen["output_metadata"] = kwargs.get("output_metadata")
         return {"structures": (), "scores": scores}
 
+    def fake_released_config(**kwargs):
+        seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
+        return SimpleNamespace(msa_depth=1024)
+
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
             featurize_query_with_metadata=lambda *args, **kwargs: (
@@ -1409,10 +1417,11 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             ),
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
+            has_atomized_tokens=has_atomized_tokens,
             normalize_asym_ids=normalize_asym_ids,
         ),
         "foldjax.models.openfold3.inference": SimpleNamespace(
-            released_config=lambda **kwargs: SimpleNamespace(msa_depth=1024),
+            released_config=fake_released_config,
             compile_predict=fake_compile,
             predict=fake_predict,
         ),
@@ -1445,6 +1454,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     OpenFold3Backend().predict(request)
 
     assert seen["n_chain"] == 2
+    assert seen["has_atomized_tokens"] is False
     if not eager:
         assert seen["compile_options"] == {
             "triangle_kernel": None,
@@ -1457,10 +1467,13 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from foldjax.models.openfold3.data import has_atomized_tokens
+
     features = {
         "token_mask": np.asarray([[1, 1]], dtype=np.float32),
         "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
         "asym_id": np.asarray([[0, 0]], dtype=np.int64),
+        "is_atomized": np.asarray([[0, 0]], dtype=np.int32),
         "msa_mask": np.ones((1, 1, 2), dtype=np.float32),
         "template_backbone_frame_mask": np.ones((1, 1, 2), dtype=np.float32),
         "template_pseudo_beta_mask": np.ones((1, 1, 2), dtype=np.float32),
@@ -1477,6 +1490,8 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             "token_mask": np.asarray([[1, 1, 0, 0]], dtype=np.float32),
             "atom_mask": np.asarray([[1, 1, 0, 0]], dtype=np.float32),
             "asym_id": np.asarray([[0, 0, 0, 0]], dtype=np.int64),
+            # Dirty padding metadata must not select the atomized graph.
+            "is_atomized": np.asarray([[0, 0, 1, 1]], dtype=np.int32),
             "msa_mask": np.pad(batch["msa_mask"], ((0, 0), (0, 1), (0, 2))),
             "template_backbone_frame_mask": np.pad(
                 batch["template_backbone_frame_mask"],
@@ -1508,6 +1523,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             ),
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
+            has_atomized_tokens=has_atomized_tokens,
             pad_features=pad_features,
             normalize_asym_ids=lambda batch: (batch, 1),
         ),

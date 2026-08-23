@@ -302,6 +302,9 @@ class OpenFold3Backend(Backend):
         )
         overrides["returned_representations"] = wanted
         overrides["stop_after_trunk"] = request.stop_after == "trunk"
+        overrides["has_atomized_tokens"] = (
+            request.stop_after != "trunk" and data.has_atomized_tokens(features)
+        )
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
         # Upstream subsamples inside `MSAModuleEmbedder.forward`; this port does it
         # on the host, before the alignment reaches the device. Unconditional, so

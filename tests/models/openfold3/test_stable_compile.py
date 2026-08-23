@@ -105,6 +105,7 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
                 os.environ[TRIANGLE_BACKEND_ENV],
                 augment,
                 use_trunk_pair_embedding,
+                config.has_atomized_tokens,
             )
         )
         return batch["x"] + params + representative_atoms.cb_offset[0]
@@ -126,13 +127,23 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
             n_chain=2,
             cache_scope="scope-a",
         )(*args)
-        jax.block_until_ready((first, second))
+        polymer_only = inference.compile_predict(
+            _config(has_atomized_tokens=False),
+            _table(2),
+            n_chain=2,
+            cache_scope="scope-a",
+        )(*args)
+        jax.block_until_ready((first, second, polymer_only))
 
-        assert len(traces) == 1
-        assert inference._compiled_predict._cache_size() == 1
+        assert len(traces) == 2
+        assert inference._compiled_predict._cache_size() == 2
         np.testing.assert_array_equal(first, np.full(4, 3.0, dtype=np.float32))
         np.testing.assert_array_equal(second, np.full(4, 4.0, dtype=np.float32))
-        assert traces[0] == ("1d", 2, "cueq", True, True)
+        np.testing.assert_array_equal(polymer_only, np.full(4, 5.0, dtype=np.float32))
+        assert traces == [
+            ("1d", 2, "cueq", True, True, True),
+            ("1d", 2, "cueq", True, True, False),
+        ]
     finally:
         inference._compiled_predict.clear_cache()
 

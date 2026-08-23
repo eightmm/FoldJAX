@@ -160,6 +160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
     from foldjax.models.openfold3.data import (
         collapse_identical_templates,
+        has_atomized_tokens,
         load_feature_archive,
         normalize_asym_ids,
         subsample_msa_rows,
@@ -206,6 +207,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     overrides["returned_representations"] = wanted_representations
     overrides["stop_after_trunk"] = args.stop_after == "trunk"
+    overrides["has_atomized_tokens"] = (
+        args.stop_after != "trunk" and has_atomized_tokens(raw)
+    )
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
     # Keep a full alignment on the host only. At long sequences it can be
     # several GiB, so converting before this cut defeats the memory saving.

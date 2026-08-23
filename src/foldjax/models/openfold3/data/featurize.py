@@ -70,6 +70,19 @@ _MISSING = (
 )
 
 
+def has_atomized_tokens(features: Mapping[str, object]) -> bool:
+    """Whether any active token needs a predicted-geometry neighbour search.
+
+    Padding may carry arbitrary values outside the biological prefix, so the
+    token mask is part of this host-side graph choice. Both arrays are already
+    resident on the host when the inference configuration is built.
+    """
+
+    atomized = np.asarray(features["is_atomized"], dtype=bool)
+    token_mask = np.asarray(features["token_mask"], dtype=bool)
+    return bool(np.any(atomized & token_mask))
+
+
 class OutputMetadata(NamedTuple):
     """Exact structure identity carried beside model features.
 
