@@ -87,6 +87,50 @@ class ModelSettings:
     msa_column_mask_rate: float = 0.1
     num_loops: int = 20
     num_samples: int = 8
+    #: Run the confidence head one structure at a time instead of batching
+    #: every sample through it. Off by default, so nothing a recorded command
+    #: predicts moves unless it is asked for.
+    #:
+    #: Worth asking for near a memory limit: this model's peak is one temp
+    #: arena sized `num_samples * L^2 * 4*c_z`, and this head is where the
+    #: sample factor enters it. Measured at 1,003 tokens with five samples on
+    #: a 96 GB card at the released schedule, peak falls 56.0 to 30.2 GiB and
+    #: the arena 35.99 to 11.31, with warm time unchanged -- 28.3-28.6 s
+    #: either way. Read that 45% as a property of that measurement rather than
+    #: of the option: the arena is quadratic and this divides only its
+    #: confidence-head share, so the fraction moves with length and with
+    #: sample count. Coordinates are bit-identical
+    #: across all five samples; the only visible difference is up to 1e-5 of
+    #: pLDDT, which a float32 control collapses to 3.6e-7, so it is bfloat16
+    #: reduction-order rounding from the changed matmul shapes rather than
+    #: anything about the samples.
+    #:
+    #: It does not raise the size this model can reach. Sequencing divides
+    #: only the head's share of a quadratic arena -- 3.18x here, not the 5x
+    #: the sample count suggests -- and dividing a quadratic by a constant
+    #: buys its square root in reachable length, about 1.8x. 2,096 tokens
+    #: still does not fit on a 96 GB card, and the failure is a named tensor
+    #: rather than an inference: the allocator asks for 17,994,612,736 bytes,
+    #: which is `bf16[1, 2096, 2096, 2048]` byte for byte -- one sample's
+    #: packed pair transition, on top of 64.6 GiB already resident. Batched,
+    #: that single buffer would have been five times as large.
+    #:
+    #: Protenix carries the same switch and defaults it on
+    #: (`models/protenix/models/model.py`). Whether this one should follow is
+    #: a decision about that 1e-5, not about the memory -- and the 1e-5 was
+    #: measured on one target at one seed. It is not a bound: a target where
+    #: the confidence head is less well determined could move further, and
+    #: nobody has looked.
+    #:
+    #: One exposure a reader should know about. Rebuilding the batched result
+    #: from the mapped one keys on a size-1 second axis: a leaf with one is
+    #: squeezed onto it, a leaf without one keeps its first copy. That is
+    #: correct for all seventeen leaves this head returns today, checked
+    #: shape by shape. It is not future-proof -- a new sample-independent
+    #: output whose second axis happened to be size one would be collapsed
+    #: silently rather than loudly. Protenix's copy of the rule carries the
+    #: same exposure.
+    confidence_sample_sequential: bool = False
     #: What upstream's `torch.amp.autocast` makes the trunk on CUDA. Four
     #: regions run in bfloat16 there -- the whole trunk from the inputs
     #: embedder to the parcae coda, the confidence head's folding trunk, the
@@ -863,11 +907,11 @@ def predict(
         "residue_index": features["residue_index"],
         "entity_id": features["entity_id"],
     }
-    output.update(
-        confidence_head(
+    def _confidence(sample_coords: jnp.ndarray, samples: int) -> dict:
+        return confidence_head(
             x_inputs,
             z,
-            coords,
+            sample_coords,
             params,
             "confidence_head",
             distogram_atom_idx=features["distogram_atom_idx"],
@@ -879,11 +923,30 @@ def predict(
             n_layers=settings.confidence_n_layers,
             n_chains=n_chains,
             trunk_dtype=compute,
-            num_samples=n_samples,
+            num_samples=samples,
             relative_position_encoding=rel_pos,
             token_bonds_encoding=token_bonds_encoding,
         )
-    )
+
+    if settings.confidence_sample_sequential and n_samples > 1:
+        # Protenix's `confidence_sample_sequential`, same shape of answer: map
+        # over the sample axis with a size-1 sample axis kept, so the head's
+        # own shapes are untouched and only the batch factor disappears.
+        conf = jax.lax.map(lambda one: _confidence(one[None], 1), coords)
+        # Each leaf gained a leading map axis over its single-sample shape. A
+        # leaf whose next axis is that size-1 sample axis collapses back onto
+        # it; a sample-independent leaf keeps one copy, as batching produced.
+        conf = {
+            name: (
+                jnp.squeeze(value, axis=1)
+                if value.ndim > 1 and value.shape[1] == 1
+                else value[0]
+            )
+            for name, value in conf.items()
+        }
+    else:
+        conf = _confidence(coords, n_samples)
+    output.update(conf)
     return output
 
 

@@ -44,6 +44,28 @@ command predicts unless it says so here, in its own paragraph.
   now runs inside the selected default-device context, so lazy parameter loads
   and other unpinned allocations start on the requested device. A forced
   two-device probe places all 405 checkpoint array leaves directly on device 1.
+- **`confidence_sample_sequential` for ESMFold2**, off by default. Runs the
+  confidence head one structure at a time instead of batching every sample
+  through it. This model's peak is a single temp arena sized
+  `num_samples * L^2 * 4*c_z`, and that head is where the sample factor enters
+  it: at 1,003 tokens with five samples on a 96 GB card, peak falls from 56.0
+  to 30.2 GiB and the arena from 35.99 to 11.31, with warm time unchanged at
+  28.3-28.6 s either way. Coordinates are bit-identical across all five
+  samples; the only difference a user could see is up to 1e-5 of pLDDT, which
+  a float32 control collapses to 3.6e-7, so it is bfloat16 reduction-order
+  rounding from the changed matmul shapes rather than anything about sample
+  independence -- and it was measured on one target at one seed, so it is not
+  a bound.
+
+  Read the 45% as a property of that measurement and not of the option: the
+  arena is quadratic and this divides only the head's share of it, so the
+  fraction moves with length and sample count. It does not raise the size the
+  model can reach, and that is now a named tensor rather than an inference --
+  at 2,096 tokens the allocator asks for `bf16[1, 2096, 2096, 2048]` on top of
+  64.6 GiB already resident and never gets it. Dividing a quadratic by 3.18
+  buys its square root in reachable length, about 1.8x, which was not enough.
+  Protenix carries the same switch and defaults it on; whether this one should
+  follow is a decision about that 1e-5 rather than about the memory.
 - **OpenFold3 compiles 3 programs before predicting instead of 104.** Every
   `jnp.asarray` on a NumPy array is a traced operation, so it compiles one
   `jit(stage)` program per distinct shape and dtype -- and none of them is
