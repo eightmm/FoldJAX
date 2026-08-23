@@ -104,7 +104,12 @@ def cast_trunk_params(
 
 
 def _with_cueq_triangle_defaults(function):
-    """Run OpenDDE's triangle kernels fused, like upstream does.
+    """Pick OpenDDE's triangle backends: fused attention, dtype-keyed product.
+
+    The attention is fused like upstream's. The *multiplication* is fused only
+    on a float32 trunk; a bfloat16 trunk gets the blocked path, measured faster
+    and smaller there at both sizes tested. That measurement sits in `wrapped`
+    below, next to the line that acts on it.
 
     This used to pin both backends to XLA. The pin was measured -- at 1,531
     tokens the fused path asks for a 92.21 GiB arena on a 97,887 MiB card and
@@ -141,15 +146,38 @@ def _with_cueq_triangle_defaults(function):
     So any adaptive policy here keys on **dtype first**, then size. Blocked is
     now the cheaper arm at every size measured -- about 24% by the identity in
     `protenix/models/triangle/triangle.py`, once its destination stopped being
-    float32 -- but the default stays fused until a clocked A/B settles the time
-    question, which single warm samples on this card cannot.
+    float32 -- and the clocked A/B below settled the time question that
+    single warm samples on this card could not.
     """
 
     @wraps(function)
     def wrapped(*args, **kwargs):
+        trunk_dtype = kwargs.get("trunk_dtype")
+        narrow = trunk_dtype is not None and jnp.dtype(trunk_dtype).itemsize < 4
         defaults = {
             "PROTENIX_TRIANGLE_BACKEND": "cueq_jit",
-            "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "cueq",
+            # The multiplication default is the one measurement that came out
+            # against the fused kernel, and only on a narrow trunk. Blocked
+            # wins both axes at both sizes tested, bfloat16, three timed runs
+            # per arm alternating, warmups discarded:
+            #
+            #     1,003 res   166.27 -> 143.97 s (-13.4%)   22.44 -> 19.85 GiB
+            #     1,531 res   405.07 -> 373.23 s (-7.9%)    52.10 -> 45.76 GiB
+            #
+            # Per-arm spread was 0.19-0.56% against 8-13% gaps, the slowest
+            # blocked run beat the fastest cueq run at both sizes, and in all
+            # four comparisons the *losing* arm held the higher mean SM clock
+            # -- the card was biased toward cueq and cueq still lost. Throttle
+            # stayed 0x4, the 300 W cap, throughout; never thermal.
+            #
+            # Narrow trunks only, and the reason is the identity in
+            # `protenix/models/triangle/triangle.py`: blocked holds two `c`
+            # accumulators at the trunk's width against fused's two `2c`
+            # projections, so it is ~24% cheaper *once the destination stops
+            # being float32*. In fp32 `out_dtype` is a no-op, the accumulators
+            # do not narrow, and none of the above was measured -- OpenDDE
+            # ships fp32, so the shipped default is deliberately unchanged.
+            "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "xla" if narrow else "cueq",
         }
         inserted = []
         for name, value in defaults.items():

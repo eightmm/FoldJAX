@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -643,3 +644,42 @@ def test_the_model_feature_filter_keeps_template_multiplicity() -> None:
     assert "template_multiplicity" in kept
     assert "template_distogram" in kept
     assert "not_a_model_feature" not in kept
+
+
+def test_the_multiplication_backend_default_is_keyed_on_the_trunk_dtype(
+    monkeypatch,
+) -> None:
+    """Blocked for a narrow trunk, fused for float32, explicit env still wins.
+
+    The blocked path is measured faster *and* smaller on a bfloat16 trunk --
+    13.4% and 2.59 GiB at 1,003 residues, 7.9% and 6.35 GiB at 1,531 -- and the
+    reason is that its accumulators follow the trunk's width. On a float32
+    trunk they do not narrow, none of that was measured, and OpenDDE ships
+    float32, so the shipped default must stay fused. A single default for both
+    dtypes is the bug this pins.
+    """
+    import jax.numpy as jnp
+
+    from foldjax.models.opendde.models import model as model_impl
+
+    seen: list[str | None] = []
+
+    @model_impl._with_cueq_triangle_defaults
+    def spy(**_kwargs) -> None:
+        seen.append(os.environ.get("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"))
+
+    monkeypatch.delenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)
+    spy(trunk_dtype=jnp.bfloat16)
+    spy(trunk_dtype=jnp.float32)
+    spy(trunk_dtype=None)
+    assert seen == ["xla", "cueq", "cueq"], seen
+
+    # Nothing leaks into the process for the next model to inherit.
+    assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND" not in os.environ
+
+    # An explicit environment still wins, on either dtype: `setdefault`, not a
+    # pin, is what lets a job too large for one path ask for the other.
+    seen.clear()
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq")
+    spy(trunk_dtype=jnp.bfloat16)
+    assert seen == ["cueq"], seen
