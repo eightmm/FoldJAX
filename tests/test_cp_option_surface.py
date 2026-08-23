@@ -20,9 +20,15 @@ SQUARE_GRID_MODELS = ("boltz2", "opendde", "openfold3", "protenix")
 
 
 def _request(model: str, job) -> PredictionRequest:
+    weights = job.parent / f"{model}.weights"
+    weights.touch()
     return PredictionRequest(
         model=model,
         input=job,
+        # This gate exercises cheap option validation, not managed checkpoint
+        # discovery.  An explicit path keeps a clean CI runner independent of
+        # whichever multi-gigabyte model weights happen to be installed.
+        weights=weights,
         options={"cp_devices": 4, "cp_layout": "2d"},
     )
 
