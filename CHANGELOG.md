@@ -85,7 +85,11 @@ command predicts unless it says so here, in its own paragraph.
   checkpoint, the loader's maximum RSS fell from 6,687,764 KiB to 4,848,852 KiB
   (1,838,912 KiB, 27.5%) while the resulting parameter tree remained
   2,026,900,352 bytes and value-identical. A lifetime regression test verifies
-  that the flat owner is gone before every pre-stack operation.
+  that the flat owner is gone before every pre-stack operation. The final host
+  transfer now uses `device_put` as well: a separate 12-shape CPU probe built
+  12 `jit(stage)` programs through `jnp.asarray` and zero through the direct
+  transfer. Float64, float32, int64, int32 and boolean leaves retained the same
+  values and JAX-canonical dtypes.
 - **OpenFold3 repeated-layer weights are stacked before device transfer.**
   The released checkpoint contains seven homogeneous scanned stacks whose
   parameter leaves total 1,444,290,304 bytes (1.35 GiB). They previously

@@ -84,3 +84,41 @@ def test_load_params_releases_flat_mapping_before_prestack(
     assert observed and all(observed)
     np.testing.assert_array_equal(loaded["layers"][0]["weight"], [1.0, 2.0])
     np.testing.assert_array_equal(loaded["layers"][1]["weight"], [3.0, 4.0])
+
+
+def test_load_params_transfers_without_jnp_staging(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    source = {
+        "float64": np.asarray([1.25, -2.5], dtype=np.float64),
+        "float32": np.arange(6, dtype=np.float32).reshape(2, 3),
+        "int64": np.asarray([1, -2], dtype=np.int64),
+        "int32": np.asarray([3, -4], dtype=np.int32),
+        "bool": np.asarray([True, False], dtype=bool),
+    }
+    saved = native.save_params(source, tmp_path / "weights")
+    original_device_put = native.jax.device_put
+    transferred: list[np.ndarray] = []
+
+    def spy_device_put(value: np.ndarray) -> Any:
+        transferred.append(value)
+        return original_device_put(value)
+
+    def forbid_asarray(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("parameter transfer used a staged jnp.asarray")
+
+    monkeypatch.setattr(native.jax, "device_put", spy_device_put)
+    monkeypatch.setattr(native.jnp, "asarray", forbid_asarray)
+
+    loaded = native.load_params(saved["weights_path"])
+
+    assert len(transferred) == len(source)
+    assert all(isinstance(value, np.ndarray) for value in transferred)
+    for name, expected in source.items():
+        canonical_dtype = native.jax.dtypes.canonicalize_dtype(expected.dtype)
+        np.testing.assert_array_equal(
+            np.asarray(loaded[name]),
+            expected.astype(canonical_dtype),
+        )
+        assert loaded[name].dtype == canonical_dtype

@@ -263,8 +263,10 @@ def load_params(path: str | Path, dtype: Any = None, prestack: bool = True) -> A
     # the device transfer below.
     del arrays
     params = prestack_layer_lists(params)
+    # ``jnp.asarray`` stages one tiny JIT program for every distinct leaf shape.
+    # These are already concrete host arrays, so transfer them without tracing.
     return jax.tree.map(
-        lambda leaf: jnp.asarray(leaf) if isinstance(leaf, np.ndarray) else leaf,
+        lambda leaf: jax.device_put(leaf) if isinstance(leaf, np.ndarray) else leaf,
         params,
         is_leaf=lambda leaf: leaf is None,
     )
