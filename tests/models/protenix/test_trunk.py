@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -106,10 +107,11 @@ def test_compact_relative_positions_keep_the_bfloat16_trunk_projection() -> None
         linear_no_bias=LinearParams(weight=weight, bias=None)
     )
 
-    actual = relative_position_encoding(jnp.asarray(relp), params)
-    historical = relative_position_encoding(
-        jnp.asarray(relp, dtype=jnp.bfloat16), params
-    )
+    with jax.numpy_dtype_promotion("strict"):
+        actual = relative_position_encoding(jnp.asarray(relp), params)
+        historical = relative_position_encoding(
+            jnp.asarray(relp, dtype=jnp.bfloat16), params
+        )
 
     assert actual.dtype == jnp.bfloat16
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(historical))
@@ -124,10 +126,11 @@ def test_compact_relative_positions_keep_the_float32_diffusion_projection() -> N
         linear_no_bias=LinearParams(weight=jnp.asarray(weight), bias=None)
     )
 
-    actual = relative_position_encoding(jnp.asarray(relp), params)
-    historical = relative_position_encoding(
-        jnp.asarray(relp, dtype=jnp.float32), params
-    )
+    with jax.numpy_dtype_promotion("strict"):
+        actual = relative_position_encoding(jnp.asarray(relp), params)
+        historical = relative_position_encoding(
+            jnp.asarray(relp, dtype=jnp.float32), params
+        )
 
     assert actual.dtype == jnp.float32
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(historical))

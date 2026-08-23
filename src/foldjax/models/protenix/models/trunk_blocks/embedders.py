@@ -108,10 +108,13 @@ def relative_position_encoding(
 ) -> jnp.ndarray:
     """Apply the relative-position linear projection."""
 
-    # Do not force a dtype here. Protenix may supply the compact int8 feature,
-    # while OpenDDE retains its float feature; each model's trunk conversion
-    # historically narrowed floats before this projection and diffusion kept
-    # float32. Promotion against the weights preserves those caller contracts.
+    # Protenix may supply the compact int8 feature, while OpenDDE retains its
+    # float feature. Cast only the integer representation: matching the weight
+    # preserves the historical BF16-trunk/FP32-diffusion split and also works
+    # under JAX's strict dtype-promotion mode. Existing float callers retain
+    # their normal promotion behavior.
+    if jnp.issubdtype(relp_feature.dtype, jnp.integer):
+        relp_feature = relp_feature.astype(params.linear_no_bias.weight.dtype)
     return linear(relp_feature, params.linear_no_bias)
 
 
