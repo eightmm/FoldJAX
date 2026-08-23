@@ -53,6 +53,17 @@ command predicts unless it says so here, in its own paragraph.
   continued failures, cleanup and wrapper compatibility. Released-weight
   CUDA latency, peak-memory and numerical parity remain deployment gates, so
   no end-to-end GPU speedup is claimed here.
+- **AlphaFold 3 reuses one managed ModelRunner inside a request.** Multi-seed
+  and multi-input managed runs now load the selected parameter generation and
+  construct its shape-keyed JIT owner once, while scalar runs and explicit
+  external `source=` checkouts preserve the fresh-run path. Reuse is lazy, so
+  an entirely resumed request does not import the runner or load parameters.
+  Weight files, the vendored runner and vendored model source are anchored in
+  both the live session and run manifests; a partial resume cannot combine
+  seeds produced by different generations. CPU mock tests cover reuse,
+  cleanup, cache/config/device splits, mutation, resume and cancellation.
+  Released-weight GPU latency, memory and numerical parity remain deployment
+  gates, so no production speedup is claimed here.
 - **Boltz-2 drops the flat host checkpoint mapping before layer stacking.** The
   nested parameter tree already owns the same NumPy leaves; retaining the flat
   dictionary kept the unstacked per-layer arrays alive while their stacked

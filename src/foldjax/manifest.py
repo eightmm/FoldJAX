@@ -89,9 +89,7 @@ def _weight_stat_signature(path: Path) -> tuple[Any, ...] | None:
                     # cannot bind that external content, so do not claim this
                     # tree is resumable.
                     return None
-                entries.append(
-                    (relative, kind, _stat_fields(info), detail)
-                )
+                entries.append((relative, kind, _stat_fields(info), detail))
         return (
             "directory",
             str(root),
@@ -206,8 +204,10 @@ def _exact_value(left: Any, right: Any) -> bool:
             _exact_value(left[key], right[key]) for key in left
         )
     if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
-        return type(left) is type(right) and len(left) == len(right) and all(
-            _exact_value(a, b) for a, b in zip(left, right, strict=True)
+        return (
+            type(left) is type(right)
+            and len(left) == len(right)
+            and all(_exact_value(a, b) for a, b in zip(left, right, strict=True))
         )
     return type(left) is type(right) and left == right
 
@@ -270,13 +270,11 @@ _SELF_CONTAINED_NATIVE_SUFFIXES = frozenset(
 def _path_option(key: str) -> bool:
     """Whether an open-ended backend option conventionally names a path."""
     key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
-    words = tuple(
-        word
-        for word in key.lower().replace("-", "_").split("_")
-        if word
-    )
-    return key.lower() in _PATH_OPTION_KEYS or key.upper().startswith("FILE_") or bool(
-        words and words[-1] in _PATH_OPTION_WORDS
+    words = tuple(word for word in key.lower().replace("-", "_").split("_") if word)
+    return (
+        key.lower() in _PATH_OPTION_KEYS
+        or key.upper().startswith("FILE_")
+        or bool(words and words[-1] in _PATH_OPTION_WORDS)
     )
 
 
@@ -351,9 +349,7 @@ def _common_input_paths(
     for entity in entities:
         if not isinstance(entity, Mapping):
             return None
-        if entity.get("type") in {"protein", "rna"} and not entity.get(
-            "unpaired_msa"
-        ):
+        if entity.get("type") in {"protein", "rna"} and not entity.get("unpaired_msa"):
             missing_alignment = True
         for field in ("unpaired_msa", "paired_msa"):
             value = entity.get(field)
@@ -414,8 +410,7 @@ def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
             )
         if isinstance(value, (list, tuple)):
             return all(
-                visit(child, key=key, path_context=path_context)
-                for child in value
+                visit(child, key=key, path_context=path_context) for child in value
             )
         if not isinstance(value, str) or not value.strip():
             return not path_context
@@ -428,11 +423,7 @@ def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
             if not text:
                 return False
         raw = Path(text)
-        candidates = (
-            (raw,)
-            if raw.is_absolute()
-            else (base / raw, Path.cwd() / raw)
-        )
+        candidates = (raw,) if raw.is_absolute() else (base / raw, Path.cwd() / raw)
         existing: list[Path] = []
         for candidate in candidates:
             try:
@@ -479,9 +470,7 @@ def _uses_ccd_chemistry(request: PredictionRequest) -> bool:
             if str(value.get("type", "")).lower() == "ligand":
                 return True
             for key, child in value.items():
-                normalized = re.sub(
-                    r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)
-                ).lower()
+                normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)).lower()
                 if normalized in markers and child not in (None, "", [], {}):
                     return True
                 if visit(child):
@@ -495,9 +484,7 @@ def _uses_ccd_chemistry(request: PredictionRequest) -> bool:
 
 def _implicit_ccd_assets(request: PredictionRequest) -> list[Path]:
     """Managed/environment CCD files Protenix-family featurization may read."""
-    if request.model not in {"protenix", "opendde"} or not _uses_ccd_chemistry(
-        request
-    ):
+    if request.model not in {"protenix", "opendde"} or not _uses_ccd_chemistry(request):
         return []
     from foldjax.paths import assets_dir
 
@@ -536,9 +523,7 @@ def _document_uses_key(request: PredictionRequest, wanted: str) -> bool:
     def visit(value: Any) -> bool:
         if isinstance(value, Mapping):
             for key, child in value.items():
-                normalized = re.sub(
-                    r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)
-                ).lower()
+                normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)).lower()
                 if normalized == wanted and child not in (None, "", [], {}):
                     return True
                 if visit(child):
@@ -570,9 +555,7 @@ def _protenix_template_search_is_implicit(request: PredictionRequest) -> bool:
     def visit(value: Any) -> bool:
         if isinstance(value, Mapping):
             for key, child in value.items():
-                normalized = re.sub(
-                    r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)
-                ).lower()
+                normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key)).lower()
                 if normalized == "templates_path" and isinstance(child, str):
                     if Path(child.strip()).suffix.lower() in {".a3m", ".hhr"}:
                         return True
@@ -632,9 +615,8 @@ def _implicit_weight_assets(
             if recorded_weight is None or path.resolve() != recorded_weight
         )
         missing.extend(primary_missing)
-        affinity_requested = (
-            request.stop_after != "trunk"
-            and _document_uses_key(request, "affinity")
+        affinity_requested = request.stop_after != "trunk" and _document_uses_key(
+            request, "affinity"
         )
         if affinity_requested:
             configured = request.options.get("affinity_weights")
@@ -766,6 +748,17 @@ def _input_dependencies(
             if candidate.is_dir():
                 paths.append(candidate)
                 break
+    if request.model == "alphafold3" and not request.options.get("source"):
+        # The managed AlphaFold 3 route executes a vendored runner against the
+        # vendored Python/C++ source tree.  Those files are model inputs just
+        # as surely as the parameter bundle: accepting a seed manifest made by
+        # generation A while running a missing seed with generation B would
+        # silently combine two implementations in one result.  Keep imports
+        # local so ordinary manifest use remains free of the AlphaFold runtime.
+        from foldjax.backends.alphafold3 import VENDORED_RUNNER
+        from foldjax.models.alphafold3 import build
+
+        paths.extend((VENDORED_RUNNER, build.source_package()))
     weight_bundle = _implicit_weight_assets(request)
     if weight_bundle is None:
         return {"verifiable": False, "artifacts": []}
@@ -865,9 +858,7 @@ def matches_request(
 
     input_record = document.get("input")
     weights_record = document.get("weights")
-    if not isinstance(input_record, Mapping) or not isinstance(
-        weights_record, Mapping
-    ):
+    if not isinstance(input_record, Mapping) or not isinstance(weights_record, Mapping):
         return False
 
     input_digest = _digest(request.input)
@@ -898,9 +889,7 @@ def matches_request(
         request.padding.summary() if request.padding is not None else None
     )
     expected_representations = (
-        list(request.representations)
-        if request.representations is not None
-        else None
+        list(request.representations) if request.representations is not None else None
     )
     required = {
         "model",
@@ -917,9 +906,7 @@ def matches_request(
     }
     if not required.issubset(document):
         return False
-    if not {"path", "resolved_path", "format", "sha256"}.issubset(
-        input_record
-    ):
+    if not {"path", "resolved_path", "format", "sha256"}.issubset(input_record):
         return False
     if not {
         "identity",
@@ -941,9 +928,7 @@ def matches_request(
         (
             _exact_value(document["model"], request.model),
             _exact_value(input_record["path"], str(request.input)),
-            _exact_value(
-                input_record["resolved_path"], _resolved_path(request.input)
-            ),
+            _exact_value(input_record["resolved_path"], _resolved_path(request.input)),
             _exact_value(input_record["format"], request.input_format),
             _exact_value(input_record["sha256"], input_digest),
             _exact_value(recorded_dependencies, current_dependencies),
