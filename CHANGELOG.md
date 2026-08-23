@@ -12,6 +12,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenDDE warns before a job that probably will not fit.** OpenDDE ships
+  float32, and float32 has a wall near 1,400 residues on a 96 GB card that no
+  backend choice rescues -- at 1,531 residues the fused path asks 93.40 GiB and
+  the blocked path 80.72, and both die. The failure presented as a half-hour
+  hang, because the allocator retries every ten seconds before giving up. A
+  preflight now estimates the arena from the realized trunk dtype and the
+  structural token count, compares it against the pool the allocator took, and
+  warns -- naming `--trunk-dtype bf16` as the lever and saying plainly that it
+  is an opt-in divergence from upstream's float32 storage. It never refuses,
+  it is silent for every job that fits, and it is silent whenever it cannot
+  establish the pool, the token count or the dtype. The message says the
+  estimate is not a guarantee in either direction, because the practical
+  ceiling sits below the arithmetic one.
+
+- **A requested triangle-multiplication chunk size now says when it is
+  ignored.** The fused kernel has no parameter of that family, so the option
+  was silently inert whenever it ran -- and unlike the attention path, where
+  the fused kernel never builds the tensor a chunk size would bound, this one
+  does build it: 5,299 MiB apiece on OpenDDE's structural branch at 1,003
+  tokens. The warning names that size and points at the backend that honours
+  the request.
+
 - **ESMFold2 keeps one verified model and one input's ESMC states for a
   request.** A multi-seed or multi-input batch used to construct a fresh
   backend for every scalar run, reload the 26,347,754,143-byte released bundle,
@@ -422,6 +444,39 @@ command predicts unless it says so here, in its own paragraph.
   now see it instead of `Any`.
 
 ### Changed
+
+- **Protenix and OpenDDE compute each distinct template once instead of once
+  per row.** A query with fewer than four template hits is padded up to four,
+  and the padding is zeros rather than the gap restype, so a query with no hits
+  at all is one all-gap row plus three identical zero rows -- two distinct
+  templates, not four and not one. The template stack ran the whole pairformer
+  once per row and divided by the row count; it now runs once per distinct row,
+  weights each by how many it stands for, and divides by their sum. At 3,012
+  tokens Protenix's entry arguments fall 12.404 -> 9.430 GiB and its total
+  50.145 -> 47.171; the measured run peak at 1,003 tokens is 8,953 -> 6,970
+  MiB. OpenDDE reads templates once per recycle, so its stack evaluations come
+  off per cycle. Structures are not bit-identical and are not meant to be: the
+  divisor carries a `1e-7` epsilon that does not scale, and the running sum
+  re-associates. Paired CA RMSD against a base run is 0.065 A median against a
+  0.061 A rerun floor, both about 30x below the model's own 1.86 A sampling
+  spread.
+
+- **OpenDDE's bfloat16 trunk now runs the blocked triangle product rather than
+  the fused kernel.** Measured on a cooled card, warmup discarded, three timed
+  runs per arm alternating: 166.27 -> 143.97 s and 22.44 -> 19.85 GiB at 1,003
+  residues, 405.07 -> 373.23 s and 52.10 -> 45.76 GiB at 1,531. Per-arm spread
+  was 0.19-0.56% against gaps of 8-13%. The default is keyed on the trunk
+  dtype: float32 is what OpenDDE ships and is unchanged, because the blocked
+  path's accumulators only narrow when the trunk does. An explicit
+  `PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND` still wins on either dtype.
+
+- **The blocked triangle product holds its output at the trunk's width.** It
+  was pinned to float32 on the grounds that a narrower destination would round
+  every block on the way in. It would, and that is the rounding the caller
+  already performs on the next line, so the results are bit-identical. On a
+  bfloat16 trunk this removes the largest buffer in that program -- 4,471 ->
+  2,235 MiB on Protenix's template stack at 3,012 tokens, moving the temp arena
+  39.102 -> 37.367 GiB. A float32 trunk is unaffected.
 
 - Sequences are normalized where the document is validated: all whitespace
   removed (so a YAML block scalar works), upper-cased, and nucleic acids
