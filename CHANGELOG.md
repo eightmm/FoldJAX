@@ -314,6 +314,25 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **ESMFold2's folding trunk ran in float32 while every setting said
+  bfloat16.** `ModelSettings.trunk_dtype` defaults to `bfloat16`, the released
+  `config.json` sets it, and a test pinned that field -- but the field is not
+  the tensors. Weights were cast, and three feature tensors were not: one
+  float32 term in `z_init = z_init + rel_pos + token_bonds_encoding` widened
+  `z_init`, and the `z.astype(z_init.dtype)` after it carried float32 through
+  all forty-eight trunk layers. Casting those three to the compute dtype makes
+  the port run the configuration it advertises. Warm wall time at 1,003 tokens
+  falls from 36.5-38.8 s to 28.2-28.8 s, about 23%, measured with an ordering
+  control so it is not a cooler-card artefact. Peak does not move -- 56,228
+  against 56,230 MiB, where two runs of the unchanged code at different seeds
+  differ by 427 MiB -- which says the pair path accounts for essentially none
+  of this model's footprint; its language model is 27.8% of it. Structures
+  move 0.065 Å at the median against a rerun floor of exactly 0.000 Å (a fixed
+  seed is bit-deterministic here) and a sampling spread of 0.49-1.53 Å, so
+  nothing a user reads changes. The gate that let this ship asserted the
+  setting; the new one spies the trunk and asserts the dtypes the graph
+  actually built, in both bfloat16 and float32, because pinning one would pass
+  for a port that hard-coded it.
 - **OpenFold3 predicted nothing at all.** Every OpenFold3 run raised
   `TypeError: released_config() got an unexpected keyword argument
   'returned_representations'` before the model was reached, with no option

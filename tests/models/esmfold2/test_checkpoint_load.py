@@ -9,7 +9,10 @@ is the one check that reaches all 1,594 of them.
 
 from __future__ import annotations
 
+import dataclasses
+
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -148,3 +151,80 @@ def test_a_job_folds_from_sequence_to_pdb(tmp_path) -> None:
     assert {chain.name for chain in structure[0]} == {"A"}
     assert all(np.isfinite([a.pos.x, a.pos.y, a.pos.z]).all() for a in atoms)
     assert 0.0 <= written["summary"][0]["plddt"] <= 1.0
+
+
+def _realized_trunk_dtypes(monkeypatch, settings, parameters, features, hidden):
+    """The dtype of every tensor the trunk and the MSA encoder actually run on.
+
+    Spies rather than inspects, because the thing worth asserting is what the
+    traced graph builds, and that is only visible from inside the call.
+    """
+    pair: list = []
+    msa: list = []
+    real_loops, real_msa = jax_model.run_loops, jax_model.msa_encoder
+
+    def loops_spy(key, z, z_init, *args, **kwargs):
+        pair.extend((z.dtype, z_init.dtype))
+        out = real_loops(key, z, z_init, *args, **kwargs)
+        pair.append(out.dtype)
+        return out
+
+    def msa_spy(injected, one_hot, mask, has_deletion, deletion_value, *a, **k):
+        msa.extend(
+            (injected.dtype, one_hot.dtype, has_deletion.dtype, deletion_value.dtype)
+        )
+        return real_msa(injected, one_hot, mask, has_deletion, deletion_value, *a, **k)
+
+    monkeypatch.setattr(jax_model, "run_loops", loops_spy)
+    monkeypatch.setattr(jax_model, "msa_encoder", msa_spy)
+    jax_model.predict(
+        jax.random.key(0),
+        features,
+        parameters,
+        settings=settings,
+        lm_hidden_states=hidden,
+    )
+    return pair, msa
+
+
+@pytest.mark.slow
+def test_the_trunk_runs_at_the_dtype_it_was_configured_for(monkeypatch) -> None:
+    """`trunk_dtype` is a claim about tensors, so assert the tensors.
+
+    `test_the_released_trunk_is_bfloat16` asserts the *setting*, and a setting
+    cannot notice being ignored: the pair path is `z_init + rel_pos +
+    token_bonds`, and one float32 term among those three widens `z_init`,
+    which `z` follows, which is then the width of all forty-eight trunk
+    layers. That is a bfloat16 trunk on paper running float32 in fact, and no
+    shape, key or score check can see it -- only the realized dtype can.
+
+    Both dtypes are exercised on purpose. Pinning bfloat16 alone would pass
+    for a port that hard-coded it and ignored the setting just as thoroughly.
+    """
+    directory = _weights()
+    parameters = checkpoint.load_parameters(directory)
+    features = _features()
+    hidden = np.zeros((1, N_TOKENS, 81, 2560), dtype=np.float32)
+
+    for configured in ("bfloat16", "float32"):
+        settings = dataclasses.replace(
+            jax_model.with_overrides(
+                checkpoint.load_settings(directory),
+                num_loops=1,
+                num_samples=1,
+                num_steps=1,
+            ),
+            trunk_dtype=configured,
+        )
+        pair, msa = _realized_trunk_dtypes(
+            monkeypatch, settings, parameters, features, hidden
+        )
+        expected = jnp.dtype(configured)
+        assert pair, "the spy never fired -- run_loops was not reached"
+        assert all(seen == expected for seen in pair), (
+            f"configured {configured}, trunk ran {sorted({str(d) for d in pair})}"
+        )
+        assert msa, "the spy never fired -- msa_encoder was not reached"
+        assert all(seen == expected for seen in msa), (
+            f"configured {configured}, MSA encoder ran {sorted({str(d) for d in msa})}"
+        )

@@ -448,11 +448,13 @@ def run_loops(
                     loop_mask, 1, 2
                 )[..., None].astype(z_init.dtype)
                 msa_mask = jnp.swapaxes(loop_mask, 1, 2)
+                # Concatenated onto `one_hot`, which is `z_init.dtype`; a
+                # float32 here would widen the whole MSA encoder.
                 has_deletion = jnp.swapaxes(
                     loop_has_deletion, 1, 2
-                ).astype(jnp.float32)
+                ).astype(z_init.dtype)
                 deletion_value = jnp.swapaxes(loop_deletion, 1, 2).astype(
-                    jnp.float32
+                    z_init.dtype
                 )
             msa_pair = msa_encoder(
                 injected,
@@ -587,9 +589,32 @@ def predict(
         n_tokens=n_tokens,
     )
 
+    # What crosses into the pair path is narrowed here, at the two linears
+    # upstream's autocast region covers, because that is the tensor whose width
+    # is quadratic in token count. Without this cast one float32 term reaches
+    # `z_init = z_init + rel_pos + token_bonds_encoding` below, and the
+    # `z.astype(z_init.dtype)` after it carries float32 through all 48 trunk
+    # layers -- which is what this port did, while its settings and its
+    # released config.json both said bfloat16.
+    #
+    # The atom encoder upstream of here is deliberately NOT narrowed, but not
+    # for the reason it is tempting to give: `rms_norm`'s eps is the Python
+    # default `FLOAT32_EPS` (atom.py:38) and `atom_encoder` is called without
+    # one, so eps is 1.19e-7 whatever the tensors are. Narrowing it would
+    # change rounding only. It is left alone because it buys almost nothing --
+    # atom tensors are linear in atom count, not quadratic -- and because
+    # upstream at bfloat16 derives a different eps there, so matching it is an
+    # upstream-parity question that no test in this tree can currently settle
+    # (the torch parity tests skip without torch, and `test_model_parity` pins
+    # float32 on purpose). Separately and pre-existing: `atom_features`
+    # (atom.py:265) hard-casts its inputs to float32 while its weights are
+    # already bfloat16, so that module runs float32 activations against
+    # bfloat16 weights. That is the same kind of leak this cast fixes, and it
+    # has not been measured.
+    pair_inputs = x_inputs.astype(compute)
     z_init = (
-        linear(x_inputs, trunk_params, "z_init_1")[:, :, None, :]
-        + linear(x_inputs, trunk_params, "z_init_2")[:, None, :, :]
+        linear(pair_inputs, trunk_params, "z_init_1")[:, :, None, :]
+        + linear(pair_inputs, trunk_params, "z_init_2")[:, None, :, :]
     )
     rel_pos = relative_position_encoding(
         features["residue_index"],
@@ -601,11 +626,12 @@ def predict(
         "rel_pos",
         n_residue_bins=settings.n_residue_bins,
         n_chain_bins=settings.n_chain_bins,
+        dtype=compute,
     )
     token_bonds_encoding = linear(
-        features["token_bonds"].astype(jnp.float32)[..., None]
+        features["token_bonds"].astype(compute)[..., None]
         if features["token_bonds"].ndim == 3
-        else features["token_bonds"].astype(jnp.float32),
+        else features["token_bonds"].astype(compute),
         trunk_params,
         "token_bonds",
     )
@@ -691,7 +717,7 @@ def predict(
                 loop_has_deletion,
                 loop_deletion_value,
             )
-            msa_inputs = {"loop_tape": loop_tape, "x_inputs": x_inputs}
+            msa_inputs = {"loop_tape": loop_tape, "x_inputs": pair_inputs}
         else:
             # Keep the historical unpadded graph exactly: column masking is
             # applied to the raw alignment before each loop selects its rows.
@@ -721,7 +747,9 @@ def predict(
             one_hot = jnp.swapaxes(one_hot, 1, 2) * jnp.swapaxes(mask, 1, 2)[
                 ..., None
             ].astype(compute)
-            zeros = jnp.zeros(one_hot.shape[:3], dtype=jnp.float32)
+            # These two are concatenated onto `msa_one_hot`, so their width is
+            # the MSA representation's width for the whole encoder.
+            zeros = jnp.zeros(one_hot.shape[:3], dtype=compute)
             msa_inputs = {
                 "msa_one_hot": one_hot,
                 "msa_mask": jnp.swapaxes(mask, 1, 2),
@@ -729,17 +757,17 @@ def predict(
                     zeros
                     if features.get("has_deletion") is None
                     else jnp.swapaxes(features["has_deletion"], 1, 2).astype(
-                        jnp.float32
+                        compute
                     )
                 ),
                 "deletion_value": (
                     zeros
                     if features.get("deletion_value") is None
                     else jnp.swapaxes(features["deletion_value"], 1, 2).astype(
-                        jnp.float32
+                        compute
                     )
                 ),
-                "x_inputs": x_inputs,
+                "x_inputs": pair_inputs,
             }
 
     z = run_loops(

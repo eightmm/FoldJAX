@@ -42,12 +42,19 @@ def relative_position_encoding(
     *,
     n_residue_bins: int = 32,
     n_chain_bins: int = 2,
+    dtype=jnp.float32,
 ) -> jnp.ndarray:
     """`ResIdxAsymIdSymIdEntityIdEncoding`.
 
     Differences are `x[i] - x[j]` with `i` the row, clipped into `[0, 2r]` and
     pushed to the out-of-range bin `2r+1` when the pair fails the branch's
     condition.
+
+    `dtype` is the width the one-hots are built at, and therefore the width
+    the embedding matmul runs at. It exists because this module sits inside
+    upstream's `autocast` region: torch narrows a float32 activation on the
+    way into `nn.Linear`, and building the one-hots float32 here would
+    instead *widen* the bfloat16 weights and every pair tensor downstream.
     """
     dot = f"{prefix}." if prefix else ""
     r, c = n_residue_bins, n_chain_bins
@@ -70,10 +77,10 @@ def relative_position_encoding(
 
     features = jnp.concatenate(
         [
-            jax.nn.one_hot(d_res, 2 * r + 2),
-            jax.nn.one_hot(d_tok, 2 * r + 2),
-            same_entity.astype(jnp.float32)[..., None],
-            jax.nn.one_hot(d_chain, 2 * c + 2),
+            jax.nn.one_hot(d_res, 2 * r + 2, dtype=dtype),
+            jax.nn.one_hot(d_tok, 2 * r + 2, dtype=dtype),
+            same_entity.astype(dtype)[..., None],
+            jax.nn.one_hot(d_chain, 2 * c + 2, dtype=dtype),
         ],
         axis=-1,
     )
