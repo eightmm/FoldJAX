@@ -136,6 +136,14 @@ def triangle_multiplication(
         params.linear_a_p.weight.shape[0] == z.shape[-1] and z.shape[-1] % 32 == 0
     )
     if backend == "cueq" and cueq_supported and not cp_active:
+        if chunk_size is not None and 0 < chunk_size < z.shape[-3]:
+            _warn_unchunkable_multiplication(
+                chunk_size,
+                rows=z.shape[-3],
+                cols=z.shape[-2],
+                c_hidden=params.linear_a_p.weight.shape[0],
+                itemsize=z.dtype.itemsize,
+            )
         from foldjax.models.protenix.models.triangle.triangle_cueq import (
             cueq_triangle_multiplication,
         )
@@ -464,6 +472,67 @@ def _warn_unchunkable_backend(q_chunk_size: int) -> None:
         "'cueq' backend, which never forms the score tensor the chunk size "
         "exists to bound. Nothing is lost; set PROTENIX_TRIANGLE_BACKEND=xla_jit "
         "to get the blocked path that honours it.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
+_WARNED_UNCHUNKABLE_MUL = False
+
+
+def _warn_unchunkable_multiplication(
+    chunk_size: int,
+    *,
+    rows: int,
+    cols: int,
+    c_hidden: int,
+    itemsize: int,
+) -> None:
+    """Say that a requested chunk size is not used, once -- and what it costs.
+
+    The cuEquivariance kernel has no parameter of this family to accept:
+    ``cuequivariance_jax`` takes ``(x, direction, key, mask, weights, biases,
+    eps, precision, fallback)`` and nothing else, so this is not a call site
+    dropping an argument. There is nowhere to put it.
+
+    Deliberately *not* the sentence the attention path uses. There the knob is
+    moot and nothing is lost, because the fused kernel never forms the score
+    tensor the chunk size exists to bound. Here the fused kernel does
+    materialise both full ``[N, N, c_hidden]`` projections -- 5,299 MiB apiece
+    on OpenDDE's structural branch at 1,003 tokens, 53.5% of that arena -- which
+    is exactly what a chunk size looks like it would bound. A knob that is inert
+    next to a buffer it appears to promise to bound is worse than a knob that is
+    inert next to nothing.
+
+    What the escape is worth, measured. Switching to the blocked path on OpenDDE
+    at 1,003 tokens cost 2.6 GiB rather than saving any: 25.185 GiB against
+    22.535, two passes per arm within 0.05%. The arithmetic said so in advance
+    and is the reason to expect it at every size -- two fused bf16 ``2*c``
+    projections and two blocked float32 ``c`` accumulators are the same bytes
+    per pair element, so the blocked path was the fused path plus one padded
+    copy of the pair tensor, pure overhead. Predicted 2,775 MiB against measured
+    2,585 at N_st=1902.
+
+    That parity no longer holds as written: the blocked destination is now kept
+    at the trunk's own width, which halves the accumulators on a bfloat16 trunk
+    and has not been re-measured against the fused path. So the warning points
+    at the escape without promising a direction -- measure before believing
+    either one.
+    """
+    global _WARNED_UNCHUNKABLE_MUL
+    if _WARNED_UNCHUNKABLE_MUL:
+        return
+    _WARNED_UNCHUNKABLE_MUL = True
+    projections_mib = 2 * rows * cols * c_hidden * itemsize // 1024**2
+    warnings.warn(
+        f"triangle multiplication chunk_size={chunk_size} is not used by the "
+        "'cueq' backend, which takes the whole row axis and has no parameter "
+        "for one. Unlike the attention path this is not free: the fused kernel "
+        f"materialises both full projections ({projections_mib:,} MiB here), "
+        "which is what the chunk size looks like it would bound. Set "
+        "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla for the blocked path "
+        "that honours it -- but measure it, because it has not been a memory "
+        "win at any size tested so far.",
         RuntimeWarning,
         stacklevel=2,
     )

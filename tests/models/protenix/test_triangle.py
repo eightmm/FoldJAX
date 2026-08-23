@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -403,3 +405,50 @@ def test_blocked_triangle_matches_the_unblocked_contraction(monkeypatch) -> None
         np.testing.assert_allclose(
             np.asarray(blocked), np.asarray(whole), rtol=1e-6, atol=1e-6
         )
+
+
+def test_inert_multiplication_chunk_size_says_so_and_says_what_it_costs(
+    monkeypatch,
+) -> None:
+    """The cueq multiplication kernel has no chunk parameter; the knob must say so.
+
+    The attention path already warns. This one differs in substance, not just in
+    wording: cueq attention never builds the tensor the chunk size would bound,
+    so nothing is lost, while cueq multiplication does build both full
+    projections. The warning names their size for that reason.
+    """
+    from foldjax.models.protenix.models.triangle import triangle as triangle_mod
+
+    rng = np.random.default_rng(17)
+    c = 32  # c_hidden == c_z and divisible by 32, so the cueq guard is cleared.
+    z = jnp.asarray(rng.normal(size=(1, 6, 6, c)).astype(np.float32))
+    mask = jnp.ones((1, 6, 6), dtype=jnp.float32)
+    params = map_triangle_multiplication_state_dict(
+        _triangle_state(rng, c_z=c, c_hidden=c), "tri"
+    )
+
+    monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq")
+    monkeypatch.setattr(triangle_mod, "_WARNED_UNCHUNKABLE_MUL", False)
+    with pytest.warns(RuntimeWarning, match="not used by the 'cueq' backend") as got:
+        triangle_multiplication(z, mask, params, "outgoing", chunk_size=2)
+    text = str(got[0].message)
+    # 2 * 6 * 6 * 32 * 4 B is under a MiB, so the point is the sentence, not the
+    # number: it must name the buffer and offer the escape without promising it.
+    assert "materialises both full projections" in text
+    assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla" in text
+    assert "measure it" in text
+
+    # Once, not once per layer.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        triangle_multiplication(z, mask, params, "outgoing", chunk_size=2)
+
+    # Silent where there is nothing to warn about: a chunk that covers the rows,
+    # and the backend that actually honours the request.
+    monkeypatch.setattr(triangle_mod, "_WARNED_UNCHUNKABLE_MUL", False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        triangle_multiplication(z, mask, params, "outgoing", chunk_size=6)
+        triangle_multiplication(z, mask, params, "outgoing", chunk_size=None)
+        monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
+        triangle_multiplication(z, mask, params, "outgoing", chunk_size=2)
