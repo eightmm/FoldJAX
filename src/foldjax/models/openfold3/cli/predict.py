@@ -249,15 +249,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         jax.block_until_ready(prediction.coordinates)
         print(f"predicted in {time.perf_counter() - started:.1f}s (eager)")
     else:
+        cache_scope = None
         if not args.no_cache:
             from foldjax.models.openfold3.compilation import (
                 enable_compilation_cache,
             )
 
             cache = enable_compilation_cache(args.cache_dir)
+            cache_scope = str(cache)
             print(f"persistent compilation cache {cache}")
         print("compiling (one-time, minutes at long sequences) ...")
-        compiled = compile_predict(config, table, n_chain=n_chain)
+        compiled = compile_predict(
+            config,
+            table,
+            n_chain=n_chain,
+            cache_scope=cache_scope,
+        )
         elapsed = []
         for _ in range(max(1, args.repeats)):
             started = time.perf_counter()

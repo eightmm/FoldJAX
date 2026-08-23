@@ -1311,6 +1311,31 @@ def test_openfold3_predicts_from_the_vendored_package() -> None:
         assert import_module(name) is not None, name
 
 
+def test_openfold3_backend_planning_does_not_import_the_model_runtime() -> None:
+    """Cache planning stays cheap and must not initialize JAX by import."""
+
+    script = r"""
+import sys
+from foldjax.backends.openfold3 import OpenFold3Backend
+
+OpenFold3Backend().capabilities()
+assert "jax" not in sys.modules
+assert not any(
+    name == "foldjax.models.openfold3"
+    or name.startswith("foldjax.models.openfold3.")
+    for name in sys.modules
+), sorted(name for name in sys.modules if "openfold3" in name)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert completed.returncode == 0, completed.stdout
+
+
 def test_openfold3_capabilities_separate_raw_and_feature_runtime_needs() -> None:
     capabilities = OpenFold3Backend().capabilities()
     requirements = capabilities.input_requirements
@@ -1363,7 +1388,9 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
         return prediction
 
-    def fake_compile(config, table, *, n_chain=None):
+    def fake_compile(config, table, *, n_chain=None, **compile_options):
+        seen["compile_options"] = compile_options
+
         def compiled(key, batch, params):
             seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
             return prediction
@@ -1418,6 +1445,11 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     OpenFold3Backend().predict(request)
 
     assert seen["n_chain"] == 2
+    if not eager:
+        assert seen["compile_options"] == {
+            "triangle_kernel": None,
+            "cache_scope": str(tmp_path / "cache"),
+        }
     assert seen["output_metadata"] is output_metadata
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
 
@@ -1456,7 +1488,9 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             ),
         }
 
-    def fake_compile(config, table, *, n_chain=None):
+    def fake_compile(config, table, *, n_chain=None, **compile_options):
+        seen["compile_options"] = compile_options
+
         def compiled(key, batch, params, *, noise_mask=None):
             seen["noise_mask"] = np.asarray(noise_mask)
             return prediction
@@ -1516,6 +1550,10 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
     result = OpenFold3Backend().predict(request)
 
     assert seen["targets"] == (4, 4, 2, 2)
+    assert seen["compile_options"] == {
+        "triangle_kernel": None,
+        "cache_scope": str(tmp_path / "cache"),
+    }
     np.testing.assert_array_equal(
         seen["noise_mask"],
         [[True, True, False, False], [True, True, False, False]],

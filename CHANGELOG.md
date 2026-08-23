@@ -34,6 +34,20 @@ command predicts unless it says so here, in its own paragraph.
   tokens. The warning names that size and points at the backend that honours
   the request.
 
+- **OpenFold3 reuses a bounded, correctly partitioned in-process JIT pool across
+  repeated factories.** Multi-seed/backend calls with the same graph choices
+  now share a trace instead of constructing a new `jax.jit` cache each time,
+  while an eight-executable LRU bound prevents plural unpadded workloads from
+  retaining every program shape for the lifetime of the process. The static
+  identity includes configuration, chain count, resolved CP layout and ordered
+  devices, effective triangle kernel, RNG route, representations/stop boundary,
+  and persistent-cache scope; the representative-atom table stays validated
+  dynamic data. Deleted or replaced persistent-cache entries force repopulation,
+  and `lower().compile()` retains the public three-argument callable plus its CP
+  placement. Tiny serial and forced four-device CPU tests cover exact parity,
+  trace reuse and eviction, distinct 1-D/2-D HLO, cache repair and partitioning.
+  Released-weight GPU compile latency and memory remain deployment gates, so no
+  GPU speedup is claimed here.
 - **ESMFold2 keeps one verified model and one input's ESMC states for a
   request.** A multi-seed or multi-input batch used to construct a fresh
   backend for every scalar run, reload the 26,347,754,143-byte released bundle,

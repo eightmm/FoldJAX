@@ -12,13 +12,24 @@ What this does **not** do: featurization (upstream's data pipeline builds
 from __future__ import annotations
 
 import functools
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from typing import NamedTuple
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
-from foldjax.models import _capture
+from foldjax._openfold3_compile import (
+    canonical_cache_scope,
+    inspect_cache_scope,
+    observe_cache_scope,
+    reset_cache_scope_tracking,
+    resolve_triangle_kernel,
+    triangle_backend,
+)
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -482,10 +493,6 @@ def predict(
             sigma_data=config.sigma_data,
         )
 
-    s_input = _capture.capture("single_inputs", s_input)
-    s_trunk = _capture.capture("single", s_trunk)
-    z = _capture.capture("pair", z)
-
     if config.stop_after_trunk:
         return Prediction(
             coordinates=None,
@@ -497,13 +504,9 @@ def predict(
             pde_logits=None,
             distogram_logits=None,
             single_inputs=(
-                s_input
-                if "single_inputs" in config.returned_representations
-                else None
+                s_input if "single_inputs" in config.returned_representations else None
             ),
-            single=(
-                s_trunk if "single" in config.returned_representations else None
-            ),
+            single=(s_trunk if "single" in config.returned_representations else None),
             pair=z if "pair" in config.returned_representations else None,
         )
 
@@ -545,9 +548,7 @@ def predict(
     pair_mask_1 = token_mask_1[..., :, None] * token_mask_1[..., None, :]
     # Zeroing happens after the distogram head, which reads the trunk embedding
     # regardless.
-    z_conf_input = shard_pair_rows(
-        z if use_trunk_pair_embedding else jnp.zeros_like(z)
-    )
+    z_conf_input = shard_pair_rows(z if use_trunk_pair_embedding else jnp.zeros_like(z))
 
     def confidence_pair(
         si_input: jnp.ndarray,
@@ -807,6 +808,352 @@ def resolve_cp_layout(config: InferenceConfig) -> str:
     return "1d"
 
 
+@dataclass(frozen=True, slots=True)
+class _PredictGraphIdentity:
+    """Hashable identity of every Python choice made while tracing prediction."""
+
+    config: InferenceConfig
+    n_chain: int | None
+    augment: bool
+    use_trunk_pair_embedding: bool
+    rng_route: str
+    triangle_kernel: str
+    cp_topology: tuple[object, ...]
+    cache_scope: str | None
+
+
+def _validated_representative_atoms(
+    table: RepresentativeAtomTable,
+) -> RepresentativeAtomTable:
+    """Validate and canonicalise the tiny chemistry table as dynamic data."""
+
+    if not isinstance(table, RepresentativeAtomTable):
+        raise TypeError("representative_atoms must be a RepresentativeAtomTable")
+    arrays: list[np.ndarray] = []
+    for name, value in zip(table._fields, table, strict=True):
+        host = np.asarray(value)
+        if host.shape != (32,):
+            raise ValueError(
+                f"representative atom field {name!r} must have shape (32,), "
+                f"got {host.shape}"
+            )
+        if not np.issubdtype(host.dtype, np.number) or not np.isfinite(host).all():
+            raise ValueError(
+                f"representative atom field {name!r} must be finite numeric data"
+            )
+        # Keep these 1.6 KiB of lookups on the host. ``jax.jit`` stages the
+        # complete dynamic argument tree once; converting each field with
+        # ``jnp.asarray`` here would compile a separate staging program.
+        arrays.append(np.asarray(host, dtype=np.float32))
+    return RepresentativeAtomTable(*arrays)
+
+
+def _rng_route(
+    noise_tape: jnp.ndarray | None,
+    noise_mask: jnp.ndarray | None,
+) -> str:
+    if noise_tape is not None and noise_mask is not None:
+        raise ValueError("noise_tape and noise_mask are mutually exclusive")
+    if noise_tape is not None:
+        return "tape"
+    if noise_mask is not None:
+        return "mask"
+    return "native"
+
+
+def _cp_topology_identity(mesh, *, layout: str) -> tuple[object, ...]:
+    """Return topology plus ordered physical devices captured by sharding ops."""
+
+    if mesh is None:
+        return ("serial", 1, (1, 1), (), ())
+    shape = tuple(int(size) for size in mesh.devices.shape)
+    grid = shape if len(shape) == 2 else (shape[0], 1)
+    devices = tuple(
+        (
+            str(device.platform),
+            int(device.process_index),
+            int(device.id),
+            str(device.device_kind),
+        )
+        for device in mesh.devices.flat
+    )
+    return (
+        layout,
+        int(mesh.devices.size),
+        grid,
+        tuple(str(axis) for axis in mesh.axis_names),
+        devices,
+    )
+
+
+def _predict_for_identity(
+    key: jax.Array,
+    batch: Mapping[str, jnp.ndarray],
+    params: InferenceParams,
+    representative_atoms: RepresentativeAtomTable,
+    noise_tape: jnp.ndarray | None,
+    noise_mask: jnp.ndarray | None,
+    *,
+    identity: _PredictGraphIdentity,
+) -> Prediction:
+    """Prediction body for one fully resolved compile-time identity."""
+
+    return predict(
+        key,
+        batch,
+        params,
+        identity.config,
+        representative_atoms,
+        n_chain=identity.n_chain,
+        noise_tape=noise_tape if identity.rng_route == "tape" else None,
+        noise_mask=noise_mask if identity.rng_route == "mask" else None,
+        augment=identity.augment,
+        use_trunk_pair_embedding=identity.use_trunk_pair_embedding,
+    )
+
+
+_MAX_RETAINED_EXECUTABLES = 8
+
+
+class _CompiledPredictPool:
+    """Bounded process-wide pool of stable OpenFold prediction JITs.
+
+    A single module-level ``jax.jit`` deduplicates repeated factories, but its
+    internal cache never evicts. OpenFold programs can be hundreds of
+    megabytes, and unpadded plural requests naturally create many shapes. One
+    JIT per graph identity lets us evict least-recently-used programs while
+    keeping parameters and chemistry tables as ordinary dynamic arguments.
+    """
+
+    def __init__(self, limit: int = _MAX_RETAINED_EXECUTABLES) -> None:
+        self._limit = int(limit)
+        self._entries: OrderedDict[_PredictGraphIdentity, Any] = OrderedDict()
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _new(identity: _PredictGraphIdentity):
+        return jax.jit(functools.partial(_predict_for_identity, identity=identity))
+
+    @staticmethod
+    def _entry_size(compiled: Any) -> int:
+        size = getattr(compiled, "_cache_size", None)
+        return int(size()) if callable(size) else 1
+
+    @staticmethod
+    def _drop(compiled: Any) -> None:
+        clear = getattr(compiled, "clear_cache", None)
+        if callable(clear):
+            clear()
+
+    def _get(self, identity: _PredictGraphIdentity):
+        compiled = self._entries.pop(identity, None)
+        if compiled is None:
+            while len(self._entries) >= self._limit:
+                _identity, evicted = self._entries.popitem(last=False)
+                self._drop(evicted)
+            compiled = self._new(identity)
+        self._entries[identity] = compiled
+        return compiled
+
+    def _trim(self) -> None:
+        while self._entries and self._cache_size_unlocked() > self._limit:
+            _identity, evicted = self._entries.popitem(last=False)
+            self._drop(evicted)
+
+    def _cache_size_unlocked(self) -> int:
+        return sum(self._entry_size(entry) for entry in self._entries.values())
+
+    def __call__(
+        self,
+        key: jax.Array,
+        batch: Mapping[str, jnp.ndarray],
+        params: InferenceParams,
+        representative_atoms: RepresentativeAtomTable,
+        noise_tape: jnp.ndarray | None,
+        noise_mask: jnp.ndarray | None,
+        *,
+        identity: _PredictGraphIdentity,
+    ) -> Prediction:
+        with self._lock:
+            compiled = self._get(identity)
+            result = compiled(
+                key,
+                batch,
+                params,
+                representative_atoms,
+                noise_tape,
+                noise_mask,
+            )
+            self._trim()
+            return result
+
+    def lower(
+        self,
+        key: jax.Array,
+        batch: Mapping[str, jnp.ndarray],
+        params: InferenceParams,
+        representative_atoms: RepresentativeAtomTable,
+        noise_tape: jnp.ndarray | None,
+        noise_mask: jnp.ndarray | None,
+        *,
+        identity: _PredictGraphIdentity,
+    ):
+        with self._lock:
+            compiled = self._get(identity)
+            lowered = compiled.lower(
+                key,
+                batch,
+                params,
+                representative_atoms,
+                noise_tape,
+                noise_mask,
+            )
+            self._trim()
+            return lowered
+
+    def clear_cache(self) -> None:
+        with self._lock:
+            for compiled in self._entries.values():
+                self._drop(compiled)
+            self._entries.clear()
+            reset_cache_scope_tracking()
+
+    def _cache_size(self) -> int:
+        with self._lock:
+            return self._cache_size_unlocked()
+
+
+_compiled_predict = _CompiledPredictPool()
+
+
+def _require_same_topology(identity: _PredictGraphIdentity, mesh) -> None:
+    current = _cp_topology_identity(mesh, layout=identity.config.cp_layout)
+    if current != identity.cp_topology:
+        raise RuntimeError(
+            "the OpenFold3 compiled executable was lowered for a different "
+            "context-parallel device topology"
+        )
+
+
+def _persistent_cache_matches(scope: str | None) -> bool:
+    """Whether JAX is currently configured to populate this exact scope."""
+
+    if scope is None:
+        return False
+    if not getattr(jax.config, "jax_enable_compilation_cache", True):
+        return False
+    if getattr(jax.config, "jax_compilation_cache_max_size", -1) == 0:
+        return False
+    configured = getattr(jax.config, "jax_compilation_cache_dir", None)
+    return configured is not None and canonical_cache_scope(str(configured)) == scope
+
+
+def _persistent_cache_is_bounded(scope: str | None) -> bool:
+    """Whether the active cache requires a matching access-time sidecar."""
+
+    return _persistent_cache_matches(scope) and (
+        getattr(jax.config, "jax_compilation_cache_max_size", -1) != -1
+    )
+
+
+class _BoundCompiledPredict:
+    """Public three-argument view over a six-argument JAX executable."""
+
+    def __init__(
+        self,
+        compiled: Any,
+        *,
+        table: RepresentativeAtomTable,
+        identity: _PredictGraphIdentity,
+    ) -> None:
+        self._compiled = compiled
+        self._table = table
+        self._identity = identity
+
+    def __call__(
+        self,
+        key,
+        batch,
+        params,
+        *,
+        noise_tape=None,
+        noise_mask=None,
+    ):
+        route = _rng_route(noise_tape, noise_mask)
+        if route != self._identity.rng_route:
+            raise ValueError(
+                "compiled OpenFold3 RNG route does not match the route used "
+                f"during lowering: expected {self._identity.rng_route!r}, "
+                f"got {route!r}"
+            )
+        with (
+            triangle_backend(self._identity.triangle_kernel),
+            context_parallel(
+                self._identity.config.cp_shards,
+                layout=self._identity.config.cp_layout,
+            ) as mesh,
+        ):
+            _require_same_topology(self._identity, mesh)
+            return self._compiled(
+                replicate_tree(key),
+                replicate_tree(batch),
+                replicate_tree(params),
+                replicate_tree(self._table),
+                replicate_tree(noise_tape),
+                replicate_tree(noise_mask),
+            )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._compiled, name)
+
+
+class _BoundLoweredPredict:
+    """Lowered OpenFold program retaining its public callable contract."""
+
+    def __init__(
+        self,
+        lowered: Any,
+        *,
+        table: RepresentativeAtomTable,
+        identity: _PredictGraphIdentity,
+    ) -> None:
+        self._lowered = lowered
+        self._table = table
+        self._identity = identity
+
+    def compile(self, *args, **kwargs) -> _BoundCompiledPredict:
+        identity = self._identity
+        with (
+            triangle_backend(identity.triangle_kernel),
+            context_parallel(
+                identity.config.cp_shards,
+                layout=identity.config.cp_layout,
+            ) as mesh,
+        ):
+            _require_same_topology(identity, mesh)
+            bounded_cache = _persistent_cache_is_bounded(identity.cache_scope)
+            cache_token = inspect_cache_scope(
+                identity.cache_scope, repair_atime=bounded_cache
+            )
+            if cache_token is not None and cache_token.invalidated:
+                _compiled_predict.clear_cache()
+            compiled = self._lowered.compile(*args, **kwargs)
+            observe_cache_scope(
+                identity.cache_scope,
+                token=cache_token,
+                require_payload=_persistent_cache_matches(identity.cache_scope),
+                require_atime=bounded_cache,
+            )
+        return _BoundCompiledPredict(
+            compiled,
+            table=self._table,
+            identity=identity,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._lowered, name)
+
+
 def compile_predict(
     config: InferenceConfig,
     representative_atoms: RepresentativeAtomTable,
@@ -814,6 +1161,8 @@ def compile_predict(
     n_chain: int | None = None,
     augment: bool = True,
     use_trunk_pair_embedding: bool = True,
+    triangle_kernel: str | None = None,
+    cache_scope: str | None = None,
 ) -> Callable[[jax.Array, Mapping[str, jnp.ndarray], InferenceParams], Prediction]:
     """Return a compiled ``predict`` bound to one configuration.
 
@@ -825,9 +1174,12 @@ def compile_predict(
     costs almost nothing at run time.
 
     The one-time cost is real: ~170 s to compile at 8 rollout steps and ~280 s at
-    200. This is a factory rather than a cache inside :func:`predict` so that cost
-    is explicit at the call site, and so :func:`predict` stays an ordinary function
-    for the parity tests.
+    200. Repeated factory calls share a bounded module-level JIT pool, while
+    :func:`predict` stays an ordinary function for parity tests. The static
+    identity includes the resolved mesh devices, triangle kernel, RNG route and
+    persistent-cache scope, so reuse cannot replay a graph traced under different
+    ambient state. The least-recently-used programs are dropped after eight
+    retained executables rather than growing process memory without a bound.
 
     ``params`` stays a runtime argument, so weights can be swapped -- a different
     checkpoint, or averaged weights -- without recompiling. Changing ``config``,
@@ -839,36 +1191,111 @@ def compile_predict(
     Padding uses the mask so the compact random stream is preserved without
     retaining every rollout draw at once.
     """
-    compiled = jax.jit(
-        functools.partial(
-            predict,
-            config=config,
-            representative_atoms=representative_atoms,
-            n_chain=n_chain,
-            augment=augment,
-            use_trunk_pair_embedding=use_trunk_pair_embedding,
-        )
-    )
-    if config.cp_shards <= 1:
-        return compiled
+    table = _validated_representative_atoms(representative_atoms)
+    layout = "1d" if config.cp_shards <= 1 else resolve_cp_layout(config)
+    compiled_config = config._replace(cp_layout=layout)
+    scope = None if cache_scope is None else canonical_cache_scope(str(cache_scope))
 
-    def contextual(key, batch, params, **kwargs):
+    def invoke(
+        operation,
+        key,
+        batch,
+        params,
+        *,
+        noise_tape=None,
+        noise_mask=None,
+    ):
         # Tracing happens on the first call, so the mesh has to be active
         # here, not at factory time. A checkpoint committed to one device
         # fails the multi-device call's device-assignment check; everything
         # token-linear is replicated onto the mesh, and the graph's own
         # constraints shard the pair-shaped state from its first
         # materialization.
-        # A tap records a tracer of the graph being built, so the capture
-        # set has to be live while the program is traced, not while it runs.
-        with _capture.capturing(config.returned_representations), context_parallel(
-            config.cp_shards, layout=resolve_cp_layout(config)
+        route = _rng_route(noise_tape, noise_mask)
+        effective_kernel = resolve_triangle_kernel(
+            triangle_kernel, cp_shards=compiled_config.cp_shards
+        )
+        with (
+            triangle_backend(effective_kernel),
+            context_parallel(compiled_config.cp_shards, layout=layout) as mesh,
         ):
-            return compiled(
+            identity = _PredictGraphIdentity(
+                config=compiled_config,
+                n_chain=n_chain,
+                augment=augment,
+                use_trunk_pair_embedding=use_trunk_pair_embedding,
+                rng_route=route,
+                triangle_kernel=effective_kernel,
+                cp_topology=_cp_topology_identity(mesh, layout=layout),
+                cache_scope=scope,
+            )
+            bounded_cache = _persistent_cache_is_bounded(scope)
+            cache_token = inspect_cache_scope(scope, repair_atime=bounded_cache)
+            if cache_token is not None and cache_token.invalidated:
+                # An in-memory JIT hit otherwise prevents a deleted or replaced
+                # persistent namespace from being populated again.
+                _compiled_predict.clear_cache()
+            value = operation(
                 replicate_tree(key),
                 replicate_tree(batch),
                 replicate_tree(params),
-                **replicate_tree(kwargs),
+                replicate_tree(table),
+                replicate_tree(noise_tape),
+                replicate_tree(noise_mask),
+                identity=identity,
             )
+            observe_cache_scope(
+                scope,
+                token=cache_token,
+                require_payload=_persistent_cache_matches(scope),
+                require_atime=bounded_cache,
+            )
+            return value, identity
 
+    def contextual(
+        key,
+        batch,
+        params,
+        *,
+        noise_tape=None,
+        noise_mask=None,
+    ):
+        value, _identity = invoke(
+            _compiled_predict,
+            key,
+            batch,
+            params,
+            noise_tape=noise_tape,
+            noise_mask=noise_mask,
+        )
+        return value
+
+    def lower(
+        key,
+        batch,
+        params,
+        *,
+        noise_tape=None,
+        noise_mask=None,
+    ):
+        """Lower with the same mesh and static identity as an ordinary call."""
+
+        lowered, identity = invoke(
+            _compiled_predict.lower,
+            key,
+            batch,
+            params,
+            noise_tape=noise_tape,
+            noise_mask=noise_mask,
+        )
+        return _BoundLoweredPredict(
+            lowered,
+            table=table,
+            identity=identity,
+        )
+
+    # ``compile_predict`` historically returned JAX's jitted callable. Keep
+    # its most useful introspection surface while the actual executable cache
+    # now lives on the module-level function.
+    contextual.lower = lower  # type: ignore[attr-defined]
     return contextual

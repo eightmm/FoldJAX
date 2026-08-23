@@ -383,8 +383,17 @@ prediction = run(key, batch, params)   # params may be swapped without recompili
 ```
 
 `predict` itself stays an ordinary uncompiled function, which is what the parity
-tests use; `compile_predict` is a factory rather than a hidden cache so the compile
-cost is visible at the call site.
+tests use. Repeated `compile_predict` factories share a process-wide bounded JIT
+pool when their graph identity matches, so multi-seed and repeated backend calls
+no longer retrace the same program. The pool retains at most eight executable
+variants and evicts least-recently-used entries, bounding long-lived unpadded
+batch memory. The identity names the full model configuration, resolved CP
+layout and ordered devices, effective triangle kernel, RNG route, requested
+representations/stop boundary, chain count, and persistent-cache scope. The
+representative-atom chemistry table remains a validated dynamic pytree: changing
+its values changes the result without changing the graph. `run.lower(...).compile()`
+keeps the same public `(key, batch, params)` call shape and recreates the exact CP
+placement selected during lowering.
 
 **Cache the compile.** The FoldJAX backend and `openfold3-jax-predict` enable a
 persistent cache by default because every uncached process pays this dominant
@@ -393,8 +402,14 @@ cost again. Direct library callers opt in explicitly:
 ```python
 from foldjax.models.openfold3 import enable_compilation_cache
 
-enable_compilation_cache()          # or pass a directory / set $OPENFOLD3_JAX_CACHE
+cache = enable_compilation_cache()  # or pass a directory / set $OPENFOLD3_JAX_CACHE
+run = compile_predict(config, chemistry, cache_scope=str(cache))
 ```
+
+Passing the returned cache path as `cache_scope` also lets the in-process pool
+notice when that namespace is deleted or replaced. It then discards the matching
+memory cache and recompiles, so a cache-warming request repopulates the directory
+instead of reporting success after an in-memory-only hit.
 
 Measured on an RTX PRO 6000, released architecture, 5 samples x 20 steps:
 

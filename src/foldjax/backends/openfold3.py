@@ -14,15 +14,18 @@ the ``openfold3-preprocess`` extra.
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from foldjax._openfold3_compile import (
+    resolve_triangle_kernel,
+)
+from foldjax._openfold3_compile import (
+    triangle_backend as _triangle_backend,
+)
 from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import Backend
 from foldjax.models import _representations
@@ -45,6 +48,8 @@ _COMPILE_OPTIONS = (
     "num_cycles",
     "pair_chunk_size",
     "max_msa_depth",
+    "cp_devices",
+    "cp_layout",
     "triangle_kernel",
 )
 
@@ -111,23 +116,6 @@ def _compile_enabled(options: dict[str, Any]) -> bool:
     return not _strict_boolean(options.pop("no_compile", False), name="no_compile")
 
 
-@contextmanager
-def _triangle_backend(value: str | None) -> Iterator[None]:
-    """Select one kernel for this call without leaking it into the next one."""
-    name = "OPENFOLD3_TRIANGLE_BACKEND"
-    previous = os.environ.get(name)
-    if value is not None:
-        os.environ[name] = value
-    try:
-        yield
-    finally:
-        if value is not None:
-            if previous is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = previous
-
-
 class OpenFold3Backend(Backend):
     name = "openfold3"
     padding_axes = ("tokens", "atoms", "msa", "templates")
@@ -170,6 +158,29 @@ class OpenFold3Backend(Backend):
         ),
     }
     compile_options = _COMPILE_OPTIONS
+
+    def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
+        """Name every static OpenFold3 program choice, including defaults."""
+
+        profile = super().cache_profile(request)
+        options = self.apply_sampling(request)
+        cp_shards = int(options.get("cp_devices", 1))
+        requested_layout = str(options.get("cp_layout", "auto"))
+        profile["cp_devices"] = cp_shards
+        profile["cp_layout"] = (
+            "serial"
+            if cp_shards <= 1
+            else "1d" if requested_layout == "auto" else requested_layout
+        )
+        profile["triangle_kernel"] = resolve_triangle_kernel(
+            options.get("triangle_kernel"), cp_shards=cp_shards
+        )
+        profile["representations"] = _representations.resolve(
+            request.representations, _representations.specs_for("openfold3")
+        )
+        profile["stop_after"] = request.stop_after
+        profile["rng_route"] = "mask" if request.padding is not None else "native"
+        return profile
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _compile_enabled(dict(options))
@@ -367,7 +378,13 @@ class OpenFold3Backend(Backend):
         with _triangle_backend(kernel):
             if compile_it:
                 compiled = inference.compile_predict(
-                    config, table, n_chain=n_chain
+                    config,
+                    table,
+                    n_chain=n_chain,
+                    triangle_kernel=kernel,
+                    cache_scope=(
+                        None if request.cache_dir is None else str(request.cache_dir)
+                    ),
                 )
                 prediction = (
                     compiled(key, features, params)

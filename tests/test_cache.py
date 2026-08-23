@@ -164,6 +164,43 @@ def test_openfold3_triangle_kernel_changes_the_cache_namespace(tmp_path: Path) -
     assert cueq != xla
 
 
+def test_openfold3_cache_profile_names_every_static_runtime_route(
+    tmp_path: Path,
+) -> None:
+    backend = OpenFold3Backend()
+    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+
+    serial = backend.cache_profile(request)
+    assert serial["cp_devices"] == 1
+    assert serial["cp_layout"] == "serial"
+    assert serial["triangle_kernel"] == "cueq"
+    assert serial["representations"] == ()
+    assert serial["stop_after"] == "full"
+    assert serial["rng_route"] == "native"
+
+    automatic = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "auto"}
+    )
+    rows = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "1d"}
+    )
+    grid = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "2d"}
+    )
+    assert backend.cache_profile(automatic) == backend.cache_profile(rows)
+    assert backend.cache_profile(automatic)["triangle_kernel"] == "xla"
+    assert resolve_cache_dir(automatic, backend) != resolve_cache_dir(grid, backend)
+
+    represented = dataclasses.replace(request, representations=("pair",))
+    trunk = dataclasses.replace(represented, stop_after="trunk")
+    padded = dataclasses.replace(request, padding=True)
+    assert resolve_cache_dir(represented, backend) != resolve_cache_dir(
+        request, backend
+    )
+    assert resolve_cache_dir(trunk, backend) != resolve_cache_dir(represented, backend)
+    assert resolve_cache_dir(padded, backend) != resolve_cache_dir(request, backend)
+
+
 def test_compilation_cache_scope_disables_and_restores_host_config(
     tmp_path: Path, monkeypatch
 ) -> None:

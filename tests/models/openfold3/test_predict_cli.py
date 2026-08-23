@@ -253,7 +253,9 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         seen.update(n_chain=n_chain, asym_id=np.asarray(features["asym_id"]))
         return prediction
 
-    def fake_compile(config, table, *, n_chain=None):
+    def fake_compile(config, table, *, n_chain=None, **compile_options):
+        seen["compile_options"] = compile_options
+
         def compiled(key, features, params):
             seen.update(n_chain=n_chain, asym_id=np.asarray(features["asym_id"]))
             return prediction
@@ -302,6 +304,8 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
 
     assert main(argv) == 0
     assert seen["n_chain"] == 2
+    if not eager:
+        assert seen["compile_options"] == {"cache_scope": None}
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
 
 
