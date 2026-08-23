@@ -124,10 +124,47 @@ def _transition_block(x: jnp.ndarray, params: TransitionParams) -> jnp.ndarray:
     return linear(silu(a) * b, params.linear_out)
 
 
-def _transition_runtime_identity() -> tuple[tuple, str]:
-    """Static execution identity for the independently compiled transition."""
+def _transition_runtime_identity() -> tuple[
+    str,
+    int,
+    tuple[int, int],
+    tuple[str, ...],
+]:
+    """Static topology identity for the independently compiled transition."""
 
-    return cp_identity(), jax.default_backend()
+    return cp_identity()
+
+
+def _mapped_transition(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int,
+) -> jnp.ndarray:
+    """Run fixed-width transition blocks through one bounded loop."""
+
+    return jax.lax.map(
+        lambda row: _transition_block(row, params),
+        x,
+        batch_size=chunk_size,
+    )
+
+
+def _concatenated_transition(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int,
+) -> jnp.ndarray:
+    """Run the historical independently staged transition blocks."""
+
+    return jnp.concatenate(
+        [
+            _transition_block(x[start : start + chunk_size], params)
+            for start in range(0, x.shape[0], chunk_size)
+        ],
+        axis=0,
+    )
 
 
 def _transition_for_runtime(
@@ -135,7 +172,7 @@ def _transition_for_runtime(
     params: TransitionParams,
     *,
     chunk_size: int | None,
-    runtime_identity: tuple[tuple, str],
+    runtime_identity: tuple[str, int, tuple[int, int], tuple[str, ...]],
 ) -> jnp.ndarray:
     """Apply one transition using the proven execution route for this runtime."""
 
@@ -144,11 +181,10 @@ def _transition_for_runtime(
     if chunk_size is None or chunk_size <= 0 or chunk_size >= x.shape[0]:
         return _transition_block(x, params)
 
-    cp_topology, platform = runtime_identity
+    cp_topology = runtime_identity
     n_chunks = -(-x.shape[0] // chunk_size)
     if (
         cp_topology[0] == "serial"
-        and platform == "cpu"
         and x.dtype == jnp.float32
         and n_chunks >= 4
     ):
@@ -158,24 +194,23 @@ def _transition_for_runtime(
         # recomputing rows. This keeps the compiled graph and live widened
         # buffers bounded when there are enough blocks for the loop to pay.
         #
-        # Keep this route serial and CPU-only. Mapping the global leading axis
-        # under either CP layout introduces a full-width all-gather, while GPU
-        # latency and memory have not been measured for this schedule.
-        return jax.lax.map(
-            lambda row: _transition_block(row, params),
+        # Keep this route serial and CPU-only. JAX chooses the execution
+        # platform late -- explicit JIT targets, input placement, and portable
+        # export can all differ from the process default -- so the branch must
+        # be selected during lowering rather than by a Python platform query.
+        # Mapping the global leading axis under either CP layout introduces a
+        # full-width all-gather, while GPU latency and memory have not been
+        # measured for this schedule.
+        return jax.lax.platform_dependent(
             x,
-            batch_size=chunk_size,
+            params,
+            cpu=partial(_mapped_transition, chunk_size=chunk_size),
+            default=partial(_concatenated_transition, chunk_size=chunk_size),
         )
 
     # Historical route for GPU/TPU, reduced precision, context parallelism,
     # and short block lists.
-    return jnp.concatenate(
-        [
-            _transition_block(x[start : start + chunk_size], params)
-            for start in range(0, x.shape[0], chunk_size)
-        ],
-        axis=0,
-    )
+    return _concatenated_transition(x, params, chunk_size=chunk_size)
 
 
 def transition(
@@ -207,7 +242,7 @@ def _compiled_transition(
     params: TransitionParams,
     *,
     chunk_size: int | None,
-    runtime_identity: tuple[tuple, str],
+    runtime_identity: tuple[str, int, tuple[int, int], tuple[str, ...]],
 ) -> jnp.ndarray:
     return _transition_for_runtime(
         x,
@@ -223,7 +258,7 @@ def compiled_transition(
     *,
     chunk_size: int | None = None,
 ) -> jnp.ndarray:
-    """Apply the transition through a topology- and platform-keyed JIT."""
+    """Apply the transition through a topology-keyed, platform-aware JIT."""
 
     return _compiled_transition(
         x,

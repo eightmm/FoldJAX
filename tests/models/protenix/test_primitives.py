@@ -146,7 +146,7 @@ def _transition_params(rng, channels: int, hidden: int) -> TransitionParams:
     )
 
 
-_SERIAL_CPU_IDENTITY = (("serial", 1, (1, 1), ()), "cpu")
+_SERIAL_IDENTITY = ("serial", 1, (1, 1), ())
 
 
 def _historical_transition(
@@ -181,7 +181,7 @@ def test_sequenced_transition_preserves_chunks_and_short_tail(dtype) -> None:
             value,
             params,
             chunk_size=4,
-            runtime_identity=_SERIAL_CPU_IDENTITY,
+            runtime_identity=_SERIAL_IDENTITY,
         )
     )(x)
     expected = np.asarray(expected)
@@ -214,7 +214,7 @@ def test_sequenced_transition_preserves_nonfinite_classes() -> None:
                 value,
                 params,
                 chunk_size=4,
-                runtime_identity=_SERIAL_CPU_IDENTITY,
+                runtime_identity=_SERIAL_IDENTITY,
             )
         )(x)
     )
@@ -235,7 +235,7 @@ def _compiled_transition_hlo(
     rows: int,
     chunk_size: int,
     dtype: jnp.dtype,
-    runtime_identity: tuple[tuple, str],
+    runtime_identity: tuple,
 ) -> str:
     rng = np.random.default_rng(15)
     x = jnp.zeros((rows, 7, 6), dtype=dtype)
@@ -243,14 +243,15 @@ def _compiled_transition_hlo(
         lambda value: jnp.asarray(value, dtype=dtype),
         _transition_params(rng, channels=6, hidden=16),
     )
-    return str(
-        _compiled_transition.lower(
-            x,
-            params,
-            chunk_size=chunk_size,
-            runtime_identity=runtime_identity,
-        ).compiler_ir(dialect="stablehlo")
-    )
+    return jax.export.export(
+        _compiled_transition,
+        platforms=("cpu",),
+    )(
+        x,
+        params,
+        chunk_size=chunk_size,
+        runtime_identity=runtime_identity,
+    ).mlir_module()
 
 
 def test_large_serial_cpu_float32_transition_uses_one_loop() -> None:
@@ -258,7 +259,7 @@ def test_large_serial_cpu_float32_transition_uses_one_loop() -> None:
         rows=16,
         chunk_size=4,
         dtype=jnp.float32,
-        runtime_identity=_SERIAL_CPU_IDENTITY,
+        runtime_identity=_SERIAL_IDENTITY,
     )
 
     assert hlo.count("stablehlo.while") == 1
@@ -266,23 +267,61 @@ def test_large_serial_cpu_float32_transition_uses_one_loop() -> None:
 
 
 @pytest.mark.parametrize(
+    "function",
+    [transition, compiled_transition],
+    ids=("transition", "compiled-transition"),
+)
+@pytest.mark.parametrize(
+    ("platform", "uses_loop"),
+    [("cpu", True), ("cuda", False), ("tpu", False)],
+)
+def test_public_transition_route_follows_the_actual_lowering_target(
+    function,
+    platform: str,
+    uses_loop: bool,
+) -> None:
+    """Portable lowering must not inherit the build process's CPU default."""
+
+    rng = np.random.default_rng(17)
+    x = jnp.zeros((16, 7, 6), dtype=jnp.float32)
+    params = _transition_params(rng, channels=6, hidden=16)
+
+    def run(value, parameters):
+        return function(value, parameters, chunk_size=4)
+
+    # Cross-platform export lowers StableHLO without requiring a target device,
+    # so CUDA and TPU routing remain covered by CPU-only CI.
+    exported = jax.export.export(
+        jax.jit(run),
+        platforms=(platform,),
+    )(x, params)
+    hlo = exported.mlir_module()
+
+    if uses_loop:
+        assert hlo.count("stablehlo.while") == 1
+        assert "stablehlo.concatenate" not in hlo
+    else:
+        assert "stablehlo.while" not in hlo
+        assert hlo.count("stablehlo.concatenate") == 1
+
+
+@pytest.mark.parametrize(
     ("rows", "dtype", "runtime_identity"),
     [
-        (12, jnp.float32, _SERIAL_CPU_IDENTITY),
-        (16, jnp.bfloat16, _SERIAL_CPU_IDENTITY),
-        (16, jnp.float32, (("serial", 1, (1, 1), ()), "gpu")),
-        (16, jnp.float32, (("1d", 4, (4, 1), ("cp",)), "cpu")),
+        (12, jnp.float32, _SERIAL_IDENTITY),
+        (16, jnp.bfloat16, _SERIAL_IDENTITY),
+        (16, jnp.float32, ("1d", 4, (4, 1), ("cp",))),
         (
             16,
             jnp.float32,
-            (("2d", 4, (2, 2), ("cp_row", "cp_col")), "cpu"),
+            ("2d", 4, (2, 2), ("cp_row", "cp_col")),
         ),
     ],
 )
 def test_transition_keeps_historical_route_outside_cpu_map_gate(
     rows: int,
     dtype: jnp.dtype,
-    runtime_identity: tuple[tuple, str],
+    runtime_identity: tuple,
 ) -> None:
     hlo = _compiled_transition_hlo(
         rows=rows,
@@ -295,19 +334,52 @@ def test_transition_keeps_historical_route_outside_cpu_map_gate(
     assert hlo.count("stablehlo.concatenate") == 1
 
 
+def test_cpu_mapped_transition_preserves_vmap_grad_semantics() -> None:
+    rng = np.random.default_rng(18)
+    cpu = jax.local_devices(backend="cpu")[0]
+    x = jax.device_put(
+        rng.normal(size=(3, 18, 7, 6)).astype(np.float32),
+        cpu,
+    )
+    params = jax.tree.map(
+        lambda value: jax.device_put(value, cpu),
+        _transition_params(rng, channels=6, hidden=16),
+    )
+
+    def mapped_loss(value):
+        result = transition(value, params, chunk_size=4)
+        return jnp.sum(jnp.square(result))
+
+    def historical_loss(value):
+        result = _historical_transition(value, params, chunk_size=4)
+        return jnp.sum(jnp.square(result))
+
+    mapped_values, mapped_grads = jax.jit(
+        jax.vmap(jax.value_and_grad(mapped_loss))
+    )(x)
+    historical_values, historical_grads = jax.jit(
+        jax.vmap(jax.value_and_grad(historical_loss))
+    )(x)
+
+    np.testing.assert_allclose(mapped_values, historical_values, rtol=1e-6, atol=1e-6)
+    gradient_delta = np.max(np.abs(mapped_grads - historical_grads))
+    gradient_scale = np.max(np.abs(historical_grads))
+    assert gradient_delta <= 1e-6 * gradient_scale
+
+
 def test_unchunked_transition_stays_whole() -> None:
     hlo = _compiled_transition_hlo(
         rows=16,
         chunk_size=0,
         dtype=jnp.float32,
-        runtime_identity=_SERIAL_CPU_IDENTITY,
+        runtime_identity=_SERIAL_IDENTITY,
     )
 
     assert "stablehlo.while" not in hlo
     assert "stablehlo.concatenate" not in hlo
 
 
-def test_compiled_transition_keys_cache_by_public_runtime_identity(
+def test_compiled_transition_keys_cache_by_public_topology_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rng = np.random.default_rng(16)
