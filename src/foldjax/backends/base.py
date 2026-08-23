@@ -85,6 +85,7 @@ class Backend(ABC):
             raise ValueError(
                 f"{self.name} does not support input format {request.input_format!r}"
             )
+        self._validate_representations(request, capabilities)
         options = self.apply_sampling(request)
         if request.padding is not None:
             if not self.padding_axes:
@@ -114,6 +115,61 @@ class Backend(ABC):
                 f"unsupported {self.name} options: {', '.join(unsupported)}"
             )
         self.validate_native_options(options)
+
+    def _validate_representations(
+        self,
+        request: PredictionRequest,
+        capabilities: ModelCapabilities,
+    ) -> None:
+        """Reject invalid representation selectors and unsupported fan-out.
+
+        Native adapters resolve these names again when they decide which arrays
+        to persist.  Planning must apply the same comma-separated/``all``
+        vocabulary first, though: otherwise an invalid name is discovered only
+        after weights and model-specific runtime state have started loading.
+        The public result owns one representation archive, so one request also
+        cannot capture representations from more than one seed without losing
+        every handle but one.
+        """
+        if not request.representations:
+            return
+        available = capabilities.representations
+        found = False
+        selected_all = False
+        for entry in request.representations:
+            for part in str(entry).split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if part == "all":
+                    if not available:
+                        raise ValueError(
+                            f"{self.name} does not expose trunk representations"
+                        )
+                    # This matches the native resolver: ``all`` selects the
+                    # complete capability list and supersedes later entries.
+                    found = True
+                    selected_all = True
+                    break
+                if part not in available:
+                    produced = ", ".join(available) or "none"
+                    raise ValueError(
+                        f"unknown representation {part!r} for {self.name}; "
+                        f"this model produces: {produced}"
+                    )
+                found = True
+            if selected_all:
+                break
+        if not found:
+            raise ValueError(
+                "representations must name at least one representation or 'all'"
+            )
+        if len(request.resolved_seeds) > 1:
+            raise ValueError(
+                "representations cannot be combined with multiple seeds: "
+                "PredictionResult carries one representation archive; run one "
+                "seed per request"
+            )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         """Validate built-in option values without importing a model runtime.

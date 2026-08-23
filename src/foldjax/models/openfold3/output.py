@@ -24,6 +24,8 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from foldjax.models._output_validation import require_finite_coordinates
+
 # Upstream's 32-token residue vocabulary, in order; ``restype`` is a one-hot over
 # it. Embedded rather than imported so writing output needs none of the data stack,
 # and gated against upstream in the tests.
@@ -945,8 +947,6 @@ def write_prediction_outputs(
     Returns a mapping of what was written, so a caller does not have to reconstruct
     the filenames. ``omitted_arrays`` names anything the cap left out.
     """
-    root = Path(directory)
-    root.mkdir(parents=True, exist_ok=True)
     name = _safe_output_name(name)
     if output_metadata is None:
         warnings.warn(
@@ -962,12 +962,19 @@ def write_prediction_outputs(
     coordinates = np.asarray(prediction.coordinates, dtype=np.float64)
     if coordinates.ndim == 2:
         coordinates = coordinates[None, ...]
+    require_finite_coordinates(
+        coordinates,
+        model="OpenFold3",
+        atom_mask=features["atom_mask"],
+    )
     # mmCIF B factors and public confidence JSON conventionally carry pLDDT on
     # a 0--100 scale. The Prediction/raw archive remains fractional.
     plddt = _plddt_percent(prediction.plddt)
     if plddt.ndim == 1:
         plddt = plddt[None, :]
 
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
     structures = []
     for index in range(coordinates.shape[0]):
         # Predictions cover padded atoms too; only the real ones are written.

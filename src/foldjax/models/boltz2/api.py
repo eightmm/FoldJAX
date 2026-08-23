@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from foldjax.models import _capture, _representations
+from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
 from foldjax.schema import PaddingConfig
@@ -647,11 +648,12 @@ def predict(
             primary_summary["static"] = primary_static
             result["padding"] = {"primary": primary_summary}
         return result
-    coords_batched = np.asarray(
-        jax.block_until_ready(out["sample_atom_coords"])
+    coords_batched = require_finite_coordinates(
+        jax.block_until_ready(out["sample_atom_coords"]),
+        model="Boltz2",
+        atom_mask=feats_np["atom_pad_mask"],
     ).reshape(diffusion_samples, -1, 3)
     plddt_batched = np.asarray(out["plddt"]).reshape(diffusion_samples, -1)
-    assert np.all(np.isfinite(coords_batched)), "non-finite coordinates produced"
 
     affinity_padding_plan = None
     if affinity_model_params is not None:

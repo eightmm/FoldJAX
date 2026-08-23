@@ -154,8 +154,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import jax
     import jax.numpy as jnp
-    import numpy as np
 
+    from foldjax.models._output_validation import require_finite_coordinates
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
     from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
     from foldjax.models.openfold3.data import (
@@ -290,9 +290,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"wrote {archive}")
         return 0
 
-    coordinates = np.asarray(prediction.coordinates)
-    if not np.isfinite(coordinates).all():
-        print("non-finite coordinates; refusing to write a structure")
+    try:
+        require_finite_coordinates(
+            prediction.coordinates,
+            model="OpenFold3",
+            atom_mask=features["atom_mask"],
+        )
+    except ValueError as error:
+        print(f"{error}; refusing to write a structure")
         return 1
 
     written = write_prediction_outputs(

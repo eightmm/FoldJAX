@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
+from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.esmfold2.data import pdb
 
 #: Scalars the confidence head returns once per sample.
@@ -114,11 +115,8 @@ def write_prediction_outputs(
     plddt_scale: float = 100.0,
 ) -> dict[str, object]:
     """Write one PDB per sample and one confidence JSON beside them."""
-    directory = Path(output_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-
     cropped = crop_prediction(output, features)
-    coords = _numpy(cropped["sample_atom_coords"])
+    coords = require_finite_coordinates(cropped["sample_atom_coords"], model="ESMFold2")
     if coords.ndim == 2:
         coords = coords[None]
     per_atom = (
@@ -127,6 +125,8 @@ def write_prediction_outputs(
         else None
     )
 
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
     structures: list[Path] = []
     for index in range(coords.shape[0]):
         # mmCIF, because `foldjax.output.normalize` names every structure

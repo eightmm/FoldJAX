@@ -267,6 +267,97 @@ def test_boltz_rejects_a_single_diffusion_step_before_loading_model(
         Boltz2Backend().validate_request(request)
 
 
+@pytest.mark.parametrize(
+    "representations",
+    [("single", "pair"), ("single,pair",), ("all",)],
+)
+def test_backend_validates_supported_representation_spellings_before_prediction(
+    tmp_path: Path, representations: tuple[str, ...]
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        representations=representations,
+    )
+
+    Boltz2Backend().validate_request(request)
+
+
+def test_backend_rejects_an_unsupported_comma_separated_representation_early(
+    tmp_path: Path,
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        representations=("single,structural_pair",),
+    )
+
+    with pytest.raises(ValueError, match="structural_pair.*boltz2"):
+        Boltz2Backend().validate_request(request)
+
+
+def test_backend_rejects_all_when_it_exposes_no_representations(
+    tmp_path: Path,
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "alphafold3"),
+        input_format="native",
+        representations=("all",),
+    )
+
+    with pytest.raises(ValueError, match="does not expose trunk representations"):
+        AlphaFold3Backend().validate_request(request)
+
+
+@pytest.mark.parametrize(
+    "representations",
+    [("",), ("   ",), (",",), (" , ", "")],
+)
+def test_backend_rejects_representation_selectors_without_a_name(
+    tmp_path: Path, representations: tuple[str, ...]
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        representations=representations,
+        stop_after="trunk",
+    )
+
+    with pytest.raises(ValueError, match="at least one representation"):
+        Boltz2Backend().validate_request(request)
+
+
+@pytest.mark.parametrize(
+    "seed_fields",
+    [{"seed": 0, "seeds": (7, 11)}, {"num_seeds": 2}],
+)
+def test_backend_rejects_multi_seed_representation_capture(
+    tmp_path: Path, seed_fields: dict[str, object]
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        representations=("pair",),
+        **seed_fields,
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined with multiple seeds"):
+        Boltz2Backend().validate_request(request)
+
+
+def test_backend_allows_representation_capture_with_one_resolved_seed(
+    tmp_path: Path,
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        representations=("pair",),
+        num_seeds=1,
+    )
+
+    Boltz2Backend().validate_request(request)
+
+
 def _write_protenix_outputs(out: Path, samples: int = 1) -> list[Path]:
     """Write what the shared Protenix writer writes, and return what it returns.
 
@@ -610,7 +701,11 @@ def test_opendde_capabilities_match_the_current_native_runtime() -> None:
     capabilities = OpenDDEBackend().capabilities()
     assert capabilities.input_formats == ("native", "opendde", "foldjax")
     assert capabilities.supports_msa is True
-    assert capabilities.supports_templates is True
+    assert capabilities.supports_templates is False
+    assert "warn and drop" in capabilities.input_requirements["native"].notes
+    assert "reject templates and RNA MSAs" in (
+        capabilities.input_requirements["foldjax"].notes
+    )
 
 
 @dataclasses.dataclass(frozen=True)

@@ -208,7 +208,7 @@ def test_openfold3_msa_depth_is_a_cap_on_the_released_default(
 
 
 @pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
-def test_prediction_cli_passes_static_chain_count(
+def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_padding(
     tmp_path: Path, monkeypatch, eager: bool
 ) -> None:
     import jax
@@ -219,7 +219,7 @@ def test_prediction_cli_passes_static_chain_count(
 
     raw = {
         "token_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
-        "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
+        "atom_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
         "asym_id": np.asarray([[7, 42, 999]], dtype=np.int64),
     }
     params = SimpleNamespace(
@@ -228,7 +228,9 @@ def test_prediction_cli_passes_static_chain_count(
             diffusion_transformer=SimpleNamespace(blocks=())
         ),
     )
-    prediction = SimpleNamespace(coordinates=np.zeros((1, 2, 3), dtype=np.float32))
+    coordinates = np.zeros((1, 3, 3), dtype=np.float32)
+    coordinates[0, 2, 0] = np.nan
+    prediction = SimpleNamespace(coordinates=coordinates)
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(

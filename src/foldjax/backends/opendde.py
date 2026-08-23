@@ -89,10 +89,21 @@ class OpenDDEBackend(Backend):
         _strict_boolean(options.get("include_raw", False), name="include_raw")
 
     def capabilities(self) -> ModelCapabilities:
-        requirement = InputRequirement(
+        native_requirement = InputRequirement(
             notes=(
                 "NumPy/Gemmi/RDKit featurization and JAX prediction are included "
-                "in the base install and do not import PyTorch."
+                "in the base install and do not import PyTorch. Native "
+                "templatesPath and RNA unpairedMsaPath fields retain OpenDDE's "
+                "released compatibility policy: warn and drop because its "
+                "shipped defaults disable them."
+            )
+        )
+        common_requirement = InputRequirement(
+            notes=(
+                "NumPy/Gemmi/RDKit featurization and JAX prediction are included "
+                "in the base install and do not import PyTorch. FoldJAX common "
+                "inputs reject templates and RNA MSAs because OpenDDE's shipped "
+                "defaults would discard them; protein MSAs remain supported."
             )
         )
         return ModelCapabilities(
@@ -101,9 +112,15 @@ class OpenDDEBackend(Backend):
             sampling=dict(self.sampling_options),
             input_formats=("native", "opendde", "foldjax"),
             input_requirements={
-                name: requirement for name in ("native", "opendde", "foldjax")
+                "native": native_requirement,
+                "opendde": native_requirement,
+                "foldjax": common_requirement,
             },
-            supports_templates=True,
+            # The implementation contains template machinery, but the shipped
+            # inference contract fixes use_template=False and discards the
+            # native field. Capabilities describe the runnable configuration,
+            # not dormant code paths.
+            supports_templates=False,
             padding_axes=self.padding_axes,
         )
 

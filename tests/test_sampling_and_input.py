@@ -301,6 +301,26 @@ def test_sampling_knobs_survive_the_whole_predict_path(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "seed_fields",
+    [{"seed": 0, "seeds": (7, 11)}, {"seed": 7, "num_seeds": 2}],
+)
+def test_resolve_rejects_multi_seed_representation_capture(
+    tmp_path: Path, seed_fields: dict[str, object]
+) -> None:
+    request = PredictionRequest(
+        model="opendde",
+        input=_job_file(tmp_path),
+        input_format="native",
+        weights=_weights(tmp_path),
+        representations=("single",),
+        **seed_fields,
+    )
+
+    with pytest.raises(ValueError, match="one representation archive"):
+        foldjax.resolve_request(request)
+
+
 def test_seeds_run_the_job_once_each_and_return_every_structure(
     tmp_path: Path, monkeypatch
 ) -> None:

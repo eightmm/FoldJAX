@@ -11,6 +11,7 @@ from typing import Any
 import gemmi
 import numpy as np
 
+from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.protenix.data.static_io import save_output_npz
 
 _RESTYPE_NAMES = (
@@ -79,6 +80,7 @@ def write_protenix_outputs(
     coordinates = np.asarray(output.get("coordinate"))
     if coordinates.ndim != 3 or coordinates.shape[-1] != 3:
         raise ValueError("coordinate must have shape (n_sample, n_atom, 3)")
+    require_finite_coordinates(coordinates, model="Protenix/OpenDDE")
     if "atom_plddt" not in output:
         raise ValueError("original-style output requires atom_plddt confidence")
     atom_plddt = np.asarray(output["atom_plddt"])

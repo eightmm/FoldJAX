@@ -107,12 +107,18 @@ def test_materializes_protenix_input(common_job: Path, tmp_path: Path) -> None:
 
 
 def test_materializes_opendde_input_as_a_native_job_list(tmp_path: Path) -> None:
+    (tmp_path / "protein.a3m").write_text(">query\nACD\n")
     source = _write(
         tmp_path / "job.json",
         {
             "name": "dde",
             "entities": [
-                {"type": "protein", "id": ["A", "B"], "sequence": "ACD"},
+                {
+                    "type": "protein",
+                    "id": ["A", "B"],
+                    "sequence": "ACD",
+                    "unpaired_msa": "protein.a3m",
+                },
                 {"type": "dna", "id": ["D"], "sequence": "ACGT"},
                 {"type": "ligand", "id": ["L"], "ccd": "ATP"},
             ],
@@ -130,6 +136,7 @@ def test_materializes_opendde_input_as_a_native_job_list(tmp_path: Path) -> None
         "id": ["A", "B"],
         "count": 2,
         "sequence": "ACD",
+        "unpairedMsaPath": str(tmp_path / "protein.a3m"),
         "modifications": [],
     }
     assert native[0]["sequences"][1]["dnaSequence"]["id"] == ["D"]
@@ -257,6 +264,43 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
             "boltz2",
             lambda job: job["entities"][0].update({"paired_msa": "paired.a3m"}),
             "cannot express paired_msa",
+        ),
+        (
+            "opendde",
+            lambda job: job["entities"][0].update(
+                {
+                    "templates": [
+                        {
+                            "mmcif": "template.cif",
+                            "query_indices": [1],
+                            "template_indices": [1],
+                        }
+                    ]
+                }
+            ),
+            "use_template=False",
+        ),
+        (
+            "opendde",
+            lambda job: job["entities"][1].update(
+                {
+                    "type": "rna",
+                    "sequence": "ACGU",
+                    "unpaired_msa": "rna.a3m",
+                }
+            ),
+            "use_rna_msa=False",
+        ),
+        (
+            "opendde",
+            lambda job: job["entities"][1].update(
+                {
+                    "type": "rna",
+                    "sequence": "ACGU",
+                    "paired_msa": "rna-paired.a3m",
+                }
+            ),
+            "use_rna_msa=False",
         ),
     ],
 )

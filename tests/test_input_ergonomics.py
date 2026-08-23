@@ -409,6 +409,53 @@ def test_capabilities_name_what_the_common_schema_cannot_reach() -> None:
     assert "paired_msa" not in common_schema_features("boltz2")
     assert "templates_unmapped" in common_schema_features("boltz2")
 
+    # OpenDDE contains dormant template machinery, but its runnable released
+    # configuration discards templatesPath. Neither the backend capability nor
+    # the common reach should advertise it; native passthrough retains the
+    # compatibility warning/drop policy.
+    opendde = capabilities("opendde")
+    assert opendde.supports_templates is False
+    assert "templates" not in opendde.common_schema_features
+    assert "templates" not in opendde.native_only_features
+
+
+@pytest.mark.parametrize(
+    ("entity", "message"),
+    [
+        (
+            {
+                "type": "rna",
+                "id": "R",
+                "sequence": "ACGU",
+                "unpaired_msa": "rna.a3m",
+            },
+            "use_rna_msa=False",
+        ),
+        (
+            {
+                "type": "protein",
+                "id": "A",
+                "sequence": SEQUENCE,
+                "templates": [
+                    {
+                        "mmcif": "template.cif",
+                        "query_indices": [1],
+                        "template_indices": [1],
+                    }
+                ],
+            },
+            "use_template=False",
+        ),
+    ],
+)
+def test_opendde_compatibility_rejects_common_inputs_it_would_drop(
+    entity: dict, message: str
+) -> None:
+    reason = compatibility({"entities": [entity]}, "opendde")
+
+    assert reason is not None
+    assert message in reason
+
 
 def test_fasta_records_become_chains() -> None:
     records = parse_fasta(">one\nMKTA\nYIAK\n\n>two\nGGSG\n")

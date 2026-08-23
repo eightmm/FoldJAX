@@ -63,12 +63,14 @@ _ALL_FEATURES = frozenset(
         "ligand_smiles",
         "bonds",
         # A structural template, in the two forms the dialects actually take.
-        # AlphaFold 3, Protenix and OpenDDE all require an explicit
-        # query-residue -> template-residue map and refuse a bare file
-        # (`folding_input.py:378`, `template_features.py:329`); Boltz-2 takes a
-        # path and aligns it itself (`parse/schema.py:986`). These are different
-        # inputs, not one input in two spellings, so they are separate features
-        # and a document is refused by whichever model cannot use its form.
+        # AlphaFold 3 and Protenix require an explicit query-residue ->
+        # template-residue map and refuse a bare file (`folding_input.py:378`,
+        # `template_features.py:329`); Boltz-2 takes a path and aligns it itself
+        # (`parse/schema.py:986`). OpenDDE's shipped inference configuration
+        # disables its template path, so the common route refuses both forms.
+        # These are different inputs, not one input in two spellings, so they
+        # are separate features and a document is refused by whichever model
+        # cannot use its form.
         "templates",
         "templates_unmapped",
         # Binding affinity. Only Boltz-2 has the head, and its schema addresses
@@ -88,9 +90,13 @@ _TARGETS = {
     # foldjax.models.boltz2 dispatches its parser on the file suffix and rejects .json
     # outright; JSON is a YAML subset, so the document is written as .yaml.
     "boltz2": _Target(".yaml", _ALL_FEATURES - {"paired_msa", "templates"}),
-    # OpenDDE consumes the Protenix list-of-jobs dialect, including its modified
-    # polymer and entity/copy-addressed covalent-bond representations.
-    "opendde": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
+    # OpenDDE consumes most of the Protenix list-of-jobs dialect, including its
+    # modified-polymer and entity/copy-addressed covalent-bond representations.
+    # Its released inference defaults set ``use_template=False``: a generated
+    # ``templatesPath`` is deliberately discarded by the native compatibility
+    # path.  A common job must therefore reject templates instead of advertising
+    # a field whose scientific input will not reach the model.
+    "opendde": _Target(".json", _ALL_FEATURES - _NO_TEMPLATES),
     "protenix": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     # OpenFold3 expresses everything, but with two constraints its own layer
     # enforces and this writer therefore has to: alignment files are selected by
@@ -495,6 +501,13 @@ def _validate(
                 raise ValueError(f"{feature} must be a non-empty path string")
             if value is not None and feature not in target.features:
                 _reject(model, feature, f"remove it from entity {_ids(entity)[0]!r}")
+            if value is not None and model == "opendde" and kind == "rna":
+                _reject(
+                    model,
+                    f"RNA {feature}",
+                    "its shipped inference default is use_rna_msa=False and "
+                    "would discard the alignment; protein MSAs remain supported",
+                )
             if value is not None:
                 entity[feature] = value.strip()
         if entity.get("modifications") and "modifications" not in target.features:
@@ -512,6 +525,13 @@ def _validate(
             feature = "templates" if template["mapping"] else "templates_unmapped"
             if feature in target.features:
                 continue
+            if model == "opendde":
+                _reject(
+                    model,
+                    "templates in the common schema",
+                    "its shipped inference default is use_template=False and "
+                    "would discard the generated templatesPath",
+                )
             if feature == "templates_unmapped" and "templates" in target.features:
                 _reject(
                     model,
@@ -1170,12 +1190,11 @@ def native_only_features(
 ) -> tuple[str, ...]:
     """Scientific inputs this model takes that the common schema cannot express.
 
-    ``supports_templates`` and ``supports_affinity`` describe the *model*, and
-    five of the six backends report templates. The common job document has no
-    field for either (`_JOB_KEYS`, `_POLYMER_KEYS`), so a discovery surface that
-    printed only the model-level flag told a caller to look for a field that has
-    never existed. Naming the gap is the honest half of that answer; the other
-    half is that the model's own dialect still reaches it.
+    ``supports_templates`` and ``supports_affinity`` describe the *model*, not
+    whether a common job can safely reach that machinery. A dialect may lack a
+    field even though the runnable backend supports the feature. Naming that
+    gap is the honest half of the answer; a backend whose released runtime
+    discards a field must instead report the model-level capability as false.
     """
     target = _TARGETS.get(model)
     features = target.features if target is not None else frozenset()
