@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+
+from foldjax.models._cp import cp_identity
 
 
 class LinearParams(NamedTuple):
@@ -121,6 +124,60 @@ def _transition_block(x: jnp.ndarray, params: TransitionParams) -> jnp.ndarray:
     return linear(silu(a) * b, params.linear_out)
 
 
+def _transition_runtime_identity() -> tuple[tuple, str]:
+    """Static execution identity for the independently compiled transition."""
+
+    return cp_identity(), jax.default_backend()
+
+
+def _transition_for_runtime(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int | None,
+    runtime_identity: tuple[tuple, str],
+) -> jnp.ndarray:
+    """Apply one transition using the proven execution route for this runtime."""
+
+    if chunk_size is None:
+        chunk_size = _transition_chunk_rows(x, params)
+    if chunk_size is None or chunk_size <= 0 or chunk_size >= x.shape[0]:
+        return _transition_block(x, params)
+
+    cp_topology, platform = runtime_identity
+    n_chunks = -(-x.shape[0] // chunk_size)
+    if (
+        cp_topology[0] == "serial"
+        and platform == "cpu"
+        and x.dtype == jnp.float32
+        and n_chunks >= 4
+    ):
+        # `batch_size` vectorizes one fixed-width transition block inside a
+        # scan. JAX evaluates a non-divisible tail through a separate vmap, so
+        # it retains the historical short final block rather than padding or
+        # recomputing rows. This keeps the compiled graph and live widened
+        # buffers bounded when there are enough blocks for the loop to pay.
+        #
+        # Keep this route serial and CPU-only. Mapping the global leading axis
+        # under either CP layout introduces a full-width all-gather, while GPU
+        # latency and memory have not been measured for this schedule.
+        return jax.lax.map(
+            lambda row: _transition_block(row, params),
+            x,
+            batch_size=chunk_size,
+        )
+
+    # Historical route for GPU/TPU, reduced precision, context parallelism,
+    # and short block lists.
+    return jnp.concatenate(
+        [
+            _transition_block(x[start : start + chunk_size], params)
+            for start in range(0, x.shape[0], chunk_size)
+        ],
+        axis=0,
+    )
+
+
 def transition(
     x: jnp.ndarray,
     params: TransitionParams,
@@ -133,20 +190,47 @@ def transition(
     and materialises the wide form whole.
     """
 
-    if chunk_size is None:
-        chunk_size = _transition_chunk_rows(x, params)
-    if chunk_size is None or chunk_size <= 0 or chunk_size >= x.shape[0]:
-        return _transition_block(x, params)
-    return jnp.concatenate(
-        [
-            _transition_block(x[start : start + chunk_size], params)
-            for start in range(0, x.shape[0], chunk_size)
-        ],
-        axis=0,
+    return _transition_for_runtime(
+        x,
+        params,
+        chunk_size=chunk_size,
+        runtime_identity=_transition_runtime_identity(),
     )
 
 
-compiled_transition = jax.jit(transition, static_argnames=("chunk_size",))
+@partial(
+    jax.jit,
+    static_argnames=("chunk_size", "runtime_identity"),
+)
+def _compiled_transition(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int | None,
+    runtime_identity: tuple[tuple, str],
+) -> jnp.ndarray:
+    return _transition_for_runtime(
+        x,
+        params,
+        chunk_size=chunk_size,
+        runtime_identity=runtime_identity,
+    )
+
+
+def compiled_transition(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int | None = None,
+) -> jnp.ndarray:
+    """Apply the transition through a topology- and platform-keyed JIT."""
+
+    return _compiled_transition(
+        x,
+        params,
+        chunk_size=chunk_size,
+        runtime_identity=_transition_runtime_identity(),
+    )
 
 
 def adaptive_layer_norm(

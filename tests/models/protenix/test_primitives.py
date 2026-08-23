@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
+from foldjax.models.protenix.models.primitives import primitives as primitives_module
 from foldjax.models.protenix.models.primitives.primitives import (
     AdaptiveLayerNormParams,
     LayerNormParams,
     LinearParams,
     TransitionParams,
+    _compiled_transition,
+    _transition_block,
+    _transition_for_runtime,
     adaptive_layer_norm,
+    compiled_transition,
     layer_norm,
     transition,
 )
@@ -137,6 +144,196 @@ def _transition_params(rng, channels: int, hidden: int) -> TransitionParams:
         linear_b=linear(hidden, channels),
         linear_out=linear(channels, hidden),
     )
+
+
+_SERIAL_CPU_IDENTITY = (("serial", 1, (1, 1), ()), "cpu")
+
+
+def _historical_transition(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    chunk_size: int,
+) -> jnp.ndarray:
+    return jnp.concatenate(
+        [
+            _transition_block(x[start : start + chunk_size], params)
+            for start in range(0, x.shape[0], chunk_size)
+        ],
+        axis=0,
+    )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+def test_sequenced_transition_preserves_chunks_and_short_tail(dtype) -> None:
+    rng = np.random.default_rng(13)
+    x = jnp.asarray(rng.normal(size=(18, 7, 6)), dtype=dtype)
+    params = jax.tree.map(
+        lambda value: jnp.asarray(value, dtype=dtype),
+        _transition_params(rng, channels=6, hidden=16),
+    )
+
+    expected = jax.jit(
+        lambda value: _historical_transition(value, params, chunk_size=4)
+    )(x)
+    actual = jax.jit(
+        lambda value: _transition_for_runtime(
+            value,
+            params,
+            chunk_size=4,
+            runtime_identity=_SERIAL_CPU_IDENTITY,
+        )
+    )(x)
+    expected = np.asarray(expected)
+    actual = np.asarray(actual)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+    # lax.map evaluates the non-divisible tail through a separate vmap with
+    # the same short shape as the historical final slice.
+    np.testing.assert_array_equal(actual[-2:], expected[-2:])
+
+
+def test_sequenced_transition_preserves_nonfinite_classes() -> None:
+    rng = np.random.default_rng(14)
+    values = rng.normal(size=(18, 7, 6)).astype(np.float32)
+    values[0, 0, 0] = np.nan
+    values[5, 1, 1] = np.inf
+    values[12, 2, 2] = -np.inf
+    values[-1, 3, 3] = np.nan
+    x = jnp.asarray(values)
+    params = _transition_params(rng, channels=6, hidden=16)
+
+    expected = np.asarray(
+        jax.jit(lambda value: _historical_transition(value, params, chunk_size=4))(
+            x
+        )
+    )
+    actual = np.asarray(
+        jax.jit(
+            lambda value: _transition_for_runtime(
+                value,
+                params,
+                chunk_size=4,
+                runtime_identity=_SERIAL_CPU_IDENTITY,
+            )
+        )(x)
+    )
+
+    np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
+    np.testing.assert_array_equal(np.isposinf(actual), np.isposinf(expected))
+    np.testing.assert_array_equal(np.isneginf(actual), np.isneginf(expected))
+    finite = np.isfinite(actual) & np.isfinite(expected)
+    np.testing.assert_allclose(actual[finite], expected[finite], rtol=1e-6, atol=1e-6)
+    np.testing.assert_array_equal(
+        actual[-2:].view(np.uint32),
+        expected[-2:].view(np.uint32),
+    )
+
+
+def _compiled_transition_hlo(
+    *,
+    rows: int,
+    chunk_size: int,
+    dtype: jnp.dtype,
+    runtime_identity: tuple[tuple, str],
+) -> str:
+    rng = np.random.default_rng(15)
+    x = jnp.zeros((rows, 7, 6), dtype=dtype)
+    params = jax.tree.map(
+        lambda value: jnp.asarray(value, dtype=dtype),
+        _transition_params(rng, channels=6, hidden=16),
+    )
+    return str(
+        _compiled_transition.lower(
+            x,
+            params,
+            chunk_size=chunk_size,
+            runtime_identity=runtime_identity,
+        ).compiler_ir(dialect="stablehlo")
+    )
+
+
+def test_large_serial_cpu_float32_transition_uses_one_loop() -> None:
+    hlo = _compiled_transition_hlo(
+        rows=16,
+        chunk_size=4,
+        dtype=jnp.float32,
+        runtime_identity=_SERIAL_CPU_IDENTITY,
+    )
+
+    assert hlo.count("stablehlo.while") == 1
+    assert "stablehlo.concatenate" not in hlo
+
+
+@pytest.mark.parametrize(
+    ("rows", "dtype", "runtime_identity"),
+    [
+        (12, jnp.float32, _SERIAL_CPU_IDENTITY),
+        (16, jnp.bfloat16, _SERIAL_CPU_IDENTITY),
+        (16, jnp.float32, (("serial", 1, (1, 1), ()), "gpu")),
+        (16, jnp.float32, (("1d", 4, (4, 1), ("cp",)), "cpu")),
+        (
+            16,
+            jnp.float32,
+            (("2d", 4, (2, 2), ("cp_row", "cp_col")), "cpu"),
+        ),
+    ],
+)
+def test_transition_keeps_historical_route_outside_cpu_map_gate(
+    rows: int,
+    dtype: jnp.dtype,
+    runtime_identity: tuple[tuple, str],
+) -> None:
+    hlo = _compiled_transition_hlo(
+        rows=rows,
+        chunk_size=4,
+        dtype=dtype,
+        runtime_identity=runtime_identity,
+    )
+
+    assert "stablehlo.while" not in hlo
+    assert hlo.count("stablehlo.concatenate") == 1
+
+
+def test_unchunked_transition_stays_whole() -> None:
+    hlo = _compiled_transition_hlo(
+        rows=16,
+        chunk_size=0,
+        dtype=jnp.float32,
+        runtime_identity=_SERIAL_CPU_IDENTITY,
+    )
+
+    assert "stablehlo.while" not in hlo
+    assert "stablehlo.concatenate" not in hlo
+
+
+def test_compiled_transition_keys_cache_by_public_runtime_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(16)
+    x = jnp.asarray(rng.normal(size=(16, 7, 6)), dtype=jnp.float32)
+    params = _transition_params(rng, channels=6, hidden=16)
+    serial = ("serial", 1, (1, 1), ())
+    one_dimensional = ("1d", 4, (4, 1), ("cp",))
+
+    _compiled_transition.clear_cache()
+    try:
+        monkeypatch.setattr(primitives_module, "cp_identity", lambda: serial)
+        serial_result = compiled_transition(x, params, chunk_size=4)
+        jax.block_until_ready(serial_result)
+        assert _compiled_transition._cache_size() == 1
+
+        monkeypatch.setattr(
+            primitives_module,
+            "cp_identity",
+            lambda: one_dimensional,
+        )
+        cp_result = compiled_transition(x, params, chunk_size=4)
+        jax.block_until_ready(cp_result)
+        assert _compiled_transition._cache_size() == 2
+        np.testing.assert_allclose(cp_result, serial_result, rtol=1e-6, atol=1e-6)
+    finally:
+        _compiled_transition.clear_cache()
 
 
 def test_blocking_the_transition_does_not_change_what_it_computes() -> None:

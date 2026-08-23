@@ -177,3 +177,77 @@ def test_protenix_pair_core_matches_serial(
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "PROTENIX_CP_OK" in completed.stdout
+
+
+_TRANSITION_PROBE = textwrap.dedent(
+    r"""
+    import os
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel, shard_pair_rows
+    from foldjax.models.protenix.models.primitives.primitives import (
+        LayerNormParams,
+        LinearParams,
+        TransitionParams,
+        transition,
+    )
+
+    layout = os.environ["FOLDJAX_CP_PROBE_LAYOUT"]
+    assert jax.device_count() == 4, jax.devices()
+
+    tokens, channels, hidden = 16, 8, 16
+    rng = np.random.default_rng(20260824)
+
+    def arr(*shape):
+        return jnp.asarray(rng.normal(size=shape, scale=0.1), jnp.float32)
+
+    params = TransitionParams(
+        layer_norm=LayerNormParams(
+            weight=arr(channels),
+            bias=arr(channels),
+        ),
+        linear_a=LinearParams(weight=arr(hidden, channels)),
+        linear_b=LinearParams(weight=arr(hidden, channels)),
+        linear_out=LinearParams(weight=arr(channels, hidden)),
+    )
+    pair = arr(tokens, tokens, channels)
+
+    def run(value):
+        value = shard_pair_rows(value)
+        value = transition(value, params, chunk_size=4)
+        return shard_pair_rows(value)
+
+    reference = np.asarray(jax.jit(run)(pair))
+    jax.clear_caches()
+    with context_parallel(4, layout=layout):
+        lowered = jax.jit(run).lower(pair)
+        executable = lowered.compile()
+        got = np.asarray(executable(pair))
+        hlo = executable.as_text().lower()
+
+    np.testing.assert_allclose(got, reference, rtol=1e-6, atol=1e-6)
+    assert "all-gather" not in hlo and "all_gather" not in hlo, hlo
+    print("PROTENIX_TRANSITION_CP_OK")
+    """
+)
+
+
+@pytest.mark.parametrize("layout", ["1d", "2d"])
+def test_chunked_transition_keeps_cp_path_gather_free(layout: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _TRANSITION_PROBE],
+        capture_output=True,
+        text=True,
+        env={
+            "JAX_PLATFORMS": "cpu",
+            "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+            "FOLDJAX_CP_PROBE_LAYOUT": layout,
+            **inherited_environment(),
+        },
+        timeout=240,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "PROTENIX_TRANSITION_CP_OK" in completed.stdout

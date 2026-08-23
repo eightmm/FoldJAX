@@ -12,6 +12,22 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Large float32 CPU transitions compile as one bounded loop.** Protenix and
+  OpenDDE historically emitted one independent transition subgraph per leading
+  chunk, which let CPU XLA keep several widened blocks live together and made
+  StableHLO grow with sequence length. Serial CPU float32 transitions with at
+  least four chunks now use one `lax.map`; shorter block lists, reduced
+  precision, GPU/TPU, and both context-parallel layouts retain the historical
+  graph. At OpenDDE's released transition widths and 946 structural tokens, a
+  CPU compile-only probe reduced StableHLO text from 27,194 to 13,095 bytes,
+  median compile time from 153.8 to 95.3 ms, and compiled temporary memory from
+  5,243.6 to 2,804.8 MiB. The loop can retile full float32 chunks and is not
+  bitwise-identical: the measured max-norm relative difference
+  (`max(abs(delta)) / max(abs(reference))`) was 6.4e-7;
+  non-finite classifications and the separately evaluated short tail were
+  unchanged. These are CPU compiler measurements only; released-weight GPU
+  latency and memory remain deployment gates.
+
 - **Protenix carries its relative-position one-hot compactly without changing
   trunk or diffusion arithmetic.** The `[N_token, N_token, 139]` feature contains
   only exact zeroes and ones, so its host/device representation is now int8
