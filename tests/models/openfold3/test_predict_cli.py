@@ -134,7 +134,7 @@ def test_chain_ids_are_normalized_from_real_tokens_only() -> None:
         }
     )
     np.testing.assert_array_equal(monomer["asym_id"], [[0, 0, 0]])
-    assert monomer_n_chain is None
+    assert monomer_n_chain == 1
 
 
 def test_atom_metadata_ignores_padded_chain_ids() -> None:

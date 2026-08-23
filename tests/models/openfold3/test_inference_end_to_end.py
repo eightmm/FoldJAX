@@ -384,13 +384,20 @@ def test_full_inference_path_runs(openfold3_source, randomized, monkeypatch) -> 
     # Keep it present to prove inference still derives frames from coordinates.
     batch["has_frame"] = jnp.zeros((1, N_TOKEN), dtype=jnp.float32)
     calls = []
+    ptm_calls = []
     original_token_frame_atoms = inference.token_frame_atoms
+    original_compute_ptm = inference.compute_ptm
 
     def tracked_token_frame_atoms(*args, **kwargs):
         calls.append(True)
         return original_token_frame_atoms(*args, **kwargs)
 
+    def tracked_compute_ptm(*args, **kwargs):
+        ptm_calls.append(bool(kwargs.get("interface", False)))
+        return original_compute_ptm(*args, **kwargs)
+
     monkeypatch.setattr(inference, "token_frame_atoms", tracked_token_frame_atoms)
+    monkeypatch.setattr(inference, "compute_ptm", tracked_compute_ptm)
     out = predict(
         jax.random.key(0),
         batch,
@@ -411,6 +418,9 @@ def test_full_inference_path_runs(openfold3_source, randomized, monkeypatch) -> 
     assert out.iptm.shape == (config.num_samples,)
     assert out.chain_pair_iptm is None
     assert calls == [True]
+    # ``None`` is the direct API's conservative unknown-chain mode, so it must
+    # retain the generic interface score even if the caller omitted n_chain.
+    assert ptm_calls == [False, True]
     for name, array in (
         ("coordinates", out.coordinates),
         ("plddt", out.plddt),
@@ -441,12 +451,22 @@ def test_iptm_outputs_appear_when_chains_are_declared(
     assert np.isfinite(np.asarray(out.chain_pair_iptm)).all()
 
 
-def test_monomer_iptm_is_zero_and_has_no_chain_pair_matrix(
-    openfold3_source, randomized
+def test_monomer_iptm_is_zero_without_tracing_interface_tm(
+    openfold3_source, randomized, monkeypatch
 ) -> None:
+    from foldjax.models.openfold3 import inference
+
     torch = _torch()
     batch = _batch(torch)
     batch["asym_id"] = jnp.zeros_like(batch["asym_id"])
+    ptm_calls = []
+    original_compute_ptm = inference.compute_ptm
+
+    def tracked_compute_ptm(*args, **kwargs):
+        ptm_calls.append(bool(kwargs.get("interface", False)))
+        return original_compute_ptm(*args, **kwargs)
+
+    monkeypatch.setattr(inference, "compute_ptm", tracked_compute_ptm)
     out = predict(
         jax.random.key(0),
         batch,
@@ -455,8 +475,9 @@ def test_monomer_iptm_is_zero_and_has_no_chain_pair_matrix(
         _representative_atoms(),
         n_chain=1,
     )
-    np.testing.assert_allclose(np.asarray(out.iptm), 0.0, atol=1e-7)
+    np.testing.assert_array_equal(np.asarray(out.iptm), 0.0)
     assert out.chain_pair_iptm is None
+    assert ptm_calls == [False]
 
 
 def test_prediction_is_deterministic_for_a_fixed_key(

@@ -609,8 +609,9 @@ def normalize_asym_ids(
 
     OpenFold3's interface and clash heads iterate over ``range(n_chain)``, so
     sparse or 1-based IDs silently omit chains. Padding IDs are not chemistry and
-    must not increase that static bound. The returned bound is ``None`` for a
-    monomer, preserving the lower-cost monomer confidence path.
+    must not increase that static bound. The returned bound is explicit for
+    every non-empty input so inference can specialize the monomer confidence
+    graph; ``None`` remains reserved for an unknown or empty chain set.
     """
     token_mask = np.asarray(features["token_mask"]) > 0
     asym_id = np.asarray(features["asym_id"])
@@ -628,7 +629,7 @@ def normalize_asym_ids(
     result = dict(features)
     result["asym_id"] = normalized
     n_chain = int(chain_ids.size)
-    return result, n_chain if n_chain > 1 else None
+    return result, n_chain if n_chain > 0 else None
 
 
 # The representative-atom table travels with the features under this prefix. It is

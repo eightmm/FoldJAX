@@ -359,6 +359,33 @@ def openfold3_precision(function):
     return wrapper
 
 
+def _compute_global_iptm(
+    ptm: jnp.ndarray,
+    pae_logits: jnp.ndarray,
+    has_frame: jnp.ndarray,
+    token_mask: jnp.ndarray,
+    asym_id: jnp.ndarray,
+    *,
+    n_chain: int | None,
+    bin_min: float,
+    bin_max: float,
+    no_bins: int,
+) -> jnp.ndarray:
+    """Return aggregate ipTM, statically omitting its empty monomer reduction."""
+    if n_chain == 1:
+        return jnp.zeros_like(ptm)
+    return compute_ptm(
+        pae_logits,
+        has_frame,
+        token_mask,
+        asym_id=asym_id,
+        interface=True,
+        bin_min=bin_min,
+        bin_max=bin_max,
+        no_bins=no_bins,
+    )
+
+
 @openfold3_precision
 def predict(
     key: jax.Array,
@@ -381,8 +408,10 @@ def predict(
         batch: featurized input.
         params: mapped parameters.
         config: shapes and hyperparameters from the checkpoint.
-        n_chain: chain-id upper bound; enables the chain-pair ipTM matrix for a
-            multichain input. Aggregate ipTM is returned for every input.
+        n_chain: normalized active-chain count. ``1`` asserts a known monomer
+            and specializes its aggregate ipTM to zero; ``None`` keeps the
+            generic unknown-chain path. Counts above one also enable the
+            chain-pair ipTM matrix.
         noise_fn: forwarded to the sampler to replace its random draws; supplied
             only to compare the rollout against another implementation.
         noise_tape: runtime sampler draws used by shape padding to preserve the
@@ -674,12 +703,13 @@ def predict(
     # inter-chain pairs), so it is a scalar output for every input. Only the
     # chain-pair matrix is conditional on an actual multichain complex.
     asym_id = batch["asym_id"].reshape(-1)[: config.n_token]
-    iptm = compute_ptm(
+    iptm = _compute_global_iptm(
+        ptm,
         pae_for_ptm,
         has_frame,
         token_mask,
-        asym_id=asym_id,
-        interface=True,
+        asym_id,
+        n_chain=n_chain,
         **ptm_kwargs,
     )
     chain_pair = None

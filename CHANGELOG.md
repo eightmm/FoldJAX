@@ -70,6 +70,14 @@ command predicts unless it says so here, in its own paragraph.
   from 58.0 to 1.17 ms, and `top_k` operations from one to zero. These are
   confidence-frame stage measurements; released-weight full-model GPU latency
   and peak memory remain deployment gates.
+- **OpenFold3 omits aggregate interface-TM work for known monomers.** Active
+  chain IDs are now normalized to an explicit static count, so production
+  monomer graphs return the mathematically identical all-zero ipTM vector
+  without tracing its interface mask and reductions. Direct callers that leave
+  the chain count unknown retain the generic path. In a five-sample, 128-token
+  optimized CPU graph, HLO text fell from 33,067 to 22,033 bytes, fusions from
+  25 to 18, and reductions from nine to six; XLA had already shared the pair
+  softmax, so no full-model latency or peak-memory improvement is claimed.
 - **ESMFold2 keeps one verified model and one input's ESMC states for a
   request.** A multi-seed or multi-input batch used to construct a fresh
   backend for every scalar run, reload the 26,347,754,143-byte released bundle,
