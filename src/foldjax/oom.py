@@ -94,6 +94,18 @@ def _pool_card_and_used() -> tuple[int | None, int | None, int | None]:
     return int(limit), card, (int(used) if used is not None else None)
 
 
+def device_budget() -> tuple[int | None, int | None]:
+    """The allocator's pool and the device's capacity in bytes, or ``None``s.
+
+    A public read of the same numbers :func:`diagnose` uses after a failure, so
+    a caller can ask *before* one. Returns ``None`` when preallocation is off:
+    there is no pool to be measured against, and a preflight that guessed one
+    would be inventing its own ceiling.
+    """
+    pool, card, _ = _pool_card_and_used()
+    return pool, card
+
+
 def diagnose(error: BaseException) -> str | None:
     """Explain an OOM against the pool, or return ``None`` if it cannot be read.
 

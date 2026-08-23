@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,89 @@ def _load_weights(path: Path) -> Any:
     from foldjax.models.opendde.bridge.weights_io import load_native_weights
 
     return load_native_weights(path)
+
+
+
+#: Arena size per structural-token pair, in MiB, measured 2026-08-23 on a
+#: 95.6 GiB card at HEAD 9af2892 and validated at a second size to 0.2%.
+#:
+#: OpenDDE's temp arena is ~86% of peak and is pure quadratic in the structural
+#: token count -- not the residue count, which is the whole reason this warning
+#: exists. bf16 fitted at N_st=1902 (19,797 MiB) predicts 48,532 at N_st=2978
+#: against 48,440 measured; fp32 fitted at 1902 (39,097 MiB) predicts 95,846
+#: against a 95,642 MiB allocation request. `num_samples` is deliberately absent:
+#: unlike ESMFold2 it is not a leading dimension of this peak, which is set by
+#: the pair-space trunk rather than the diffusion batch (43,090 MiB at 5 samples
+#: against 42,877 at 1 -- 0.5%).
+_ARENA_MIB_PER_PAIR = {"bfloat16": 5.4724e-3, "float32": 1.0807e-2}
+
+#: The arena is not the pool's only tenant, so a job whose arena merely fits the
+#: pool does not fit. Arguments -- weights plus features -- measured 3.0-4.6 GiB
+#: across these sizes, and an fp32 blocked arena at 94% of the pool still died
+#: with preallocation on. 0.9 is therefore where "probably will not fit" starts,
+#: and it is a practical ceiling read off a failure, not an arithmetic one.
+_PRACTICAL_ARENA_FRACTION = 0.9
+
+
+def _preflight_arena(features: Mapping[str, Any], trunk_dtype: Any) -> str | None:
+    """Warn when this job's arena probably will not fit. Never refuses.
+
+    Silent whenever it cannot establish something: no pool (preallocation off),
+    no structural token count, or an estimate that fits. A preflight that cried
+    wolf on a job that runs would be worse than none.
+    """
+    from foldjax import oom
+
+    index = features.get("structural_token_index")
+    if index is None:
+        return None
+    # No module-level numpy import here on purpose: this file keeps its import
+    # surface light, and a shape is all that is needed.
+    shape = getattr(index, "shape", None)
+    n_structural = int(shape[-1]) if shape else len(index)
+    if n_structural < 1:
+        return None
+    # The *realized* trunk dtype, not the flag: `trunk_dtype` is what
+    # `cast_trunk_params` was actually applied with, and `None` means the
+    # parameters were left at the released float32.
+    name = "bfloat16" if trunk_dtype is not None else "float32"
+    per_pair = _ARENA_MIB_PER_PAIR.get(name)
+    if per_pair is None:
+        return None
+    estimate_mib = per_pair * n_structural * n_structural
+
+    pool, card = oom.device_budget()
+    if pool is None:
+        return None
+    budget_mib = pool / 2**20 * _PRACTICAL_ARENA_FRACTION
+    if estimate_mib <= budget_mib:
+        return None
+
+    gib = 1024.0
+    lines = [
+        f"OpenDDE preflight: this job's {n_structural} structural tokens "
+        f"({name} trunk) need an estimated {estimate_mib / gib:.1f} GiB of temp "
+        f"arena, against roughly {budget_mib / gib:.1f} GiB usable of a "
+        f"{pool / 2**30:.1f} GiB pool"
+        + (f" on a {card / 2**30:.1f} GiB device" if card else "")
+        + ". It will probably not fit.",
+        "This is an estimate from a measured quadratic, not a guarantee in "
+        "either direction: the practical ceiling sits below the arithmetic one, "
+        "and a job near the line may still fail.",
+    ]
+    if name == "float32":
+        lines.append(
+            "The lever is --trunk-dtype bf16, which roughly halves the arena. "
+            "Note it is an opt-in divergence from upstream, which stores "
+            "float32; the structures it produces are not the released "
+            "configuration's."
+        )
+    else:
+        lines.append(
+            "The trunk is already bfloat16, so the dtype lever is spent -- this "
+            "size needs a larger card."
+        )
+    return " ".join(lines)
 
 
 def _predict(
@@ -131,6 +215,9 @@ def _predict(
     # count and the head count are known. `--chunk-policy off` restores the
     # unbounded form.
     n_residue = int(features["restype"].shape[-2])
+    preflight = _preflight_arena(features, trunk_dtype)
+    if preflight is not None:
+        warnings.warn(preflight, RuntimeWarning, stacklevel=2)
     # The residue count, as upstream feeds it: OpenDDE resolves the threshold
     # table twice, once with `N_token` for the residue trunk and once with
     # `len(parent_residue_idx)` for the structural branch (opendde.py:1481,
