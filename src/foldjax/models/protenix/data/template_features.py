@@ -14,6 +14,7 @@ Ground truth: ``protenix.data.template`` (``parse_json_templates`` ->
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -219,7 +220,7 @@ TEMPLATE_FIELDS = (
 )
 
 
-def dedup_templates(features: Any) -> dict[str, Any]:
+def dedup_templates(features: Mapping[str, Any]) -> Mapping[str, Any]:
     """Keep one copy of each distinct template, with how many it stands for.
 
     ``TemplateEmbedder`` runs the whole pairformer stack once per row and
@@ -272,9 +273,11 @@ def dedup_templates(features: Any) -> dict[str, Any]:
             unchanged.
 
     Returns:
-        A new mapping carrying only the distinct template rows plus
+        A new ``dict`` carrying only the distinct template rows plus
         ``template_multiplicity``. When there is nothing to deduplicate the
-        input mapping is returned **unchanged and by identity** -- a no-op
+        input mapping is returned **unchanged and by identity** -- which is why
+        the return is annotated ``Mapping`` rather than ``dict``: on those paths
+        the caller gets back exactly what it passed, whatever type that was -- a no-op
         that returns a copy is not a no-op, and OpenDDE's CLI wiring test
         asserts the featurizer's own dict reaches the model.
     """
