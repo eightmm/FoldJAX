@@ -19,6 +19,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from safetensors import safe_open
@@ -56,12 +57,10 @@ def load_parameters(
     parameters: dict[str, jnp.ndarray] = {}
     with safe_open(Path(directory, WEIGHTS_NAME), framework="numpy") as handle:
         for name in handle.keys():  # noqa: SIM118 -- safetensors has no __iter__
-            array = jnp.asarray(handle.get_tensor(name)) if to_device else (
-                handle.get_tensor(name)
-            )
+            array = handle.get_tensor(name)
             if dtype is not None and name.rsplit(".", 1)[-1] not in buffers:
                 array = array.astype(jnp.dtype(dtype))
-            parameters[name] = array
+            parameters[name] = jax.device_put(array) if to_device else array
     return parameters
 
 

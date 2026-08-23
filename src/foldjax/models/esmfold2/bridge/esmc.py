@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 from safetensors import safe_open
 
@@ -78,9 +79,14 @@ def load_parameters(
                 if not (key.startswith("transformer.") or key == "embed.weight"):
                     continue
                 array = handle.get_tensor(name)
-                value = jnp.asarray(array) if to_device else array
                 if dtype is not None:
-                    value = value.astype(jnp.dtype(dtype))
+                    # Cast while this is still a host array. The published ESMC
+                    # checkpoint is 25.4 GB of float32 and normally loads as
+                    # bfloat16; transferring first briefly stages the full-width
+                    # leaf on device and builds a conversion executable for each
+                    # distinct shape.
+                    array = array.astype(jnp.dtype(dtype))
+                value = jax.device_put(array) if to_device else array
                 parameters[key] = value
     return parameters
 

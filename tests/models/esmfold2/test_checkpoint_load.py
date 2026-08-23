@@ -10,11 +10,13 @@ is the one check that reaches all 1,594 of them.
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from safetensors.numpy import save_file
 
 from foldjax.models.esmfold2.bridge import checkpoint
 from foldjax.models.esmfold2.models import model as jax_model
@@ -58,6 +60,58 @@ def _features():
         "has_deletion": np.zeros((1, MSA_DEPTH, N_TOKENS), dtype=np.float32),
         "deletion_value": np.zeros((1, MSA_DEPTH, N_TOKENS), dtype=np.float32),
     }
+
+
+def test_parameter_cast_precedes_direct_device_transfer(
+    tmp_path, monkeypatch: Any
+) -> None:
+    source = {
+        "trunk.weight": np.asarray([1.25, -2.5], dtype=np.float32),
+        # Buffers describe exact boundaries and retain their published dtype.
+        "confidence.boundaries": np.asarray([0.0, 1.0], dtype=np.float32),
+    }
+    save_file(source, tmp_path / checkpoint.WEIGHTS_NAME)
+    original_device_put = checkpoint.jax.device_put
+    transferred: list[np.ndarray] = []
+
+    def spy_device_put(value: np.ndarray) -> jax.Array:
+        transferred.append(value)
+        return original_device_put(value)
+
+    def forbid_asarray(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("structure parameter transfer used a staged jnp.asarray")
+
+    monkeypatch.setattr(checkpoint.jax, "device_put", spy_device_put)
+    monkeypatch.setattr(checkpoint.jnp, "asarray", forbid_asarray)
+
+    parameters = checkpoint.load_parameters(tmp_path, dtype="bfloat16")
+
+    assert sorted(str(value.dtype) for value in transferred) == ["bfloat16", "float32"]
+    assert str(parameters["trunk.weight"].dtype) == "bfloat16"
+    assert parameters["confidence.boundaries"].dtype == jnp.float32
+    np.testing.assert_array_equal(
+        np.asarray(parameters["trunk.weight"]), source["trunk.weight"]
+    )
+
+
+def test_host_only_parameter_load_keeps_arrays_off_device(
+    tmp_path, monkeypatch: Any
+) -> None:
+    save_file(
+        {"trunk.weight": np.asarray([1.25, -2.5], dtype=np.float32)},
+        tmp_path / checkpoint.WEIGHTS_NAME,
+    )
+
+    def forbid_device_put(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("host-only structure load transferred a parameter")
+
+    monkeypatch.setattr(checkpoint.jax, "device_put", forbid_device_put)
+    parameters = checkpoint.load_parameters(tmp_path, dtype="bfloat16", to_device=False)
+
+    assert isinstance(parameters["trunk.weight"], np.ndarray)
+    assert str(parameters["trunk.weight"].dtype) == "bfloat16"
 
 
 def test_the_released_settings_are_read_from_the_file() -> None:

@@ -77,6 +77,19 @@ command predicts unless it says so here, in its own paragraph.
   continued failures, cleanup and wrapper compatibility. Released-weight
   CUDA latency, peak-memory and numerical parity remain deployment gates, so
   no end-to-end GPU speedup is claimed here.
+- **ESMFold2 casts checkpoint leaves before transferring them.** The released
+  structure and ESMC bundles contain 1,594 tensors across 49 shapes and 802
+  selected tensors across six shapes, respectively. Loading them through
+  `jnp.asarray` and then casting ESMC on device created a shape-specialized
+  staging program for the structure leaves and both staging and conversion
+  programs for ESMC. The loader now casts the published float32 ESMC leaves to
+  the requested dtype on the host and transfers both bundles with `device_put`.
+  This preserves the historical values exactly, removes all of those loader
+  compilations, and avoids an extra full-width device copy of the current ESMC
+  leaf (up to 141,557,760 bytes in the released checkpoint). In a separate
+  128 MiB CPU transfer probe the bfloat16 path's maximum RSS fell from 909,652
+  to 598,180 KiB (34.2%); released-checkpoint GPU peak memory remains a
+  deployment gate.
 - **AlphaFold 3 reuses one managed ModelRunner inside a request.** Multi-seed
   and multi-input managed runs now load the selected parameter generation and
   construct its shape-keyed JIT owner once, while scalar runs and explicit
