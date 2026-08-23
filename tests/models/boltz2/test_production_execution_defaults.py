@@ -70,3 +70,54 @@ def test_the_matmul_precision_pin_is_a_scope_not_a_latch() -> None:
 
     assert seen == [MATMUL_PRECISION]
     assert jax.config.jax_default_matmul_precision == before
+
+
+def test_the_compiled_path_hands_the_graph_unplaced_features() -> None:
+    """Placing the feature dict costs device memory the program never asks for.
+
+    The featurizer emits 78 arrays and the inference graph reads 31. Building
+    the dict with `jnp.asarray` put all 78 on the device and kept them there
+    for the whole run; `disto_target` -- a training label, f32[N, N, 1, 64] --
+    was 246 MiB of that at 1,003 tokens on its own, and the term is quadratic
+    in token count. Handing `jax.jit` the NumPy arrays instead lets it drop the
+    unread ones before anything is transferred.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models.boltz2.api import _graph_features
+
+    feats = {"msa": np.zeros((1, 4, 3), np.int64)}
+
+    compiled = _graph_features(feats, place=False)
+    assert type(compiled["msa"]) is np.ndarray
+
+    placed = _graph_features(feats, place=True)
+    assert isinstance(placed["msa"], jnp.ndarray)
+
+    # Both spellings reach the graph as the same argument, so the traced
+    # program -- and therefore every coordinate it produces -- is unchanged.
+    assert jnp.asarray(compiled["msa"]).dtype == placed["msa"].dtype
+    assert compiled["msa"].shape == placed["msa"].shape
+
+
+def test_jit_drops_arguments_the_graph_never_reads() -> None:
+    """The saving above is JAX's argument pruning, so pin that it still prunes.
+
+    `jax.jit` DCEs unread arguments out of the lowered program and filters them
+    out before the rest are placed. If an upgrade ever stopped doing that, the
+    unread features would silently be transferred again and only a memory
+    benchmark would notice.
+    """
+    import jax
+    import numpy as np
+
+    def graph(read, never_read):
+        return read * 2.0
+
+    lowered = jax.jit(graph).lower(
+        np.zeros((3,), np.float32), np.zeros((1024,), np.float32)
+    )
+    signature = lowered.as_text().split("func.func public @main")[1].split("\n")[0]
+    assert "1024" not in signature
+    assert "3xf32" in signature

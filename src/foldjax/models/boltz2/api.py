@@ -118,6 +118,39 @@ def _pinned_matmul_precision(function):
     return wrapper
 
 
+def _graph_features(
+    feats: Mapping[str, np.ndarray], *, place: bool
+) -> dict[str, object]:
+    """Prepare the featurizer's arrays for the model call.
+
+    ``place=False`` (the compiled path) leaves them as NumPy. ``jax.jit`` drops
+    every argument the traced program never reads, and it drops them *before*
+    the remaining ones are transferred, so a feature the model does not use is
+    never copied to the device at all. Placing the dict first defeats that: the
+    buffers exist for the whole run whether or not the program takes them.
+
+    Measured at 1,003 tokens: the graph reads 31 of the featurizer's 78 arrays.
+    The other 47 are 306 MiB of the 541 MiB that used to be placed, and
+    ``disto_target`` -- a training label, ``f32[N, N, 1, 64]``, read by no
+    inference path -- is 246 MiB of that on its own. The term is quadratic in
+    token count, so it grows with the input.
+
+    Argument dtypes canonicalize identically from a NumPy array and from a
+    placed one, so the traced jaxpr and the compiled program are unchanged: the
+    StableHLO of the whole L1000 graph hashes the same either way.
+
+    ``place=True`` is for the two callers that cannot use the pruning: steering
+    runs eagerly (no jit, so no DCE, and op-by-op dispatch would re-transfer
+    per op) and context parallelism places every input at its own ownership
+    boundary.
+    """
+
+    import jax.numpy as jnp
+
+    convert = jnp.asarray if place else np.asarray
+    return {name: convert(value) for name, value in feats.items()}
+
+
 def featurize(
     *,
     input: str | Path | None = None,
@@ -452,7 +485,10 @@ def predict(
         ).astype(np.int32)
         feats_np["atom_to_token_valid"] = atom_valid
 
-    feats = {k: jnp.asarray(v) for k, v in feats_np.items()}
+    # Only the eager steering path and the context-parallel path need the
+    # features placed; the compiled path lets `jax.jit` prune the ones the
+    # graph never reads before anything is transferred (see `_graph_features`).
+    feats = _graph_features(feats_np, place=steering_active or cp_devices > 1)
     padding_noise_tape = (
         _prefix_stable_noise_tape(
             jax.random.PRNGKey(seed),
@@ -661,9 +697,10 @@ def predict(
                 affinity_padding_plan.target["atoms"],
                 target_msa=affinity_padding_plan.target["msa"],
             )
-        affinity_feats = {
-            key: jnp.asarray(value) for key, value in affinity_feats_np.items()
-        }
+        # `run_affinity` below is always jitted -- affinity is rejected under
+        # context parallelism and never runs the eager steering path -- so this
+        # dict can always take the pruning.
+        affinity_feats = _graph_features(affinity_feats_np, place=False)
         affinity_kwargs = {
             **predict_kwargs,
             "recycling_steps": 5,

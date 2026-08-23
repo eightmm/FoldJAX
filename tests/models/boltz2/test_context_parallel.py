@@ -313,3 +313,75 @@ def test_square_layout_needs_a_square_device_count() -> None:
         _resolve_cp_layout("2d", 1)
     with pytest.raises(ValueError, match="must be one of"):
         _resolve_cp_layout("grid", 4)
+
+
+_PLACEMENT_PROBE = textwrap.dedent(
+    """
+    import numpy as np
+
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models._cp import (
+        ATOM_FEATURE_AXES,
+        PAIR_FEATURE_NAMES,
+        context_parallel,
+        replicate_tree,
+    )
+
+    N, A = 8, 16
+    feats = {}
+    for name in sorted(PAIR_FEATURE_NAMES):
+        if name in ("type_bonds", "pair_mask"):
+            feats[name] = np.arange(N * N, dtype=np.int64).reshape(1, N, N)
+        else:
+            feats[name] = np.arange(N * N * 3, dtype=np.float32).reshape(1, N, N, 3)
+    for name, axis in sorted(ATOM_FEATURE_AXES.items()):
+        shape = [1, 1, A, 3] if axis == 2 else [1, A, 5]
+        feats[name] = np.arange(int(np.prod(shape)), dtype=np.float32).reshape(shape)
+    feats["atom_to_token_valid"] = np.ones((1, A, 5), dtype=bool)
+    feats["msa"] = np.zeros((1, 12, N), dtype=np.int64)
+    feats["atom_to_token"] = np.zeros((1, A, N), dtype=np.float32)
+    # A pair feature whose token axis does not divide the mesh: must stay
+    # replicated, so the comparison below is not vacuously all-replicated.
+    feats["contact_threshold"] = np.zeros((1, N + 1, N + 1), dtype=np.float32)
+
+    def summarise(tree):
+        return {
+            name: (str(value.sharding), str(value.dtype), tuple(value.shape))
+            for name, value in tree.items()
+        }
+
+    with context_parallel(4, layout="1d"):
+        for pair, atom in ((True, True), (False, True)):
+            placed = summarise(replicate_tree(
+                {k: jnp.asarray(v) for k, v in feats.items()},
+                shard_pair_features=pair, shard_atom_features=atom,
+            ))
+            host = summarise(replicate_tree(
+                {k: np.asarray(v) for k, v in feats.items()},
+                shard_pair_features=pair, shard_atom_features=atom,
+            ))
+            assert placed == host, (pair, atom)
+            sharded = [k for k, v in placed.items() if "P()" not in v[0]]
+            assert sharded, "nothing was sharded; the probe proves nothing"
+            if pair:
+                assert any(k in PAIR_FEATURE_NAMES for k in sharded)
+                assert "P()" in placed["contact_threshold"][0]
+    print("CP_PLACEMENT_OK")
+    """
+)
+
+
+def test_cp_placement_is_the_same_from_numpy_and_from_placed_leaves() -> None:
+    """`predict` hands the compiled path NumPy features; CP still gets placed ones.
+
+    The gate is `place=steering_active or cp_devices > 1`, so context
+    parallelism never sees a NumPy leaf today. But `replicate_tree` decides per
+    leaf via `_is_movable_array`, a predicate leaf *type* has broken twice
+    (bfloat16 reports dtype kind 'V'; typed PRNG keys report no kind at all).
+    A silent flip from "placed on the mesh" to "replicated" would fail no test
+    and would not move a single-device HLO hash, so pin that the walk is
+    type-invariant rather than relying on the gate alone.
+    """
+    assert "CP_PLACEMENT_OK" in _run_probe(_PLACEMENT_PROBE)

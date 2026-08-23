@@ -12,6 +12,19 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Features the graph never reads are no longer copied to the device.**
+  Boltz-2's featurizer produces 78 arrays and the compiled program reads 31.
+  `jax.jit` already dropped the other 47 from the program -- and drops them
+  before the rest are transferred -- but the call site placed the whole
+  dictionary first, so those buffers existed for the whole run anyway: 306 MiB
+  of them at 1,003 tokens and 1,326 MiB at 2,096, since the term is quadratic
+  in token count. `disto_target`, a training label of `f32[N, N, 1, 64]` that
+  no inference path reads, was 246 MiB of it on its own. Placing them also
+  compiled one transfer program per array -- 142 of the 143 programs a cold run
+  built. The compiled path now hands the featurizer's NumPy arrays straight to
+  `jax.jit`; the two callers that cannot use the pruning, eager steering and
+  context parallelism, still place theirs. The lowered StableHLO of the whole
+  graph hashes identically either way, so no prediction changes.
 - **A context-parallel mesh proves it moves data before anything runs on it.**
   Entering `--cp-devices P` now shards a four-mebibyte array whose rows carry
   their own index, asks for it back replicated, and refuses to continue if the
