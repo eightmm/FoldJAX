@@ -570,7 +570,8 @@ command predicts unless it says so here, in its own paragraph.
   tokens Protenix's entry arguments fall 12.404 -> 9.430 GiB and its total
   50.145 -> 47.171; the measured run peak at 1,003 tokens is 8,953 -> 6,970
   MiB. OpenDDE reads templates once per recycle, so its stack evaluations come
-  off per cycle. Structures are not bit-identical and are not meant to be: the
+  off per cycle; its entry arguments fall 3.455 -> 3.126 GiB at 1,003 tokens,
+  measured against a base that differs from main by the dedup call alone. Structures are not bit-identical and are not meant to be: the
   divisor carries a `1e-7` epsilon that does not scale, and the running sum
   re-associates. Paired CA RMSD against a base run is 0.065 A median against a
   0.061 A rerun floor, both about 30x below the model's own 1.86 A sampling
