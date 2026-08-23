@@ -234,7 +234,8 @@ command predicts unless it says so here, in its own paragraph.
   now runs inside the selected default-device context, so lazy parameter loads
   and other unpinned allocations start on the requested device. A forced
   two-device probe places all 405 checkpoint array leaves directly on device 1.
-- **`confidence_sample_sequential` for ESMFold2**, off by default. Runs the
+- **`confidence_sample_sequential` for ESMFold2**, **on by default** since the
+  released 32-sample configuration cannot run without it (see Fixed). Runs the
   confidence head one structure at a time instead of batching every sample
   through it. This model's peak is a single temp arena sized
   `num_samples * L^2 * 4*c_z`, and that head is where the sample factor enters
@@ -595,11 +596,13 @@ command predicts unless it says so here, in its own paragraph.
   is a parity defect on its own terms. It is worth 65,485 -> 35,945 MiB of temp
   arena at 1,003 residues and the released 32 diffusion samples.
 
-  **Those arena figures, and the 35,945 -> 11,312 MiB below, were measured
-  with `confidence_sample_sequential=True`, which is not the shipped default.**
-  Batched over 32 samples the confidence head builds `f32[32, L, L, 64]` twice
-  -- 15.35 GiB of `pae_logits` and `pde_logits` against 245.6 MiB per sample
-  sequentially -- so the shipped arena is larger than any number here. Both
+  **Those arena figures, and the 35,945 -> 11,312 MiB below, were measured with
+  `confidence_sample_sequential=True` -- which was not the shipped default when
+  they were taken and is now.** They describe the shipped product. The note that
+  stood here said the opposite, and was correct until the default flipped: at
+  `False` the confidence head builds `bf16[32, L^2, 2048]` at 122.8 GiB against
+  a 95.6 GiB device, so no measurement of that configuration was ever going to
+  be a figure for a working product. Both
   A/Bs held the setting constant, so the differences are real at that setting;
   whether they are the same at the default is being measured.
 
@@ -701,6 +704,17 @@ command predicts unless it says so here, in its own paragraph.
   rather than `protenix-jax/0.1.0`.
 
 ### Fixed
+
+- **ESMFold2's released configuration did not run.** At 32 diffusion samples --
+  what `config.json` ships and `backends/esmfold2.py` carries -- a 1,003-residue
+  job terminated with an allocation failure after 71 minutes, under default
+  preallocation and under `XLA_PYTHON_CLIENT_PREALLOCATE=false` alike. The
+  confidence head runs its own folding trunk on the spread pair, and batched
+  over 32 samples that trunk builds `bf16[32, L^2, 2048]` at **122.8 GiB on a
+  95.6 GiB device** -- 27.2 GiB over on a single buffer, so no allocator setting
+  could rescue it. `confidence_sample_sequential` now defaults to on, which
+  divides that and every other batched intermediate by the sample count.
+
 
 - **ESMFold2's folding trunk ran in float32 while every setting said
   bfloat16.** `ModelSettings.trunk_dtype` defaults to `bfloat16`, the released
