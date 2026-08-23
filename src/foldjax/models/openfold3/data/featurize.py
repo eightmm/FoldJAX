@@ -1007,3 +1007,90 @@ def subsample_msa_rows(
         if array is not None:
             out[name] = array[:, order]
     return out
+
+
+def collapse_identical_templates(
+    features: Mapping[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Keep one row of a template axis whose rows are all the same template.
+
+    The template stack runs once per template and the results are averaged, so
+    ``n`` copies of one template cost ``n`` times the work to produce the value
+    one copy already gives. That is not a hypothetical: a query with no
+    templates is featurized as the released fixed-width axis of *four* empty
+    ones (``_empty_template_features``, mirroring upstream's ``n_templates: 4``),
+    every one of them the same all-gap restype and all-zero distogram, masks and
+    unit vectors. Nothing downstream distinguishes them either --
+    ``template_pair_embedder`` reads no per-template index -- so the stack
+    computes the same tensor four times and divides the sum by four.
+
+    Measured on the 1003-token bench target with no templates, the four rows
+    *together* are 645.2 MiB of entry arguments, 599 MiB of it a zero
+    distogram, and 5.68 GiB at 3012 tokens. Those are totals, not savings:
+    collapsing to one row keeps a quarter, so it saves 484 MiB and 4.26 GiB
+    respectively, and drops three of the four template-stack evaluations in
+    every recycling cycle.
+
+    End to end that is 415 MiB off the peak at 1003 tokens with no time
+    difference the measurement can resolve, and 6.3 GiB (-10.4%) with 16.3 s
+    (-6.8%) at 3012, the latter confirmed with the arms run in both orders so
+    it is not a warming card. The written structures and confidences are
+    byte-identical at both sizes, including a four-chain complex, against a
+    rerun floor of exactly zero.
+
+    This is a divergence from upstream, which does compute the duplicates. It is
+    a divergence in work, not in value: with ``n`` identical rows the reduction
+    is ``n * x / n``, which is ``x`` up to the rounding of the summation --
+    around an ulp at the point the template update is added to the pair
+    representation, far below the spread between two runs of the same code.
+
+    Args:
+        features: batched model features. Templates are found through
+            ``_TEMPLATE_AXES``, so a feature subset without them is returned
+            unchanged.
+
+    Returns:
+        A new mapping with every template-axis feature reduced to its first row
+        when they are all equal; otherwise the same entries, shared not copied.
+    """
+    present = {
+        name: (np.asarray(features[name]), axes[0])
+        for name, axes in _TEMPLATE_AXES.items()
+        if name in features
+    }
+    if not present:
+        return dict(features)
+
+    rows = {array.shape[axis % array.ndim] for array, axis in present.values()}
+    if len(rows) != 1:
+        raise ValueError(
+            f"template features disagree on their row count: {sorted(rows)}"
+        )
+    (n_templates,) = rows
+    if n_templates <= 1:
+        return dict(features)
+
+    # A padding mask records which rows are real, so rows that agree in content
+    # can still differ in whether they participate. Only the all-active case is
+    # collapsed; anything else keeps its storage and its weights.
+    padding = present.get("template_padding_mask")
+    if padding is not None:
+        mask = padding[0]
+        if not np.array_equal(mask, np.ones_like(mask)):
+            return dict(features)
+
+    # Smallest first, so a distinct pair of masks answers the question before
+    # the hundreds of megabytes of distogram are ever compared.
+    ordered = sorted(present.items(), key=lambda item: item[1][0].nbytes)
+    for _name, (array, axis) in ordered:
+        moved = np.moveaxis(array, axis % array.ndim, 0)
+        first = moved[0]
+        if not all(
+            np.array_equal(first, moved[index]) for index in range(1, n_templates)
+        ):
+            return dict(features)
+
+    out = dict(features)
+    for name, (array, axis) in present.items():
+        out[name] = np.take(array, [0], axis=axis % array.ndim)
+    return out

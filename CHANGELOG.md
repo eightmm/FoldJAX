@@ -30,6 +30,25 @@ command predicts unless it says so here, in its own paragraph.
   now runs inside the selected default-device context, so lazy parameter loads
   and other unpinned allocations start on the requested device. A forced
   two-device probe places all 405 checkpoint array leaves directly on device 1.
+- **A query with no templates no longer runs the template stack four times.**
+  Upstream's released width is four templates, so a query without any is
+  featurized as four *identical* empty ones -- the same all-gap restype, the
+  same zero distogram, masks and unit vectors. The stack runs once per row and
+  averages, and nothing downstream distinguishes rows, so it computed one
+  tensor four times and divided the sum by four. Collapsing runs that are all
+  equal to a single row saves 484 MiB of entry arguments at 1,003 tokens and
+  4.26 GiB at 3,012, and drops three of four template-stack evaluations in
+  every recycling cycle: peak falls 415 MiB at 1,003 tokens with no time
+  difference the measurement resolves, and 6.3 GiB with 16.3 s -- 10.4% and
+  6.8% -- at 3,012, the latter confirmed with the arms run in both orders so a
+  warming card cannot explain it. This is a divergence from upstream in work
+  and not in value: with `n` identical rows the reduction is `n * x / n`, and
+  the written structures and confidences come out byte-identical at both sizes,
+  including a four-chain complex, against a rerun floor of exactly zero. It
+  declines to collapse when any row differs and when the padding mask is not
+  all-active, and the padded path was checked too -- a collapsed feature padded
+  back to four rows carries a mask of `[1, 0, 0, 0]`, so the denominator stays
+  one.
 - **The MSA outer product carries a byte ceiling, like every other widening
   operation here.** `outer_product_mean` widens `[M, N, C]` into `[N, N, C, C]`
   before `linear_out` narrows it, and at 1,003 tokens that intermediate is

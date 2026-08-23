@@ -159,6 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
     from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
     from foldjax.models.openfold3.data import (
+        collapse_identical_templates,
         load_feature_archive,
         normalize_asym_ids,
         subsample_msa_rows,
@@ -209,6 +210,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Keep a full alignment on the host only. At long sequences it can be
     # several GiB, so converting before this cut defeats the memory saving.
     raw = subsample_msa_rows(raw, config.msa_depth)
+    # An archive built for a query with no templates carries four identical
+    # empty ones, which the stack would embed four times to average back to the
+    # value one gives. The FoldJAX backend cuts them in the same place, so both
+    # entry points compile the same program from the same archive.
+    raw = collapse_identical_templates(raw)
     raw, n_chain = normalize_asym_ids(raw)
     features = {name: jnp.asarray(value) for name, value in raw.items()}
     print(

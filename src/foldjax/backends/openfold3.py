@@ -296,6 +296,13 @@ class OpenFold3Backend(Backend):
         # on the host, before the alignment reaches the device. Unconditional, so
         # the default path is the released one rather than a full-depth divergence.
         features = data.subsample_msa_rows(features, config.msa_depth)
+        # A query with no templates is still featurized as the released
+        # fixed-width axis of four identical empty ones, which the template
+        # stack then embeds four times and averages. Dropping the duplicates
+        # here -- before the padding plan reads the template axis, and before
+        # anything reaches the device -- keeps the value and a quarter of the
+        # work. Real, differing templates are left alone.
+        features = data.collapse_identical_templates(features)
         padding_plan = None
         if request.padding is not None:
             padding_plan = _padding_plan(features, request.padding)

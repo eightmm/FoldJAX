@@ -1286,6 +1286,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
                 output_metadata,
             ),
             subsample_msa_rows=lambda batch, depth: batch,
+            collapse_identical_templates=lambda batch: batch,
             normalize_asym_ids=normalize_asym_ids,
         ),
         "foldjax.models.openfold3.inference": SimpleNamespace(
@@ -1377,6 +1378,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
                 output_metadata,
             ),
             subsample_msa_rows=lambda batch, depth: batch,
+            collapse_identical_templates=lambda batch: batch,
             pad_features=pad_features,
             normalize_asym_ids=lambda batch: (batch, 1),
         ),
