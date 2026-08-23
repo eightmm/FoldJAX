@@ -131,6 +131,40 @@ class ModelSettings:
     #: silently rather than loudly. Protenix's copy of the rule carries the
     #: same exposure.
     confidence_sample_sequential: bool = False
+    #: Return the confidence head's full-bin logits and the PAE/PDE matrices.
+    #: False by default, mirroring Boltz-2's flag of the same name and default
+    #: -- that argument was had once already on the other port and this is the
+    #: same problem, not a different one.
+    #:
+    #: Nothing reads them. `write_prediction_outputs` consumes three arrays and
+    #: four scalars (`sample_atom_coords`, `plddt_per_atom`, `plddt`, and
+    #: `SAMPLE_SCORES`); the backend takes its scores from that writer's
+    #: summary; `representations` offers only `single` and `pair`; and `raw`
+    #: carries overrides, language-model presence and padding. There is no path
+    #: by which a caller receives them.
+    #:
+    #: They are not free to carry. Measured entry outputs at 1,003 tokens were
+    #: 2,748 MiB at 5 samples and 16,264 MiB at 32 -- against 2,745 and 16,261
+    #: MiB of these arrays computed from their shapes, so they are the whole
+    #: term. `pae_logits` and `pde_logits` are `[S, L, L, 64]` float32 and are
+    #: 15.36 GiB of the 15.88 at the released 32 samples: quadratic in tokens
+    #: and linear in samples.
+    #:
+    #: The saving comes from their not being *entry outputs of the compiled
+    #: program*, which XLA cannot eliminate however unread they are. Dropping
+    #: them from the returned dict after the fact would save exactly nothing,
+    #: which is why this is a static setting and not a caller-side filter.
+    #:
+    #: `pae` and `pde` are derived matrices rather than raw logits, and in
+    #: tools of this family a PAE matrix is something users actively want. That
+    #: they are unread here may describe a missing output feature rather than
+    #: pure waste -- so this flag is how you turn them back on, and PAE from
+    #: ESMFold2 is one argument away rather than unsupported.
+    #:
+    #: `distogram_logits` is deliberately NOT under this flag: it is 245 MiB
+    #: and flat in sample count, and `test_model_parity` reads it. Excluding it
+    #: keeps 98% of the saving without touching a test that cannot run here.
+    return_confidence_logits: bool = False
     #: What upstream's `torch.amp.autocast` makes the trunk on CUDA. Four
     #: regions run in bfloat16 there -- the whole trunk from the inputs
     #: embedder to the parcae coda, the confidence head's folding trunk, the
@@ -211,6 +245,19 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
 #: `modeling_esmfold2.py:936`. Everything else -- the distogram head, the
 #: structure head, the confidence head -- is float32 there, and the two
 #: sub-regions that reopen bfloat16 for themselves are handled where they are.
+#: What `return_confidence_logits=False` stops returning. Every one is derived
+#: inside the confidence head from tensors the head keeps, so the scalars that
+#: *are* read -- `ptm` comes from `softmax(pae_logits)` -- are unaffected: this
+#: withholds the arrays, it does not skip the arithmetic.
+CONFIDENCE_LOGIT_OUTPUTS = (
+    "pae_logits",
+    "pde_logits",
+    "plddt_logits",
+    "resolved_logits",
+    "pae",
+    "pde",
+)
+
 TRUNK_PREFIXES = (
     "inputs_embedder.",
     "z_init_1.",
@@ -947,6 +994,12 @@ def predict(
     else:
         conf = _confidence(coords, n_samples)
     output.update(conf)
+    if not settings.return_confidence_logits:
+        # Dropped here, inside the traced function, so they stop being entry
+        # outputs of the compiled program. Filtering the dict in the caller
+        # would leave the buffers exactly where they are.
+        for name in CONFIDENCE_LOGIT_OUTPUTS:
+            output.pop(name, None)
     return output
 
 

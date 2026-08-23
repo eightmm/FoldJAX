@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 from pathlib import Path
 
+import jax.numpy as jnp
 import pytest
 
 MODELS = Path(__file__).resolve().parent.parent / "src/foldjax/models"
@@ -118,22 +120,53 @@ def test_protenix_hands_its_confidence_head_a_backend() -> None:
         )
 
 
-def test_opendde_runs_the_fused_kernels_like_upstream() -> None:
-    """OpenDDE stopped being the exception.
+def test_opendde_runs_the_fused_kernels_upstream_ships(monkeypatch) -> None:
+    """OpenDDE stopped being the exception, and then diverged on one path only.
 
     Both backends were pinned to XLA here on an OOM measured only at 1,531
     tokens -- 92.21 GiB fused against a 97,887 MiB card. That is real at that
     size and was wrong as a rule: the same model peaks at 10,552 MiB on a
-    490-token job and 34,408 on a 970-token one. Upstream runs both kernels
-    fused at every size.
+    490-token job and 34,408 on a 970-token one.
+
+    The attention is fused everywhere, as upstream runs it. The *product* is
+    fused on float32, which is what OpenDDE ships and what upstream stores --
+    so the released configuration still runs upstream's kernels. On bfloat16 it
+    takes the blocked path, measured faster *and* smaller there: 166.27 ->
+    143.97 s and 22.44 -> 19.85 GiB at 1,003 residues, 405.07 -> 373.23 s and
+    52.10 -> 45.76 GiB at 1,531. That is a deliberate divergence from
+    upstream's default on a path that is *already* a divergence -- upstream
+    stores float32, so a bfloat16 trunk is opt-in before this choice is
+    reached. The faithful path is unchanged.
+
+    Behavioural rather than source-text: the previous version asserted the
+    string `"PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "cueq"` appeared in the
+    function, which stopped being true when the value became an expression
+    while the policy it was guarding was still intact for float32.
     """
     from foldjax.models.opendde.models import model
 
-    source = inspect.getsource(model._with_cueq_triangle_defaults)
-    assert '"PROTENIX_TRIANGLE_BACKEND": "cueq_jit"' in source
-    assert '"PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "cueq"' in source
+    seen: dict[str, str | None] = {}
+
+    @model._with_cueq_triangle_defaults
+    def spy(**_kwargs) -> None:
+        seen["attention"] = os.environ.get("PROTENIX_TRIANGLE_BACKEND")
+        seen["product"] = os.environ.get("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND")
+
+    for name in (
+        "PROTENIX_TRIANGLE_BACKEND",
+        "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    spy(trunk_dtype=None)
+    assert seen == {"attention": "cueq_jit", "product": "cueq"}, seen
+
+    spy(trunk_dtype=jnp.bfloat16)
+    assert seen == {"attention": "cueq_jit", "product": "xla"}, seen
+
     # setdefault, not assignment: the largest jobs still need a way to the
     # blocked path, and the process must not inherit either value.
+    source = inspect.getsource(model._with_cueq_triangle_defaults)
     assert "if name not in os.environ" in source
     assert "os.environ.pop" in source
 
