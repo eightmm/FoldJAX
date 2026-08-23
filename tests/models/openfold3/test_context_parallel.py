@@ -328,6 +328,37 @@ _CANNON_PROBE = _TWO_D_PREAMBLE + textwrap.dedent(
 )
 
 
+_COMPENSATED_CANNON_PROBE = _TWO_D_PREAMBLE + textwrap.dedent(
+    """
+    from foldjax.models.openfold3.models.triangle import _cannon_combine
+
+    assert DEVICES == 9
+
+    # Each output is mathematically 1.0, but a plain fp32 tile reduction loses
+    # that unit for two of the three cyclic Cannon orders:
+    # (1e8 + 1) - 1e8 and (1 - 1e8) + 1e8 both round to zero. Neumaier's
+    # correction must retain it without changing the tile-only schedule.
+    values = jnp.asarray([1e8, 1.0, -1e8], dtype=jnp.float32)
+    a = jnp.broadcast_to(values[None, :, None], (3, 3, 1))
+    b = jnp.ones((3, 3, 1), dtype=jnp.float32)
+
+    def run(a_in, b_in):
+        return _cannon_combine(a_in, b_in, outgoing=True)
+
+    jax.clear_caches()
+    with context_parallel(DEVICES, layout="2d"):
+        lowered = jax.jit(run).lower(a, b)
+        got = jax.device_get(lowered.compile()(a, b))
+    np.testing.assert_array_equal(got, np.ones((3, 3, 1), dtype=np.float32))
+
+    hlo = lowered.compiler_ir(dialect="hlo").as_hlo_text().lower()
+    assert "collective-permute" in hlo or "collective_permute" in hlo, hlo
+    assert "all-gather" not in hlo and "all_gather" not in hlo, hlo
+    print("COMPENSATED_CANNON_OK")
+    """
+)
+
+
 _GRID_STACK_PROBE = _TWO_D_PREAMBLE + textwrap.dedent(
     """
     from foldjax.models.openfold3.models.attention import AttentionParams
@@ -448,6 +479,13 @@ def test_cannon_holds_on_a_three_by_three_grid() -> None:
     the two ring directions and both skews are separate permutations.
     """
     assert "CANNON_PARITY_OK" in _run_probe(_CANNON_PROBE, devices=9)
+
+
+def test_cannon_uses_compensated_tile_accumulation() -> None:
+    """Cancellation-prone tiles retain low bits on a 3x3 grid."""
+    assert "COMPENSATED_CANNON_OK" in _run_probe(
+        _COMPENSATED_CANNON_PROBE, devices=9
+    )
 
 
 def test_two_dimensional_pairformer_matches_the_unsharded_stack() -> None:

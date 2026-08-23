@@ -192,6 +192,7 @@ def _cannon_combine(
         lhs = permute(lhs, row_skew_perm(side))
         rhs = permute(rhs, col_skew_perm(side))
         total = None
+        correction = None
         for step in range(side):
             # float32 accumulation without widening the operands, which is what
             # AF3's BF16_BF16_F32 algorithm does; with a float32 trunk the two
@@ -199,11 +200,22 @@ def _cannon_combine(
             term = jnp.einsum(
                 subscript, lhs, rhs, preferred_element_type=jnp.float32
             )
-            total = term if total is None else total + term
+            if total is None:
+                total = term
+                correction = jnp.zeros_like(term)
+            else:
+                updated = total + term
+                residual = jnp.where(
+                    jnp.abs(total) >= jnp.abs(term),
+                    (total - updated) + term,
+                    (term - updated) + total,
+                )
+                total = updated
+                correction = correction + residual
             if step + 1 < side:
                 lhs = permute(lhs, ring_perm(side, axis=CP_COL_AXIS, delta=-1))
                 rhs = permute(rhs, ring_perm(side, axis=CP_ROW_AXIS, delta=-1))
-        return total
+        return total + correction
 
     out = jax.shard_map(body, mesh=mesh, in_specs=(spec, spec), out_specs=spec)(a, b)
     if pad:

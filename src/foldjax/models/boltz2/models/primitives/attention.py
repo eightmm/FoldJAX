@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.primitives.attention_backend import (
+    masked_softmax,
     tokamax_dot_product_attention,
 )
 
@@ -88,10 +89,10 @@ def attention_pair_bias_forward(
         v_f = v.astype(jnp.float32)
         bias_f = bias.astype(jnp.float32)
         scale = jnp.sqrt(jnp.asarray(head_dim, dtype=jnp.float32))
-        mask_bias = (1.0 - mask[:, None, None].astype(jnp.float32)) * -inf
+        key_mask = mask[:, None, None, :].astype(bool)
         n_q = q.shape[1]
         if chunk_size is None or chunk_size <= 0 or n_q <= chunk_size:
-            out = _attention_qblock(q_f, k_f, v_f, bias_f, mask_bias, scale)
+            out = _attention_qblock(q_f, k_f, v_f, bias_f, key_mask, scale)
         else:
             blocks = []
             for start in range(0, n_q, chunk_size):
@@ -102,7 +103,7 @@ def attention_pair_bias_forward(
                         k_f,
                         v_f,
                         bias_f[:, :, start:stop],
-                        mask_bias,
+                        key_mask,
                         scale,
                     )
                 )
@@ -120,11 +121,11 @@ def _attention_qblock(
     k: jnp.ndarray,
     v: jnp.ndarray,
     bias_blk: jnp.ndarray,
-    mask_bias: jnp.ndarray,
+    key_mask: jnp.ndarray,
     scale: jnp.ndarray,
 ) -> jnp.ndarray:
     """Exact attention for a query block. q_blk:[b,iq,h,d]; softmax over full j."""
     attn = jnp.einsum("bihd,bjhd->bhij", q_blk, k) / scale
-    attn = attn + bias_blk + mask_bias
-    attn = jax.nn.softmax(attn, axis=-1)
+    attn = attn + bias_blk
+    attn = masked_softmax(attn, key_mask)
     return jnp.einsum("bhij,bjhd->bihd", attn, v)
