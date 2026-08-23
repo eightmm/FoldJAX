@@ -80,10 +80,18 @@ def test_predict_runs_under_the_precision_upstream_ships() -> None:
 
 
 def test_allocator_env_is_set_on_import() -> None:
-    """Checked in a fresh process so an inherited value cannot mask it."""
+    """Checked in a fresh process so an inherited value cannot mask it.
+
+    The import sets the fraction and deliberately leaves preallocation alone.
+    It used to force ``XLA_PYTHON_CLIENT_PREALLOCATE=false``; at 3,012 tokens
+    with a cold cache that is the difference between the run dying on a
+    54.34 GiB request at a 28.5 GiB high-water mark and completing at a
+    59.8 GiB peak. Asserting the *absence* is the point -- a re-added default
+    would reinstate the wall, and only this direction catches it.
+    """
     code = (
         "import foldjax.models.openfold3, os; "
-        "print(os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'], "
+        "print(os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '<unset>'), "
         "os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'])"
     )
     result = subprocess.run(
@@ -93,7 +101,7 @@ def test_allocator_env_is_set_on_import() -> None:
         check=True,
         env={"JAX_PLATFORMS": "cpu", **inherited_environment()},
     )
-    assert result.stdout.split() == ["false", "0.90"]
+    assert result.stdout.split() == ["<unset>", "0.90"]
 
 
 def test_explicit_env_settings_are_not_overridden() -> None:

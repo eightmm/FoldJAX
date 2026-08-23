@@ -2,10 +2,14 @@
 
 import os
 
-# Grow the allocator on demand instead of reserving the device up front, so a
-# large token bucket does not fail before it has a chance to run. Explicit
-# process-level settings always win.
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+# Take the pool up front. Growing the allocator on demand was the historical
+# setting here, justified as stopping a large token bucket from failing before
+# it had a chance to run; measured at 3,012 tokens with a cold compilation
+# cache, it is what *caused* that failure. A grown pool is assembled piecewise
+# and cannot serve one large contiguous request even with the card mostly
+# free, so the run dies asking for a block that would have fit. Only the
+# fraction is set, and only as a default: an explicit process-level setting
+# still wins.
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
 # The matmul precision OpenFold3 needs is applied by `openfold3_precision`

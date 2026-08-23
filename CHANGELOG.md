@@ -10,6 +10,25 @@ command predicts unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Fixed
+
+- **OpenFold3 no longer forces the allocator to grow on demand, which is what
+  made long targets fail.** Importing the port set
+  `XLA_PYTHON_CLIENT_PREALLOCATE=false` process-wide, documented as stopping a
+  large token bucket from failing before it had a chance to run. A cold-cache
+  A/B at 3,012 tokens, both arms setting the variable explicitly and both at
+  `MEM_FRACTION=0.90`, measured the opposite: with preallocation off the run
+  died after 324.3 s asking for 54.34 GiB, having reached a high-water mark of
+  only 28.5 GiB; with it on the same command completed in 1,058.4 s at a peak
+  of 59.8 GiB and logged no allocator failure. A pool grown on demand is
+  assembled piecewise, so it cannot serve one large contiguous request even
+  with the card mostly free. Only the fraction is now set, still via
+  `setdefault`, so an explicit operator setting continues to win. This also
+  re-enables `foldjax.oom`'s pool-based diagnostic for OpenFold3, which
+  declines to report whenever preallocation is off. The recorded symptom of a
+  3,012-token first invocation failing while a second process succeeded is
+  explained by the same mechanism.
+
 ### Added
 
 - **OpenFold3 carries template-free pair geometry as one verified zero scalar.**

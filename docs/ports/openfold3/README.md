@@ -50,8 +50,14 @@ around this model's `predict` call rather than changing JAX globally:
   warm, no memory change, CA RMSD 0.011 A against a 0.005 A run-twice floor, and
   TM 0.9937 against the deposited structure either way. Re-running that torch
   comparison needs the reference captured under `"high"` on both sides.
-- `XLA_PYTHON_CLIENT_PREALLOCATE=false` and `MEM_FRACTION=0.90` via `setdefault`,
-  so an operator's explicit choice survives.
+- `MEM_FRACTION=0.90` via `setdefault`, so an operator's explicit choice
+  survives. Preallocation is deliberately *not* set. The import used to force
+  `XLA_PYTHON_CLIENT_PREALLOCATE=false` to keep a large token bucket from
+  failing early; a cold-cache A/B at 3,012 tokens showed it caused that
+  failure rather than preventing it — `false` died on a 54.34 GiB request
+  having only reached a 28.5 GiB high-water mark, while the same command with
+  preallocation on completed at a 59.8 GiB peak. A pool grown on demand is
+  assembled piecewise and cannot serve one large contiguous request.
 
 ## Setup
 
