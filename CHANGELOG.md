@@ -12,6 +12,24 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenFold3 repeated-layer weights are stacked before device transfer.**
+  The released checkpoint contains seven homogeneous scanned stacks whose
+  parameter leaves total 1,444,290,304 bytes (1.35 GiB). They previously
+  arrived at `jit` as one argument per layer, so XLA emitted `concatenate`
+  copies of the weights into its temporary arena. Mapping now keeps checkpoint
+  arrays on the host, stacks each homogeneous sequence once, and transfers only
+  the stacked tree. A 4-layer CPU compilation drops both parameter
+  concatenates and at least one full stacked copy from temporary memory while
+  remaining bitwise identical. This trades a host-side stacked copy during
+  checkpoint mapping for the smaller compiled device arena. The heterogeneous
+  four-block MSA path and the two unscanned conditioning-transition loops keep
+  their original layouts.
+- **AlphaFold 3 parameters follow the explicitly selected device.** A run on
+  device 1 used to load the 1,146,811,260-byte checkpoint on JAX's implicit
+  device 0 before the device-pinned model copied it across. Native prediction
+  now runs inside the selected default-device context, so lazy parameter loads
+  and other unpinned allocations start on the requested device. A forced
+  two-device probe places all 405 checkpoint array leaves directly on device 1.
 - **Features the graph never reads are no longer copied to the device.**
   Boltz-2's featurizer produces 78 arrays and the compiled program reads 31.
   `jax.jit` already dropped the other 47 from the program -- and drops them

@@ -154,6 +154,20 @@ def _tokamax_kernel_fallback(strategy: str):
     return tokamax_config.autotuning_cache_miss_fallback(strategy)
 
 
+def _model_device(device: Any):
+    """Make lazy AlphaFold 3 parameter loads follow the selected device.
+
+    ``ModelRunner`` pins its compiled function to ``device``, but its cached
+    parameter property is first touched inside ``predict_structure``. Without
+    this context, ``jnp.array`` in the upstream loader uses JAX's implicit
+    default device and a nonzero GPU run briefly owns and copies the checkpoint
+    from GPU 0.
+    """
+    import jax
+
+    return jax.default_device(device)
+
+
 def _settle_absl_flags() -> None:
     """Give absl its defaults instead of letting it parse FoldJAX's argv.
 
@@ -622,7 +636,7 @@ class AlphaFold3Backend(Backend):
                 (fold_input, job_name, job_dir, None, None)
                 for fold_input, job_name, job_dir in jobs
             )
-        with _tokamax_kernel_fallback(kernel_fallback):
+        with _tokamax_kernel_fallback(kernel_fallback), _model_device(device):
             for fold_input, job_name, job_dir, examples, resolved_plan in run_jobs:
                 if examples is not None:
                     results = _predict_featurized_structure(

@@ -24,6 +24,8 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._stacking import StackedLayers, stacked_or_stack
+
 
 def can_scan(blocks: Sequence[Any]) -> bool:
     """Whether ``blocks`` can be stacked into one scanned body.
@@ -36,6 +38,11 @@ def can_scan(blocks: Sequence[Any]) -> bool:
     """
     if len(blocks) < 2:
         return False
+    if isinstance(blocks, StackedLayers):
+        # The representation already owns one pytree with a leading layer
+        # axis. Avoid rebuilding 48 layer views merely to inspect it again at
+        # trace time.
+        return True
     reference = jax.tree.structure(blocks[0])
     shapes = [jnp.shape(leaf) for leaf in jax.tree.leaves(blocks[0])]
     for block in blocks[1:]:
@@ -70,7 +77,7 @@ def scan_stack[Carry](
         raise ValueError(
             "blocks are not stackable: their parameter trees or leaf shapes differ"
         )
-    stacked = jax.tree.map(lambda *arrays: jnp.stack(arrays), *blocks)
+    stacked = stacked_or_stack(blocks)
 
     def scanned(state: Carry, block: Any) -> tuple[Carry, None]:
         return body(state, block), None

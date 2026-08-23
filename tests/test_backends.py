@@ -4,10 +4,11 @@ import json
 import os
 import subprocess
 import sys
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import jax
 import numpy as np
 import pytest
 
@@ -701,7 +702,10 @@ def test_alphafold3_requires_real_booleans_for_output_options(
     monkeypatch.setattr(
         "foldjax.backends.alphafold3._load_runner", lambda _path: runner
     )
-    monkeypatch.setattr("jax.local_devices", lambda backend=None: ("device0",))
+    selected_device = jax.devices()[0]
+    monkeypatch.setattr(
+        "jax.local_devices", lambda backend=None: (selected_device,)
+    )
     request = dataclasses.replace(
         _request(tmp_path, "alphafold3", **{option: value}),
         cache_dir=None,
@@ -724,6 +728,7 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
     package_init.touch()
     request.options["source"] = runner_file.parent
     seen = {}
+    active_devices = []
 
     class FakeRunner:
         def __init__(self, **kwargs):
@@ -734,6 +739,7 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
 
     def predict_structure(fold_input, model_runner, *, buckets):
         seen["fold_input"] = fold_input
+        seen["active_device"] = active_devices[-1] if active_devices else None
         return results
 
     def write_outputs(written, output_dir, job_name):
@@ -762,11 +768,26 @@ def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -
     monkeypatch.setitem(sys.modules, "alphafold3.common", common)
     monkeypatch.setitem(sys.modules, "alphafold3.common.folding_input", folding)
     monkeypatch.setattr("foldjax.backends.alphafold3._load_runner", lambda path: runner)
-    monkeypatch.setattr("jax.local_devices", lambda backend=None: ("device0",))
+    selected_device = jax.devices()[0]
+    monkeypatch.setattr(
+        "jax.local_devices", lambda backend=None: (selected_device,)
+    )
+
+    @contextmanager
+    def model_device(device):
+        active_devices.append(device)
+        try:
+            yield
+        finally:
+            active_devices.pop()
+
+    monkeypatch.setattr("foldjax.backends.alphafold3._model_device", model_device)
 
     result = AlphaFold3Backend().predict(request)
 
-    assert seen["runner"]["device"] == "device0"
+    assert seen["runner"]["device"] == selected_device
+    assert seen["active_device"] == selected_device
+    assert active_devices == []
     assert seen["fold_input"].rng_seeds == (5,)
     assert result.raw == results
     sample = result.samples[0]
@@ -848,7 +869,10 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
         "foldjax.backends.alphafold3._tokamax_kernel_fallback",
         lambda strategy: nullcontext(),
     )
-    monkeypatch.setattr("jax.local_devices", lambda backend=None: ("device0",))
+    selected_device = jax.devices()[0]
+    monkeypatch.setattr(
+        "jax.local_devices", lambda backend=None: (selected_device,)
+    )
     padding = PaddingConfig(tokens=512, overflow="exact")
     request = dataclasses.replace(
         _request(tmp_path, "alphafold3"),

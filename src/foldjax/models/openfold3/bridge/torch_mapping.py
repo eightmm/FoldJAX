@@ -11,9 +11,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._stacking import prestack_layer_lists
 from foldjax.models.openfold3.inference import InferenceParams
 from foldjax.models.openfold3.models.atom_features import (
     AtomAttentionDecoderParams,
@@ -80,34 +82,40 @@ from foldjax.models.openfold3.models.triangle_attention import TriangleAttention
 from foldjax.models.openfold3.models.trunk import TrunkParams
 
 
-def to_array(value: Any) -> jnp.ndarray:
-    """Convert one torch/numpy tensor to a JAX array without importing torch."""
+def to_array(value: Any) -> np.ndarray:
+    """Convert one torch/numpy tensor to a host array without importing torch.
+
+    Individual mappers deliberately stay on the host. ``map_inference_params``
+    can then stack repeated layers before the parameter tree reaches a device,
+    avoiding both an in-graph concatenate and a transient device-side copy of
+    the unstacked checkpoint.
+    """
     if hasattr(value, "detach"):
         value = value.detach().cpu().numpy()
-    return jnp.asarray(np.asarray(value))
+    return np.asarray(value)
 
 
 def _join(prefix: str, name: str) -> str:
     return f"{prefix}.{name}" if prefix else name
 
 
-def _require(state: Mapping[str, Any], key: str) -> jnp.ndarray:
+def _require(state: Mapping[str, Any], key: str) -> np.ndarray:
     if key not in state:
         raise KeyError(f"missing checkpoint key: {key}")
     return to_array(state[key])
 
 
-def _optional(state: Mapping[str, Any], key: str) -> jnp.ndarray | None:
+def _optional(state: Mapping[str, Any], key: str) -> np.ndarray | None:
     return to_array(state[key]) if key in state else None
-
 
 
 def _squeeze_trailing(array: Any) -> Any:
     """Drop trailing singleton axes from a 1-D-by-intent buffer."""
-    result = jnp.asarray(array)
+    result = np.asarray(array)
     while result.ndim > 1 and result.shape[-1] == 1:
         result = result[..., 0]
     return result
+
 
 def map_linear(
     state: Mapping[str, Any], prefix: str = "", *, bias: bool | None = None
@@ -855,8 +863,44 @@ def map_pairformer_embedding(
     )
 
 
+def _prestack_scanned_blocks(params: Any) -> Any:
+    """Pre-stack only fields that OpenFold3 passes to ``scan_stack``.
+
+    The shared recursive helper intentionally recognises any homogeneous layer
+    sequence. OpenFold3 also has two-element ``transition_s``/``transition_z``
+    sequences that run through Python loops; stacking those replaces separate
+    parameters with slices of one large buffer and increases XLA temporary
+    memory. Every scanned model stack is stored in a field named ``blocks``, so
+    keep this bridge-specific selection narrow and leave all other sequences in
+    their original layout.
+    """
+    if isinstance(params, dict):
+        return {
+            name: (
+                prestack_layer_lists(value)
+                if name == "blocks"
+                else _prestack_scanned_blocks(value)
+            )
+            for name, value in params.items()
+        }
+    if hasattr(params, "_fields") and isinstance(params, tuple):
+        return type(params)(
+            *(
+                prestack_layer_lists(value)
+                if name == "blocks"
+                else _prestack_scanned_blocks(value)
+                for name, value in zip(params._fields, params, strict=True)
+            )
+        )
+    if isinstance(params, list):
+        return [_prestack_scanned_blocks(value) for value in params]
+    if isinstance(params, tuple):
+        return tuple(_prestack_scanned_blocks(value) for value in params)
+    return params
+
+
 def map_inference_params(
-    state: Mapping[str, Any], prefix: str | None = None
+    state: Mapping[str, Any], prefix: str | None = None, *, prestack: bool = True
 ) -> InferenceParams:
     """Assemble every parameter group :func:`predict` needs from a checkpoint.
 
@@ -864,6 +908,9 @@ def map_inference_params(
         state: a loaded checkpoint, already stripped of wrapper prefixes.
         prefix: the model root. Detected via :func:`find_model_prefix` when
             omitted; pass ``""`` to force the top level.
+        prestack: stack homogeneous scanned block fields on the host before
+            moving the complete parameter tree to JAX. Disable only for
+            diagnostics that need the historical per-layer parameter layout.
 
     Raises:
         KeyError: a group is missing. The PAE head is the one upstream omits
@@ -888,7 +935,7 @@ def map_inference_params(
             "ipTM. Map the other groups individually if that is acceptable."
         )
 
-    return InferenceParams(
+    params = InferenceParams(
         trunk=map_trunk(state, _join(prefix, INFERENCE_PREFIXES["trunk"])),
         diffusion_conditioning=map_diffusion_conditioning(
             state, _join(prefix, INFERENCE_PREFIXES["diffusion_conditioning"])
@@ -912,6 +959,13 @@ def map_inference_params(
         experimentally_resolved_head=map_atom_logit_head(
             state, _join(prefix, INFERENCE_PREFIXES["experimentally_resolved_head"])
         ),
+    )
+    if prestack:
+        params = _prestack_scanned_blocks(params)
+    return jax.tree.map(
+        lambda leaf: jnp.asarray(leaf) if isinstance(leaf, np.ndarray) else leaf,
+        params,
+        is_leaf=lambda leaf: leaf is None,
     )
 
 

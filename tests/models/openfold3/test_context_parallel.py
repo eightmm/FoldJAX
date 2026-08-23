@@ -86,6 +86,7 @@ _PARITY_PROBE = textwrap.dedent(
     import pytest
 
     from foldjax.models._cp import context_parallel
+    from foldjax.models._stacking import prestack_layer_lists
     from foldjax.models.openfold3.models.attention import AttentionParams
     from foldjax.models.openfold3.models.attention_pair_bias import (
         AttentionPairBiasParams,
@@ -172,7 +173,9 @@ _PARITY_PROBE = textwrap.dedent(
             single_transition=transition(),
         )
 
-    params = PairformerStackParams(blocks=(block(), block()))
+    params = prestack_layer_lists(
+        PairformerStackParams(blocks=(block(), block()))
+    )
     s, z = arr(N, C), arr(N, N, C)
     mask_np = rng.random(N) > 0.15
     single_mask = jnp.asarray(mask_np, dtype=jnp.float32)
@@ -253,6 +256,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models._cp import context_parallel, cp_grid, cp_layout
+from foldjax.models._stacking import prestack_layer_lists
 from foldjax.models.openfold3.models.primitives import (
     LayerNormParams, LinearParams, SwiGLUParams, SwiGLUTransitionParams,
 )
@@ -383,7 +387,9 @@ _GRID_STACK_PROBE = _TWO_D_PREAMBLE + textwrap.dedent(
             single_transition=transition(),
         )
 
-    params = PairformerStackParams(blocks=(block(), block()))
+    params = prestack_layer_lists(
+        PairformerStackParams(blocks=(block(), block()))
+    )
     s, z = arr(N, C), arr(N, N, C)
     mask_np = rng.random(N) > 0.15
     single_mask = jnp.asarray(mask_np, dtype=jnp.float32)
