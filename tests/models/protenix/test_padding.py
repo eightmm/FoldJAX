@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -362,14 +363,6 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
 
 @pytest.mark.parametrize("chunk_size", [None, 1])
 def test_padded_noise_keeps_every_sample_real_prefix(chunk_size) -> None:
-    exact_init, exact_steps = _padded_noise_tapes(
-        seed=17,
-        n_sample=2,
-        n_step=3,
-        actual_atom=3,
-        target_atom=3,
-        diffusion_chunk_size=chunk_size,
-    )
     padded_init, padded_steps = _padded_noise_tapes(
         seed=17,
         n_sample=2,
@@ -379,9 +372,41 @@ def test_padded_noise_keeps_every_sample_real_prefix(chunk_size) -> None:
         diffusion_chunk_size=chunk_size,
     )
 
-    np.testing.assert_array_equal(np.asarray(padded_init[:, :3]), exact_init)
-    for padded, exact in zip(padded_steps, exact_steps, strict=True):
-        np.testing.assert_array_equal(np.asarray(padded[:, :3]), exact)
+    root_key = jax.random.PRNGKey(17)
+    chunk_sizes = (2,) if chunk_size is None else (1, 1)
+    chunk_keys = (
+        (root_key,)
+        if chunk_size is None
+        else tuple(jax.random.split(root_key, len(chunk_sizes)))
+    )
+    expected_init_chunks = []
+    expected_step_chunks = [[] for _ in range(3)]
+    for expected_chunk_size, chunk_key in zip(
+        chunk_sizes, chunk_keys, strict=True
+    ):
+        chunk_key, init_key = jax.random.split(chunk_key)
+        expected_init_chunks.append(
+            jax.random.normal(
+                init_key, (expected_chunk_size, 3, 3), dtype=jnp.float32
+            )
+        )
+        for step_index, step_key in enumerate(jax.random.split(chunk_key, 3)):
+            expected_step_chunks[step_index].append(
+                jax.random.normal(
+                    step_key, (expected_chunk_size, 3, 3), dtype=jnp.float32
+                )
+            )
+    expected_init = jnp.concatenate(expected_init_chunks, axis=0)
+    expected_steps = jnp.stack(
+        tuple(jnp.concatenate(chunks, axis=0) for chunks in expected_step_chunks),
+        axis=0,
+    )
+
+    assert padded_steps.shape == (3, 2, 7, 3)
+    np.testing.assert_array_equal(np.asarray(padded_init[:, :3]), expected_init)
+    np.testing.assert_array_equal(np.asarray(padded_steps[..., :3, :]), expected_steps)
+    np.testing.assert_array_equal(np.asarray(padded_init[:, 3:]), 0)
+    np.testing.assert_array_equal(np.asarray(padded_steps[..., 3:, :]), 0)
 
 
 def _features() -> dict[str, np.ndarray]:

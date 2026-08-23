@@ -6,7 +6,7 @@ CLI: static features + JAX params + PRNG key -> one prediction dictionary.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import jax
@@ -33,7 +33,7 @@ def protenix_predict_static(
     sigma_data: float = 16.0,
     recycling_steps: int = 10,
     init_noise: jnp.ndarray | None = None,
-    step_noises: tuple[jnp.ndarray, ...] | None = None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,
     atom_encoder_heads: int = 4,

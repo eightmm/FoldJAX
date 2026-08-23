@@ -617,6 +617,12 @@ def test_static_infer_pads_mini_esm_language_model_and_reports_profile(
     assert language_targets == [16]
     assert features["restype"].shape[0] == 8
     assert kwargs["padded_generated_schema"] is True
+    assert kwargs["step_noises"].shape == (
+        kwargs["num_sampling_steps"],
+        1,
+        8,
+        3,
+    )
     plan, static = profiles[0]
     assert plan.target["language_model_tokens"] == 16
     assert static == {"chains": 1}

@@ -31,6 +31,20 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Padding no longer rebuilds a 200-leaf diffusion-noise tuple inside the
+  scanned OpenDDE and Protenix samplers.** Both padding producers now preserve
+  the historical per-key draws, sample-chunk order, and real-atom prefix while
+  carrying step noise as one `[steps, samples, atoms, 3]` array. The scan reads
+  that array directly; direct tuple/list callers still take the historical
+  stack path, and calls without an explicit tape retain the historical RNG
+  path. In an isolated CPU sampler probe at 200 steps, 5 samples, and 32 atoms,
+  the 384,000 input bytes and outputs were unchanged bitwise. OpenDDE StableHLO
+  text fell from 117,452 to 82,930 bytes and compiled temporary memory from
+  386,392 to 2,392 bytes; Protenix fell from 42,190 to 7,672 bytes and from
+  384,260 to 260 bytes. These are synthetic sampler-only CPU measurements;
+  released-weight end-to-end GPU latency and peak memory remain deployment
+  gates.
+
 - **OpenFold3 carries template-free pair geometry as one verified zero scalar.**
   Duplicate empty templates were already collapsed to one row, but that row
   still carried four exact-zero geometric inputs through the entry boundary,

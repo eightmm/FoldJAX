@@ -22,13 +22,15 @@ def make_padded_random_tapes(
     target_atom: int,
     batch_shape: Sequence[int] = (),
     dtype: jnp.dtype = jnp.float32,
-) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Generate OpenDDE's real-size random stream, then pad its atom axis.
 
     Drawing directly at ``target_atom`` changes the flat RNG offsets for later
     samples.  This helper follows :func:`sample_diffusion`'s exact key split and
     real shapes first, so every real atom retains the default unpadded stream.
-    Rotations and translations have no atom axis and are reused unchanged.
+    Step noise is returned as one ``[steps, ..., samples, atoms, 3]`` array so
+    the scanned sampler can consume it directly. Rotations and translations
+    have no atom axis and are reused unchanged.
     """
 
     if n_sample < 1 or n_steps < 1 or actual_atom < 1:
@@ -44,9 +46,12 @@ def make_padded_random_tapes(
     init_key, step_key, rotation_key, translation_key = jax.random.split(key, 4)
     real_shape = (*batch_shape, n_sample, actual_atom, 3)
     init_noise = jax.random.normal(init_key, real_shape, dtype=dtype)
-    step_noises = tuple(
-        jax.random.normal(step_key_i, real_shape, dtype=dtype)
-        for step_key_i in jax.random.split(step_key, n_steps)
+    step_noises = jnp.stack(
+        tuple(
+            jax.random.normal(step_key_i, real_shape, dtype=dtype)
+            for step_key_i in jax.random.split(step_key, n_steps)
+        ),
+        axis=0,
     )
     leading_shape = real_shape[:-2]
     rotations = uniform_random_rotations(
@@ -60,10 +65,7 @@ def make_padded_random_tapes(
     )
     return (
         pad_atom_noise(init_noise, actual=actual_atom, target=target_atom),
-        tuple(
-            pad_atom_noise(noise, actual=actual_atom, target=target_atom)
-            for noise in step_noises
-        ),
+        pad_atom_noise(step_noises, actual=actual_atom, target=target_atom),
         rotations,
         translations,
     )
@@ -77,7 +79,7 @@ def sample_diffusion(
     n_atom: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
-    step_noises: Sequence[jnp.ndarray] | None = None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     rotations: jnp.ndarray | None = None,
     translations: jnp.ndarray | None = None,
     batch_shape: Sequence[int] = (),
@@ -133,15 +135,25 @@ def sample_diffusion(
         init_noise = init_noise * atom_mask[..., None]
 
     leading_shape = init_noise.shape[:-2]
+    packed_step_noises = step_noises is not None and hasattr(step_noises, "shape")
     if step_noises is None:
         step_keys = jax.random.split(step_key, n_steps)
         step_noises = tuple(
             jax.random.normal(step_key_i, init_noise.shape, dtype=dtype)
             for step_key_i in step_keys
         )
+    elif packed_step_noises:
+        step_noises = jnp.asarray(step_noises, dtype=dtype)
     else:
         step_noises = tuple(jnp.asarray(noise, dtype=dtype) for noise in step_noises)
-    if len(step_noises) != n_steps or any(
+    if packed_step_noises:
+        expected_step_shape = (n_steps, *init_noise.shape)
+        if tuple(step_noises.shape) != expected_step_shape:
+            raise ValueError(
+                f"packed step_noises expected shape {expected_step_shape}, "
+                f"got {step_noises.shape}"
+            )
+    elif len(step_noises) != n_steps or any(
         noise.shape != init_noise.shape for noise in step_noises
     ):
         raise ValueError("step_noises must match the number of steps and init shape")
@@ -207,7 +219,9 @@ def sample_diffusion(
         return x_next
 
     if use_scan:
-        stacked_noises = jnp.stack(tuple(step_noises), axis=0)
+        stacked_noises = step_noises if packed_step_noises else jnp.stack(
+            tuple(step_noises), axis=0
+        )
 
         def body(x_carry, xs):
             c_tau_last, c_tau, step_noise, rotation, translation = xs

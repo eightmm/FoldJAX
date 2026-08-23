@@ -145,7 +145,7 @@ def _predict(
     n_chain: int | None = None,
     cycle_msa_features: tuple[dict[str, Any], ...] | None = None,
     init_noise: Any = None,
-    step_noises: Sequence[Any] | None = None,
+    step_noises: Any = None,
     rotations: Any = None,
     translations: Any = None,
 ) -> dict[str, Any]:

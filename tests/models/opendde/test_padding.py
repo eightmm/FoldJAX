@@ -18,6 +18,7 @@ from foldjax.models.opendde.data.padding import (
     select_opendde_model_features,
 )
 from foldjax.models.opendde.models import model as model_impl
+from foldjax.models.opendde.models.geometry import uniform_random_rotations
 from foldjax.models.opendde.models.msa_sampling import (
     pad_opendde_msa_cycle_features,
     sample_opendde_msa_cycle_features,
@@ -273,6 +274,7 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
     cycles = seen["cycle_msa_features"]
     assert len(cycles) == 2
     assert all(cycle["msa"].shape == (64, 256) for cycle in cycles)
+    assert seen["step_noises"].shape == (1, 1, 256, 3)
     assert profiles == [
         {
             "actual": {
@@ -358,23 +360,27 @@ def test_padded_random_tapes_preserve_the_unpadded_real_prefix() -> None:
         actual_atom=3,
         target_atom=5,
     )
-    exact = make_padded_random_tapes(
-        key=key,
-        n_sample=2,
-        n_steps=3,
-        actual_atom=3,
-        target_atom=3,
+    init_key, step_key, rotation_key, translation_key = jax.random.split(key, 4)
+    expected_init = jax.random.normal(init_key, (2, 3, 3), dtype=jnp.float32)
+    expected_steps = jnp.stack(
+        tuple(
+            jax.random.normal(step_key_i, (2, 3, 3), dtype=jnp.float32)
+            for step_key_i in jax.random.split(step_key, 3)
+        ),
+        axis=0,
+    )
+    expected_rotations = uniform_random_rotations(rotation_key, (3, 2))
+    expected_translations = jax.random.normal(
+        translation_key, (3, 2, 3), dtype=jnp.float32
     )
 
-    np.testing.assert_array_equal(np.asarray(padded[0][:, :3]), np.asarray(exact[0]))
-    for padded_step, exact_step in zip(padded[1], exact[1], strict=True):
-        np.testing.assert_array_equal(
-            np.asarray(padded_step[:, :3]),
-            np.asarray(exact_step),
-        )
+    assert padded[1].shape == (3, 2, 5, 3)
+    np.testing.assert_array_equal(np.asarray(padded[0][:, :3]), expected_init)
+    np.testing.assert_array_equal(np.asarray(padded[1][..., :3, :]), expected_steps)
     np.testing.assert_array_equal(np.asarray(padded[0][:, 3:]), 0)
-    np.testing.assert_array_equal(np.asarray(padded[2]), np.asarray(exact[2]))
-    np.testing.assert_array_equal(np.asarray(padded[3]), np.asarray(exact[3]))
+    np.testing.assert_array_equal(np.asarray(padded[1][..., 3:, :]), 0)
+    np.testing.assert_array_equal(np.asarray(padded[2]), expected_rotations)
+    np.testing.assert_array_equal(np.asarray(padded[3]), expected_translations)
 
 
 def test_atom_only_padding_cannot_mark_token_zero_as_ligand(

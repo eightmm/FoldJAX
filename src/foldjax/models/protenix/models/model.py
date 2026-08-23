@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import partial
 from typing import Any, NamedTuple
 
@@ -127,7 +127,7 @@ def protenix_infer_static(
     key: jax.Array | None,
     n_sample: int,
     init_noise: jnp.ndarray | None = None,
-    step_noises: tuple[jnp.ndarray, ...] | None = None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     n_cycle: int = 1,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,

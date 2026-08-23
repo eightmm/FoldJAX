@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import jax
@@ -109,7 +110,7 @@ def sample_diffusion(
     n_atom: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
-    step_noises: tuple[jnp.ndarray, ...] | None = None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     gamma0: float = 0.8,
     gamma_min: float = 1.0,
     noise_scale_lambda: float = 1.003,
@@ -157,9 +158,13 @@ def sample_diffusion(
             init_chunk = _slice_sample_axis(init_noise, start, chunk_n)
         step_chunks = None
         if step_noises is not None:
-            step_chunks = tuple(
-                _slice_sample_axis(noise, start, chunk_n) for noise in step_noises
-            )
+            if hasattr(step_noises, "shape"):
+                step_chunks = _slice_sample_axis(step_noises, start, chunk_n)
+            else:
+                step_chunks = tuple(
+                    _slice_sample_axis(noise, start, chunk_n)
+                    for noise in step_noises
+                )
         outputs.append(
             _sample_diffusion_chunk(
                 denoise_fn,
@@ -195,7 +200,7 @@ def sample_diffusion_with_module(
     n_sample: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
-    step_noises: tuple[jnp.ndarray, ...] | None = None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     pair_z: jnp.ndarray | None = None,
     p_lm: jnp.ndarray | None = None,
     c_l: jnp.ndarray | None = None,
@@ -581,7 +586,7 @@ def _sample_diffusion_chunk(
     n_atom: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None,
-    step_noises: tuple[jnp.ndarray, ...] | None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None,
     gamma0: float,
     gamma_min: float,
     noise_scale_lambda: float,
@@ -621,6 +626,7 @@ def _sample_diffusion_chunk(
         init_noise = init_noise * atom_mask[None, :, None]
     x_l = noise_schedule[0].astype(dtype) * init_noise.astype(dtype)
 
+    packed_step_noises = step_noises is not None and hasattr(step_noises, "shape")
     if step_noises is None:
         if key is None:
             raise ValueError("key is required when step_noises is not provided")
@@ -629,7 +635,14 @@ def _sample_diffusion_chunk(
             jax.random.normal(step_key, x_l.shape, dtype=dtype)
             for step_key in step_keys
         )
-    if len(step_noises) != n_steps:
+    if packed_step_noises:
+        expected_step_shape = (n_steps, *x_l.shape)
+        if tuple(step_noises.shape) != expected_step_shape:
+            raise ValueError(
+                f"packed step_noises expected shape {expected_step_shape}, "
+                f"got {step_noises.shape}"
+            )
+    elif len(step_noises) != n_steps:
         raise ValueError("step_noises length must equal len(noise_schedule) - 1")
     guidance_keys = None
     if guidance_engine is not None and config.eps_std != 0.0:
@@ -639,7 +652,9 @@ def _sample_diffusion_chunk(
         guidance_keys = jax.random.split(guidance_key, n_steps)
 
     if use_scan:
-        stacked_noises = jnp.stack(step_noises, axis=0)
+        stacked_noises = (
+            step_noises if packed_step_noises else jnp.stack(step_noises, axis=0)
+        )
 
         def body(x_carry, xs):
             c_tau_last, c_tau, step_noise = xs

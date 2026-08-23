@@ -472,7 +472,7 @@ def opendde_infer_static(
     key: jax.Array | None,
     n_sample: int,
     init_noise: jnp.ndarray | None = None,
-    step_noises: Sequence[jnp.ndarray] | None = None,
+    step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     rotations: jnp.ndarray | None = None,
     translations: jnp.ndarray | None = None,
     n_cycle: int = 10,

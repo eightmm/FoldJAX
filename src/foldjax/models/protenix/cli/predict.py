@@ -973,12 +973,15 @@ def _padded_noise_tapes(
     actual_atom: int,
     target_atom: int,
     diffusion_chunk_size: int | None,
-) -> tuple[Any, tuple[Any, ...]]:
+) -> tuple[Any, Any]:
     """Generate the exact unpadded random stream, then right-pad it.
 
     Generating directly at ``target_atom`` preserves sample zero's flat prefix
     but changes every later sample's offset. Building the released real shape
     first keeps all real atoms of every sample identical to the default path.
+    The per-step result is packed as ``[steps, samples, atoms, 3]`` for the
+    scanned production sampler; direct library callers may still pass a
+    sequence of step arrays.
     """
 
     import jax
@@ -1017,13 +1020,12 @@ def _padded_noise_tapes(
                 )
             )
     init_noise = jnp.concatenate(init_chunks, axis=0)
-    step_noises = tuple(jnp.concatenate(chunks, axis=0) for chunks in step_chunks)
+    step_noises = jnp.stack(
+        tuple(jnp.concatenate(chunks, axis=0) for chunks in step_chunks), axis=0
+    )
     return (
         pad_atom_noise(init_noise, actual=actual_atom, target=target_atom),
-        tuple(
-            pad_atom_noise(noise, actual=actual_atom, target=target_atom)
-            for noise in step_noises
-        ),
+        pad_atom_noise(step_noises, actual=actual_atom, target=target_atom),
     )
 
 
