@@ -57,6 +57,20 @@ MODEL_FEATURES = (
 # appended only for a serving bucket are excluded from the template reduction.
 OPTIONAL_MODEL_FEATURES = ("template_padding_mask",)
 
+# Private trace-time provenance inserted only by
+# :func:`compact_zero_template_pair_features`.  Presence of this key changes the
+# JAX mapping PyTree, so the compact and dense programs cannot share a trace.
+# It is deliberately not an archive/model feature: production inserts it only
+# after validation, template collapse, and optional serving padding.
+_ZERO_TEMPLATE_PAIR_MARKER = "_foldjax_zero_template_pair_features"
+
+_ZERO_TEMPLATE_PAIR_FEATURES = (
+    "template_distogram",
+    "template_pseudo_beta_mask",
+    "template_unit_vector",
+    "template_backbone_frame_mask",
+)
+
 # Produced by the dataset for bookkeeping, not consumed by the model.
 _NON_FEATURES = frozenset(
     {"query_id", "seed", "repeated_sample", "valid_sample", "num_paired_seqs"}
@@ -1107,4 +1121,63 @@ def collapse_identical_templates(
     out = dict(features)
     for name, (array, axis) in present.items():
         out[name] = np.take(array, [0], axis=axis % array.ndim)
+    return out
+
+
+def compact_zero_template_pair_features(
+    features: Mapping[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Replace exact-zero quadratic template inputs with one scalar marker.
+
+    A template-free query still needs ``template_restype``: its all-gap rows and
+    the recycled pair embedding make the template tower nonzero.  Its four
+    geometric inputs, however, are bitwise-positive float32 zeroes.  Every
+    corresponding projection is bias-free in the released model, so projecting
+    one dynamic zero vector and broadcasting the result is the same operation at
+    every pair position.  The model-side compact branch still evaluates those
+    projections in their historical order, including ``0 * NaN/Inf`` behaviour.
+
+    This host boundary is the only producer of the private marker.  Missing,
+    malformed, differently typed, nonzero, non-finite, or negative-zero inputs
+    retain the dense representation unchanged.  A stale caller-provided marker
+    is removed before validation rather than trusted as provenance.
+    """
+    out = dict(features)
+    out.pop(_ZERO_TEMPLATE_PAIR_MARKER, None)
+
+    restype_value = out.get("template_restype")
+    if restype_value is None:
+        return out
+    restype = np.asarray(restype_value)
+    if restype.ndim < 3 or restype.shape[-1] != 32:
+        return out
+
+    prefix = restype.shape[:-2]
+    n_token = restype.shape[-2]
+    expected_shapes = {
+        "template_distogram": (*prefix, n_token, n_token, 39),
+        "template_pseudo_beta_mask": (*prefix, n_token),
+        "template_unit_vector": (*prefix, n_token, n_token, 3),
+        "template_backbone_frame_mask": (*prefix, n_token),
+    }
+    arrays: dict[str, np.ndarray] = {}
+    for name in _ZERO_TEMPLATE_PAIR_FEATURES:
+        value = out.get(name)
+        if value is None:
+            return out
+        array = np.asarray(value)
+        if array.shape != expected_shapes[name] or array.dtype != np.dtype(np.float32):
+            return out
+        arrays[name] = array
+
+    # Compare the raw float32 words so -0.0 is not mistaken for the exact +0.0
+    # emitted by the no-template featurizer.  Check small masks before scanning
+    # the quadratic fields, which can be multiple GiB at serving sizes.
+    for array in sorted(arrays.values(), key=lambda value: value.nbytes):
+        if np.any(array.view(np.uint32)):
+            return out
+
+    for name in _ZERO_TEMPLATE_PAIR_FEATURES:
+        del out[name]
+    out[_ZERO_TEMPLATE_PAIR_MARKER] = np.zeros((), dtype=np.float32)
     return out

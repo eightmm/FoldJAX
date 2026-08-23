@@ -12,6 +12,23 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenFold3 carries template-free pair geometry as one verified zero scalar.**
+  Duplicate empty templates were already collapsed to one row, but that row
+  still carried four exact-zero geometric inputs through the entry boundary,
+  led by `[N_token, N_token, 39]` float32 distogram storage. Production now
+  verifies the final post-padding host arrays are bitwise positive zero before
+  replacing them with a private scalar marker; nonzero, non-finite,
+  negative-zero, differently typed, malformed, and direct low-level inputs
+  retain the dense path. The compact graph evaluates every bias-free zero
+  projection once and broadcasts it in the historical add order, rather than
+  deleting the terms, so `0 * NaN/Inf` parameter behaviour is retained. The
+  removed entry data is 161.2 MiB at 1,003 tokens and 1.42 GiB at 3,012 tokens.
+  In an isolated 128-token, 8-channel CPU pair-embedder probe, feature bytes
+  including `asym_id` fell from 2,770,432 to 16,900, StableHLO text from 10,222
+  to 7,983 bytes, compiled argument memory from 3,298,496 to 544,452 bytes, and
+  compiled temporary memory from 5,308,416 to 4,784,128 bytes. Full-model
+  released-weight GPU latency and peak memory remain deployment gates.
+
 - **Large float32 CPU transitions compile as one bounded loop.** Protenix and
   OpenDDE historically emitted one independent transition subgraph per leading
   chunk, which let CPU XLA keep several widened blocks live together and made

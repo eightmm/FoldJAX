@@ -25,6 +25,7 @@ from foldjax._openfold3_compile import (
 from foldjax.cache import compilation_cache_scope
 from foldjax.models import _capture
 from foldjax.models.openfold3 import inference
+from foldjax.models.openfold3.data import compact_zero_template_pair_features
 from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
     token_representative_atoms,
@@ -144,6 +145,55 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
             ("1d", 2, "cueq", True, True, True),
             ("1d", 2, "cueq", True, True, False),
         ]
+    finally:
+        inference._compiled_predict.clear_cache()
+
+
+def test_compact_and_dense_batch_trees_have_distinct_bounded_cache_entries(
+    monkeypatch,
+) -> None:
+    traces: list[tuple[str, ...]] = []
+
+    def tiny_predict(
+        key,
+        batch,
+        params,
+        config,
+        representative_atoms,
+        **kwargs,
+    ):
+        del key, config, representative_atoms, kwargs
+        traces.append(tuple(sorted(batch)))
+        return batch["x"] + params
+
+    dense = {
+        "x": np.ones((4,), dtype=np.float32),
+        "template_restype": np.zeros((1, 1, 4, 32), dtype=np.int32),
+        "template_pseudo_beta_mask": np.zeros((1, 1, 4), dtype=np.float32),
+        "template_backbone_frame_mask": np.zeros((1, 1, 4), dtype=np.float32),
+        "template_distogram": np.zeros((1, 1, 4, 4, 39), dtype=np.float32),
+        "template_unit_vector": np.zeros((1, 1, 4, 4, 3), dtype=np.float32),
+    }
+    compact = compact_zero_template_pair_features(dense)
+    monkeypatch.setattr(inference, "predict", tiny_predict)
+    inference._compiled_predict.clear_cache()
+    run = inference.compile_predict(_config(), _table())
+    args = (jax.random.key(0), jnp.asarray(2.0, dtype=jnp.float32))
+    try:
+        dense_value = run(args[0], dense, args[1])
+        compact_value = run(args[0], compact, args[1])
+        repeated = run(args[0], compact, args[1])
+        jax.block_until_ready((dense_value, compact_value, repeated))
+
+        assert len(traces) == 2
+        assert traces[0] != traces[1]
+        assert inference._compiled_predict._cache_size() == 2
+        assert (
+            inference._compiled_predict._cache_size()
+            <= inference._MAX_RETAINED_EXECUTABLES
+        )
+        np.testing.assert_array_equal(dense_value, compact_value)
+        np.testing.assert_array_equal(compact_value, repeated)
     finally:
         inference._compiled_predict.clear_cache()
 

@@ -160,6 +160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
     from foldjax.models.openfold3.data import (
         collapse_identical_templates,
+        compact_zero_template_pair_features,
         has_atomized_tokens,
         load_feature_archive,
         normalize_asym_ids,
@@ -220,6 +221,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # entry points compile the same program from the same archive.
     raw = collapse_identical_templates(raw)
     raw, n_chain = normalize_asym_ids(raw)
+    raw = compact_zero_template_pair_features(raw)
     # `jax.jit` stages host arrays itself, once for the whole argument tree.
     # Placing them here instead compiles a `jit_stage` program per distinct
     # shape and dtype, and none of them survive `enable_compilation_cache`'s

@@ -333,6 +333,10 @@ class OpenFold3Backend(Backend):
                 n_token=n_token, n_atom=n_atom, **overrides
             )
         features, n_chain = data.normalize_asym_ids(features)
+        # Empty-template geometry is exact +0.  Compact it only after serving
+        # padding has established the final template/token shapes; the helper's
+        # private marker gives the resulting mapping its own JIT PyTree identity.
+        features = data.compact_zero_template_pair_features(features)
 
         params = mapping.map_inference_params(
             checkpoint.load_checkpoint(request.weights),

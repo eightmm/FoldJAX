@@ -18,6 +18,10 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models.openfold3.data.featurize import (
+    _ZERO_TEMPLATE_PAIR_FEATURES,
+    _ZERO_TEMPLATE_PAIR_MARKER,
+)
 from foldjax.models.openfold3.models.pair_block import PairBlockParams, pair_block
 from foldjax.models.openfold3.models.primitives import (
     LayerNormParams,
@@ -122,25 +126,6 @@ def template_pair_embedder(
     Both pairwise masks are additionally restricted to within-chain pairs, so a
     template never contributes across a chain boundary.
     """
-    asym_id = batch["asym_id"]
-    # [..., 1, N_token, N_token, 1] so it broadcasts over templates and channels.
-    same_chain = (asym_id[..., :, None] == asym_id[..., None, :]).astype(z.dtype)
-    same_chain = same_chain[..., None, :, :, None]
-
-    pseudo_beta = batch["template_pseudo_beta_mask"]
-    pseudo_beta_pair = (
-        pseudo_beta[..., :, None] * pseudo_beta[..., None, :]
-    )[..., None] * same_chain
-
-    backbone = batch["template_backbone_frame_mask"]
-    backbone_pair = (
-        backbone[..., :, None] * backbone[..., None, :]
-    )[..., None] * same_chain
-
-    # The unit vector's three components each get their own projection.
-    unit_vector = batch["template_unit_vector"]
-    x, y, w = (unit_vector[..., index] for index in range(3))
-
     restype = batch["template_restype"].astype(z.dtype)
     n_token = restype.shape[-2]
     # ti varies along the i axis, tj along j; both broadcast to the pair shape.
@@ -151,14 +136,63 @@ def template_pair_embedder(
         restype[..., None, :, :], (*restype.shape[:-2], n_token, *restype.shape[-2:])
     )
 
-    a = linear(batch["template_distogram"], params.dgram_linear)
-    a = a + linear(pseudo_beta_pair, params.pseudo_beta_mask_linear)
+    # Unknown mapping keys have historically been ignored by this low-level API.
+    # Treat the marker as provenance only for the representation the host helper
+    # actually emits: marker present and every replaced dense field absent.  A
+    # direct caller that happens to carry the private key beside dense geometry
+    # must continue to use that geometry rather than silently discarding it.
+    compact_zero_pairs = _ZERO_TEMPLATE_PAIR_MARKER in batch and all(
+        name not in batch for name in _ZERO_TEMPLATE_PAIR_FEATURES
+    )
+    if compact_zero_pairs:
+        marker = jnp.asarray(batch[_ZERO_TEMPLATE_PAIR_MARKER]).reshape(())
+
+        def zero_pair_projection(projection: LinearParams) -> jnp.ndarray:
+            # The marker remains dynamic so XLA cannot replace this with a
+            # constant zero and erase 0 * NaN/Inf parameter semantics.  Evaluate
+            # the historical reduction width once, then broadcast its result.
+            zero_input = jnp.broadcast_to(marker, (projection.weight.shape[-1],))
+            projected = linear(zero_input, projection)
+            return jnp.broadcast_to(
+                projected,
+                (*restype.shape[:-2], n_token, n_token, projected.shape[-1]),
+            )
+
+        a = zero_pair_projection(params.dgram_linear)
+        a = a + zero_pair_projection(params.pseudo_beta_mask_linear)
+    else:
+        asym_id = batch["asym_id"]
+        # [..., 1, N_token, N_token, 1] so it broadcasts over templates/channels.
+        same_chain = (asym_id[..., :, None] == asym_id[..., None, :]).astype(z.dtype)
+        same_chain = same_chain[..., None, :, :, None]
+
+        pseudo_beta = batch["template_pseudo_beta_mask"]
+        pseudo_beta_pair = (
+            pseudo_beta[..., :, None] * pseudo_beta[..., None, :]
+        )[..., None] * same_chain
+        backbone = batch["template_backbone_frame_mask"]
+        backbone_pair = (
+            backbone[..., :, None] * backbone[..., None, :]
+        )[..., None] * same_chain
+
+        # The unit vector's three components each get their own projection.
+        unit_vector = batch["template_unit_vector"]
+        x, y, w = (unit_vector[..., index] for index in range(3))
+
+        a = linear(batch["template_distogram"], params.dgram_linear)
+        a = a + linear(pseudo_beta_pair, params.pseudo_beta_mask_linear)
     a = a + linear(restype_ti, params.aatype_linear_1)
     a = a + linear(restype_tj, params.aatype_linear_2)
-    a = a + linear(x[..., None], params.x_linear)
-    a = a + linear(y[..., None], params.y_linear)
-    a = a + linear(w[..., None], params.z_linear)
-    a = a + linear(backbone_pair, params.backbone_mask_linear)
+    if compact_zero_pairs:
+        a = a + zero_pair_projection(params.x_linear)
+        a = a + zero_pair_projection(params.y_linear)
+        a = a + zero_pair_projection(params.z_linear)
+        a = a + zero_pair_projection(params.backbone_mask_linear)
+    else:
+        a = a + linear(x[..., None], params.x_linear)
+        a = a + linear(y[..., None], params.y_linear)
+        a = a + linear(w[..., None], params.z_linear)
+        a = a + linear(backbone_pair, params.backbone_mask_linear)
 
     z_embedded = linear(layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z)
     return z_embedded[..., None, :, :, :] + a

@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 
 from foldjax.backends.openfold3 import _padding_plan, _sampler_noise_mask
-from foldjax.models.openfold3.data import pad_features
+from foldjax.models.openfold3.data import (
+    collapse_identical_templates,
+    compact_zero_template_pair_features,
+    pad_features,
+)
+from foldjax.models.openfold3.data.featurize import _ZERO_TEMPLATE_PAIR_MARKER
 from foldjax.models.openfold3.data.validation import validate_features
 from foldjax.models.openfold3.inference import Prediction
 from foldjax.models.openfold3.models import template_module
@@ -42,6 +47,32 @@ def test_padding_covers_all_four_dynamic_axes() -> None:
     np.testing.assert_array_equal(
         padded["template_padding_mask"], np.asarray([[1.0, 0.0, 0.0]])
     )
+
+
+def test_zero_template_compaction_runs_after_final_padding_shape() -> None:
+    features = minimal_features(tokens=4, atoms=7, msa_rows=2, templates=4)
+    features["template_pseudo_beta_mask"].fill(0.0)
+    features["template_backbone_frame_mask"].fill(0.0)
+    collapsed = collapse_identical_templates(features)
+    assert collapsed["template_restype"].shape == (1, 1, 4, 32)
+    padded = pad_features(
+        collapsed, n_token=8, n_atom=13, n_msa=5, n_templates=3
+    )
+
+    compact = compact_zero_template_pair_features(padded)
+
+    assert compact["template_restype"].shape == (1, 3, 8, 32)
+    np.testing.assert_array_equal(
+        compact["template_padding_mask"], np.asarray([[1.0, 0.0, 0.0]])
+    )
+    assert compact[_ZERO_TEMPLATE_PAIR_MARKER].shape == ()
+    for name in (
+        "template_distogram",
+        "template_pseudo_beta_mask",
+        "template_unit_vector",
+        "template_backbone_frame_mask",
+    ):
+        assert name not in compact
     validate_features(padded)
 
     repadded = pad_features(

@@ -1417,6 +1417,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             ),
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
+            compact_zero_template_pair_features=lambda batch: batch,
             has_atomized_tokens=has_atomized_tokens,
             normalize_asym_ids=normalize_asym_ids,
         ),
@@ -1512,6 +1513,10 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
 
         return compiled
 
+    def compact_zero_template_pair_features(batch):
+        seen["compact_shape"] = batch["token_mask"].shape
+        return batch
+
     def fake_write(*args, **kwargs):
         return {"structures": (), "scores": scores}
 
@@ -1523,6 +1528,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             ),
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
+            compact_zero_template_pair_features=compact_zero_template_pair_features,
             has_atomized_tokens=has_atomized_tokens,
             pad_features=pad_features,
             normalize_asym_ids=lambda batch: (batch, 1),
@@ -1566,6 +1572,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
     result = OpenFold3Backend().predict(request)
 
     assert seen["targets"] == (4, 4, 2, 2)
+    assert seen["compact_shape"] == (1, 4)
     assert seen["compile_options"] == {
         "triangle_kernel": None,
         "cache_scope": str(tmp_path / "cache"),

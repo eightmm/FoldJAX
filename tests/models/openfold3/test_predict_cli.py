@@ -239,6 +239,12 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     )
     monkeypatch.setattr(data, "subsample_msa_rows", lambda features, depth: features)
 
+    def compact(features):
+        seen["compact_asym_id"] = np.asarray(features["asym_id"])
+        return features
+
+    monkeypatch.setattr(data, "compact_zero_template_pair_features", compact)
+
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         return SimpleNamespace(
@@ -314,6 +320,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     if not eager:
         assert seen["compile_options"] == {"cache_scope": None}
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
+    np.testing.assert_array_equal(seen["compact_asym_id"], [[0, 1, 0]])
 
 
 def test_incomplete_features_are_refused(tmp_path: Path, capsys) -> None:
