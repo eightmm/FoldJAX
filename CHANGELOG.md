@@ -557,6 +557,14 @@ command predicts unless it says so here, in its own paragraph.
   is a parity defect on its own terms. It is worth 65,485 -> 35,945 MiB of temp
   arena at 1,003 residues and the released 32 diffusion samples.
 
+  **Those arena figures, and the 35,945 -> 11,312 MiB below, were measured
+  with `confidence_sample_sequential=True`, which is not the shipped default.**
+  Batched over 32 samples the confidence head builds `f32[32, L, L, 64]` twice
+  -- 15.35 GiB of `pae_logits` and `pde_logits` against 245.6 MiB per sample
+  sequentially -- so the shipped arena is larger than any number here. Both
+  A/Bs held the setting constant, so the differences are real at that setting;
+  whether they are the same at the default is being measured.
+
   The attention is a sliding window of +-64 in packed rank and was computed as
   a full `[batch, heads, atoms, atoms]` score matrix with the window applied as
   a mask -- 59,049 MiB, 90.2% of that arena, to carry at most 129 non-zero
