@@ -51,7 +51,7 @@ command predicts unless it says so here, in its own paragraph.
   2,288,027,095-byte checkpoint and its SHA-256, stages it atomically for direct
   loading, and leaves it opt-in because the preprocessing extra is not part of
   the base runtime. The Colab workflow fetches it automatically when OpenFold3
-  is selected while retaining an optional compatible-p1 path override. Current
+  is selected and exposes no manual OpenFold3 path field. Current
   upstream OpenBind v0.5 and older p2 checkpoints target newer architectures;
   FoldJAX never substitutes them for its p1 port. AlphaFold 3 remains the only
   carried model whose parameters must be supplied manually.
@@ -84,9 +84,9 @@ command predicts unless it says so here, in its own paragraph.
   preserve each backend's actual portable execution vocabulary before their
   reports are combined. ESMFold2
   accepts the same all-biomolecule common schema and its complete public bundle
-  is 26.77 GB. OpenFold3 is selected by default, fetches the exact public p1
-  checkpoint, and also accepts a compatible path override; AlphaFold 3 accepts
-  a user-provided parameter directory. Their
+  is 26.77 GB. OpenFold3 is selected by default and fetches or reuses the exact
+  managed public p1 checkpoint; AlphaFold 3 accepts a user-provided parameter
+  directory. Their
   optional preprocessing/runtime dependencies install only when selected.
   Input entity types, ligand representations, parameter readiness, and runtime
   state are checked before public downloads begin. FoldJAX runs the large sessions

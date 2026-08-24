@@ -430,7 +430,7 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "for model_name in SELECTED_MODELS" in source
     assert "INPUT_ENTITY_TYPES" in source
     assert "INPUT_REQUIRED_FEATURES" in source
-    assert "OPENFOLD3_WEIGHTS_PATH" in source
+    assert "OPENFOLD3_WEIGHTS_PATH" not in source
     assert "ALPHAFOLD3_WEIGHTS_PATH" in source
     assert 'JOB_NAME = "protein-rna-atp-demo"' in source
     assert 'RNA_CHAINS = "GGGAAACCC"' in source
@@ -753,7 +753,7 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
         "opendde",
         "openfold3",
     )
-    assert namespace["MANUAL_WEIGHT_TEXT"]["openfold3"] == ""
+    assert "openfold3" not in namespace["MANUAL_WEIGHT_TEXT"]
 
 
 def test_colab_form_rejects_invalid_nucleic_acid_before_setup(monkeypatch) -> None:
@@ -861,47 +861,7 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
     assert calls[0][0][0][-2:] == ["--model", "esmfold2"]
 
 
-def test_colab_accepts_supplied_openfold3_weights_without_fetching(
-    tmp_path: Path, monkeypatch
-) -> None:
-    calls = []
-    _patch_ipython_display(monkeypatch)
-    weights_path = tmp_path / "of3.pt"
-    weights_path.write_bytes(b"test")
-    info = _fake_model_info(
-        "openfold3",
-        entity_types=("protein", "dna", "rna", "ligand"),
-        features=("ligand_ccd", "ligand_smiles"),
-        fetchable=True,
-        ready=False,
-        weights_path=tmp_path / "managed" / "of3.pt",
-    )
-    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
-    namespace = {
-        "SELECTED_MODELS": ("openfold3",),
-        "INPUT_ENTITY_TYPES": frozenset({"protein", "ligand"}),
-        "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
-        "MANUAL_WEIGHT_TEXT": {"openfold3": str(weights_path)},
-        "foldjax_home": tmp_path,
-        "Path": Path,
-        "display": lambda *_args: None,
-        "shutil": SimpleNamespace(
-            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
-        ),
-        "subprocess": SimpleNamespace(
-            run=lambda *args, **kwargs: calls.append((args, kwargs))
-        ),
-        "sys": sys,
-        **_notebook_ui(),
-    }
-
-    exec(_cell_source("fetch-weights"), namespace)
-
-    assert namespace["MODEL_WEIGHTS"] == {"openfold3": weights_path}
-    assert calls == []
-
-
-def test_colab_fetches_public_openfold3_p1_when_no_override_is_supplied(
+def test_colab_fetches_public_openfold3_p1_automatically(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
@@ -919,7 +879,7 @@ def test_colab_fetches_public_openfold3_p1_when_no_override_is_supplied(
         "SELECTED_MODELS": ("openfold3",),
         "INPUT_ENTITY_TYPES": frozenset({"protein", "ligand"}),
         "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
-        "MANUAL_WEIGHT_TEXT": {"openfold3": ""},
+        "MANUAL_WEIGHT_TEXT": {},
         "foldjax_home": tmp_path,
         "Path": Path,
         "display": lambda *_args: None,
@@ -958,7 +918,7 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
         "SELECTED_MODELS": ("openfold3",),
         "INPUT_ENTITY_TYPES": frozenset({"protein"}),
         "INPUT_REQUIRED_FEATURES": frozenset(),
-        "MANUAL_WEIGHT_TEXT": {"openfold3": ""},
+        "MANUAL_WEIGHT_TEXT": {},
         "foldjax_home": tmp_path,
         "Path": Path,
         "display": lambda *_args: None,

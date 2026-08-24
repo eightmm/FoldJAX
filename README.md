@@ -89,9 +89,8 @@ carried models; the default sends one compact synthetic protein+RNA+ATP job to
 Protenix, OpenDDE, and OpenFold3. ESMFold2 accepts the same protein, DNA, RNA,
 ligand, modification, and covalent-bond schema; its complete public
 structure+ESMC+chemistry bundle is 26.77 GB. OpenFold3 is selected by default
-and downloads its managed public p1 checkpoint automatically when the optional
-compatible-p1 path is blank. AlphaFold 3 accepts a user-supplied parameter
-directory.
+and always downloads or reuses its managed public p1 checkpoint. AlphaFold 3
+accepts a user-supplied parameter directory.
 Compatibility is checked before any download. The notebook keeps large model
 sessions sequential, records per-model failures without losing successful runs,
 and presents each setup, execution, and validation stage as a guided status
