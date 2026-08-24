@@ -204,8 +204,8 @@ def test_models_for_reports_which_backends_can_run_a_job(
     rows = {row["model"]: row for row in json.loads(capsys.readouterr().out)}
 
     assert rows["boltz2"]["runs"] is True
-    assert rows["esmfold2"]["runs"] is False
-    assert "ligand" in rows["esmfold2"]["reason"]
+    assert rows["esmfold2"]["runs"] is True
+    assert rows["esmfold2"]["reason"] is None
     # No weights in this store, and the answer arrives anyway.
     assert rows["boltz2"]["weights_ready"] is False
 

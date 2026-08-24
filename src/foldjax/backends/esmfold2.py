@@ -577,6 +577,13 @@ class ESMFold2Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
+        # Reject malformed model-selection options before opening the input or
+        # importing JAX. This keeps configuration errors deterministic even
+        # when the job path is also unavailable.
+        managed_asset_profile(options)
+        without_lm = _strict_boolean(
+            options.get("no_language_model", False), name="no_language_model"
+        )
         # In-package imports, kept inside `predict` for the same reason every
         # other vendored backend does it: to keep `import foldjax` off JAX's
         # import cost.
@@ -607,10 +614,6 @@ class ESMFold2Backend(Backend):
         # whether the model uses it.  An external ESMC checkpoint selects the
         # structure-only managed bundle while still running the released LM
         # branch.
-        managed_asset_profile(options)
-        without_lm = _strict_boolean(
-            options.get("no_language_model", False), name="no_language_model"
-        )
         if (
             without_lm
             and request.padding is not None

@@ -367,7 +367,7 @@ def test_an_unknown_msa_policy_is_refused(tmp_path: Path) -> None:
         _materialize(source, "protenix", tmp_path / "out", msa="yes-please")
 
 
-def test_compatibility_explains_the_model_that_cannot_run_a_job() -> None:
+def test_compatibility_accepts_esmfold2_all_biomolecule_input() -> None:
     document = {
         "entities": [
             {"type": "protein", "id": "A", "sequence": SEQUENCE},
@@ -376,7 +376,7 @@ def test_compatibility_explains_the_model_that_cannot_run_a_job() -> None:
     }
 
     assert compatibility(document, "boltz2") is None
-    assert "ligand" in (compatibility(document, "esmfold2") or "")
+    assert compatibility(document, "esmfold2") is None
     # The check must not consume the caller's document.
     assert document["entities"][0]["sequence"] == SEQUENCE
 
