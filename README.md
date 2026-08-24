@@ -116,7 +116,7 @@ from pathlib import Path
 from foldjax import Job, PredictionRequest, predict_batch
 
 job_path = Job.from_sequences(
-    protein=("MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFP",),
+    protein=("MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFPDWQNYTPGPGIRYPLTFGWCFKLVPVDPEEVVEELEKAGVE",),
     rna=("GGGAAACCC",),
     ligand_ccd=("ATP",),
     name="protein-rna-atp-demo",

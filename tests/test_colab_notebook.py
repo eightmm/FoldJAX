@@ -699,7 +699,8 @@ def test_colab_form_builds_mixed_polymer_and_ligand_input(
     _patch_ipython_display(monkeypatch)
     configure = _cell_source("configure-run")
     configure = configure.replace(
-        'PROTEIN_CHAINS = "MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFP"',
+        'PROTEIN_CHAINS = "MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFP'
+        'DWQNYTPGPGIRYPLTFGWCFKLVPVDPEEVVEELEKAGVE"',
         'PROTEIN_CHAINS = "ACDEFG"',
     )
     configure = configure.replace('DNA_CHAINS = ""', 'DNA_CHAINS = "ACGT:TGCA"')
@@ -746,6 +747,7 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
         "ligand",
     ]
     assert namespace["LIGAND_CCDS"] == ("ATP",)
+    assert len(namespace["PROTEIN_SEQUENCES"][0]) == 78
     assert namespace["SELECTED_MODELS"] == (
         "protenix",
         "opendde",
