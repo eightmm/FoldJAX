@@ -372,6 +372,41 @@ _PLACEMENT_PROBE = textwrap.dedent(
     """
 )
 
+_FILTERED_PLACEMENT_PROBE = textwrap.dedent(
+    """
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel, replicate_tree
+    from foldjax.models.boltz2.data.bucket import select_model_features
+
+    N = 32
+    feats = {
+        "token_pad_mask": np.ones((1, N), dtype=np.float32),
+        "atom_pad_mask": np.ones((1, 64), dtype=np.float32),
+        "msa": np.zeros((1, 8, N), dtype=np.int32),
+        "disto_target": np.zeros((1, N, N, 1, 64), dtype=np.float32),
+        "writer_only": np.zeros((1, 17), dtype=np.float32),
+    }
+    filtered = select_model_features(feats)
+    assert "disto_target" not in filtered
+    assert "writer_only" not in filtered
+
+    def physical_bytes(tree):
+        return sum(
+            shard.data.size * shard.data.dtype.itemsize
+            for value in tree.values()
+            for shard in value.addressable_shards
+        )
+
+    with context_parallel(4, layout="1d"):
+        raw = replicate_tree(feats)
+        placed = replicate_tree(filtered)
+    assert physical_bytes(placed) < physical_bytes(raw)
+    assert set(placed) == set(filtered)
+    print("CP_DEAD_FEATURE_FILTER_OK")
+    """
+)
+
 
 def test_cp_placement_is_the_same_from_numpy_and_from_placed_leaves() -> None:
     """`predict` hands the compiled path NumPy features; CP still gets placed ones.
@@ -385,3 +420,7 @@ def test_cp_placement_is_the_same_from_numpy_and_from_placed_leaves() -> None:
     type-invariant rather than relying on the gate alone.
     """
     assert "CP_PLACEMENT_OK" in _run_probe(_PLACEMENT_PROBE)
+
+
+def test_cp_never_places_features_dead_to_the_nonsteering_graph() -> None:
+    assert "CP_DEAD_FEATURE_FILTER_OK" in _run_probe(_FILTERED_PLACEMENT_PROBE)

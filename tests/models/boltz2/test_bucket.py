@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -6,6 +7,7 @@ from foldjax.models.boltz2.data.bucket import (
     pad_feats,
     resolve_bucket_shape,
     resolve_padding_plan,
+    select_model_features,
     select_model_features_for_padding,
 )
 from foldjax.schema import PaddingConfig
@@ -149,6 +151,73 @@ def test_neutral_padding_drops_features_unused_by_the_jitted_graph() -> None:
     assert "host_only_variable_archive" not in selected
     assert "r_set_to_rep_atom" not in selected
     assert "token_to_rep_atom" in selected
+
+
+def test_generic_model_feature_filter_drops_training_and_writer_arrays() -> None:
+    feats = _features()
+    feats["disto_target"] = np.full((1, 3, 3, 1, 64), np.nan, dtype=np.float32)
+    feats["host_only_variable_archive"] = np.full(
+        (1, 37), np.inf, dtype=np.float32
+    )
+
+    selected = select_model_features(feats)
+
+    assert "disto_target" not in selected
+    assert "coords" not in selected
+    assert "ensemble_ref_idxs" not in selected
+    assert "host_only_variable_archive" not in selected
+    assert selected["token_pad_mask"] is feats["token_pad_mask"]
+    assert selected["atom_pad_mask"] is feats["atom_pad_mask"]
+
+
+def test_filtering_dead_nonfinite_features_does_not_change_the_executable() -> None:
+    feats = {
+        "token_pad_mask": np.asarray(
+            [[1.0, -0.0, np.nan, np.inf, -np.inf]], dtype=np.float32
+        ),
+        "atom_pad_mask": np.ones((1, 4), dtype=np.float32),
+        "disto_target": np.asarray([[[[[np.nan, np.inf, -np.inf]]]]]),
+        "writer_only": np.asarray([np.nan, np.inf], dtype=np.float32),
+    }
+    filtered = select_model_features(feats)
+
+    def graph(model_feats):
+        return model_feats["token_pad_mask"] + jnp.sum(
+            model_feats["atom_pad_mask"]
+        )
+
+    raw_lowered = jax.jit(graph).lower(feats)
+    filtered_lowered = jax.jit(graph).lower(filtered)
+    assert (
+        raw_lowered.compiler_ir(dialect="hlo").as_hlo_text()
+        == filtered_lowered.compiler_ir(dialect="hlo").as_hlo_text()
+    )
+
+    raw_executable = raw_lowered.compile()
+    filtered_executable = filtered_lowered.compile()
+    memory_fields = (
+        "argument_size_in_bytes",
+        "output_size_in_bytes",
+        "alias_size_in_bytes",
+        "temp_size_in_bytes",
+        "host_argument_size_in_bytes",
+        "host_output_size_in_bytes",
+        "host_alias_size_in_bytes",
+        "host_temp_size_in_bytes",
+    )
+    raw_memory = raw_executable.memory_analysis()
+    filtered_memory = filtered_executable.memory_analysis()
+    assert tuple(getattr(raw_memory, name) for name in memory_fields) == tuple(
+        getattr(filtered_memory, name) for name in memory_fields
+    )
+
+    raw = np.asarray(raw_executable(feats))
+    selected = np.asarray(filtered_executable(filtered))
+    np.testing.assert_array_equal(raw, selected)
+    np.testing.assert_array_equal(np.isnan(raw), np.isnan(selected))
+    np.testing.assert_array_equal(np.isposinf(raw), np.isposinf(selected))
+    np.testing.assert_array_equal(np.isneginf(raw), np.isneginf(selected))
+    np.testing.assert_array_equal(np.signbit(raw), np.signbit(selected))
 
 
 def test_pad_feats_preserves_jax_compatible_arrays() -> None:

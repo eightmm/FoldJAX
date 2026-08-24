@@ -254,6 +254,25 @@ def select_model_features_for_padding(
         raise ValueError(
             "neutral Boltz2 padding currently supports exactly one template row"
         )
+    return select_model_features(feats)
+
+
+def select_model_features(
+    feats: Mapping[str, object],
+) -> dict[str, object]:
+    """Keep only arrays consumed by the non-steering inference graph.
+
+    The compiled single-device path can rely on JAX to prune unread NumPy
+    arguments before transfer. Context parallelism cannot: it places every
+    feature at an explicit ownership boundary before calling ``jax.jit``.
+    Legacy bucketing also visits every feature on the host. Filtering both
+    routes here prevents training labels and writer-only arrays from becoming
+    live inputs while leaving the public featurizer result untouched.
+
+    Active steering must retain its variable-length constraint arrays and must
+    not call this helper.
+    """
+
     return {
         key: value
         for key, value in feats.items()

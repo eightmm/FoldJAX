@@ -86,10 +86,18 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     loaded = []
     seen = []
 
+    primary_features = _fake_features(affinity=True)
+    primary_features["disto_target"] = np.full(
+        (1, 2, 2, 1, 64), np.nan, dtype=np.float32
+    )
+    affinity_features = _fake_features(affinity=True)
+    affinity_features["disto_target"] = np.full(
+        (1, 2, 2, 1, 64), np.inf, dtype=np.float32
+    )
     monkeypatch.setattr(
         api,
         "featurize",
-        lambda **kwargs: (_fake_features(affinity=True), "job", tmp_path),
+        lambda **kwargs: (primary_features, "job", tmp_path),
     )
 
     def fake_load_params(path: Path):
@@ -114,7 +122,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         }
         controls["noise_tape"] = "init_noise" in kwargs or "step_noises" in kwargs
         second_stage = "affinity" in params
-        seen.append((second_stage, controls))
+        seen.append((second_stage, controls, frozenset(feats)))
         if second_stage:
             return {
                 "sample_atom_coords": jnp.zeros((5, 3, 3)),
@@ -136,7 +144,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(
         api,
         "_prepare_affinity_features",
-        lambda **kwargs: _fake_features(affinity=True),
+        lambda **kwargs: affinity_features,
         raising=False,
     )
 
@@ -154,7 +162,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     )
 
     assert loaded == [confidence_weights, affinity_weights]
-    assert seen[0] == (
+    assert seen[0][:2] == (
         False,
         {
             "steering_args": {"fk_steering": False},
@@ -168,6 +176,8 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     assert seen[1][0] is True
     assert seen[1][1]["multiplicity"] == 5
     assert seen[1][1]["noise_tape"] is False
+    assert "disto_target" not in seen[0][2]
+    assert "disto_target" not in seen[1][2]
     np.testing.assert_array_equal(out["raw"]["affinity_pred_value"], [2.0])
     assert out["coords"].shape == (2, 3, 3)
     assert out["plddt"].shape == (2, 3)
@@ -242,6 +252,85 @@ def test_bucket_api_crops_public_and_raw_outputs(tmp_path, monkeypatch) -> None:
         "atoms": 256,
         "msa": 1,
     }
+
+
+@pytest.mark.parametrize("bucket", [False, True])
+def test_nonsteering_exact_and_bucket_routes_filter_dead_features(
+    tmp_path, monkeypatch, bucket
+) -> None:
+    feats = _fake_features(affinity=False)
+    feats["disto_target"] = np.full(
+        (1, 2, 2, 1, 64), np.nan, dtype=np.float32
+    )
+    feats["writer_only"] = np.full((1, 9), np.inf, dtype=np.float32)
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+    seen = []
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        seen.append(frozenset(model_feats))
+        atoms = model_feats["atom_pad_mask"].shape[-1]
+        tokens = model_feats["token_pad_mask"].shape[-1]
+        return {
+            "sample_atom_coords": jnp.zeros((1, atoms, 3)),
+            "plddt": jnp.ones((1, tokens)),
+            "iptm": jnp.ones((1,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+
+    api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        bucket=bucket,
+        steps=1,
+    )
+
+    assert len(seen) == 1
+    assert "disto_target" not in seen[0]
+    assert "writer_only" not in seen[0]
+
+
+def test_active_steering_retains_variable_and_host_features(
+    tmp_path, monkeypatch
+) -> None:
+    feats = _fake_features(affinity=False)
+    feats["disto_target"] = np.zeros((1, 2, 2, 1, 64), dtype=np.float32)
+    feats["steering_only"] = np.arange(7, dtype=np.int32)
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+    seen = []
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        seen.append(frozenset(model_feats))
+        return {
+            "sample_atom_coords": jnp.zeros((1, 3, 3)),
+            "plddt": jnp.ones((1, 2)),
+            "iptm": jnp.ones((1,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+
+    api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        steering_args={"fk_steering": True},
+        steps=1,
+    )
+
+    assert seen == [frozenset(feats)]
 
 
 def test_neutral_padding_crops_back_to_the_default_public_shapes(

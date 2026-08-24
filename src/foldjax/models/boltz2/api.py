@@ -594,13 +594,15 @@ def predict(
                 "yet; run the affinity job on a single device"
             )
     if padding is not None:
-        from foldjax.models.boltz2.data.bucket import (
-            select_model_features_for_padding,
-        )
+        from foldjax.models.boltz2.data.bucket import select_model_features_for_padding
 
         feats_np = select_model_features_for_padding(
             feats_np, steering_active=steering_active
         )
+    elif not steering_active:
+        from foldjax.models.boltz2.data.bucket import select_model_features
+
+        feats_np = select_model_features(feats_np)
 
     original_tokens = int(feats_np["token_pad_mask"].shape[-1])
     original_atoms = int(feats_np["atom_pad_mask"].shape[-1])
@@ -864,6 +866,10 @@ def predict(
             msa_api_key_value=msa_api_key_value,
             max_msa_depth=max_msa_depth,
         )
+        if padding is None:
+            from foldjax.models.boltz2.data.bucket import select_model_features
+
+            affinity_feats_np = select_model_features(affinity_feats_np)
         if padding is not None or bucket:
             from foldjax.models.boltz2.data.bucket import (
                 pad_feats,

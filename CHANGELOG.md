@@ -31,6 +31,24 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Boltz-2 drops training and writer-only features before non-steering
+  inference owns them.** The model-input allowlist previously ran only for
+  explicit neutral padding. Exact-shape, legacy-bucket, and context-parallel
+  calls therefore retained the complete featurizer mapping; context
+  parallelism also placed every array before JIT could discard unread inputs.
+  A 1,003-token probe found 47 JIT-dead arrays totaling 306 MiB, including the
+  246 MiB quadratic `disto_target` training label. The conservative host
+  allowlist now removes training and writer-only inputs such as that label
+  before the exact, bucketed, context-parallel, and always-jitted affinity
+  routes take ownership, while retaining conditional model inputs. Active
+  steering still receives its variable-length constraint arrays, padding keeps
+  its template-row validation, and public featurization plus the low-level
+  model API remain unchanged. A minimal CPU DCE probe produces identical HLO,
+  executable memory analysis, outputs, and non-finite masks before and after
+  filtering; a forced four-CPU mesh also gates that removed features never
+  reach placement. No model arithmetic, static runtime identity, or
+  compilation profile changes.
+
 - **Protenix and OpenDDE confidence project released distance bins without a
   quadratic one-hot.** Their shared head previously materialized
   `[N_token, N_token, 39]` float indicators before a linear whose input has at
