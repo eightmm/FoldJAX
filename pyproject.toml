@@ -55,9 +55,11 @@ dependencies = [
     # currently held to the Gemmi 0.7 ABI until a separate compatibility sweep.
     "gemmi>=0.7.5,<0.8",
     "modelcif>=1.0",
-    # protenix/opendde preprocessing. AlphaFold 3 pins rdkit==2025.9.4
-    # exactly, so the floor stays at that release for the optional af3 extra.
-    "rdkit>=2025.9.4,<2026",
+    # Protenix/OpenDDE preprocessing and ESMFold2 CCD chemistry. Biohub's
+    # current CCD snapshot is serialized by RDKit 2026.03; an older reader
+    # emits one compatibility warning per component and does not guarantee the
+    # molecule payload. Keep the runtime on that serialization generation.
+    "rdkit>=2026.3.5,<2027",
     # opendde
     "scipy>=1.15",
     # Boltz-2 preprocessing. These are ordinary scientific libraries, none of

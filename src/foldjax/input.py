@@ -109,12 +109,14 @@ _TARGETS = {
     # its query document has no field for a caller-supplied structure, so a
     # template here would be dropped rather than used.
     "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"} - _NO_TEMPLATES),
-    # ESMFold2's entry point takes a sequence, not a job file, so its adapter
-    # reads the FoldJAX document itself. Upstream ESMFold2 supports all
-    # biomolecules, but the current FoldJAX feature adapter declares protein
-    # only. The document is still validated so a ligand job is refused here
-    # rather than folded as its protein half.
-    "esmfold2": _Target(".json", {"unpaired_msa"}),
+    # ESMFold2 has no second native dialect: its NumPy adapter reads the common
+    # document and implements Biohub's all-biomolecule tokenizer directly.
+    # Taxonomy-paired MSAs and structural templates are not part of this route;
+    # every chemistry feature below is represented without loss.
+    "esmfold2": _Target(
+        ".json",
+        {"unpaired_msa", "modifications", "ligand_ccd", "ligand_smiles", "bonds"},
+    ),
 }
 
 
@@ -1300,6 +1302,12 @@ def materialize_native_input(
 
     if model == "esmfold2":
         # No dialect to translate into: the adapter consumes this schema.
+        # Unlike every generated native dialect, this is otherwise a direct
+        # copy; resolve MSA paths now so relocating the generated document does
+        # not change which alignment it names.
+        for entity in job["entities"]:
+            if entity.get("unpaired_msa"):
+                entity["unpaired_msa"] = _path(entity["unpaired_msa"], base)
         document: Any = job
     elif model == "alphafold3":
         document = _alphafold3(job, base, seed)

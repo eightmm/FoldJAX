@@ -243,7 +243,7 @@ protenix    yes
 opendde     yes
 alphafold3  yes    (weights not installed)
 openfold3   no     cannot express: bonds
-esmfold2    no     cannot express: ligand entity
+esmfold2    yes
 ```
 
 **비용.** 매우 낮음(반나절). 첫 사용자가 가장 자주 막히는 지점이다.

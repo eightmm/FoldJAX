@@ -21,6 +21,7 @@ from foldjax.backends.esmfold2 import (
     ESMFold2Backend,
     _job_chains,
     _model_asset_snapshot,
+    _requires_all_atom_features,
     managed_asset_profile,
 )
 from foldjax.paths import weights_dir
@@ -185,13 +186,119 @@ def test_scalar_backend_withholds_distogram_without_exposing_an_override(
     assert "return_distogram_logits" not in result.raw["overrides"]
 
 
-def test_a_ligand_job_is_refused_rather_than_folded_as_protein(tmp_path) -> None:
-    """`forward` expresses ligands; this adapter does not build their features.
+def test_all_released_biomolecule_types_are_advertised() -> None:
+    assert ESMFold2Backend().capabilities().entity_types == (
+        "protein",
+        "dna",
+        "rna",
+        "ligand",
+    )
 
-    Accepting the job and folding the protein alone would return a structure
-    that answers a different question than the one asked.
-    """
-    assert "ligand" not in ESMFold2Backend().capabilities().entity_types
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"entities": [{"type": "dna", "id": "D", "sequence": "AT"}]},
+        {"entities": [{"type": "rna", "id": "R", "sequence": "AU"}]},
+        {"entities": [{"type": "ligand", "id": "L", "ccd": "ATP"}]},
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "P",
+                    "sequence": "AS",
+                    "modifications": [{"ccd": "SEP", "position": 2}],
+                }
+            ]
+        },
+        {
+            "entities": [{"type": "protein", "id": "P", "sequence": "AS"}],
+            "bonds": [[['P', 1, 'CA'], ['P', 2, 'CA']]],
+        },
+    ],
+)
+def test_noncanonical_chemistry_selects_all_atom_features(document) -> None:
+    assert _requires_all_atom_features(document)
+
+
+def test_plain_protein_keeps_the_historical_feature_path() -> None:
+    assert not _requires_all_atom_features(
+        {"entities": [{"type": "protein", "id": "P", "sequence": "AS"}]}
+    )
+
+
+def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) -> None:
+    job = tmp_path / "mixed.json"
+    document = {
+        "name": "mixed",
+        "entities": [
+            {"type": "protein", "id": "P", "sequence": "AS"},
+            {"type": "dna", "id": "D", "sequence": "AT"},
+            {"type": "rna", "id": "R", "sequence": "AU"},
+            {"type": "ligand", "id": "L", "ccd": "ATP"},
+        ],
+        "bonds": [[['P', 2, 'CA'], ['L', 1, 'PA']]],
+    }
+    job.write_text(json.dumps(document))
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    features = {
+        "input_ids": np.asarray([[4]]),
+        "asym_id": np.asarray([[0]]),
+        "residue_index": np.asarray([[0]]),
+        "mol_type": np.asarray([[0]]),
+        "token_attention_mask": np.asarray([[True]]),
+    }
+    seen = {}
+    model = SimpleNamespace(
+        has_language_model=False,
+        settings=SimpleNamespace(msa_max_depth=16, msa_n_layers=1, num_loops=3),
+    )
+
+    def build_common(value, **kwargs):
+        seen["document"] = value
+        seen.update(kwargs)
+        return features
+
+    def predict(key, value, loaded, **kwargs):
+        seen.update(key=key, features=value, model=loaded, predict=kwargs)
+        return {}
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            load=lambda *args, **kwargs: model,
+            seed_key=lambda seed: seed,
+            build_common_job_features=build_common,
+            build_job_features=lambda *_args: pytest.fail("legacy builder was used"),
+            predict=predict,
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 0.75}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+
+    ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            options={"no_language_model": True},
+        )
+    )
+
+    assert seen["document"] == document
+    assert seen["base_dir"] == tmp_path
+    assert seen["ccd_path"] == weights / "ccd.pkl"
+    assert "msa_depth" not in seen
+    assert seen["features"] is features
+    assert seen["predict"]["return_distogram_logits"] is False
 
 
 def test_chain_copies_become_separate_chains_of_one_entity(tmp_path) -> None:
@@ -545,6 +652,27 @@ def test_huggingface_style_symlinked_esmc_shards_are_verifiable(tmp_path) -> Non
 
     assert snapshot is not None
     assert any(str(shard.resolve()) == path for path, _identity in snapshot)
+
+
+def test_available_ccd_is_part_of_the_model_asset_snapshot(tmp_path) -> None:
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "model.safetensors").write_bytes(b"structure")
+    (weights / "config.json").write_text("{}")
+    ccd = weights / "ccd.pkl"
+    ccd.write_bytes(b"chemistry")
+
+    before = _model_asset_snapshot(weights, esmc=None, language_model=False)
+    assert before is not None
+    assert any(str(ccd.resolve()) == path for path, _identity in before)
+
+    replacement = weights / "ccd.new"
+    replacement.write_bytes(b"different chemistry")
+    os.replace(replacement, ccd)
+    after = _model_asset_snapshot(weights, esmc=None, language_model=False)
+
+    assert after is not None
+    assert after != before
 
 
 def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(

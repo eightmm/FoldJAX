@@ -58,6 +58,11 @@ _TOKEN_AXES: dict[str, tuple[int, ...]] = {
     "has_deletion": (-1,),
     "deletion_value": (-1,),
     "deletion_mean": (-1,),
+    # Writer-only all-biomolecule metadata. Inference removes these leaves
+    # before constructing the JAX PyTree, but serving padding must still keep
+    # them aligned with their tokens.
+    "token_chain_id_chars": (-2,),
+    "token_residue_name_chars": (-2,),
     # Host-side deep-MSA normalization preserves the profile of the complete
     # alignment here before selecting the bounded set of encoder rows.
     "msa_profile": (-2,),

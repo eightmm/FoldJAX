@@ -22,6 +22,10 @@ from collections.abc import Mapping
 import numpy as np
 
 from foldjax.models.esmfold2.data import chemistry
+from foldjax.models.esmfold2.data.all_atom_constants import (
+    ELEMENT_NUMBER_TO_SYMBOL,
+    MOL_TYPE_NONPOLYMER,
+)
 
 #: Chain identifiers in the order PDB files conventionally use them. Past 62
 #: chains a PDB file cannot name them at all, and the writer says so.
@@ -37,6 +41,12 @@ def decode_atom_name(codes: np.ndarray) -> str:
     return "".join(
         chr(int(code) + 32) if int(code) != 0 else " " for code in codes
     ).strip()
+
+
+def _decode_text(codes: np.ndarray) -> str:
+    """Decode zero-padded ASCII writer metadata."""
+
+    return bytes(int(value) for value in codes if int(value)).decode("ascii")
 
 
 def _format_atom_name(name: str) -> str:
@@ -131,16 +141,85 @@ def to_mmcif(
     plddt_scale: float = 100.0,
     name: str = "prediction",
 ) -> str:
-    """The same structure as mmCIF, which is what the rest of FoldJAX writes.
+    """Write mmCIF, retaining arbitrary chain and CCD residue identifiers.
 
-    Routed through the PDB writer and gemmi rather than emitting `atom_site`
-    directly: the atom naming, chain identity and b-factor handling are already
-    tested there, and a second serialiser would be a second place for them to
-    disagree. PDB's own limits do not bite on FoldJAX's currently supported
-    ESMFold2 protein path, so there are no four-character atom names and no
-    five-digit serials at the lengths it folds.
+    Legacy protein feature dictionaries do not carry writer metadata and keep
+    the established PDB-through-Gemmi path. The all-biomolecule builder does:
+    it is written directly because PDB cannot represent multi-character chain
+    IDs and truncates the component namespace that ligands/modifications use.
     """
     import gemmi
+
+    if {
+        "token_chain_id_chars",
+        "token_residue_name_chars",
+    } <= features.keys():
+        take = lambda key: _drop_batch(np.asarray(features[key]))  # noqa: E731
+        atom_to_token = take("atom_to_token")
+        atom_mask = take("atom_attention_mask").astype(bool)
+        token_mask = take("token_attention_mask").astype(bool)
+        residue_index = take("residue_index")
+        mol_type = take("mol_type")
+        atom_names = take("ref_atom_name_chars")
+        elements = take("ref_element")
+        chain_names = take("token_chain_id_chars")
+        residue_names = take("token_residue_name_chars")
+        coordinates = _drop_batch(np.asarray(coords))
+        confidence = (
+            np.zeros(coordinates.shape[0], dtype=np.float32)
+            if plddt_per_atom is None
+            else _drop_batch(np.asarray(plddt_per_atom)) * plddt_scale
+        )
+
+        structure = gemmi.Structure()
+        structure.name = name
+        model = gemmi.Model("1")
+        chain_objects: dict[str, gemmi.Chain] = {}
+        residue_objects: dict[tuple[str, int, str], gemmi.Residue] = {}
+        for atom_index, owner in enumerate(atom_to_token):
+            if not atom_mask[atom_index]:
+                continue
+            token = int(owner)
+            if not token_mask[token]:
+                continue
+            chain_name = _decode_text(chain_names[token])
+            residue_name = _decode_text(residue_names[token])
+            chain = chain_objects.get(chain_name)
+            if chain is None:
+                model.add_chain(gemmi.Chain(chain_name))
+                chain = model[-1]
+                chain_objects[chain_name] = chain
+            residue_key = (chain_name, int(residue_index[token]), residue_name)
+            residue = residue_objects.get(residue_key)
+            if residue is None:
+                residue = gemmi.Residue()
+                residue.name = residue_name
+                residue.seqid = gemmi.SeqId(int(residue_index[token]) + 1, " ")
+                residue.het_flag = (
+                    "H" if int(mol_type[token]) == MOL_TYPE_NONPOLYMER else "A"
+                )
+                chain.add_residue(residue)
+                residue = chain[-1]
+                residue_objects[residue_key] = residue
+            atom = gemmi.Atom()
+            atom.name = decode_atom_name(atom_names[atom_index])
+            symbol = ELEMENT_NUMBER_TO_SYMBOL.get(int(elements[atom_index]), "C")
+            atom.element = gemmi.Element(symbol.title())
+            atom.pos = gemmi.Position(
+                *(float(value) for value in coordinates[atom_index])
+            )
+            atom.occ = 1.0
+            atom.b_iso = float(confidence[atom_index])
+            residue.add_atom(atom)
+
+        # Gemmi copies the model when it is inserted. Populate the local model
+        # first so the structure receives the chains and atoms rather than the
+        # empty shell.
+        structure.add_model(model)
+        structure.setup_entities()
+        document = structure.make_mmcif_document()
+        document.sole_block().name = name
+        return document.as_string()
 
     structure = gemmi.read_pdb_string(
         to_pdb(coords, features, plddt_per_atom, plddt_scale=plddt_scale)

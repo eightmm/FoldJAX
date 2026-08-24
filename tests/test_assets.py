@@ -737,18 +737,25 @@ def test_a_zero_byte_required_weight_is_not_ready(
 
 
 def test_esmfold2_requires_only_the_supported_inference_bundle() -> None:
+    from foldjax.models.esmfold2.data.ccd import (
+        BIOHUB_CCD_SHA256,
+        BIOHUB_CCD_SIZE,
+    )
+
     spec = assets.assets_for("esmfold2")
     required = set(spec.requires)
     downloads = {item.name for item in spec.downloads}
     assert {"model.safetensors", "config.json"} <= required
-    assert "ccd.pkl" not in required
-    assert "ccd.pkl" not in downloads
+    assert "ccd.pkl" in required
+    assert "ccd.pkl" in downloads
+    ccd = next(item for item in spec.downloads if item.name == "ccd.pkl")
+    assert (ccd.sha256, ccd.size) == (BIOHUB_CCD_SHA256, BIOHUB_CCD_SIZE)
     assert "esmc/config.json" in required
     assert "esmc/model.safetensors.index.json" in required
     assert {
         f"esmc/model-{index:05d}-of-00006.safetensors" for index in range(1, 7)
     } <= required
-    assert model_info("esmfold2").download_bytes == 26_347_754_143
+    assert model_info("esmfold2").download_bytes == 26_765_060_727
 
 
 def test_esmfold2_profiles_publish_their_exact_transfer_contract() -> None:
@@ -762,9 +769,10 @@ def test_esmfold2_profiles_publish_their_exact_transfer_contract() -> None:
     assert {item.name for item in structure.downloads} == {
         "model.safetensors",
         "config.json",
+        "ccd.pkl",
     }
-    assert structure.requires == ("model.safetensors", "config.json")
-    assert sum(item.size or 0 for item in structure.downloads) == 939_507_565
+    assert structure.requires == ("model.safetensors", "config.json", "ccd.pkl")
+    assert sum(item.size or 0 for item in structure.downloads) == 1_356_814_149
     assert "no_language_model=true" in structure.notes
 
     with pytest.raises(ValueError, match="unsupported asset profile.*esmfold2"):

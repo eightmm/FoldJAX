@@ -65,16 +65,18 @@ inside `AttentionPairBias`.
 ## Managed assets
 
 Upstream ESMFold2 supports proteins, DNA, RNA, ligands, and modified residues.
-FoldJAX currently exposes only its protein input path because the complete
-upstream all-biomolecule feature builder has not yet been ported to NumPy/JAX.
-Those supported protein features get their canonical atom names and reference
-coordinates from the chemistry tables carried in the package, so neither
-featurization nor prediction reads the publisher's 417 MB `ccd.pkl`.
+FoldJAX exposes that same contract through a Torch-free NumPy builder. Standard
+polymers, atom-tokenized modified residues, CCD/SMILES ligands and explicit
+covalent bonds produce the feature dictionary consumed by the JAX port. The
+publisher's pinned 417 MB `ccd.pkl` supplies arbitrary component chemistry and
+is checked again before deserialization; ordinary protein-only jobs keep the
+established in-package chemistry path.
 
 The managed store has two explicit profiles:
 
-* `released` (default) stages the structure checkpoint and complete ESMC-6B;
-* `structure-only` stages `model.safetensors` and `config.json` only (940 MB).
+* `released` (default) stages the structure checkpoint, CCD and complete ESMC-6B;
+* `structure-only` stages `model.safetensors`, `config.json`, and `ccd.pkl`
+  (1.36 GB).
   It supports either `no_language_model=true` or a released-model run whose
   ESMC checkpoint is supplied explicitly with `esmc_weights`.
 

@@ -95,8 +95,8 @@ def test_models_json_reports_weight_readiness(
     profiles = {
         profile["profile"]: profile for profile in esmfold["weights"]["profiles"]
     }
-    assert profiles["released"]["download_bytes"] == 26_347_754_143
-    assert profiles["structure-only"]["download_bytes"] == 939_507_565
+    assert profiles["released"]["download_bytes"] == 26_765_060_727
+    assert profiles["structure-only"]["download_bytes"] == 1_356_814_149
     protenix = next(item for item in payload if item["model"] == "protenix")
     protenix_profiles = {
         profile["profile"]: profile
@@ -143,7 +143,7 @@ def test_weights_cli_passes_model_specific_profiles(
     )
 
     assert calls == [("esmfold2", "structure-only", True, True, True)]
-    assert "2 file(s)" in capsys.readouterr().out
+    assert "3 file(s)" in capsys.readouterr().out
 
 
 def test_weights_cli_routes_protenix_profile_through_its_isolated_root(

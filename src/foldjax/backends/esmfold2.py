@@ -21,13 +21,11 @@ Two things about it differ from the rest of the fleet and reach the interface:
   and the sampler adds noise. Two runs at the same seed agree; two seeds do not,
   and that is the model rather than the port.
 
-Upstream ESMFold2 is an all-biomolecule model: its released input pipeline
-supports proteins, DNA, RNA, ligands, and modified residues. The remaining port
-gap is FoldJAX's feature adapter, which currently builds protein features only.
-`capabilities()` therefore reports protein rather than accepting a job it would
-fold without its ligand or nucleic acid. Supported protein features use the
-canonical chemistry carried in this package; prediction never reads upstream's
-417 MB `ccd.pkl`.
+Upstream ESMFold2 is an all-biomolecule model. FoldJAX implements that released
+input contract in NumPy: proteins, DNA, RNA, CCD and SMILES ligands, modified
+residues and explicit covalent bonds all reach the same JAX model. Biohub's
+verified ``ccd.pkl`` supplies arbitrary component chemistry; an unchanged
+protein-only job retains the smaller historical in-package chemistry path.
 """
 
 from __future__ import annotations
@@ -114,6 +112,13 @@ def _model_asset_snapshot(
     weights = Path(weights)
     root = weights.parent if weights.is_file() else weights
     paths = [root / "model.safetensors", root / "config.json"]
+    # All-biomolecule jobs read the CCD beside the structure checkpoint. Keep
+    # it in the session provenance whenever it is present, while preserving
+    # compatibility with external protein-only bundles that predate the CCD
+    # requirement and never enter the all-atom feature path.
+    ccd = root / "ccd.pkl"
+    if ccd.exists():
+        paths.append(ccd)
     if language_model:
         lm_paths = _esmc_asset_paths(
             Path(esmc) if esmc is not None else root / "esmc"
@@ -565,11 +570,7 @@ class ESMFold2Backend(Backend):
                     )
                 )
             },
-            # Deliberately narrower than upstream ESMFold2: the model supports
-            # ligands and nucleic acids, but this FoldJAX adapter does not build
-            # their features yet. A job naming them would otherwise be folded
-            # as protein alone.
-            entity_types=("protein",),
+            entity_types=("protein", "dna", "rna", "ligand"),
             supports_templates=False,
             padding_axes=self.padding_axes,
         )
@@ -582,7 +583,9 @@ class ESMFold2Backend(Backend):
         inference = import_module("foldjax.models.esmfold2.inference")
         output_module = import_module("foldjax.models.esmfold2.output")
 
-        chains, alignments = _job_chains(request.input)
+        document, document_base = _job_document(request.input)
+        chains, alignments = _chains_from_document(document, document_base)
+        all_atom_input = _requires_all_atom_features(document)
         overrides = {
             name: int(options.pop(name))
             for name in ("num_loops", "num_steps", "num_samples", "msa_max_depth")
@@ -639,7 +642,19 @@ class ESMFold2Backend(Backend):
                 "predict",
             )
         )
-        if request.padding is None and (
+        prebuilt_features = None
+        if all_atom_input:
+            weights_root = Path(request.weights)
+            if not weights_root.is_dir():
+                weights_root = weights_root.parent
+            prebuilt_features = inference.build_common_job_features(
+                document,
+                base_dir=document_base,
+                ccd_path=weights_root / "ccd.pkl",
+                seed=request.seed,
+            )
+
+        if not all_atom_input and request.padding is None and (
             not self._session_active or not cached_lm_api
         ):
             # Preserve the original, public no-padding path exactly.  Besides
@@ -655,7 +670,11 @@ class ESMFold2Backend(Backend):
                 **overrides,
             )
         else:
-            features = inference.build_job_features(chains, alignments)
+            features = (
+                prebuilt_features
+                if prebuilt_features is not None
+                else inference.build_job_features(chains, alignments)
+            )
             prediction_key = inference.seed_key(request.seed)
             lm_tokens = (
                 inference.language_model_length(features)
@@ -773,24 +792,24 @@ class ESMFold2Backend(Backend):
         )
 
 
-def _job_chains(
-    path: Path,
-) -> tuple[list[tuple[str, str, int, int]], dict[int, Path]]:
-    """One entry per chain copy, and the alignment each entity pins.
+def _job_document(path: Path) -> tuple[dict[str, Any], Path]:
+    """Read the validated common document consumed by this native adapter."""
 
-    A FoldJAX entity is a sequence and the chains that carry it, which is
-    exactly ESMFold2's entity/symmetry split: every copy becomes its own chain
-    with its own `asym_id`, sharing an `entity_id` and counting up `sym_id`.
-    Alignment paths are resolved against the job file, as everywhere else.
-    """
     document: Any = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(document, dict) or "entities" not in document:
         raise ValueError(
             "ESMFold2 takes a FoldJAX job document; it has no native dialect"
         )
+    return document, Path(path).parent
+
+
+def _chains_from_document(
+    document: Mapping[str, Any], base: Path
+) -> tuple[list[tuple[str, str, int, int]], dict[int, Path]]:
+    """Legacy protein chain tuples used by unchanged protein-only jobs."""
+
     chains: list[tuple[str, str, int, int]] = []
     alignments: dict[int, Path] = {}
-    base = Path(path).parent
     for entity_index, entity in enumerate(document["entities"]):
         if entity.get("type") != "protein":
             continue
@@ -804,6 +823,30 @@ def _job_chains(
             alignments[entity_index] = (
                 candidate if candidate.is_absolute() else base / candidate
             )
+    return chains, alignments
+
+
+def _requires_all_atom_features(document: Mapping[str, Any]) -> bool:
+    """Whether the official all-biomolecule tokenizer is semantically needed."""
+
+    return bool(document.get("bonds")) or any(
+        entity.get("type") != "protein" or entity.get("modifications")
+        for entity in document["entities"]
+    )
+
+
+def _job_chains(
+    path: Path,
+) -> tuple[list[tuple[str, str, int, int]], dict[int, Path]]:
+    """One entry per chain copy, and the alignment each entity pins.
+
+    A FoldJAX entity is a sequence and the chains that carry it, which is
+    exactly ESMFold2's entity/symmetry split: every copy becomes its own chain
+    with its own `asym_id`, sharing an `entity_id` and counting up `sym_id`.
+    Alignment paths are resolved against the job file, as everywhere else.
+    """
+    document, base = _job_document(path)
+    chains, alignments = _chains_from_document(document, base)
     if not chains:
         raise ValueError("the job names no protein chains")
     return chains, alignments

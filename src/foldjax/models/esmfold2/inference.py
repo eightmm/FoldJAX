@@ -32,6 +32,7 @@ from foldjax.models._cp import (
 )
 from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
 from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
+from foldjax.models.esmfold2.data import all_atom as all_atom_featurisation
 from foldjax.models.esmfold2.data import features as featurisation
 from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
@@ -294,7 +295,11 @@ def predict(
         num_steps=num_steps,
         msa_max_depth=msa_max_depth,
     )
-    arrays = {name: jnp.asarray(value) for name, value in features.items()}
+    arrays = {
+        name: jnp.asarray(value)
+        for name, value in features.items()
+        if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
+    }
     hidden = precomputed_lm_states
     if hidden is None:
         hidden = language_model_states(
@@ -450,6 +455,25 @@ def build_job_features(
     return featurisation.build_features(chains, dict(alignments or {}))
 
 
+def build_common_job_features(
+    document: Mapping[str, object],
+    *,
+    base_dir: str | Path,
+    ccd_path: str | Path,
+    seed: int,
+    msa_depth: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Build Biohub's all-biomolecule feature contract from a common job."""
+
+    return all_atom_featurisation.build_job_features(
+        document,
+        base_dir=base_dir,
+        ccd_path=ccd_path,
+        seed=seed,
+        msa_depth=msa_depth,
+    )
+
+
 def pad_features(
     features: dict[str, np.ndarray],
     *,
@@ -551,6 +575,7 @@ __all__ = [
     "LANGUAGE_MODEL_FEATURES",
     "LoadedModel",
     "build_job_features",
+    "build_common_job_features",
     "esmc_directory",
     "language_model_length",
     "language_model_states",

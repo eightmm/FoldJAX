@@ -51,6 +51,27 @@ def test_materializes_alphafold3_input(common_job: Path, tmp_path: Path) -> None
     assert native["sequences"][2]["ligand"]["ccdCodes"] == ["ATP"]
 
 
+def test_materializes_esmfold2_all_biomolecule_input(
+    common_job: Path, tmp_path: Path
+) -> None:
+    native = json.loads(
+        _materialize(common_job, "esmfold2", tmp_path / "esm").read_text()
+    )
+
+    assert [entity["type"] for entity in native["entities"]] == [
+        "protein",
+        "dna",
+        "ligand",
+    ]
+    assert native["entities"][0]["modifications"] == [
+        {"ccd": "SEP", "position": 2}
+    ]
+    assert native["entities"][0]["unpaired_msa"] == str(
+        common_job.parent / "msa.a3m"
+    )
+    assert native["entities"][2]["ccd"] == "ATP"
+
+
 @pytest.mark.parametrize("value", [42, ["msa.a3m"], {"path": "msa.a3m"}, "  "])
 def test_msa_references_must_be_nonempty_path_strings(
     tmp_path: Path, job: dict, value: object

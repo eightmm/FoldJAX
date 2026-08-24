@@ -739,13 +739,13 @@ def _stage_esmfold2(
     -- the released configuration differs from upstream's dataclass defaults in
     most of the fields that matter -- and the download step keeps files under
     `downloads/`. Files are hard-linked where the filesystem allows it, so the
-    roughly 1.3 GB structure checkpoint and, for the released profile, the
+    roughly 1.36 GB structure+chemistry bundle and, for the released profile, the
     additional 25.4 GB language model are not stored twice.
 
     ESMC-6B, the language model the trunk folds representations from, is a
     separate 25.4 GB checkpoint that upstream distributes apart from this one.
     The released profile publishes it under `<weights>/esmfold2/esmc`; the
-    structure-only profile deliberately stages only the two structure files.
+    structure-only profile deliberately stages only the structure files and CCD.
     """
     out = weights_dir(model)
     out.mkdir(parents=True, exist_ok=True)
@@ -1381,6 +1381,20 @@ REGISTRY: dict[str, ModelAssets] = {
                 ),
                 size=2337,
             ),
+            # The released all-biomolecule tokenizer's CCD snapshot. It is a
+            # dictionary of RDKit molecules used for standard nucleic-acid
+            # reference conformers, modified residues and CCD ligands.
+            Download(
+                name="ccd.pkl",
+                url=(
+                    "https://huggingface.co/biohub/ESMFold2/resolve/"
+                    "8fc3ff471022fdce52c77030685eb775de0c00a3/ccd.pkl"
+                ),
+                sha256=(
+                    "9ff44b1927c6b9198e38ffe0928706827a09a350c15530beeeabebfa88038fc5"
+                ),
+                size=417306584,
+            ),
             # ESMC-6B, the language model the trunk folds representations from.
             # Upstream distributes it as its own repository and the store
             # keeps it in the `esmc/` subdirectory the loader looks in. It is
@@ -1479,6 +1493,7 @@ REGISTRY: dict[str, ModelAssets] = {
         requires=(
             "model.safetensors",
             "config.json",
+            "ccd.pkl",
             "esmc/config.json",
             "esmc/model.safetensors.index.json",
             "esmc/model-00001-of-00006.safetensors",
@@ -1496,11 +1511,9 @@ REGISTRY: dict[str, ModelAssets] = {
         "checkpoints: the 940 MB structure network, and ESMC-6B, the 6B "
         "language model it folds representations from, which upstream "
         "distributes as its own repository and which this fetches into "
-        "<weights>/esmc. Upstream ESMFold2 supports all biomolecules; the "
-        "current FoldJAX protein feature adapter uses in-package canonical "
-        "chemistry and never reads the publisher's ccd.pkl, so that "
-        "417 MB file is not fetched. Budget 26.4 GB when hard links are "
-        "available, or up to 52.7 GB when downloads and staged weights must "
+        "<weights>/esmc. Biohub's 417 MB ccd.pkl is included for DNA, RNA, "
+        "CCD ligands and modified residues. Budget 26.8 GB when hard links are "
+        "available, or up to 53.6 GB when downloads and staged weights must "
         "be copied, plus an hour. "
         "Folding without the "
         "language model is possible and is a different model, so it has to be "
@@ -1707,8 +1720,9 @@ def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
         requires=requires,
         ready_check=_esmfold2_structure_only_ready,
         notes=(
-            "ESMFold2 structure-only profile: the 940 MB structure checkpoint "
-            "and config, without ESMC-6B. This profile is valid only with "
+            "ESMFold2 structure-only profile: the 940 MB structure checkpoint, "
+            "config and 417 MB all-biomolecule CCD, without ESMC-6B. This "
+            "profile is valid only with "
             "no_language_model=true and predicts a deliberately different model "
             "from the released structure+ESMC bundle."
         ),
