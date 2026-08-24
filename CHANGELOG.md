@@ -10,6 +10,27 @@ command predicts unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Changed
+
+- **FoldJAX now targets Python 3.13 and the current JAX/cuEquivariance runtime
+  family.** The package metadata, lockfile, lint target, and CPU CI move from
+  Python 3.12 to 3.13. JAX/JAXLIB and both CUDA plugin families move from
+  0.10.1 to 0.11.1; cuEquivariance core, JAX, and CUDA ops are aligned at
+  0.11.1; Tokamax moves to 0.0.13; AlphaFold 3's Haiku extra moves to 0.0.17;
+  and Flax is pinned at 0.12.9 because earlier 0.12 releases resolve but fail at
+  import against JAX 0.11.1's HiType API. Qwix 0.1.8 and Triton 3.7.1 complete
+  the pinned kernel stack. AlphaFold 3's first-use extension build now passes
+  the active Python executable to uv explicitly, preventing a machine with
+  multiple installed Python minors from producing the wrong ABI wheel.
+  CUDA 12 and CUDA 13 remain conflicting extras so a checkout can serve both
+  driver generations through separate environments. This is a runtime support
+  migration, not a change to model weights or sampling defaults. JAX 0.11 also
+  changed the implementation of 2-by-2 and 3-by-3 determinant operations;
+  alignment and rotation paths can therefore differ in low-order floating-point
+  bits even with the same inputs. CPU tests cover the base runtime, and locked
+  dependency resolution covers both CUDA extras; released-model CUDA numerical
+  and kernel-performance checks remain deployment gates.
+
 ### Fixed
 
 - **OpenFold3 no longer forces the allocator to grow on demand, which is what

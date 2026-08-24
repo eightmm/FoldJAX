@@ -297,7 +297,16 @@ def _write_marker(path: Path) -> None:
 def _build_command(stage: Path, wheels: Path) -> list[str]:
     uv = shutil.which("uv")
     if uv is not None:
-        return [uv, "build", "--wheel", "--out-dir", str(wheels), str(stage)]
+        return [
+            uv,
+            "build",
+            "--python",
+            sys.executable,
+            "--wheel",
+            "--out-dir",
+            str(wheels),
+            str(stage),
+        ]
     if importlib.util.find_spec("pip") is not None:
         return [
             sys.executable,

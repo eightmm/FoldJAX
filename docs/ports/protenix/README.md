@@ -46,7 +46,7 @@ checkpoint conversion, preprocessing, parity, and performance.
 
 ## Installation
 
-FoldJAX currently targets Python 3.12. The recommended environment manager is
+FoldJAX currently targets Python 3.13. The recommended environment manager is
 [uv](https://docs.astral.sh/uv/).
 
 ```bash

@@ -7,7 +7,7 @@ name = "foldjax"
 version = "0.3.0"
 description = "Six biomolecular structure-prediction models behind one JAX interface"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.13,<3.14"
 license = "Apache-2.0"
 keywords = [
     "biomolecular-structure-prediction",
@@ -24,7 +24,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 # Union of the six carried models' runtime requirements. FoldJAX itself adds
@@ -34,10 +34,16 @@ classifiers = [
 # dependencies are intentionally absent from the standalone runtime.
 dependencies = [
     # shared JAX runtime
-    "jax==0.10.1",
-    "numpy>=2.0",
-    "cuequivariance-jax==0.10.0",
-    "tokamax==0.0.12",
+    "jax==0.11.1",
+    "numpy>=2.1",
+    "cuequivariance==0.11.1",
+    "cuequivariance-jax==0.11.1",
+    # Qwix (via Tokamax) imports Flax NNX. Flax 0.12.7 resolves against JAX
+    # 0.11.1 but still calls the removed MutableHiType API; 0.12.9 contains
+    # the matching HiType compatibility update.
+    "flax==0.12.9",
+    "qwix==0.1.8",
+    "tokamax==0.0.13",
     # boltz2
     "chex>=0.1.86",
     "einops>=0.8.0",
@@ -53,7 +59,7 @@ dependencies = [
     # exactly, so the floor stays at that release for the optional af3 extra.
     "rdkit>=2025.9.4,<2026",
     # opendde
-    "scipy>=1.9",
+    "scipy>=1.15",
     # Boltz-2 preprocessing. These are ordinary scientific libraries, none of
     # which pulls torch; only the featurizer's *array* layer used to need it,
     # and that now runs on NumPy. Keeping them in the base set is what lets the
@@ -77,17 +83,17 @@ dependencies = [
 # (vendored sources, the CPU-only AlphaFold 3 pybind module, the weight store,
 # compile caches) is CUDA-generation-agnostic and shared.
 cuda12 = [
-    "cuequivariance-ops-jax-cu12==0.9.0",
-    "jax[cuda12]==0.10.1",
-    "triton>=3.0",
+    "cuequivariance-ops-jax-cu12==0.11.1",
+    "jax[cuda12]==0.11.1",
+    "triton==3.7.1",
 ]
 cuda13 = [
-    "cuequivariance-ops-jax-cu13==0.9.0",
-    "jax[cuda13]==0.10.1",
+    "cuequivariance-ops-jax-cu13==0.11.1",
+    "jax[cuda13]==0.11.1",
     # cuequivariance-jax's GPU layer-norm/triangle kernels import triton but do
     # not declare it. It used to arrive via torch; now that prediction is
     # torch-free it has to be asked for directly.
-    "triton>=3.0",
+    "triton==3.7.1",
 ]
 # OpenFold3 featurization. Feature-archive prediction needs none of this; raw
 # JSON prediction uses these chemistry/data packages through FoldJAX's local
@@ -129,7 +135,7 @@ openfold3-preprocess = [
 # jax, numpy, rdkit and tokamax are already here at compatible versions.
 alphafold3 = [
     "absl-py>=2.3.1",
-    "dm-haiku==0.0.16",
+    "dm-haiku==0.0.17",
     "etils[epath]",
     "tqdm",
     "zstandard",
@@ -225,7 +231,7 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py313"
 # Vendored from upstream with narrowly documented runtime patches, so upstream's
 # style is kept: broad reformatting would obscure the small reviewable delta.
 # Both are Apache-2.0 or MIT and carry their LICENSE/NOTICE.

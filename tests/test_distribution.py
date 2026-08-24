@@ -31,6 +31,52 @@ FORBIDDEN_RUNTIME_IMPORTS = {
 }
 
 
+def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
+    """Metadata, lock, lint, and CI must name one supported runtime family."""
+    document = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    project = document["project"]
+    dependencies = project["dependencies"]
+    extras = project["optional-dependencies"]
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    assert sys.version_info[:2] == (3, 13)
+    assert project["requires-python"] == ">=3.13,<3.14"
+    assert "Programming Language :: Python :: 3.13" in project["classifiers"]
+    assert document["tool"]["ruff"]["target-version"] == "py313"
+    assert (ROOT / ".python-version").read_text().strip() == "3.13"
+    assert lock["requires-python"] == "==3.13.*"
+    assert 'UV_PYTHON: "3.13"' in workflow
+    assert workflow.count('python-version: "3.13"') == 2
+
+    assert "jax==0.11.1" in dependencies
+    assert "cuequivariance==0.11.1" in dependencies
+    assert "cuequivariance-jax==0.11.1" in dependencies
+    assert "flax==0.12.9" in dependencies
+    assert "qwix==0.1.8" in dependencies
+    assert "tokamax==0.0.13" in dependencies
+    assert "jax[cuda12]==0.11.1" in extras["cuda12"]
+    assert "jax[cuda13]==0.11.1" in extras["cuda13"]
+    assert "cuequivariance-ops-jax-cu12==0.11.1" in extras["cuda12"]
+    assert "cuequivariance-ops-jax-cu13==0.11.1" in extras["cuda13"]
+    assert "triton==3.7.1" in extras["cuda12"]
+    assert "triton==3.7.1" in extras["cuda13"]
+    assert "dm-haiku==0.0.17" in extras["alphafold3"]
+
+
+def test_alphafold3_uv_build_uses_the_active_python(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The first-use extension wheel must match this process's Python ABI."""
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setattr(build.shutil, "which", lambda name: "/usr/bin/uv")
+
+    command = build._build_command(tmp_path / "stage", tmp_path / "wheels")
+
+    assert command[:4] == ["/usr/bin/uv", "build", "--python", sys.executable]
+
+
 def _forbidden_python_imports(root: Path) -> list[str]:
     """Return direct forbidden imports below one installable package tree."""
 

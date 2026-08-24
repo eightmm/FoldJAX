@@ -15,6 +15,7 @@ env:
   # here should try. Keeping it explicit also stops a stray CUDA plugin from
   # changing what the suite exercises.
   JAX_PLATFORMS: cpu
+  UV_PYTHON: "3.13"
 
 jobs:
   check:
@@ -29,6 +30,7 @@ jobs:
         with:
           version: "0.10.3"
           enable-cache: true
+          python-version: "3.13"
 
       # A clean runner has no sibling checkouts, which is the whole point: an
       # `openfold3` extra once resolved to `../openfold3_jax` and made this
@@ -83,6 +85,7 @@ jobs:
         with:
           version: "0.10.3"
           enable-cache: true
+          python-version: "3.13"
 
       - name: Install without dev dependencies
         run: uv sync --frozen

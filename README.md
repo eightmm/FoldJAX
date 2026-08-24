@@ -87,6 +87,9 @@ schedule.
 
 ## Installation
 
+FoldJAX requires Python 3.13. Its lockfile pins JAX 0.11.1 and the matching
+cuEquivariance JAX/CUDA packages for reproducible CPU and GPU environments.
+
 ```bash
 uv sync --extra cuda13 --group dev
 uv run foldjax weights fetch --model boltz2      # download, verify, convert once

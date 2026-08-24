@@ -591,7 +591,7 @@ def _unpack_boltz_mols(
         unpacked = Path(scratch) / "unpacked"
         unpacked.mkdir()
         with tarfile.open(archive) as tar:
-            # Python 3.12 warns without an explicit policy; refuse anything
+            # Modern Python warns without an explicit policy; refuse anything
             # that would escape the staging directory.
             tar.extractall(unpacked, filter="data")
         entries = [path for path in unpacked.iterdir() if path.name != "__MACOSX"]
