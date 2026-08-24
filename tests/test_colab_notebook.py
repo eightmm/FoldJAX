@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import ast
 import json
+import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+
+import jax
+import pytest
 
 import foldjax
 from foldjax import PredictionRequest, PredictionResult, PredictionSample
@@ -13,6 +18,19 @@ from foldjax.backends.protenix import ProtenixBackend
 
 ROOT = Path(__file__).parents[1]
 NOTEBOOK = ROOT / "notebooks" / "FoldJAX_Colab.ipynb"
+COLAB_STACK = {
+    "cuequivariance": "0.11.1",
+    "cuequivariance-jax": "0.11.1",
+    "cuequivariance-ops-cu12": "0.11.1",
+    "cuequivariance-ops-jax-cu12": "0.11.1",
+    "flax": "0.12.9",
+    "jax-cuda12-pjrt": "0.11.1",
+    "jax-cuda12-plugin": "0.11.1",
+    "jaxlib": "0.11.1",
+    "qwix": "0.1.8",
+    "tokamax": "0.0.13",
+    "triton": "3.7.1",
+}
 
 
 def _document() -> dict:
@@ -38,7 +56,7 @@ def test_colab_notebook_is_clean_gpu_notebook() -> None:
     assert document["nbformat"] == 4
     assert document["nbformat_minor"] >= 5
     assert document["metadata"]["accelerator"] == "GPU"
-    assert document["metadata"]["language_info"]["version"] == "3.12"
+    assert document["metadata"]["language_info"]["version"] == "3.13"
     assert document["cells"][0]["cell_type"] == "markdown"
     for cell in _code_cells():
         assert cell["execution_count"] is None
@@ -56,19 +74,94 @@ def test_colab_notebook_installs_supported_cuda_runtime_before_imports() -> None
     install = _source(cells[0])
     all_source = "\n".join(_source(cell) for cell in cells)
 
-    assert 'FOLDJAX_REF = "49800135a81f6d6e9cacaee547d1ea09c083f94b"' in install
+    assert 'FOLDJAX_REF = "613c0fa99b3838db1a9ea02db35735056ce71e96"' in install
     assert "foldjax[cuda12]" in install
     assert "FoldJAX.git@{FOLDJAX_REF}" in install
     assert '"py3Dmol>=2.0,<3"' in install
     assert all_source.index('"pip"') < all_source.index("import jax")
-    assert 'sys.version_info[:2] != (3, 12)' in install
+    assert 'sys.version_info[:2] != (3, 13)' in install
     assert 'shutil.which("nvidia-smi")' in install
     assert "Dependencies installed; restarting the runtime once" in install
     assert "signal.SIGKILL" in install
     assert "XLA_PYTHON_CLIENT_MEM_FRACTION" in all_source
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND" in all_source
-    assert 'jax.__version__ != "0.10.1"' in all_source
+    assert 'jax.__version__ != "0.11.1"' in all_source
+    assert "metadata.PackageNotFoundError" in all_source
+    for package, version in COLAB_STACK.items():
+        assert f'"{package}": "{version}"' in all_source
     assert 'device.platform == "gpu"' in all_source
+
+
+def test_colab_install_stops_before_pip_on_wrong_python(monkeypatch) -> None:
+    calls: list[tuple] = []
+    monkeypatch.setattr(sys, "version_info", (3, 12, 12))
+    monkeypatch.setattr(sys, "version", "3.12.12 (Colab runtime)")
+    monkeypatch.setattr(
+        subprocess,
+        "check_call",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        exec(_cell_source("install-foldjax"), {})
+
+    message = str(error.value)
+    assert "Python 3.13" in message
+    assert "3.12.12" in message
+    assert "Runtime → Change runtime type → Runtime version" in message
+    assert "reconnect" in message
+    assert calls == []
+
+
+def test_colab_runtime_matches_the_root_project_contract() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert project["project"]["requires-python"] == ">=3.13,<3.14"
+    assert "jax==0.11.1" in project["project"]["dependencies"]
+
+
+def test_colab_gpu_check_executes_with_the_pinned_stack(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    device = SimpleNamespace(platform="gpu")
+    monkeypatch.setattr(jax, "__version__", "0.11.1")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(metadata, "version", COLAB_STACK.__getitem__)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout="NVIDIA test GPU, 16000 MiB, 999.0"
+        ),
+    )
+
+    exec(
+        _cell_source("check-gpu"),
+        {"install_marker": tmp_path / "installed", "subprocess": subprocess},
+    )
+
+
+def test_colab_gpu_check_clears_marker_before_reinstall(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    marker = tmp_path / "installed"
+    marker.write_text("stale", encoding="utf-8")
+    device = SimpleNamespace(platform="gpu")
+    monkeypatch.setattr(jax, "__version__", "0.11.0")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(metadata, "version", COLAB_STACK.__getitem__)
+
+    with pytest.raises(RuntimeError, match="reinstall the stack"):
+        exec(
+            _cell_source("check-gpu"),
+            {"install_marker": marker, "subprocess": subprocess},
+        )
+
+    assert not marker.exists()
 
 
 def test_colab_notebook_keeps_demo_and_privacy_choices_explicit() -> None:

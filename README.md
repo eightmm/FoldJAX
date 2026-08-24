@@ -78,12 +78,12 @@ measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md)
 ### Google Colab: protein prediction
 
 The [Google Colab quickstart](notebooks/FoldJAX_Colab.ipynb) is a complete GPU
-example that starts from a 76-residue protein sequence. It installs the pinned
-CUDA 12 JAX runtime, downloads and verifies the public Protenix weights, runs a
-short prediction, displays confidence scores and an interactive 3D structure,
-then downloads the structure and reproducibility manifest as an archive. Its
-fast tutorial schedule is clearly separated from the released sampling
-schedule.
+example that starts from a 76-residue protein sequence. It requires and checks
+Python 3.13, installs the pinned JAX 0.11.1 and cuEquivariance 0.11.1 CUDA 12
+runtime, downloads and verifies the public Protenix weights, runs a short
+prediction, displays confidence scores and an interactive 3D structure, then
+downloads the structure and reproducibility manifest as an archive. Its fast
+tutorial schedule is clearly separated from the released sampling schedule.
 
 ## Installation
 
