@@ -52,20 +52,26 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
-- **A Google Colab GPU quickstart now covers the complete first prediction.**
-  The notebook requires and checks Colab's Python 3.13 runtime, then installs
-  FoldJAX's JAX 0.11.1 and cuEquivariance 0.11.1 CUDA 12 stack from an immutable
-  repository revision, verifies every pinned accelerator-package version,
-  checks that JAX sees a GPU, downloads and verifies the public Protenix bundle,
-  builds a 76-residue protein job through the Python API, predicts, prints
-  confidence scores, renders the structure with py3Dmol, and downloads the
-  structure plus its run manifest. Its default fast-demo schedule is explicitly
-  labelled as 1 sample, 20 steps, and 1 recycle rather than the released
-  5/200/10 schedule. Single-sequence mode does not contact an additional MSA
-  service; the notebook separately warns that Colab and saved outputs are still
-  hosted data. Optional Google Drive persistence preserves the weight store
-  across ephemeral sessions, while device-specific compilation entries remain
-  local.
+- **The Google Colab example is now a practical multi-model workflow rather
+  than a single-model smoke test.** A compact form accepts one or more protein
+  chains, sampling mode, seeds, MSA policy, storage policy, and public-model
+  presets ranging from Protenix alone to Protenix/OpenDDE/Boltz-2. Its default
+  builds one two-chain insulin job and sends that exact recorded input to
+  Protenix and OpenDDE through one plural request. FoldJAX runs the large model
+  sessions sequentially, resumes verified work, preserves successful models
+  when an in-scope failure is configured to continue, validates every emitted
+  structure and finite score, and presents a native-score table plus an
+  interactive model/sample viewer. A single archive contains the common input,
+  complete batch report, comparison CSV, structures, confidence artifacts, and
+  reproducibility manifests. Model scores remain separately named and are not
+  collapsed into a scientifically unsupported universal ranking. Before first
+  use the notebook shows each publisher, licence, download size, cache state,
+  and conservative disk estimate, then fetches public checkpoints in sequence.
+  It still checks Python 3.13, the immutable JAX 0.11.1/cuEquivariance 0.11.1
+  CUDA 12 stack, and a real JAX GPU before prediction. Fast mode remains clearly
+  labelled as 1 sample, 20 steps, and 1 recycle; released defaults are opt-in.
+  MSA transfer, Colab/Drive retention, and cached-versus-local storage are
+  disclosed where the user makes those choices.
 
 - **OpenFold3 projects template residue types before expanding them across token
   pairs.** The template pair embedder previously broadcast each

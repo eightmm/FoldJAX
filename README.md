@@ -75,15 +75,42 @@ measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md)
 
 ## Examples
 
-### Google Colab: protein prediction
+### Google Colab: compare models from one input
 
-The [Google Colab quickstart](notebooks/FoldJAX_Colab.ipynb) is a complete GPU
-example that starts from a 76-residue protein sequence. It requires and checks
-Python 3.13, installs the pinned JAX 0.11.1 and cuEquivariance 0.11.1 CUDA 12
-runtime, downloads and verifies the public Protenix weights, runs a short
-prediction, displays confidence scores and an interactive 3D structure, then
-downloads the structure and reproducibility manifest as an archive. Its fast
-tutorial schedule is clearly separated from the released sampling schedule.
+The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) is a practical GPU
+example built around FoldJAX's common input API. A compact form accepts one or
+more colon-separated protein chains and selects Protenix, OpenDDE, or Boltz-2.
+The default sends the exact same two-chain job to Protenix and OpenDDE, keeps
+the large model sessions sequential, records per-model failures without losing
+successful runs, and presents a comparison table plus an interactive structure
+selector. The final ZIP contains the common input, batch report, score table,
+structures, confidence artifacts, and reproducibility manifests for every run.
+
+The notebook requires and checks Python 3.13, installs the pinned JAX 0.11.1
+and cuEquivariance 0.11.1 CUDA 12 runtime, shows checkpoint source/licence/size
+before downloading, and keeps its short 1-sample/20-step/1-recycle tutorial
+schedule clearly separated from every model's released defaults. In Python,
+the same multi-model path is simply:
+
+```python
+from pathlib import Path
+
+from foldjax import Job, PredictionRequest, predict_batch
+
+job_path = Job.from_sequences(
+    protein=("GIVEQCCTSICSLYQLENYCN", "FVNQHLCGSHLVEALYLVCGERGFFYTPKT"),
+    name="insulin-complex",
+).write("insulin-complex.json")
+report = predict_batch(
+    PredictionRequest(
+        models=("protenix", "opendde"),
+        input=job_path,
+        output_dir=Path("foldjax-outputs"),
+        msa="none",
+        on_error="continue",
+    )
+)
+```
 
 ## Installation
 
