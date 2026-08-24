@@ -10,10 +10,14 @@ each, every channel width left alone -- and maps its ``state_dict``.
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 
+import jax
+import numpy as np
 import pytest
 
+from foldjax.models.openfold3.bridge import torch_mapping
 from foldjax.models.openfold3.bridge.torch_mapping import (
     INFERENCE_PREFIXES,
     find_model_prefix,
@@ -21,6 +25,113 @@ from foldjax.models.openfold3.bridge.torch_mapping import (
 )
 
 pytestmark = pytest.mark.torch_parity
+
+
+def _mapped_digest(params) -> str:
+    """Hash one mapped PyTree without changing its array dtypes or values."""
+    digest = hashlib.sha256(str(jax.tree.structure(params)).encode())
+    for leaf in jax.tree.leaves(params):
+        array = np.asarray(leaf)
+        digest.update(array.dtype.str.encode())
+        digest.update(repr(array.shape).encode())
+        digest.update(memoryview(np.ascontiguousarray(array)).cast("B"))
+    return digest.hexdigest()
+
+
+def _alias_state(*, prefix: str = "wrapper") -> dict[str, np.ndarray]:
+    root = f"{prefix}." if prefix else ""
+    return {
+        f"{root}diffusion_module.a": np.asarray([1.0, -0.0], dtype=np.float32),
+        f"{root}diffusion_module.b": np.asarray([2, 3], dtype=np.int32),
+        f"{root}sample_diffusion.diffusion_module.a": np.asarray(
+            [1.0, -0.0], dtype=np.float32
+        ),
+        f"{root}sample_diffusion.diffusion_module.b": np.asarray(
+            [2, 3], dtype=np.int32
+        ),
+        "other.sample_diffusion.diffusion_module.a": np.asarray(
+            [9.0], dtype=np.float32
+        ),
+    }
+
+
+def test_prunes_only_a_complete_alias_group_at_the_resolved_nested_prefix() -> None:
+    state = _alias_state()
+
+    removed = torch_mapping.prune_sample_diffusion_aliases(
+        state, prefix="wrapper"
+    )
+
+    assert removed == 2
+    assert set(state) == {
+        "wrapper.diffusion_module.a",
+        "wrapper.diffusion_module.b",
+        "other.sample_diffusion.diffusion_module.a",
+    }
+
+
+def test_preserves_a_partial_sample_diffusion_group() -> None:
+    state = _alias_state()
+    del state["wrapper.sample_diffusion.diffusion_module.b"]
+
+    assert (
+        torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper") == 0
+    )
+    assert "wrapper.sample_diffusion.diffusion_module.a" in state
+
+
+def test_preserves_a_nonmatching_sample_diffusion_group_bitwise() -> None:
+    state = _alias_state()
+    state["wrapper.sample_diffusion.diffusion_module.a"] = np.asarray(
+        [1.0, 0.0], dtype=np.float32
+    )
+
+    assert (
+        torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper") == 0
+    )
+    assert "wrapper.sample_diffusion.diffusion_module.a" in state
+
+
+def test_compares_scalar_aliases_bitwise_without_aborting() -> None:
+    identical = {
+        "diffusion_module.scalar": np.asarray(-0.0, dtype=np.float32),
+        "sample_diffusion.diffusion_module.scalar": np.asarray(
+            -0.0, dtype=np.float32
+        ),
+    }
+    assert torch_mapping.prune_sample_diffusion_aliases(identical, prefix="") == 1
+    assert set(identical) == {"diffusion_module.scalar"}
+
+    different = {
+        "diffusion_module.scalar": np.asarray(-0.0, dtype=np.float32),
+        "sample_diffusion.diffusion_module.scalar": np.asarray(
+            0.0, dtype=np.float32
+        ),
+    }
+    assert torch_mapping.prune_sample_diffusion_aliases(different, prefix="") == 0
+    assert "sample_diffusion.diffusion_module.scalar" in different
+
+
+def test_object_array_preserves_the_complete_alias_group() -> None:
+    marker = object()
+    state = {
+        "diffusion_module.numeric": np.asarray([1.0], dtype=np.float32),
+        "diffusion_module.extra_state": np.asarray(marker, dtype=object),
+        "sample_diffusion.diffusion_module.numeric": np.asarray(
+            [1.0], dtype=np.float32
+        ),
+        "sample_diffusion.diffusion_module.extra_state": np.asarray(
+            marker, dtype=object
+        ),
+    }
+
+    assert torch_mapping.prune_sample_diffusion_aliases(state, prefix="") == 0
+    assert set(state) == {
+        "diffusion_module.numeric",
+        "diffusion_module.extra_state",
+        "sample_diffusion.diffusion_module.numeric",
+        "sample_diffusion.diffusion_module.extra_state",
+    }
 
 
 def _shrink(node) -> None:
@@ -62,6 +173,24 @@ def test_maps_a_real_model_state_dict(released_state: dict) -> None:
     # The pair conditioning path must be mapped, not silently skipped.
     assert params.diffusion_conditioning.linear_z is not None
     assert len(params.diffusion_conditioning.transition_z) == 2
+
+
+def test_pruning_keeps_the_mapped_tree_bitwise_exact(released_state: dict) -> None:
+    baseline = map_inference_params(released_state)
+    pruned_state = dict(released_state)
+    removed = torch_mapping.prune_sample_diffusion_aliases(
+        pruned_state,
+        prefix=torch_mapping.resolve_model_prefix(pruned_state),
+    )
+    pruned = map_inference_params(pruned_state)
+
+    assert removed > 0
+    assert jax.tree.structure(pruned) == jax.tree.structure(baseline)
+    baseline_leaves = jax.tree.leaves(baseline)
+    pruned_leaves = jax.tree.leaves(pruned)
+    for expected, actual in zip(baseline_leaves, pruned_leaves, strict=True):
+        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    assert _mapped_digest(pruned) == _mapped_digest(baseline)
 
 
 def test_every_declared_prefix_exists_in_the_real_model(released_state: dict) -> None:

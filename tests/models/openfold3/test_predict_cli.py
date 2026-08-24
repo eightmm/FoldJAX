@@ -233,6 +233,8 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     coordinates[0, 2, 0] = np.nan
     prediction = SimpleNamespace(coordinates=coordinates)
     seen: dict[str, object] = {}
+    checkpoint_state = {"checkpoint": object()}
+    checkpoint_events: list[object] = []
 
     monkeypatch.setattr(
         data, "load_feature_archive", lambda path: (raw, object(), None)
@@ -276,10 +278,30 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
 
     monkeypatch.setattr(inference, "predict", fake_predict)
     monkeypatch.setattr(inference, "compile_predict", fake_compile)
-    monkeypatch.setattr(checkpoint, "load_checkpoint", lambda path: {})
+    def load_checkpoint(path):
+        checkpoint_events.append("load")
+        return checkpoint_state
+
+    def resolve_model_prefix(state, prefix=None):
+        checkpoint_events.append(("resolve", state, prefix))
+        return "resolved"
+
+    def prune_sample_diffusion_aliases(state, *, prefix):
+        checkpoint_events.append(("prune", state, prefix))
+        return 0
+
+    def map_inference_params(state, prefix):
+        checkpoint_events.append(("map", state, prefix))
+        return params
+
+    monkeypatch.setattr(checkpoint, "load_checkpoint", load_checkpoint)
+    monkeypatch.setattr(torch_mapping, "resolve_model_prefix", resolve_model_prefix)
     monkeypatch.setattr(
-        torch_mapping, "map_inference_params", lambda state, prefix: params
+        torch_mapping,
+        "prune_sample_diffusion_aliases",
+        prune_sample_diffusion_aliases,
     )
+    monkeypatch.setattr(torch_mapping, "map_inference_params", map_inference_params)
     monkeypatch.setattr(jnp, "asarray", np.asarray)
     monkeypatch.setattr(jax.random, "key", lambda seed: seed)
     monkeypatch.setattr(jax, "block_until_ready", lambda value: value)
@@ -321,6 +343,12 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         assert seen["compile_options"] == {"cache_scope": None}
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
     np.testing.assert_array_equal(seen["compact_asym_id"], [[0, 1, 0]])
+    assert checkpoint_events == [
+        "load",
+        ("resolve", checkpoint_state, None),
+        ("prune", checkpoint_state, "resolved"),
+        ("map", checkpoint_state, "resolved"),
+    ]
 
 
 def test_incomplete_features_are_refused(tmp_path: Path, capsys) -> None:

@@ -846,6 +846,86 @@ def find_model_prefix(state: Mapping[str, Any]) -> str | None:
     return None
 
 
+def resolve_model_prefix(
+    state: Mapping[str, Any], prefix: str | None = None
+) -> str:
+    """Return an explicit model root or detect it with the mapper's error."""
+    if prefix is not None:
+        return prefix
+    detected = find_model_prefix(state)
+    if detected is None:
+        raise KeyError(
+            "no pairformer_stack.blocks.* keys, so this is not an OpenFold3 "
+            "model checkpoint; inspect it with openfold3-jax-inspect-checkpoint"
+        )
+    return detected
+
+
+def _bitwise_identical_checkpoint_arrays(left: Any, right: Any) -> bool:
+    """Whether two loaded tensors have exactly the same contiguous bytes."""
+    left_array = to_array(left)
+    right_array = to_array(right)
+    if (
+        left_array.dtype != right_array.dtype
+        or left_array.shape != right_array.shape
+        or not left_array.flags.c_contiguous
+        or not right_array.flags.c_contiguous
+    ):
+        return False
+    if left_array.dtype.hasobject:
+        return False
+    try:
+        return np.array_equal(
+            left_array.reshape(-1).view(np.uint8),
+            right_array.reshape(-1).view(np.uint8),
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def prune_sample_diffusion_aliases(
+    state: dict[str, Any], *, prefix: str
+) -> int:
+    """Discard one complete, byte-identical sampler alias group in place.
+
+    Upstream registers the denoiser both as ``diffusion_module`` and below
+    ``sample_diffusion``. Torch preserves that shared storage, but FoldJAX's
+    restricted archive reader returns owning NumPy arrays and therefore holds
+    the checkpoint payload twice while inference parameters are prestacked and
+    transferred. The inference mapper reads only the canonical module.
+
+    Be conservative for other checkpoint layouts: an absent, partial,
+    non-contiguous, differently typed, or byte-different alias group is left
+    untouched. ``prefix`` must already be resolved so similarly named groups
+    elsewhere in the checkpoint cannot be removed.
+    """
+    root = f"{prefix}." if prefix else ""
+    alias_root = f"{root}sample_diffusion."
+    canonical_root = f"{root}diffusion_module."
+    aliases = {
+        key[len(alias_root) :]: key
+        for key in state
+        if key.startswith(alias_root)
+    }
+    canonical = {
+        key[len(root) :]: key
+        for key in state
+        if key.startswith(canonical_root)
+    }
+    if not aliases or aliases.keys() != canonical.keys():
+        return 0
+    if any(
+        not _bitwise_identical_checkpoint_arrays(
+            state[alias_key], state[canonical[suffix]]
+        )
+        for suffix, alias_key in aliases.items()
+    ):
+        return 0
+    for key in aliases.values():
+        del state[key]
+    return len(aliases)
+
+
 def map_pairformer_embedding(
     state: Mapping[str, Any], prefix: str = ""
 ) -> PairformerEmbeddingParams:
@@ -917,14 +997,7 @@ def map_inference_params(
             -- so its absence is reported as a checkpoint property rather than a
             mapping bug.
     """
-    if prefix is None:
-        prefix = find_model_prefix(state)
-        if prefix is None:
-            raise KeyError(
-                "no pairformer_stack.blocks.* keys, so this is not an OpenFold3 "
-                "model checkpoint; inspect it with "
-                "openfold3-jax-inspect-checkpoint"
-            )
+    prefix = resolve_model_prefix(state, prefix)
 
     pae_root = _join(prefix, INFERENCE_PREFIXES["pae_head"])
     if not any(key.startswith(pae_root + ".") for key in state):

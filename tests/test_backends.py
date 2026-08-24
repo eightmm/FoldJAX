@@ -1385,6 +1385,8 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     prediction = object()
     output_metadata = object()
     seen: dict[str, object] = {}
+    checkpoint_state = {"checkpoint": object()}
+    checkpoint_events: list[object] = []
     scores = tmp_path / "scores.json"
     scores.write_text('{"samples": []}')
 
@@ -1408,6 +1410,22 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         return SimpleNamespace(msa_depth=1024)
+
+    def load_checkpoint(path):
+        checkpoint_events.append("load")
+        return checkpoint_state
+
+    def resolve_model_prefix(state, prefix=None):
+        checkpoint_events.append(("resolve", state, prefix))
+        return "resolved"
+
+    def prune_sample_diffusion_aliases(state, *, prefix):
+        checkpoint_events.append(("prune", state, prefix))
+        return 0
+
+    def map_inference_params(state, prefix):
+        checkpoint_events.append(("map", state, prefix))
+        return object()
 
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
@@ -1433,10 +1451,12 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             representative_atom_table=lambda: object()
         ),
         "foldjax.models.openfold3.bridge.checkpoint": SimpleNamespace(
-            load_checkpoint=lambda path: {}
+            load_checkpoint=load_checkpoint
         ),
         "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
-            map_inference_params=lambda state, prefix: object()
+            resolve_model_prefix=resolve_model_prefix,
+            prune_sample_diffusion_aliases=prune_sample_diffusion_aliases,
+            map_inference_params=map_inference_params,
         ),
         "foldjax.models.openfold3.compilation": SimpleNamespace(
             enable_compilation_cache=lambda path: path
@@ -1462,6 +1482,12 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             "cache_scope": str(tmp_path / "cache"),
         }
     assert seen["output_metadata"] is output_metadata
+    assert checkpoint_events == [
+        "load",
+        ("resolve", checkpoint_state, None),
+        ("prune", checkpoint_state, "resolved"),
+        ("map", checkpoint_state, "resolved"),
+    ]
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
 
 
@@ -1550,6 +1576,8 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             load_checkpoint=lambda path: {}
         ),
         "foldjax.models.openfold3.bridge.torch_mapping": SimpleNamespace(
+            resolve_model_prefix=lambda state, prefix=None: "",
+            prune_sample_diffusion_aliases=lambda state, *, prefix: 0,
             map_inference_params=lambda state, prefix: object()
         ),
         "foldjax.models.openfold3.compilation": SimpleNamespace(

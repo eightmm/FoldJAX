@@ -31,6 +31,24 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenFold3 drops the released checkpoint's redundant diffusion registration
+  before inference mapping.** Upstream registers one denoiser under both
+  `diffusion_module.*` and `sample_diffusion.*`; Torch preserves their shared
+  storage, while the current restricted NumPy reader materializes both.
+  After the full checkpoint is loaded and its model prefix is resolved, the
+  common-backend and standalone-predict inference paths now remove the sampler
+  group only when its key set and every contiguous tensor byte exactly match
+  the canonical group. Partial, non-matching, nested-unrelated, and
+  inspection/verification loads remain complete. In the released checkpoint
+  this removes 767 arrays totaling 812,960,240 bytes before host prestacking
+  and device transfer. Across two fresh CPU processes, maximum RSS fell from
+  5,222,868--5,417,916 KiB to 4,646,056--4,662,020 KiB; mapping time was
+  0.37--0.38 s in both arms, while a fresh-process run of the final
+  conservative byte check took 0.13 s. The resulting 593-leaf,
+  1,473,188,784-byte mapped tree was bitwise identical. This does not reduce
+  the restricted reader's own earlier deserialization peak, and
+  released-weight GPU latency and peak memory were not measured.
+
 - **Boltz-2 drops training and writer-only features before non-steering
   inference owns them.** The model-input allowlist previously ran only for
   explicit neutral padding. Exact-shape, legacy-bucket, and context-parallel

@@ -338,10 +338,18 @@ class OpenFold3Backend(Backend):
         # private marker gives the resulting mapping its own JIT PyTree identity.
         features = data.compact_zero_template_pair_features(features)
 
-        params = mapping.map_inference_params(
-            checkpoint.load_checkpoint(request.weights),
-            options.pop("prefix", None),
+        # The complete checkpoint remains visible to inspection and verification.
+        # Only the inference path drops upstream's second registration of the
+        # denoiser, after the model root is known and before host prestacking can
+        # keep both owning NumPy copies live beside the device parameter tree.
+        checkpoint_state = checkpoint.load_checkpoint(request.weights)
+        model_prefix = mapping.resolve_model_prefix(
+            checkpoint_state, options.pop("prefix", None)
         )
+        mapping.prune_sample_diffusion_aliases(
+            checkpoint_state, prefix=model_prefix
+        )
+        params = mapping.map_inference_params(checkpoint_state, model_prefix)
         kernel = options.pop("triangle_kernel", None)
         compile_it = _compile_enabled(options)
         if getattr(config, "cp_shards", 1) > 1 and not compile_it:

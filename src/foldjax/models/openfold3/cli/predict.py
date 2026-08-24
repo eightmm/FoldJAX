@@ -157,7 +157,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from foldjax.models._output_validation import require_finite_coordinates
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
-    from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
+    from foldjax.models.openfold3.bridge.torch_mapping import (
+        map_inference_params,
+        prune_sample_diffusion_aliases,
+        resolve_model_prefix,
+    )
     from foldjax.models.openfold3.data import (
         collapse_identical_templates,
         compact_zero_template_pair_features,
@@ -240,7 +244,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     state = load_checkpoint(args.checkpoint)
-    params = map_inference_params(state, args.prefix)
+    model_prefix = resolve_model_prefix(state, args.prefix)
+    prune_sample_diffusion_aliases(state, prefix=model_prefix)
+    params = map_inference_params(state, model_prefix)
     print(
         f"mapped {len(params.trunk.pairformer_stack.blocks)} Pairformer / "
         f"{len(params.denoiser.diffusion_transformer.blocks)} diffusion blocks"

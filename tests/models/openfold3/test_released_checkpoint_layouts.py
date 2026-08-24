@@ -9,10 +9,48 @@ the definitions.
 
 from __future__ import annotations
 
+import gc
+import hashlib
+import os
+from pathlib import Path
+
+import jax
 import numpy as np
 import pytest
 
 from foldjax.models.openfold3.bridge.torch_mapping import _squeeze_trailing
+
+
+def _optional_released_checkpoint() -> Path | None:
+    repository = Path(__file__).resolve().parents[3]
+    explicit = os.environ.get("OPENFOLD3_CHECKPOINT")
+    candidates = [
+        Path(explicit).expanduser() if explicit else None,
+        repository
+        / ".foldjax"
+        / "weights"
+        / "openfold3"
+        / "of3_ft3_v1.pt",
+        repository.parent
+        / "openfold3"
+        / "openfold3_weights"
+        / "checkpoints"
+        / "of3_ft3_v1.pt",
+    ]
+    return next(
+        (path for path in candidates if path is not None and path.is_file()), None
+    )
+
+
+def _tree_digest(tree) -> tuple[str, int, int]:
+    digest = hashlib.sha256(str(jax.tree.structure(tree)).encode())
+    leaves = jax.tree.leaves(tree)
+    for leaf in leaves:
+        array = np.asarray(leaf)
+        digest.update(array.dtype.str.encode())
+        digest.update(repr(array.shape).encode())
+        digest.update(memoryview(np.ascontiguousarray(array)).cast("B"))
+    return digest.hexdigest(), len(leaves), sum(leaf.nbytes for leaf in leaves)
 
 
 def test_squeeze_trailing_accepts_the_released_column_vector() -> None:
@@ -151,3 +189,42 @@ def test_the_released_checkpoint_really_stores_a_column_vector(
             f"{name} has shape {shape}; the mapper only knows how to read "
             "(c,) and (c, 1)"
         )
+
+
+def test_the_released_checkpoint_alias_group_is_completely_prunable() -> None:
+    """Gate the memory premise against the access-gated checkpoint when present."""
+    from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
+    from foldjax.models.openfold3.bridge.torch_mapping import (
+        map_inference_params,
+        prune_sample_diffusion_aliases,
+        resolve_model_prefix,
+    )
+
+    path = _optional_released_checkpoint()
+    if path is None:
+        pytest.skip(
+            "no released checkpoint; set OPENFOLD3_CHECKPOINT to enable this gate"
+        )
+
+    state = load_checkpoint(path)
+    alias_keys = [key for key in state if ".sample_diffusion." in f".{key}"]
+    alias_bytes = sum(state[key].nbytes for key in alias_keys)
+    prefix = resolve_model_prefix(state)
+    baseline = map_inference_params(state, prefix)
+    jax.block_until_ready(baseline)
+    baseline_digest = _tree_digest(baseline)
+    del baseline
+    gc.collect()
+
+    removed = prune_sample_diffusion_aliases(state, prefix=prefix)
+    pruned = map_inference_params(state, prefix)
+    jax.block_until_ready(pruned)
+
+    assert removed == len(alias_keys) == 767
+    assert alias_bytes == 812_960_240
+    assert not any(key.startswith("sample_diffusion.") for key in state)
+    assert _tree_digest(pruned) == baseline_digest == (
+        "9569dfaf02f752c33753d0231ee9c00e4587fc413ebe2c84c2e62070c404657b",
+        593,
+        1_473_188_784,
+    )
