@@ -278,6 +278,7 @@ def predict(
     cp_shards: int = 1,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    return_distogram_logits: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -321,7 +322,7 @@ def predict(
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
-            compact_token_bond_encoding,
+            compact_token_bond_encoding, return_distogram_logits,
         )
         if compile_it
         else _run
@@ -352,6 +353,7 @@ def predict(
             stop_after_trunk,
             contiguous_atom_groups,
             compact_token_bond_encoding,
+            return_distogram_logits,
         )
 
 
@@ -368,6 +370,7 @@ def _run(
     stop_after_trunk: bool = False,
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
+    return_distogram_logits: bool = True,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -387,6 +390,7 @@ def _run(
         stop_after_trunk=stop_after_trunk,
         contiguous_atom_groups=contiguous_atom_groups,
         compact_token_bond_encoding=compact_token_bond_encoding,
+        return_distogram_logits=return_distogram_logits,
     )
 
 
@@ -400,6 +404,7 @@ def compiled_predict(
     stop_after_trunk: bool = False,
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
+    return_distogram_logits: bool = True,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -411,11 +416,13 @@ def compiled_predict(
     masks and never enter this cache key. The penultimate boolean selects the
     normalized contiguous-atom reducer; external feature mappings that do not
     satisfy its host-checked contract receive a distinct generic graph.  The
-    final boolean similarly replaces the unbiased token-bond projection with
+    next boolean similarly replaces the unbiased token-bond projection with
     its exact channel-wise signed-zero vector only when the host proves the
-    compact contract.
+    compact contract. The final boolean retains the direct API's native
+    distogram output or omits the backend-dead branch; those graphs must not
+    share one cached callable.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10, 11))
+    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12))
 
 
 def predict_job(

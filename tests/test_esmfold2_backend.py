@@ -140,6 +140,51 @@ def test_external_esmc_keeps_the_released_language_model_branch(
     assert result.raw["language_model"] is True
 
 
+def test_scalar_backend_withholds_distogram_without_exposing_an_override(
+    tmp_path, monkeypatch
+) -> None:
+    job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    seen: dict[str, object] = {}
+    model = SimpleNamespace(has_language_model=False)
+
+    def predict_job(*args, **kwargs):
+        del args
+        seen.update(kwargs)
+        return {}, {"asym_id": np.asarray([[0]])}
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            load=lambda *args, **kwargs: model,
+            seed_key=lambda seed: seed,
+            predict_job=predict_job,
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 0.75}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+
+    result = ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            options={"no_language_model": True},
+        )
+    )
+
+    assert seen == {"return_distogram_logits": False}
+    assert "return_distogram_logits" not in result.raw["overrides"]
+
+
 def test_a_ligand_job_is_refused_rather_than_folded_as_protein(tmp_path) -> None:
     """`forward` expresses ligands; this adapter does not build their features.
 
@@ -217,7 +262,9 @@ def _fake_session_modules(tmp_path, calls):
 
     def predict(key, features, loaded, **kwargs):
         del features, loaded
-        calls["predict"].append((key, kwargs["precomputed_lm_states"]))
+        calls["predict"].append(
+            (key, kwargs["precomputed_lm_states"], dict(kwargs))
+        )
         return {}
 
     inference = SimpleNamespace(
@@ -302,6 +349,9 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
     assert len(calls["load"]) == 1
     assert len(calls["lm"]) == 2
     assert len(calls["predict"]) == 6
+    assert all(
+        call[2]["return_distogram_logits"] is False for call in calls["predict"]
+    )
     assert calls["predict"][0][1] is calls["predict"][1][1]
     assert calls["predict"][1][1] is calls["predict"][2][1]
     assert calls["predict"][2][1] is not calls["predict"][3][1]

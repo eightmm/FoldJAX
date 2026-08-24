@@ -648,6 +648,7 @@ class ESMFold2Backend(Backend):
                 chains,
                 alignments,
                 model,
+                return_distogram_logits=False,
                 **overrides,
             )
         else:
@@ -703,6 +704,7 @@ class ESMFold2Backend(Backend):
                 language_model_tokens=lm_target,
                 precomputed_lm_states=hidden,
                 preserve_prefix_rng=request.padding is not None,
+                return_distogram_logits=False,
                 **overrides,
             )
 

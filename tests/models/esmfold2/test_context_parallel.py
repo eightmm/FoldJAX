@@ -65,6 +65,60 @@ def test_compact_token_bond_static_choice_crosses_the_mesh_context(
     assert seen == [True, False]
 
 
+_DISTOGRAM_ROUTE_PROBE = textwrap.dedent(
+    """
+    import jax
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models.esmfold2 import inference
+
+    assert jax.device_count() == 4, jax.devices()
+    seen = []
+    original = inference.structure_model.predict
+
+    def fake_predict(*args, **kwargs):
+        del args
+        seen.append(kwargs["return_distogram_logits"])
+        return {}
+
+    inference.structure_model.predict = fake_predict
+    try:
+        with context_parallel(4):
+            inference._run(
+                None,
+                {},
+                {},
+                None,
+                None,
+                1,
+                False,
+                4,
+                return_distogram_logits=False,
+            )
+    finally:
+        inference.structure_model.predict = original
+
+    assert seen == [False], seen
+    print("CP_DISTOGRAM_ROUTE_OK")
+    """
+)
+
+
+def test_distogram_choice_crosses_a_forced_four_device_cpu_mesh() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _DISTOGRAM_ROUTE_PROBE],
+        capture_output=True,
+        text=True,
+        env={
+            "JAX_PLATFORMS": "cpu",
+            "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+            **inherited_environment(),
+        },
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "CP_DISTOGRAM_ROUTE_OK" in completed.stdout
+
+
 _PARITY_PROBE = textwrap.dedent(
     """
     import jax

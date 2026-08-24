@@ -314,10 +314,12 @@ def test_inference_routes_the_atom_contract_into_the_compile_identity(
     routed = []
 
     def fake_compiled_predict(*identity):
-        routed.append(identity[-2])
+        routed.append(identity[-3])
+        assert identity[-1] is True
 
         def run(*args):
-            assert args[-2] is identity[-2]
+            assert args[-3] is identity[-3]
+            assert args[-1] is True
             return {}
 
         return run

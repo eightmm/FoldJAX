@@ -368,6 +368,12 @@ def _token_bonds_encoding(
     return linear(values, params, "token_bonds")
 
 
+def _distogram_logits(z: jnp.ndarray, params: Params) -> jnp.ndarray:
+    """The native symmetric-pair distogram returned by the direct API."""
+
+    return linear(z + jnp.swapaxes(z, -2, -3), params, "distogram_head")
+
+
 def inputs_embedding(
     res_type_one_hot: jnp.ndarray,
     profile: jnp.ndarray,
@@ -665,6 +671,7 @@ def predict(
     stop_after_trunk: bool = False,
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
+    return_distogram_logits: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -681,6 +688,11 @@ def predict(
     `n_chains` sizes the confidence head's per-chain ipTM matrix. It is read
     off `asym_id` when omitted, which is a host read of a traced value and so
     the one thing that would stop this function being jitted; pass it to jit.
+
+    `return_distogram_logits` defaults on because this low-level function is
+    the direct parity/debugging API. The common FoldJAX backend turns it off:
+    its writer, scores and representation export do not consume that quadratic
+    native output.
     """
     token_mask = features["token_attention_mask"]
     atom_mask = features["atom_attention_mask"]
@@ -945,7 +957,11 @@ def predict(
     rel_pos = rel_pos.astype(jnp.float32)
     token_bonds_encoding = token_bonds_encoding.astype(jnp.float32)
 
-    distogram_logits = linear(z + jnp.swapaxes(z, -2, -3), params, "distogram_head")
+    distogram_logits = (
+        _distogram_logits(z, params)
+        if return_distogram_logits
+        else None
+    )
 
     cache = diffusion.build_cache(
         features["ref_pos"],
@@ -1005,14 +1021,17 @@ def predict(
         for name, value in (("single", x_inputs), ("pair", z))
         if name in return_representations
     }
-    output = {
-        **representations,
-        "distogram_logits": distogram_logits,
-        "sample_atom_coords": coords,
-        "atom_pad_mask": atom_mask,
-        "residue_index": features["residue_index"],
-        "entity_id": features["entity_id"],
-    }
+    output = dict(representations)
+    if distogram_logits is not None:
+        output["distogram_logits"] = distogram_logits
+    output.update(
+        {
+            "sample_atom_coords": coords,
+            "atom_pad_mask": atom_mask,
+            "residue_index": features["residue_index"],
+            "entity_id": features["entity_id"],
+        }
+    )
 
     def _confidence(sample_coords: jnp.ndarray, samples: int) -> dict:
         return confidence_head(

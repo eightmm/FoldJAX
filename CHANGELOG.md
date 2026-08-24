@@ -31,6 +31,26 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **ESMFold2 does not return a native distogram that the common backend never
+  reads.** The direct model and inference APIs still return
+  `distogram_logits` by default for parity and debugging, but the common
+  backend now gives both its exact-shape and padded/session graphs a separate
+  static output choice. Its structure writer, confidence summary, normalized
+  result, raw metadata and representation exporter consume none of this
+  `[batch, tokens, tokens, 64]` float32 array, so the backend graph omits both
+  the entry output and its independent symmetric-pair projection. The choice
+  is part of the in-process JIT identity and is not exposed as a sampling
+  override. At one batch and 1,003 tokens the removed entry output is
+  257,538,304 bytes (245.6 MiB); at 3,012 it is 2,322,468,864 bytes
+  (2.16 GiB). In an isolated
+  256-token, 256-pair-channel CPU stage, output memory fell from 16,778,256 to
+  1,024 bytes, temporary memory from 83,886,080 to zero, reported floating
+  point work from 2,168,455,168 operations to none, the StableHLO dot count
+  from one to zero, and warm median time from 32.07 to 0.005 ms. The retained
+  carry was byte-identical. These are synthetic CPU stage measurements;
+  released-weight end-to-end GPU latency and whole-model peak memory remain
+  deployment measurements.
+
 - **ESMFold2 replaces a proven zero token-bond projection with its compact
   signed-zero vector.** The supported protein featurizer supplies an all-`+0`
   `[batch, tokens, tokens, 1]` feature, and the released projection is a finite
