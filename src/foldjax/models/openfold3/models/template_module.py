@@ -114,6 +114,17 @@ class TemplateEmbedderParams(NamedTuple):
     linear_t: LinearParams
 
 
+def _project_template_restype(
+    restype: jnp.ndarray,
+    aatype_linear_1: LinearParams,
+    aatype_linear_2: LinearParams,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Project residue types before broadcasting them over token pairs."""
+    restype_ti = linear(restype, aatype_linear_1)[..., :, None, :]
+    restype_tj = linear(restype, aatype_linear_2)[..., None, :, :]
+    return restype_ti, restype_tj
+
+
 def template_pair_embedder(
     batch: Mapping[str, jnp.ndarray],
     z: jnp.ndarray,
@@ -128,12 +139,13 @@ def template_pair_embedder(
     """
     restype = batch["template_restype"].astype(z.dtype)
     n_token = restype.shape[-2]
-    # ti varies along the i axis, tj along j; both broadcast to the pair shape.
-    restype_ti = jnp.broadcast_to(
-        restype[..., :, None, :], (*restype.shape[:-1], n_token, restype.shape[-1])
-    )
-    restype_tj = jnp.broadcast_to(
-        restype[..., None, :, :], (*restype.shape[:-2], n_token, *restype.shape[-2:])
+    # Project each token once, then let the additions broadcast over the other
+    # pair axis. This preserves the two historical dots and their add order
+    # without presenting either dot with a quadratic residue-type operand.
+    restype_ti, restype_tj = _project_template_restype(
+        restype,
+        params.aatype_linear_1,
+        params.aatype_linear_2,
     )
 
     # Unknown mapping keys have historically been ignored by this low-level API.
@@ -181,8 +193,8 @@ def template_pair_embedder(
 
         a = linear(batch["template_distogram"], params.dgram_linear)
         a = a + linear(pseudo_beta_pair, params.pseudo_beta_mask_linear)
-    a = a + linear(restype_ti, params.aatype_linear_1)
-    a = a + linear(restype_tj, params.aatype_linear_2)
+    a = a + restype_ti
+    a = a + restype_tj
     if compact_zero_pairs:
         a = a + zero_pair_projection(params.x_linear)
         a = a + zero_pair_projection(params.y_linear)

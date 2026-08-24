@@ -31,6 +31,29 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenFold3 projects template residue types before expanding them across token
+  pairs.** The template pair embedder previously broadcast each
+  `[N_template, N_token, 32]` input to
+  `[N_template, N_token, N_token, 32]` and only then applied its two
+  projections. It now evaluates the same two linears once per token and lets
+  their existing left-associated additions broadcast the projected values over
+  the other pair axis. The public call, parameter tree, context-parallel
+  identity, dot reduction width, projection order, and addition order are
+  unchanged. FP32/BF16, leading-axis, signed-zero, non-finite, dense/compact
+  template, and forced four-CPU 1-D/2-D context-parallel oracle tests retain
+  exact bytes on the dynamic inference path. A locked-environment CPU probe of
+  the projection and its two left-associated additions used an
+  `[1, 1, 256, 256, 64]` accumulator, `[1, 1, 256, 32]` residue types, and two
+  dynamic `[64, 32]` weights. Output bytes were identical while compiled
+  temporary memory fell from 32.0 to 0.125 MiB in FP32 (33,554,432 to 131,072
+  bytes) and from 32.008 to 0.102 MiB in BF16 (33,562,624 to 106,496 bytes);
+  argument and output sizes were unchanged. Manually closing both arbitrary
+  residue types and weights into a JIT can instead make XLA constant-fold the
+  two forms differently and produce small FP32 deltas; supported one-hot
+  direct/full closures and the production dynamic route were byte-exact. These
+  are synthetic CPU stage measurements, not released-weight end-to-end GPU
+  numerical, latency, or whole-model peak-memory evidence.
+
 - **OpenDDE stops carrying the raw alignment after its recycle samples are
   complete.** The CLI's exact/default path already sampled every recycle to at
   most 1,280 rows, but still passed the much deeper source `msa`,
