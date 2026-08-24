@@ -56,7 +56,10 @@ def _job(case: str) -> tuple[list[tuple[str, str, int, int]], dict[int, Path]]:
     alignments: dict[int, Path] = {}
     for index, entity in enumerate(document["entities"]):
         if entity.get("type") != "protein":
-            raise SystemExit(f"{case} is not protein-only; ESMFold2 folds protein")
+            raise SystemExit(
+                f"{case} needs upstream ESMFold2's all-biomolecule feature "
+                "builder, which the current FoldJAX adapter has not ported"
+            )
         ids = entity.get("id", ["A"])
         for symmetry, chain in enumerate(ids if isinstance(ids, list) else [ids]):
             chains.append((entity["sequence"], str(chain), index, symmetry))

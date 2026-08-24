@@ -110,9 +110,10 @@ _TARGETS = {
     # template here would be dropped rather than used.
     "openfold3": _Target(".json", _ALL_FEATURES - {"bonds"} - _NO_TEMPLATES),
     # ESMFold2's entry point takes a sequence, not a job file, so its adapter
-    # reads the FoldJAX document itself. The document is still written out and
-    # still validated -- against a backend that declares protein only, so a
-    # ligand job is refused here rather than folded as its protein half.
+    # reads the FoldJAX document itself. Upstream ESMFold2 supports all
+    # biomolecules, but the current FoldJAX feature adapter declares protein
+    # only. The document is still validated so a ligand job is refused here
+    # rather than folded as its protein half.
     "esmfold2": _Target(".json", {"unpaired_msa"}),
 }
 

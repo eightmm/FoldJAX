@@ -41,10 +41,13 @@ language model that upstream distributes separately (`foldjax weights fetch
 *random at inference by design* —
 random initial pair state, per-loop language-model dropout, sampler noise — so
 two seeds give genuinely different structures rather than the same structure
-twice. Protein only for now: supported protein jobs use FoldJAX's in-package
-canonical chemistry. Ligands and nucleic acids are rejected because this
-adapter does not build their features; the current runtime does not consume
-upstream's 417 MB `ccd.pkl`.
+twice. **[Upstream ESMFold2](https://github.com/Biohub/esm/blob/main/esm/models/esmfold2/prepare_input.py)
+is an all-biomolecule model**: its released input pipeline supports proteins,
+DNA, RNA, small-molecule ligands, and modified residues. FoldJAX currently ports
+only its protein feature adapter, using
+in-package canonical chemistry; non-protein jobs are therefore rejected here
+until the upstream all-biomolecule featurizer is ported to NumPy/JAX. That is a
+FoldJAX coverage gap, not a limitation of ESMFold2 itself.
 
 The complete released ESMFold2 profile is the compatible default. To run the
 explicit structure-network-only variant without downloading ESMC-6B, fetch its
@@ -82,9 +85,11 @@ The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) is a practical GPU
 example built around FoldJAX's common input API. A compact form accepts protein,
 DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
 carried models; the default sends the exact same two-chain job to Protenix and
-OpenDDE. ESMFold2 is marked protein-only with its 26.35 GB complete bundle,
-while OpenFold3 uses its managed public p1 checkpoint (with an optional path
-override) and AlphaFold 3 accepts a user-supplied parameter directory.
+OpenDDE. ESMFold2 is correctly described as an upstream all-biomolecule model
+whose current FoldJAX feature adapter still exposes protein jobs only; its
+complete bundle is 26.35 GB. OpenFold3 uses its managed public p1 checkpoint
+(with an optional path override), and AlphaFold 3 accepts a user-supplied
+parameter directory.
 Compatibility is checked before any download. The notebook keeps large model
 sessions sequential, records per-model failures without losing successful runs,
 and presents each setup, execution, and validation stage as a guided status

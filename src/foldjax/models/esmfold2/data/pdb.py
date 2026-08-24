@@ -136,9 +136,9 @@ def to_mmcif(
     Routed through the PDB writer and gemmi rather than emitting `atom_site`
     directly: the atom naming, chain identity and b-factor handling are already
     tested there, and a second serialiser would be a second place for them to
-    disagree. PDB's own limits do not bite here -- ESMFold2 is protein-only, so
-    there are no four-character atom names and no five-digit serials at the
-    lengths it folds.
+    disagree. PDB's own limits do not bite on FoldJAX's currently supported
+    ESMFold2 protein path, so there are no four-character atom names and no
+    five-digit serials at the lengths it folds.
     """
     import gemmi
 

@@ -40,10 +40,10 @@ def test_every_example_translates_to_every_backend(
     """The common schema's promise: one file runs on every backend that can
     express what it names, and is refused by name on every backend that cannot.
 
-    Only ESMFold2 currently refuses anything -- its adapter folds protein
-    chains and does not build ligand or nucleic-acid features yet. The refusal
-    is the point being tested: dropping the ligand and folding the protein
-    would answer a different question than the file asks.
+    Only ESMFold2 currently refuses anything. Upstream ESMFold2 supports all
+    biomolecules, but FoldJAX has not yet ported its ligand and nucleic-acid
+    feature builder. The refusal is the point being tested: dropping the ligand
+    and folding the protein would answer a different question than the file asks.
     """
     document = read_job_document(job)
     named = {entity.get("type") for entity in document.get("entities", [])}

@@ -21,11 +21,13 @@ Two things about it differ from the rest of the fleet and reach the interface:
   and the sampler adds noise. Two runs at the same seed agree; two seeds do not,
   and that is the model rather than the port.
 
-Ligands and nucleic acids are what remains: the model expresses them, but this
-adapter does not build their features, so `capabilities()` reports protein
-rather than accepting a job it would fold without its ligand. Supported protein
-features use the canonical chemistry carried in this package; prediction never
-reads upstream's 417 MB `ccd.pkl`.
+Upstream ESMFold2 is an all-biomolecule model: its released input pipeline
+supports proteins, DNA, RNA, ligands, and modified residues. The remaining port
+gap is FoldJAX's feature adapter, which currently builds protein features only.
+`capabilities()` therefore reports protein rather than accepting a job it would
+fold without its ligand or nucleic acid. Supported protein features use the
+canonical chemistry carried in this package; prediction never reads upstream's
+417 MB `ccd.pkl`.
 """
 
 from __future__ import annotations
@@ -563,9 +565,10 @@ class ESMFold2Backend(Backend):
                     )
                 )
             },
-            # Deliberately narrow: the model expresses ligands and nucleic
-            # acids, but this adapter does not build their features yet, and a
-            # job that named them would otherwise be folded as protein alone.
+            # Deliberately narrower than upstream ESMFold2: the model supports
+            # ligands and nucleic acids, but this FoldJAX adapter does not build
+            # their features yet. A job naming them would otherwise be folded
+            # as protein alone.
             entity_types=("protein",),
             supports_templates=False,
             padding_axes=self.padding_axes,

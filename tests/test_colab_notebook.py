@@ -248,7 +248,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "native score" in markdown.lower()
     assert "sequential" in markdown.lower()
     assert "ColabFold MMseqs2" in markdown
-    assert "ESMFold2 is protein-only" in markdown
+    assert "Upstream ESMFold2 supports all biomolecules" in markdown
+    assert "current FoldJAX feature adapter still accepts protein jobs only" in markdown
     assert (
         "OpenFold3's compatible p1 checkpoint is a public managed download"
         in markdown
@@ -788,5 +789,6 @@ def test_readme_links_to_and_explains_the_colab_workflow() -> None:
     assert 'models=("protenix", "opendde")' in readme
     assert "predict_batch" in readme
     assert "protein, DNA, RNA, CCD ligands, and SMILES ligands" in prose
-    assert "ESMFold2" in readme
+    assert "is an all-biomolecule model" in readme
+    assert "That is a FoldJAX coverage gap" in prose
     assert "OpenFold3" in readme

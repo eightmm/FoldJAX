@@ -64,10 +64,12 @@ inside `AttentionPairBias`.
 
 ## Managed assets
 
-FoldJAX currently exposes ESMFold2 for protein inputs only. Those features get
-their canonical atom names and reference coordinates from the chemistry tables
-carried in the package, so neither featurization nor prediction reads the
-publisher's 417 MB `ccd.pkl`.
+Upstream ESMFold2 supports proteins, DNA, RNA, ligands, and modified residues.
+FoldJAX currently exposes only its protein input path because the complete
+upstream all-biomolecule feature builder has not yet been ported to NumPy/JAX.
+Those supported protein features get their canonical atom names and reference
+coordinates from the chemistry tables carried in the package, so neither
+featurization nor prediction reads the publisher's 417 MB `ccd.pkl`.
 
 The managed store has two explicit profiles:
 
@@ -83,6 +85,6 @@ automatically. Request resolution also selects the smaller managed bundle from
 the legacy native option, or from an explicit external `esmc_weights`, when no
 structure weights were supplied. The default path fails with the complete-bundle
 fetch instruction instead of silently changing the model.
-Supporting ligands or nucleic acids remains a
-separate feature-building task; merely downloading the old CCD pickle would not
-make those inputs valid.
+Porting upstream ligand and nucleic-acid support remains a separate
+feature-building task; merely downloading the old CCD pickle would not make
+those inputs valid.

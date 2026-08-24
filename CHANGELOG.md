@@ -70,7 +70,9 @@ command predicts unless it says so here, in its own paragraph.
   builds one two-chain insulin job and sends that exact recorded input to
   Protenix and OpenDDE; model-specific requests preserve each backend's actual
   portable execution vocabulary before their reports are combined. ESMFold2 is
-  identified as protein-only with a 26.35 GB complete public bundle. OpenFold3
+  identified as an all-biomolecule upstream model while the current FoldJAX
+  port's protein-only feature-adapter gap is stated separately; its complete
+  public bundle is 26.35 GB. OpenFold3
   fetches the exact public p1 checkpoint and also accepts a compatible path
   override; AlphaFold 3 accepts a user-provided parameter directory. Their
   optional preprocessing/runtime dependencies install only when selected.
