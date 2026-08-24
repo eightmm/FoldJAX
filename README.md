@@ -87,9 +87,11 @@ while OpenFold3 uses its managed public p1 checkpoint (with an optional path
 override) and AlphaFold 3 accepts a user-supplied parameter directory.
 Compatibility is checked before any download. The notebook keeps large model
 sessions sequential, records per-model failures without losing successful runs,
-and presents a comparison table plus an interactive structure selector. The
-final ZIP contains the common input, batch report, score table, structures,
-confidence artifacts, and reproducibility manifests for every run.
+and presents each setup, execution, and validation stage as a guided status
+card or comparison table rather than a stream of raw notebook logs. Its
+interactive structure selector keeps every model, seed, and sample in one
+viewer. The final ZIP contains the common input, batch report, score table,
+structures, confidence artifacts, and reproducibility manifests for every run.
 
 The notebook requires and checks Python 3.13, installs the pinned JAX 0.11.1
 and cuEquivariance 0.11.1 CUDA 12 runtime, shows checkpoint source/licence/size

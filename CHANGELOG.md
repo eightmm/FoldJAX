@@ -85,6 +85,9 @@ command predicts unless it says so here, in its own paragraph.
   collapsed into a scientifically unsupported universal ranking. Before first
   use the notebook shows each publisher, licence, download size, cache state,
   and conservative disk estimate, then fetches public checkpoints in sequence.
+  Setup, execution, validation, visualization, and export now use consistent
+  status cards and styled tables, so folded implementation cells still present
+  a readable end-to-end workflow instead of raw diagnostic output.
   It still checks Python 3.13, the immutable JAX 0.11.1/cuEquivariance 0.11.1
   CUDA 12 stack, and a real JAX GPU before prediction. Fast mode remains clearly
   labelled as 1 sample, 20 steps, and 1 recycle; released defaults are opt-in.

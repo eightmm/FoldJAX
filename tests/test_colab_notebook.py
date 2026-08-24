@@ -83,7 +83,7 @@ def test_colab_notebook_installs_supported_cuda_runtime_before_imports() -> None
     install = _cell_source("install-foldjax")
     all_source = "\n".join(_source(cell) for cell in _code_cells())
 
-    assert 'FOLDJAX_REF = "613c0fa99b3838db1a9ea02db35735056ce71e96"' in install
+    assert 'FOLDJAX_REF = "7ad6d59db0e52c1670eda7505b9b5d123fc74664"' in install
     assert 'install_extras = ["cuda12"]' in install
     assert 'install_extras.append("alphafold3")' in install
     assert 'install_extras.append("openfold3-preprocess")' in install
@@ -95,7 +95,8 @@ def test_colab_notebook_installs_supported_cuda_runtime_before_imports() -> None
     assert 'sys.version_info[:2] != (3, 13)' in install
     assert 'install_marker.unlink(missing_ok=True)' in install
     assert 'shutil.which("nvidia-smi")' in install
-    assert "Dependencies installed; restarting the runtime once" in install
+    assert '"Dependencies installed"' in install
+    assert "The runtime will restart once" in install
     assert "signal.SIGKILL" in install
     assert "XLA_PYTHON_CLIENT_MEM_FRACTION" in all_source
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND" in all_source
@@ -161,6 +162,7 @@ def test_colab_gpu_check_executes_with_the_pinned_stack(
             "install_marker": tmp_path / "installed",
             "subprocess": subprocess,
             "sys": sys,
+            "foldjax_card": lambda *_args, **_kwargs: None,
         },
     )
 
@@ -255,6 +257,42 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "AlphaFold3 still requires parameters" in markdown
 
 
+def test_colab_notebook_renders_a_guided_workflow_instead_of_raw_logs() -> None:
+    code_by_id = {cell["id"]: _source(cell) for cell in _code_cells()}
+    markdown = "\n".join(
+        _source(cell)
+        for cell in _document()["cells"]
+        if cell["cell_type"] == "markdown"
+    )
+
+    for cell_id in (
+        "configure-run",
+        "install-foldjax",
+        "configure-runtime",
+        "check-gpu",
+        "fetch-weights",
+        "build-job",
+        "run-predictions",
+        "compare-results",
+        "view-structures",
+        "download-results",
+    ):
+        assert "foldjax_card(" in code_by_id[cell_id]
+    for cell_id in ("fetch-weights", "plan-runs", "run-predictions", "compare-results"):
+        assert "foldjax_table(" in code_by_id[cell_id]
+    assert "print(" not in "\n".join(code_by_id.values())
+    for section in (
+        "RUNTIME · STORAGE",
+        "CHECKPOINTS · COMPATIBILITY",
+        "ONE INPUT · MANY MODELS",
+        "EXECUTION · SEQUENTIAL GPU SESSIONS",
+        "ANALYSIS · NATIVE SCORES",
+        "VISUALIZATION · STRUCTURE EXPLORER",
+        "EXPORT · REPRODUCIBLE BUNDLE",
+    ):
+        assert section in markdown
+
+
 def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
     for cell in _code_cells():
         ast.parse(_source(cell), filename=f"{NOTEBOOK}:{cell['id']}")
@@ -318,7 +356,10 @@ def test_colab_model_specific_request_options_are_supported(
     assert {1, 20}.issubset(set(native.values()))
 
 
-def test_colab_form_builds_mixed_polymer_and_ligand_input(tmp_path: Path) -> None:
+def test_colab_form_builds_mixed_polymer_and_ligand_input(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
     configure = _cell_source("configure-run")
     configure = configure.replace(
         'PROTEIN_CHAINS = "GIVEQCCTSICSLYQLENYCN:'
@@ -351,7 +392,8 @@ def test_colab_form_builds_mixed_polymer_and_ligand_input(tmp_path: Path) -> Non
     }
 
 
-def test_colab_form_rejects_invalid_nucleic_acid_before_setup() -> None:
+def test_colab_form_rejects_invalid_nucleic_acid_before_setup(monkeypatch) -> None:
+    _patch_ipython_display(monkeypatch)
     configure = _cell_source("configure-run").replace(
         'DNA_CHAINS = ""', 'DNA_CHAINS = "ACGU"'
     )
@@ -390,10 +432,22 @@ def _patch_ipython_display(monkeypatch) -> None:
     ipython = ModuleType("IPython")
     ipython.__path__ = []  # type: ignore[attr-defined]
     ipython_display = ModuleType("IPython.display")
+    ipython_display.HTML = lambda value: value  # type: ignore[attr-defined]
     ipython_display.display = lambda *_args: None  # type: ignore[attr-defined]
     ipython.display = ipython_display  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "IPython", ipython)
     monkeypatch.setitem(sys.modules, "IPython.display", ipython_display)
+
+
+def _notebook_ui(*, tables: list | None = None) -> dict:
+    def render_table(frame, *_args, **_kwargs) -> None:
+        if tables is not None:
+            tables.append(frame)
+
+    return {
+        "foldjax_card": lambda *_args, **_kwargs: None,
+        "foldjax_table": render_table,
+    }
 
 
 def test_colab_rejects_esmfold2_nonprotein_input_before_download(
@@ -427,6 +481,7 @@ def test_colab_rejects_esmfold2_nonprotein_input_before_download(
                     run=lambda *args, **kwargs: calls.append((args, kwargs))
                 ),
                 "sys": sys,
+                **_notebook_ui(),
             },
         )
 
@@ -464,6 +519,7 @@ def test_colab_accepts_supplied_openfold3_weights_without_fetching(
             run=lambda *args, **kwargs: calls.append((args, kwargs))
         ),
         "sys": sys,
+        **_notebook_ui(),
     }
 
     exec(_cell_source("fetch-weights"), namespace)
@@ -501,6 +557,7 @@ def test_colab_fetches_public_openfold3_p1_when_no_override_is_supplied(
             run=lambda *args, **kwargs: calls.append((args, kwargs))
         ),
         "sys": sys,
+        **_notebook_ui(),
     }
 
     exec(_cell_source("fetch-weights"), namespace)
@@ -567,6 +624,7 @@ def test_colab_prediction_and_output_cells_execute_together(
     monkeypatch.setattr(foldjax, "resolve_requests", fake_resolve)
     monkeypatch.setattr(foldjax, "predict_batch", fake_predict_batch)
     monkeypatch.setattr(foldjax.progress, "enable", lambda: None)
+    _patch_ipython_display(monkeypatch)
 
     namespace = {
         "Path": Path,
@@ -702,9 +760,12 @@ def test_colab_run_cell_surfaces_model_failures(
     exec(
         _cell_source("run-predictions"),
         {
-            "model_requests": (SimpleNamespace(model="opendde"),),
+            "model_requests": (
+                SimpleNamespace(model="opendde", num_seeds=1, msa="none"),
+            ),
             "display": displayed.append,
             "pd": __import__("pandas"),
+            **_notebook_ui(tables=displayed),
         },
     )
 
