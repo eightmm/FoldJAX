@@ -111,7 +111,15 @@ command predicts unless it says so here, in its own paragraph.
   prediction. Fast mode remains clearly labelled as 1 sample, 20 steps, and 1
   recycle; released defaults are opt-in.
   MSA transfer, Colab/Drive retention, and cached-versus-local storage are
-  disclosed where the user makes those choices.
+  disclosed where the user makes those choices. Separate toggles persist the
+  reusable asset cache and prediction outputs: the former covers weights,
+  shared assets, generated runtimes, and sequence-and-search-provenance MSA
+  entries, while the latter keeps output trees and validated resume manifests.
+  A cache inventory reports each component's file count and logical size. An
+  input preflight groups identical chains and reports verified MSA hits, misses,
+  disabled search, and unavailable RNA search without displaying sequences;
+  cached protein alignments are shared across model runs. Compilation stays on
+  the active VM because its identity includes the accelerator and runtime.
 
 - **OpenFold3 projects template residue types before expanding them across token
   pairs.** The template pair embedder previously broadcast each

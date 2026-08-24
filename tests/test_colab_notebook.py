@@ -444,8 +444,9 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'compact.split(":")' in source
     assert 'LIGAND_CCD_CODES.split(",")' in source
     assert 'LIGAND_SMILES.split(";")' in source
-    assert "PERSIST_WEIGHTS_TO_DRIVE = False" in source
-    assert 'OUTPUT_ROOT = WORK_DIR / "outputs" / JOB_SLUG / RUN_LABEL' in source
+    assert "PERSIST_CACHE_TO_DRIVE = False" in source
+    assert "PERSIST_OUTPUTS_TO_DRIVE = False" in source
+    assert 'OUTPUT_ROOT = OUTPUT_BASE / JOB_SLUG / RUN_LABEL' in source
     assert 'RUN_MODE = "Fast demo"' in source
     assert 'MSA_POLICY = "none"' in source
     assert "job_path.read_text()" not in source
@@ -556,9 +557,8 @@ def test_colab_configures_accelerator_specific_kernels(
     monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
     namespace = {
         "ACCELERATOR_KIND": accelerator,
-        "JOB_SLUG": "job",
-        "RUN_LABEL": "fast-demo",
-        "PERSIST_WEIGHTS_TO_DRIVE": False,
+        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
         "Path": Path,
         "os": __import__("os"),
         "foldjax_card": lambda *_args, **_kwargs: None,
@@ -583,6 +583,47 @@ def test_colab_configures_accelerator_specific_kernels(
         ("XLA_PYTHON_CLIENT_MEM_FRACTION" in namespace["os"].environ)
         is (accelerator == "gpu")
     )
+
+
+def test_colab_can_persist_cache_and_outputs_to_drive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _cell_source("configure-runtime")
+    source = source.replace(
+        'WORK_DIR = Path("/content/foldjax-colab")',
+        f'WORK_DIR = Path({str(tmp_path / "work")!r})',
+    )
+    source = source.replace(
+        'Path("/content/drive/MyDrive/foldjax-cache")',
+        f'Path({str(tmp_path / "drive-cache")!r})',
+    )
+    source = source.replace(
+        'Path("/content/drive/MyDrive/foldjax-outputs")',
+        f'Path({str(tmp_path / "drive-outputs")!r})',
+    )
+    mounts = []
+    google = ModuleType("google")
+    google.__path__ = []  # type: ignore[attr-defined]
+    colab = ModuleType("google.colab")
+    colab.drive = SimpleNamespace(mount=mounts.append)  # type: ignore[attr-defined]
+    google.colab = colab  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.colab", colab)
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "PERSIST_CACHE_TO_DRIVE": True,
+        "PERSIST_OUTPUTS_TO_DRIVE": True,
+        "Path": Path,
+        "os": __import__("os"),
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+
+    exec(source, namespace)
+
+    assert mounts == ["/content/drive"]
+    assert namespace["foldjax_home"] == tmp_path / "drive-cache"
+    assert namespace["OUTPUT_BASE"] == tmp_path / "drive-outputs"
+    assert namespace["COMPILE_CACHE"] == tmp_path / "work" / "compile-cache"
 
 
 @pytest.mark.parametrize(
@@ -748,7 +789,7 @@ def test_colab_form_builds_mixed_polymer_and_ligand_input(
     build_job = build_job.replace(
         'LIGAND_SMILES = ""', 'LIGAND_SMILES = "CCO; C1=CC=CC=C1"'
     )
-    namespace: dict = {"WORK_DIR": tmp_path}
+    namespace: dict = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
     exec(_cell_source("configure-run"), namespace)
     exec(build_job, namespace)
 
@@ -770,7 +811,7 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
     tmp_path: Path, monkeypatch
 ) -> None:
     _patch_ipython_display(monkeypatch)
-    namespace: dict = {"WORK_DIR": tmp_path}
+    namespace: dict = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
 
     exec(_cell_source("configure-run"), namespace)
     exec(_cell_source("build-job"), namespace)
@@ -791,6 +832,83 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
     assert "openfold3" not in namespace["MANUAL_WEIGHT_TEXT"]
 
 
+@pytest.mark.parametrize(
+    ("cached", "expected_cache", "expected_action"),
+    (
+        (True, "hit", "no service contact"),
+        (False, "miss", "remote search"),
+    ),
+)
+def test_colab_msa_preflight_reports_cache_reuse_without_searching(
+    cached: bool,
+    expected_cache: str,
+    expected_action: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    tables = []
+
+    class StubPipeline:
+        cache_dir = tmp_path / "msa"
+
+        def _identity(self, _sequence):
+            return "cache-key", {}
+
+        def _cached(self, _directory, _sequence, _cache_key):
+            return {"unpairedMsaPath": "cached.a3m"} if cached else None
+
+    monkeypatch.setattr("foldjax.input._msa_pipeline", StubPipeline)
+    monkeypatch.setattr("foldjax.input._rna_msa_pipeline", lambda: None)
+    monkeypatch.setattr(
+        "foldjax.input.msa_search_backend",
+        lambda: {
+            "protein": {"kind": "remote", "host": "https://msa.invalid"},
+            "rna": {"kind": "unavailable"},
+        },
+    )
+    namespace = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
+    _patch_ipython_display(monkeypatch)
+    exec(_cell_source("configure-run"), namespace)
+    namespace["MSA_POLICY"] = "auto"
+    namespace["foldjax_table"] = lambda frame, *_args, **_kwargs: tables.append(frame)
+
+    exec(_cell_source("build-job"), namespace)
+
+    preflight = next(frame for frame in tables if "action" in frame.columns)
+    protein = preflight.loc[preflight["entity"] == "protein 1"].iloc[0]
+    rna = preflight.loc[preflight["entity"] == "RNA 1"].iloc[0]
+    assert protein["cache"] == expected_cache
+    assert expected_action in protein["action"]
+    assert rna["cache"] == "unavailable"
+    assert "no public RNA search" in rna["action"]
+
+
+def test_colab_msa_preflight_rejects_required_rna_without_a_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pipeline = SimpleNamespace(
+        cache_dir=tmp_path / "msa",
+        _identity=lambda _sequence: ("cache-key", {}),
+        _cached=lambda *_args: {"unpairedMsaPath": "cached.a3m"},
+    )
+    monkeypatch.setattr("foldjax.input._msa_pipeline", lambda: pipeline)
+    monkeypatch.setattr("foldjax.input._rna_msa_pipeline", lambda: None)
+    monkeypatch.setattr(
+        "foldjax.input.msa_search_backend",
+        lambda: {
+            "protein": {"kind": "remote", "host": "https://msa.invalid"},
+            "rna": {"kind": "unavailable"},
+        },
+    )
+    namespace = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
+    _patch_ipython_display(monkeypatch)
+    exec(_cell_source("configure-run"), namespace)
+    namespace["MSA_POLICY"] = "required"
+
+    with pytest.raises(RuntimeError, match="RNA MSA is required"):
+        exec(_cell_source("build-job"), namespace)
+
+
 def test_colab_form_rejects_invalid_nucleic_acid_after_setup(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -798,7 +916,7 @@ def test_colab_form_rejects_invalid_nucleic_acid_after_setup(
     build_job = _cell_source("build-job").replace(
         'DNA_CHAINS = ""', 'DNA_CHAINS = "ACGU"'
     )
-    namespace = {"WORK_DIR": tmp_path}
+    namespace = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
     exec(_cell_source("configure-run"), namespace)
 
     with pytest.raises(ValueError, match="DNA chain 1.*base 'U'"):
@@ -883,6 +1001,10 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
             ),
             "MANUAL_WEIGHT_TEXT": {},
             "foldjax_home": tmp_path,
+            "COMPILE_CACHE": tmp_path / "compile-cache",
+            "OUTPUT_BASE": tmp_path / "outputs",
+            "PERSIST_CACHE_TO_DRIVE": False,
+            "PERSIST_OUTPUTS_TO_DRIVE": False,
             "Path": Path,
             "display": lambda *_args: None,
             "shutil": SimpleNamespace(
@@ -920,6 +1042,10 @@ def test_colab_fetches_public_openfold3_p1_automatically(
         "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
         "MANUAL_WEIGHT_TEXT": {},
         "foldjax_home": tmp_path,
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
         "Path": Path,
         "display": lambda *_args: None,
         "shutil": SimpleNamespace(
@@ -943,7 +1069,11 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
+    tables = []
     _patch_ipython_display(monkeypatch)
+    msa_entry = tmp_path / "msa" / "test-entry"
+    msa_entry.mkdir(parents=True)
+    (msa_entry / "non_pairing.a3m").write_text(">query\nAAAA\n", encoding="utf-8")
     info = _fake_model_info(
         "openfold3",
         entity_types=("protein", "dna", "rna", "ligand"),
@@ -959,6 +1089,10 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
         "INPUT_REQUIRED_FEATURES": frozenset(),
         "MANUAL_WEIGHT_TEXT": {},
         "foldjax_home": tmp_path,
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
         "Path": Path,
         "display": lambda *_args: None,
         "shutil": SimpleNamespace(
@@ -968,13 +1102,18 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
             run=lambda *args, **kwargs: calls.append((args, kwargs))
         ),
         "sys": sys,
-        **_notebook_ui(),
+        **_notebook_ui(tables=tables),
     }
 
     exec(_cell_source("fetch-weights"), namespace)
 
     assert namespace["MODEL_WEIGHTS"] == {"openfold3": None}
     assert calls == []
+    inventory = next(frame for frame in tables if "component" in frame.columns)
+    assert set(inventory["component"]) >= {"weights", "MSA", "predictions"}
+    msa_row = inventory.loc[inventory["component"] == "MSA"].iloc[0]
+    assert msa_row["location"] == "runtime"
+    assert msa_row["files"] == 1
 
 
 def test_colab_prediction_and_output_cells_execute_together(
@@ -1045,7 +1184,7 @@ def test_colab_prediction_and_output_cells_execute_together(
     namespace.update(
         {
             "WORK_DIR": tmp_path,
-            "OUTPUT_ROOT": tmp_path / "outputs",
+            "OUTPUT_BASE": tmp_path / "persistent-outputs",
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "MODEL_WEIGHTS": {
                 "protenix": None,
@@ -1080,6 +1219,10 @@ def test_colab_prediction_and_output_cells_execute_together(
     )
     assert all(request.num_seeds == 1 for request in seen)
     assert all(request.msa == "none" for request in seen)
+    assert all(
+        str(request.output_dir).startswith(str(tmp_path / "persistent-outputs"))
+        for request in seen
+    )
     assert tuple(namespace["comparison"]["model"]) == (
         "opendde",
         "openfold3",

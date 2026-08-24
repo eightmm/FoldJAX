@@ -104,10 +104,18 @@ structures, confidence artifacts, and reproducibility manifests for every run.
 The notebook installs and verifies the stack for the detected runtime before
 showing the biomolecule form and prediction stages. A matching install marker,
 verified managed-weight state, and finished prediction manifests make **Run
-all** idempotent: later runs skip work that is already complete. TPU execution
-remains experimental until every model has real-TPU parity evidence. The
-notebook shows checkpoint source/licence/size before downloading and keeps its
-short
+all** idempotent: later runs skip work that is already complete. Its cache
+inventory reports checkpoints, shared assets, generated runtimes, MSA entries,
+compilation entries, and predictions without echoing sequence text. The MSA
+preflight groups identical chains and shows whether each sequence is disabled,
+served by a verified sequence-and-search-provenance cache entry, or will require
+a search. Protein MSA results are therefore reused across selected models and
+repeated runs. Cache persistence to Drive covers weights, MSA results, and
+generated runtime assets; output persistence separately keeps prediction trees
+and their resume manifests across VM replacement. Compilation remains local to
+the active accelerator/runtime. TPU execution remains experimental until every
+model has real-TPU parity evidence. The notebook shows checkpoint
+source/licence/size before downloading and keeps its short
 1-sample/20-step/1-recycle tutorial schedule clearly separated from every
 model's released defaults. In Python,
 the same multi-model path is simply:
