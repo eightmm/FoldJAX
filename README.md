@@ -73,12 +73,19 @@ from that path rather than a redundant managed ESMC copy.
 *Each port against the repository it came from — same job, same schedule, same
 measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md).*
 
-## Installation
+## Examples
 
-For a no-local-setup GPU walkthrough, open the
-[Google Colab quickstart](notebooks/FoldJAX_Colab.ipynb). It installs the pinned
-CUDA 12 JAX runtime, prepares public Protenix weights, predicts a short protein,
-visualizes the structure, and downloads a reproducibility archive.
+### Google Colab: protein prediction
+
+The [Google Colab quickstart](notebooks/FoldJAX_Colab.ipynb) is a complete GPU
+example that starts from a 76-residue protein sequence. It installs the pinned
+CUDA 12 JAX runtime, downloads and verifies the public Protenix weights, runs a
+short prediction, displays confidence scores and an interactive 3D structure,
+then downloads the structure and reproducibility manifest as an archive. Its
+fast tutorial schedule is clearly separated from the released sampling
+schedule.
+
+## Installation
 
 ```bash
 uv sync --extra cuda13 --group dev

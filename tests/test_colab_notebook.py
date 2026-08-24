@@ -224,6 +224,8 @@ def test_colab_prediction_and_output_cells_execute_together(
 def test_readme_links_to_the_colab_notebook() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
+    assert "## Examples" in readme
+    assert "### Google Colab: protein prediction" in readme
     assert (
         "https://colab.research.google.com/github/eightmm/FoldJAX/blob/"
         "main/notebooks/FoldJAX_Colab.ipynb"
