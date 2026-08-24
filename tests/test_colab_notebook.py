@@ -84,7 +84,11 @@ def test_colab_notebook_installs_supported_cuda_runtime_before_imports() -> None
     all_source = "\n".join(_source(cell) for cell in _code_cells())
 
     assert 'FOLDJAX_REF = "613c0fa99b3838db1a9ea02db35735056ce71e96"' in install
-    assert "foldjax[cuda12]" in install
+    assert 'install_extras = ["cuda12"]' in install
+    assert 'install_extras.append("alphafold3")' in install
+    assert 'install_extras.append("openfold3-preprocess")' in install
+    assert "','.join(install_extras)" in install
+    assert "install_profile" in install
     assert "FoldJAX.git@{FOLDJAX_REF}" in install
     assert '"py3Dmol>=2.0,<3"' in install
     assert all_source.index('"pip"') < all_source.index("import jax")
@@ -114,7 +118,10 @@ def test_colab_install_stops_before_pip_on_wrong_python(monkeypatch) -> None:
     )
 
     with pytest.raises(RuntimeError) as error:
-        exec(_cell_source("install-foldjax"), {})
+        exec(
+            _cell_source("install-foldjax"),
+            {"SELECTED_MODELS": ("protenix",)},
+        )
 
     message = str(error.value)
     assert "Python 3.13" in message
@@ -191,25 +198,47 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
         if cell["cell_type"] == "markdown"
     )
 
-    assert 'MODEL_PRESET = "Compare: Protenix + OpenDDE"' in source
-    assert '"Public trio: Protenix + OpenDDE + Boltz-2"' in source
-    assert '("protenix", "opendde")' in source
-    assert '"boltz2"' in source
+    assert "MODEL_PRESET" not in source
+    for field in (
+        "RUN_PROTENIX",
+        "RUN_OPENDDE",
+        "RUN_BOLTZ2",
+        "RUN_ESMFOLD2",
+        "RUN_OPENFOLD3",
+        "RUN_ALPHAFOLD3",
+    ):
+        assert f"{field} =" in source
     assert "PROTEIN_CHAINS" in source
-    assert 'clean_input.split(":")' in source
+    assert "DNA_CHAINS" in source
+    assert "RNA_CHAINS" in source
+    assert "LIGAND_CCD_CODES" in source
+    assert "LIGAND_SMILES" in source
+    assert 'compact.split(":")' in source
+    assert 'LIGAND_CCD_CODES.split(",")' in source
+    assert 'LIGAND_SMILES.split(";")' in source
     assert "PERSIST_WEIGHTS_TO_DRIVE = False" in source
     assert 'OUTPUT_ROOT = WORK_DIR / "outputs" / JOB_SLUG / RUN_LABEL' in source
     assert 'RUN_MODE = "Fast demo"' in source
     assert 'MSA_POLICY = "none"' in source
     assert "job_path.read_text()" not in source
     assert '{"num_samples": 1, "num_steps": 20, "num_recycles": 1}' in source
-    assert 'models=SELECTED_MODELS' in source
-    assert "predict_batch(batch_request)" in source
+    assert "protein=PROTEIN_SEQUENCES" in source
+    assert "dna=DNA_SEQUENCES" in source
+    assert "rna=RNA_SEQUENCES" in source
+    assert "ligand_ccd=LIGAND_CCDS" in source
+    assert "ligand_smiles=LIGAND_SMILES_VALUES" in source
+    assert "model=model_name" in source
+    assert "predict_batch(model_request)" in source
+    assert "BatchReport(" in source
     assert '"dtype": "float32"' in source
     assert '"attention_kernel": "xla"' in source
     assert "CONTINUE_ON_ERROR" in source
     assert "model_info(model_name)" in source
     assert "for model_name in SELECTED_MODELS" in source
+    assert "INPUT_ENTITY_TYPES" in source
+    assert "INPUT_REQUIRED_FEATURES" in source
+    assert "OPENFOLD3_WEIGHTS_PATH" in source
+    assert "ALPHAFOLD3_WEIGHTS_PATH" in source
     assert "resume=True" in source
     assert "STRUCTURES" in source
     assert "comparison.to_csv" in source
@@ -217,6 +246,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "native score" in markdown.lower()
     assert "sequential" in markdown.lower()
     assert "ColabFold MMseqs2" in markdown
+    assert "ESMFold2 is protein-only" in markdown
+    assert "OpenFold3 and AlphaFold3 require parameters" in markdown
 
 
 def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
@@ -224,9 +255,33 @@ def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
         ast.parse(_source(cell), filename=f"{NOTEBOOK}:{cell['id']}")
 
 
-@pytest.mark.parametrize("model_name", ("protenix", "opendde", "boltz2"))
-def test_colab_common_request_options_are_supported(
-    model_name: str, tmp_path: Path
+@pytest.mark.parametrize(
+    ("model_name", "options"),
+    (
+        (
+            "protenix",
+            {
+                "dtype": "float32",
+                "attention_kernel": "xla",
+                "triangle_kernel": "xla",
+            },
+        ),
+        ("opendde", {"dtype": "float32", "attention_kernel": "xla"}),
+        (
+            "boltz2",
+            {
+                "dtype": "float32",
+                "attention_kernel": "xla",
+                "triangle_kernel": "xla",
+            },
+        ),
+        ("esmfold2", {}),
+        ("openfold3", {"triangle_kernel": "xla"}),
+        ("alphafold3", {"attention_kernel": "xla"}),
+    ),
+)
+def test_colab_model_specific_request_options_are_supported(
+    model_name: str, options: dict[str, str], tmp_path: Path
 ) -> None:
     input_path = tmp_path / "complex.json"
     input_path.write_text(
@@ -245,10 +300,7 @@ def test_colab_common_request_options_are_supported(
         cache_dir=tmp_path / "compile-cache",
         seed=0,
         msa="none",
-        options={
-            "dtype": "float32",
-            "attention_kernel": "xla",
-        },
+        options=options,
         resume=True,
         num_samples=1,
         num_steps=20,
@@ -261,44 +313,200 @@ def test_colab_common_request_options_are_supported(
     assert {1, 20}.issubset(set(native.values()))
 
 
+def test_colab_form_builds_mixed_polymer_and_ligand_input(tmp_path: Path) -> None:
+    configure = _cell_source("configure-run")
+    configure = configure.replace(
+        'PROTEIN_CHAINS = "GIVEQCCTSICSLYQLENYCN:'
+        'FVNQHLCGSHLVEALYLVCGERGFFYTPKT"',
+        'PROTEIN_CHAINS = "ACDEFG"',
+    )
+    configure = configure.replace('DNA_CHAINS = ""', 'DNA_CHAINS = "ACGT:TGCA"')
+    configure = configure.replace('RNA_CHAINS = ""', 'RNA_CHAINS = "ACGU"')
+    configure = configure.replace(
+        'LIGAND_CCD_CODES = ""', 'LIGAND_CCD_CODES = "ATP, MG"'
+    )
+    configure = configure.replace(
+        'LIGAND_SMILES = ""', 'LIGAND_SMILES = "CCO; C1=CC=CC=C1"'
+    )
+    namespace: dict = {"WORK_DIR": tmp_path}
+    exec(configure, namespace)
+    exec(_cell_source("build-job"), namespace)
+
+    payload = json.loads(Path(namespace["job_path"]).read_text(encoding="utf-8"))
+    kinds = [entity["type"] for entity in payload["entities"]]
+    assert kinds.count("protein") == 1
+    assert kinds.count("dna") == 2
+    assert kinds.count("rna") == 1
+    assert kinds.count("ligand") == 4
+    assert namespace["INPUT_ENTITY_TYPES"] == {
+        "protein",
+        "dna",
+        "rna",
+        "ligand",
+    }
+
+
+def test_colab_form_rejects_invalid_nucleic_acid_before_setup() -> None:
+    configure = _cell_source("configure-run").replace(
+        'DNA_CHAINS = ""', 'DNA_CHAINS = "ACGU"'
+    )
+
+    with pytest.raises(ValueError, match="DNA chain 1.*base 'U'"):
+        exec(configure, {})
+
+
+def _fake_model_info(
+    model: str,
+    *,
+    entity_types: tuple[str, ...],
+    features: tuple[str, ...] = (),
+    fetchable: bool,
+    ready: bool,
+    weights_path: Path,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        model=model,
+        capabilities=SimpleNamespace(
+            entity_types=entity_types,
+            common_schema_features=features,
+        ),
+        weights_fetchable=fetchable,
+        weights_ready=ready,
+        weights_path=weights_path,
+        download_bytes=1_000_000 if fetchable else None,
+        weights_licence="test licence",
+        weights_source="test source",
+        notes="test setup note",
+        runtime=SimpleNamespace(ready=True),
+    )
+
+
+def _patch_ipython_display(monkeypatch) -> None:
+    ipython = ModuleType("IPython")
+    ipython.__path__ = []  # type: ignore[attr-defined]
+    ipython_display = ModuleType("IPython.display")
+    ipython_display.display = lambda *_args: None  # type: ignore[attr-defined]
+    ipython.display = ipython_display  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "IPython", ipython)
+    monkeypatch.setitem(sys.modules, "IPython.display", ipython_display)
+
+
+def test_colab_rejects_esmfold2_nonprotein_input_before_download(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "esmfold2",
+        entity_types=("protein",),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "esmfold2.safetensors",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+
+    with pytest.raises(RuntimeError, match="esmfold2 cannot represent"):
+        exec(
+            _cell_source("fetch-weights"),
+            {
+                "SELECTED_MODELS": ("esmfold2",),
+                "INPUT_ENTITY_TYPES": frozenset({"protein", "dna"}),
+                "INPUT_REQUIRED_FEATURES": frozenset(),
+                "MANUAL_WEIGHT_TEXT": {},
+                "foldjax_home": tmp_path,
+                "display": lambda *_args: None,
+                "shutil": SimpleNamespace(
+                    disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+                ),
+                "subprocess": SimpleNamespace(
+                    run=lambda *args, **kwargs: calls.append((args, kwargs))
+                ),
+                "sys": sys,
+            },
+        )
+
+    assert calls == []
+
+
+def test_colab_accepts_supplied_openfold3_weights_without_fetching(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    _patch_ipython_display(monkeypatch)
+    weights_path = tmp_path / "of3.pt"
+    weights_path.write_bytes(b"test")
+    info = _fake_model_info(
+        "openfold3",
+        entity_types=("protein", "dna", "rna", "ligand"),
+        features=("ligand_ccd", "ligand_smiles"),
+        fetchable=False,
+        ready=False,
+        weights_path=tmp_path / "managed" / "of3.pt",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    namespace = {
+        "SELECTED_MODELS": ("openfold3",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein", "ligand"}),
+        "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
+        "MANUAL_WEIGHT_TEXT": {"openfold3": str(weights_path)},
+        "foldjax_home": tmp_path,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(
+            run=lambda *args, **kwargs: calls.append((args, kwargs))
+        ),
+        "sys": sys,
+    }
+
+    exec(_cell_source("fetch-weights"), namespace)
+
+    assert namespace["MODEL_WEIGHTS"] == {"openfold3": weights_path}
+    assert calls == []
+
+
 def test_colab_prediction_and_output_cells_execute_together(
     tmp_path: Path, monkeypatch
 ) -> None:
     seen: list[PredictionRequest] = []
 
     def fake_resolve(request: PredictionRequest):
-        assert request.models == ("protenix", "opendde")
-        return tuple(
+        assert request.model in ("protenix", "opendde")
+        return (
             SimpleNamespace(
-                model=model,
+                model=request.model,
                 input=request.input,
-                output_dir=tmp_path / "outputs" / model / "insulin-complex",
+                output_dir=request.output_dir,
                 resolved_seeds=(0,),
+                options=request.options,
                 sampling=request.sampling,
-            )
-            for model in request.models
+            ),
         )
 
     def fake_predict_batch(request: PredictionRequest) -> BatchReport:
         seen.append(request)
-        results = []
-        for index, model in enumerate(request.models or ()):
-            output_dir = tmp_path / "outputs" / model / "insulin-complex"
-            output_dir.mkdir(parents=True)
-            structure = output_dir / f"{model}.cif"
-            structure.write_text(
-                f"data_{model}\n_entry.id {model}\n#\n",
-                encoding="utf-8",
-            )
-            (output_dir / "confidence.json").write_text(
-                json.dumps({"ranking_score": 0.8 - index * 0.1}),
-                encoding="utf-8",
-            )
-            (output_dir / "foldjax_run.json").write_text(
-                json.dumps({"schema": 1, "model": model}),
-                encoding="utf-8",
-            )
-            results.append(
+        model = request.model
+        assert model is not None
+        index = ("protenix", "opendde").index(model)
+        output_dir = Path(request.output_dir)
+        output_dir.mkdir(parents=True)
+        structure = output_dir / f"{model}.cif"
+        structure.write_text(
+            f"data_{model}\n_entry.id {model}\n#\n",
+            encoding="utf-8",
+        )
+        (output_dir / "confidence.json").write_text(
+            json.dumps({"ranking_score": 0.8 - index * 0.1}),
+            encoding="utf-8",
+        )
+        (output_dir / "foldjax_run.json").write_text(
+            json.dumps({"schema": 1, "model": model}),
+            encoding="utf-8",
+        )
+        return BatchReport(
+            results=(
                 PredictionResult(
                     model=model,
                     samples=(
@@ -309,9 +517,9 @@ def test_colab_prediction_and_output_cells_execute_together(
                         ),
                     ),
                     output_dir=output_dir,
-                )
+                ),
             )
-        return BatchReport(results=tuple(results))
+        )
 
     monkeypatch.setattr(foldjax, "resolve_requests", fake_resolve)
     monkeypatch.setattr(foldjax, "predict_batch", fake_predict_batch)
@@ -328,6 +536,7 @@ def test_colab_prediction_and_output_cells_execute_together(
             "WORK_DIR": tmp_path,
             "OUTPUT_ROOT": tmp_path / "outputs",
             "COMPILE_CACHE": tmp_path / "compile-cache",
+            "MODEL_WEIGHTS": {"protenix": None, "opendde": None},
         }
     )
     exec(_cell_source("build-job"), namespace)
@@ -335,16 +544,22 @@ def test_colab_prediction_and_output_cells_execute_together(
     exec(_cell_source("run-predictions"), namespace)
     exec(_cell_source("compare-results"), namespace)
 
-    assert len(seen) == 1
-    request = seen[0]
-    assert request.models == ("protenix", "opendde")
-    assert request.options == {
+    assert tuple(request.model for request in seen) == ("protenix", "opendde")
+    assert seen[0].options == {
+        "dtype": "float32",
+        "attention_kernel": "xla",
+        "triangle_kernel": "xla",
+    }
+    assert seen[1].options == {
         "dtype": "float32",
         "attention_kernel": "xla",
     }
-    assert (request.num_samples, request.num_steps, request.num_recycles) == (1, 20, 1)
-    assert request.num_seeds == 1
-    assert request.msa == "none"
+    assert all(
+        (request.num_samples, request.num_steps, request.num_recycles) == (1, 20, 1)
+        for request in seen
+    )
+    assert all(request.num_seeds == 1 for request in seen)
+    assert all(request.msa == "none" for request in seen)
     assert tuple(namespace["comparison"]["model"]) == ("opendde", "protenix")
     assert len(namespace["STRUCTURES"]) == 2
 
@@ -444,7 +659,7 @@ def test_colab_run_cell_surfaces_model_failures(
     exec(
         _cell_source("run-predictions"),
         {
-            "batch_request": object(),
+            "model_requests": (SimpleNamespace(model="opendde"),),
             "display": displayed.append,
             "pd": __import__("pandas"),
         },
@@ -457,6 +672,7 @@ def test_colab_run_cell_surfaces_model_failures(
 
 def test_readme_links_to_and_explains_the_colab_workflow() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    prose = " ".join(readme.split())
 
     assert "## Examples" in readme
     assert "### Google Colab: compare models from one input" in readme
@@ -467,3 +683,6 @@ def test_readme_links_to_and_explains_the_colab_workflow() -> None:
     assert "[Google Colab workflow](notebooks/FoldJAX_Colab.ipynb)" in readme
     assert 'models=("protenix", "opendde")' in readme
     assert "predict_batch" in readme
+    assert "protein, DNA, RNA, CCD ligands, and SMILES ligands" in prose
+    assert "ESMFold2" in readme
+    assert "OpenFold3" in readme

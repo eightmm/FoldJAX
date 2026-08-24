@@ -78,13 +78,17 @@ measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md)
 ### Google Colab: compare models from one input
 
 The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) is a practical GPU
-example built around FoldJAX's common input API. A compact form accepts one or
-more colon-separated protein chains and selects Protenix, OpenDDE, or Boltz-2.
-The default sends the exact same two-chain job to Protenix and OpenDDE, keeps
-the large model sessions sequential, records per-model failures without losing
-successful runs, and presents a comparison table plus an interactive structure
-selector. The final ZIP contains the common input, batch report, score table,
-structures, confidence artifacts, and reproducibility manifests for every run.
+example built around FoldJAX's common input API. A compact form accepts protein,
+DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
+carried models; the default sends the exact same two-chain job to Protenix and
+OpenDDE. ESMFold2 is marked protein-only with its 26.35 GB complete bundle,
+while OpenFold3 and AlphaFold 3 accept user-supplied parameter paths because
+FoldJAX cannot fetch their gated/licensed weights. Compatibility is checked
+before any download. The notebook keeps large model sessions sequential,
+records per-model failures without losing successful runs, and presents a
+comparison table plus an interactive structure selector. The final ZIP contains
+the common input, batch report, score table, structures, confidence artifacts,
+and reproducibility manifests for every run.
 
 The notebook requires and checks Python 3.13, installs the pinned JAX 0.11.1
 and cuEquivariance 0.11.1 CUDA 12 runtime, shows checkpoint source/licence/size

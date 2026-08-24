@@ -53,12 +53,18 @@ command predicts unless it says so here, in its own paragraph.
 ### Added
 
 - **The Google Colab example is now a practical multi-model workflow rather
-  than a single-model smoke test.** A compact form accepts one or more protein
-  chains, sampling mode, seeds, MSA policy, storage policy, and public-model
-  presets ranging from Protenix alone to Protenix/OpenDDE/Boltz-2. Its default
+  than a single-model smoke test.** A compact form accepts protein, DNA, RNA,
+  CCD ligands, SMILES ligands, sampling mode, seeds, MSA policy, and storage
+  policy. Independent checkboxes expose all six carried models. Its default
   builds one two-chain insulin job and sends that exact recorded input to
-  Protenix and OpenDDE through one plural request. FoldJAX runs the large model
-  sessions sequentially, resumes verified work, preserves successful models
+  Protenix and OpenDDE; model-specific requests preserve each backend's actual
+  portable execution vocabulary before their reports are combined. ESMFold2 is
+  identified as protein-only with a 26.35 GB complete public bundle. OpenFold3
+  and AlphaFold 3 accept user-provided weight paths and install their optional
+  preprocessing/runtime dependencies only when selected. Input entity types,
+  ligand representations, gated-weight readiness, and generated runtime state
+  are checked before public downloads begin. FoldJAX runs the large sessions
+  sequentially, resumes verified work, preserves successful models
   when an in-scope failure is configured to continue, validates every emitted
   structure and finite score, and presents a native-score table plus an
   interactive model/sample viewer. A single archive contains the common input,
