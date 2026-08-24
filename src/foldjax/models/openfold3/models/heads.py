@@ -143,6 +143,97 @@ class PairformerEmbeddingParams(NamedTuple):
     pairformer_stack: PairformerStackParams
 
 
+def _project_distance_bins(
+    squared_distance: jnp.ndarray,
+    params: LinearParams,
+    *,
+    dtype: jnp.dtype,
+    min_bin: float,
+    max_bin: float,
+    no_bin: int,
+    inf: float,
+) -> jnp.ndarray:
+    """Project the strict distance-bin one-hot without materializing it.
+
+    The historical expression built ``[..., N, N, no_bin]`` zero/one values and
+    passed them through a bias-free linear.  A one-hot dot selects one row of the
+    transposed weight, except that a value exactly on either bin edge selects no
+    row.  Locate that row directly so confidence embedding does not retain the
+    released 39-channel pair temporary.
+
+    Two IEEE details are deliberate.  The released multi-term dot canonicalizes
+    a selected negative zero to positive zero, and every *unselected* NaN or
+    infinity still participates as ``0 * weight``.  The small reduction over the
+    weight matrix reproduces those cases: the sole non-finite value may survive
+    only when it is the selected infinity; every other non-finite combination
+    produces NaN.
+
+    Non-monotonic custom bin ranges, single-bin dots, and incompatible parameter
+    layouts retain the dense expression.  This keeps the private helper an
+    optimization rather than a new low-level input contract.
+    """
+
+    weight = params.weight
+    monotonic_squared_bins = min_bin >= 0.0 and max_bin >= min_bin
+    # A length-one dot is lowered as a multiply and can therefore retain -0.
+    # Keep that degenerate layout on the dense expression; reductions with at
+    # least two terms canonicalize zero exactly as the indexed path does.
+    indexed_layout = no_bin > 1 and weight.ndim == 2 and weight.shape[-1] == no_bin
+    if not monotonic_squared_bins or not indexed_layout:
+        bins = jnp.linspace(min_bin, max_bin, no_bin, dtype=dtype)
+        squared = bins**2
+        upper = jnp.concatenate(
+            [squared[1:], jnp.asarray([inf], dtype=dtype)]
+        )
+        one_hot = (
+            (squared_distance[..., None] > squared)
+            & (squared_distance[..., None] < upper)
+        ).astype(dtype)
+        return linear(one_hot, params)
+
+    bins = jnp.linspace(min_bin, max_bin, no_bin, dtype=dtype)
+    squared = bins**2
+    upper = jnp.concatenate([squared[1:], jnp.asarray([inf], dtype=dtype)])
+
+    # ``side="left"`` makes an exact internal edge point at the preceding bin;
+    # the strict comparisons below then reject it, matching the two comparisons
+    # in the dense one-hot expression.  NaN, infinity, and the open final bound
+    # are rejected by those same comparisons.
+    index = jnp.searchsorted(squared, squared_distance, side="left") - 1
+    safe_index = jnp.clip(index, 0, no_bin - 1)
+    valid = (
+        (index >= 0)
+        & (squared_distance > squared[safe_index])
+        & (squared_distance < upper[safe_index])
+    )
+
+    table = jnp.swapaxes(weight, -1, -2)
+    selected = jnp.take(table, safe_index, axis=0)
+    output_dtype = jnp.result_type(dtype, weight.dtype)
+    selected = selected.astype(output_dtype)
+    zero = jnp.zeros((), dtype=output_dtype)
+    # The multi-term dot starts from +0, so selecting -0 also yields +0.
+    selected = jnp.where(selected == 0, zero, selected)
+
+    nonfinite_count = jnp.sum(~jnp.isfinite(table), axis=0)
+    no_nonfinite = nonfinite_count == 0
+    sole_selected_infinity = (nonfinite_count == 1) & jnp.isinf(selected)
+    preserves_nonfinite_semantics = jnp.where(
+        valid[..., None],
+        no_nonfinite | sole_selected_infinity,
+        no_nonfinite,
+    )
+    projected = jnp.where(valid[..., None], selected, zero)
+    projected = jnp.where(
+        preserves_nonfinite_semantics,
+        projected,
+        jnp.asarray(jnp.nan, dtype=output_dtype),
+    )
+    if params.bias is not None:
+        projected = projected + params.bias
+    return projected
+
+
 def pairformer_embedding(
     si_input: jnp.ndarray,
     si: jnp.ndarray,
@@ -179,21 +270,28 @@ def pairformer_embedding(
         + linear(si_input[..., None, :, :], params.linear_j)
     )
 
-    # A squared-distance one-hot: bin k is on when the squared distance falls
-    # between bins[k]**2 and bins[k+1]**2, with the last bin open-ended.
-    bins = jnp.linspace(min_bin, max_bin, no_bin, dtype=zij.dtype)
-    squared = bins**2
-    upper = jnp.concatenate([squared[1:], jnp.asarray([inf], dtype=zij.dtype)])
+    # Project the squared-distance one-hot by selecting its one active weight row.
+    # The helper preserves strict-edge, non-finite, and signed-zero dot semantics
+    # without materializing the released ``[..., N, N, 39]`` temporary.
     dij = jnp.sum(
         (x_pred[..., :, None, :] - x_pred[..., None, :, :]) ** 2,
         axis=-1,
-        keepdims=True,
     )
-    dij = ((dij > squared) & (dij < upper)).astype(zij.dtype)
     # Born sharded under context parallelism: the distance embedding and the
     # outer-sum init otherwise materialize whole on every device before the
     # stack's own constraints take over.
-    zij = shard_pair_rows(zij + linear(dij, params.linear_distance))
+    zij = shard_pair_rows(
+        zij
+        + _project_distance_bins(
+            dij,
+            params.linear_distance,
+            dtype=zij.dtype,
+            min_bin=min_bin,
+            max_bin=max_bin,
+            no_bin=no_bin,
+            inf=inf,
+        )
+    )
 
     return pairformer_stack(
         si,

@@ -31,6 +31,22 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenFold3 confidence projects distance bins without a quadratic one-hot.**
+  The confidence re-embedding previously materialized
+  `[samples, N_token, N_token, 39]` float distance indicators only to pass each
+  one-hot row through a bias-free linear. It now locates the same strict bin and
+  selects that projection-weight row directly. Exact bin edges and distances
+  outside the open final bound still select no row; coordinate NaN/Inf,
+  arbitrary NaN/Inf weights, and negative-zero weights retain the dense dot's
+  finite and non-finite results. At 3,012 tokens in OpenFold3's released FP32
+  path, the removed one-hot is 1.32 GiB per confidence sample. In an isolated
+  512-token, 128-output FP32 CPU projection,
+  compiled temporary memory fell from 40,894,620 to 6,292,456 bytes while the
+  134,217,728-byte output and 26,112 argument bytes were unchanged, and the
+  39-wide StableHLO dot was removed. This is a synthetic confidence-stage CPU
+  measurement; released-weight end-to-end GPU latency and peak memory remain
+  deployment gates.
+
 - **Boltz-2 confidence constructs ligand frames from representative atom rows.**
   The inference head previously formed every atom-by-atom distance row and then
   gathered the one row selected by each token's existing representative-atom
