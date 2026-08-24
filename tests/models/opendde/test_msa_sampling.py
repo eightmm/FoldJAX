@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from foldjax.models.opendde.models.msa_sampling import sample_opendde_msa_cycle_features
+from foldjax.models.opendde.models.msa_sampling import (
+    drop_sampled_msa_source_features,
+    sample_opendde_msa_cycle_features,
+)
 
 
 def _features(msa: np.ndarray) -> dict[str, np.ndarray]:
@@ -11,6 +15,91 @@ def _features(msa: np.ndarray) -> dict[str, np.ndarray]:
         "has_deletion": msa.astype(np.float32) + 100.0,
         "deletion_value": msa.astype(np.float32) + 200.0,
     }
+
+
+def _complete_cycle(depth: int = 2, tokens: int = 3) -> dict[str, np.ndarray]:
+    shape = (depth, tokens)
+    return {
+        "msa": np.zeros(shape, dtype=np.int64),
+        "has_deletion": np.zeros(shape, dtype=np.float32),
+        "deletion_value": np.zeros(shape, dtype=np.float32),
+        "msa_mask": np.ones(shape, dtype=np.float32),
+    }
+
+
+def test_sampled_msa_source_drop_is_surgical() -> None:
+    source = {
+        **_complete_cycle(depth=7),
+        "profile": np.zeros((3, 32), dtype=np.float32),
+        "deletion_mean": np.zeros((3,), dtype=np.float32),
+        "constraint_feature": {"contact": np.asarray([1.0])},
+        "template_aatype": np.asarray([[1, 2, 3]]),
+        "writer_metadata": {"chain": "A"},
+        "custom_feature": object(),
+    }
+
+    pruned = drop_sampled_msa_source_features(source, (_complete_cycle(),))
+
+    assert pruned is not source
+    for name in ("msa", "has_deletion", "deletion_value", "msa_mask"):
+        assert name not in pruned
+    for name in (
+        "profile",
+        "deletion_mean",
+        "constraint_feature",
+        "template_aatype",
+        "writer_metadata",
+        "custom_feature",
+    ):
+        assert pruned[name] is source[name]
+
+
+@pytest.mark.parametrize("cycles", [None, ()])
+def test_sampled_msa_source_drop_preserves_no_cycle_fallback(cycles) -> None:
+    source = _complete_cycle()
+
+    assert drop_sampled_msa_source_features(source, cycles) is source
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "missing",
+        "mismatched",
+        "different_cycle_shape",
+        "ragged",
+        "empty",
+        "non_mapping",
+        "later_incomplete",
+    ],
+)
+def test_sampled_msa_source_drop_preserves_malformed_cycle_fallback(
+    malformation: str,
+) -> None:
+    source = _complete_cycle(depth=7)
+    cycle = _complete_cycle()
+    cycles: tuple[object, ...]
+    if malformation == "missing":
+        cycle.pop("msa_mask")
+        cycles = (cycle,)
+    elif malformation == "mismatched":
+        cycle["msa_mask"] = np.ones((2, 4), dtype=np.float32)
+        cycles = (cycle,)
+    elif malformation == "different_cycle_shape":
+        cycles = (cycle, _complete_cycle(depth=3))
+    elif malformation == "ragged":
+        cycle["msa"] = [[1, 2, 3], [4]]  # type: ignore[assignment]
+        cycles = (cycle,)
+    elif malformation == "empty":
+        cycles = (_complete_cycle(depth=0),)
+    elif malformation == "non_mapping":
+        cycles = (object(),)
+    else:
+        incomplete = _complete_cycle()
+        incomplete.pop("deletion_value")
+        cycles = (cycle, incomplete)
+
+    assert drop_sampled_msa_source_features(source, cycles) is source  # type: ignore[arg-type]
 
 
 def test_opendde_msa_sampling_uses_fixed_depth_and_preserves_duplicates() -> None:

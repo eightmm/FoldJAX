@@ -2,13 +2,71 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import PaddingConfig
+
+_MSA_VALUE_FIELDS = ("msa", "has_deletion", "deletion_value")
+_RAW_MSA_SOURCE_FIELDS = (*_MSA_VALUE_FIELDS, "msa_mask")
+
+
+def drop_sampled_msa_source_features(
+    input_feature_dict: Mapping[str, Any],
+    cycle_msa_features: Sequence[Mapping[str, Any]] | None,
+) -> Mapping[str, Any]:
+    """Drop raw MSA inputs only after complete sampled cycles replace them.
+
+    The sampled-cycle tuple is the model's sole MSA input once every cycle has
+    a non-empty, shape-consistent value for all four consumed fields.  Keeping
+    the much deeper source alignment in the feature mapping would still make
+    it part of the JIT input signature and context-parallel placement even
+    though XLA dead-code elimination removes it from the computation.
+
+    This is deliberately a conservative boundary helper: absent, empty,
+    incomplete, or malformed cycle data leaves the original mapping object
+    untouched so direct/custom callers retain their historical fallback.
+    """
+
+    if cycle_msa_features is None or len(cycle_msa_features) == 0:
+        return input_feature_dict
+
+    sampled_shape: tuple[int, ...] | None = None
+    for cycle in cycle_msa_features:
+        if not isinstance(cycle, Mapping):
+            return input_feature_dict
+        if any(name not in cycle for name in _RAW_MSA_SOURCE_FIELDS):
+            return input_feature_dict
+        shapes: list[tuple[int, ...]] = []
+        for name in _RAW_MSA_SOURCE_FIELDS:
+            value = cycle[name]
+            try:
+                shape = getattr(value, "shape", None)
+                if shape is None:
+                    shape = np.shape(value)
+                concrete_shape = tuple(int(dimension) for dimension in shape)
+            except (TypeError, ValueError):
+                return input_feature_dict
+            if len(concrete_shape) != 2 or any(size <= 0 for size in concrete_shape):
+                return input_feature_dict
+            shapes.append(concrete_shape)
+        if any(shape != shapes[0] for shape in shapes[1:]):
+            return input_feature_dict
+        if sampled_shape is None:
+            sampled_shape = shapes[0]
+        elif shapes[0] != sampled_shape:
+            return input_feature_dict
+
+    if not any(name in input_feature_dict for name in _RAW_MSA_SOURCE_FIELDS):
+        return input_feature_dict
+    return {
+        name: value
+        for name, value in input_feature_dict.items()
+        if name not in _RAW_MSA_SOURCE_FIELDS
+    }
 
 
 def sample_opendde_msa_cycle_features(
@@ -31,11 +89,12 @@ def sample_opendde_msa_cycle_features(
     if msa_depth <= 0:
         raise ValueError("msa_depth must be positive")
 
-    msa_fields = ("msa", "has_deletion", "deletion_value")
-    if any(field not in input_feature_dict for field in msa_fields):
+    if any(field not in input_feature_dict for field in _MSA_VALUE_FIELDS):
         return tuple()
 
-    arrays = {field: np.asarray(input_feature_dict[field]) for field in msa_fields}
+    arrays = {
+        field: np.asarray(input_feature_dict[field]) for field in _MSA_VALUE_FIELDS
+    }
     msa = arrays["msa"]
     if msa.ndim != 2 or any(values.shape != msa.shape for values in arrays.values()):
         raise ValueError("MSA and deletion features must share shape [N_msa, N_token]")
@@ -105,19 +164,18 @@ def pad_opendde_msa_cycle_features(
             "does not contain msa, has_deletion, and deletion_value"
         )
 
-    msa_fields = ("msa", "has_deletion", "deletion_value")
     storage_depth: int | None = None
     storage_tokens: int | None = None
     actual_depth: int | None = None
     validated: list[tuple[dict[str, np.ndarray], int]] = []
     for cycle_index, cycle in enumerate(cycles):
-        missing = [name for name in (*msa_fields, "msa_mask") if name not in cycle]
+        missing = [name for name in _RAW_MSA_SOURCE_FIELDS if name not in cycle]
         if missing:
             raise ValueError(
                 "OpenDDE MSA padding requires complete sampled cycle fields; "
                 f"cycle {cycle_index} is missing: {', '.join(missing)}"
             )
-        arrays = {name: np.asarray(cycle[name]) for name in msa_fields}
+        arrays = {name: np.asarray(cycle[name]) for name in _MSA_VALUE_FIELDS}
         msa = arrays["msa"]
         if msa.ndim != 2 or any(value.shape != msa.shape for value in arrays.values()):
             raise ValueError(
@@ -184,7 +242,7 @@ def pad_opendde_msa_cycle_features(
     padded_cycles: list[dict[str, np.ndarray]] = []
     for cycle, _real_depth in validated:
         padded = dict(cycle)
-        for name in msa_fields:
+        for name in _MSA_VALUE_FIELDS:
             constant = gap_token if name == "msa" else 0
             padded[name] = np.pad(
                 np.asarray(cycle[name]),

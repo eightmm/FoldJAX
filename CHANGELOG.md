@@ -31,6 +31,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenDDE stops carrying the raw alignment after its recycle samples are
+  complete.** The CLI's exact/default path already sampled every recycle to at
+  most 1,280 rows, but still passed the much deeper source `msa`,
+  `has_deletion`, `deletion_value`, and optional `msa_mask` through preflight,
+  JIT identity, and context-parallel placement even though the trunk reads only
+  the sampled cycles. It now removes only those source fields before model
+  inference when every sampled cycle has all four non-empty, shape-consistent
+  arrays. Missing, empty, incomplete, or malformed cycles keep the original
+  mapping and direct low-level model APIs are unchanged; `profile`,
+  `deletion_mean`, constraints, templates, writer data, and custom metadata are
+  preserved. An actual two-cycle CPU Pairformer probe with non-finite raw
+  deletion sentinels produced byte-identical outputs and byte-identical
+  StableHLO in the matched probe, while changing source depth caused three
+  traces before pruning and one after.
+  A forced four-CPU-device placement probe at 256 tokens and 4,096 source rows
+  measured 48 MiB of replicated source storage across the mesh for the common
+  three-array source. At the nominal 16,384-row source maximum and 1,531
+  tokens, those three arrays at the default device dtypes are 287.1 MiB per
+  device, or 1.12 GiB on four devices. The latter is a shape-and-dtype
+  extrapolation, not an observed peak; released-weight end-to-end GPU numerical
+  parity, latency, and peak memory remain deployment gates.
+
 - **ESMFold2 does not return a native distogram that the common backend never
   reads.** The direct model and inference APIs still return
   `distogram_logits` by default for parity and debugging, but the common

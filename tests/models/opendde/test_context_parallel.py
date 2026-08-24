@@ -337,6 +337,67 @@ _CANNON_PROBE = textwrap.dedent(
 )
 
 
+_SAMPLED_MSA_PLACEMENT_PROBE = textwrap.dedent(
+    """
+    import jax
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel, replicate_tree
+    from foldjax.models.opendde.models.msa_sampling import (
+        drop_sampled_msa_source_features,
+    )
+
+    assert jax.device_count() == 4, jax.devices()
+    M, N = 32, 16
+    raw_names = ("msa", "has_deletion", "deletion_value", "msa_mask")
+    features = {
+        "msa": np.zeros((M, N), dtype=np.int32),
+        "has_deletion": np.zeros((M, N), dtype=np.float32),
+        "deletion_value": np.zeros((M, N), dtype=np.float32),
+        "msa_mask": np.ones((M, N), dtype=np.float32),
+        "profile": np.zeros((N, 32), dtype=np.float32),
+        "deletion_mean": np.zeros((N,), dtype=np.float32),
+        "constraint_feature": {"contact": np.ones((N, N), dtype=np.float32)},
+        "template_aatype": np.ones((1, N), dtype=np.int32),
+        "custom_metadata": "kept",
+    }
+    cycle = {
+        "msa": np.zeros((4, N), dtype=np.int32),
+        "has_deletion": np.zeros((4, N), dtype=np.float32),
+        "deletion_value": np.zeros((4, N), dtype=np.float32),
+        "msa_mask": np.ones((4, N), dtype=np.float32),
+    }
+    pruned = drop_sampled_msa_source_features(features, (cycle, cycle))
+    assert set(features) - set(pruned) == set(raw_names)
+    assert pruned["profile"] is features["profile"]
+    assert pruned["deletion_mean"] is features["deletion_mean"]
+    assert pruned["constraint_feature"] is features["constraint_feature"]
+    assert pruned["template_aatype"] is features["template_aatype"]
+    assert pruned["custom_metadata"] == "kept"
+
+    def physical_bytes(values):
+        return sum(
+            shard.data.size * shard.data.dtype.itemsize
+            for value in values
+            for shard in value.addressable_shards
+        )
+
+    for layout in ("1d", "2d"):
+        with context_parallel(4, layout=layout):
+            raw_placed = replicate_tree(features)
+            pruned_placed = replicate_tree(pruned)
+        for name in raw_names:
+            assert "P()" in str(raw_placed[name].sharding)
+            assert name not in pruned_placed
+        removed_bytes = physical_bytes([raw_placed[name] for name in raw_names])
+        assert removed_bytes > 0
+        assert set(pruned_placed) == set(pruned)
+        print(layout, removed_bytes)
+    print("CP_SAMPLED_MSA_PRUNE_OK")
+    """
+)
+
+
 def _run_probe(source: str, *, devices: int = 4) -> str:
     completed = subprocess.run(
         [sys.executable, "-c", source],
@@ -373,6 +434,10 @@ def test_cannon_holds_on_a_three_by_three_grid() -> None:
     grid that separates them.
     """
     assert "CANNON_PARITY_OK" in _run_probe(_CANNON_PROBE, devices=9)
+
+
+def test_sampled_raw_msa_never_reaches_cp_placement() -> None:
+    assert "CP_SAMPLED_MSA_PRUNE_OK" in _run_probe(_SAMPLED_MSA_PLACEMENT_PROBE)
 
 
 _WHOLE_MODEL_PROBE = textwrap.dedent(

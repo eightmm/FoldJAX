@@ -156,6 +156,7 @@ def _predict(
         opendde_infer_static,
     )
     from foldjax.models.opendde.models.msa_sampling import (
+        drop_sampled_msa_source_features,
         sample_opendde_msa_cycle_features,
     )
     from foldjax.models.protenix.chunking import resolve_chunk_config
@@ -170,6 +171,9 @@ def _predict(
             n_cycle=n_cycle,
             seed=seed,
         )
+    # The compiled wrapper places the entire feature tree on a CP mesh before
+    # JIT can dead-code-eliminate inputs superseded by these recycle samples.
+    model_features = drop_sampled_msa_source_features(features, sampled)
     if cp_shards > 1 and not graph_jit:
         raise ValueError(
             "context parallelism requires the compiled graph; "
@@ -214,8 +218,8 @@ def _predict(
     # site from that branch's own shape, which is the only place both the token
     # count and the head count are known. `--chunk-policy off` restores the
     # unbounded form.
-    n_residue = int(features["restype"].shape[-2])
-    preflight = _preflight_arena(features, trunk_dtype)
+    n_residue = int(model_features["restype"].shape[-2])
+    preflight = _preflight_arena(model_features, trunk_dtype)
     if preflight is not None:
         warnings.warn(preflight, RuntimeWarning, stacklevel=2)
     # The residue count, as upstream feeds it: OpenDDE resolves the threshold
@@ -246,7 +250,7 @@ def _predict(
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
     return infer(
-        features,
+        model_features,
         params,
         inference_noise_schedule(n_step=n_step),
         key=jax.random.PRNGKey(seed),
