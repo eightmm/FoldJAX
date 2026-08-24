@@ -26,10 +26,15 @@ from foldjax.models._graph import (
     merge_static_flags,
     split_static_flags,
 )
+from foldjax.models.protenix.models import model as model_impl
+from foldjax.models.protenix.models.heads.confidence import (
+    ConfidenceDistanceEmbeddingParams,
+)
 from foldjax.models.protenix.models.model import (
     GRAPH_STATIC_ARGNAMES,
     protenix_infer_static,
 )
+from foldjax.models.protenix.models.primitives.primitives import LinearParams
 
 
 class _Inner(NamedTuple):
@@ -104,6 +109,58 @@ def test_the_static_argnames_are_real_parameters():
 
 def test_the_chain_count_is_static():
     assert "n_chain" in GRAPH_STATIC_ARGNAMES
+
+
+class _ConfidenceOnly(NamedTuple):
+    distance_embedding: ConfidenceDistanceEmbeddingParams
+
+
+class _ModelOnly(NamedTuple):
+    confidence: _ConfidenceOnly
+
+
+def _confidence_only_params(*, contiguous: bool = True) -> _ModelOnly:
+    lower = jnp.asarray([0.0, 1.0, 2.0], dtype=jnp.float32)
+    upper = jnp.asarray(
+        [1.0, 2.0 if contiguous else 2.5, 3.0], dtype=jnp.float32
+    )
+    distance = ConfidenceDistanceEmbeddingParams(
+        lower_bins=lower,
+        upper_bins=upper,
+        linear_d=LinearParams(weight=jnp.ones((4, 3)), bias=jnp.zeros((4,))),
+        linear_d_wo_onehot=LinearParams(weight=jnp.ones((4, 1)), bias=None),
+    )
+    return _ModelOnly(confidence=_ConfidenceOnly(distance_embedding=distance))
+
+
+def test_compiled_wrapper_host_gates_a_static_compact_distance_flag(
+    monkeypatch,
+) -> None:
+    captured: list[bool] = []
+
+    def fake_compiled(*_args, **kwargs):
+        captured.append(kwargs["compact_confidence_distance_bins"])
+        return {}
+
+    monkeypatch.setattr(model_impl, "_compiled_protenix_infer", fake_compiled)
+    features = {"asym_id": jnp.asarray([0], dtype=jnp.int32)}
+    noise_schedule = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+
+    model_impl.protenix_infer_compiled(
+        features, _confidence_only_params(), noise_schedule
+    )
+    model_impl.protenix_infer_compiled(
+        features, _confidence_only_params(contiguous=False), noise_schedule
+    )
+    model_impl.protenix_infer_compiled(
+        features,
+        _confidence_only_params(),
+        noise_schedule,
+        compact_confidence_distance_bins=False,
+    )
+
+    assert "compact_confidence_distance_bins" in GRAPH_STATIC_ARGNAMES
+    assert captured == [True, False, False]
 
 
 def test_guidance_stays_on_the_eager_path():

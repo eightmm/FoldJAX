@@ -44,6 +44,7 @@ from foldjax.models.protenix.models.diffusion.atom import (
 from foldjax.models.protenix.models.diffusion.diffusion import DiffusionModuleParams
 from foldjax.models.protenix.models.heads.confidence import (
     ConfidenceHeadParams,
+    can_compact_confidence_distance_embedding,
     confidence_head,
 )
 from foldjax.models.protenix.models.heads.head import DistogramParams, distogram_head
@@ -501,6 +502,7 @@ def opendde_infer_static(
     # sample over N^2, which is not a small corner to leave behind.
     confidence_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
+    compact_confidence_distance_bins: bool = False,
     run_confidence: bool = True,
     #: Compute the released confidence summaries inside the graph. Off, the
     #: caller must reduce the raw logits on the host -- which forces the
@@ -859,6 +861,7 @@ def opendde_infer_static(
                 coordinates,
                 params.confidence,
                 use_embedding=use_confidence_embedding,
+                compact_distance_bins=compact_confidence_distance_bins,
                 use_scan=use_confidence_scan,
                 triangle_mul_chunk_size=triangle_mul_chunk_size,
                 triangle_att_q_chunk_size=triangle_att_q_chunk_size,
@@ -894,6 +897,7 @@ def opendde_infer_static(
 GRAPH_STATIC_ARGNAMES = (
     "atom_decoder_heads",
     "atom_encoder_heads",
+    "compact_confidence_distance_bins",
     "confidence_triangle_attention_backend",
     "cp_layout",
     "cp_shards",
@@ -981,6 +985,14 @@ def opendde_infer_compiled(
     _validate_static_structural_features(
         input_feature_dict,
         require_residue_confidence_mask=kwargs.get("run_confidence", True),
+    )
+    compact_requested = bool(kwargs.get("compact_confidence_distance_bins", True))
+    distance_params = getattr(
+        getattr(params, "confidence", None), "distance_embedding", None
+    )
+    kwargs["compact_confidence_distance_bins"] = (
+        compact_requested
+        and can_compact_confidence_distance_embedding(distance_params)
     )
     param_arrays, treedef, flags = split_static_flags(params)
     cp = int(kwargs.pop("cp_shards", 1))

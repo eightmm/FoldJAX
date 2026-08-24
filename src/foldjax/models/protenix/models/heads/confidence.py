@@ -7,6 +7,7 @@ from typing import NamedTuple
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
@@ -1134,19 +1135,129 @@ def confidence_one_hot(
     return ((x[..., None] > lower_bins) & (x[..., None] < upper_bins)).astype(x.dtype)
 
 
+def can_compact_confidence_distance_embedding(
+    params: ConfidenceDistanceEmbeddingParams | None,
+) -> bool:
+    """Return whether indexed bin projection is exact for concrete parameters.
+
+    This is deliberately a host-only predicate.  Released Protenix and OpenDDE
+    checkpoints use finite, adjacent open intervals, for which a distance can
+    select at most one column of ``linear_d``.  Custom parameters may overlap,
+    leave gaps, contain non-finite values, or rely on dense-dot IEEE behaviour;
+    those stay on the historical dense path.
+    """
+
+    if params is None:
+        return False
+    try:
+        arrays = (
+            params.lower_bins,
+            params.upper_bins,
+            params.linear_d.weight,
+        )
+        if any(isinstance(value, jax.core.Tracer) for value in arrays):
+            return False
+        lower, upper, weight = (
+            np.asarray(jax.device_get(value)) for value in arrays
+        )
+        bias = params.linear_d.bias
+        if isinstance(bias, jax.core.Tracer):
+            return False
+        bias_host = None if bias is None else np.asarray(jax.device_get(bias))
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+    def _floating(value: np.ndarray) -> bool:
+        try:
+            return bool(jnp.issubdtype(jnp.dtype(value.dtype), jnp.floating))
+        except TypeError:
+            return False
+
+    if (
+        lower.ndim != 1
+        or upper.ndim != 1
+        or lower.shape != upper.shape
+        or lower.size <= 1
+        or lower.dtype != upper.dtype
+        or not _floating(lower)
+        or not np.isfinite(lower).all()
+        or not np.isfinite(upper).all()
+        or not np.all(lower[1:] > lower[:-1])
+        or not np.all(upper > lower)
+        or not np.array_equal(upper[:-1], lower[1:])
+    ):
+        return False
+    if (
+        weight.ndim != 2
+        or weight.shape[1] != lower.size
+        or not _floating(weight)
+        or not np.isfinite(weight).all()
+    ):
+        return False
+    if bias_host is not None and (
+        bias_host.ndim != 1
+        or bias_host.shape[0] != weight.shape[0]
+        or not _floating(bias_host)
+        or not np.isfinite(bias_host).all()
+    ):
+        return False
+    return True
+
+
+def _compact_confidence_bin_projection(
+    distance: jnp.ndarray,
+    params: ConfidenceDistanceEmbeddingParams,
+) -> jnp.ndarray:
+    """Project one selected open-interval bin without an ``N x N x B`` tensor."""
+
+    lower = params.lower_bins
+    upper = params.upper_bins
+    index = jnp.searchsorted(lower, distance, side="left") - 1
+    safe_index = jnp.clip(index, 0, lower.shape[0] - 1)
+    valid = (
+        (index >= 0)
+        & (distance > lower[safe_index])
+        & (distance < upper[safe_index])
+    )
+
+    # ``linear`` stores weights as [out, in].  A dense dot over a one-hot row
+    # selects this same [out] row, while its multi-term reduction canonicalises
+    # a selected -0 to +0.  Preserve that last detail explicitly.
+    dtype = jnp.result_type(distance.dtype, params.linear_d.weight.dtype)
+    table = jnp.swapaxes(params.linear_d.weight, -1, -2).astype(dtype)
+    selected = table[safe_index]
+    positive_zero = jnp.asarray(0.0, dtype=dtype)
+    selected = jnp.where(selected == 0, positive_zero, selected)
+    projected = jnp.where(valid[..., None], selected, positive_zero)
+    if params.linear_d.bias is not None:
+        projected = projected + params.linear_d.bias
+    return projected
+
+
 def confidence_distance_embedding(
     x_pred_rep_coords: jnp.ndarray,
     params: ConfidenceDistanceEmbeddingParams,
+    *,
+    compact_bins: bool = False,
 ) -> jnp.ndarray:
-    """Embed representative-atom pair distances for ConfidenceHead."""
+    """Embed representative-atom pair distances for ConfidenceHead.
+
+    ``compact_bins=False`` preserves the public/direct dense implementation.
+    Production compiled wrappers enable the compact path only after validating
+    the concrete checkpoint with :func:`can_compact_confidence_distance_embedding`.
+    """
 
     coords = x_pred_rep_coords.astype(jnp.float32)
     diff = coords[..., :, None, :] - coords[..., None, :, :]
     distance = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1))
-    return linear(
-        confidence_one_hot(distance, params.lower_bins, params.upper_bins),
-        params.linear_d,
-    ) + linear(distance[..., None], params.linear_d_wo_onehot)
+    if compact_bins:
+        binned = _compact_confidence_bin_projection(distance, params)
+    else:
+        binned = linear(
+            confidence_one_hot(distance, params.lower_bins, params.upper_bins),
+            params.linear_d,
+        )
+    return binned + linear(distance[..., None], params.linear_d_wo_onehot)
 
 
 def confidence_output_logits(
@@ -1195,6 +1306,7 @@ def confidence_head_single_sample(
     params: ConfidenceHeadParams,
     *,
     use_embedding: bool = True,
+    compact_distance_bins: bool = False,
     use_scan: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
@@ -1218,6 +1330,7 @@ def confidence_head_single_sample(
         + confidence_distance_embedding(
             x_pred_rep_coords,
             params.distance_embedding,
+            compact_bins=compact_distance_bins,
         )
     )
     if params.pairformer_stack.blocks:
@@ -1255,6 +1368,7 @@ def confidence_head(
     params: ConfidenceHeadParams,
     *,
     use_embedding: bool = True,
+    compact_distance_bins: bool = False,
     use_scan: bool = True,
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
@@ -1291,6 +1405,7 @@ def confidence_head(
                 atom_to_tokatom_idx,
                 params,
                 use_embedding=use_embedding,
+                compact_distance_bins=compact_distance_bins,
                 use_scan=use_scan,
                 triangle_mul_chunk_size=triangle_mul_chunk_size,
                 triangle_att_q_chunk_size=triangle_att_q_chunk_size,

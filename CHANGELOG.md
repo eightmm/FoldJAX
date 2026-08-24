@@ -31,6 +31,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Protenix and OpenDDE confidence project released distance bins without a
+  quadratic one-hot.** Their shared head previously materialized
+  `[N_token, N_token, 39]` float indicators before a linear whose input has at
+  most one nonzero. Production compiled wrappers now validate the concrete
+  checkpoint's finite, strictly ordered, exactly adjacent open intervals and
+  finite projection before selecting the same weight row directly; direct API
+  calls retain the dense default, while custom parameters with overlapping,
+  gapped, malformed, or non-finite layouts fall back to it. Canonical finite,
+  adjacent custom layouts can use the compact path. Exact edges, out-of-range
+  and non-finite distances,
+  signed zero, FP32/BF16, both CP layouts, and wrapper cache identity are
+  regression-gated. With released weights, isolated full distance-embedding
+  CPU temporary memory fell from 519,100,644 to 24,144,488 bytes at 1,003
+  Protenix tokens, from 4,681,226,304 to 217,731,560 bytes at 3,012, and from
+  366,741,760 to 5,715,560 bytes at 488 OpenDDE tokens; output memory was
+  unchanged, and a 256-token Protenix warm median fell from 9.32 to 4.04 ms.
+  Full released confidence-head outputs were bitwise identical on CPU at the
+  default JAX matmul precision, but its total arena remains
+  Pairformer-dominated. These are CPU confidence-stage
+  measurements; released-weight end-to-end GPU numerical parity, latency, and
+  peak memory remain deployment gates.
+
 - **OpenFold3 confidence projects distance bins without a quadratic one-hot.**
   The confidence re-embedding previously materialized
   `[samples, N_token, N_token, 39]` float distance indicators only to pass each

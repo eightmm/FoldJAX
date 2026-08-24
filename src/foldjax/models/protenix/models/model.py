@@ -36,6 +36,7 @@ from foldjax.models.protenix.models.diffusion.diffusion import (
 )
 from foldjax.models.protenix.models.heads.confidence import (
     ConfidenceHeadParams,
+    can_compact_confidence_distance_embedding,
     confidence_head,
     confidence_scores_from_logits,
 )
@@ -157,6 +158,7 @@ def protenix_infer_static(
     #: already finished.
     confidence_triangle_attention_backend: str | None = None,
     use_confidence_embedding: bool = True,
+    compact_confidence_distance_bins: bool = False,
     run_confidence: bool = True,
     run_confidence_scores: bool = True,
     #: Whether the raw representations and full-bin logits are program outputs.
@@ -395,6 +397,7 @@ def protenix_infer_static(
                 sample_coordinates,
                 params.confidence,
                 use_embedding=use_confidence_embedding,
+                compact_distance_bins=compact_confidence_distance_bins,
                 use_scan=use_confidence_scan,
                 triangle_mul_chunk_size=triangle_mul_chunk_size,
                 triangle_att_q_chunk_size=triangle_att_q_chunk_size,
@@ -466,6 +469,7 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_encoder_heads",
     "centre_each_step",
     "confidence_triangle_attention_backend",
+    "compact_confidence_distance_bins",
     "cp_layout",
     "cp_shards",
     "diffusion_attention_backend",
@@ -558,6 +562,14 @@ def protenix_infer_compiled(
     if token_padding_mask is not None:
         asym_id = asym_id[jnp.asarray(token_padding_mask).astype(bool)]
     kwargs.setdefault("n_chain", int(jnp.max(asym_id)) + 1)
+    compact_requested = bool(kwargs.get("compact_confidence_distance_bins", True))
+    distance_params = getattr(
+        getattr(params, "confidence", None), "distance_embedding", None
+    )
+    kwargs["compact_confidence_distance_bins"] = (
+        compact_requested
+        and can_compact_confidence_distance_embedding(distance_params)
+    )
     param_arrays, treedef, flags = split_static_flags(params)
     model_features = traceable_features(input_feature_dict)
     if padded_generated_schema:

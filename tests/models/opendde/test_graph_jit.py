@@ -20,10 +20,15 @@ from foldjax.models._graph import (
     merge_static_flags,
     split_static_flags,
 )
+from foldjax.models.opendde.models import model as model_impl
 from foldjax.models.opendde.models.model import (
     GRAPH_STATIC_ARGNAMES,
     opendde_infer_static,
 )
+from foldjax.models.protenix.models.heads.confidence import (
+    ConfidenceDistanceEmbeddingParams,
+)
+from foldjax.models.protenix.models.primitives.primitives import LinearParams
 
 # The graph helpers moved to `foldjax.models._graph` when Protenix needed the
 # same three answers; these names keep the test reading as it was written.
@@ -139,6 +144,61 @@ def test_value_checks_can_be_skipped_for_tracing() -> None:
     assert "validate_feature_values" in signature.parameters
     assert signature.parameters["validate_feature_values"].default is True
     assert "validate_feature_values" in GRAPH_STATIC_ARGNAMES
+
+
+class _ConfidenceOnly(NamedTuple):
+    distance_embedding: ConfidenceDistanceEmbeddingParams
+
+
+class _ModelOnly(NamedTuple):
+    confidence: _ConfidenceOnly
+
+
+def _confidence_only_params(*, contiguous: bool = True) -> _ModelOnly:
+    lower = jnp.asarray([0.0, 1.0, 2.0], dtype=jnp.float32)
+    upper = jnp.asarray(
+        [1.0, 2.0 if contiguous else 2.5, 3.0], dtype=jnp.float32
+    )
+    distance = ConfidenceDistanceEmbeddingParams(
+        lower_bins=lower,
+        upper_bins=upper,
+        linear_d=LinearParams(weight=jnp.ones((4, 3)), bias=jnp.zeros((4,))),
+        linear_d_wo_onehot=LinearParams(weight=jnp.ones((4, 1)), bias=None),
+    )
+    return _ModelOnly(confidence=_ConfidenceOnly(distance_embedding=distance))
+
+
+def test_compiled_wrapper_reuses_the_host_gated_static_compact_flag(
+    monkeypatch,
+) -> None:
+    captured: list[bool] = []
+
+    monkeypatch.setattr(
+        model_impl,
+        "_validate_static_structural_features",
+        lambda *_args, **_kwargs: (1, 1, 1),
+    )
+
+    def fake_compiled(*_args, **kwargs):
+        captured.append(kwargs["compact_confidence_distance_bins"])
+        return {}
+
+    monkeypatch.setattr(model_impl, "_compiled_opendde_infer", fake_compiled)
+    noise_schedule = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+
+    model_impl.opendde_infer_compiled({}, _confidence_only_params(), noise_schedule)
+    model_impl.opendde_infer_compiled(
+        {}, _confidence_only_params(contiguous=False), noise_schedule
+    )
+    model_impl.opendde_infer_compiled(
+        {},
+        _confidence_only_params(),
+        noise_schedule,
+        compact_confidence_distance_bins=False,
+    )
+
+    assert "compact_confidence_distance_bins" in GRAPH_STATIC_ARGNAMES
+    assert captured == [True, False, False]
 
 
 @pytest.mark.parametrize(
