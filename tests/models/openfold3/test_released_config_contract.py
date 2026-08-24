@@ -4,9 +4,9 @@
 into :func:`released_config`. Nothing checked that the two sides named the same
 things, so adding ``returned_representations``/``stop_after_trunk`` to the
 backend without adding them to the constructor made *every* OpenFold3
-prediction fail with a ``TypeError`` before the model was reached. Weights are
-access-gated, so no test that runs a prediction can guard this; reading the two
-sources does, and costs nothing.
+prediction fail with a ``TypeError`` before the model was reached. This static
+contract catches the mismatch without requiring the optional multi-gigabyte p1
+checkpoint or running a prediction.
 """
 
 import ast

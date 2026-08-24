@@ -33,6 +33,17 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3 p1 is now a managed public download instead of being mislabeled
+  as access-gated.** Upstream's own p1 release path publishes
+  `of3_ft3_v1.pt` from an unsigned S3 bucket. The registry now pins that exact
+  2,288,027,095-byte checkpoint and its SHA-256, stages it atomically for direct
+  loading, and leaves it opt-in because the preprocessing extra is not part of
+  the base runtime. The Colab workflow fetches it automatically when OpenFold3
+  is selected while retaining an optional compatible-p1 path override. Current
+  upstream OpenBind v0.5 and older p2 checkpoints target newer architectures;
+  FoldJAX never substitutes them for its p1 port. AlphaFold 3 remains the only
+  carried model whose parameters must be supplied manually.
+
 - **OpenFold3 no longer forces the allocator to grow on demand, which is what
   made long targets fail.** Importing the port set
   `XLA_PYTHON_CLIENT_PREALLOCATE=false` process-wide, documented as stopping a
@@ -60,10 +71,11 @@ command predicts unless it says so here, in its own paragraph.
   Protenix and OpenDDE; model-specific requests preserve each backend's actual
   portable execution vocabulary before their reports are combined. ESMFold2 is
   identified as protein-only with a 26.35 GB complete public bundle. OpenFold3
-  and AlphaFold 3 accept user-provided weight paths and install their optional
-  preprocessing/runtime dependencies only when selected. Input entity types,
-  ligand representations, gated-weight readiness, and generated runtime state
-  are checked before public downloads begin. FoldJAX runs the large sessions
+  fetches the exact public p1 checkpoint and also accepts a compatible path
+  override; AlphaFold 3 accepts a user-provided parameter directory. Their
+  optional preprocessing/runtime dependencies install only when selected.
+  Input entity types, ligand representations, parameter readiness, and runtime
+  state are checked before public downloads begin. FoldJAX runs the large sessions
   sequentially, resumes verified work, preserves successful models
   when an in-scope failure is configured to continue, validates every emitted
   structure and finite score, and presents a native-score table plus an
@@ -1090,10 +1102,10 @@ command predicts unless it says so here, in its own paragraph.
   needed to trigger it and through both `foldjax predict --model openfold3`
   and `openfold3-jax-predict`. The backend passed the trunk-representation
   request into a constructor that had never been given the two parameters,
-  though `InferenceConfig` carried both fields already. Weights are
-  access-gated, so no test that runs a prediction could have caught it; the
-  gate that now does reads the two sources and asserts every key one passes is
-  a parameter the other accepts.
+  though `InferenceConfig` carried both fields already. The checkpoint was not
+  installed in the hermetic test environment, so no prediction test caught it;
+  the gate that now does reads the two sources and asserts every key one passes
+  is a parameter the other accepts.
 - **A run that stopped at the trunk still tried to write a structure.** The
   trunk graph returns before the sampler, so there are no coordinates:
   OpenFold3 raised `IndexError` reading an empty coordinate shape and ESMFold2

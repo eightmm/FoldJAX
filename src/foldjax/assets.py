@@ -1,9 +1,9 @@
 """Fetch, verify, stage, and resolve model assets.
 
 Upstreams publish several different formats. FoldJAX converts the torch
-archives used by Boltz-2, OpenDDE, and Protenix, stages ESMFold2's native
-safetensors bundle, and locates manually supplied AlphaFold 3/OpenFold3
-parameters. Managed checkpoint loading remains PyTorch-free.
+archives used by Boltz-2, OpenDDE, and Protenix, stages ESMFold2 and OpenFold3
+for direct loading, and locates manually supplied AlphaFold 3 parameters.
+Managed checkpoint loading remains PyTorch-free.
 
 Nothing here runs during prediction, and no file is redistributed — each is
 downloaded from its own publisher under that project's terms.
@@ -812,6 +812,45 @@ def _bring_your_own(model: str, source: Path) -> Path:
     return weights_dir(model)
 
 
+def _stage_single_published_file(
+    model: str,
+    source: Path,
+    *,
+    sources_already_verified: bool = False,
+    spec: ModelAssets | None = None,
+) -> Path:
+    """Atomically stage one publisher-native checkpoint for direct loading."""
+
+    spec = spec or assets_for(model)
+    if len(spec.downloads) != 1:
+        raise RuntimeError(f"{model} direct staging requires exactly one file")
+    item = spec.downloads[0]
+    origin = source / item.name
+    if not sources_already_verified and not _verified(origin, item):
+        raise RuntimeError(f"{model} source asset is incomplete: {origin}")
+
+    target = spec.native_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not target.is_symlink() and _same_file_contents(target, origin, item):
+            return target
+    except OSError:
+        pass
+
+    with tempfile.TemporaryDirectory(
+        prefix=".foldjax-stage-", dir=target.parent
+    ) as scratch:
+        staged = Path(scratch) / target.name
+        try:
+            os.link(origin, staged)
+        except OSError:
+            shutil.copy2(origin, staged)
+        if not _same_file_contents(staged, origin, item):
+            raise RuntimeError(f"{model} asset staging was incomplete: {origin}")
+        os.replace(staged, target)
+    return target
+
+
 _AF3_PARAMETER_PATTERNS = (
     re.compile(r"(?P<model>.*)\.(?P<index>\d+)\.bin\.zst$"),
     re.compile(r"(?P<model>.*)\.bin\.zst\.(?P<index>\d+)$"),
@@ -1469,22 +1508,37 @@ REGISTRY: dict[str, ModelAssets] = {
     "openfold3": ModelAssets(
         model="openfold3",
         source="https://github.com/aqlaboratory/openfold-3",
-        licence="Apache-2.0 for code and weights; the weight repository is gated",
-        # Empty on purpose, and for a different reason than AlphaFold 3's. These
-        # weights *are* redistributable -- Apache-2.0, with the training data
-        # published -- but the repository is access-gated: even its example
-        # config returns HTTP 401 unauthenticated. A download FoldJAX cannot
-        # authenticate would fail with a bare 401, which reads like a broken URL
-        # rather than an access request nobody has made yet.
-        downloads=(),
+        licence="Apache-2.0 for code and weights",
+        downloads=(
+            # OpenFold3 tag 0.3.1's own download script uses this unsigned
+            # bucket/key. Version 0.4 explicitly breaks p1 checkpoint
+            # compatibility, so this must not track upstream's moving default.
+            Download(
+                name="of3_ft3_v1.pt",
+                url=(
+                    "https://openfold.s3.amazonaws.com/"
+                    "openfold3_params/of3_ft3_v1.pt"
+                ),
+                sha256=(
+                    "aedd8f3eb814e3926c8974ef34c9499d"
+                    "f224443f173b7e396c97684da6e3eeb6"
+                ),
+                size=2_288_027_095,
+            ),
+        ),
         native="of3_ft3_v1.pt",
         requires=("of3_ft3_v1.pt",),
-        convert=_bring_your_own,
-        notes="Request access at https://huggingface.co/OpenFold/OpenFold3, then "
-        "put of3_ft3_v1.pt in this directory. The port reads the released "
-        "checkpoint directly with FoldJAX's built-in torch-archive reader, so "
-        "loading it needs no PyTorch installation. A "
-        "safetensors export can also be given to --weights.",
+        convert=_stage_single_published_file,
+        in_default_setup=False,
+        conversion_sources=("of3_ft3_v1.pt",),
+        conversion_schema="openfold3-public-p1-stage-v1",
+        notes="FoldJAX implements OpenFold3 p1 and fetches its exact public "
+        "of3_ft3_v1.pt checkpoint from the publisher's unsigned S3 bucket. "
+        "Upstream p2 and OpenBind v0.5 checkpoints target newer, incompatible "
+        "architectures and are not substituted. The port reads p1 directly "
+        "with FoldJAX's built-in torch-archive reader, so loading needs no "
+        "PyTorch installation. A compatible p1 file or safetensors export can "
+        "still be supplied explicitly with --weights.",
     ),
     "boltz2": ModelAssets(
         model="boltz2",
@@ -1795,9 +1849,10 @@ def _cleanup_abandoned_staging(model: str) -> None:
         candidates.extend(root.glob(f".foldjax-{model}-native-*"))
     elif model in _PROTENIX_PROFILE_BY_INTERNAL_MODEL:
         candidates.extend(root.glob(".foldjax-protenix-variant-*"))
-    elif model == "esmfold2":
+    elif model in {"esmfold2", "openfold3"}:
         candidates.extend(root.glob(".foldjax-stage-*"))
-        candidates.extend((root / "esmc").glob(".foldjax-stage-*"))
+        if model == "esmfold2":
+            candidates.extend((root / "esmc").glob(".foldjax-stage-*"))
     for candidate in candidates:
         if candidate.is_symlink() or candidate.is_file():
             candidate.unlink(missing_ok=True)
@@ -2123,6 +2178,8 @@ def _conversion_action(spec: ModelAssets) -> tuple[str, str]:
 
     if spec.convert is _stage_esmfold2:
         return "stage", "published safetensors for direct JAX loading"
+    if spec.convert is _stage_single_published_file:
+        return "stage", "publisher checkpoint for direct JAX loading"
     if spec.convert is _bring_your_own:
         return "direct", "publisher-native parameters for direct JAX loading"
     if spec.convert is _convert_boltz2:
@@ -2399,6 +2456,13 @@ def fetch(
                     sources_already_verified=True,
                     spec=spec,
                 )
+            elif spec.convert is _stage_single_published_file:
+                _stage_single_published_file(
+                    spec.model,
+                    downloads_dir(spec.model),
+                    sources_already_verified=True,
+                    spec=spec,
+                )
             elif spec.convert is _convert_protenix_variant:
                 _convert_protenix_variant(
                     spec.model,
@@ -2455,10 +2519,8 @@ def fetch(
                     # request. Reporting it as a failed conversion describes a step
                     # that never runs and hides the one thing the user has to do.
                     #
-                    # The reason differs per model and only `notes` knows it --
-                    # AlphaFold 3's parameters may not be redistributed at all,
-                    # while OpenFold3's are Apache-2.0 behind a gated repository.
-                    # Asserting either one here would be wrong for the other.
+                    # Only publisher policy belongs in `notes`; the shared
+                    # fallback must not invent a licence or access reason.
                     raise RuntimeError(
                         f"FoldJAX cannot fetch {spec.model}'s parameters; its "
                         f"publisher releases them only on request.\n{spec.notes}\n"

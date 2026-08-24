@@ -50,23 +50,19 @@ so vendoring OpenFold3 added no base dependency.
 
 ## Weights
 
-The published checkpoint is `of3_ft3_v1.pt`, and the code *and* weights are
-Apache-2.0 with the training data published — this is the most permissively
-licensed model FoldJAX carries. The **repository is access-gated**, though: even
-its example config returns HTTP 401 unauthenticated, so FoldJAX cannot fetch it
-for you.
+The checkpoint supported by this port is OpenFold3 p1's `of3_ft3_v1.pt`. The
+code and weights are Apache-2.0, and upstream publishes this exact p1 file from
+an unsigned S3 bucket. FoldJAX pins its size and SHA-256 before staging it:
 
 ```bash
-# Request access at https://huggingface.co/OpenFold/OpenFold3, then:
-store=$(foldjax home | python -c 'import json,sys; print(json.load(sys.stdin)["weights"])')
-mkdir -p "$store/openfold3"                         # `foldjax home` prints the rest
-cp of3_ft3_v1.pt "$store/openfold3/"
-foldjax weights list                                # openfold3 now reads `ready`
+foldjax weights fetch --model openfold3
+foldjax weights path --model openfold3
 ```
 
-`foldjax weights fetch --model openfold3` reports that the parameters are
-released only on request and names the directory to put them in, rather than
-failing with a bare 401.
+Upstream's current OpenBind v0.5 checkpoint and its older p2 checkpoint use
+newer architectures and are not compatible with FoldJAX's p1 port. They are
+therefore never silently substituted for `of3_ft3_v1.pt`. A compatible p1 file
+can still be passed explicitly with `--weights`.
 
 Nothing is converted: the port reads the released checkpoint directly with
 FoldJAX's restricted torch-archive reader. It reconstructs `.pt`/`.ckpt`

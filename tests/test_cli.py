@@ -440,15 +440,10 @@ def test_runtime_prepare_is_a_clean_noop_for_other_models(
     assert payload["setup"] is None
 
 
-def test_setup_fetches_what_is_public_and_instructs_for_the_rest(
+def test_setup_fetches_defaults_and_reports_opt_in_or_manual_models(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    """One command, and an honest account of what it could not do.
-
-    The two models whose publishers release parameters on request cannot be
-    fetched by anyone, so `setup` must not fail on them -- it reports the step
-    the user has to take. Its exit status is about the public downloads only.
-    """
+    """One command fetches defaults and reports every deliberate opt-in."""
     from foldjax import assets
     from foldjax.models.alphafold3 import build
 
@@ -470,7 +465,9 @@ def test_setup_fetches_what_is_public_and_instructs_for_the_rest(
     out = capsys.readouterr().out
     assert fetched == ["boltz2", "opendde", "protenix"], "only the public ones"
     assert "alphafold3  manual" in out and "Request the parameters" in out
-    assert "openfold3   manual" in out and "huggingface.co/OpenFold" in out
+    assert "openfold3   opt-in" in out
+    assert "foldjax weights fetch --model openfold3" in out
+    assert "public" in out and "of3_ft3_v1.pt" in out
     assert "runtime" in out
     assert "foldjax runtime prepare --model alphafold3" in out
     # The two modalities that need no weights still need an answer.

@@ -104,14 +104,10 @@ def foldjax_models() -> tuple[str, ...]:
 def test_registry_declares_what_each_model_needs() -> None:
     for name in assets.available():
         spec = assets.REGISTRY[name]
-        # Two models have nothing to download, for two different reasons, and
-        # both still need a registry entry so the store knows where the files
-        # belong. AlphaFold 3's parameters go only to applicants who accept
-        # DeepMind's terms. OpenFold3's are Apache-2.0 and redistributable, but
-        # the HuggingFace repository is access-gated, so an unauthenticated
-        # fetch would 401 -- which reads like a broken URL rather than an
-        # access request nobody has made.
-        if name not in ("alphafold3", "openfold3"):
+        # AlphaFold 3 still has nothing public to download, but needs a registry
+        # entry so the store knows where manually supplied parameters belong.
+        # OpenFold3 p1 is public through its publisher's unsigned S3 bucket.
+        if name != "alphafold3":
             assert spec.downloads, name
         assert spec.requires, name
         assert spec.licence and spec.source, name
@@ -672,14 +668,13 @@ def test_download_only_fully_verifies_conversion_sources(
     assert target.read_bytes() == payload
 
 
-@pytest.mark.parametrize("model", ["alphafold3", "openfold3"])
 def test_download_only_refuses_models_with_no_downloadable_parameters(
-    tmp_path: Path, monkeypatch, model: str
+    tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
 
     with pytest.raises(RuntimeError, match="no downloadable parameter files"):
-        assets.fetch(model, convert=False)
+        assets.fetch("alphafold3", convert=False)
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -1250,7 +1245,38 @@ def test_esmfold2_staging_atomically_repairs_a_partial_target(
     assert not list(target.parent.glob(".foldjax-stage-*"))
 
 
-@pytest.mark.parametrize("model", ["boltz2", "esmfold2", "opendde", "protenix"])
+def test_openfold3_public_checkpoint_is_staged_atomically(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    payload = b"public-openfold3-p1"
+    item = assets.Download(
+        name="of3_ft3_v1.pt",
+        url="https://example.invalid/of3_ft3_v1.pt",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    spec = dataclasses.replace(
+        assets.REGISTRY["openfold3"],
+        downloads=(item,),
+        conversion_sources=(item.name,),
+    )
+    source = paths.downloads_dir("openfold3") / item.name
+    source.parent.mkdir(parents=True)
+    source.write_bytes(payload)
+
+    target = assets._stage_single_published_file(
+        "openfold3", paths.downloads_dir("openfold3"), spec=spec
+    )
+
+    assert target == paths.weights_dir("openfold3") / item.name
+    assert target.read_bytes() == payload
+    assert not list(target.parent.glob(".foldjax-stage-*"))
+
+
+@pytest.mark.parametrize(
+    "model", ["boltz2", "esmfold2", "opendde", "openfold3", "protenix"]
+)
 def test_conversion_lock_cleans_only_known_abandoned_staging(
     tmp_path: Path, monkeypatch, model: str
 ) -> None:
@@ -1259,7 +1285,7 @@ def test_conversion_lock_cleans_only_known_abandoned_staging(
     root.mkdir(parents=True)
     if model == "boltz2":
         abandoned = root / ".foldjax-mols-dead"
-    elif model == "esmfold2":
+    elif model in {"esmfold2", "openfold3"}:
         abandoned = root / ".foldjax-stage-dead"
     else:
         abandoned = root / f".foldjax-{model}-native-dead"
@@ -1321,25 +1347,18 @@ def test_missing_managed_weights_do_not_request_a_removed_torch_extra(
     assert "torch-bridge" not in message
 
 
-@pytest.mark.parametrize(
-    ("model", "expected"),
-    [
-        ("alphafold3", "Request the parameters from DeepMind"),
-        ("openfold3", "Request access at https://huggingface.co/OpenFold/OpenFold3"),
-    ],
-)
-def test_manual_weight_resolution_gives_the_real_setup_step(
-    tmp_path: Path, monkeypatch, model: str, expected: str
+def test_manual_alphafold3_resolution_gives_the_real_setup_step(
+    tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
 
     with pytest.raises(FileNotFoundError) as error:
-        assets.resolve_weights(model)
+        assets.resolve_weights("alphafold3")
 
     message = str(error.value)
-    assert expected in message
+    assert "Request the parameters from DeepMind" in message
     assert "weights fetch" not in message
-    assert str(paths.weights_dir(model)) in message
+    assert str(paths.weights_dir("alphafold3")) in message
 
 
 def test_shared_assets_are_not_duplicated_per_model(
@@ -1381,6 +1400,34 @@ def test_download_verifies_the_published_hash(tmp_path: Path, monkeypatch) -> No
     # A second call is a no-op rather than a re-download.
     stamp = path.stat().st_mtime_ns
     assert assets.download(item, "protenix").stat().st_mtime_ns == stamp
+
+
+def test_openfold3_fetch_downloads_stages_and_records_public_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    payload = b"small stand-in for public p1 weights"
+    item = assets.Download(
+        name="of3_ft3_v1.pt",
+        url=_serve(tmp_path, payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+    )
+    spec = dataclasses.replace(
+        assets.REGISTRY["openfold3"],
+        downloads=(item,),
+        conversion_sources=(item.name,),
+    )
+    monkeypatch.setattr(
+        assets, "REGISTRY", {**assets.REGISTRY, "openfold3": spec}
+    )
+
+    result = assets.fetch("openfold3")
+
+    assert result == paths.weights_dir("openfold3") / item.name
+    assert result.read_bytes() == payload
+    assert assets._native_manifest_complete(spec)
+    assert assets.fetch("openfold3") == result
 
 
 def test_fresh_download_hashes_a_large_payload_only_once(
@@ -1560,25 +1607,45 @@ def test_fetching_a_non_redistributable_model_explains_itself(
     assert str(tmp_path) in message, "must say where to put the file"
 
 
-def test_fetching_a_gated_model_does_not_call_it_non_redistributable(
+def test_openfold3_registry_uses_the_publishers_public_p1_checkpoint(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The same code path serves two models whose reasons are opposite.
-
-    `fetch` used to assert "parameters are not redistributable" for anything
-    with no downloads. That is true of AlphaFold 3 and false of OpenFold3, whose
-    code *and* weights are Apache-2.0 with published training data -- what stops
-    an automatic download there is a gated repository, not a licence. The shared
-    sentence now says only that the publisher releases them on request, and the
-    model's own `notes` carry the reason.
-    """
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
-    with pytest.raises(RuntimeError) as error:
-        assets.fetch("openfold3")
+    spec = assets.assets_for("openfold3")
+
+    assert not spec.in_default_setup
+    assert spec.conversion_sources == ("of3_ft3_v1.pt",)
+    assert len(spec.downloads) == 1
+    checkpoint = spec.downloads[0]
+    assert checkpoint.name == "of3_ft3_v1.pt"
+    assert checkpoint.url == (
+        "https://openfold.s3.amazonaws.com/"
+        "openfold3_params/of3_ft3_v1.pt"
+    )
+    assert checkpoint.size == 2_288_027_095
+    assert checkpoint.sha256 == (
+        "aedd8f3eb814e3926c8974ef34c9499d"
+        "f224443f173b7e396c97684da6e3eeb6"
+    )
+    info = model_info("openfold3")
+    assert info.weights_fetchable
+    assert info.download_bytes == checkpoint.size
+    assert "OpenFold3 p1" in spec.notes
+    assert "incompatible" in spec.notes
+
+
+def test_openfold3_missing_weights_point_to_the_managed_fetch_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+
+    with pytest.raises(FileNotFoundError) as error:
+        assets.resolve_weights("openfold3")
+
     message = str(error.value)
-    assert "not redistributable" not in message
-    assert "huggingface.co/OpenFold/OpenFold3" in message
+    assert "foldjax weights fetch --model openfold3" in message
     assert "of3_ft3_v1.pt" in message
+    assert "Request access" not in message
 
 
 def test_the_cli_reports_an_unfetchable_model_without_a_traceback(

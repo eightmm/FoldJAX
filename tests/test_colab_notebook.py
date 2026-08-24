@@ -247,7 +247,12 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "sequential" in markdown.lower()
     assert "ColabFold MMseqs2" in markdown
     assert "ESMFold2 is protein-only" in markdown
-    assert "OpenFold3 and AlphaFold3 require parameters" in markdown
+    assert (
+        "OpenFold3's compatible p1 checkpoint is a public managed download"
+        in markdown
+    )
+    assert "p2/OpenBind checkpoints are not compatible" in markdown
+    assert "AlphaFold3 still requires parameters" in markdown
 
 
 def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
@@ -439,7 +444,7 @@ def test_colab_accepts_supplied_openfold3_weights_without_fetching(
         "openfold3",
         entity_types=("protein", "dna", "rna", "ligand"),
         features=("ligand_ccd", "ligand_smiles"),
-        fetchable=False,
+        fetchable=True,
         ready=False,
         weights_path=tmp_path / "managed" / "of3.pt",
     )
@@ -465,6 +470,44 @@ def test_colab_accepts_supplied_openfold3_weights_without_fetching(
 
     assert namespace["MODEL_WEIGHTS"] == {"openfold3": weights_path}
     assert calls == []
+
+
+def test_colab_fetches_public_openfold3_p1_when_no_override_is_supplied(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "openfold3",
+        entity_types=("protein", "dna", "rna", "ligand"),
+        features=("ligand_ccd", "ligand_smiles"),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "managed" / "of3_ft3_v1.pt",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    namespace = {
+        "SELECTED_MODELS": ("openfold3",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein", "ligand"}),
+        "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
+        "MANUAL_WEIGHT_TEXT": {"openfold3": ""},
+        "foldjax_home": tmp_path,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(
+            run=lambda *args, **kwargs: calls.append((args, kwargs))
+        ),
+        "sys": sys,
+    }
+
+    exec(_cell_source("fetch-weights"), namespace)
+
+    assert namespace["MODEL_WEIGHTS"] == {"openfold3": None}
+    assert len(calls) == 1
+    assert calls[0][0][0][-2:] == ["--model", "openfold3"]
 
 
 def test_colab_prediction_and_output_cells_execute_together(

@@ -476,6 +476,8 @@ The released config sets `fuse_projection_weights: false`, so real checkpoints
 are expected unfused; a test records that, and another builds a fully fused model
 from upstream's config and maps it, so neither path can rot unnoticed.
 
-Weights: `huggingface.co/OpenFold/OpenFold3`. Never committed here. **The repo is
-gated** — even the example config returns HTTP 401 unauthenticated, so loading
-real weights needs a HuggingFace account with access granted.
+Weights are never committed here. FoldJAX fetches the public p1
+`of3_ft3_v1.pt` from the publisher's unsigned
+`s3://openfold/openfold3_params/` bucket and verifies its pinned SHA-256. This
+port implements p1; upstream p2 and OpenBind v0.5 checkpoints use incompatible
+architectures and must not be substituted.

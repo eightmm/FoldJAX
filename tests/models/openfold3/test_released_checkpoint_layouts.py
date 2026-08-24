@@ -192,7 +192,7 @@ def test_the_released_checkpoint_really_stores_a_column_vector(
 
 
 def test_the_released_checkpoint_alias_group_is_completely_prunable() -> None:
-    """Gate the memory premise against the access-gated checkpoint when present."""
+    """Gate the memory premise against the optional released checkpoint."""
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
     from foldjax.models.openfold3.bridge.torch_mapping import (
         map_inference_params,

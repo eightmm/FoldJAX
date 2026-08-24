@@ -23,8 +23,9 @@ all carried inside the package:
 Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations
 that match their upstream's results; AlphaFold 3 is upstream's own source,
 vendored. Weights are never redistributed. `foldjax weights fetch` downloads
-and converts or stages public assets; AlphaFold 3 and gated OpenFold3 weights
-are supplied manually after accepting their publishers' terms.
+and converts or stages public assets, including the exact public OpenFold3 p1
+checkpoint; AlphaFold 3 weights are supplied manually after accepting their
+publisher's terms.
 
 Every advertised prediction path is Torch-free, including raw OpenFold3 jobs
 and Protenix ESM/ISM conditioning. Publisher `.pt` checkpoints are a file
@@ -82,13 +83,13 @@ example built around FoldJAX's common input API. A compact form accepts protein,
 DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
 carried models; the default sends the exact same two-chain job to Protenix and
 OpenDDE. ESMFold2 is marked protein-only with its 26.35 GB complete bundle,
-while OpenFold3 and AlphaFold 3 accept user-supplied parameter paths because
-FoldJAX cannot fetch their gated/licensed weights. Compatibility is checked
-before any download. The notebook keeps large model sessions sequential,
-records per-model failures without losing successful runs, and presents a
-comparison table plus an interactive structure selector. The final ZIP contains
-the common input, batch report, score table, structures, confidence artifacts,
-and reproducibility manifests for every run.
+while OpenFold3 uses its managed public p1 checkpoint (with an optional path
+override) and AlphaFold 3 accepts a user-supplied parameter directory.
+Compatibility is checked before any download. The notebook keeps large model
+sessions sequential, records per-model failures without losing successful runs,
+and presents a comparison table plus an interactive structure selector. The
+final ZIP contains the common input, batch report, score table, structures,
+confidence artifacts, and reproducibility manifests for every run.
 
 The notebook requires and checks Python 3.13, installs the pinned JAX 0.11.1
 and cuEquivariance 0.11.1 CUDA 12 runtime, shows checkpoint source/licence/size
@@ -498,8 +499,9 @@ the measurements:
 
 Upstreams publish several formats. `foldjax weights` downloads public files,
 checks their pinned size and SHA-256, converts Boltz-2/OpenDDE/Protenix once,
-stages ESMFold2's native safetensors, and locates manually supplied AlphaFold 3
-or OpenFold3 parameters. Managed checkpoint loading remains PyTorch-free.
+stages ESMFold2 and OpenFold3's publisher-native checkpoints, and locates
+manually supplied AlphaFold 3 parameters. Managed checkpoint loading remains
+PyTorch-free.
 
 ```bash
 uv run foldjax setup                            # default public models, in one go
@@ -523,8 +525,11 @@ OpenDDE, Protenix — plus shared CCD assets. ESMFold2 is public but deliberatel
 opt-in because its full structure+ESMC bundle is about 26 GB; fetch it with
 `foldjax weights fetch --model esmfold2`, or fetch only its 940 MB structure
 network with `--profile structure-only`, then pass that same profile to
-`foldjax predict`. AlphaFold 3 and OpenFold3 release parameters on
-request. MSA search needs nothing installed (ColabFold MMseqs2 server).
+`foldjax predict`. OpenFold3 is also opt-in: `foldjax weights fetch --model
+openfold3` downloads the public p1 checkpoint supported by this port. Upstream
+p2 and OpenBind v0.5 checkpoints target newer incompatible architectures.
+AlphaFold 3 releases parameters on request. MSA search needs nothing installed
+(ColabFold MMseqs2 server).
 
 ```
 ~/.cache/foldjax/          # or $FOLDJAX_HOME, or a .foldjax/ in the checkout,
