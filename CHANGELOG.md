@@ -31,6 +31,19 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **A Google Colab GPU quickstart now covers the complete first prediction.**
+  The notebook installs FoldJAX's pinned CUDA 12 JAX runtime from an immutable
+  repository revision, checks that JAX sees a GPU, downloads and verifies the
+  public Protenix bundle, builds a 76-residue protein job through the Python
+  API, predicts, prints confidence scores, renders the structure with py3Dmol,
+  and downloads the structure plus its run manifest. Its default fast-demo
+  schedule is explicitly labelled as 1 sample, 20 steps, and 1 recycle rather
+  than the released 5/200/10 schedule. Single-sequence mode does not contact an
+  additional MSA service; the notebook separately warns that Colab and saved
+  outputs are still hosted data. Optional Google Drive persistence preserves
+  the weight store across ephemeral sessions, while device-specific
+  compilation entries remain local.
+
 - **OpenFold3 projects template residue types before expanding them across token
   pairs.** The template pair embedder previously broadcast each
   `[N_template, N_token, 32]` input to

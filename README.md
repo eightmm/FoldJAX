@@ -6,6 +6,8 @@
 
 # FoldJAX
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/eightmm/FoldJAX/blob/main/notebooks/FoldJAX_Colab.ipynb)
+
 Biomolecular structure prediction in JAX. Six models behind one interface,
 all carried inside the package:
 
@@ -72,6 +74,11 @@ from that path rather than a redundant managed ESMC copy.
 measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md).*
 
 ## Installation
+
+For a no-local-setup GPU walkthrough, open the
+[Google Colab quickstart](notebooks/FoldJAX_Colab.ipynb). It installs the pinned
+CUDA 12 JAX runtime, prepares public Protenix weights, predicts a short protein,
+visualizes the structure, and downloads a reproducibility archive.
 
 ```bash
 uv sync --extra cuda13 --group dev
