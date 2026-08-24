@@ -122,41 +122,51 @@ def test_allocator_env_is_set_on_import() -> None:
 
 
 @requires_gpu
-def test_the_pool_is_actually_taken_up_front() -> None:
+def test_the_port_does_not_force_the_allocator_to_grow() -> None:
     """The absence assertion above is not enough on its own.
 
-    Removing the `PREALLOCATE=false` default leaves JAX's own default, and
-    measured on this version that is byte-identical to setting `"true"`:
-    88,108 MiB held either way against 586 MiB with preallocation off. But
-    "identical today" is an inherited property, not a stated one, and the
-    thing it decides is whether a 3,012-token run completes at all. If JAX
-    ever flips that default, the port silently regains a wall that took a
-    full cold-cache A/B to attribute.
+    Removing the `PREALLOCATE=false` default leaves JAX's own, and measured on
+    this version the two are byte-identical: 88,108 MiB held with the variable
+    unset and with it `"true"`, against 586 MiB with it off. But "identical
+    today" is inherited, not stated, and what it decides is whether a
+    3,012-token run completes at all. If JAX ever flips that default the port
+    silently regains a wall that took a full cold-cache A/B to attribute.
 
-    So assert the *effect* rather than the spelling. `pool_bytes` is the
-    discriminator -- 91,774,311,424 preallocated against 2,097,152 grown on
-    demand -- while `bytes_limit` reads the same under both and would pass a
-    test that never measured anything.
+    So assert the effect. Both arms are measured here rather than one compared
+    against a constant: an absolute floor conflates "preallocation is on" with
+    "the card is free", and this suite runs inside a process that has itself
+    taken most of the GPU -- the first version of this test passed alone and
+    failed in the suite, with the child preallocating a genuine 7.6 GiB that
+    was only 8.9% of a limit its parent had already claimed. The ratio is
+    immune to that: growth-on-demand seeds a nominal ~2 MiB pool whatever else
+    is running, so the shipped arm exceeds it by orders of magnitude even under
+    contention.
     """
     code = (
         "import foldjax.models.openfold3, jax, jax.numpy as jnp, json; "
         "jnp.zeros(1).block_until_ready(); "
         "s = jax.devices()[0].memory_stats() or {}; "
-        "print(json.dumps([s.get('pool_bytes'), s.get('bytes_limit')]))"
+        "print(json.dumps(s.get('pool_bytes')))"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=inherited_environment(),
-    )
-    pool, limit = json.loads(result.stdout.strip().splitlines()[-1])
-    assert pool is not None and limit, result.stdout
-    assert pool > 0.5 * limit, (
-        f"pool_bytes {pool} is only {pool / limit:.1%} of bytes_limit {limit}: "
-        "the allocator is growing on demand, which is what made OpenFold3 fail "
-        "at 3,012 tokens while the card still had room"
+
+    def pool(**overrides: str) -> int:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**inherited_environment(), **overrides},
+        )
+        value = json.loads(result.stdout.strip().splitlines()[-1])
+        assert value, result.stdout
+        return value
+
+    grown = pool(XLA_PYTHON_CLIENT_PREALLOCATE="false")
+    shipped = pool()
+    assert shipped > 100 * grown, (
+        f"the port's pool is {shipped} bytes against {grown} when preallocation "
+        "is explicitly off -- the same order, so it is growing on demand, which "
+        "is what made OpenFold3 fail at 3,012 tokens while the card had room"
     )
 
 
