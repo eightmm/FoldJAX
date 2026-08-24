@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -24,17 +25,19 @@ from foldjax.registry import get_backend
 
 ROOT = Path(__file__).parents[1]
 NOTEBOOK = ROOT / "notebooks" / "FoldJAX_Colab.ipynb"
-COLAB_STACK = {
+COLAB_COMMON_STACK = {
     "cuequivariance": "0.11.1",
     "cuequivariance-jax": "0.11.1",
-    "cuequivariance-ops-cu12": "0.11.1",
-    "cuequivariance-ops-jax-cu12": "0.11.1",
     "flax": "0.12.9",
-    "jax-cuda12-pjrt": "0.11.1",
-    "jax-cuda12-plugin": "0.11.1",
     "jaxlib": "0.11.1",
     "qwix": "0.1.8",
     "tokamax": "0.0.13",
+}
+COLAB_CUDA_STACK = {
+    "cuequivariance-ops-cu12": "0.11.1",
+    "cuequivariance-ops-jax-cu12": "0.11.1",
+    "jax-cuda12-pjrt": "0.11.1",
+    "jax-cuda12-plugin": "0.11.1",
     "triton": "3.7.1",
 }
 
@@ -56,7 +59,25 @@ def _cell_source(cell_id: str) -> str:
     return _source(next(cell for cell in _document()["cells"] if cell["id"] == cell_id))
 
 
-def test_colab_notebook_is_clean_gpu_workflow() -> None:
+def _cell_function(cell_id: str, function_name: str):
+    tree = ast.parse(_cell_source(cell_id))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {
+        "os": __import__("os"),
+        "Path": Path,
+        "shutil": shutil,
+        "subprocess": subprocess,
+    }
+    exec(compile(module, str(NOTEBOOK), "exec"), namespace)
+    return namespace[function_name]
+
+
+def test_colab_notebook_is_clean_accelerator_workflow() -> None:
     document = _document()
 
     assert document["nbformat"] == 4
@@ -79,33 +100,37 @@ def test_colab_notebook_is_clean_gpu_workflow() -> None:
     assert ids.index("view-structures") < ids.index("download-results")
 
 
-def test_colab_notebook_installs_supported_cuda_runtime_before_imports() -> None:
+def test_colab_notebook_installs_the_detected_accelerator_runtime() -> None:
     install = _cell_source("install-foldjax")
     all_source = "\n".join(_source(cell) for cell in _code_cells())
 
-    assert 'FOLDJAX_REF = "7ad6d59db0e52c1670eda7505b9b5d123fc74664"' in install
-    assert 'install_extras = ["cuda12"]' in install
+    assert 'FOLDJAX_REF = "8f3ebac133fb44ee1b7565573fdb5bea2faf1c8d"' in install
+    assert 'install_extras = ["cuda12"] if ACCELERATOR_KIND == "gpu" else []' in install
     assert 'install_extras.append("alphafold3")' in install
     assert 'install_extras.append("openfold3-preprocess")' in install
     assert "','.join(install_extras)" in install
     assert "install_profile" in install
+    assert '(ACCELERATOR_KIND, *install_extras)' in install
     assert "FoldJAX.git@{FOLDJAX_REF}" in install
+    assert 'jax[tpu]=={JAX_VERSION}' in install
     assert '"py3Dmol>=2.0,<3"' in install
     assert all_source.index('"pip"') < all_source.index("import jax")
     assert 'sys.version_info[:2] != (3, 13)' in install
-    assert 'install_marker.unlink(missing_ok=True)' in install
+    assert 'Path("/dev/accel0").exists()' in install
     assert 'shutil.which("nvidia-smi")' in install
+    assert '["nvidia-smi", "-L"]' in install
     assert '"Dependencies installed"' in install
     assert "The runtime will restart once" in install
     assert "signal.SIGKILL" in install
     assert "XLA_PYTHON_CLIENT_MEM_FRACTION" in all_source
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND" in all_source
     assert "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND" in all_source
-    assert 'jax.__version__ != "0.11.1"' in all_source
+    assert "jax.__version__ != JAX_VERSION" in all_source
     assert "metadata.PackageNotFoundError" in all_source
-    for package, version in COLAB_STACK.items():
+    for package, version in (COLAB_COMMON_STACK | COLAB_CUDA_STACK).items():
         assert f'"{package}": "{version}"' in all_source
-    assert 'device.platform == "gpu"' in all_source
+    assert 'device.platform == ACCELERATOR_KIND' in all_source
+    assert 'required_packages.add("libtpu")' in all_source
 
 
 def test_colab_install_stops_before_pip_on_wrong_python(monkeypatch) -> None:
@@ -132,6 +157,84 @@ def test_colab_install_stops_before_pip_on_wrong_python(monkeypatch) -> None:
     assert calls == []
 
 
+def test_colab_tpu_install_assembles_the_libtpu_stack(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    source = _cell_source("install-foldjax").replace(
+        'f"/content/.foldjax-colab-',
+        f'f"{tmp_path}/.foldjax-colab-',
+    )
+    monkeypatch.setenv("TPU_ACCELERATOR_TYPE", "v5e-1")
+    monkeypatch.setattr(
+        subprocess,
+        "check_call",
+        lambda command: calls.append(tuple(command)),
+    )
+    os_module = __import__("os")
+    monkeypatch.setattr(os_module, "kill", lambda *_args: None)
+
+    namespace = {
+        "SELECTED_MODELS": ("openfold3",),
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+    exec(source, namespace)
+
+    assert namespace["ACCELERATOR_KIND"] == "tpu"
+    assert len(calls) == 1
+    assert "jax[tpu]==0.11.1" in calls[0]
+    assert any("foldjax[openfold3-preprocess]" in argument for argument in calls[0])
+    assert not any("cuda12" in argument for argument in calls[0])
+
+
+def test_colab_accelerator_detection_prefers_tpu_markers(monkeypatch) -> None:
+    monkeypatch.setenv("TPU_ACCELERATOR_TYPE", "v5e-1")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+
+    detect_accelerator = _cell_function("install-foldjax", "detect_accelerator")
+
+    assert detect_accelerator() == "tpu"
+
+
+def test_colab_accelerator_detection_requires_a_working_gpu_probe(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("COLAB_TPU_ADDR", raising=False)
+    monkeypatch.delenv("TPU_NAME", raising=False)
+    monkeypatch.delenv("TPU_ACCELERATOR_TYPE", raising=False)
+    monkeypatch.setattr(Path, "exists", lambda _path: False)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="GPU 0\n"),
+    )
+
+    detect_accelerator = _cell_function("install-foldjax", "detect_accelerator")
+
+    assert detect_accelerator() == "gpu"
+
+
+def test_colab_accelerator_detection_rejects_an_unusable_gpu_probe(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("COLAB_TPU_ADDR", raising=False)
+    monkeypatch.delenv("TPU_NAME", raising=False)
+    monkeypatch.delenv("TPU_ACCELERATOR_TYPE", raising=False)
+    monkeypatch.setattr(Path, "exists", lambda _path: False)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
+
+    detect_accelerator = _cell_function("install-foldjax", "detect_accelerator")
+
+    with pytest.raises(RuntimeError, match="No supported accelerator"):
+        detect_accelerator()
+
+
 def test_colab_runtime_matches_the_root_project_contract() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -144,10 +247,16 @@ def test_colab_gpu_check_executes_with_the_pinned_stack(
 ) -> None:
     from importlib import metadata
 
-    device = SimpleNamespace(platform="gpu")
+    cards = []
+    device = SimpleNamespace(
+        platform="gpu",
+        device_kind="NVIDIA test GPU",
+        memory_stats=lambda: {"bytes_limit": 16 * 2**30},
+    )
     monkeypatch.setattr(jax, "__version__", "0.11.1")
     monkeypatch.setattr(jax, "devices", lambda: [device])
-    monkeypatch.setattr(metadata, "version", COLAB_STACK.__getitem__)
+    stack = COLAB_COMMON_STACK | COLAB_CUDA_STACK
+    monkeypatch.setattr(metadata, "version", stack.__getitem__)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -157,14 +266,91 @@ def test_colab_gpu_check_executes_with_the_pinned_stack(
     )
 
     exec(
-        _cell_source("check-gpu"),
+        _cell_source("check-accelerator"),
         {
+            "ACCELERATOR_KIND": "gpu",
+            "JAX_VERSION": "0.11.1",
             "install_marker": tmp_path / "installed",
             "subprocess": subprocess,
             "sys": sys,
-            "foldjax_card": lambda *_args, **_kwargs: None,
+            "foldjax_card": lambda *args, **kwargs: cards.append((args, kwargs)),
         },
     )
+
+    assert any("16.0 GiB VRAM" in str(card) for card in cards)
+
+
+def test_colab_tpu_check_executes_without_querying_nvidia(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    cards = []
+    device = SimpleNamespace(
+        platform="tpu",
+        device_kind="TPU v5e",
+        memory_stats=lambda: {"bytes_limit": 16 * 2**30},
+    )
+    monkeypatch.setattr(jax, "__version__", "0.11.1")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(
+        metadata,
+        "version",
+        lambda package: (
+            "0.0.46" if package == "libtpu" else COLAB_COMMON_STACK[package]
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("TPU verification queried nvidia-smi"),
+    )
+
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "JAX_VERSION": "0.11.1",
+        "install_marker": tmp_path / "installed",
+        "subprocess": subprocess,
+        "sys": sys,
+        "foldjax_card": lambda *args, **kwargs: cards.append((args, kwargs)),
+    }
+    exec(_cell_source("check-accelerator"), namespace)
+
+    assert namespace["DEVICE_MEMORY_BYTES"] == 16 * 2**30
+    assert any("16.0 GiB HBM" in str(card) for card in cards)
+
+
+def test_colab_accelerator_check_reports_unavailable_capacity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    cards = []
+    device = SimpleNamespace(
+        platform="tpu", device_kind="TPU", memory_stats=lambda: None
+    )
+    monkeypatch.setattr(jax, "__version__", "0.11.1")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(
+        metadata,
+        "version",
+        lambda package: (
+            "0.0.46" if package == "libtpu" else COLAB_COMMON_STACK[package]
+        ),
+    )
+
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "JAX_VERSION": "0.11.1",
+        "install_marker": tmp_path / "installed",
+        "subprocess": subprocess,
+        "sys": sys,
+        "foldjax_card": lambda *args, **kwargs: cards.append((args, kwargs)),
+    }
+    exec(_cell_source("check-accelerator"), namespace)
+
+    assert namespace["DEVICE_MEMORY_BYTES"] is None
+    assert any("capacity unavailable" in str(card) for card in cards)
 
 
 def test_colab_gpu_check_clears_marker_before_reinstall(
@@ -174,15 +360,20 @@ def test_colab_gpu_check_clears_marker_before_reinstall(
 
     marker = tmp_path / "installed"
     marker.write_text("stale", encoding="utf-8")
-    device = SimpleNamespace(platform="gpu")
+    device = SimpleNamespace(
+        platform="gpu", device_kind="GPU", memory_stats=lambda: {}
+    )
     monkeypatch.setattr(jax, "__version__", "0.11.0")
     monkeypatch.setattr(jax, "devices", lambda: [device])
-    monkeypatch.setattr(metadata, "version", COLAB_STACK.__getitem__)
+    stack = COLAB_COMMON_STACK | COLAB_CUDA_STACK
+    monkeypatch.setattr(metadata, "version", stack.__getitem__)
 
     with pytest.raises(RuntimeError, match="reinstall the stack"):
         exec(
-            _cell_source("check-gpu"),
+            _cell_source("check-accelerator"),
             {
+                "ACCELERATOR_KIND": "gpu",
+                "JAX_VERSION": "0.11.1",
                 "install_marker": marker,
                 "subprocess": subprocess,
                 "sys": sys,
@@ -248,8 +439,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "native score" in markdown.lower()
     assert "sequential" in markdown.lower()
     assert "ColabFold MMseqs2" in markdown
-    assert "Upstream ESMFold2 supports all biomolecules" in markdown
-    assert "current FoldJAX feature adapter still accepts protein jobs only" in markdown
+    assert "ESMFold2 accepts protein, DNA, RNA" in markdown
+    assert "structure+ESMC+chemistry bundle is about 26.77 GB" in markdown
     assert (
         "OpenFold3's compatible p1 checkpoint is a public managed download"
         in markdown
@@ -270,7 +461,7 @@ def test_colab_notebook_renders_a_guided_workflow_instead_of_raw_logs() -> None:
         "configure-run",
         "install-foldjax",
         "configure-runtime",
-        "check-gpu",
+        "check-accelerator",
         "fetch-weights",
         "build-job",
         "run-predictions",
@@ -286,7 +477,7 @@ def test_colab_notebook_renders_a_guided_workflow_instead_of_raw_logs() -> None:
         "RUNTIME · STORAGE",
         "CHECKPOINTS · COMPATIBILITY",
         "ONE INPUT · MANY MODELS",
-        "EXECUTION · SEQUENTIAL GPU SESSIONS",
+        "EXECUTION · SEQUENTIAL ACCELERATOR SESSIONS",
         "ANALYSIS · NATIVE SCORES",
         "VISUALIZATION · STRUCTURE EXPLORER",
         "EXPORT · REPRODUCIBLE BUNDLE",
@@ -300,12 +491,144 @@ def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
 
 
 @pytest.mark.parametrize(
+    ("accelerator", "multiplication_backend", "attention_backend", "profile"),
+    (
+        ("gpu", "cueq", "cueq_jit", "CUDA fused"),
+        ("tpu", "xla", "xla_jit", "portable XLA"),
+    ),
+)
+def test_colab_configures_accelerator_specific_kernels(
+    accelerator: str,
+    multiplication_backend: str,
+    attention_backend: str,
+    profile: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _cell_source("configure-runtime")
+    source = source.replace(
+        'WORK_DIR = Path("/content/foldjax-colab")',
+        f'WORK_DIR = Path({str(tmp_path / "work")!r})',
+    )
+    source = source.replace(
+        'foldjax_home = Path("/content/foldjax-cache")',
+        f'foldjax_home = Path({str(tmp_path / "cache")!r})',
+    )
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
+    namespace = {
+        "ACCELERATOR_KIND": accelerator,
+        "JOB_SLUG": "job",
+        "RUN_LABEL": "fast-demo",
+        "PERSIST_WEIGHTS_TO_DRIVE": False,
+        "Path": Path,
+        "os": __import__("os"),
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+
+    exec(source, namespace)
+
+    assert namespace["KERNEL_PROFILE"] == profile
+    assert (
+        namespace["os"].environ["PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND"]
+        == multiplication_backend
+    )
+    assert (
+        namespace["os"].environ["BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"]
+        == multiplication_backend
+    )
+    assert (
+        namespace["os"].environ["PROTENIX_TRIANGLE_BACKEND"]
+        == attention_backend
+    )
+    assert (
+        ("XLA_PYTHON_CLIENT_MEM_FRACTION" in namespace["os"].environ)
+        is (accelerator == "gpu")
+    )
+
+
+@pytest.mark.parametrize(
+    ("accelerator", "triangle_kernel", "alphafold_attention"),
+    (
+        ("gpu", "cueq", "auto"),
+        ("tpu", "xla", "xla"),
+    ),
+)
+def test_colab_plans_all_model_kernels_for_the_accelerator(
+    accelerator: str,
+    triangle_kernel: str,
+    alphafold_attention: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    models = (
+        "protenix",
+        "opendde",
+        "boltz2",
+        "esmfold2",
+        "openfold3",
+        "alphafold3",
+    )
+
+    def fake_resolve(request: PredictionRequest):
+        return (
+            SimpleNamespace(
+                model=request.model,
+                input=request.input,
+                output_dir=request.output_dir,
+                resolved_seeds=(0,),
+                options=request.options,
+                sampling=request.sampling,
+            ),
+    )
+
+    monkeypatch.setattr(foldjax, "resolve_requests", fake_resolve)
+    job_path = tmp_path / "job.json"
+    job_path.write_text("{}", encoding="utf-8")
+    namespace = {
+        "ACCELERATOR_KIND": accelerator,
+        "SELECTED_MODELS": models,
+        "JOB_SLUG": "job",
+        "job_path": job_path,
+        "MODEL_WEIGHTS": dict.fromkeys(models),
+        "OUTPUT_ROOT": tmp_path / "outputs",
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "NUM_SEEDS": 1,
+        "MSA_POLICY": "none",
+        "CONTINUE_ON_ERROR": True,
+        "FAST_SCHEDULE": {},
+        "Path": Path,
+        "pd": __import__("pandas"),
+        "foldjax_table": lambda *_args, **_kwargs: None,
+    }
+
+    exec(_cell_source("plan-runs"), namespace)
+
+    options = namespace["MODEL_OPTIONS"]
+    assert options == {
+        "protenix": {
+            "attention_kernel": "xla",
+            "triangle_kernel": triangle_kernel,
+        },
+        "opendde": {"dtype": "float32", "attention_kernel": "xla"},
+        "boltz2": {
+            "attention_kernel": "xla",
+            "triangle_kernel": triangle_kernel,
+        },
+        "esmfold2": {},
+        "openfold3": {"triangle_kernel": triangle_kernel},
+        "alphafold3": {"attention_kernel": alphafold_attention},
+    }
+    assert namespace["MODEL_PRECISION"]["protenix"] == "native bfloat16"
+    assert namespace["MODEL_PRECISION"]["boltz2"] == "native bfloat16"
+    assert namespace["MODEL_PRECISION"]["openfold3"] == "float32"
+
+
+@pytest.mark.parametrize(
     ("model_name", "options"),
     (
         (
             "protenix",
             {
-                "dtype": "float32",
                 "attention_kernel": "xla",
                 "triangle_kernel": "xla",
             },
@@ -314,7 +637,6 @@ def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
         (
             "boltz2",
             {
-                "dtype": "float32",
                 "attention_kernel": "xla",
                 "triangle_kernel": "xla",
             },
@@ -322,6 +644,16 @@ def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
         ("esmfold2", {}),
         ("openfold3", {"triangle_kernel": "xla"}),
         ("alphafold3", {"attention_kernel": "xla"}),
+        (
+            "protenix",
+            {"attention_kernel": "xla", "triangle_kernel": "cueq"},
+        ),
+        (
+            "boltz2",
+            {"attention_kernel": "xla", "triangle_kernel": "cueq"},
+        ),
+        ("openfold3", {"triangle_kernel": "cueq"}),
+        ("alphafold3", {"attention_kernel": "auto"}),
     ),
 )
 def test_colab_model_specific_request_options_are_supported(
@@ -451,42 +783,51 @@ def _notebook_ui(*, tables: list | None = None) -> dict:
     }
 
 
-def test_colab_rejects_esmfold2_nonprotein_input_before_download(
+def test_colab_accepts_esmfold2_all_biomolecule_input(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
     _patch_ipython_display(monkeypatch)
     info = _fake_model_info(
         "esmfold2",
-        entity_types=("protein",),
+        entity_types=("protein", "dna", "rna", "ligand"),
+        features=(
+            "unpaired_msa",
+            "modifications",
+            "ligand_ccd",
+            "ligand_smiles",
+            "bonds",
+        ),
         fetchable=True,
         ready=False,
         weights_path=tmp_path / "esmfold2.safetensors",
     )
     monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    exec(
+        _cell_source("fetch-weights"),
+        {
+            "SELECTED_MODELS": ("esmfold2",),
+            "INPUT_ENTITY_TYPES": frozenset({"protein", "dna", "rna", "ligand"}),
+            "INPUT_REQUIRED_FEATURES": frozenset(
+                {"modifications", "ligand_ccd", "bonds"}
+            ),
+            "MANUAL_WEIGHT_TEXT": {},
+            "foldjax_home": tmp_path,
+            "Path": Path,
+            "display": lambda *_args: None,
+            "shutil": SimpleNamespace(
+                disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+            ),
+            "subprocess": SimpleNamespace(
+                run=lambda *args, **kwargs: calls.append((args, kwargs))
+            ),
+            "sys": sys,
+            **_notebook_ui(),
+        },
+    )
 
-    with pytest.raises(RuntimeError, match="esmfold2 cannot represent"):
-        exec(
-            _cell_source("fetch-weights"),
-            {
-                "SELECTED_MODELS": ("esmfold2",),
-                "INPUT_ENTITY_TYPES": frozenset({"protein", "dna"}),
-                "INPUT_REQUIRED_FEATURES": frozenset(),
-                "MANUAL_WEIGHT_TEXT": {},
-                "foldjax_home": tmp_path,
-                "display": lambda *_args: None,
-                "shutil": SimpleNamespace(
-                    disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
-                ),
-                "subprocess": SimpleNamespace(
-                    run=lambda *args, **kwargs: calls.append((args, kwargs))
-                ),
-                "sys": sys,
-                **_notebook_ui(),
-            },
-        )
-
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0][0][0][-2:] == ["--model", "esmfold2"]
 
 
 def test_colab_accepts_supplied_openfold3_weights_without_fetching(
@@ -568,6 +909,44 @@ def test_colab_fetches_public_openfold3_p1_when_no_override_is_supplied(
     assert calls[0][0][0][-2:] == ["--model", "openfold3"]
 
 
+def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "openfold3",
+        entity_types=("protein", "dna", "rna", "ligand"),
+        features=("ligand_ccd", "ligand_smiles"),
+        fetchable=True,
+        ready=True,
+        weights_path=tmp_path / "managed" / "of3_ft3_v1.pt",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    namespace = {
+        "SELECTED_MODELS": ("openfold3",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "MANUAL_WEIGHT_TEXT": {"openfold3": ""},
+        "foldjax_home": tmp_path,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(
+            run=lambda *args, **kwargs: calls.append((args, kwargs))
+        ),
+        "sys": sys,
+        **_notebook_ui(),
+    }
+
+    exec(_cell_source("fetch-weights"), namespace)
+
+    assert namespace["MODEL_WEIGHTS"] == {"openfold3": None}
+    assert calls == []
+
+
 def test_colab_prediction_and_output_cells_execute_together(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -639,6 +1018,7 @@ def test_colab_prediction_and_output_cells_execute_together(
             "OUTPUT_ROOT": tmp_path / "outputs",
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "MODEL_WEIGHTS": {"protenix": None, "opendde": None},
+            "ACCELERATOR_KIND": "tpu",
         }
     )
     exec(_cell_source("build-job"), namespace)
@@ -648,7 +1028,6 @@ def test_colab_prediction_and_output_cells_execute_together(
 
     assert tuple(request.model for request in seen) == ("protenix", "opendde")
     assert seen[0].options == {
-        "dtype": "float32",
         "attention_kernel": "xla",
         "triangle_kernel": "xla",
     }
@@ -790,5 +1169,5 @@ def test_readme_links_to_and_explains_the_colab_workflow() -> None:
     assert "predict_batch" in readme
     assert "protein, DNA, RNA, CCD ligands, and SMILES ligands" in prose
     assert "is an all-biomolecule model" in readme
-    assert "That is a FoldJAX coverage gap" in prose
+    assert "FoldJAX ports that input contract without Torch" in prose
     assert "OpenFold3" in readme

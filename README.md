@@ -43,15 +43,15 @@ random initial pair state, per-loop language-model dropout, sampler noise — so
 two seeds give genuinely different structures rather than the same structure
 twice. **[Upstream ESMFold2](https://github.com/Biohub/esm/blob/main/esm/models/esmfold2/prepare_input.py)
 is an all-biomolecule model**: its released input pipeline supports proteins,
-DNA, RNA, small-molecule ligands, and modified residues. FoldJAX currently ports
-only its protein feature adapter, using
-in-package canonical chemistry; non-protein jobs are therefore rejected here
-until the upstream all-biomolecule featurizer is ported to NumPy/JAX. That is a
-FoldJAX coverage gap, not a limitation of ESMFold2 itself.
+DNA, RNA, small-molecule ligands, and modified residues. FoldJAX ports that
+input contract without Torch: standard polymers, CCD and SMILES ligands,
+modified residues, and explicit covalent bonds are featurized in NumPy from
+the verified Biohub CCD snapshot. Protein-only jobs retain the established
+in-package fast path.
 
 The complete released ESMFold2 profile is the compatible default. To run the
 explicit structure-network-only variant without downloading ESMC-6B, fetch its
-940 MB profile and select the same profile for prediction:
+1.36 GB structure+chemistry profile and select the same profile for prediction:
 
 ```bash
 foldjax weights fetch --model esmfold2 --profile structure-only
@@ -64,7 +64,7 @@ native options are rejected instead of silently overriding the profile.
 The older explicit option still selects that managed profile automatically
 when weights are omitted. Without either spelling, FoldJAX still requires the complete
 structure+ESMC release and never silently falls back to a different model.
-An explicit `esmc_weights=/path/to/esmc` also selects the 940 MB managed
+An explicit `esmc_weights=/path/to/esmc` also selects the 1.36 GB managed
 profile: the released language-model branch still runs, but its weights come
 from that path rather than a redundant managed ESMC copy.
 
@@ -81,15 +81,16 @@ measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md)
 
 ### Google Colab: compare models from one input
 
-The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) is a practical GPU
-example built around FoldJAX's common input API. A compact form accepts protein,
+The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) detects a selected
+NVIDIA GPU or TPU runtime and configures FoldJAX around its common input API.
+A compact form accepts protein,
 DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
 carried models; the default sends the exact same two-chain job to Protenix and
-OpenDDE. ESMFold2 is correctly described as an upstream all-biomolecule model
-whose current FoldJAX feature adapter still exposes protein jobs only; its
-complete bundle is 26.35 GB. OpenFold3 uses its managed public p1 checkpoint
-(with an optional path override), and AlphaFold 3 accepts a user-supplied
-parameter directory.
+OpenDDE. ESMFold2 accepts the same protein, DNA, RNA, ligand, modification, and
+covalent-bond schema; its complete public structure+ESMC+chemistry bundle is
+26.77 GB. OpenFold3 downloads its managed public p1 checkpoint automatically
+when the optional compatible-p1 path is blank, and AlphaFold 3 accepts a
+user-supplied parameter directory.
 Compatibility is checked before any download. The notebook keeps large model
 sessions sequential, records per-model failures without losing successful runs,
 and presents each setup, execution, and validation stage as a guided status
@@ -98,10 +99,14 @@ interactive structure selector keeps every model, seed, and sample in one
 viewer. The final ZIP contains the common input, batch report, score table,
 structures, confidence artifacts, and reproducibility manifests for every run.
 
-The notebook requires and checks Python 3.13, installs the pinned JAX 0.11.1
-and cuEquivariance 0.11.1 CUDA 12 runtime, shows checkpoint source/licence/size
-before downloading, and keeps its short 1-sample/20-step/1-recycle tutorial
-schedule clearly separated from every model's released defaults. In Python,
+The notebook requires and checks Python 3.13. It installs the pinned JAX 0.11.1
+CUDA 12 stack on NVIDIA or the matching `jax[tpu]`/`libtpu` stack on TPU, then
+selects fused CUDA kernels or portable XLA kernels accordingly. TPU execution
+initially targets v5e and remains experimental until every model has real-TPU
+parity evidence. The notebook shows checkpoint source/licence/size before
+downloading and keeps its short
+1-sample/20-step/1-recycle tutorial schedule clearly separated from every
+model's released defaults. In Python,
 the same multi-model path is simply:
 
 ```python
@@ -529,9 +534,9 @@ through `foldjax.assets.fetch(..., on_event=callback)` instead of parsing text.
 
 `setup` fetches and converts the default publicly published models — Boltz-2,
 OpenDDE, Protenix — plus shared CCD assets. ESMFold2 is public but deliberately
-opt-in because its full structure+ESMC bundle is about 26 GB; fetch it with
-`foldjax weights fetch --model esmfold2`, or fetch only its 940 MB structure
-network with `--profile structure-only`, then pass that same profile to
+opt-in because its full structure+ESMC+chemistry bundle is about 26.8 GB; fetch
+it with `foldjax weights fetch --model esmfold2`, or fetch its 1.36 GB
+structure+chemistry profile with `--profile structure-only`, then pass it to
 `foldjax predict`. OpenFold3 is also opt-in: `foldjax weights fetch --model
 openfold3` downloads the public p1 checkpoint supported by this port. Upstream
 p2 and OpenBind v0.5 checkpoints target newer incompatible architectures.

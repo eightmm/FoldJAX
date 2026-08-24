@@ -12,6 +12,18 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 now accepts the complete released all-biomolecule input
+  contract.** FoldJAX's Torch-free NumPy adapter now builds protein, DNA, RNA,
+  CCD-ligand, SMILES-ligand, modified-residue, and explicit covalent-bond
+  features instead of rejecting every non-protein job. Protein-only inputs
+  retain their established feature path. Mixed-complex outputs are written
+  directly as mmCIF so arbitrary chain identifiers, CCD residue names, and all
+  folded atoms survive. The managed released and structure-only profiles now
+  include Biohub's pinned 417,306,584-byte `ccd.pkl`; the reader rechecks its
+  SHA-256 before deserializing it. RDKit moves to the 2026.03 serialization
+  generation used by that snapshot. The complete public download is 26.77 GB;
+  the structure-without-ESMC profile is 1.36 GB.
+
 - **FoldJAX now targets Python 3.13 and the current JAX/cuEquivariance runtime
   family.** The package metadata, lockfile, lint target, and CPU CI move from
   Python 3.12 to 3.13. JAX/JAXLIB and both CUDA plugin families move from
@@ -69,10 +81,9 @@ command predicts unless it says so here, in its own paragraph.
   policy. Independent checkboxes expose all six carried models. Its default
   builds one two-chain insulin job and sends that exact recorded input to
   Protenix and OpenDDE; model-specific requests preserve each backend's actual
-  portable execution vocabulary before their reports are combined. ESMFold2 is
-  identified as an all-biomolecule upstream model while the current FoldJAX
-  port's protein-only feature-adapter gap is stated separately; its complete
-  public bundle is 26.35 GB. OpenFold3
+  portable execution vocabulary before their reports are combined. ESMFold2
+  accepts the same all-biomolecule common schema and its complete public bundle
+  is 26.77 GB. OpenFold3
   fetches the exact public p1 checkpoint and also accepts a compatible path
   override; AlphaFold 3 accepts a user-provided parameter directory. Their
   optional preprocessing/runtime dependencies install only when selected.
