@@ -104,7 +104,7 @@ def test_colab_notebook_installs_the_detected_accelerator_runtime() -> None:
     install = _cell_source("install-foldjax")
     all_source = "\n".join(_source(cell) for cell in _code_cells())
 
-    assert 'FOLDJAX_REF = "8f3ebac133fb44ee1b7565573fdb5bea2faf1c8d"' in install
+    assert 'FOLDJAX_REF = "52f8c8890956acedac5e293a6bddc2e8b5449ba4"' in install
     assert 'install_extras = ["cuda12"] if ACCELERATOR_KIND == "gpu" else []' in install
     assert 'install_extras.append("alphafold3")' in install
     assert 'install_extras.append("openfold3-preprocess")' in install
