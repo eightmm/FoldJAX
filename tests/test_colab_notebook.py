@@ -79,12 +79,16 @@ def _cell_function(cell_id: str, function_name: str):
 
 def test_colab_notebook_is_clean_accelerator_workflow() -> None:
     document = _document()
+    how_to_run = _source(document["cells"][0])
 
     assert document["nbformat"] == 4
     assert document["nbformat_minor"] >= 5
     assert document["metadata"]["accelerator"] == "GPU"
     assert document["metadata"]["language_info"]["version"] == "3.13"
     assert document["cells"][0]["cell_type"] == "markdown"
+    assert "detects the active runtime" in how_to_run
+    assert "v5e" not in how_to_run
+    assert "Python 3.13" not in how_to_run
     for cell in _code_cells():
         assert cell["execution_count"] is None
         assert cell["outputs"] == []
@@ -98,6 +102,8 @@ def test_colab_notebook_is_clean_accelerator_workflow() -> None:
     assert ids.index("run-predictions") < ids.index("compare-results")
     assert ids.index("compare-results") < ids.index("view-structures")
     assert ids.index("view-structures") < ids.index("download-results")
+    assert "PROTEIN_CHAINS" not in _cell_source("configure-run")
+    assert "PROTEIN_CHAINS" in _cell_source("build-job")
 
 
 def test_colab_notebook_installs_the_detected_accelerator_runtime() -> None:
@@ -185,6 +191,35 @@ def test_colab_tpu_install_assembles_the_libtpu_stack(
     assert "jax[tpu]==0.11.1" in calls[0]
     assert any("foldjax[openfold3-preprocess]" in argument for argument in calls[0])
     assert not any("cuda12" in argument for argument in calls[0])
+
+
+def test_colab_rerun_reuses_the_matching_install_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    cards = []
+    source = _cell_source("install-foldjax").replace(
+        'f"/content/.foldjax-colab-',
+        f'f"{tmp_path}/.foldjax-colab-',
+    )
+    monkeypatch.setenv("TPU_ACCELERATOR_TYPE", "test-tpu")
+    monkeypatch.setattr(
+        subprocess,
+        "check_call",
+        lambda command: calls.append(tuple(command)),
+    )
+    os_module = __import__("os")
+    monkeypatch.setattr(os_module, "kill", lambda *_args: None)
+    namespace = {
+        "SELECTED_MODELS": ("openfold3",),
+        "foldjax_card": lambda *args, **kwargs: cards.append((args, kwargs)),
+    }
+
+    exec(source, namespace)
+    exec(source, namespace)
+
+    assert len(calls) == 1
+    assert any("Dependencies ready" in str(card) for card in cards)
 
 
 def test_colab_accelerator_detection_prefers_tpu_markers(monkeypatch) -> None:
@@ -697,25 +732,25 @@ def test_colab_form_builds_mixed_polymer_and_ligand_input(
     tmp_path: Path, monkeypatch
 ) -> None:
     _patch_ipython_display(monkeypatch)
-    configure = _cell_source("configure-run")
-    configure = configure.replace(
+    build_job = _cell_source("build-job")
+    build_job = build_job.replace(
         'PROTEIN_CHAINS = "MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFP'
         'DWQNYTPGPGIRYPLTFGWCFKLVPVDPEEVVEELEKAGVE"',
         'PROTEIN_CHAINS = "ACDEFG"',
     )
-    configure = configure.replace('DNA_CHAINS = ""', 'DNA_CHAINS = "ACGT:TGCA"')
-    configure = configure.replace(
+    build_job = build_job.replace('DNA_CHAINS = ""', 'DNA_CHAINS = "ACGT:TGCA"')
+    build_job = build_job.replace(
         'RNA_CHAINS = "GGGAAACCC"', 'RNA_CHAINS = "ACGU"'
     )
-    configure = configure.replace(
+    build_job = build_job.replace(
         'LIGAND_CCD_CODES = "ATP"', 'LIGAND_CCD_CODES = "ATP, MG"'
     )
-    configure = configure.replace(
+    build_job = build_job.replace(
         'LIGAND_SMILES = ""', 'LIGAND_SMILES = "CCO; C1=CC=CC=C1"'
     )
     namespace: dict = {"WORK_DIR": tmp_path}
-    exec(configure, namespace)
-    exec(_cell_source("build-job"), namespace)
+    exec(_cell_source("configure-run"), namespace)
+    exec(build_job, namespace)
 
     payload = json.loads(Path(namespace["job_path"]).read_text(encoding="utf-8"))
     kinds = [entity["type"] for entity in payload["entities"]]
@@ -756,14 +791,18 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
     assert "openfold3" not in namespace["MANUAL_WEIGHT_TEXT"]
 
 
-def test_colab_form_rejects_invalid_nucleic_acid_before_setup(monkeypatch) -> None:
+def test_colab_form_rejects_invalid_nucleic_acid_after_setup(
+    tmp_path: Path, monkeypatch
+) -> None:
     _patch_ipython_display(monkeypatch)
-    configure = _cell_source("configure-run").replace(
+    build_job = _cell_source("build-job").replace(
         'DNA_CHAINS = ""', 'DNA_CHAINS = "ACGU"'
     )
+    namespace = {"WORK_DIR": tmp_path}
+    exec(_cell_source("configure-run"), namespace)
 
     with pytest.raises(ValueError, match="DNA chain 1.*base 'U'"):
-        exec(configure, {})
+        exec(build_job, namespace)
 
 
 def _fake_model_info(

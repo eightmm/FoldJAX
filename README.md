@@ -81,8 +81,9 @@ measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md)
 
 ### Google Colab: compare models from one input
 
-The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) detects a selected
-NVIDIA GPU or TPU runtime and configures FoldJAX around its common input API.
+The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) detects the active
+accelerator runtime and configures its matching JAX stack and kernels around
+FoldJAX's common input API.
 A compact form accepts protein,
 DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
 carried models; the default sends one compact synthetic protein+RNA+ATP job to
@@ -91,7 +92,8 @@ ligand, modification, and covalent-bond schema; its complete public
 structure+ESMC+chemistry bundle is 26.77 GB. OpenFold3 is selected by default
 and always downloads or reuses its managed public p1 checkpoint. AlphaFold 3
 accepts a user-supplied parameter directory.
-Compatibility is checked before any download. The notebook keeps large model
+Checkpoint availability is handled first; input compatibility is checked after
+the biomolecule form and before prediction. The notebook keeps large model
 sessions sequential, records per-model failures without losing successful runs,
 and presents each setup, execution, and validation stage as a guided status
 card or comparison table rather than a stream of raw notebook logs. Its
@@ -99,12 +101,13 @@ interactive structure selector keeps every model, seed, and sample in one
 viewer. The final ZIP contains the common input, batch report, score table,
 structures, confidence artifacts, and reproducibility manifests for every run.
 
-The notebook requires and checks Python 3.13. It installs the pinned JAX 0.11.1
-CUDA 12 stack on NVIDIA or the matching `jax[tpu]`/`libtpu` stack on TPU, then
-selects fused CUDA kernels or portable XLA kernels accordingly. TPU execution
-initially targets v5e and remains experimental until every model has real-TPU
-parity evidence. The notebook shows checkpoint source/licence/size before
-downloading and keeps its short
+The notebook installs and verifies the stack for the detected runtime before
+showing the biomolecule form and prediction stages. A matching install marker,
+verified managed-weight state, and finished prediction manifests make **Run
+all** idempotent: later runs skip work that is already complete. TPU execution
+remains experimental until every model has real-TPU parity evidence. The
+notebook shows checkpoint source/licence/size before downloading and keeps its
+short
 1-sample/20-step/1-recycle tutorial schedule clearly separated from every
 model's released defaults. In Python,
 the same multi-model path is simply:

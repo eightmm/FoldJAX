@@ -76,9 +76,10 @@ command predicts unless it says so here, in its own paragraph.
 ### Added
 
 - **The Google Colab example is now a practical multi-model workflow rather
-  than a single-model smoke test.** A compact form accepts protein, DNA, RNA,
-  CCD ligands, SMILES ligands, sampling mode, seeds, MSA policy, and storage
-  policy. Independent checkboxes expose all six carried models. Its default
+  than a single-model smoke test.** A setup form selects models, sampling, MSA,
+  and storage policy before idempotent installation and checkpoint preparation;
+  a later form accepts protein, DNA, RNA, CCD ligands, and SMILES ligands.
+  Independent checkboxes expose all six carried models. Its default
   builds one compact synthetic protein+RNA+ATP job and sends that exact
   recorded input to Protenix, OpenDDE, and OpenFold3; model-specific requests
   preserve each backend's actual portable execution vocabulary before their
@@ -88,9 +89,12 @@ command predicts unless it says so here, in its own paragraph.
   managed public p1 checkpoint; AlphaFold 3 accepts a user-provided parameter
   directory. Their
   optional preprocessing/runtime dependencies install only when selected.
-  Input entity types, ligand representations, parameter readiness, and runtime
-  state are checked before public downloads begin. FoldJAX runs the large sessions
-  sequentially, resumes verified work, preserves successful models
+  Parameter readiness and runtime state are checked before public downloads.
+  Input entity types and ligand representations are checked immediately after
+  the later biomolecule form and before prediction. A matching install marker,
+  verified managed-weight state, and finished manifests make repeated Run-all
+  execution skip completed work. FoldJAX runs the large sessions sequentially,
+  preserves successful models
   when an in-scope failure is configured to continue, validates every emitted
   structure and finite score, and presents a native-score table plus an
   interactive model/sample viewer. A single archive contains the common input,
@@ -102,9 +106,10 @@ command predicts unless it says so here, in its own paragraph.
   Setup, execution, validation, visualization, and export now use consistent
   status cards and styled tables, so folded implementation cells still present
   a readable end-to-end workflow instead of raw diagnostic output.
-  It still checks Python 3.13, the immutable JAX 0.11.1/cuEquivariance 0.11.1
-  CUDA 12 stack, and a real JAX GPU before prediction. Fast mode remains clearly
-  labelled as 1 sample, 20 steps, and 1 recycle; released defaults are opt-in.
+  It detects the active accelerator, checks the immutable JAX
+  0.11.1/cuEquivariance 0.11.1 stack, and rejects silent CPU fallback before
+  prediction. Fast mode remains clearly labelled as 1 sample, 20 steps, and 1
+  recycle; released defaults are opt-in.
   MSA transfer, Colab/Drive retention, and cached-versus-local storage are
   disclosed where the user makes those choices.
 
