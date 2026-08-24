@@ -85,12 +85,13 @@ The [Google Colab workflow](notebooks/FoldJAX_Colab.ipynb) detects a selected
 NVIDIA GPU or TPU runtime and configures FoldJAX around its common input API.
 A compact form accepts protein,
 DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
-carried models; the default sends the exact same two-chain job to Protenix and
-OpenDDE. ESMFold2 accepts the same protein, DNA, RNA, ligand, modification, and
-covalent-bond schema; its complete public structure+ESMC+chemistry bundle is
-26.77 GB. OpenFold3 downloads its managed public p1 checkpoint automatically
-when the optional compatible-p1 path is blank, and AlphaFold 3 accepts a
-user-supplied parameter directory.
+carried models; the default sends one compact synthetic protein+RNA+ATP job to
+Protenix, OpenDDE, and OpenFold3. ESMFold2 accepts the same protein, DNA, RNA,
+ligand, modification, and covalent-bond schema; its complete public
+structure+ESMC+chemistry bundle is 26.77 GB. OpenFold3 is selected by default
+and downloads its managed public p1 checkpoint automatically when the optional
+compatible-p1 path is blank. AlphaFold 3 accepts a user-supplied parameter
+directory.
 Compatibility is checked before any download. The notebook keeps large model
 sessions sequential, records per-model failures without losing successful runs,
 and presents each setup, execution, and validation stage as a guided status
@@ -115,12 +116,14 @@ from pathlib import Path
 from foldjax import Job, PredictionRequest, predict_batch
 
 job_path = Job.from_sequences(
-    protein=("GIVEQCCTSICSLYQLENYCN", "FVNQHLCGSHLVEALYLVCGERGFFYTPKT"),
-    name="insulin-complex",
-).write("insulin-complex.json")
+    protein=("MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFP",),
+    rna=("GGGAAACCC",),
+    ligand_ccd=("ATP",),
+    name="protein-rna-atp-demo",
+).write("protein-rna-atp-demo.json")
 report = predict_batch(
     PredictionRequest(
-        models=("protenix", "opendde"),
+        models=("protenix", "opendde", "openfold3"),
         input=job_path,
         output_dir=Path("foldjax-outputs"),
         msa="none",

@@ -432,6 +432,10 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "INPUT_REQUIRED_FEATURES" in source
     assert "OPENFOLD3_WEIGHTS_PATH" in source
     assert "ALPHAFOLD3_WEIGHTS_PATH" in source
+    assert 'JOB_NAME = "protein-rna-atp-demo"' in source
+    assert 'RNA_CHAINS = "GGGAAACCC"' in source
+    assert 'LIGAND_CCD_CODES = "ATP"' in source
+    assert "RUN_OPENFOLD3 = True" in source
     assert "resume=True" in source
     assert "STRUCTURES" in source
     assert "comparison.to_csv" in source
@@ -695,14 +699,15 @@ def test_colab_form_builds_mixed_polymer_and_ligand_input(
     _patch_ipython_display(monkeypatch)
     configure = _cell_source("configure-run")
     configure = configure.replace(
-        'PROTEIN_CHAINS = "GIVEQCCTSICSLYQLENYCN:'
-        'FVNQHLCGSHLVEALYLVCGERGFFYTPKT"',
+        'PROTEIN_CHAINS = "MKTAYIAKQRQISFVKSHFSRQDILDLWIYHTQGYFP"',
         'PROTEIN_CHAINS = "ACDEFG"',
     )
     configure = configure.replace('DNA_CHAINS = ""', 'DNA_CHAINS = "ACGT:TGCA"')
-    configure = configure.replace('RNA_CHAINS = ""', 'RNA_CHAINS = "ACGU"')
     configure = configure.replace(
-        'LIGAND_CCD_CODES = ""', 'LIGAND_CCD_CODES = "ATP, MG"'
+        'RNA_CHAINS = "GGGAAACCC"', 'RNA_CHAINS = "ACGU"'
+    )
+    configure = configure.replace(
+        'LIGAND_CCD_CODES = "ATP"', 'LIGAND_CCD_CODES = "ATP, MG"'
     )
     configure = configure.replace(
         'LIGAND_SMILES = ""', 'LIGAND_SMILES = "CCO; C1=CC=CC=C1"'
@@ -723,6 +728,30 @@ def test_colab_form_builds_mixed_polymer_and_ligand_input(
         "rna",
         "ligand",
     }
+
+
+def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
+    namespace: dict = {"WORK_DIR": tmp_path}
+
+    exec(_cell_source("configure-run"), namespace)
+    exec(_cell_source("build-job"), namespace)
+
+    payload = json.loads(Path(namespace["job_path"]).read_text(encoding="utf-8"))
+    assert [entity["type"] for entity in payload["entities"]] == [
+        "protein",
+        "rna",
+        "ligand",
+    ]
+    assert namespace["LIGAND_CCDS"] == ("ATP",)
+    assert namespace["SELECTED_MODELS"] == (
+        "protenix",
+        "opendde",
+        "openfold3",
+    )
+    assert namespace["MANUAL_WEIGHT_TEXT"]["openfold3"] == ""
 
 
 def test_colab_form_rejects_invalid_nucleic_acid_before_setup(monkeypatch) -> None:
@@ -953,7 +982,7 @@ def test_colab_prediction_and_output_cells_execute_together(
     seen: list[PredictionRequest] = []
 
     def fake_resolve(request: PredictionRequest):
-        assert request.model in ("protenix", "opendde")
+        assert request.model in ("protenix", "opendde", "openfold3")
         return (
             SimpleNamespace(
                 model=request.model,
@@ -969,7 +998,7 @@ def test_colab_prediction_and_output_cells_execute_together(
         seen.append(request)
         model = request.model
         assert model is not None
-        index = ("protenix", "opendde").index(model)
+        index = ("protenix", "opendde", "openfold3").index(model)
         output_dir = Path(request.output_dir)
         output_dir.mkdir(parents=True)
         structure = output_dir / f"{model}.cif"
@@ -1017,7 +1046,11 @@ def test_colab_prediction_and_output_cells_execute_together(
             "WORK_DIR": tmp_path,
             "OUTPUT_ROOT": tmp_path / "outputs",
             "COMPILE_CACHE": tmp_path / "compile-cache",
-            "MODEL_WEIGHTS": {"protenix": None, "opendde": None},
+            "MODEL_WEIGHTS": {
+                "protenix": None,
+                "opendde": None,
+                "openfold3": None,
+            },
             "ACCELERATOR_KIND": "tpu",
         }
     )
@@ -1026,7 +1059,11 @@ def test_colab_prediction_and_output_cells_execute_together(
     exec(_cell_source("run-predictions"), namespace)
     exec(_cell_source("compare-results"), namespace)
 
-    assert tuple(request.model for request in seen) == ("protenix", "opendde")
+    assert tuple(request.model for request in seen) == (
+        "protenix",
+        "opendde",
+        "openfold3",
+    )
     assert seen[0].options == {
         "attention_kernel": "xla",
         "triangle_kernel": "xla",
@@ -1035,14 +1072,19 @@ def test_colab_prediction_and_output_cells_execute_together(
         "dtype": "float32",
         "attention_kernel": "xla",
     }
+    assert seen[2].options == {"triangle_kernel": "xla"}
     assert all(
         (request.num_samples, request.num_steps, request.num_recycles) == (1, 20, 1)
         for request in seen
     )
     assert all(request.num_seeds == 1 for request in seen)
     assert all(request.msa == "none" for request in seen)
-    assert tuple(namespace["comparison"]["model"]) == ("opendde", "protenix")
-    assert len(namespace["STRUCTURES"]) == 2
+    assert tuple(namespace["comparison"]["model"]) == (
+        "opendde",
+        "openfold3",
+        "protenix",
+    )
+    assert len(namespace["STRUCTURES"]) == 3
 
     viewer_calls: list[tuple] = []
 
@@ -1113,8 +1155,9 @@ def test_colab_prediction_and_output_cells_execute_together(
         "input/job.json",
         "comparison.csv",
         "batch_report.json",
-        "outputs/protenix/insulin-complex/protenix.cif",
-        "outputs/opendde/insulin-complex/opendde.cif",
+        "outputs/protenix/protein-rna-atp-demo/protenix.cif",
+        "outputs/opendde/protein-rna-atp-demo/opendde.cif",
+        "outputs/openfold3/protein-rna-atp-demo/openfold3.cif",
     }.issubset(names)
 
 
@@ -1165,7 +1208,7 @@ def test_readme_links_to_and_explains_the_colab_workflow() -> None:
         "main/notebooks/FoldJAX_Colab.ipynb"
     ) in readme
     assert "[Google Colab workflow](notebooks/FoldJAX_Colab.ipynb)" in readme
-    assert 'models=("protenix", "opendde")' in readme
+    assert 'models=("protenix", "opendde", "openfold3")' in readme
     assert "predict_batch" in readme
     assert "protein, DNA, RNA, CCD ligands, and SMILES ligands" in prose
     assert "is an all-biomolecule model" in readme

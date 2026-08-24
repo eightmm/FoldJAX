@@ -79,13 +79,14 @@ command predicts unless it says so here, in its own paragraph.
   than a single-model smoke test.** A compact form accepts protein, DNA, RNA,
   CCD ligands, SMILES ligands, sampling mode, seeds, MSA policy, and storage
   policy. Independent checkboxes expose all six carried models. Its default
-  builds one two-chain insulin job and sends that exact recorded input to
-  Protenix and OpenDDE; model-specific requests preserve each backend's actual
-  portable execution vocabulary before their reports are combined. ESMFold2
+  builds one compact synthetic protein+RNA+ATP job and sends that exact
+  recorded input to Protenix, OpenDDE, and OpenFold3; model-specific requests
+  preserve each backend's actual portable execution vocabulary before their
+  reports are combined. ESMFold2
   accepts the same all-biomolecule common schema and its complete public bundle
-  is 26.77 GB. OpenFold3
-  fetches the exact public p1 checkpoint and also accepts a compatible path
-  override; AlphaFold 3 accepts a user-provided parameter directory. Their
+  is 26.77 GB. OpenFold3 is selected by default, fetches the exact public p1
+  checkpoint, and also accepts a compatible path override; AlphaFold 3 accepts
+  a user-provided parameter directory. Their
   optional preprocessing/runtime dependencies install only when selected.
   Input entity types, ligand representations, parameter readiness, and runtime
   state are checked before public downloads begin. FoldJAX runs the large sessions
