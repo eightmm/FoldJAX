@@ -31,6 +31,29 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **ESMFold2 replaces a proven zero token-bond projection with its compact
+  signed-zero vector.** The supported protein featurizer supplies an all-`+0`
+  `[batch, tokens, tokens, 1]` feature, and the released projection is a finite
+  `[256, 1]` weight with no bias, but the structure graph still projected that
+  input to 256 pair channels and added the zero result before the trunk and
+  again in the confidence head. The inference wrapper now verifies the full
+  host shape and values plus the compatible post-cast finite, unbiased weight
+  and routes that proof into the compiled-function identity. The compact graph
+  derives a `[256]` zero vector with each compute-cast weight channel's sign
+  and keeps both original left-associated broadcast additions; simply dropping
+  them is not bitwise exact for signed zero. Nonzero, negative-zero, malformed,
+  non-finite, bias-bearing, integer-weight, incompatible-dtype, and unverified
+  direct/custom inputs retain the generic projection. FP32/BF16 raw bytes,
+  supported source-to-compute cast edges, post-cast overflow fallback, padding,
+  context-parallel routing, and the two cache identities are regression-gated.
+  In an isolated 256-token BF16 CPU pair stage that reuses the encoding on both
+  sides of a four-step scan, outputs were byte-identical, the StableHLO dot
+  count fell from one to zero, compiled temporary memory fell from 67,108,932
+  to 33,554,500 bytes, and floating-point work reported by XLA fell from
+  285,344,000 to 184,551,936 operations. These are synthetic CPU stage
+  measurements; released-weight end-to-end GPU numerical parity, latency, and
+  whole-model peak memory remain deployment gates.
+
 - **OpenFold3 drops the released checkpoint's redundant diffusion registration
   before inference mapping.** Upstream registers one denoiser under both
   `diffusion_module.*` and `sample_diffusion.*`; Torch preserves their shared

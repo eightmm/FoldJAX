@@ -159,7 +159,7 @@ def _has_contiguous_atom_groups(features: Mapping[str, np.ndarray]) -> bool:
         raw_mask = np.asarray(features["atom_attention_mask"])
         mask = raw_mask.astype(bool)
         token_mask = np.asarray(features["token_attention_mask"])
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         return False
     if (
         owners.ndim != 2
@@ -193,6 +193,69 @@ def _has_contiguous_atom_groups(features: Mapping[str, np.ndarray]) -> bool:
         if np.bincount(index, minlength=n_tokens).max() > MAX_ATOMS_PER_TOKEN:
             return False
     return True
+
+
+def _has_compact_token_bond_encoding(
+    features: Mapping[str, np.ndarray],
+    parameters: Mapping[str, jnp.ndarray],
+    *,
+    pair_width: int,
+    compute_dtype: object,
+) -> bool:
+    """Whether the pair-wide projection has an exact compact zero form.
+
+    The package's protein featurizer emits only zero token bonds, and the
+    released projection has no bias.  External feature mappings and custom
+    checkpoints are less constrained, so they keep the generic graph unless
+    the complete input shape, values, supported source/compute dtype route,
+    weight shape, post-cast finiteness, and no-bias parameter contract can be
+    checked on the host.
+    """
+
+    try:
+        bonds = np.asarray(features["token_bonds"])
+        token_mask = np.asarray(features["token_attention_mask"])
+        source_weight = parameters["token_bonds.weight"]
+        source_dtype = jnp.dtype(source_weight.dtype)
+        compute = jnp.dtype(compute_dtype)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+    if not (
+        jnp.issubdtype(bonds.dtype, jnp.integer)
+        or jnp.issubdtype(bonds.dtype, jnp.floating)
+    ):
+        return False
+    # Mirror `_cast`'s supported checkpoint paths exactly. Released FP32
+    # weights are narrowed when the trunk computes in BF16; already-BF16
+    # weights remain BF16. Other source/compute combinations retain the
+    # generic graph, including BF16 source under an FP32 trunk, because
+    # `_cast` deliberately does not widen it.
+    if compute not in {jnp.dtype(jnp.float32), jnp.dtype(jnp.bfloat16)}:
+        return False
+    if source_dtype == jnp.dtype(jnp.float32):
+        compute_weight = source_weight.astype(compute)
+    elif source_dtype == jnp.dtype(jnp.bfloat16) and compute == source_dtype:
+        compute_weight = source_weight
+    else:
+        return False
+    if token_mask.ndim != 2:
+        return False
+    expected = (*token_mask.shape, token_mask.shape[-1])
+    if bonds.shape not in {expected, (*expected, 1)}:
+        return False
+    if (
+        compute_weight.shape != (pair_width, 1)
+        or "token_bonds.bias" in parameters
+    ):
+        return False
+    try:
+        return bool(
+            np.all(bonds == 0)
+            and not np.any(np.signbit(bonds))
+            and np.all(np.isfinite(np.asarray(compute_weight)))
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def predict(
@@ -242,6 +305,12 @@ def predict(
     contiguous_atom_groups = (
         False if stop_after_trunk else _has_contiguous_atom_groups(features)
     )
+    compact_token_bond_encoding = _has_compact_token_bond_encoding(
+        features,
+        model.parameters,
+        pair_width=settings.d_pair,
+        compute_dtype=settings.trunk_dtype,
+    )
 
     if cp_shards > 1 and not compile_it:
         raise ValueError(
@@ -252,6 +321,7 @@ def predict(
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
+            compact_token_bond_encoding,
         )
         if compile_it
         else _run
@@ -281,6 +351,7 @@ def predict(
             return_representations,
             stop_after_trunk,
             contiguous_atom_groups,
+            compact_token_bond_encoding,
         )
 
 
@@ -296,6 +367,7 @@ def _run(
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
     contiguous_atom_groups: bool = False,
+    compact_token_bond_encoding: bool = False,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -314,6 +386,7 @@ def _run(
         return_representations=return_representations,
         stop_after_trunk=stop_after_trunk,
         contiguous_atom_groups=contiguous_atom_groups,
+        compact_token_bond_encoding=compact_token_bond_encoding,
     )
 
 
@@ -326,6 +399,7 @@ def compiled_predict(
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
     contiguous_atom_groups: bool = False,
+    compact_token_bond_encoding: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -334,11 +408,14 @@ def compiled_predict(
     exact-shape calls or masked serving draws, and `cp_shards` decides whether
     the trace carries sharding constraints -- a mesh change must be a retrace,
     never a stale cache hit. The real token and atom counts remain data in the
-    masks and never enter this cache key. The final boolean selects the
+    masks and never enter this cache key. The penultimate boolean selects the
     normalized contiguous-atom reducer; external feature mappings that do not
-    satisfy its host-checked contract receive a distinct generic graph.
+    satisfy its host-checked contract receive a distinct generic graph.  The
+    final boolean similarly replaces the unbiased token-bond projection with
+    its exact channel-wise signed-zero vector only when the host proves the
+    compact contract.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10))
+    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10, 11))
 
 
 def predict_job(

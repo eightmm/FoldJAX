@@ -348,6 +348,26 @@ def _cast(params: Params, prefixes: tuple[str, ...], dtype) -> dict:
     }
 
 
+def _token_bonds_encoding(
+    token_bonds: jnp.ndarray,
+    params: Params,
+    dtype: jnp.dtype,
+    *,
+    compact_token_bond_encoding: bool = False,
+) -> jnp.ndarray:
+    """Project token bonds, or return their exact compact signed zeros."""
+
+    if compact_token_bond_encoding:
+        weight = params["token_bonds.weight"].astype(dtype)[:, 0]
+        return jnp.copysign(jnp.zeros_like(weight), weight)
+    values = (
+        token_bonds.astype(dtype)[..., None]
+        if token_bonds.ndim == 3
+        else token_bonds.astype(dtype)
+    )
+    return linear(values, params, "token_bonds")
+
+
 def inputs_embedding(
     res_type_one_hot: jnp.ndarray,
     profile: jnp.ndarray,
@@ -644,6 +664,7 @@ def predict(
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
     contiguous_atom_groups: bool = False,
+    compact_token_bond_encoding: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -766,12 +787,11 @@ def predict(
         n_chain_bins=settings.n_chain_bins,
         dtype=compute,
     )
-    token_bonds_encoding = linear(
-        features["token_bonds"].astype(compute)[..., None]
-        if features["token_bonds"].ndim == 3
-        else features["token_bonds"].astype(compute),
+    token_bonds_encoding = _token_bonds_encoding(
+        features["token_bonds"],
         trunk_params,
-        "token_bonds",
+        compute,
+        compact_token_bond_encoding=compact_token_bond_encoding,
     )
     # Born sharded under context parallelism: `z_init` re-enters the
     # recurrence every loop, `rel_pos` is reused by the diffusion cache and

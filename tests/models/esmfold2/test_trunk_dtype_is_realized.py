@@ -41,12 +41,12 @@ def test_a_bfloat16_weight_against_a_float32_input_yields_float32() -> None:
     )
 
 
-def _predict_source() -> ast.FunctionDef:
+def _function_source(name: str) -> ast.FunctionDef:
     tree = ast.parse(pathlib.Path(inspect.getfile(jax_model)).read_text())
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "predict":
+        if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
-    raise AssertionError("esmfold2's `predict` has been renamed")
+    raise AssertionError(f"esmfold2's `{name}` has been renamed")
 
 
 def test_every_tensor_entering_the_pair_state_is_cast_to_the_compute_dtype() -> None:
@@ -56,12 +56,14 @@ def test_every_tensor_entering_the_pair_state_is_cast_to_the_compute_dtype() -> 
     rename will fail this test loudly, which is the right trade against a
     float32 trunk shipping silently again.
     """
-    source = ast.unparse(_predict_source())
+    source = ast.unparse(_function_source("predict"))
     assert "pair_inputs = x_inputs.astype(compute)" in source, (
         "the inputs embedding must be narrowed before the z_init linears"
     )
-    for fragment, what in (
-        ("dtype=compute", "the relative position encoding"),
-        ("features['token_bonds'].astype(compute)", "the token-bond encoding"),
-    ):
-        assert fragment in source, f"{what} must be built at the compute dtype"
+    assert "dtype=compute" in source, (
+        "the relative position encoding must be built at the compute dtype"
+    )
+    bond_source = ast.unparse(_function_source("_token_bonds_encoding"))
+    assert "token_bonds.astype(dtype)" in bond_source, (
+        "the generic token-bond encoding must be built at the compute dtype"
+    )

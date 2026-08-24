@@ -41,6 +41,30 @@ def test_shard_count_must_match_the_active_mesh() -> None:
         _run(None, {}, {}, None, None, 1, False, 2)
 
 
+def test_compact_token_bond_static_choice_crosses_the_mesh_context(
+    monkeypatch,
+) -> None:
+    """The host proof and ambient CP route must reach one graph decision."""
+    from foldjax.models.esmfold2 import inference
+
+    seen = []
+
+    def fake_predict(*args, **kwargs):
+        del args
+        seen.append(kwargs["compact_token_bond_encoding"])
+        return {}
+
+    monkeypatch.setattr(inference.structure_model, "predict", fake_predict)
+    with context_parallel(1):
+        inference._run(
+            None, {}, {}, None, None, 1, False, compact_token_bond_encoding=True
+        )
+        # A direct low-level call that does not supply the proof stays generic.
+        inference._run(None, {}, {}, None, None, 1, False)
+
+    assert seen == [True, False]
+
+
 _PARITY_PROBE = textwrap.dedent(
     """
     import jax
