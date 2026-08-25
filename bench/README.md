@@ -38,6 +38,25 @@ one's number is unknowable. The card is allowed to go idle between runs, since
 a process exiting does not return its device memory synchronously and the next
 job can otherwise fail an allocation that would have fit.
 
+**One quiet reading is not enough**, and the cost of believing it was an
+OpenFold3 row at 3,012 tokens that looked like a memory regression. Its
+measured run started 13 s after a 26-minute warm-up released 88 GiB, never
+reserved its own pool -- three consecutive 15 s samples sat at 615 MiB, the
+size of a bare CUDA context -- and died inside `BFCAllocator::Extend`, which is
+the grow-on-demand path a process only takes when preallocation did not happen.
+`gpu_idle` now wants several consecutive readings below the threshold and says
+so when it gives up waiting. Re-run under that gate, the same warm-up-then-
+measure sequence completed, and three independent runs of the row agreed to
+0.1 MiB.
+
+A failed row keeps its whole stderr in `<row>.stderr.txt` beside the JSON. The
+3,000-character tail in the row itself is a summary, not the record: an XLA
+allocation failure ends in a stack dump long enough to fill any tail on its
+own, so the line naming the requested bytes -- the only part that identifies
+the failure -- is exactly what a truncated tail drops. A warm-up that exits
+non-zero is reported too, with its output in `<row>.warmup.txt`; it used to be
+discarded, which left the measured run silently paying for compilation.
+
 ## Memory over time, not just its maximum
 
 A peak is one number off a curve that has a shape: weights loading, a trunk that

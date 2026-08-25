@@ -23,8 +23,22 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 
 
-def gpu_idle(threshold_mib: int = 2048, timeout_s: int = 300) -> None:
+def gpu_idle(threshold_mib: int = 2048, timeout_s: int = 300, settled: int = 3) -> None:
+    """Wait for the previous run's memory to be back, and to stay back.
+
+    One reading below the threshold is not enough. A process that has exited
+    releases its memory to the driver over some interval, and `nvidia-smi` can
+    report a small figure while the release is still in flight; the next run
+    then asks for its pool -- 0.9 of the card, under the shipped setting -- and
+    cannot get it. Requiring several consecutive quiet readings costs seconds
+    and removes a failure that is indistinguishable from the model being too
+    large for the card.
+
+    Giving up is reported rather than silent: a run started on a busy card is
+    still a measurement, but not of the thing the table claims.
+    """
     waited = 0
+    quiet = 0
     while waited < timeout_s:
         try:
             query = [
@@ -40,9 +54,18 @@ def gpu_idle(threshold_mib: int = 2048, timeout_s: int = 300) -> None:
         if not used:
             return
         if int(used[0]) <= threshold_mib:
-            return
+            quiet += 1
+            if quiet >= settled:
+                return
+        else:
+            quiet = 0
         time.sleep(5)
         waited += 5
+    print(
+        f"[warn] card still above {threshold_mib} MiB after {timeout_s}s; "
+        "starting anyway",
+        flush=True,
+    )
 
 
 def native_input(model: str, case, destination: Path) -> Path:
@@ -110,7 +133,7 @@ def main() -> int:
                     subprocess.run(["rm", "-rf", str(warm)], check=False)
                     warm.mkdir(parents=True, exist_ok=True)
                     print(f"[warm] {model} {case_name}", flush=True)
-                    subprocess.run(
+                    filled = subprocess.run(
                         [
                             str(REPO / ".venv/bin/python"), "-m", "bench.run_foldjax",
                             "--model", model, "--case", case_name,
@@ -120,6 +143,18 @@ def main() -> int:
                         env={**__import__("os").environ, "PYTHONPATH": str(REPO)},
                         timeout=args.timeout + 600,
                     )
+                    # A warm-up that died is not a neutral event: the run it was
+                    # supposed to prepare now pays compilation inside the
+                    # measured time, and whatever killed it is likely to kill
+                    # that run too. Say so, and keep the reason.
+                    if filled.returncode != 0:
+                        log = args.results / f"{model}-{impl}-{case_name}.warmup.txt"
+                        log.write_text(filled.stderr or "")
+                        print(
+                            f"[warn] warm-up exited {filled.returncode}; "
+                            f"reason in {log.name}",
+                            flush=True,
+                        )
                     subprocess.run(["rm", "-rf", str(warm)], check=False)
                     gpu_idle()
                     argv = [
@@ -155,12 +190,21 @@ def main() -> int:
                     timeout=args.timeout + 600,
                 )
                 if completed.returncode != 0 or not row.is_file():
+                    # Keep all of it beside the row, not just the tail. An XLA
+                    # allocation failure ends in a stack dump long enough to
+                    # fill any tail on its own, so the line that says how many
+                    # bytes were asked for -- the only part that identifies the
+                    # failure -- is exactly what a truncated tail loses.
+                    log = row.with_suffix(".stderr.txt")
+                    log.write_text(completed.stderr or "")
                     row.write_text(
                         json.dumps(
                             {
                                 "impl": impl, "model": model, "case": case_name,
                                 "length": case.length, "failed": True,
                                 "wall_s": round(time.perf_counter() - started, 2),
+                                "stderr_bytes": len(completed.stderr or ""),
+                                "stderr_path": str(log),
                                 "stderr_tail": completed.stderr[-3000:],
                             },
                             sort_keys=True,
