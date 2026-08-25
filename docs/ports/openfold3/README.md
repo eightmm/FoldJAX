@@ -58,6 +58,12 @@ around this model's `predict` call rather than changing JAX globally:
   having only reached a 28.5 GiB high-water mark, while the same command with
   preallocation on completed at a 59.8 GiB peak. A pool grown on demand is
   assembled piecewise and cannot serve one large contiguous request.
+  **That failure is specific to a cold compilation cache.** Run again at 3,012
+  tokens on 2026-08-24 with the cache already filled, both settings completed
+  and agreed: 59,766.7 MiB in 1,376.4 s preallocated against 59,842.1 MiB in
+  1,374.5 s grown on demand, with pTM identical to five decimals. So the
+  setting still matters — a first invocation is exactly when it is paid — but
+  it is not what decides whether the size runs.
 
 ## Setup
 

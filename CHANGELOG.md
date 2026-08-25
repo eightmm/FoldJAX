@@ -12,6 +12,68 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`foldjax setup` now fetches OpenFold3's weights, leaving AlphaFold 3 as the
+  only model anyone has to supply by hand.** The port's `of3_ft3_v1.pt` was
+  already declared with the publisher's own URL, size and SHA-256, but was
+  marked opt-in and reported as such; the key is served unsigned, so there was
+  nothing to opt into. `setup` adds 2.29 GB and one more `ready` line. ESMFold2
+  stays opt-in on the reason that field exists for — its full bundle is about
+  26.8 GB, not a licence — and AlphaFold 3 stays manual because DeepMind
+  releases its parameters only to applicants who accept their terms and they
+  may not be redistributed.
+
+- **Template realignment accepts Kalign 3.3.5 *or newer*, and finds the wheel.**
+  The check was an exact `== 3.3.5` against a binary named exactly `kalign`.
+  Neither Protenix nor AlphaFold 3 asks for a version, no commit here recorded
+  why 3.3.5, and PyPI's `kalign-python` wheel publishes 3.4.8 through 3.6.0 and
+  nothing older — so the pin made templates reachable only through a system
+  package, while a working `kalign-py` sat unused in the same virtualenv. The
+  resolver now looks for `kalign-py` as well as `kalign`, reads the `kalign-py
+  X.Y.Z` banner its wheel prints, and compares version ordering against a 3.3.5
+  floor. An unparsable banner still fails, rather than passing because it did
+  not match a string. What is **not** established is that versions above the
+  floor align identically; Kalign realigns the query onto the template chain,
+  so a different aligner can give different templates and a different
+  structure. Pin an exact binary with `PROTENIX_KALIGN_BINARY` when a run has
+  to be reproduced against one.
+
+- **`foldjax runtime gc` reclaims abandoned AlphaFold 3 runtime trees.** A
+  prepared tree is keyed by the vendored source *and* the interpreter ABI, so
+  every edit to a vendored file and every Python move mints a new one and
+  abandons the old in place — and nothing collected them. Each is about a
+  gigabyte, of which only the compiled extension depends on the key: the rest
+  is a ~490 MB `components.cif` and the ~510 MB `ccd.pickle` generated from it.
+  The store this was found in held twelve trees and 12 GB, one of them
+  reachable. `gc` keeps the live tree always, and by default keeps anything
+  prepared in the last 7 days as well, because the store is shared between
+  checkouts and a worktree at another commit has its own live tree;
+  `--keep-days` moves that guard and `--all` drops it. `--dry-run` reports
+  without removing. Removing a tree costs a rebuild rather than data, with one
+  caveat worth knowing: libcifpp fetches the current CCD at build time, so a
+  rebuild months later is a different chemical dictionary, not the same one.
+
+- **`foldjax setup --all` installs every published checkpoint in one command.**
+  Size was the only thing keeping ESMFold2 out of `setup`, and there was no way
+  to say "take it too" without naming it; the opt-in line now says the flag
+  exists. AlphaFold 3 is not included by any flag, because there is nothing to
+  download: its parameters are licensed to the person who requested them.
+
+- **OpenFold3's per-sample confidence is reported differently, and its values
+  moved.** Carrying the port's own featurization changed three things a caller
+  can see. `mean_plddt` is now on the public 0--100 scale rather than the
+  head's [0, 1] output, so a value that read 0.9103 reads 91.15. `iptm` and
+  `has_clash` are reported where earlier runs of the same four-chain jobs
+  produced neither. And pTM on the same job moves by up to 0.005: measured
+  under the benchmark schedule at 3,012 tokens it is 0.87029 where the earlier
+  build gave 0.87563, and at 2,096 tokens 0.90455 against 0.90708, both
+  reproducible to five decimals across independent runs. Against the recorded
+  upstream run the direction depends on the statistic — at 3,012 tokens the
+  sample mean is closer than before and the best sample is farther, because
+  upstream's own five samples spread 0.0105 there — so this is a different
+  computation rather than a more or less accurate one. The new `iptm` lands
+  within 0.011 of upstream's. Peak memory and wall time are unaffected by this
+  entry; they are covered by the benchmark.
+
 - **ESMFold2 now accepts the complete released all-biomolecule input
   contract.** FoldJAX's Torch-free NumPy adapter now builds protein, DNA, RNA,
   CCD-ligand, SMILES-ligand, modified-residue, and explicit covalent-bond

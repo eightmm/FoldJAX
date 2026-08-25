@@ -930,3 +930,80 @@ answer across jobs, nodes and card models. If one corrupted structure from
 gpu3 matches one from gpu4, the corruption has a single deterministic form,
 and the search narrows to which kernel produces it. If they differ, the
 selection idea is wrong too.
+
+## The port column, re-measured against unchanged upstreams (2026-08-24)
+
+Forty-odd `perf:` commits had landed since the 2026-08-12/13 length sweep, each
+carrying a synthetic CPU stage measurement and each saying in its own changelog
+entry that released-weight end-to-end GPU numbers remained a deployment gate.
+This is that gate. Only the FoldJAX side was re-run — the upstreams did not
+change, and OpenFold3's 3,012-token upstream row alone is 6,722 s — so every
+ratio below is a new port number over a recorded reference.
+
+**Two harness lessons came first, and both cost a sweep.**
+
+The first attempt ran in the shared checkout. Another agent's Python 3.13
+migration recreated `.venv` mid-sweep and the resync dropped the `cuda13`
+extra; JAX prints *"a CUDA-enabled jaxlib is not installed. Falling back to
+cpu"* and keeps going. Everything after that point ran on the CPU and failed in
+ways that read as model problems: AlphaFold 3 raised `NotImplementedError: Not
+supported on cpu` out of tokamax, Protenix asked for 902 GiB converting its
+coordinates. Nothing in the row said "CPU". The re-run went into a private
+worktree with its own venv, and the sweep script now asserts a GPU device in
+the measuring interpreter before it measures anything.
+
+The second was OpenFold3 at 3,012 tokens, which failed where the baseline had
+succeeded. It looked like a memory regression from the allocator change in
+`981651b`. It was not. The failing process never reserved its pool — three
+consecutive 15 s samples at 615 MiB, the size of a bare CUDA context — and died
+in `BFCAllocator::Extend`, the grow-on-demand path. It had started 13 s after a
+26-minute warm-up released 88 GiB. `drive.py`'s gate waited for one reading
+below 2,048 MiB, which is true well before the driver has handed 88 GiB back.
+The gate now wants three consecutive quiet readings; the same warm-up-then-
+measure sequence then passed, and three independent runs of that row agree to
+0.1 MiB. Two other harness holes were filled on the way: a failed row keeps its
+whole stderr beside it rather than a 3,000-character tail an XLA stack dump
+fills on its own, and a warm-up that dies now says so.
+
+**What the ports actually gained.** Peak memory, against 2026-08-13:
+
+    protenix    499 -6.1%   1003 -18.6%   2096 -14.3%   3012 -15.8%
+    openfold3   499 -2.5%   1003  -5.8%   2096 -10.7%   3012  -9.8%
+    boltz2      499 -2.7%   1003  -4.9%   2096  -6.0%   3012  -6.3%
+    opendde     499 +1.5%   1003  -3.1%   2096 fails    3012 fails
+    alphafold3  499 +2.4%   1003  -0.3%   2096  -0.0%   3012  +0.0%
+
+The saving grows with size in every port that has one, which is what a change
+to a quadratic term looks like: 8.2 GiB off Protenix at 3,012 tokens, 6.3 off
+OpenFold3, 2.9 off Boltz-2. AlphaFold 3 is flat because FoldJAX drives the
+official distribution rather than reimplementing it. OpenDDE is the odd one:
+the sign flips with size, up 194 MiB at 499 and down 1.4 GiB at 1,003, which is
+a fixed cost added and a size-dependent one removed. ESMFold2 is not in the
+sweep's model list but was measured under the same schedule: 23,646 MiB at
+1,003 tokens on five samples where the 2026-08-13 record was 49,817 on four —
+4,729 against 12,454 MiB per sample, the per-sample confidence head paying for
+it in time.
+
+Against upstream the margins widened accordingly: Protenix at 1,003 tokens from
+1.54x to 1.89x on memory, OpenFold3 at 3,012 from 1.26x to 1.39x, on upstream
+numbers nobody touched.
+
+**Accuracy held everywhere except one place, and that place is not the perf
+work.** Eighteen of nineteen rows moved pTM by less than that run's own spread
+across its five samples. OpenFold3 is the exception: -0.0053 at 3,012 tokens
+against a 0.0015 spread, reproducible to five decimals across three runs. The
+cause is `e218f48` (2026-08-14), which replaced the port's featurization; the
+same commit added `ipTM`, which the older build did not report at all on
+four-chain targets, and put pLDDT on the public 0-100 scale. Against upstream
+the new pTM is closer at 3,012 tokens on the sample mean and farther on the
+best sample, and farther at 2,096 on both — a different computation, not a
+better one. None of that was in the changelog; it is now.
+
+**Two failures are worth keeping as results.** OpenDDE's float32 trunk still
+cannot reach 2,096 or 3,012 tokens, but it now says so before it starts: the
+preflight puts 5,812 structural tokens at an estimated 356.5 GiB of temp arena
+against 76.9 GiB usable, and the job stops after 108 s where the same failure
+used to take 4,496 s. And the card itself is a term in every time number here:
+through these runs it sat at its 300 W cap with a median SM clock of 1,567 MHz
+against 2,272 unloaded, so the long rows are throttled. Both sides of every
+ratio ran that way, but the absolute seconds are not what a cool card gives.

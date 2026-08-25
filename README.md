@@ -22,10 +22,13 @@ all carried inside the package:
 
 Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations
 that match their upstream's results; AlphaFold 3 is upstream's own source,
-vendored. Weights are never redistributed. `foldjax weights fetch` downloads
-and converts or stages public assets, including the exact public OpenFold3 p1
-checkpoint; AlphaFold 3 weights are supplied manually after accepting their
-publisher's terms.
+vendored. Weights are never redistributed — each file comes from its own
+publisher, under that project's terms. `foldjax setup` fetches every one that
+is published, OpenFold3's exact p1 checkpoint included, and converts or stages
+it. **AlphaFold 3 is the only model whose weights you have to supply
+yourself**, because DeepMind releases its parameters only to applicants who
+accept their terms. ESMFold2 is public but stays opt-in for its size: the full
+bundle is about 26.8 GB.
 
 Every advertised prediction path is Torch-free, including raw OpenFold3 jobs
 and Protenix ESM/ISM conditioning. Publisher `.pt` checkpoints are a file
@@ -76,6 +79,16 @@ from that path rather than a redundant managed ESMC copy.
 
 *Each port against the repository it came from — same job, same schedule, same
 measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md).*
+
+Across the ten rows both sides complete, FoldJAX holds a **1.08x to 2.30x**
+lower peak and runs at **0.94x to 4.85x** the speed, and at 3,012 tokens four
+of the five models in that table finish on the FoldJAX side where two finish
+upstream. The widest memory margin, 3.11x, is at the 2,096-token size the
+scaling figure adds. Two of those numbers need the context the doc gives them:
+OpenDDE is the one row FoldJAX does not win on time, and OpenFold3's upstream
+cannot reach its own released attention kernel on this card, so its speed
+column is not a like-for-like comparison. The FoldJAX column was re-measured
+on 2026-08-24; the upstream column is unchanged, because upstream is.
 
 ## Examples
 
@@ -545,15 +558,22 @@ sizes; a repeat run explicitly reports that the verified native bundle was
 skipped. Library callers can receive the same structured `AssetEvent` objects
 through `foldjax.assets.fetch(..., on_event=callback)` instead of parsing text.
 
-`setup` fetches and converts the default publicly published models — Boltz-2,
-OpenDDE, Protenix — plus shared CCD assets. ESMFold2 is public but deliberately
-opt-in because its full structure+ESMC+chemistry bundle is about 26.8 GB; fetch
-it with `foldjax weights fetch --model esmfold2`, or fetch its 1.36 GB
-structure+chemistry profile with `--profile structure-only`, then pass it to
-`foldjax predict`. OpenFold3 is also opt-in: `foldjax weights fetch --model
-openfold3` downloads the public p1 checkpoint supported by this port. Upstream
-p2 and OpenBind v0.5 checkpoints target newer incompatible architectures.
-AlphaFold 3 releases parameters on request. MSA search needs nothing installed
+`setup` fetches and converts every model whose weights are published — Boltz-2,
+OpenDDE, OpenFold3, Protenix — plus shared CCD assets. OpenFold3's 2.29 GB p1
+checkpoint comes from the publisher's own unsigned S3 key, pinned by SHA-256,
+so it needs no account and no request; upstream p2 and OpenBind v0.5 target
+newer incompatible architectures and are not substituted.
+
+Two models are outside that, for two different reasons. ESMFold2 is public but
+held back from the default because its full structure+ESMC+chemistry bundle is
+about 26.8 GB — `foldjax setup --all` takes it with the rest, `foldjax weights
+fetch --model esmfold2` takes it alone, and `--profile structure-only` takes
+the 1.36 GB structure+chemistry profile instead. **AlphaFold 3 is the one set of
+weights you have to supply yourself**, because DeepMind releases its parameters
+only to applicants who accept their terms and they may not be redistributed; no
+flag changes that, and `foldjax setup` says which directory `af3.bin` goes in.
+Once it is there nothing else is asked of you: the ABI-specific extension and
+CCD tables build themselves on first use. MSA search needs nothing installed
 (ColabFold MMseqs2 server).
 
 ```
@@ -570,6 +590,15 @@ archive needs conversion or direct loading, FoldJAX's restricted reader returns
 NumPy arrays without importing PyTorch. No weights are redistributed — each
 file comes from its own publisher under that project's terms, and nothing is
 fetched implicitly during prediction.
+
+`runtime/` is the one directory that grows on its own. An AlphaFold 3 tree is
+keyed by the vendored source and the interpreter ABI, so editing a vendored
+file or moving Python mints a new one — about a gigabyte each, nearly all of it
+the chemical component dictionary rather than code. `foldjax runtime gc --model
+alphafold3` removes the ones nothing can select any more; it always keeps the
+live tree, and by default keeps anything prepared in the last week too, since
+this store is shared between checkouts and another commit's tree may be live
+for someone else. `--dry-run` shows what would go.
 
 ### GPU and the compile cache
 
