@@ -478,7 +478,7 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "INPUT_ENTITY_TYPES" in source
     assert "INPUT_REQUIRED_FEATURES" in source
     assert "OPENFOLD3_WEIGHTS_PATH" not in source
-    assert "ALPHAFOLD3_WEIGHTS_PATH" in source
+    assert "ALPHAFOLD3_WEIGHTS_PATH" not in source
     assert 'JOB_NAME = "protein-rna-atp-demo"' in source
     assert 'RNA_CHAINS = "GGGAAACCC"' in source
     assert 'LIGAND_CCD_CODES = "ATP"' in source
@@ -503,7 +503,6 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert configure.count("# @param") == 10
     assert "PERSIST_MODEL_ASSETS_TO_DRIVE" not in configure
     assert "PERSIST_MSA_TO_DRIVE" not in configure
-    assert "ALPHAFOLD3_WEIGHTS_PATH" not in configure
     assert "CUSTOM_NUM_SAMPLES" not in configure
     assert "DOWNLOAD_RESULTS" not in configure
     assert (
@@ -515,7 +514,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'DRIVE_ROOT / "model-assets"' in source
     assert 'DRIVE_ROOT / "msa"' in source
     assert 'DRIVE_ROOT / "outputs"' in source
-    assert "ALPHAFOLD3_WEIGHTS_PATH" in _cell_source("fetch-weights")
+    assert "ALPHAFOLD3_WEIGHTS_PATH" not in _cell_source("fetch-weights")
+    assert "MANUAL_WEIGHT_TEXT" not in _cell_source("fetch-weights")
     assert "AlphaFold 3 private parameter location" in _cell_source("fetch-weights")
     assert (
         'foldjax_home / "weights" / "alphafold3"'
@@ -1028,11 +1028,7 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
         "opendde",
         "openfold3",
     )
-    assert "MANUAL_WEIGHT_TEXT" not in namespace
-    assert (
-        '"alphafold3": ALPHAFOLD3_WEIGHTS_PATH.strip()'
-        in _cell_source("fetch-weights")
-    )
+    assert 'MODEL_WEIGHTS[model_name] = None' in _cell_source("fetch-weights")
 
 
 def test_colab_custom_schedule_seeds_msa_representations_and_padding(
@@ -1371,8 +1367,7 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
             "INPUT_REQUIRED_FEATURES": frozenset(
                 {"modifications", "ligand_ccd", "bonds"}
             ),
-                "MANUAL_WEIGHT_TEXT": {},
-                "MODEL_PROFILES": {"esmfold2": None},
+            "MODEL_PROFILES": {"esmfold2": None},
             "foldjax_home": tmp_path,
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "OUTPUT_BASE": tmp_path / "outputs",
@@ -1427,7 +1422,6 @@ def test_colab_fetches_the_explicit_esmfold2_structure_only_profile(
         "SELECTED_MODELS": ("esmfold2",),
         "INPUT_ENTITY_TYPES": frozenset({"protein"}),
         "INPUT_REQUIRED_FEATURES": frozenset(),
-        "MANUAL_WEIGHT_TEXT": {},
         "MODEL_PROFILES": {"esmfold2": "structure-only"},
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
@@ -1479,7 +1473,6 @@ def test_colab_fetches_public_openfold3_p1_automatically(
         "SELECTED_MODELS": ("openfold3",),
         "INPUT_ENTITY_TYPES": frozenset({"protein", "ligand"}),
         "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
-        "MANUAL_WEIGHT_TEXT": {},
         "MODEL_PROFILES": {"openfold3": None},
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
@@ -1529,7 +1522,6 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
         "SELECTED_MODELS": ("openfold3",),
         "INPUT_ENTITY_TYPES": frozenset({"protein"}),
         "INPUT_REQUIRED_FEATURES": frozenset(),
-        "MANUAL_WEIGHT_TEXT": {},
         "MODEL_PROFILES": {"openfold3": None},
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
