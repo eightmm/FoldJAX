@@ -95,7 +95,7 @@ also supply the assets a job needs explicitly:
 | `--template-mmcif-dir DIR` | local PDB mmCIF files referenced by precomputed template hits |
 | `--template-release-dates PATH` | official `release_date_cache.json` for the model cutoff |
 | `--template-obsolete-map PATH` | official `obsolete_to_successor.json` mapping |
-| `--kalign-binary PATH` | executable Kalign 3.3.5 for exact query-to-mmCIF template realignment |
+| `--kalign-binary PATH` | executable Kalign 3.3.5 or newer for query-to-mmCIF template realignment; `kalign-py` from the `kalign-python` wheel counts |
 
 The RDKit cache is a pickle and must be treated as trusted input; use only the
 pinned official SHA-256
@@ -159,8 +159,13 @@ lower-level entry point for an already featurized, unbatched example.
 - User-supplied protein/RNA MSA files, legacy precomputed-MSA directories, and
   precomputed template-hit A3M plus local mmCIF coordinates. JSON-relative
   paths resolve from the input file first. Exact template coordinate mapping
-  requires the upstream-compatible Kalign 3.3.5 executable; other versions
-  fail explicitly instead of silently changing the alignment.
+  requires a Kalign 3.3.5 or newer executable; anything older fails
+  explicitly instead of silently changing the alignment. The floor was an exact
+  pin until 2026-08-25, which no upstream asks for and which made templates
+  reachable only through a system package: PyPI's `kalign-python` wheel starts
+  at 3.4.8. Whether versions above the floor align identically has not been
+  measured, so pin one with `PROTENIX_KALIGN_BINARY` when a run has to be
+  reproduced exactly.
 - OpenDDE's exact 16-key summary contract: `plddt`, `gpde`, `ptm`, `iptm`,
   `chain_gpde`, `chain_pair_gpde`, `chain_ptm`, `chain_iptm`,
   `chain_pair_iptm`, `chain_pair_iptm_global`, `chain_plddt`,
@@ -168,7 +173,8 @@ lower-level entry point for an already featurized, unbatched example.
   `num_recycles`.
 
 Model execution is JAX-only. Native preprocessing uses NumPy, Gemmi, and RDKit,
-plus external Kalign 3.3.5 only for template realignment, but never PyTorch.
+plus an external Kalign (3.3.5 or newer) only for template realignment, but
+never PyTorch.
 When the caller has not selected Protenix triangle kernels explicitly, the
 OpenDDE model call uses dependency-free XLA triangle attention/multiplication
 and restores the process environment afterward; the base runtime therefore

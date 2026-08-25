@@ -28,7 +28,21 @@ _MAX_TEMPLATE_CANDIDATES = 20
 _RELEASE_DATES_ENV = "PROTENIX_TEMPLATE_RELEASE_DATES_FILE"
 _OBSOLETE_PDBS_ENV = "PROTENIX_TEMPLATE_OBSOLETE_FILE"
 _KALIGN_BINARY_ENV = "PROTENIX_KALIGN_BINARY"
-_KALIGN_VERSION = "3.3.5"
+#: Oldest Kalign this path accepts. It was an exact pin, and that was wrong
+#: in a way worth recording: neither Protenix nor AlphaFold 3 asks for a
+#: version -- upstream Protenix only asserts that a binary path was given --
+#: and no commit here ever said why 3.3.5. It reads as the version that
+#: happened to be installed. The cost was real: PyPI's `kalign-python` wheel
+#: publishes 3.4.8 through 3.6.0 and nothing older, so an exact 3.3.5 made
+#: templates reachable only through a system package.
+#:
+#: What is *not* established is that these versions align identically. Kalign
+#: realigns the query onto the template chain here, so a different aligner can
+#: give different templates and therefore a different structure. That
+#: comparison has not been run. Pin an exact binary with the environment
+#: variable when a run has to be reproduced against one.
+_KALIGN_MINIMUM = (3, 3, 5)
+_KALIGN_VERSION = ".".join(str(part) for part in _KALIGN_MINIMUM)
 
 _PROTEIN_3TO1 = {
     "ALA": "A",
@@ -553,13 +567,21 @@ def _resolve_kalign_binary(kalign_binary: str | Path | None) -> str:
         # Requiring the variable as well meant that installing the right
         # version was not enough, and refusing to look was the difference
         # between templates working and not on a machine that already had it.
-        found = shutil.which("kalign")
+        # `kalign-py` is the console script PyPI's `kalign-python` wheel
+        # installs, and it is the only way to get this without a system
+        # package. Looking only for `kalign` meant an environment that already
+        # had a working aligner reported it as missing.
+        found = next(
+            (name for name in ("kalign", "kalign-py") if shutil.which(name)),
+            None,
+        )
         if found is None:
             raise ValueError(
-                f"template search realignment requires Kalign {_KALIGN_VERSION}; "
-                f"install it (`apt install kalign`) or set {_KALIGN_BINARY_ENV}"
+                f"template search realignment requires Kalign {_KALIGN_VERSION} "
+                "or newer; install it (`pip install kalign-python`, or "
+                f"`apt install kalign`) or set {_KALIGN_BINARY_ENV}"
             )
-        configured = found
+        configured = shutil.which(found)
     executable = shutil.which(os.fspath(configured))
     if executable is None:
         raise FileNotFoundError(
@@ -581,14 +603,28 @@ def _resolve_kalign_binary(kalign_binary: str | Path | None) -> str:
             f"Kalign version check exited with {completed.returncode}: {detail}"
         )
     version_output = "\n".join((completed.stdout, completed.stderr)).strip()
-    match = re.search(r"(?mi)^kalign\s+([^\s]+)\s*$", version_output)
+    # The wheel spells its own name `kalign-py`, so a pattern anchored on
+    # `kalign` alone read its whole banner as the version string.
+    match = re.search(r"(?mi)^kalign(?:-py)?\s+([^\s]+)\s*$", version_output)
     actual_version = match.group(1) if match is not None else version_output
-    if actual_version != _KALIGN_VERSION:
+    if _version_tuple(actual_version) < _KALIGN_MINIMUM:
         raise RuntimeError(
-            f"template mapping requires Kalign {_KALIGN_VERSION}; "
+            f"template mapping requires Kalign {_KALIGN_VERSION} or newer; "
             f"configured binary reports {actual_version or 'no version'}"
         )
     return executable
+
+
+def _version_tuple(reported: str) -> tuple[int, ...]:
+    """Leading numeric components of a reported version, or nothing.
+
+    An unparsable banner returns an empty tuple, which sorts below every real
+    version and so fails the check rather than passing it by accident.
+    """
+    match = re.match(r"\s*v?(\d+(?:\.\d+)*)", reported or "")
+    if match is None:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def _parse_fasta_rows(content: str) -> list[str]:

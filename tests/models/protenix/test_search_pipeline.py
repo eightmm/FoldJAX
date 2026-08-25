@@ -553,10 +553,16 @@ def test_template_resolution_requires_explicit_kalign_binary(
         )
 
 
-def test_template_resolution_rejects_non_pinned_kalign_version(
+def test_template_resolution_rejects_a_kalign_below_the_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    binary = _write_fake_kalign(tmp_path, monkeypatch, version="3.6.0")
+    """Newer is allowed now; older is still refused.
+
+    This asserted that 3.6.0 was rejected, which was the exact pin talking. The
+    floor is what protects the alignment, and PyPI's wheel starts at 3.4.8, so
+    an exact pin only made templates unreachable without a system package.
+    """
+    binary = _write_fake_kalign(tmp_path, monkeypatch, version="3.3.4")
     database = tmp_path / "mmcif"
     database.mkdir()
     query = "ACDEFGHIKLMN"
@@ -570,7 +576,7 @@ def test_template_resolution_rejects_non_pinned_kalign_version(
     obsolete = tmp_path / "obsolete.json"
     obsolete.write_text("{}")
 
-    with pytest.raises(RuntimeError, match=r"requires Kalign 3\.3\.5.*3\.6\.0"):
+    with pytest.raises(RuntimeError, match=r"requires Kalign 3\.3\.5.*3\.3\.4"):
         resolve_template_search_hits(
             artifact,
             query_sequence=query,
@@ -847,3 +853,77 @@ def test_template_search_requires_protein_msa_path(tmp_path: Path) -> None:
         apply_template_paths(
             {"sequences": [{"proteinChain": {"sequence": "ACDEF"}}]}, pipeline
         )
+
+
+def _write_banner_only_kalign(directory: Path, name: str, banner: str) -> Path:
+    """A stand-in that answers --version and nothing else."""
+    import sys
+
+    binary = directory / name
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        f"print({banner!r})\n"
+        "raise SystemExit(0)\n"
+    )
+    binary.chmod(0o755)
+    return binary
+
+
+def test_resolver_accepts_the_wheels_console_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`kalign-py` is the only Kalign installable without a system package.
+
+    PyPI's `kalign-python` wheel installs under that name and prints a banner
+    to match, so a resolver that looks for `kalign` alone reports a working
+    aligner as missing -- which is what this environment did.
+    """
+    from foldjax.models.protenix.data.search import templates
+
+    monkeypatch.delenv("PROTENIX_KALIGN_BINARY", raising=False)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = _write_banner_only_kalign(bin_dir, "kalign-py", "kalign-py 3.6.0")
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert templates._resolve_kalign_binary(None) == str(binary)
+
+
+def test_resolver_refuses_an_older_kalign_and_an_unreadable_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The floor is a floor, and an unparsable banner is below it.
+
+    Falling back to the whole banner text as the version used to pass an exact
+    string comparison only by never matching; under an ordering it has to sort
+    below every real version instead of raising a type error or slipping
+    through.
+    """
+    from foldjax.models.protenix.data.search import templates
+
+    monkeypatch.delenv("PROTENIX_KALIGN_BINARY", raising=False)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    old = _write_banner_only_kalign(bin_dir, "kalign", "kalign 3.3.4")
+    with pytest.raises(RuntimeError, match="3.3.5 or newer"):
+        templates._resolve_kalign_binary(str(old))
+
+    mute = _write_banner_only_kalign(bin_dir, "kalign-mute", "no version here")
+    with pytest.raises(RuntimeError, match="3.3.5 or newer"):
+        templates._resolve_kalign_binary(str(mute))
+
+
+def test_resolver_accepts_the_version_the_pin_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.models.protenix.data.search import templates
+
+    monkeypatch.delenv("PROTENIX_KALIGN_BINARY", raising=False)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
+    exact = _write_banner_only_kalign(bin_dir, "kalign", "kalign 3.3.5")
+
+    assert templates._resolve_kalign_binary(str(exact)) == str(exact)
