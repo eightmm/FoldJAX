@@ -449,9 +449,9 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "PERSIST_MSA_TO_DRIVE = False" in source
     assert "PERSIST_OUTPUTS_TO_DRIVE = False" in source
     assert 'OUTPUT_ROOT = OUTPUT_BASE / JOB_SLUG / RUN_LABEL' in source
-    assert 'RUN_MODE = "Fast demo"' in source
+    assert 'RUN_MODE = "Default"' in source
     assert (
-        'RUN_MODE = "Fast demo"  # @param '
+        'RUN_MODE = "Default"  # @param '
         '["Fast demo", "Default", "Custom"]'
     ) in source
     assert 'INPUT_MODE = "Form"' in source
@@ -535,9 +535,10 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'MSA_POLICY = "auto"' in build_job
     plan_runs = _cell_source("plan-runs")
     assert "Sampling and memory" not in plan_runs
-    assert "Custom schedule — used only when Run mode is Custom" in plan_runs
+    assert "Shared custom schedule — applies to every selected model" in plan_runs
+    assert "select one model for individual tuning" in plan_runs
     assert "Optional overrides — apply to every run mode" in plan_runs
-    assert 'RUN_MODE = "Fast demo"' in plan_runs
+    assert 'RUN_MODE = "Default"' in plan_runs
     assert "NUM_SEEDS = 1" in plan_runs
     assert 'EXECUTION = "Predict"' in plan_runs
     assert "CONTINUE_ON_ERROR = True" in plan_runs
@@ -1068,9 +1069,7 @@ def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
     )
     exec(_cell_source("build-job"), namespace)
     monkeypatch.setattr(foldjax, "resolve_requests", lambda request: (request,))
-    plan = _cell_source("plan-runs").replace(
-        'RUN_MODE = "Fast demo"', 'RUN_MODE = "Default"'
-    )
+    plan = _cell_source("plan-runs")
 
     exec(plan, namespace)
 
@@ -1091,7 +1090,7 @@ def test_colab_custom_schedule_seeds_msa_and_representations(
 ) -> None:
     configure = _cell_source("configure-run")
     plan = _cell_source("plan-runs")
-    plan = plan.replace('RUN_MODE = "Fast demo"', 'RUN_MODE = "Custom"')
+    plan = plan.replace('RUN_MODE = "Default"', 'RUN_MODE = "Custom"')
     plan = plan.replace(
         'CUSTOM_NUM_SAMPLES = 1', 'CUSTOM_NUM_SAMPLES = 2'
     )
@@ -1725,7 +1724,8 @@ def test_colab_prediction_and_output_cells_execute_together(
     }
     assert seen[3].options == {"triangle_kernel": "xla"}
     assert all(
-        (request.num_samples, request.num_steps, request.num_recycles) == (1, 20, 1)
+        (request.num_samples, request.num_steps, request.num_recycles)
+        == (None, None, None)
         for request in seen
     )
     assert all(request.num_seeds == 1 for request in seen)
