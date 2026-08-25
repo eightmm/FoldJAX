@@ -537,7 +537,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "Sampling and memory" not in plan_runs
     assert "Shared custom schedule — applies to every selected model" in plan_runs
     assert "select one model for individual tuning" in plan_runs
-    assert "Optional overrides — apply to every run mode" in plan_runs
+    assert "explicit values replace the generated `0..NUM_SEEDS-1`" in plan_runs
+    assert "Optional memory override — applies to every run mode" in plan_runs
     assert 'RUN_MODE = "Default"' in plan_runs
     assert "NUM_SEEDS = 1" in plan_runs
     assert 'EXECUTION = "Predict"' in plan_runs
@@ -1075,6 +1076,12 @@ def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
 
     assert namespace["RUN_LABEL"] == "default"
     assert namespace["SAMPLING_OVERRIDE"] == {}
+    assert namespace["EFFECTIVE_NUM_SEEDS"] == 1
+    assert namespace["SEED_SOURCE"] == "generated 0..0"
+    assert {row["seed count"] for row in namespace["plan_rows"]} == {1}
+    assert {row["seed source"] for row in namespace["plan_rows"]} == {
+        "generated 0..0"
+    }
     assert {row["schedule"] for row in namespace["plan_rows"]} == {
         "native default (varies by model)"
     }
@@ -1083,6 +1090,8 @@ def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
         assert request.num_steps is None
         assert request.num_recycles is None
         assert request.padding is None
+        assert request.num_seeds == 1
+        assert request.seeds is None
 
 
 def test_colab_custom_schedule_seeds_msa_and_representations(
@@ -1098,6 +1107,7 @@ def test_colab_custom_schedule_seeds_msa_and_representations(
     plan = plan.replace(
         'CUSTOM_NUM_RECYCLES = 3', 'CUSTOM_NUM_RECYCLES = 2'
     )
+    plan = plan.replace("NUM_SEEDS = 1", "NUM_SEEDS = 0")
     plan = plan.replace('EXPLICIT_SEEDS = ""', 'EXPLICIT_SEEDS = "7, 11"')
     plan = plan.replace('MAX_MSA_DEPTH = 0', 'MAX_MSA_DEPTH = 256')
     plan = plan.replace(
@@ -1128,8 +1138,12 @@ def test_colab_custom_schedule_seeds_msa_and_representations(
     exec(plan, namespace)
 
     assert namespace["RUN_LABEL"] == "custom-s2-n60-r2"
+    assert namespace["EFFECTIVE_NUM_SEEDS"] == 2
+    assert namespace["SEED_SOURCE"] == "explicit values"
     for request in namespace["model_requests"]:
         assert request.resolved_seeds == (7, 11)
+        assert request.seeds == (7, 11)
+        assert request.num_seeds is None
         assert request.max_msa_depth == 256
         assert request.representations == ("single", "pair")
         assert request.stop_after == "trunk"
