@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import ast
+import io
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tarfile
+import time
 import tomllib
 import zipfile
 from pathlib import Path
@@ -419,6 +423,187 @@ def test_colab_accelerator_check_reports_unavailable_capacity(
     assert any("capacity unavailable" in str(card) for card in cards)
 
 
+def test_colab_compile_cache_pack_round_trips_selected_device_and_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    device = SimpleNamespace(
+        platform="tpu",
+        device_kind="TPU v5e test",
+        memory_stats=lambda: {"bytes_limit": 16 * 2**30},
+    )
+    monkeypatch.setattr(jax, "__version__", "0.11.1")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(
+        metadata,
+        "version",
+        lambda package: (
+            "0.0.46" if package == "libtpu" else COLAB_COMMON_STACK[package]
+        ),
+    )
+    local_cache = tmp_path / "local-cache"
+    archive_store = tmp_path / "drive" / "compile-cache"
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "JAX_VERSION": "0.11.1",
+        "install_marker": tmp_path / "installed",
+        "subprocess": subprocess,
+        "sys": sys,
+        "SELECTED_MODELS": ("protenix",),
+        "KERNEL_PROFILE": "portable XLA",
+        "PERSIST_COMPILE_CACHE_TO_DRIVE": True,
+        "COMPILE_CACHE": local_cache,
+        "COMPILE_CACHE_STAGING": tmp_path / "staging",
+        "COMPILE_ARCHIVE_STORE": archive_store,
+        "COMPILE_CACHE_LOCAL_MAX_BYTES": 2**20,
+        "COMPILE_CACHE_DRIVE_MAX_BYTES": 2**20,
+        "COMPILE_CACHE_MAX_AGE_DAYS": 30,
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+
+    exec(_cell_source("check-accelerator"), namespace)
+
+    entry = local_cache / "protenix" / "weights" / "profile" / "entry.bin"
+    entry.parent.mkdir(parents=True)
+    entry.write_bytes(b"compiled executable")
+    event = namespace["sync_compile_cache_archive"]("protenix")
+    archive = namespace["model_compile_archive"]("protenix")
+
+    assert event["status"] == "saved"
+    assert archive.is_file()
+    assert "jax-0.11.1-jaxlib-0.11.1" in str(archive)
+    assert "TPU-v5e-test" in str(archive)
+    assert "portable-XLA" in str(archive)
+
+    shutil.rmtree(local_cache)
+    restored, errors = namespace["restore_compile_cache_archives"]()
+
+    assert errors == ()
+    assert restored[0][0] == "protenix"
+    assert entry.read_bytes() == b"compiled executable"
+
+
+def test_colab_compile_cache_restore_rejects_unsafe_archive_members(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    device = SimpleNamespace(
+        platform="tpu", device_kind="TPU", memory_stats=lambda: {}
+    )
+    monkeypatch.setattr(jax, "__version__", "0.11.1")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(
+        metadata,
+        "version",
+        lambda package: (
+            "0.0.46" if package == "libtpu" else COLAB_COMMON_STACK[package]
+        ),
+    )
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "JAX_VERSION": "0.11.1",
+        "install_marker": tmp_path / "installed",
+        "subprocess": subprocess,
+        "sys": sys,
+        "SELECTED_MODELS": (),
+        "KERNEL_PROFILE": "portable XLA",
+        "PERSIST_COMPILE_CACHE_TO_DRIVE": True,
+        "COMPILE_CACHE": tmp_path / "local-cache",
+        "COMPILE_CACHE_STAGING": tmp_path / "staging",
+        "COMPILE_ARCHIVE_STORE": tmp_path / "drive-cache",
+        "COMPILE_CACHE_LOCAL_MAX_BYTES": 2**20,
+        "COMPILE_CACHE_DRIVE_MAX_BYTES": 2**20,
+        "COMPILE_CACHE_MAX_AGE_DAYS": 30,
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+    exec(_cell_source("check-accelerator"), namespace)
+    namespace["SELECTED_MODELS"] = ("protenix",)
+    archive = namespace["model_compile_archive"]("protenix")
+    archive.parent.mkdir(parents=True)
+    with tarfile.open(archive, "w") as bundle:
+        member = tarfile.TarInfo("../escaped.bin")
+        payload = b"unsafe"
+        member.size = len(payload)
+        bundle.addfile(member, io.BytesIO(payload))
+
+    restored, errors = namespace["restore_compile_cache_archives"]()
+
+    assert restored == ()
+    assert errors and "Unsafe compilation-cache archive member" in errors[0]
+    assert not archive.exists()
+    assert not (tmp_path / "escaped.bin").exists()
+
+
+def test_colab_compile_cache_pruning_is_age_and_size_bounded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from importlib import metadata
+
+    device = SimpleNamespace(
+        platform="tpu", device_kind="TPU", memory_stats=lambda: {}
+    )
+    monkeypatch.setattr(jax, "__version__", "0.11.1")
+    monkeypatch.setattr(jax, "devices", lambda: [device])
+    monkeypatch.setattr(
+        metadata,
+        "version",
+        lambda package: (
+            "0.0.46" if package == "libtpu" else COLAB_COMMON_STACK[package]
+        ),
+    )
+    archive_store = tmp_path / "drive-cache"
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "JAX_VERSION": "0.11.1",
+        "install_marker": tmp_path / "installed",
+        "subprocess": subprocess,
+        "sys": sys,
+        "SELECTED_MODELS": (),
+        "KERNEL_PROFILE": "portable XLA",
+        "PERSIST_COMPILE_CACHE_TO_DRIVE": True,
+        "COMPILE_CACHE": tmp_path / "local-cache",
+        "COMPILE_CACHE_STAGING": tmp_path / "staging",
+        "COMPILE_ARCHIVE_STORE": archive_store,
+        "COMPILE_CACHE_LOCAL_MAX_BYTES": 2**20,
+        "COMPILE_CACHE_DRIVE_MAX_BYTES": 1_500,
+        "COMPILE_CACHE_MAX_AGE_DAYS": 30,
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+    exec(_cell_source("check-accelerator"), namespace)
+    old = archive_store / "old.tar"
+    recent = archive_store / "recent.tar"
+    newest = archive_store / "newest.tar"
+    old.write_bytes(b"o" * 600)
+    recent.write_bytes(b"r" * 800)
+    newest.write_bytes(b"n" * 800)
+    now = time.time()
+    os.utime(old, (now - 31 * 86400, now - 31 * 86400))
+    os.utime(recent, (now - 10, now - 10))
+    os.utime(newest, (now, now))
+
+    namespace["prune_drive_compile_archives"]()
+
+    assert not old.exists()
+    assert not recent.exists()
+    assert newest.exists()
+
+    namespace["COMPILE_CACHE_LOCAL_MAX_BYTES"] = 1_000
+    local_old = namespace["COMPILE_CACHE"] / "protenix" / "old.bin"
+    local_new = namespace["COMPILE_CACHE"] / "protenix" / "new.bin"
+    local_old.parent.mkdir(parents=True)
+    local_old.write_bytes(b"o" * 800)
+    local_new.write_bytes(b"n" * 800)
+    os.utime(local_old, (now - 10, now - 10))
+    os.utime(local_new, (now, now))
+
+    namespace["prune_local_compile_cache"]()
+
+    assert not local_old.exists()
+    assert local_new.exists()
+
+
 def test_colab_gpu_check_clears_marker_before_reinstall(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -476,10 +661,20 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'compact.split(":")' in source
     assert 'LIGAND_CCD_CODES.split(",")' in source
     assert 'LIGAND_SMILES.split(";")' in source
-    assert "PERSIST_MODEL_ASSETS_TO_DRIVE = False" in source
-    assert "PERSIST_MSA_TO_DRIVE = False" in source
-    assert "PERSIST_OUTPUTS_TO_DRIVE = False" in source
+    assert "PERSIST_MODEL_ASSETS_TO_DRIVE = True" in source
+    assert "PERSIST_MSA_TO_DRIVE = True" in source
+    assert "PERSIST_OUTPUTS_TO_DRIVE = True" in source
+    assert "PERSIST_COMPILE_CACHE_TO_DRIVE = True" in source
     assert 'OUTPUT_ROOT = OUTPUT_BASE / JOB_SLUG / RUN_LABEL' in source
+    assert "output_dir=OUTPUT_ROOT / model_name," in source
+    assert "output_dir=OUTPUT_ROOT / model_name / JOB_SLUG" not in source
+    assert "LEGACY_OUTPUT_DIRS" in source
+    assert "Earlier output layout found" in source
+    assert 'f"{JOB_SLUG}-{RUN_LABEL}-foldjax.zip"' in source
+    assert "manually obtained weights" not in source
+    assert "manual/gated parameters" not in source
+    assert "user-supplied parameters downloaded directly from Google" in markdown
+    assert "Keep output persistence enabled" in markdown
     assert 'RUN_MODE = "Default"' in source
     assert (
         'RUN_MODE = "Default"  # @param '
@@ -548,10 +743,19 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "CUSTOM_NUM_SAMPLES" not in configure
     assert "DOWNLOAD_RESULTS" not in configure
     assert (
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = False"
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = True"
         in _cell_source("configure-runtime")
     )
-    assert "PERSIST_MSA_TO_DRIVE = False" in _cell_source("configure-runtime")
+    assert "PERSIST_MSA_TO_DRIVE = True" in _cell_source("configure-runtime")
+    assert "PERSIST_OUTPUTS_TO_DRIVE = True" in _cell_source(
+        "configure-runtime"
+    )
+    assert "PERSIST_COMPILE_CACHE_TO_DRIVE = True" in _cell_source(
+        "configure-runtime"
+    )
+    assert "Drive persistence is enabled by default" in markdown
+    assert "JAX always compiles against fast local storage" in markdown
+    assert "2.5 GiB global limit and 30-day retention" in markdown
     assert 'DRIVE_ROOT = Path("/content/drive/MyDrive/FoldJAX")' in source
     assert 'DRIVE_ROOT / "model-assets"' in source
     assert 'DRIVE_ROOT / "msa"' in source
@@ -564,14 +768,21 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
         in _cell_source("fetch-weights")
     )
     runtime = _cell_source("configure-runtime")
-    assert 'MODEL_ASSET_STORE / "models"' in runtime
+    assert "MODEL_STORE_ROOT = MODEL_ASSET_STORE" in runtime
+    assert '`FoldJAX/model-assets/<model>/' in markdown
     assert 'MODEL_ASSET_STORE / "shared" / "assets"' in runtime
     assert "migrate_legacy_model_store" in runtime
+    fetch_weights = _cell_source("fetch-weights")
+    assert "def run_setup_command" in fetch_weights
+    assert 'capture_output=True' in fetch_weights
+    assert 'stage="weight download, verification, or conversion"' in fetch_weights
+    assert 'stage="generated runtime preparation"' in fetch_weights
     build_job = _cell_source("build-job")
     assert 'MSA_POLICY = "auto"' in build_job
     plan_runs = _cell_source("plan-runs")
     assert "Sampling and memory" not in plan_runs
     assert "Shared custom schedule — applies to every selected model" in plan_runs
+    assert "select one model for individual tuning" in plan_runs
     assert "select one model for individual tuning" in plan_runs
     assert "explicit values replace the generated `0..NUM_SEEDS-1`" in plan_runs
     assert "Optional memory override — applies to every run mode" in plan_runs
@@ -591,18 +802,34 @@ def test_colab_discloses_each_checkpoint_licence_with_a_source() -> None:
     )
 
     expected = (
-        ("Protenix", "Apache-2.0", "github.com/bytedance/Protenix"),
-        ("OpenDDE", "publisher model card", "huggingface.co/aurekaresearch/OpenDDE"),
-        ("Boltz-2", "MIT", "github.com/jwohlwend/boltz"),
-        ("ESMFold2", "ESMC-6B MIT plus its terms", "huggingface.co/biohub/ESMFold2"),
+        (
+            "Protenix",
+            "Apache-2.0; academic and commercial use",
+            "github.com/bytedance/Protenix",
+        ),
+        (
+            "OpenDDE",
+            "Apache-2.0 released checkpoints",
+            "huggingface.co/aurekaresearch/OpenDDE",
+        ),
+        (
+            "Boltz-2",
+            "MIT; academic and commercial use",
+            "github.com/jwohlwend/boltz",
+        ),
+        (
+            "ESMFold2",
+            "MIT for ESMFold2 and ESMC-6B; Biohub AUP applies",
+            "huggingface.co/biohub/ESMFold2",
+        ),
         (
             "OpenFold3",
-            "Apache-2.0 for code and weights",
-            "github.com/aqlaboratory/openfold-3",
+            "Apache-2.0 model and parameters",
+            "huggingface.co/OpenFold/OpenFold3",
         ),
         (
             "AlphaFold 3",
-            "not redistributable",
+            "non-commercial use by/for non-commercial organizations",
             "github.com/google-deepmind/alphafold3",
         ),
     )
@@ -612,6 +839,23 @@ def test_colab_discloses_each_checkpoint_licence_with_a_source() -> None:
         assert source in markdown
     assert '"licence": info.weights_licence' in _cell_source("fetch-weights")
     assert '"source": info.weights_source' in _cell_source("fetch-weights")
+
+
+def test_registered_checkpoint_licences_are_explicit() -> None:
+    expected = {
+        "alphafold3": "AlphaFold 3 Model Parameters Terms of Use",
+        "boltz2": "MIT (code and weights; academic and commercial use)",
+        "esmfold2": "MIT (ESMFold2 and ESMC-6B weights)",
+        "opendde": "Apache-2.0 (released checkpoints and code)",
+        "openfold3": "Apache-2.0 (OpenFold3 model and parameters",
+        "protenix": "Apache-2.0 (model parameters; academic and commercial use)",
+    }
+
+    for model, licence in expected.items():
+        assert licence in foldjax.model_info(model).weights_licence
+    assert "see the" not in " ".join(
+        foldjax.model_info(model).weights_licence for model in expected
+    ).lower()
 
 
 def test_colab_notebook_renders_a_guided_workflow_instead_of_raw_logs() -> None:
@@ -688,6 +932,13 @@ def test_colab_configures_accelerator_specific_kernels(
         'foldjax_home = Path("/content/foldjax-cache")',
         f'foldjax_home = Path({str(tmp_path / "cache")!r})',
     )
+    for setting in (
+        "PERSIST_MODEL_ASSETS_TO_DRIVE",
+        "PERSIST_MSA_TO_DRIVE",
+        "PERSIST_OUTPUTS_TO_DRIVE",
+        "PERSIST_COMPILE_CACHE_TO_DRIVE",
+    ):
+        source = source.replace(f"{setting} = True", f"{setting} = False")
     monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
     namespace = {
         "ACCELERATOR_KIND": accelerator,
@@ -696,6 +947,7 @@ def test_colab_configures_accelerator_specific_kernels(
         "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
         "PERSIST_MSA_TO_DRIVE": False,
         "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "PERSIST_COMPILE_CACHE_TO_DRIVE": False,
         "Path": Path,
         "os": __import__("os"),
         "foldjax_card": lambda *_args, **_kwargs: None,
@@ -722,20 +974,10 @@ def test_colab_configures_accelerator_specific_kernels(
     )
 
 
-def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
+def test_colab_defaults_model_assets_msa_outputs_and_compile_cache_to_drive(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = _cell_source("configure-runtime")
-    source = source.replace(
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
-    )
-    source = source.replace(
-        "PERSIST_MSA_TO_DRIVE = False", "PERSIST_MSA_TO_DRIVE = True"
-    )
-    source = source.replace(
-        "PERSIST_OUTPUTS_TO_DRIVE = False", "PERSIST_OUTPUTS_TO_DRIVE = True"
-    )
     source = source.replace(
         'WORK_DIR = Path("/content/foldjax-colab")',
         f'WORK_DIR = Path({str(tmp_path / "work")!r})',
@@ -752,12 +994,23 @@ def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
         tmp_path
         / "drive-root"
         / "model-assets"
-        / "weights"
+        / "models"
         / "openfold3"
+        / "weights"
         / "p1.pt"
+    )
+    cached_download = (
+        tmp_path
+        / "drive-root"
+        / "model-assets"
+        / "downloads"
+        / "openfold3"
+        / "source.bin"
     )
     cached_weight.parent.mkdir(parents=True)
     cached_weight.write_bytes(b"cached")
+    cached_download.parent.mkdir(parents=True)
+    cached_download.write_bytes(b"download")
     cached_shared_asset = (
         tmp_path
         / "drive-root"
@@ -793,8 +1046,14 @@ def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
     assert namespace["foldjax_home"] == tmp_path / "local-cache"
     assert namespace["DRIVE_ROOT"] == tmp_path / "drive-root"
     assert namespace["MODEL_ASSET_STORE"] == tmp_path / "drive-root" / "model-assets"
+    assert namespace["MODEL_STORE_ROOT"] == namespace["MODEL_ASSET_STORE"]
     assert namespace["MSA_STORE"] == tmp_path / "drive-root" / "msa"
     assert namespace["OUTPUT_BASE"] == tmp_path / "drive-root" / "outputs"
+    assert (
+        namespace["COMPILE_ARCHIVE_STORE"]
+        == tmp_path / "drive-root" / "compile-cache"
+    )
+    assert namespace["COMPILE_CACHE_DRIVE_MAX_BYTES"] == int(2.5 * 2**30)
     assert namespace["COMPILE_CACHE"] == tmp_path / "work" / "compile-cache"
     assert (namespace["foldjax_home"] / "weights").is_dir()
     assert (namespace["foldjax_home"] / "weights" / "openfold3").is_symlink()
@@ -806,14 +1065,22 @@ def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
     ).is_dir()
     assert namespace["MIGRATED_MODEL_STORES"] == (
         "openfold3/weights",
+        "openfold3/downloads",
         "shared/assets",
     )
+    assert not (namespace["MODEL_ASSET_STORE"] / "models").exists()
     assert (
         namespace["foldjax_home"] / "weights" / "openfold3" / "p1.pt"
     ).read_bytes() == b"cached"
     assert (
         namespace["MODEL_STORE_ROOT"] / "openfold3" / "weights" / "p1.pt"
     ).read_bytes() == b"cached"
+    assert (
+        namespace["MODEL_STORE_ROOT"]
+        / "openfold3"
+        / "downloads"
+        / "source.bin"
+    ).read_bytes() == b"download"
     assert (namespace["SHARED_ASSET_STORE"] / "components.v1.cif").read_bytes() == (
         b"shared"
     )
@@ -831,8 +1098,8 @@ def test_colab_can_persist_model_assets_without_persisting_msa(
 ) -> None:
     source = _cell_source("configure-runtime")
     source = source.replace(
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
+        "PERSIST_MSA_TO_DRIVE = True",
+        "PERSIST_MSA_TO_DRIVE = False",
     )
     replacements = {
         'WORK_DIR = Path("/content/foldjax-colab")': (
@@ -877,10 +1144,6 @@ def test_colab_model_store_migration_never_merges_conflicting_directories(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = _cell_source("configure-runtime")
-    source = source.replace(
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
-    )
     replacements = {
         'WORK_DIR = Path("/content/foldjax-colab")': (
             f'WORK_DIR = Path({str(tmp_path / "work")!r})'
@@ -906,7 +1169,6 @@ def test_colab_model_store_migration_never_merges_conflicting_directories(
         tmp_path
         / "drive-root"
         / "model-assets"
-        / "models"
         / "openfold3"
         / "weights"
         / "p1.pt"
@@ -944,10 +1206,6 @@ def test_colab_detects_private_alphafold3_parameters_in_the_drive_store(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = _cell_source("configure-runtime")
-    source = source.replace(
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
-        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
-    )
     replacements = {
         'WORK_DIR = Path("/content/foldjax-colab")': (
             f'WORK_DIR = Path({str(tmp_path / "work")!r})'
@@ -965,7 +1223,6 @@ def test_colab_detects_private_alphafold3_parameters_in_the_drive_store(
         tmp_path
         / "drive-root"
         / "model-assets"
-        / "models"
         / "alphafold3"
         / "weights"
         / "af3.bin"
@@ -1079,6 +1336,43 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
     assert namespace["MODEL_PRECISION"]["protenix"] == "native bfloat16"
     assert namespace["MODEL_PRECISION"]["boltz2"] == "native bfloat16"
     assert namespace["MODEL_PRECISION"]["openfold3"] == "float32"
+
+
+def test_colab_reports_legacy_output_layout_once_without_moving_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(foldjax, "resolve_requests", lambda request: (request,))
+    job_path = tmp_path / "job.json"
+    job_path.write_text("{}", encoding="utf-8")
+    legacy = tmp_path / "outputs" / "job" / "default" / "openfold3" / "job"
+    legacy.mkdir(parents=True)
+    marker = legacy / "foldjax_run.json"
+    marker.write_text("{}", encoding="utf-8")
+    cards: list[tuple] = []
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "USE_FUSED_TRIANGLE_KERNELS": False,
+        "SELECTED_MODELS": ("openfold3",),
+        "JOB_SLUG": "job",
+        "job_path": job_path,
+        "MODEL_WEIGHTS": {"openfold3": None},
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "MODEL_PROFILES": {"openfold3": None},
+        "MSA_POLICY": "none",
+        "Path": Path,
+        "pd": __import__("pandas"),
+        "foldjax_card": lambda *args, **kwargs: cards.append((args, kwargs)),
+        "foldjax_table": lambda *_args, **_kwargs: None,
+    }
+
+    exec(_cell_source("plan-runs"), namespace)
+    exec(_cell_source("plan-runs"), namespace)
+
+    notices = [card for card in cards if card[0][0] == "Earlier output layout found"]
+    assert len(notices) == 1
+    assert marker.is_file()
+    assert namespace["model_requests"][0].output_dir == legacy.parent
 
 
 @pytest.mark.parametrize(
@@ -1251,7 +1545,8 @@ def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
         assert request.num_samples is None
         assert request.num_steps is None
         assert request.num_recycles is None
-        assert request.padding is None
+        assert request.padding is not None
+        assert request.padding.overflow == "exact"
         assert request.num_seeds == 1
         assert request.seeds is None
 
@@ -1310,7 +1605,8 @@ def test_colab_custom_schedule_seeds_msa_and_representations(
         assert request.max_msa_depth == 256
         assert request.representations == ("single", "pair")
         assert request.stop_after == "trunk"
-        assert request.padding is None
+        assert request.padding is not None
+        assert request.padding.overflow == "exact"
         assert (request.num_samples, request.num_steps, request.num_recycles) == (
             2,
             60,
@@ -1580,6 +1876,167 @@ def test_colab_storage_error_reports_target_free_space_and_requirement(
     assert "select storage with more free space" in message
 
 
+def test_colab_weight_fetch_reports_the_actual_failed_stage_and_message(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "boltz2",
+        entity_types=("protein", "rna", "ligand"),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "weights" / "boltz2",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    cards = []
+
+    def record_card(title, message, **kwargs):
+        cards.append((title, message, kwargs))
+
+    namespace = {
+        "SELECTED_MODELS": ("boltz2",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "foldjax_home": tmp_path,
+        "MODEL_ASSET_STORE": tmp_path,
+        "MODEL_DIRECTORY_MAP": _model_directory_map(tmp_path, ("boltz2",)),
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(
+            run=lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=1,
+                stdout="boltz2: publisher files\n",
+                stderr=(
+                    "[weights] boltz2/released download error mols.tar: "
+                    "download or verification failed\n"
+                    "mols.tar arrived incomplete: connection dropped\n"
+                ),
+            )
+        ),
+        "sys": sys,
+        "foldjax_card": record_card,
+        "foldjax_table": lambda *_args, **_kwargs: None,
+    }
+
+    with pytest.raises(RuntimeError) as error:
+        exec(_cell_source("fetch-weights"), namespace)
+
+    message = str(error.value)
+    assert "boltz2 weight download, verification, or conversion failed" in message
+    assert "mols.tar arrived incomplete: connection dropped" in message
+    assert cards[-1][0] == "boltz2 setup failed"
+    metrics = dict(cards[-1][2]["metrics"])
+    assert metrics["stage"] == "weight download, verification, or conversion"
+    assert metrics["exit status"] == 1
+    assert "mols.tar arrived incomplete" in metrics["last message"]
+
+
+def test_colab_weight_fetch_updates_one_live_progress_card(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "boltz2",
+        entity_types=("protein",),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "weights" / "boltz2",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = iter(
+                (
+                    "[weights] boltz2/released download start: fetching\n",
+                    "[foldjax-progress]\tboltz2_conf.ckpt\t20971520\t104857600\n",
+                    "[foldjax-progress]\tboltz2_conf.ckpt\t104857600\t104857600\n",
+                    "[weights] boltz2/released convert done: ready\n",
+                )
+            )
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait():
+            return 0
+
+    class Progress:
+        instances = []
+
+        def __init__(self, title, message):
+            self.title = title
+            self.updates = [(message, {})]
+            self.succeeded = False
+            self.__class__.instances.append(self)
+
+        def update(self, message, **kwargs):
+            self.updates.append((message, kwargs))
+
+        def succeed(self, message, **kwargs):
+            self.succeeded = True
+            self.updates.append((message, kwargs))
+
+        def fail(self, message, **kwargs):
+            pytest.fail(f"unexpected progress failure: {message} {kwargs}")
+
+    fake_subprocess = SimpleNamespace(
+        PIPE=object(),
+        STDOUT=object(),
+        Popen=lambda *_args, **_kwargs: FakeProcess(),
+        run=lambda *_args, **_kwargs: pytest.fail("used non-live subprocess path"),
+    )
+    namespace = {
+        "SELECTED_MODELS": ("boltz2",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "foldjax_home": tmp_path,
+        "MODEL_ASSET_STORE": tmp_path,
+        "MODEL_DIRECTORY_MAP": _model_directory_map(tmp_path, ("boltz2",)),
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": fake_subprocess,
+        "threading": __import__("threading"),
+        "os": __import__("os"),
+        "sys": sys,
+        "FoldJAXProgress": Progress,
+        **_notebook_ui(),
+    }
+
+    exec(_cell_source("fetch-weights"), namespace)
+
+    progress = Progress.instances[0]
+    assert progress.title == "Preparing boltz2"
+    assert progress.succeeded is True
+    determinate = [
+        kwargs
+        for _message, kwargs in progress.updates
+        if kwargs.get("total") == 104857600
+    ]
+    assert any(item["current"] == 20971520 for item in determinate)
+    assert any(item["current"] == 104857600 for item in determinate)
+    first_transfer_metrics = dict(determinate[0]["metrics"])
+    assert first_transfer_metrics["downloaded"] == "20.0 MiB"
+
+
 def test_colab_blocks_released_esmfold2_on_a_16_gib_device(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1826,6 +2283,7 @@ def test_colab_prediction_and_output_cells_execute_together(
     tmp_path: Path, monkeypatch
 ) -> None:
     seen: list[PredictionRequest] = []
+    synced: list[str] = []
 
     def fake_resolve(request: PredictionRequest):
         assert request.model in ("protenix", "opendde", "boltz2", "openfold3")
@@ -1897,6 +2355,10 @@ def test_colab_prediction_and_output_cells_execute_together(
             },
             "ACCELERATOR_KIND": "tpu",
             "USE_FUSED_TRIANGLE_KERNELS": False,
+            "sync_compile_cache_archive": lambda model: (
+                synced.append(model)
+                or {"model": model, "status": "saved", "bytes": 1}
+            ),
         }
     )
     exec(_cell_source("build-job"), namespace)
@@ -1910,6 +2372,7 @@ def test_colab_prediction_and_output_cells_execute_together(
         "boltz2",
         "openfold3",
     )
+    assert tuple(synced) == tuple(request.model for request in seen)
     assert seen[0].options == {
         "attention_kernel": "xla",
         "triangle_kernel": "xla",
@@ -1930,9 +2393,13 @@ def test_colab_prediction_and_output_cells_execute_together(
     )
     assert all(request.num_seeds == 1 for request in seen)
     assert all(request.msa == "auto" for request in seen)
-    assert all(
-        str(request.output_dir).startswith(str(tmp_path / "persistent-outputs"))
-        for request in seen
+    assert tuple(Path(request.output_dir) for request in seen) == tuple(
+        tmp_path
+        / "persistent-outputs"
+        / "protein-rna-atp-demo"
+        / "default"
+        / model
+        for model in ("protenix", "opendde", "boltz2", "openfold3")
     )
     assert tuple(namespace["comparison"]["model"]) == (
         "boltz2",
@@ -2005,16 +2472,17 @@ def test_colab_prediction_and_output_cells_execute_together(
 
     archive = Path(downloads[0])
     assert archive.is_file()
+    assert archive.name == "protein-rna-atp-demo-default-foldjax.zip"
     with zipfile.ZipFile(archive) as bundle:
         names = set(bundle.namelist())
     assert {
         "input/job.json",
         "comparison.csv",
         "batch_report.json",
-        "outputs/protenix/protein-rna-atp-demo/protenix.cif",
-        "outputs/opendde/protein-rna-atp-demo/opendde.cif",
-        "outputs/boltz2/protein-rna-atp-demo/boltz2.cif",
-        "outputs/openfold3/protein-rna-atp-demo/openfold3.cif",
+        "outputs/protenix/protenix.cif",
+        "outputs/opendde/opendde.cif",
+        "outputs/boltz2/boltz2.cif",
+        "outputs/openfold3/openfold3.cif",
     }.issubset(names)
 
 

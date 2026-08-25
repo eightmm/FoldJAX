@@ -12,6 +12,34 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Protenix gains its other published base checkpoint, and says why v2 is not
+  one.** `--profile base-20250630` fetches
+  `protenix_base_20250630_v1.0.0.pt`: the same 368M architecture as the
+  release, trained to a 2025-06-30 wwPDB cutoff instead of AlphaFold 3's
+  2021-09-30. Upstream recommends it for practical use and keeps the release
+  for benchmarks, because comparing against AlphaFold 3 needs AlphaFold 3's
+  cutoff; the release therefore stays the default and this is opt-in. It gets
+  its own storage root because its published file is also named `protenix.pt`
+  and a shared root would have the second fetch convert over the first, and it
+  does not pick up the ESM/ISM staging the mini profiles need, having no
+  encoder beside it. Its SHA-256 is FoldJAX's own, recorded from the file at
+  that URL on 2026-08-25; the publisher serves no checksum.
+
+  Selecting `model_name=protenix-v2` without supplying weights used to fail
+  with a message about the `released` profile conflicting, which reads as a
+  choice the caller got wrong. It is not one. The port carries v2 — its
+  sampler defaults and its 2,560-token limit are in `runtime_policy`, and its
+  blocks run at v2's wider dimensions unchanged, since they take those from
+  the weights rather than a config — but ByteDance has not published
+  `protenix-v2.pt`. The URL answers anonymous requests with `AccessDenied`
+  where the v1 checkpoints serve normally, and a key that does not exist
+  answers 404, which is how a private object differs from a missing one.
+  Upstream's answer, on issues open since the 2026-04-08 announcement, is that
+  accessibility is under company-level internal review with no timeline. The
+  error now says that, and says to pass the file with `--weights` if you have
+  it.
+
+
 - **`foldjax setup` now fetches OpenFold3's weights, leaving AlphaFold 3 as the
   only model anyone has to supply by hand.** The port's `of3_ft3_v1.pt` was
   already declared with the publisher's own URL, size and SHA-256, but was

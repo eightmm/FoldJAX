@@ -1873,3 +1873,67 @@ def test_request_requires_a_real_compile_cache_boolean(
 ) -> None:
     with pytest.raises(ValueError, match="use_compile_cache must be a boolean"):
         _request(tmp_path, use_compile_cache=value)
+
+
+def test_protenix_v2_says_why_it_cannot_be_fetched(tmp_path: Path) -> None:
+    """The port runs Protenix v2; ByteDance does not publish its checkpoint.
+
+    Selecting it without supplying weights used to fail with a message about
+    the 'released' profile conflicting, which reads as a choice the caller got
+    wrong. It is not one: no profile selects v2 because there is nothing to
+    download. Checked 2026-08-25, that key answers anonymous requests with
+    AccessDenied while a key that does not exist answers 404.
+    """
+    from foldjax.backends.protenix import apply_managed_profile
+
+    with pytest.raises(ValueError) as error:
+        apply_managed_profile({"model_name": "protenix-v2"}, "released")
+
+    message = str(error.value)
+    assert "--weights" in message, "must say how to run it anyway"
+    assert "protenix-v2.pt" in message, "must name the file to supply"
+    assert "conflicts with" not in message, "the old message blamed the caller"
+
+
+def test_protenix_v2_runs_from_supplied_weights(tmp_path: Path) -> None:
+    """Supplying the checkpoint is the supported route, so it must resolve.
+
+    `model_name` is not cosmetic here -- it carries v2's sampler schedule and
+    its 2,560-token limit -- so it has to survive the option surface rather
+    than being normalised to the managed model.
+    """
+    from foldjax.api import resolve_request
+    from foldjax.models.protenix.runtime_policy import KNOWN_MODEL_NAMES
+    from foldjax.schema import PredictionRequest
+
+    assert "protenix-v2" in KNOWN_MODEL_NAMES, "the port carries this model"
+
+    job = tmp_path / "job.json"
+    job.write_text(
+        json.dumps(
+            {
+                "name": "t",
+                "entities": [
+                    {"type": "protein", "id": ["A"], "sequence": "ACDEFGHIKLMN"}
+                ],
+            }
+        )
+    )
+    checkpoint = tmp_path / "protenix-v2.pt"
+    checkpoint.write_bytes(b"")
+
+    resolved = resolve_request(
+        PredictionRequest(
+            model="protenix",
+            input=job,
+            output_dir=tmp_path / "out",
+            weights=checkpoint,
+            options={"model_name": "protenix-v2"},
+        )
+    )
+
+    assert resolved.options["model_name"] == "protenix-v2", (
+        "the name selects v2's sampler schedule and token limit; normalising "
+        "it to the managed model would silently run a different model"
+    )
+    assert resolved.weights == checkpoint

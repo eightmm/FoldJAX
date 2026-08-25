@@ -11,14 +11,18 @@
 Biomolecular structure prediction in JAX. Six models behind one interface,
 all carried inside the package:
 
-| model | vendored at | licence | upstream |
-|---|---|---|---|
-| `alphafold3` | `foldjax.models.alphafold3` | Apache-2.0 | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
-| `boltz2` | `foldjax.models.boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
-| `esmfold2` | `foldjax.models.esmfold2` | MIT + upstream notices | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
-| `opendde` | `foldjax.models.opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE) |
-| `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
-| `protenix` | `foldjax.models.protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix) |
+| model | vendored at | code licence | parameters / additional terms | upstream |
+|---|---|---|---|---|
+| `alphafold3` | `foldjax.models.alphafold3` | Apache-2.0 | [AlphaFold 3 Model Parameters Terms](https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md): non-commercial use by/for non-commercial organizations; must be received directly from Google; redistribution restricted | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
+| `boltz2` | `foldjax.models.boltz2` | MIT | MIT, code and weights; academic and commercial use | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
+| `esmfold2` | `foldjax.models.esmfold2` | MIT + third-party notices | MIT for ESMFold2 and ESMC-6B; [Biohub Acceptable Use Policy](https://biohub.org/acceptable-use-policy/) also applies | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
+| `opendde` | `foldjax.models.opendde` | Apache-2.0 | Apache-2.0 released checkpoints | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE#license) |
+| `openfold3` | `foldjax.models.openfold3` | Apache-2.0 | Apache-2.0 model and parameters; academic and commercial use | [OpenFold/OpenFold3](https://huggingface.co/OpenFold/OpenFold3) |
+| `protenix` | `foldjax.models.protenix` | Apache-2.0 | Apache-2.0 code and model parameters; academic and commercial use | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
+
+These are publisher summaries, not legal advice. Review the linked current
+terms before use; third-party chemistry assets, sequence databases and other
+referenced data retain their own licences and terms.
 
 Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations
 that match their upstream's results; AlphaFold 3 is upstream's own source,
@@ -100,7 +104,7 @@ FoldJAX's common input API.
 A compact form accepts protein,
 DNA, RNA, CCD ligands, and SMILES ligands. Independent checkboxes expose all six
 carried models; the default sends one compact synthetic protein+RNA+ATP job to
-Protenix, OpenDDE, and OpenFold3. ESMFold2 accepts the same protein, DNA, RNA,
+Protenix, OpenDDE, Boltz-2, and OpenFold3. ESMFold2 accepts the same protein, DNA, RNA,
 ligand, modification, and covalent-bond schema; its complete public
 structure+ESMC+chemistry bundle is 26.77 GB. OpenFold3 is selected by default
 and always downloads or reuses its managed public p1 checkpoint. AlphaFold 3
@@ -125,9 +129,11 @@ served by a verified sequence-and-search-provenance cache entry, or will require
 a search. Protein MSA results are therefore reused across selected models and
 repeated runs. Cache persistence to Drive covers weights, MSA results, and
 generated runtime assets; output persistence separately keeps prediction trees
-and their resume manifests across VM replacement. Compilation remains local to
-the active accelerator/runtime. TPU execution remains experimental until every
-model has real-TPU parity evidence. The notebook shows checkpoint
+and their resume manifests across VM replacement. Compilation writes only to a
+4 GiB local working cache, while selected model/JAX/device/kernel packs are
+restored from and synchronized to a private Drive archive capped globally at
+2.5 GiB with 30-day LRU retention. TPU execution remains experimental until
+every model has real-TPU parity evidence. The notebook shows checkpoint
 source/licence/size before downloading and keeps its short
 1-sample/20-step/1-recycle tutorial schedule clearly separated from every
 model's released defaults. In Python,
@@ -559,7 +565,21 @@ skipped. Library callers can receive the same structured `AssetEvent` objects
 through `foldjax.assets.fetch(..., on_event=callback)` instead of parsing text.
 
 `setup` fetches and converts every model whose weights are published — Boltz-2,
-OpenDDE, OpenFold3, Protenix — plus shared CCD assets. OpenFold3's 2.29 GB p1
+OpenDDE, OpenFold3, Protenix — plus shared CCD assets. Protenix has a second
+published base checkpoint behind `--profile base-20250630`: the same 368M
+architecture trained to a 2025-06-30 wwPDB cutoff instead of the release's
+2021-09-30. Upstream recommends it for practical use and keeps the release for
+benchmarks, since comparing against AlphaFold 3 needs AlphaFold 3's cutoff, and
+FoldJAX follows that split.
+
+**Protenix v2 is carried but cannot be fetched.** The port runs the
+architecture — `model_name=protenix-v2` selects its sampler schedule and its
+2,560-token limit — but ByteDance has not published `protenix-v2.pt`. Its URL
+answers anonymous requests with `AccessDenied`, and upstream's position is that
+accessibility is under internal review with no timeline
+([bytedance/Protenix#295](https://github.com/bytedance/Protenix/issues/295),
+open since the 2026-04-08 announcement). If you have the file, pass it with
+`--weights` and keep `model_name=protenix-v2`. OpenFold3's 2.29 GB p1
 checkpoint comes from the publisher's own unsigned S3 key, pinned by SHA-256,
 so it needs no account and no request; upstream p2 and OpenBind v0.5 target
 newer incompatible architectures and are not substituted.

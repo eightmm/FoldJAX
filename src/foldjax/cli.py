@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from collections.abc import Sequence
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -720,11 +721,32 @@ class _WeightReporter:
 
     def __init__(self) -> None:
         self._progress_active = False
+        self._line_progress = os.environ.get("FOLDJAX_PROGRESS_MODE") == "lines"
+        self._last_line_bytes: dict[str, int] = {}
+        self._last_line_time: dict[str, float] = {}
 
     def progress(self, name: str, done: int, total: int | None) -> None:
         if sys.stderr.isatty():
             _report(name, done, total)
             self._progress_active = True
+        elif self._line_progress:
+            now = time.monotonic()
+            previous_bytes = self._last_line_bytes.get(name, 0)
+            previous_time = self._last_line_time.get(name, 0.0)
+            byte_step = max(16 * 1024**2, (total or 0) // 100)
+            if (
+                done == total
+                or done - previous_bytes >= byte_step
+                or now - previous_time >= 2.0
+            ):
+                total_text = "" if total is None else str(total)
+                print(
+                    f"[foldjax-progress]\t{name}\t{done}\t{total_text}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self._last_line_bytes[name] = done
+                self._last_line_time[name] = now
         # Non-interactive logs use the structured start/done events. Emitting
         # byte callbacks too would duplicate every completed download line.
 

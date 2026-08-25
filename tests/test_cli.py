@@ -5,7 +5,20 @@ from pathlib import Path
 
 import pytest
 
-from foldjax.cli import _options, entrypoint, main
+from foldjax.cli import _options, _WeightReporter, entrypoint, main
+
+
+def test_weight_reporter_emits_machine_readable_progress_when_requested(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("FOLDJAX_PROGRESS_MODE", "lines")
+    reporter = _WeightReporter()
+
+    reporter.progress("weights.ckpt", 20 * 1024**2, 100 * 1024**2)
+
+    assert capsys.readouterr().err == (
+        "[foldjax-progress]\tweights.ckpt\t20971520\t104857600\n"
+    )
 
 
 def test_models_cli_lists_backends(capsys) -> None:
@@ -67,16 +80,17 @@ def test_models_json_reports_weight_readiness(
     assert boltz["weights"]["setup"] == "foldjax weights fetch --model boltz2"
     alphafold = next(item for item in payload if item["model"] == "alphafold3")
     assert alphafold["weights"]["fetchable"] is False
-    assert "Request the parameters" in alphafold["weights"]["setup"]
+    assert "download af3.bin.zst directly from Google" in alphafold["weights"]["setup"]
     assert alphafold["runtime"] == {
         "notes": alphafold["runtime"]["notes"],
         "ready": False,
         "requires_network": True,
         "setup": "foldjax runtime prepare --model alphafold3",
     }
-    assert next(item for item in payload if item["model"] == "boltz2")[
-        "runtime"
-    ]["ready"] is True
+    assert (
+        next(item for item in payload if item["model"] == "boltz2")["runtime"]["ready"]
+        is True
+    )
     openfold = next(item for item in payload if item["model"] == "openfold3")
     requirements = openfold["input_requirements"]
     assert requirements["openfold3-features"] == {
@@ -86,9 +100,7 @@ def test_models_json_reports_weight_readiness(
         "required_extras": [],
         "requires_torch": False,
     }
-    assert requirements["foldjax"]["required_extras"] == [
-        "openfold3-preprocess"
-    ]
+    assert requirements["foldjax"]["required_extras"] == ["openfold3-preprocess"]
     assert requirements["foldjax"]["preprocessing_runtime"] == "jax"
     assert requirements["foldjax"]["requires_torch"] is False
     esmfold = next(item for item in payload if item["model"] == "esmfold2")
@@ -99,8 +111,7 @@ def test_models_json_reports_weight_readiness(
     assert profiles["structure-only"]["download_bytes"] == 1_356_814_149
     protenix = next(item for item in payload if item["model"] == "protenix")
     protenix_profiles = {
-        profile["profile"]: profile
-        for profile in protenix["weights"]["profiles"]
+        profile["profile"]: profile for profile in protenix["weights"]["profiles"]
     }
     assert protenix_profiles["mini-esm-v0.5.0"]["download_bytes"] == 6_865_874_647
     assert protenix_profiles["mini-ism-v0.5.0"]["download_bytes"] == 12_544_004_971
@@ -346,9 +357,7 @@ def test_weights_path_accepts_a_protenix_variant_profile(
     assert capsys.readouterr().out.strip().endswith("protenix-mini-ism/mini.jax")
 
 
-def test_runtime_status_is_non_mutating_and_json_friendly(
-    monkeypatch, capsys
-) -> None:
+def test_runtime_status_is_non_mutating_and_json_friendly(monkeypatch, capsys) -> None:
     from foldjax.models.alphafold3 import build
 
     monkeypatch.setattr(build, "is_ready", lambda: False)
@@ -422,9 +431,7 @@ def test_runtime_prepare_materializes_alphafold3_only_when_needed(
     assert payload["requires_network"] is False
 
 
-def test_runtime_prepare_is_a_clean_noop_for_other_models(
-    monkeypatch, capsys
-) -> None:
+def test_runtime_prepare_is_a_clean_noop_for_other_models(monkeypatch, capsys) -> None:
     from foldjax.models.alphafold3 import build
 
     monkeypatch.setattr(
@@ -469,7 +476,8 @@ def test_setup_fetches_defaults_and_reports_opt_in_or_manual_models(
         "openfold3",
         "protenix",
     ], "every model whose weights are published"
-    assert "alphafold3  manual" in out and "Request the parameters" in out
+    assert "alphafold3  manual" in out
+    assert "download af3.bin.zst directly from Google" in out
     # AlphaFold 3 is the only model a person has to fetch by hand, because it
     # is the only one whose parameters are not published for redistribution.
     assert "openfold3   opt-in" not in out
@@ -846,9 +854,7 @@ def test_plan_cli_redacts_secret_options(tmp_path: Path, capsys) -> None:
     assert secret not in text
     assert payload["options"] == {
         "msa_server_password": "[REDACTED]",
-        "steering_args": {
-            "headers": {"Authorization": "[REDACTED]", "safe": "ok"}
-        },
+        "steering_args": {"headers": {"Authorization": "[REDACTED]", "safe": "ok"}},
     }
 
 

@@ -40,6 +40,14 @@ _CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
 
 RELEASED_PROFILE = "released"
 STRUCTURE_ONLY_PROFILE = "structure-only"
+#: Protenix's other public base checkpoint: the same 368M architecture as the
+#: release, trained to a 2025-06-30 wwPDB cutoff instead of AlphaFold 3's
+#: 2021-09-30. Upstream recommends it "for practical application scenarios" and
+#: keeps the default for benchmarks, because a fair comparison against
+#: AlphaFold 3 needs the matching cutoff. That is why this is a profile rather
+#: than the default: it predicts better on recent targets and worse on the one
+#: question the benchmark table asks.
+PROTENIX_BASE_20250630_PROFILE = "base-20250630"
 PROTENIX_MINI_ESM_PROFILE = "mini-esm-v0.5.0"
 PROTENIX_MINI_ISM_PROFILE = "mini-ism-v0.5.0"
 
@@ -209,7 +217,10 @@ def _convert_protenix(model: str, source: Path) -> Path:
     from foldjax.models.protenix.bridge.torch_mapping import load_torch_checkpoint
     from foldjax.models.protenix.bridge.weights_io import save_native_weights
 
-    out = weights_dir(model) / "protenix_base_default_v1.0.0.jax"
+    # Derived, not hard-coded: a second base checkpoint converts through this
+    # same function, and a fixed output name would have it overwrite the
+    # release's converted weights in place.
+    out = weights_dir(model) / assets_for(model).native
     out.parent.mkdir(parents=True, exist_ok=True)
     # Written uncompressed: these are float32 weights, so gzip saves about 6%
     # of disk but costs 6x on every load (8.5 s vs 1.3 s for OpenDDE's 2.6 GB).
@@ -665,6 +676,19 @@ class _ProtenixVariant:
     native: str
 
 
+#: Verified by download on 2026-08-25: the publisher serves no checksum, so
+#: this is FoldJAX's own hash of the file at that URL, the same way the release
+#: checkpoint's was recorded.
+_PROTENIX_BASE_20250630 = Download(
+    name="protenix.pt",
+    url=(
+        "https://protenix.tos-cn-beijing.volces.com/checkpoint/"
+        "protenix_base_20250630_v1.0.0.pt"
+    ),
+    sha256="e850a6b16b3d254ba9a7f67cefd9b59e111fb2036ae036d2703d050aff6ab611",
+    size=1_475_945_945,
+)
+
 _PROTENIX_VARIANTS = {
     PROTENIX_MINI_ESM_PROFILE: _ProtenixVariant(
         profile=PROTENIX_MINI_ESM_PROFILE,
@@ -716,6 +740,13 @@ _PROTENIX_VARIANTS = {
 _PROTENIX_PROFILE_BY_INTERNAL_MODEL = {
     variant.model: profile for profile, variant in _PROTENIX_VARIANTS.items()
 }
+#: Its own storage root, so its converted weights cannot overwrite the
+#: release's: both files would otherwise be `protenix.pt` converted into the
+#: same directory, and the second fetch would silently replace the first.
+_PROTENIX_BASE_20250630_MODEL = "protenix-base-20250630"
+_PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_BASE_20250630_MODEL] = (
+    PROTENIX_BASE_20250630_PROFILE
+)
 
 
 def _public_model_name(model: str) -> str:
@@ -1284,23 +1315,30 @@ REGISTRY: dict[str, ModelAssets] = {
     "alphafold3": ModelAssets(
         model="alphafold3",
         source="https://github.com/google-deepmind/alphafold3",
-        licence="AlphaFold 3 model parameters terms of use (not redistributable)",
-        # Empty on purpose. DeepMind releases the parameters only to applicants
-        # who accept their terms, so FoldJAX never downloads or redistributes
-        # them; it only knows where to look once you have them.
+        licence=(
+            "AlphaFold 3 Model Parameters Terms of Use "
+            "(non-commercial use by or for non-commercial organizations; "
+            "must be received directly from Google; redistribution restricted)"
+        ),
+        # Empty on purpose. Google now offers a direct parameter download, but
+        # its separate terms still require receipt directly from Google and
+        # restrict use and sharing. FoldJAX therefore only locates a user-supplied
+        # copy and never downloads or redistributes it.
         downloads=(),
         native=".",
         requires=("af3.bin",),
         convert=_bring_your_own,
         ready_check=_alphafold3_ready,
-        notes="Request the parameters from DeepMind, then put af3.bin (or the "
-        "af3.bin.zst you were sent) in this directory. AlphaFold 3 reads its "
-        "own format, so nothing is converted.",
+        notes="Review the parameter terms and download af3.bin.zst directly "
+        "from Google, then put af3.bin (or af3.bin.zst) in this directory. "
+        "AlphaFold 3 reads its own format, so nothing is converted.",
     ),
     "protenix": ModelAssets(
         model="protenix",
         source="https://github.com/bytedance/Protenix",
-        licence="Apache-2.0",
+        licence=(
+            "Apache-2.0 (model parameters; academic and commercial use)"
+        ),
         downloads=(
             Download(
                 name="protenix.pt",
@@ -1330,7 +1368,7 @@ REGISTRY: dict[str, ModelAssets] = {
     "opendde": ModelAssets(
         model="opendde",
         source="https://huggingface.co/aurekaresearch/OpenDDE",
-        licence="see the OpenDDE model card",
+        licence="Apache-2.0 (released checkpoints and code)",
         downloads=(
             Download(
                 name="opendde.pt",
@@ -1357,7 +1395,10 @@ REGISTRY: dict[str, ModelAssets] = {
     "esmfold2": ModelAssets(
         model="esmfold2",
         source="https://huggingface.co/biohub/ESMFold2",
-        licence="MIT for the structure weights; ESMC-6B is MIT plus its own terms",
+        licence=(
+            "MIT (ESMFold2 and ESMC-6B weights); "
+            "Biohub Acceptable Use Policy applies"
+        ),
         downloads=(
             Download(
                 name="model.safetensors",
@@ -1522,7 +1563,10 @@ REGISTRY: dict[str, ModelAssets] = {
     "openfold3": ModelAssets(
         model="openfold3",
         source="https://github.com/aqlaboratory/openfold-3",
-        licence="Apache-2.0 for code and weights",
+        licence=(
+            "Apache-2.0 (OpenFold3 model and parameters; "
+            "academic and commercial use)"
+        ),
         downloads=(
             # OpenFold3 tag 0.3.1's own download script uses this unsigned
             # bucket/key. Version 0.4 explicitly breaks p1 checkpoint
@@ -1556,7 +1600,7 @@ REGISTRY: dict[str, ModelAssets] = {
     "boltz2": ModelAssets(
         model="boltz2",
         source="https://github.com/jwohlwend/boltz",
-        licence="MIT",
+        licence="MIT (code and weights; academic and commercial use)",
         downloads=(
             Download(
                 name="boltz2_conf.ckpt",
@@ -1608,6 +1652,34 @@ REGISTRY: dict[str, ModelAssets] = {
         "torch-free checkpoint reader and NumPy featurizer.",
     ),
 }
+
+
+def _protenix_base_20250630_assets() -> ModelAssets:
+    """The release entry with its checkpoint swapped and its own storage root.
+
+    Everything else is shared: the same converter, the same CCD and template
+    assets, the same architecture. Only the published file and where its
+    converted form lands differ.
+    """
+    base = REGISTRY["protenix"]
+    shared = tuple(item for item in base.downloads if item.shared)
+    native = "protenix_base_20250630_v1.0.0.jax"
+    return dataclasses.replace(
+        base,
+        model=_PROTENIX_BASE_20250630_MODEL,
+        downloads=(_PROTENIX_BASE_20250630, *shared),
+        native=native,
+        requires=(native,),
+        in_default_setup=False,
+        conversion_sources=("protenix.pt",),
+        conversion_schema="protenix-base-20250630-native-v1",
+        notes=(
+            "Protenix's base architecture trained to a 2025-06-30 wwPDB "
+            "cutoff rather than the release's 2021-09-30. Upstream recommends "
+            "it for practical use and keeps the release for benchmarks, "
+            "because comparing against AlphaFold 3 needs AlphaFold 3's cutoff."
+        ),
+    )
 
 
 def _protenix_variant_assets(profile: str) -> ModelAssets:
@@ -1667,6 +1739,7 @@ def available_profiles(model: str) -> tuple[str, ...]:
     if normalized == "protenix":
         return (
             RELEASED_PROFILE,
+            PROTENIX_BASE_20250630_PROFILE,
             PROTENIX_MINI_ESM_PROFILE,
             PROTENIX_MINI_ISM_PROFILE,
         )
@@ -1705,6 +1778,8 @@ def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
         return spec
 
     if normalized == "protenix":
+        if selected == PROTENIX_BASE_20250630_PROFILE:
+            return _protenix_base_20250630_assets()
         return _protenix_variant_assets(selected)
 
     downloads = tuple(
@@ -2528,16 +2603,17 @@ def fetch(
                     if not (weights_dir(spec.model) / item).exists()
                 ]
                 if not spec.downloads:
-                    # Nothing was downloaded because nothing can be: these are the
-                    # models whose parameters their publisher hands out only on
-                    # request. Reporting it as a failed conversion describes a step
-                    # that never runs and hides the one thing the user has to do.
+                    # Nothing was downloaded because FoldJAX intentionally leaves
+                    # these parameters to direct publisher acquisition. Reporting
+                    # this as a failed conversion describes a step that never runs
+                    # and hides the one thing the user has to do.
                     #
                     # Only publisher policy belongs in `notes`; the shared
                     # fallback must not invent a licence or access reason.
                     raise RuntimeError(
                         f"FoldJAX cannot fetch {spec.model}'s parameters; its "
-                        f"publisher releases them only on request.\n{spec.notes}\n"
+                        "separate terms require obtaining them directly from "
+                        f"the publisher.\n{spec.notes}\n"
                         f"Expected here: {weights_dir(spec.model)}\n"
                         f"Still missing: {', '.join(missing)}"
                     )

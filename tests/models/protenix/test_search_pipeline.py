@@ -533,6 +533,7 @@ def test_template_resolution_requires_explicit_kalign_binary(
     obsolete = tmp_path / "obsolete.json"
     obsolete.write_text("{}")
     monkeypatch.delenv("PROTENIX_KALIGN_BINARY", raising=False)
+    monkeypatch.setenv("PATH", "")
 
     with pytest.raises(ValueError, match="PROTENIX_KALIGN_BINARY"):
         resolve_template_search_hits(

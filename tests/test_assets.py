@@ -784,6 +784,7 @@ def test_esmfold2_profiles_publish_their_exact_transfer_contract() -> None:
 def test_protenix_profiles_publish_isolated_structure_and_encoder_bundles() -> None:
     assert assets.available_profiles("protenix") == (
         "released",
+        "base-20250630",
         "mini-esm-v0.5.0",
         "mini-ism-v0.5.0",
     )
@@ -1364,7 +1365,7 @@ def test_manual_alphafold3_resolution_gives_the_real_setup_step(
         assets.resolve_weights("alphafold3")
 
     message = str(error.value)
-    assert "Request the parameters from DeepMind" in message
+    assert "download af3.bin.zst directly from Google" in message
     assert "weights fetch" not in message
     assert str(paths.weights_dir("alphafold3")) in message
 
@@ -1560,7 +1561,7 @@ def test_alphafold3_is_managed_but_never_downloaded() -> None:
     assert spec.downloads == ()
     assert spec.requires == ("af3.bin",)
     assert spec.native == "."
-    assert "redistributable" in spec.licence
+    assert "redistribution restricted" in spec.licence
 
 
 @pytest.mark.parametrize(
@@ -1608,10 +1609,10 @@ def test_fetching_a_non_redistributable_model_explains_itself(
     the user has to do. It also reached the CLI as an unhandled traceback.
     """
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
-    with pytest.raises(RuntimeError, match="releases them only on request") as error:
+    with pytest.raises(RuntimeError, match="obtaining them directly") as error:
         assets.fetch("alphafold3")
     message = str(error.value)
-    assert "Request the parameters from DeepMind" in message
+    assert "download af3.bin.zst directly from Google" in message
     assert str(tmp_path) in message, "must say where to put the file"
 
 
@@ -1666,7 +1667,7 @@ def test_the_cli_reports_an_unfetchable_model_without_a_traceback(
 
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
     assert main(["weights", "fetch", "--model", "alphafold3"]) == 1
-    assert "releases them only on request" in capsys.readouterr().err
+    assert "obtaining them directly" in capsys.readouterr().err
 
 
 def test_a_converted_model_still_fetches_a_file_added_later(
@@ -2115,3 +2116,39 @@ def test_full_size_hash_invalid_partial_restarts_from_zero(
 
     assert assets.download(item, "protenix").read_bytes() == payload
     assert seen_ranges == [None]
+
+
+def test_protenix_base_20250630_is_its_own_bundle_without_an_encoder() -> None:
+    """Protenix's other public base checkpoint, kept apart from the release.
+
+    Same 368M architecture, trained to a 2025-06-30 wwPDB cutoff instead of
+    AlphaFold 3's 2021-09-30. Two things have to hold for it to coexist. Its
+    published file is also named `protenix.pt`, so it needs its own storage
+    root or the second fetch converts over the first. And it has no
+    language-model conditioning, so it must not pick up the ESM/ISM staging the
+    mini profiles need.
+    """
+    from foldjax.backends.protenix import apply_managed_profile
+
+    spec = assets.assets_for("protenix", profile="base-20250630")
+    release = assets.assets_for("protenix")
+
+    assert spec.model != release.model, "a shared root would overwrite one file"
+    assert spec.native == "protenix_base_20250630_v1.0.0.jax"
+    assert spec.native != release.native
+    assert not spec.in_default_setup, "the release stays the default"
+
+    checkpoint = spec.downloads[0]
+    assert checkpoint.url.endswith("protenix_base_20250630_v1.0.0.pt")
+    assert checkpoint.size == 1_475_945_945
+    assert checkpoint.sha256 == (
+        "e850a6b16b3d254ba9a7f67cefd9b59e111fb2036ae036d2703d050aff6ab611"
+    )
+    assert {item.name for item in spec.downloads if item.shared} == {
+        item.name for item in release.downloads if item.shared
+    }, "CCD and template assets are shared, not duplicated"
+
+    applied = apply_managed_profile({}, "base-20250630", weights=Path("/w/x.jax"))
+    assert applied == {"model_name": "protenix_base_20250630_v1.0.0"}, (
+        "no esm_checkpoint_dir: this model has no encoder beside it"
+    )
