@@ -1,176 +1,202 @@
 """Render the benchmark figure from the results directory.
 
-One horizontal pair of bars per model and size — FoldJAX against the
-repository it reimplements — wall time on the left, peak memory on the right.
-The figure is generated from the same JSON records `bench/report.py` reads, so
-it cannot drift from the table: re-run the bench, re-run this, and both tell
-the same story. Failures are drawn as a hatched bar to the axis edge and
-labelled, because "did not run" is a measurement here, not missing data. The
-label distinguishes running out of memory from declining to start: upstream
-Protenix refuses protenix-v2 above 2,560 tokens by assertion, before it
-allocates anything, and drawing that as OOM would claim a measurement nobody
-took.
+One horizontal pair of bars per model and size — FoldJAX against the repository
+it reimplements — wall time on the left, peak memory on the right. The figure is
+generated from the same JSON records `bench/report.py` reads, so it cannot drift
+from the table: re-run the bench, re-run this, and both tell the same story.
+
+Two series, and only one of them is the subject, so this is the emphasis form:
+FoldJAX in the accent, upstream in the de-emphasis gray. The ratio rides each
+row as a direct label, because it is the number the reader would otherwise
+compute by eye, and it is the only label on the row — a value beside every bar
+would be thirty-six numbers nobody reads.
+
+Bars are square-ended. A 4px pixel-space round on the data end is the house
+mark spec, and it is omitted here rather than approximated: one panel is on a
+log scale, where a data-space radius makes every bar a different shape and the
+rounding starts reading as an encoding.
+
+A size that produced no structure is a label at the axis edge, not a bar. A
+failure has no magnitude; drawing it as a full-width hatch claims one, and the
+reasons differ anyway — upstream Protenix refuses protenix-v2 above 2,560 tokens
+before it allocates anything, which is not running out of memory.
 
     uv run --with matplotlib python docs/make_benchmark_figure.py \
-        --results ../foldjax-bench/results-lengths
+        --results ../foldjax-bench/results-merged-20260824
 
-Writes docs/benchmark-light.png and docs/benchmark-dark.png, the same pair the
-banner keeps, picked by the reader's colour scheme.
+Writes docs/benchmark-light.png and docs/benchmark-dark.png, the pair the README
+picks between by colour scheme.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from figure_style import THEMES, apply_theme, did_not_run  # noqa: E402
 
 MODELS = ("boltz2", "protenix", "protenix-v2", "openfold3", "opendde", "alphafold3")
 SIZES = (499, 1003, 3012)
-
-#: JAX-tile palette from the banner: FoldJAX bars in the gradient's blue,
-#: upstream in a neutral grey that reads in both themes.
-FOLDJAX_COLOR = "#4a8fe7"
-UPSTREAM_COLOR = "#9a9a9a"
+CARD_GIB = 97.9
 
 
 def load(results: Path) -> dict[tuple[str, str, int], dict]:
     records: dict[tuple[str, str, int], dict] = {}
     for path in results.glob("*.json"):
         body = json.loads(path.read_text())
+        if "model" not in body:
+            continue
         records[(body["model"], body["impl"], body["length"])] = body
     return records
 
 
-def render(records: dict, out: Path, *, dark: bool) -> Path:
+def _value(body: dict | None, metric: str) -> float | None:
+    if body is None or body.get("failed"):
+        return None
+    value = body.get(metric)
+    return float(value) if value else None
+
+
+def _absent_label(body: dict | None) -> str | None:
+    """Why this cell has no bar, in the fewest words that stay true."""
+    if body is None:
+        return None
+    if not body.get("failed"):
+        return None
+    return "refused" if "refuses" in str(body.get("reason") or "") else "out of memory"
+
+
+def render(records: dict, out: Path, theme) -> Path:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fg = "#e6e6e6" if dark else "#222222"
-    bg = "#0d1117" if dark else "#ffffff"
-    grid = "#30363d" if dark else "#dddddd"
-
-    fig, axes = plt.subplots(
-        1, 2, figsize=(12.5, 6.4), dpi=200, facecolor=bg, sharey=True
-    )
-    labels: list[str] = []
-    positions: list[float] = []
-    y = 0.0
-    rows: list[tuple[float, str, int]] = []
+    rows: list[tuple[str, str | None, int]] = []
     for size in SIZES:
+        rows.append(("header", None, size))
         for model in MODELS:
-            rows.append((y, model, size))
-            labels.append(model)
-            positions.append(y)
-            y += 1.0
-        y += 0.9  # gap between size groups
+            rows.append(("model", model, size))
 
-    for axis, metric, title, unit in (
-        (axes[0], "wall_s", "wall time (5 samples · 200 steps · 10 recycles)", "s"),
-        (axes[1], "peak_mib", "peak GPU memory", "GiB"),
-    ):
-        axis.set_facecolor(bg)
-        limit = 0.0
-        for row_y, model, size in rows:
-            for impl, color, offset in (
-                ("foldjax", FOLDJAX_COLOR, -0.19),
-                ("upstream", UPSTREAM_COLOR, 0.19),
-            ):
-                body = records.get((model, impl, size))
-                if body is None:
-                    continue  # alphafold3 has no upstream column by design
-                value = body.get(metric)
-                failed = body.get("failed") or not value
-                if not failed:
-                    shown = value / 1024.0 if metric == "peak_mib" else value
-                    limit = max(limit, shown)
-                    axis.barh(
-                        row_y + offset, shown, height=0.36, color=color, zorder=3
-                    )
-                else:
-                    axis.barh(
-                        row_y + offset,
-                        1e9,  # clipped to the axis; the hatch says why
-                        height=0.36,
-                        color="none",
-                        edgecolor=color,
-                        hatch="///",
-                        linewidth=0.8,
-                        zorder=2,
-                    )
-                    reason = str(body.get("reason") or "")
-                    label = "refused" if "refuses" in reason else "OOM"
-                    axis.text(
-                        0.99,
-                        (row_y + offset),
-                        label,
-                        transform=axis.get_yaxis_transform(),
-                        ha="right",
-                        va="center",
-                        fontsize=8,
-                        color=color,
-                        zorder=4,
-                    )
+    height = 0.34 * len(rows) + 1.6
+    figure, (left, right) = plt.subplots(
+        1, 2, figsize=(13.5, height), sharey=True, dpi=200
+    )
+    apply_theme(figure, (left, right), theme)
+
+    positions = {row: len(rows) - index for index, row in enumerate(rows)}
+    offset = 0.23
+
+    panels = ((left, "wall_s", "seconds", True), (right, "peak_mib", "GiB", False))
+    for axis, metric, unit, log in panels:
+        seen = [
+            _value(records.get((m, i, s)), metric)
+            for kind, m, s in rows
+            if kind == "model"
+            for i in ("foldjax", "upstream")
+        ]
+        top = max(v for v in seen if v)
         if metric == "peak_mib":
-            # The card the whole table ran on; the hatched bars died against
-            # this line, and FoldJAX's tallest bar clears it with room.
-            axis.axvline(97.9, color=fg, linewidth=0.9, linestyle="--", zorder=1)
-            axis.text(
-                96.6,
-                max(positions) + 0.55,
-                "97.9 GiB card",
-                rotation=90,
-                ha="right",
-                va="bottom",
-                fontsize=8,
-                color=fg,
-            )
-            axis.set_xlim(0, 104)
+            top = max(top / 1024.0, CARD_GIB) * 1.06
+            axis.set_xlim(0, top)
         else:
-            # 28 s to 6,722 s in one panel: only a log axis keeps the small
-            # cells readable next to the kernel-less upstream hours.
             axis.set_xscale("log")
-            axis.set_xlim(10, limit * 1.6)
-        axis.set_title(title, color=fg, fontsize=11)
-        axis.set_xlabel(unit, color=fg, fontsize=9)
-        axis.tick_params(colors=fg, labelsize=9)
-        axis.grid(axis="x", color=grid, linewidth=0.6, zorder=0)
-        for spine in axis.spines.values():
-            spine.set_color(grid)
+            axis.set_xlim(20, top * 1.6)
+        axis.grid(axis="x", color=theme.grid, linewidth=1.0, linestyle="-")
+        axis.set_xlabel(unit, color=theme.muted, fontsize=8.5, labelpad=6)
 
-    axes[0].set_yticks(positions, labels)
-    axes[0].invert_yaxis()
-    for row_y, model, size in rows:
-        if model == MODELS[0]:
-            axes[0].text(
-                -0.16,
-                row_y - 0.72,
-                f"{size:,} tokens",
-                transform=axes[0].get_yaxis_transform(),
-                fontsize=10,
-                fontweight="bold",
-                color=fg,
-                va="center",
-            )
+    left.set_yticks([positions[row] for row in rows])
+    left.set_yticklabels(
+        [
+            f"{size:,} tokens" if kind == "header" else f"   {model}"
+            for kind, model, size in rows
+        ]
+    )
+    for label, (kind, _m, _s) in zip(left.get_yticklabels(), rows):
+        label.set_color(theme.ink if kind == "header" else theme.ink_secondary)
+        label.set_fontweight("bold" if kind == "header" else "normal")
+        label.set_fontsize(9.5 if kind == "header" else 9)
+    left.set_ylim(0.3, len(rows) + 0.9)
+
+    right.axvline(CARD_GIB, color=theme.limit, linewidth=1.0, zorder=1)
+    right.text(
+        CARD_GIB, len(rows) + 0.7, f"{CARD_GIB:.0f} GiB card ", color=theme.muted,
+        fontsize=7.5, va="top", ha="right",
+    )
+
+    left.set_title(
+        "wall time", color=theme.ink, fontsize=11, fontweight="bold", loc="left", pad=10
+    )
+    right.set_title(
+        "peak GPU memory", color=theme.ink, fontsize=11, fontweight="bold",
+        loc="left", pad=10,
+    )
+    figure.suptitle(
+        "FoldJAX against the repository it reimplements   ·   5 samples · 200 "
+        "steps · 10 recycles · seed 101",
+        color=theme.ink_secondary, fontsize=9.5, x=0.008, ha="left", y=0.985,
+    )
 
     handles = [
-        plt.Rectangle((0, 0), 1, 1, color=FOLDJAX_COLOR),
-        plt.Rectangle((0, 0), 1, 1, color=UPSTREAM_COLOR),
+        plt.Line2D([], [], color=theme.accent, linewidth=7, solid_capstyle="round"),
+        plt.Line2D([], [], color=theme.context, linewidth=7, solid_capstyle="round"),
     ]
-    fig.legend(
-        handles,
-        ["FoldJAX", "upstream"],
-        loc="upper right",
-        frameon=False,
-        labelcolor=fg,
-        fontsize=10,
-        bbox_to_anchor=(0.99, 0.98),
+    legend = figure.legend(
+        handles, ["FoldJAX", "upstream"], loc="upper right", ncol=2,
+        frameon=False, fontsize=9, bbox_to_anchor=(0.995, 1.0),
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, facecolor=bg, bbox_inches="tight")
-    plt.close(fig)
+    for text in legend.get_texts():
+        text.set_color(theme.ink_secondary)
+
+    figure.text(
+        0.008, 0.012,
+        "bold figure on each row is upstream \u00f7 FoldJAX \u2014 above 1.00x "
+        "means FoldJAX is faster, or uses less",
+        color=theme.muted, fontsize=8, ha="left",
+    )
+    figure.subplots_adjust(
+        left=0.115, right=0.995, top=0.925, bottom=0.085, wspace=0.06
+    )
+
+    for axis, metric, _unit, _log in panels:
+        floor = axis.get_xlim()[0]
+        for kind, model, size in rows:
+            if kind == "header":
+                continue
+            y = positions[(kind, model, size)]
+            pair: list[float | None] = []
+            for impl, colour, sign in (
+                ("foldjax", theme.accent, +1),
+                ("upstream", theme.context, -1),
+            ):
+                body = records.get((model, impl, size))
+                value = _value(body, metric)
+                if value is not None and metric == "peak_mib":
+                    value = value / 1024.0
+                pair.append(value)
+                if value is None:
+                    label = _absent_label(body)
+                    if label:
+                        did_not_run(axis, y + sign * offset, label, theme)
+                    continue
+                axis.barh(
+                    y + sign * offset, value - floor, left=floor,
+                    height=0.30, color=colour, edgecolor="none", zorder=3,
+                )
+            fj, up = pair
+            if fj and up:
+                axis.text(
+                    0.995, y, f"{up / fj:.2f}x",
+                    transform=axis.get_yaxis_transform(), ha="right", va="center",
+                    fontsize=8, color=theme.ink_secondary, fontweight="bold", zorder=5,
+                )
+
+    figure.savefig(out, facecolor=theme.surface)
+    plt.close(figure)
     return out
 
 
@@ -178,15 +204,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, required=True)
     args = parser.parse_args()
+
     records = load(args.results)
-    here = Path(__file__).parent
-    for dark in (False, True):
-        path = render(
-            records,
-            here / f"benchmark-{'dark' if dark else 'light'}.png",
-            dark=dark,
-        )
-        print(path)
+    here = Path(__file__).resolve().parent
+    for theme in THEMES:
+        print(render(records, here / f"benchmark-{theme.name}.png", theme))
     return 0
 
 
