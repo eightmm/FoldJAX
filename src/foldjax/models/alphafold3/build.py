@@ -102,6 +102,73 @@ def runtime_package() -> Path:
     return runtime_root() / "alphafold3"
 
 
+def generations() -> list[Path]:
+    """Every prepared runtime tree on disk, whichever source built it."""
+    base = runtime_base()
+    if not base.is_dir():
+        return []
+    return sorted(path for path in base.iterdir() if path.is_dir())
+
+
+def generation_bytes(path: Path) -> int:
+    """Bytes a prepared runtime tree occupies, counting each inode once."""
+    seen: set[tuple[int, int]] = set()
+    total = 0
+    for item in path.rglob("*"):
+        if not item.is_file():
+            continue
+        info = item.stat()
+        identity = (info.st_dev, info.st_ino)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        total += info.st_size
+    return total
+
+
+def stale_generations(*, keep_days: float | None = 7.0) -> list[Path]:
+    """Prepared trees this interpreter and source will never select again.
+
+    A generation is keyed by the vendored source *and* the interpreter ABI, so
+    editing one vendored file, or moving Python, leaves a complete tree that
+    nothing selects again. Each carries its own chemistry -- a ~490 MB
+    ``components.cif`` and the ~510 MB ``ccd.pickle`` generated from it -- and
+    only the compiled extension actually depends on the key, so the cost of
+    keeping them is almost entirely duplicated chemistry. Nothing removed them:
+    this store had reached twelve trees and 12 GB, of which one was reachable.
+
+    Age is the guard, not a nicety. The store is shared between checkouts, and
+    a worktree at another commit has its own key and its own live tree; a tree
+    prepared recently is likely to be one of those. ``keep_days=None`` drops
+    that guard and is the caller's decision to make, not this function's.
+    """
+    current = runtime_key()
+    stale = [path for path in generations() if path.name != current]
+    if keep_days is None:
+        return stale
+    import time
+
+    cutoff = time.time() - keep_days * 86_400
+    return [path for path in stale if path.stat().st_mtime < cutoff]
+
+
+def remove_generation(path: Path) -> int:
+    """Delete one prepared tree, returning the bytes it held.
+
+    Removing a tree costs time rather than data: a generation is rebuilt from
+    the vendored source whenever something selects it again. What it does not
+    restore is the *same* chemistry -- libcifpp fetches the current CCD at
+    build time, so a rebuild months later is a different dictionary.
+    """
+    if path.resolve().parent != runtime_base().resolve():
+        raise ValueError(f"not an AlphaFold 3 runtime generation: {path}")
+    if path.name == runtime_key():
+        raise ValueError("refusing to remove the generation this source selects")
+    size = generation_bytes(path)
+    shutil.rmtree(path)
+    return size
+
+
 def source_package() -> Path:
     return _PACKAGE
 

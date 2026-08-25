@@ -338,6 +338,29 @@ def _parser() -> argparse.ArgumentParser:
         "prepare", help="prepare one model's generated native artifacts"
     )
     runtime_prepare.add_argument("--model", required=True)
+    runtime_gc = runtime_commands.add_parser(
+        "gc", help="remove prepared runtime trees nothing selects any more"
+    )
+    runtime_gc.add_argument("--model", required=True)
+    runtime_gc.add_argument(
+        "--keep-days",
+        type=float,
+        default=7.0,
+        help="keep trees prepared within this many days even when unreachable, "
+        "because a checkout at another commit has its own live tree and this "
+        "store is shared between them (default: 7)",
+    )
+    runtime_gc.add_argument(
+        "--all",
+        dest="gc_all",
+        action="store_true",
+        help="ignore --keep-days and remove every tree but the current one",
+    )
+    runtime_gc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be removed and remove nothing",
+    )
 
     describe = commands.add_parser("capabilities", help="show what one backend accepts")
     describe.add_argument("--model", required=True)
@@ -386,6 +409,14 @@ def _parser() -> argparse.ArgumentParser:
         "--download-only",
         action="store_true",
         help="fetch the released files but skip the JAX conversions",
+    )
+    setup.add_argument(
+        "--all",
+        dest="fetch_all",
+        action="store_true",
+        help="also fetch the models held back for their size, so one command "
+        "installs every published checkpoint. AlphaFold 3 is still yours to "
+        "supply: its parameters are licensed, not merely large",
     )
 
     weights = commands.add_parser(
@@ -756,12 +787,13 @@ def _run_setup(args: argparse.Namespace) -> int:
     failed = False
     for name in assets.available():
         spec = assets.assets_for(name)
-        if not spec.in_default_setup:
+        if not spec.in_default_setup and not args.fetch_all:
             state = "ready" if spec.ready() else "opt-in"
             print(f"  {name:<11s} {state}")
             if not spec.ready():
                 print(f"    fetch: foldjax weights fetch --model {name}")
                 print(f"    {spec.notes}")
+                print("    or run `foldjax setup --all` to take it with the rest")
             continue
         if not spec.downloads:
             # Gated or non-redistributable: the instruction differs per model,
@@ -806,6 +838,54 @@ def _run_setup(args: argparse.Namespace) -> int:
     for line in _template_report():
         print(f"  {line}")
     return 1 if failed else 0
+
+
+def _run_runtime_gc(args: argparse.Namespace) -> int:
+    """Reclaim runtime trees left behind by earlier source or ABI generations.
+
+    Every vendored-source edit and every interpreter move mints a new tree and
+    abandons the old one in place, and each is around a gigabyte of chemistry
+    rather than of code. Nothing collected them, so they accumulate for as long
+    as the store lives.
+    """
+    if args.model != "alphafold3":
+        raise ValueError(f"{args.model} has no FoldJAX-managed runtime generations")
+
+    from foldjax.models.alphafold3 import build
+
+    keep_days = None if args.gc_all else args.keep_days
+    stale = build.stale_generations(keep_days=keep_days)
+    # Counted before anything is removed. Asking again afterwards subtracts the
+    # trees this run just deleted and reports the held-back count as far too
+    # small -- it said one where six were held.
+    unreachable = len(build.stale_generations(keep_days=None))
+    kept = [path for path in build.generations() if path not in stale]
+    if not stale:
+        print(f"nothing to remove; {len(kept)} generation(s) kept")
+        if unreachable and not args.gc_all:
+            print(
+                f"{unreachable} unreachable generation(s) kept as recent; "
+                "--all removes them too"
+            )
+        return 0
+
+    total = 0
+    for path in stale:
+        size = build.generation_bytes(path)
+        total += size
+        verb = "would remove" if args.dry_run else "removed"
+        if not args.dry_run:
+            build.remove_generation(path)
+        print(f"{verb}  {path.name}  {size / 2**30:.1f} GiB")
+    print(f"{total / 2**30:.1f} GiB total; {len(kept)} generation(s) kept")
+    if not args.gc_all:
+        held = unreachable - len(stale)
+        if held:
+            print(
+                f"{held} unreachable generation(s) kept as recent; "
+                "--all removes them too"
+            )
+    return 0
 
 
 def _run_models_for(args: argparse.Namespace) -> int:
@@ -856,6 +936,8 @@ def _runtime_payload(name: str) -> dict[str, Any]:
 
 def _run_runtime(args: argparse.Namespace) -> int:
     """Inspect or explicitly prepare runtime artifacts without hidden work."""
+    if args.runtime_command == "gc":
+        return _run_runtime_gc(args)
     payload = _runtime_payload(args.model)
     if args.runtime_command == "status" or payload["ready"]:
         print(json.dumps(payload, indent=2, sort_keys=True))

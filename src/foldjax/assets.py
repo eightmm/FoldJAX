@@ -1543,7 +1543,6 @@ REGISTRY: dict[str, ModelAssets] = {
         native="of3_ft3_v1.pt",
         requires=("of3_ft3_v1.pt",),
         convert=_stage_single_published_file,
-        in_default_setup=False,
         conversion_sources=("of3_ft3_v1.pt",),
         conversion_schema="openfold3-public-p1-stage-v1",
         notes="FoldJAX implements OpenFold3 p1 and fetches its exact public "

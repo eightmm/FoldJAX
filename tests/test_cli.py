@@ -463,11 +463,57 @@ def test_setup_fetches_defaults_and_reports_opt_in_or_manual_models(
 
     assert main(["setup"]) == 0
     out = capsys.readouterr().out
-    assert fetched == ["boltz2", "opendde", "protenix"], "only the public ones"
+    assert fetched == [
+        "boltz2",
+        "opendde",
+        "openfold3",
+        "protenix",
+    ], "every model whose weights are published"
     assert "alphafold3  manual" in out and "Request the parameters" in out
-    assert "openfold3   opt-in" in out
-    assert "foldjax weights fetch --model openfold3" in out
-    assert "public" in out and "of3_ft3_v1.pt" in out
+    # AlphaFold 3 is the only model a person has to fetch by hand, because it
+    # is the only one whose parameters are not published for redistribution.
+    assert "openfold3   opt-in" not in out
+    assert "esmfold2    opt-in" in out, "still opt-in, for its 26.8 GB"
+    assert "foldjax setup --all" in out, "the opt-in must say how to include it"
+
+
+def test_setup_all_takes_the_models_held_back_for_their_size(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """`--all` is the one-command install of everything that is published.
+
+    Size is the only reason a public model sits out of the default, so there
+    has to be a way to say "take it too" without naming each one. AlphaFold 3
+    is not included by any flag: its parameters are licensed rather than large,
+    and FoldJAX has nothing to download.
+    """
+    from foldjax import assets
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    monkeypatch.delenv("PROTENIX_TEMPLATE_MMCIF_DIR", raising=False)
+    monkeypatch.setattr(build, "is_ready", lambda: False)
+    monkeypatch.setattr(build, "runtime_blocker", lambda: None)
+    monkeypatch.setattr(
+        build,
+        "ensure_ready",
+        lambda: pytest.fail("setup must report, not build, the AlphaFold runtime"),
+    )
+    fetched = []
+    monkeypatch.setattr(
+        assets, "fetch", lambda name, **kw: fetched.append(name) or tmp_path / name
+    )
+
+    assert main(["setup", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert fetched == [
+        "boltz2",
+        "esmfold2",
+        "opendde",
+        "openfold3",
+        "protenix",
+    ], "every published model, ESMFold2 included"
+    assert "alphafold3  manual" in out, "a licence is not a size"
     assert "runtime" in out
     assert "foldjax runtime prepare --model alphafold3" in out
     # The two modalities that need no weights still need an answer.
@@ -953,3 +999,84 @@ def test_a_successful_run_still_exits_zero(monkeypatch) -> None:
     with pytest.raises(SystemExit) as exit_info:
         cli.entrypoint()
     assert exit_info.value.code == 0
+
+
+def _make_generation(root: Path, name: str, *, age_days: float, size: int = 4096):
+    """A runtime tree of the shape `gc` walks, aged by its mtime."""
+    import os
+    import time
+
+    tree = root / name / "alphafold3" / "constants" / "converters"
+    tree.mkdir(parents=True)
+    (tree / "ccd.pickle").write_bytes(b"x" * size)
+    when = time.time() - age_days * 86_400
+    os.utime(root / name, (when, when))
+    return root / name
+
+
+def test_runtime_gc_removes_abandoned_generations_and_spares_the_live_one(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Every source edit mints a ~1 GB tree and abandons the old one in place.
+
+    The guard that matters is age rather than reachability alone: this store is
+    shared between checkouts, and a worktree at another commit has its own key
+    and its own live tree. A tree prepared an hour ago is probably one of those,
+    so `gc` leaves it and says it did.
+    """
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    base = tmp_path / "runtime" / "alphafold3"
+    base.mkdir(parents=True)
+    live = _make_generation(base, "live", age_days=0.1)
+    old = _make_generation(base, "old", age_days=30)
+    recent = _make_generation(base, "recent", age_days=0.5)
+    monkeypatch.setattr(build, "runtime_key", lambda: "live")
+
+    assert main(["runtime", "gc", "--model", "alphafold3"]) == 0
+    out = capsys.readouterr().out
+
+    assert live.is_dir(), "the generation this source selects must survive"
+    assert recent.is_dir(), "a tree another checkout may be using must survive"
+    assert not old.exists(), "an abandoned tree past the age guard must go"
+    assert "1 unreachable generation(s) kept as recent" in out
+
+
+def test_runtime_gc_all_takes_every_generation_but_the_live_one(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    base = tmp_path / "runtime" / "alphafold3"
+    base.mkdir(parents=True)
+    live = _make_generation(base, "live", age_days=0.1)
+    recent = _make_generation(base, "recent", age_days=0.5)
+    monkeypatch.setattr(build, "runtime_key", lambda: "live")
+
+    assert main(["runtime", "gc", "--model", "alphafold3", "--all"]) == 0
+    capsys.readouterr()
+
+    assert live.is_dir()
+    assert not recent.exists()
+    with pytest.raises(ValueError, match="refusing to remove"):
+        build.remove_generation(live)
+
+
+def test_runtime_gc_dry_run_reports_without_removing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    base = tmp_path / "runtime" / "alphafold3"
+    base.mkdir(parents=True)
+    _make_generation(base, "live", age_days=0.1)
+    old = _make_generation(base, "old", age_days=30)
+    monkeypatch.setattr(build, "runtime_key", lambda: "live")
+
+    assert main(["runtime", "gc", "--model", "alphafold3", "--dry-run"]) == 0
+
+    assert old.is_dir(), "a dry run must not remove anything"
+    assert "would remove" in capsys.readouterr().out

@@ -52,7 +52,11 @@ so vendoring OpenFold3 added no base dependency.
 
 The checkpoint supported by this port is OpenFold3 p1's `of3_ft3_v1.pt`. The
 code and weights are Apache-2.0, and upstream publishes this exact p1 file from
-an unsigned S3 bucket. FoldJAX pins its size and SHA-256 before staging it:
+an unsigned S3 bucket. FoldJAX pins its size and SHA-256 before staging it.
+
+Because that key needs no account and no request, **`foldjax setup` fetches it
+along with Boltz-2, OpenDDE and Protenix** — 2.29 GB. Fetching it on its own,
+or asking where it landed, still works:
 
 ```bash
 foldjax weights fetch --model openfold3

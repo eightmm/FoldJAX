@@ -1621,7 +1621,10 @@ def test_openfold3_registry_uses_the_publishers_public_p1_checkpoint(
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
     spec = assets.assets_for("openfold3")
 
-    assert not spec.in_default_setup
+    # The publisher serves this key unsigned, so `foldjax setup` fetches it
+    # like any other published checkpoint. AlphaFold 3 is the one model left
+    # that a person has to supply, and it is a licence, not a download.
+    assert spec.in_default_setup
     assert spec.conversion_sources == ("of3_ft3_v1.pt",)
     assert len(spec.downloads) == 1
     checkpoint = spec.downloads[0]
