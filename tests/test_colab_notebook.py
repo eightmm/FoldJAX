@@ -444,7 +444,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'compact.split(":")' in source
     assert 'LIGAND_CCD_CODES.split(",")' in source
     assert 'LIGAND_SMILES.split(";")' in source
-    assert "PERSIST_CACHE_TO_DRIVE = False" in source
+    assert "PERSIST_MODEL_ASSETS_TO_DRIVE = False" in source
+    assert "PERSIST_MSA_TO_DRIVE = False" in source
     assert "PERSIST_OUTPUTS_TO_DRIVE = False" in source
     assert 'OUTPUT_ROOT = OUTPUT_BASE / JOB_SLUG / RUN_LABEL' in source
     assert 'RUN_MODE = "Fast demo"' in source
@@ -500,12 +501,26 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
 
     configure = _cell_source("configure-run")
     assert configure.count("# @param") == 10
-    assert "PERSIST_CACHE_TO_DRIVE" not in configure
+    assert "PERSIST_MODEL_ASSETS_TO_DRIVE" not in configure
+    assert "PERSIST_MSA_TO_DRIVE" not in configure
     assert "ALPHAFOLD3_WEIGHTS_PATH" not in configure
     assert "CUSTOM_NUM_SAMPLES" not in configure
     assert "DOWNLOAD_RESULTS" not in configure
-    assert "PERSIST_CACHE_TO_DRIVE = False" in _cell_source("configure-runtime")
+    assert (
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = False"
+        in _cell_source("configure-runtime")
+    )
+    assert "PERSIST_MSA_TO_DRIVE = False" in _cell_source("configure-runtime")
+    assert 'DRIVE_ROOT = Path("/content/drive/MyDrive/FoldJAX")' in source
+    assert 'DRIVE_ROOT / "model-assets"' in source
+    assert 'DRIVE_ROOT / "msa"' in source
+    assert 'DRIVE_ROOT / "outputs"' in source
     assert "ALPHAFOLD3_WEIGHTS_PATH" in _cell_source("fetch-weights")
+    assert "AlphaFold 3 private parameter location" in _cell_source("fetch-weights")
+    assert (
+        'foldjax_home / "weights" / "alphafold3"'
+        in _cell_source("fetch-weights")
+    )
     assert "CUSTOM_NUM_SAMPLES = 1" in _cell_source("plan-runs")
     assert "DOWNLOAD_RESULTS = True" in _cell_source("download-results")
 
@@ -609,7 +624,8 @@ def test_colab_configures_accelerator_specific_kernels(
     monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
     namespace = {
         "ACCELERATOR_KIND": accelerator,
-        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
         "PERSIST_OUTPUTS_TO_DRIVE": False,
         "Path": Path,
         "os": __import__("os"),
@@ -637,12 +653,16 @@ def test_colab_configures_accelerator_specific_kernels(
     )
 
 
-def test_colab_can_persist_cache_and_outputs_to_drive(
+def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = _cell_source("configure-runtime")
     source = source.replace(
-        "PERSIST_CACHE_TO_DRIVE = False", "PERSIST_CACHE_TO_DRIVE = True"
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
+    )
+    source = source.replace(
+        "PERSIST_MSA_TO_DRIVE = False", "PERSIST_MSA_TO_DRIVE = True"
     )
     source = source.replace(
         "PERSIST_OUTPUTS_TO_DRIVE = False", "PERSIST_OUTPUTS_TO_DRIVE = True"
@@ -652,13 +672,23 @@ def test_colab_can_persist_cache_and_outputs_to_drive(
         f'WORK_DIR = Path({str(tmp_path / "work")!r})',
     )
     source = source.replace(
-        'Path("/content/drive/MyDrive/foldjax-cache")',
-        f'Path({str(tmp_path / "drive-cache")!r})',
+        'foldjax_home = Path("/content/foldjax-cache")',
+        f'foldjax_home = Path({str(tmp_path / "local-cache")!r})',
     )
     source = source.replace(
-        'Path("/content/drive/MyDrive/foldjax-outputs")',
-        f'Path({str(tmp_path / "drive-outputs")!r})',
+        'DRIVE_ROOT = Path("/content/drive/MyDrive/FoldJAX")',
+        f'DRIVE_ROOT = Path({str(tmp_path / "drive-root")!r})',
     )
+    cached_weight = (
+        tmp_path
+        / "drive-root"
+        / "model-assets"
+        / "weights"
+        / "openfold3"
+        / "p1.pt"
+    )
+    cached_weight.parent.mkdir(parents=True)
+    cached_weight.write_bytes(b"cached")
     mounts = []
     google = ModuleType("google")
     google.__path__ = []  # type: ignore[attr-defined]
@@ -669,7 +699,8 @@ def test_colab_can_persist_cache_and_outputs_to_drive(
     monkeypatch.setitem(sys.modules, "google.colab", colab)
     namespace = {
         "ACCELERATOR_KIND": "tpu",
-        "PERSIST_CACHE_TO_DRIVE": True,
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": True,
+        "PERSIST_MSA_TO_DRIVE": True,
         "PERSIST_OUTPUTS_TO_DRIVE": True,
         "Path": Path,
         "os": __import__("os"),
@@ -679,9 +710,114 @@ def test_colab_can_persist_cache_and_outputs_to_drive(
     exec(source, namespace)
 
     assert mounts == ["/content/drive"]
-    assert namespace["foldjax_home"] == tmp_path / "drive-cache"
-    assert namespace["OUTPUT_BASE"] == tmp_path / "drive-outputs"
+    assert namespace["foldjax_home"] == tmp_path / "local-cache"
+    assert namespace["DRIVE_ROOT"] == tmp_path / "drive-root"
+    assert namespace["MODEL_ASSET_STORE"] == tmp_path / "drive-root" / "model-assets"
+    assert namespace["MSA_STORE"] == tmp_path / "drive-root" / "msa"
+    assert namespace["OUTPUT_BASE"] == tmp_path / "drive-root" / "outputs"
     assert namespace["COMPILE_CACHE"] == tmp_path / "work" / "compile-cache"
+    assert (namespace["foldjax_home"] / "weights").is_symlink()
+    assert (namespace["foldjax_home"] / "msa").is_symlink()
+    assert (
+        namespace["foldjax_home"] / "weights" / "openfold3" / "p1.pt"
+    ).read_bytes() == b"cached"
+
+
+def test_colab_can_persist_model_assets_without_persisting_msa(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _cell_source("configure-runtime")
+    source = source.replace(
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
+    )
+    replacements = {
+        'WORK_DIR = Path("/content/foldjax-colab")': (
+            f'WORK_DIR = Path({str(tmp_path / "work")!r})'
+        ),
+        'foldjax_home = Path("/content/foldjax-cache")': (
+            f'foldjax_home = Path({str(tmp_path / "local-cache")!r})'
+        ),
+        'DRIVE_ROOT = Path("/content/drive/MyDrive/FoldJAX")': (
+            f'DRIVE_ROOT = Path({str(tmp_path / "drive-root")!r})'
+        ),
+    }
+    for old, new in replacements.items():
+        source = source.replace(old, new)
+    mounts = []
+    google = ModuleType("google")
+    google.__path__ = []  # type: ignore[attr-defined]
+    colab = ModuleType("google.colab")
+    colab.drive = SimpleNamespace(mount=mounts.append)  # type: ignore[attr-defined]
+    google.colab = colab  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.colab", colab)
+    namespace = {
+        "ACCELERATOR_KIND": "gpu",
+        "Path": Path,
+        "os": __import__("os"),
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+
+    exec(source, namespace)
+
+    assert mounts == ["/content/drive"]
+    assert (namespace["foldjax_home"] / "weights").is_symlink()
+    assert not (namespace["foldjax_home"] / "msa").is_symlink()
+    assert namespace["MSA_STORE"] == namespace["foldjax_home"] / "msa"
+
+
+def test_colab_detects_private_alphafold3_parameters_in_the_drive_store(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _cell_source("configure-runtime")
+    source = source.replace(
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = False",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE = True",
+    )
+    replacements = {
+        'WORK_DIR = Path("/content/foldjax-colab")': (
+            f'WORK_DIR = Path({str(tmp_path / "work")!r})'
+        ),
+        'foldjax_home = Path("/content/foldjax-cache")': (
+            f'foldjax_home = Path({str(tmp_path / "local-cache")!r})'
+        ),
+        'DRIVE_ROOT = Path("/content/drive/MyDrive/FoldJAX")': (
+            f'DRIVE_ROOT = Path({str(tmp_path / "drive-root")!r})'
+        ),
+    }
+    for old, new in replacements.items():
+        source = source.replace(old, new)
+    af3_parameters = (
+        tmp_path
+        / "drive-root"
+        / "model-assets"
+        / "weights"
+        / "alphafold3"
+        / "af3.bin"
+    )
+    af3_parameters.parent.mkdir(parents=True)
+    af3_parameters.write_bytes(b"private parameters")
+    google = ModuleType("google")
+    google.__path__ = []  # type: ignore[attr-defined]
+    colab = ModuleType("google.colab")
+    colab.drive = SimpleNamespace(mount=lambda _path: None)  # type: ignore[attr-defined]
+    google.colab = colab  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.colab", colab)
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "local-cache"))
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "Path": Path,
+        "os": __import__("os"),
+        "foldjax_card": lambda *_args, **_kwargs: None,
+    }
+
+    exec(source, namespace)
+
+    info = foldjax.model_info("alphafold3")
+    assert info.weights_ready is True
+    assert info.weights_path == tmp_path / "local-cache" / "weights" / "alphafold3"
 
 
 @pytest.mark.parametrize(
@@ -1157,6 +1293,51 @@ def _notebook_ui(*, tables: list | None = None) -> dict:
     }
 
 
+def test_colab_storage_error_reports_target_free_space_and_requirement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
+    model_store = tmp_path / "model-store"
+    model_store.mkdir()
+    info = _fake_model_info(
+        "protenix",
+        entity_types=("protein",),
+        fetchable=True,
+        ready=False,
+        weights_path=model_store / "weights" / "protenix",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    namespace = {
+        "SELECTED_MODELS": ("protenix",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "foldjax_home": tmp_path,
+        "MODEL_ASSET_STORE": model_store,
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": True,
+        "PERSIST_MSA_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=1_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(run=lambda *_args, **_kwargs: None),
+        "sys": sys,
+        **_notebook_ui(),
+    }
+
+    with pytest.raises(RuntimeError) as error:
+        exec(_cell_source("fetch-weights"), namespace)
+
+    message = str(error.value)
+    assert f"Model storage {model_store}" in message
+    assert "has 1.0 GB free" in message
+    assert "requires about 8.0 GB" in message
+    assert "select storage with more free space" in message
+
+
 def test_colab_accepts_esmfold2_all_biomolecule_input(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1190,8 +1371,10 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
             "foldjax_home": tmp_path,
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "OUTPUT_BASE": tmp_path / "outputs",
-            "PERSIST_CACHE_TO_DRIVE": False,
+            "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+            "PERSIST_MSA_TO_DRIVE": False,
             "PERSIST_OUTPUTS_TO_DRIVE": False,
+            "MODEL_ASSET_STORE": tmp_path,
             "Path": Path,
             "display": lambda *_args: None,
             "shutil": SimpleNamespace(
@@ -1244,8 +1427,10 @@ def test_colab_fetches_the_explicit_esmfold2_structure_only_profile(
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "OUTPUT_BASE": tmp_path / "outputs",
-        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
         "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "MODEL_ASSET_STORE": tmp_path,
         "Path": Path,
         "display": lambda *_args: None,
         "shutil": SimpleNamespace(
@@ -1294,8 +1479,10 @@ def test_colab_fetches_public_openfold3_p1_automatically(
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "OUTPUT_BASE": tmp_path / "outputs",
-        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
         "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "MODEL_ASSET_STORE": tmp_path,
         "Path": Path,
         "display": lambda *_args: None,
         "shutil": SimpleNamespace(
@@ -1342,8 +1529,10 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "OUTPUT_BASE": tmp_path / "outputs",
-        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
         "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "MODEL_ASSET_STORE": tmp_path,
         "Path": Path,
         "display": lambda *_args: None,
         "shutil": SimpleNamespace(
