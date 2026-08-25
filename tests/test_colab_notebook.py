@@ -452,7 +452,7 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'RUN_MODE = "Fast demo"' in source
     assert (
         'RUN_MODE = "Fast demo"  # @param '
-        '["Fast demo", "Released defaults", "Custom"]'
+        '["Fast demo", "Default", "Custom"]'
     ) in source
     assert 'INPUT_MODE = "Form"' in source
     assert 'MAX_MSA_DEPTH = 0' in source
@@ -460,7 +460,9 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "ESMFOLD2_PROFILE" not in source
     assert "profile_status" not in source
     assert 'REPRESENTATIONS = "None"' in source
-    assert 'PADDING_MODE = "Off"' in source
+    assert "PADDING_MODE" not in source
+    assert "PADDING_REQUESTS" not in source
+    assert "PAD_TOKENS" not in source
     assert 'MSA_POLICY = "none"' in source
     assert "job_path.read_text()" not in source
     assert '{"num_samples": 1, "num_steps": 20, "num_recycles": 1}' in source
@@ -872,7 +874,7 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
     namespace = {
         "ACCELERATOR_KIND": accelerator,
         "SELECTED_MODELS": models,
-        "RUN_MODE": "Released defaults",
+        "RUN_MODE": "Default",
         "JOB_SLUG": "job",
         "job_path": job_path,
         "MODEL_WEIGHTS": dict.fromkeys(models),
@@ -883,13 +885,9 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
         "MSA_POLICY": "none",
         "MAX_MSA_DEPTH": 0,
         "CONTINUE_ON_ERROR": True,
-        "FAST_SCHEDULE": {},
         "MODEL_PROFILES": dict.fromkeys(models),
         "REPRESENTATIONS": "None",
         "STOP_AFTER": "Full structure",
-        "PADDING_MODE": "Off",
-        "PADDING_OVERFLOW": "error",
-        "padding_targets": {},
         "Path": Path,
         "pd": __import__("pandas"),
         "foldjax_table": lambda *_args, **_kwargs: None,
@@ -1047,7 +1045,45 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
     assert 'MODEL_WEIGHTS[model_name] = None' in _cell_source("fetch-weights")
 
 
-def test_colab_custom_schedule_seeds_msa_representations_and_padding(
+def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
+    namespace: dict = {
+        "WORK_DIR": tmp_path,
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "Path": Path,
+    }
+    exec(_cell_source("configure-run"), namespace)
+    namespace.update(
+        {
+            "ACCELERATOR_KIND": "tpu",
+            "COMPILE_CACHE": tmp_path / "compile-cache",
+            "MODEL_WEIGHTS": dict.fromkeys(namespace["SELECTED_MODELS"]),
+            "MODEL_PROFILES": dict.fromkeys(namespace["SELECTED_MODELS"]),
+        }
+    )
+    exec(_cell_source("build-job"), namespace)
+    monkeypatch.setattr(foldjax, "resolve_requests", lambda request: (request,))
+    plan = _cell_source("plan-runs").replace(
+        'RUN_MODE = "Fast demo"', 'RUN_MODE = "Default"'
+    )
+
+    exec(plan, namespace)
+
+    assert namespace["RUN_LABEL"] == "default"
+    assert namespace["SAMPLING_OVERRIDE"] == {}
+    assert {row["schedule"] for row in namespace["plan_rows"]} == {
+        "native model default"
+    }
+    for request in namespace["model_requests"]:
+        assert request.num_samples is None
+        assert request.num_steps is None
+        assert request.num_recycles is None
+        assert request.padding is None
+
+
+def test_colab_custom_schedule_seeds_msa_and_representations(
     tmp_path: Path, monkeypatch
 ) -> None:
     configure = _cell_source("configure-run")
@@ -1068,9 +1104,6 @@ def test_colab_custom_schedule_seeds_msa_representations_and_padding(
     plan = plan.replace(
         'STOP_AFTER = "Full structure"',
         'STOP_AFTER = "Trunk representations"',
-    )
-    plan = plan.replace(
-        'PADDING_MODE = "Off"', 'PADDING_MODE = "Standard profile"'
     )
     _patch_ipython_display(monkeypatch)
     namespace = {
@@ -1098,7 +1131,7 @@ def test_colab_custom_schedule_seeds_msa_representations_and_padding(
         assert request.max_msa_depth == 256
         assert request.representations == ("single", "pair")
         assert request.stop_after == "trunk"
-        assert request.padding is not None
+        assert request.padding is None
         assert (request.num_samples, request.num_steps, request.num_recycles) == (
             2,
             60,
@@ -1876,44 +1909,6 @@ def test_colab_trunk_mode_reports_representations_without_structures() -> None:
 
     assert namespace["STRUCTURES"] == {}
     assert namespace["comparison"].iloc[0]["representations"] == "single, pair"
-
-
-def test_colab_custom_padding_rejects_an_unsupported_model_axis(
-    tmp_path: Path,
-) -> None:
-    job_path = tmp_path / "job.json"
-    job_path.write_text("{}", encoding="utf-8")
-    namespace = {
-        "ACCELERATOR_KIND": "tpu",
-        "SELECTED_MODELS": ("alphafold3",),
-        "RUN_MODE": "Released defaults",
-        "JOB_SLUG": "job",
-        "job_path": job_path,
-        "MODEL_WEIGHTS": {"alphafold3": None},
-        "MODEL_PROFILES": {"alphafold3": None},
-        "OUTPUT_BASE": tmp_path / "outputs",
-        "COMPILE_CACHE": tmp_path / "compile-cache",
-        "NUM_SEEDS": 1,
-        "RESOLVED_EXPLICIT_SEEDS": None,
-        "MSA_POLICY": "none",
-        "MAX_MSA_DEPTH": 0,
-        "CONTINUE_ON_ERROR": True,
-        "FAST_SCHEDULE": {},
-        "REPRESENTATIONS": "None",
-        "STOP_AFTER": "Full structure",
-        "PADDING_MODE": "Custom targets",
-        "PADDING_OVERFLOW": "error",
-        "padding_targets": {"msa": 128},
-        "Path": Path,
-        "pd": __import__("pandas"),
-        "foldjax_table": lambda *_args, **_kwargs: None,
-    }
-    plan = _cell_source("plan-runs")
-    plan = plan.replace('PADDING_MODE = "Off"', 'PADDING_MODE = "Custom targets"')
-    plan = plan.replace("PAD_MSA_ROWS = 0", "PAD_MSA_ROWS = 128")
-
-    with pytest.raises(ValueError, match="does not support padding axes.*msa"):
-        exec(plan, namespace)
 
 
 def test_readme_links_to_and_explains_the_colab_workflow() -> None:
