@@ -14,6 +14,15 @@ resolved for you. See ``foldjax.assets`` for the weight store and
 """
 
 from foldjax import assets, paths, progress
+from foldjax.alignment import (
+    AlignmentReport,
+    AtomSelection,
+    RigidTransform,
+    StructureAlignment,
+    StructureAlignmentError,
+    align_predictions,
+    align_structures,
+)
 from foldjax.api import (
     detect_input_format,
     predict,
@@ -56,6 +65,8 @@ from foldjax.schema import (
 from foldjax.warmup import CacheWarmResult, warm_cache
 
 __all__ = [
+    "AlignmentReport",
+    "AtomSelection",
     "ERROR_POLICIES",
     "MSA_POLICIES",
     "BatchReport",
@@ -77,9 +88,14 @@ __all__ = [
     "PredictionSample",
     "Protein",
     "Rna",
+    "RigidTransform",
     "RuntimeInfo",
+    "StructureAlignment",
+    "StructureAlignmentError",
     "Template",
     "assets",
+    "align_predictions",
+    "align_structures",
     "available_models",
     "capabilities",
     "detect_input_format",

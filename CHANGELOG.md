@@ -75,6 +75,20 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Added
 
+- **Predictions can now be compared in one rigid coordinate frame without
+  duplicating their structure files.** `align_predictions` accepts common
+  `PredictionResult` objects and `align_structures` accepts named PDB/mmCIF
+  paths; either another prediction or an external structure can be the
+  reference. The default chemistry-aware Kabsch fit uses protein CA and
+  DNA/RNA C4' atoms, carries ligands with the whole complex, refuses to guess
+  ambiguous homomer permutations, and reports chain correspondence, RMSD, and
+  atom coverage. Its durable representation is only a small JSON transform
+  report with source SHA-256 provenance. Transformed mmCIF text or files are
+  produced only through explicit `aligned_cif`/`write_aligned` calls, so the
+  ordinary multi-model comparison does not double output storage. This is a
+  post-processing API and deliberately adds no CLI mode or cross-model score
+  ranking.
+
 - **The Google Colab example is now a practical multi-model workflow rather
   than a single-model smoke test.** A setup form selects models, sampling, MSA,
   and storage policy before idempotent installation and checkpoint preparation;
