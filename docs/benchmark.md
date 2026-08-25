@@ -28,16 +28,38 @@ upstream, which is what makes the comparison mean anything.
 | 499 | opendde | 80 | 75 | 12.5 | 18.1 | 0.94x | 1.44x | ranking_score | 0.1946 | 0.1947 |
 | 499 | openfold3 | 35 | 97 | 9.9 | 18.7 | 2.76x | 1.88x | ptm | 0.9325 | 0.9274 |
 | 499 | protenix | 27 | 63 | 4.6 | 5.0 | 2.36x | 1.08x | ranking_score | 0.1937 | 0.1935 |
+| 499 | protenix-v2 | 38 | 72 | 6.5 | 7.0 | 1.89x | 1.08x | ranking_score | 0.1950 | 0.1947 |
 | 1003 | alphafold3 | 386 | - | 6.7 | - | - | - | - | - | - |
 | 1003 | boltz2 | 96 | 141 | 6.9 | 15.8 | 1.47x | 2.30x | complex_plddt | 0.9495 | 0.9482 |
 | 1003 | opendde | 281 | 287 | 42.9 | 59.5 | 1.02x | 1.38x | ranking_score | 0.1926 | 0.1930 |
 | 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm | 0.9307 | 0.9300 |
 | 1003 | protenix | 67 | 99 | 6.7 | 12.7 | 1.49x | 1.89x | ranking_score | 0.1921 | 0.1922 |
+| 1003 | protenix-v2 | 110 | 138 | 10.1 | 13.3 | 1.26x | 1.32x | ranking_score | 0.1931 | 0.1927 |
 | 3012 | alphafold3 | 1,019 | - | 41.3 | - | - | - | - | - | - |
 | 3012 | boltz2 | 1,016 | failed | 43.0 | failed | - | - | - | - | - |
 | 3012 | opendde | failed | failed | failed | failed | - | - | - | - | - |
 | 3012 | openfold3 | 1,385 | 6,722 | 58.4 | 81.3 | 4.85x | 1.39x | ptm | 0.8711 | 0.8748 |
 | 3012 | protenix | 723 | 797 | 43.7 | 56.0 | 1.10x | 1.28x | ranking_score | 0.9554 | 0.9502 |
+| 3012 | protenix-v2 | 2,054 | failed | 78.2 | failed | - | - | - | - | - |
+
+**`protenix-v2` is a second checkpoint, not a sixth port.** Protenix ships two
+supported models and FoldJAX runs both through the same code: v2 is the same
+blocks at c_z=256 with `hidden_scale_up`, 464M parameters against the release's
+368M. A benchmark row is a (weights, schedule) pair, so it gets its own rows,
+and both sides run the same schedule on the same job as everything else here.
+Its checkpoint was measured on 2026-08-25.
+
+**Its 3,012-token row is the one place the two implementations disagree about
+what is possible.** Upstream refuses protenix-v2 above 2,560 tokens by
+assertion, before allocating anything, and its own message gives the reason:
+"It might cause OOM." That is a memory budget rather than an architectural
+bound — the relative position encoding buckets residue separation with
+`clip(delta, 0, 2 * r_max)` at r_max=32, so nothing in the model is bounded by
+token count — and a budget calibrated on one implementation does not transfer
+to another that uses 1.2x to 1.3x less. FoldJAX warns with the expected size
+and runs: 3,012 tokens completed five samples at 78.2 GiB. `strict_token_limit`
+restores upstream's refusal for a caller who wants it. Neither implementation
+validates the model at that length, which the warning says too.
 
 **The FoldJAX columns were re-measured on 2026-08-24 at `0c2d70b`; the upstream
 columns are the runs already on record.** Nothing upstream changed between the
@@ -113,9 +135,19 @@ the average at the small end.
   3,012, and that is not a saving** -- see below. It is the one series here
   whose memory panel cannot be read without its time panel.
 
-Hollow markers are sizes a run reached and did not finish. They are drawn
-rather than dropped: omitting them would bend a curve into a claim that the
-model kept scaling.
+- **protenix-v2's time is the steepest thing in the figure at the top end,
+  19.5x per doubling between 2,096 and 3,012 tokens.** Its memory over the same
+  stretch grows 3.8x, which is the square term and nothing surprising. The time
+  is not: 434 s becomes 2,054 s for 1.44x the tokens. At 78.2 GiB the run is
+  close enough to the 88 GiB pool that the allocator has little room to work
+  in, and that shows up as time rather than as a failure.
+
+Hollow markers are sizes a run reached and did not finish, and the band they
+sit in says only that: no structure came out. The reasons differ. Most are
+out-of-memory; upstream Protenix's protenix-v2 point at 3,012 tokens is a
+refusal by assertion, before it allocated anything. They are drawn rather than
+dropped, because omitting them would bend a curve into a claim that the model
+kept scaling.
 
 ### The four upstreams against each other
 

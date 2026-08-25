@@ -132,14 +132,21 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
             repo,
             {},
         )
-    if model == "protenix":
+    if model in {"protenix", "protenix-v2"}:
         repo = ROOT / "protenix"
+        # Upstream resolves the architecture from the name: `model_name` picks
+        # the entry in configs_model_type, which for v2 widens c_z to 256 and
+        # turns on hidden_scale_up before the checkpoint is loaded. The bench's
+        # schedule flags are applied after that merge and still win.
+        upstream_name = (
+            "protenix-v2" if model == "protenix-v2" else "protenix_base_default_v1.0.0"
+        )
         return (
             _protenix_family(
                 repo,
                 [
                     "--model_name",
-                    "protenix_base_default_v1.0.0",
+                    upstream_name,
                     "--load_checkpoint_dir",
                     str(Path.home() / "protenix/checkpoint"),
                 ],

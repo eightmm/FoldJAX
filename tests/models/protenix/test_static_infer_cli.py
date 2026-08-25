@@ -844,30 +844,44 @@ def test_static_infer_orders_msa_template_and_rna_preprocessing(
     assert applies == ["msa-apply", "template-apply", "rna-apply"]
 
 
-def test_static_infer_rejects_large_v2_before_weight_load(tmp_path) -> None:
+def test_static_infer_checks_v2_size_before_loading_weights(tmp_path) -> None:
+    """The size check runs first, and no longer stops the run by itself.
+
+    It used to refuse above 2,560 tokens. That limit is upstream's memory
+    budget rather than an architectural bound, and this port runs past it -- so
+    what has to stay true is only that the check happens before the expensive
+    weight load, whichever way it goes. `--strict-token-limit` still refuses,
+    and refuses there.
+    """
     features_path = tmp_path / "large_features.npz"
     np.savez_compressed(
         features_path,
         restype=np.zeros((2561, 32), dtype=np.float32),
     )
+    argv = [
+        "--weights",
+        str(tmp_path / "missing.pkl"),
+        "--features",
+        str(features_path),
+        "--out",
+        str(tmp_path / "out.npz"),
+        "--model-name",
+        "protenix-v2",
+        "--cpu-only",
+    ]
 
     with pytest.raises(SystemExit) as exc_info:
-        main(
-            [
-                "--weights",
-                str(tmp_path / "missing.pkl"),
-                "--features",
-                str(features_path),
-                "--out",
-                str(tmp_path / "out.npz"),
-                "--model-name",
-                "protenix-v2",
-                "--cpu-only",
-            ]
-        )
-
+        main([*argv, "--strict-token-limit"])
     assert exc_info.value.code != 0
     assert "does not support n_token > 2560" in str(exc_info.value)
+
+    # Without it the size is a warning, and what stops the run is the weights
+    # that are not there -- which is how you can tell the check ran and passed
+    # rather than never running.
+    with pytest.warns(RuntimeWarning, match="memory budget"):
+        with pytest.raises((SystemExit, FileNotFoundError, OSError)) as fell_through:
+            main(argv)
+    assert "does not support n_token > 2560" not in str(fell_through.value)
 
 
 def _toy_params_with_relp_dim(relp_dim: int):

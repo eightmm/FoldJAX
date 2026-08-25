@@ -12,6 +12,27 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Protenix v2 runs past upstream's 2,560-token limit, and says what that
+  costs.** Upstream refuses protenix-v2 above 2,560 tokens by assertion, before
+  allocating anything, and its own message gives the reason: "It might cause
+  OOM." That is a memory budget rather than an architectural bound — the
+  relative position encoding buckets residue separation with
+  `clip(delta, 0, 2 * r_max)` at r_max=32, so nothing in the model is bounded
+  by token count — and a budget calibrated on one implementation does not
+  transfer to another that uses 1.2x to 1.3x less of it. FoldJAX now warns and
+  runs where upstream refuses: measured, 3,012 tokens completed five samples at
+  78.2 GiB. The warning carries an expected size, fitted on this port's own
+  measurements as `2.1 GiB + 0.0086 MiB × tokens²`, which reproduces the
+  1,003-token peak to within 5%; and it says plainly that neither
+  implementation validates the model at that length, because a run that fits is
+  not thereby a run that is right. `strict_token_limit=true` restores upstream's
+  refusal unchanged.
+
+  A switch option reached the native CLI as `--flag value`, which argparse
+  rejects with exit 2 and a usage dump naming no argument. Switch-style options
+  now render as a bare flag when on and nothing when off, and a value that is
+  neither true nor false is refused with a message that says which option.
+
 - **Protenix v2 is supported and fetched, alongside the release.**
   `--profile v2`, or `model_name=protenix-v2`, selects the 464M model announced
   2026-04-08 against the release's 368M, and `foldjax setup` now takes both:

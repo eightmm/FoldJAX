@@ -105,6 +105,15 @@ def main(
         help="Existing local mmCIF coordinate database; never downloaded implicitly.",
     )
     msa_group = parser.add_mutually_exclusive_group()
+    parser.add_argument(
+        "--strict-token-limit",
+        dest="strict_token_limit",
+        action="store_true",
+        help="refuse protenix-v2 above 2,560 tokens the way upstream does. "
+        "That limit is a memory budget -- its own message says 'It might cause "
+        "OOM' -- and nothing in the architecture is bounded by token count, so "
+        "FoldJAX warns and runs instead. Use this to get upstream's behaviour",
+    )
     msa_group.add_argument(
         "--full-depth-msa",
         dest="full_depth_msa",
@@ -669,7 +678,11 @@ def main(
 
                 validate_esm_embeddings(features)
             n_token = int(features["restype"].shape[-2])
-            validate_inference_limits(model_name=model_name, n_token=n_token)
+            validate_inference_limits(
+                model_name=model_name,
+                n_token=n_token,
+                strict_token_limit=args.strict_token_limit,
+            )
             if args.full_depth_msa and args.msa_row_alignment > 0 and "msa" in features:
                 original_msa_rows = int(features["msa"].shape[-2])
                 features = pad_msa_features_to_bucket(
@@ -722,6 +735,7 @@ def main(
                 validate_inference_limits(
                     model_name=model_name,
                     n_token=padding_plan.target["tokens"],
+                    strict_token_limit=args.strict_token_limit,
                 )
                 print(f"{job['name']}: {padding_plan.message('protenix')}")
                 if on_padding_plan is not None:

@@ -42,7 +42,14 @@ import math
 from pathlib import Path
 
 #: Cheapest first, matching the benchmark figure's row order.
-MODELS = ("boltz2", "protenix", "openfold3", "opendde", "alphafold3")
+MODELS = (
+    "boltz2",
+    "protenix",
+    "protenix-v2",
+    "openfold3",
+    "opendde",
+    "alphafold3",
+)
 
 #: Two series per panel is what lets this figure keep the JAX-tile blue against
 #: a neutral upstream: five model hues on one pair of axes cannot clear the
@@ -319,7 +326,7 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
                    markersize=6, markerfacecolor="none", markeredgewidth=1.3)
     )
     figure.legend(
-        handles, ["FoldJAX", "upstream", "OOM"],
+        handles, ["FoldJAX", "upstream", "did not run"],
         loc="upper right", frameon=False, labelcolor=fg, fontsize=9.5,
         ncol=3, bbox_to_anchor=(0.995, 1.0),
     )
@@ -383,11 +390,14 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         del column
         # The failures live in a band of their own above the data, so a reader
         # never has to decide whether a marker up there is a measurement.
+        # Not all of them are out-of-memory: upstream Protenix refuses
+        # protenix-v2 above 2,560 tokens by assertion, before allocating,
+        # so the band says only that the size produced no structure.
         floor, ceiling = top * 1.06, top * 1.25
         axis.axhspan(floor, ceiling, color=grid, alpha=0.55, zorder=0, lw=0)
         axis.axhline(floor, color=grid, linewidth=1.0, zorder=1)
         axis.text(
-            60, (floor + ceiling) / 2, "OOM", color=fg,
+            60, (floor + ceiling) / 2, "did not run", color=fg,
             fontsize=9, fontweight="bold", va="center", ha="left", zorder=5,
         )
 

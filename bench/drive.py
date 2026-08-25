@@ -77,8 +77,13 @@ def native_input(model: str, case, destination: Path) -> Path:
     from foldjax.input import materialize_native_input
     from foldjax.registry import capabilities
 
+    # Bench labels are (weights, schedule) pairs; FoldJAX's registry is keyed by
+    # backend. Protenix's two supported checkpoints are two rows and one
+    # backend, and they read the same input dialect, so the label resolves to
+    # the backend before the translator is asked what it accepts.
+    backend = "protenix" if model == "protenix-v2" else model
     return materialize_native_input(
-        case.job, capabilities(model), destination, seed=101
+        case.job, capabilities(backend), destination, seed=101
     )
 
 

@@ -26,6 +26,7 @@ _CLI_OPTIONS = {
     "n_step",
     "n_cycle",
     "model_name",
+    "strict_token_limit",
     "esm_checkpoint_dir",
     "trunk_dtype",
     "max_msa_rows",
@@ -77,6 +78,27 @@ _PROFILE_MODEL_NAMES = {
     "mini-esm-v0.5.0": "protenix_mini_esm_v0.5.0",
     "mini-ism-v0.5.0": "protenix_mini_ism_v0.5.0",
 }
+#: Options the native CLI takes as a bare switch rather than a value. Passing
+#: `--strict-token-limit true` makes argparse reject the whole command, and
+#: the usage dump that comes back says nothing about which argument was wrong.
+_FLAG_OPTIONS = frozenset({"strict_token_limit"})
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"0", "false", "no", "off", ""})
+
+
+def _render_switch(key: str, value: Any) -> list[str]:
+    """One switch option as the native CLI wants it: the flag, or nothing."""
+    flag = f"--{key.replace('_', '-')}"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _TRUE:
+            return [flag]
+        if lowered in _FALSE:
+            return []
+        raise ValueError(f"{key} is a switch; pass true or false, not {value!r}")
+    return [flag] if value else []
+
+
 #: The profiles whose checkpoint is staged beside a matching ESM/ISM encoder.
 #: The base profiles have no language-model conditioning, so pointing
 #: `esm_checkpoint_dir` at their weight directory would name an encoder that is
@@ -280,8 +302,14 @@ class ProtenixBackend(Backend):
                     argv.extend((f"--pad-{axis}", str(target)))
             argv.extend(("--padding-overflow", request.padding.overflow))
         for key in sorted(_CLI_OPTIONS):
-            if key in options:
-                argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))
+            if key not in options:
+                continue
+            value = options.pop(key)
+            flag = f"--{key.replace('_', '-')}"
+            if key not in _FLAG_OPTIONS:
+                argv.extend((flag, str(value)))
+                continue
+            argv.extend(_render_switch(key, value))
         argv.extend(cli_args)
         if options:
             raise ValueError(f"unsupported Protenix options: {', '.join(options)}")

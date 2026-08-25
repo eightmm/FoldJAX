@@ -84,15 +84,16 @@ from that path rather than a redundant managed ESMC copy.
 *Each port against the repository it came from — same job, same schedule, same
 measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md).*
 
-Across the ten rows both sides complete, FoldJAX holds a **1.08x to 2.30x**
-lower peak and runs at **0.94x to 4.85x** the speed, and at 3,012 tokens four
-of the five models in that table finish on the FoldJAX side where two finish
-upstream. The widest memory margin, 3.11x, is at the 2,096-token size the
-scaling figure adds. Two of those numbers need the context the doc gives them:
-OpenDDE is the one row FoldJAX does not win on time, and OpenFold3's upstream
-cannot reach its own released attention kernel on this card, so its speed
-column is not a like-for-like comparison. The FoldJAX column was re-measured
-on 2026-08-24; the upstream column is unchanged, because upstream is.
+Across the twelve rows of that table where both sides complete, FoldJAX holds
+a **1.08x to 2.30x** lower peak and runs at **0.94x to 4.85x** the speed, and at 3,012
+tokens five of the six models in that table finish on the FoldJAX side where
+two finish upstream. The widest memory margin, 3.11x, is at the 2,096-token
+size the scaling figure adds. Two of those numbers need the context the doc
+gives them: OpenDDE is the one row FoldJAX does not win on time, and
+OpenFold3's upstream cannot reach its own released attention kernel on this
+card, so its speed column is not a like-for-like comparison. The FoldJAX
+column was re-measured on 2026-08-24 and Protenix v2 added on 2026-08-25; the
+upstream column is otherwise unchanged, because upstream is.
 
 ## Examples
 
@@ -575,10 +576,9 @@ FoldJAX follows that split.
 **Protenix ships two supported models and `setup` fetches both.**
 `--profile v2` (or `model_name=protenix-v2`) selects Protenix v2 — 464M
 parameters against the release's 368M, announced 2026-04-08, with clear gains
-on antibody-antigen targets — and carries its sampler schedule and its
-2,560-token limit. The port needs no architecture change for it: its blocks
-read their widths from the parameters they are handed, so v2's c_z=256 and its
-eight triangle heads arrive with the checkpoint.
+on antibody-antigen targets. The port needs no architecture change for it: its
+blocks read their widths from the parameters they are handed, so v2's c_z=256
+and its eight triangle heads arrive with the checkpoint.
 
 Its provenance is worth stating. ByteDance's own CDN key stopped serving
 `protenix-v2.pt` the day it was announced and upstream says accessibility is
@@ -589,7 +589,36 @@ The archive was checked before the hash was recorded: 464,442,431 parameters,
 matching the 464.44 M upstream documents, with Pairformer weights of
 `tri_mul_out.linear_a_p (256, 256)` and `tri_att_start.linear (8, 256)` —
 exactly what `hidden_scale_up` produces at c_z=256. A substituted file fails
-on the hash before it is loaded. OpenFold3's 2.29 GB p1
+on the hash before it is loaded.
+
+**FoldJAX runs v2 at 3,012 tokens; upstream refuses at 2,561.** That limit is
+a memory budget, not an architectural bound — upstream's own assertion says
+"It might cause OOM", and the relative position encoding buckets residue
+separation with `clip(delta, 0, 2 * r_max)` at r_max=32, so nothing in the
+model is bounded by token count. A budget calibrated on one implementation
+does not transfer to another that uses less, so FoldJAX warns with the
+expected size and runs. Measured: 3,012 tokens, five completed samples,
+**78.2 GiB**. Pass `--option strict_token_limit=true` for upstream's refusal
+instead. Neither implementation validates the model at that length, and the
+warning says so.
+
+Capacity is not free, and the arithmetic is simple enough to plan with. v2
+doubles the pair channel, and the trunk's dominant tensors are pair tensors of
+shape `[tokens, tokens, c_z]`, so its cost approaches twice the release's as
+the square term takes over:
+
+| tokens | release | v2 | ratio |
+|---|---|---|---|
+| 499 | 4.6 GiB | 6.5 | 1.40x |
+| 1,003 | 6.7 | 10.1 | 1.50x |
+| 2,096 | 23.2 | 39.0 | 1.68x |
+| 3,012 | 43.7 | 78.2 | 1.79x |
+
+None of that is overhead this port could remove — the same doubling costs
+upstream 1.08x to 1.32x *more* than it costs FoldJAX at each size it will run.
+It is what the extra capacity weighs. Above about a thousand tokens the peak
+tracks `2.1 GiB + 0.0086 MiB × tokens²` closely enough to size a card before
+starting, which is what the warning prints. OpenFold3's 2.29 GB p1
 checkpoint comes from the publisher's own unsigned S3 key, pinned by SHA-256,
 so it needs no account and no request; upstream p2 and OpenBind v0.5 target
 newer incompatible architectures and are not substituted.

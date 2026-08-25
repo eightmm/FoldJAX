@@ -81,12 +81,22 @@ def main() -> int:
 
     options = dict(entry.split("=", 1) for entry in args.option)
     case = next(item for item in cases() if item.name == args.case)
+    # A benchmark row is a (weights, schedule) pair, so Protenix's two
+    # supported checkpoints are two rows. FoldJAX spells the second as a
+    # profile of one model rather than as a second model, and the bench label
+    # has to survive that: `protenix-v2` names the row, `--profile v2` names
+    # the weights.
+    model, profile = args.model, None
+    if model == "protenix-v2":
+        model, profile = "protenix", "v2"
+
     request = PredictionRequest(
-        model=args.model,
+        model=model,
         input=case.job,
         output_dir=args.output_dir,
         seed=SEED,
         options=options,
+        profile=profile,
         **SCHEDULE,
     )
 

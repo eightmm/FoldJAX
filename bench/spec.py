@@ -44,7 +44,20 @@ DATA = Path(
 )
 
 #: Every model FoldJAX can run.
-MODELS = ("alphafold3", "boltz2", "opendde", "openfold3", "protenix")
+#:
+#: `protenix-v2` is Protenix's other supported checkpoint rather than another
+#: port: 464M parameters against the release's 368M, same code path on both
+#: sides. It is listed separately because a benchmark row is a (weights,
+#: schedule) pair, and these are different weights. It caps at 2,560 tokens,
+#: so it has no 3,012-token row to compare.
+MODELS = (
+    "alphafold3",
+    "boltz2",
+    "opendde",
+    "openfold3",
+    "protenix",
+    "protenix-v2",
+)
 
 #: The models with a meaningful "upstream" column, i.e. the ones `run_upstream`
 #: knows how to drive.
@@ -59,7 +72,7 @@ MODELS = ("alphafold3", "boltz2", "opendde", "openfold3", "protenix")
 #: exist, an "upstream" number would have to be borrowed from somewhere else,
 #: which is exactly what this directory refuses to do. It can be measured on
 #: the FoldJAX side today.
-REIMPLEMENTED = ("boltz2", "opendde", "protenix")
+REIMPLEMENTED = ("boltz2", "opendde", "protenix", "protenix-v2")
 
 
 @dataclass(frozen=True)

@@ -1951,3 +1951,22 @@ def test_protenix_v2_runs_from_supplied_weights(tmp_path: Path) -> None:
         "it to the managed model would silently run a different model"
     )
     assert resolved.weights == checkpoint
+
+
+def test_switch_options_reach_protenix_as_switches(tmp_path: Path) -> None:
+    """A `store_true` flag takes no value, and argparse says so unhelpfully.
+
+    Every native option was rendered as `--flag value`, so asking for
+    `strict_token_limit=true` produced `--strict-token-limit true` and
+    the native CLI exited 2 with a usage dump that named no argument. The
+    switch has to arrive as a switch, and only when it is on.
+    """
+    from foldjax.backends.protenix import _FLAG_OPTIONS, _render_switch
+
+    assert "strict_token_limit" in _FLAG_OPTIONS
+    assert _render_switch("strict_token_limit", "true") == ["--strict-token-limit"]
+    assert _render_switch("strict_token_limit", True) == ["--strict-token-limit"]
+    assert _render_switch("strict_token_limit", "false") == []
+    assert _render_switch("strict_token_limit", False) == []
+    with pytest.raises(ValueError, match="switch"):
+        _render_switch("strict_token_limit", "maybe")

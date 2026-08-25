@@ -5,7 +5,11 @@ repository it reimplements — wall time on the left, peak memory on the right.
 The figure is generated from the same JSON records `bench/report.py` reads, so
 it cannot drift from the table: re-run the bench, re-run this, and both tell
 the same story. Failures are drawn as a hatched bar to the axis edge and
-labelled OOM, because "did not run" is a measurement here, not missing data.
+labelled, because "did not run" is a measurement here, not missing data. The
+label distinguishes running out of memory from declining to start: upstream
+Protenix refuses protenix-v2 above 2,560 tokens by assertion, before it
+allocates anything, and drawing that as OOM would claim a measurement nobody
+took.
 
     uv run --with matplotlib python docs/make_benchmark_figure.py \
         --results ../foldjax-bench/results-lengths
@@ -20,7 +24,7 @@ import argparse
 import json
 from pathlib import Path
 
-MODELS = ("boltz2", "protenix", "openfold3", "opendde", "alphafold3")
+MODELS = ("boltz2", "protenix", "protenix-v2", "openfold3", "opendde", "alphafold3")
 SIZES = (499, 1003, 3012)
 
 #: JAX-tile palette from the banner: FoldJAX bars in the gradient's blue,
@@ -95,10 +99,12 @@ def render(records: dict, out: Path, *, dark: bool) -> Path:
                         linewidth=0.8,
                         zorder=2,
                     )
+                    reason = str(body.get("reason") or "")
+                    label = "refused" if "refuses" in reason else "OOM"
                     axis.text(
                         0.99,
                         (row_y + offset),
-                        "OOM",
+                        label,
                         transform=axis.get_yaxis_transform(),
                         ha="right",
                         va="center",
