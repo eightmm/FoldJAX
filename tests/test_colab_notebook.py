@@ -448,14 +448,24 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "PERSIST_OUTPUTS_TO_DRIVE = False" in source
     assert 'OUTPUT_ROOT = OUTPUT_BASE / JOB_SLUG / RUN_LABEL' in source
     assert 'RUN_MODE = "Fast demo"' in source
+    assert (
+        'RUN_MODE = "Fast demo"  # @param '
+        '["Fast demo", "Released defaults", "Custom"]'
+    ) in source
+    assert 'INPUT_MODE = "Form"' in source
+    assert 'MAX_MSA_DEPTH = 0' in source
+    assert 'PREFLIGHT_ONLY = False' in source
+    assert 'ESMFOLD2_PROFILE = "Released"' in source
+    assert 'REPRESENTATIONS = "None"' in source
+    assert 'PADDING_MODE = "Off"' in source
     assert 'MSA_POLICY = "none"' in source
     assert "job_path.read_text()" not in source
     assert '{"num_samples": 1, "num_steps": 20, "num_recycles": 1}' in source
-    assert "protein=PROTEIN_SEQUENCES" in source
-    assert "dna=DNA_SEQUENCES" in source
-    assert "rna=RNA_SEQUENCES" in source
-    assert "ligand_ccd=LIGAND_CCDS" in source
-    assert "ligand_smiles=LIGAND_SMILES_VALUES" in source
+    assert "protein=protein_sequences" in source
+    assert "dna=dna_sequences" in source
+    assert "rna=rna_sequences" in source
+    assert "ligand_ccd=ligand_ccds" in source
+    assert "ligand_smiles=ligand_smiles" in source
     assert "model=model_name" in source
     assert "predict_batch(model_request)" in source
     assert "BatchReport(" in source
@@ -650,16 +660,7 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
     )
 
     def fake_resolve(request: PredictionRequest):
-        return (
-            SimpleNamespace(
-                model=request.model,
-                input=request.input,
-                output_dir=request.output_dir,
-                resolved_seeds=(0,),
-                options=request.options,
-                sampling=request.sampling,
-            ),
-    )
+        return (request,)
 
     monkeypatch.setattr(foldjax, "resolve_requests", fake_resolve)
     job_path = tmp_path / "job.json"
@@ -673,9 +674,17 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
         "OUTPUT_ROOT": tmp_path / "outputs",
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "NUM_SEEDS": 1,
+        "RESOLVED_EXPLICIT_SEEDS": None,
         "MSA_POLICY": "none",
+        "MAX_MSA_DEPTH": 0,
         "CONTINUE_ON_ERROR": True,
         "FAST_SCHEDULE": {},
+        "MODEL_PROFILES": dict.fromkeys(models),
+        "REPRESENTATIONS": "None",
+        "STOP_AFTER": "Full structure",
+        "PADDING_MODE": "Off",
+        "PADDING_OVERFLOW": "error",
+        "padding_targets": {},
         "Path": Path,
         "pd": __import__("pandas"),
         "foldjax_table": lambda *_args, **_kwargs: None,
@@ -822,7 +831,7 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
         "rna",
         "ligand",
     ]
-    assert namespace["LIGAND_CCDS"] == ("ATP",)
+    assert payload["entities"][-1]["ccd"] == "ATP"
     assert len(namespace["PROTEIN_SEQUENCES"][0]) == 78
     assert namespace["SELECTED_MODELS"] == (
         "protenix",
@@ -830,6 +839,128 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
         "openfold3",
     )
     assert "openfold3" not in namespace["MANUAL_WEIGHT_TEXT"]
+
+
+def test_colab_custom_schedule_seeds_msa_representations_and_padding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    configure = _cell_source("configure-run")
+    configure = configure.replace('RUN_MODE = "Fast demo"', 'RUN_MODE = "Custom"')
+    configure = configure.replace(
+        'CUSTOM_NUM_SAMPLES = 1', 'CUSTOM_NUM_SAMPLES = 2'
+    )
+    configure = configure.replace('CUSTOM_NUM_STEPS = 100', 'CUSTOM_NUM_STEPS = 60')
+    configure = configure.replace(
+        'CUSTOM_NUM_RECYCLES = 3', 'CUSTOM_NUM_RECYCLES = 2'
+    )
+    configure = configure.replace('EXPLICIT_SEEDS = ""', 'EXPLICIT_SEEDS = "7, 11"')
+    configure = configure.replace('MAX_MSA_DEPTH = 0', 'MAX_MSA_DEPTH = 256')
+    configure = configure.replace(
+        'REPRESENTATIONS = "None"', 'REPRESENTATIONS = "Single + pair"'
+    )
+    configure = configure.replace(
+        'STOP_AFTER = "Full structure"',
+        'STOP_AFTER = "Trunk representations"',
+    )
+    configure = configure.replace(
+        'PADDING_MODE = "Off"', 'PADDING_MODE = "Standard profile"'
+    )
+    _patch_ipython_display(monkeypatch)
+    namespace = {
+        "WORK_DIR": tmp_path,
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "Path": Path,
+    }
+    exec(configure, namespace)
+    namespace.update(
+        {
+            "ACCELERATOR_KIND": "tpu",
+            "COMPILE_CACHE": tmp_path / "compile-cache",
+            "MODEL_WEIGHTS": dict.fromkeys(namespace["SELECTED_MODELS"]),
+        }
+    )
+    exec(_cell_source("build-job"), namespace)
+    monkeypatch.setattr(foldjax, "resolve_requests", lambda request: (request,))
+
+    exec(_cell_source("plan-runs"), namespace)
+
+    assert namespace["RUN_LABEL"] == "custom-s2-n60-r2"
+    for request in namespace["model_requests"]:
+        assert request.resolved_seeds == (7, 11)
+        assert request.max_msa_depth == 256
+        assert request.representations == ("single", "pair")
+        assert request.stop_after == "trunk"
+        assert request.padding is not None
+        assert (request.num_samples, request.num_steps, request.num_recycles) == (
+            2,
+            60,
+            2,
+        )
+
+
+def test_colab_upload_job_uses_common_validation_and_supplied_msa(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job_path = tmp_path / "advanced.json"
+    job_path.write_text(
+        json.dumps(
+            {
+                "name": "uploaded-complex",
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "ACDEFG",
+                        "unpaired_msa": "/content/query.a3m",
+                        "modifications": [{"ccd": "SEP", "position": 2}],
+                        "templates": [
+                            {
+                                "mmcif": "data_template\n#\n",
+                                "query_indices": [1, 2],
+                                "template_indices": [1, 2],
+                            }
+                        ],
+                    },
+                    {"type": "ligand", "id": "B", "ccd": "ATP"},
+                ],
+                "bonds": [
+                    [["A", 2, "OG"], ["B", 1, "PA"]],
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    build = _cell_source("build-job")
+    build = build.replace('INPUT_MODE = "Form"', 'INPUT_MODE = "Upload job"')
+    build = build.replace('JOB_FILE_PATH = ""', f"JOB_FILE_PATH = {str(job_path)!r}")
+    tables = []
+    _patch_ipython_display(monkeypatch)
+    namespace = {
+        "WORK_DIR": tmp_path,
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "Path": Path,
+    }
+    exec(_cell_source("configure-run"), namespace)
+    namespace["SELECTED_MODELS"] = ("protenix",)
+    namespace["foldjax_table"] = lambda frame, *_args, **_kwargs: tables.append(
+        frame
+    )
+
+    exec(build, namespace)
+
+    assert namespace["job_path"] == job_path
+    assert namespace["JOB_SLUG"] == "uploaded-complex"
+    assert namespace["INPUT_REQUIRED_FEATURES"] >= {
+        "unpaired_msa",
+        "modifications",
+        "templates",
+        "ligand_ccd",
+        "bonds",
+    }
+    preflight = next(frame for frame in tables if "action" in frame.columns)
+    protein = preflight.loc[preflight["entity"] == "protein 1"].iloc[0]
+    assert protein["cache"] == "supplied"
+    assert "no service contact" in protein["action"]
 
 
 @pytest.mark.parametrize(
@@ -999,7 +1130,8 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
             "INPUT_REQUIRED_FEATURES": frozenset(
                 {"modifications", "ligand_ccd", "bonds"}
             ),
-            "MANUAL_WEIGHT_TEXT": {},
+                "MANUAL_WEIGHT_TEXT": {},
+                "MODEL_PROFILES": {"esmfold2": None},
             "foldjax_home": tmp_path,
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "OUTPUT_BASE": tmp_path / "outputs",
@@ -1022,6 +1154,64 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
     assert calls[0][0][0][-2:] == ["--model", "esmfold2"]
 
 
+def test_colab_fetches_the_explicit_esmfold2_structure_only_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "esmfold2",
+        entity_types=("protein", "dna", "rna", "ligand"),
+        features=("unpaired_msa",),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "released",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    monkeypatch.setattr(
+        "foldjax.assets.profile_status",
+        lambda _model: (
+            {
+                "profile": "structure-only",
+                "ready": False,
+                "download_bytes": 1_360_000_000,
+                "path": str(tmp_path / "structure-only"),
+                "notes": "test structure-only profile",
+            },
+        ),
+    )
+    namespace = {
+        "SELECTED_MODELS": ("esmfold2",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "MANUAL_WEIGHT_TEXT": {},
+        "MODEL_PROFILES": {"esmfold2": "structure-only"},
+        "foldjax_home": tmp_path,
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_CACHE_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(
+            run=lambda *args, **kwargs: calls.append((args, kwargs))
+        ),
+        "sys": sys,
+        **_notebook_ui(),
+    }
+
+    exec(_cell_source("fetch-weights"), namespace)
+
+    command = calls[0][0][0]
+    assert command[-4:] == ["--model", "esmfold2", "--profile", "structure-only"]
+    assert namespace["model_asset_states"]["esmfold2"]["download_bytes"] == (
+        1_360_000_000
+    )
+
+
 def test_colab_fetches_public_openfold3_p1_automatically(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1041,6 +1231,7 @@ def test_colab_fetches_public_openfold3_p1_automatically(
         "INPUT_ENTITY_TYPES": frozenset({"protein", "ligand"}),
         "INPUT_REQUIRED_FEATURES": frozenset({"ligand_smiles"}),
         "MANUAL_WEIGHT_TEXT": {},
+        "MODEL_PROFILES": {"openfold3": None},
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "OUTPUT_BASE": tmp_path / "outputs",
@@ -1088,6 +1279,7 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
         "INPUT_ENTITY_TYPES": frozenset({"protein"}),
         "INPUT_REQUIRED_FEATURES": frozenset(),
         "MANUAL_WEIGHT_TEXT": {},
+        "MODEL_PROFILES": {"openfold3": None},
         "foldjax_home": tmp_path,
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "OUTPUT_BASE": tmp_path / "outputs",
@@ -1123,16 +1315,7 @@ def test_colab_prediction_and_output_cells_execute_together(
 
     def fake_resolve(request: PredictionRequest):
         assert request.model in ("protenix", "opendde", "openfold3")
-        return (
-            SimpleNamespace(
-                model=request.model,
-                input=request.input,
-                output_dir=request.output_dir,
-                resolved_seeds=(0,),
-                options=request.options,
-                sampling=request.sampling,
-            ),
-        )
+        return (request,)
 
     def fake_predict_batch(request: PredictionRequest) -> BatchReport:
         seen.append(request)
@@ -1328,8 +1511,9 @@ def test_colab_run_cell_surfaces_model_failures(
         _cell_source("run-predictions"),
         {
             "model_requests": (
-                SimpleNamespace(model="opendde", num_seeds=1, msa="none"),
+                SimpleNamespace(model="opendde", resolved_seeds=(0,), msa="none"),
             ),
+            "PREFLIGHT_ONLY": False,
             "display": displayed.append,
             "pd": __import__("pandas"),
             **_notebook_ui(tables=displayed),
@@ -1339,6 +1523,97 @@ def test_colab_run_cell_surfaces_model_failures(
     assert len(displayed) == 1
     assert displayed[0].iloc[0]["model"] == "opendde"
     assert displayed[0].iloc[0]["error_type"] == "MemoryError"
+
+
+def test_colab_preflight_only_resolves_without_predicting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        foldjax,
+        "predict_batch",
+        lambda _request: pytest.fail("preflight must not launch inference"),
+    )
+    namespace = {
+        "model_requests": (
+            SimpleNamespace(model="protenix", resolved_seeds=(0,), msa="none"),
+        ),
+        "PREFLIGHT_ONLY": True,
+        "plan_rows": [{"model": "protenix", "seeds": [0]}],
+        "STOP_POINT": "full",
+        "Path": Path,
+        "pd": __import__("pandas"),
+        **_notebook_ui(),
+    }
+
+    exec(_cell_source("run-predictions"), namespace)
+    exec(_cell_source("compare-results"), namespace)
+
+    assert namespace["report"] == BatchReport()
+    assert namespace["STRUCTURES"] == {}
+    assert tuple(namespace["comparison"]["model"]) == ("protenix",)
+
+
+def test_colab_trunk_mode_reports_representations_without_structures() -> None:
+    representations = SimpleNamespace(
+        summary=lambda: {
+            "names": ["single", "pair"],
+            "path": "/content/results/representations.npz",
+        }
+    )
+    namespace = {
+        "report": BatchReport(
+            results=(
+                PredictionResult(
+                    model="protenix",
+                    representations=representations,
+                ),
+            )
+        ),
+        "PREFLIGHT_ONLY": False,
+        "STOP_POINT": "trunk",
+        "Path": Path,
+        "pd": __import__("pandas"),
+        **_notebook_ui(),
+    }
+
+    exec(_cell_source("compare-results"), namespace)
+
+    assert namespace["STRUCTURES"] == {}
+    assert namespace["comparison"].iloc[0]["representations"] == "single, pair"
+
+
+def test_colab_custom_padding_rejects_an_unsupported_model_axis(
+    tmp_path: Path,
+) -> None:
+    job_path = tmp_path / "job.json"
+    job_path.write_text("{}", encoding="utf-8")
+    namespace = {
+        "ACCELERATOR_KIND": "tpu",
+        "SELECTED_MODELS": ("alphafold3",),
+        "JOB_SLUG": "job",
+        "job_path": job_path,
+        "MODEL_WEIGHTS": {"alphafold3": None},
+        "MODEL_PROFILES": {"alphafold3": None},
+        "OUTPUT_ROOT": tmp_path / "outputs",
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "NUM_SEEDS": 1,
+        "RESOLVED_EXPLICIT_SEEDS": None,
+        "MSA_POLICY": "none",
+        "MAX_MSA_DEPTH": 0,
+        "CONTINUE_ON_ERROR": True,
+        "FAST_SCHEDULE": {},
+        "REPRESENTATIONS": "None",
+        "STOP_AFTER": "Full structure",
+        "PADDING_MODE": "Custom targets",
+        "PADDING_OVERFLOW": "error",
+        "padding_targets": {"msa": 128},
+        "Path": Path,
+        "pd": __import__("pandas"),
+        "foldjax_table": lambda *_args, **_kwargs: None,
+    }
+
+    with pytest.raises(ValueError, match="does not support padding axes.*msa"):
+        exec(_cell_source("plan-runs"), namespace)
 
 
 def test_readme_links_to_and_explains_the_colab_workflow() -> None:
