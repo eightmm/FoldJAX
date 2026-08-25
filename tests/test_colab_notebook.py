@@ -624,6 +624,7 @@ def test_colab_configures_accelerator_specific_kernels(
     monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
     namespace = {
         "ACCELERATOR_KIND": accelerator,
+        "SELECTED_MODELS": (),
         "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
         "PERSIST_MSA_TO_DRIVE": False,
         "PERSIST_OUTPUTS_TO_DRIVE": False,
@@ -699,6 +700,7 @@ def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
     monkeypatch.setitem(sys.modules, "google.colab", colab)
     namespace = {
         "ACCELERATOR_KIND": "tpu",
+        "SELECTED_MODELS": ("openfold3", "alphafold3"),
         "PERSIST_MODEL_ASSETS_TO_DRIVE": True,
         "PERSIST_MSA_TO_DRIVE": True,
         "PERSIST_OUTPUTS_TO_DRIVE": True,
@@ -718,6 +720,7 @@ def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
     assert namespace["COMPILE_CACHE"] == tmp_path / "work" / "compile-cache"
     assert (namespace["foldjax_home"] / "weights").is_symlink()
     assert (namespace["foldjax_home"] / "msa").is_symlink()
+    assert (namespace["MODEL_ASSET_STORE"] / "weights" / "alphafold3").is_dir()
     assert (
         namespace["foldjax_home"] / "weights" / "openfold3" / "p1.pt"
     ).read_bytes() == b"cached"
@@ -754,6 +757,7 @@ def test_colab_can_persist_model_assets_without_persisting_msa(
     monkeypatch.setitem(sys.modules, "google.colab", colab)
     namespace = {
         "ACCELERATOR_KIND": "gpu",
+        "SELECTED_MODELS": ("openfold3",),
         "Path": Path,
         "os": __import__("os"),
         "foldjax_card": lambda *_args, **_kwargs: None,
@@ -808,6 +812,7 @@ def test_colab_detects_private_alphafold3_parameters_in_the_drive_store(
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "local-cache"))
     namespace = {
         "ACCELERATOR_KIND": "tpu",
+        "SELECTED_MODELS": ("alphafold3",),
         "Path": Path,
         "os": __import__("os"),
         "foldjax_card": lambda *_args, **_kwargs: None,
