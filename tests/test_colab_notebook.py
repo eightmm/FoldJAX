@@ -454,7 +454,7 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     ) in source
     assert 'INPUT_MODE = "Form"' in source
     assert 'MAX_MSA_DEPTH = 0' in source
-    assert 'PREFLIGHT_ONLY = False' in source
+    assert 'PREFLIGHT_ONLY = EXECUTION == "Setup only"' in source
     assert 'ESMFOLD2_PROFILE = "Released"' in source
     assert 'REPRESENTATIONS = "None"' in source
     assert 'PADDING_MODE = "Off"' in source
@@ -497,6 +497,48 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     )
     assert "p2/OpenBind checkpoints are not compatible" in markdown
     assert "AlphaFold3 still requires parameters" in markdown
+
+    configure = _cell_source("configure-run")
+    assert configure.count("# @param") == 10
+    assert "PERSIST_CACHE_TO_DRIVE" not in configure
+    assert "ALPHAFOLD3_WEIGHTS_PATH" not in configure
+    assert "CUSTOM_NUM_SAMPLES" not in configure
+    assert "DOWNLOAD_RESULTS" not in configure
+    assert "PERSIST_CACHE_TO_DRIVE = False" in _cell_source("configure-runtime")
+    assert "ALPHAFOLD3_WEIGHTS_PATH" in _cell_source("fetch-weights")
+    assert "CUSTOM_NUM_SAMPLES = 1" in _cell_source("plan-runs")
+    assert "DOWNLOAD_RESULTS = True" in _cell_source("download-results")
+
+
+def test_colab_discloses_each_checkpoint_licence_with_a_source() -> None:
+    markdown = "\n".join(
+        _source(cell)
+        for cell in _document()["cells"]
+        if cell["cell_type"] == "markdown"
+    )
+
+    expected = (
+        ("Protenix", "Apache-2.0", "github.com/bytedance/Protenix"),
+        ("OpenDDE", "publisher model card", "huggingface.co/aurekaresearch/OpenDDE"),
+        ("Boltz-2", "MIT", "github.com/jwohlwend/boltz"),
+        ("ESMFold2", "ESMC-6B MIT plus its terms", "huggingface.co/biohub/ESMFold2"),
+        (
+            "OpenFold3",
+            "Apache-2.0 for code and weights",
+            "github.com/aqlaboratory/openfold-3",
+        ),
+        (
+            "AlphaFold 3",
+            "not redistributable",
+            "github.com/google-deepmind/alphafold3",
+        ),
+    )
+    for model, terms, source in expected:
+        assert model in markdown
+        assert terms in markdown
+        assert source in markdown
+    assert '"licence": info.weights_licence' in _cell_source("fetch-weights")
+    assert '"source": info.weights_source' in _cell_source("fetch-weights")
 
 
 def test_colab_notebook_renders_a_guided_workflow_instead_of_raw_logs() -> None:
@@ -600,6 +642,12 @@ def test_colab_can_persist_cache_and_outputs_to_drive(
 ) -> None:
     source = _cell_source("configure-runtime")
     source = source.replace(
+        "PERSIST_CACHE_TO_DRIVE = False", "PERSIST_CACHE_TO_DRIVE = True"
+    )
+    source = source.replace(
+        "PERSIST_OUTPUTS_TO_DRIVE = False", "PERSIST_OUTPUTS_TO_DRIVE = True"
+    )
+    source = source.replace(
         'WORK_DIR = Path("/content/foldjax-colab")',
         f'WORK_DIR = Path({str(tmp_path / "work")!r})',
     )
@@ -668,10 +716,11 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
     namespace = {
         "ACCELERATOR_KIND": accelerator,
         "SELECTED_MODELS": models,
+        "RUN_MODE": "Released defaults",
         "JOB_SLUG": "job",
         "job_path": job_path,
         "MODEL_WEIGHTS": dict.fromkeys(models),
-        "OUTPUT_ROOT": tmp_path / "outputs",
+        "OUTPUT_BASE": tmp_path / "outputs",
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "NUM_SEEDS": 1,
         "RESOLVED_EXPLICIT_SEEDS": None,
@@ -838,7 +887,11 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
         "opendde",
         "openfold3",
     )
-    assert "openfold3" not in namespace["MANUAL_WEIGHT_TEXT"]
+    assert "MANUAL_WEIGHT_TEXT" not in namespace
+    assert (
+        '"alphafold3": ALPHAFOLD3_WEIGHTS_PATH.strip()'
+        in _cell_source("fetch-weights")
+    )
 
 
 def test_colab_custom_schedule_seeds_msa_representations_and_padding(
@@ -846,23 +899,24 @@ def test_colab_custom_schedule_seeds_msa_representations_and_padding(
 ) -> None:
     configure = _cell_source("configure-run")
     configure = configure.replace('RUN_MODE = "Fast demo"', 'RUN_MODE = "Custom"')
-    configure = configure.replace(
+    plan = _cell_source("plan-runs")
+    plan = plan.replace(
         'CUSTOM_NUM_SAMPLES = 1', 'CUSTOM_NUM_SAMPLES = 2'
     )
-    configure = configure.replace('CUSTOM_NUM_STEPS = 100', 'CUSTOM_NUM_STEPS = 60')
-    configure = configure.replace(
+    plan = plan.replace('CUSTOM_NUM_STEPS = 100', 'CUSTOM_NUM_STEPS = 60')
+    plan = plan.replace(
         'CUSTOM_NUM_RECYCLES = 3', 'CUSTOM_NUM_RECYCLES = 2'
     )
-    configure = configure.replace('EXPLICIT_SEEDS = ""', 'EXPLICIT_SEEDS = "7, 11"')
-    configure = configure.replace('MAX_MSA_DEPTH = 0', 'MAX_MSA_DEPTH = 256')
-    configure = configure.replace(
+    plan = plan.replace('EXPLICIT_SEEDS = ""', 'EXPLICIT_SEEDS = "7, 11"')
+    plan = plan.replace('MAX_MSA_DEPTH = 0', 'MAX_MSA_DEPTH = 256')
+    plan = plan.replace(
         'REPRESENTATIONS = "None"', 'REPRESENTATIONS = "Single + pair"'
     )
-    configure = configure.replace(
+    plan = plan.replace(
         'STOP_AFTER = "Full structure"',
         'STOP_AFTER = "Trunk representations"',
     )
-    configure = configure.replace(
+    plan = plan.replace(
         'PADDING_MODE = "Off"', 'PADDING_MODE = "Standard profile"'
     )
     _patch_ipython_display(monkeypatch)
@@ -877,12 +931,13 @@ def test_colab_custom_schedule_seeds_msa_representations_and_padding(
             "ACCELERATOR_KIND": "tpu",
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "MODEL_WEIGHTS": dict.fromkeys(namespace["SELECTED_MODELS"]),
+            "MODEL_PROFILES": dict.fromkeys(namespace["SELECTED_MODELS"]),
         }
     )
     exec(_cell_source("build-job"), namespace)
     monkeypatch.setattr(foldjax, "resolve_requests", lambda request: (request,))
 
-    exec(_cell_source("plan-runs"), namespace)
+    exec(plan, namespace)
 
     assert namespace["RUN_LABEL"] == "custom-s2-n60-r2"
     for request in namespace["model_requests"]:
@@ -1203,7 +1258,11 @@ def test_colab_fetches_the_explicit_esmfold2_structure_only_profile(
         **_notebook_ui(),
     }
 
-    exec(_cell_source("fetch-weights"), namespace)
+    fetch = _cell_source("fetch-weights").replace(
+        'ESMFOLD2_PROFILE = "Released"',
+        'ESMFOLD2_PROFILE = "Structure-only (no language model)"',
+    )
+    exec(fetch, namespace)
 
     command = calls[0][0][0]
     assert command[-4:] == ["--model", "esmfold2", "--profile", "structure-only"]
@@ -1370,6 +1429,11 @@ def test_colab_prediction_and_output_cells_execute_together(
             "OUTPUT_BASE": tmp_path / "persistent-outputs",
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "MODEL_WEIGHTS": {
+                "protenix": None,
+                "opendde": None,
+                "openfold3": None,
+            },
+            "MODEL_PROFILES": {
                 "protenix": None,
                 "opendde": None,
                 "openfold3": None,
@@ -1590,11 +1654,12 @@ def test_colab_custom_padding_rejects_an_unsupported_model_axis(
     namespace = {
         "ACCELERATOR_KIND": "tpu",
         "SELECTED_MODELS": ("alphafold3",),
+        "RUN_MODE": "Released defaults",
         "JOB_SLUG": "job",
         "job_path": job_path,
         "MODEL_WEIGHTS": {"alphafold3": None},
         "MODEL_PROFILES": {"alphafold3": None},
-        "OUTPUT_ROOT": tmp_path / "outputs",
+        "OUTPUT_BASE": tmp_path / "outputs",
         "COMPILE_CACHE": tmp_path / "compile-cache",
         "NUM_SEEDS": 1,
         "RESOLVED_EXPLICIT_SEEDS": None,
@@ -1611,9 +1676,12 @@ def test_colab_custom_padding_rejects_an_unsupported_model_axis(
         "pd": __import__("pandas"),
         "foldjax_table": lambda *_args, **_kwargs: None,
     }
+    plan = _cell_source("plan-runs")
+    plan = plan.replace('PADDING_MODE = "Off"', 'PADDING_MODE = "Custom targets"')
+    plan = plan.replace("PAD_MSA_ROWS = 0", "PAD_MSA_ROWS = 128")
 
     with pytest.raises(ValueError, match="does not support padding axes.*msa"):
-        exec(_cell_source("plan-runs"), namespace)
+        exec(plan, namespace)
 
 
 def test_readme_links_to_and_explains_the_colab_workflow() -> None:
