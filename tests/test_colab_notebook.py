@@ -436,6 +436,7 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
         "RUN_ALPHAFOLD3",
     ):
         assert f"{field} =" in source
+    assert "RUN_BOLTZ2 = True" in source
     assert "PROTEIN_CHAINS" in source
     assert "DNA_CHAINS" in source
     assert "RNA_CHAINS" in source
@@ -498,11 +499,16 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     )
     assert "p2/OpenBind checkpoints are not compatible" in markdown
     assert "AlphaFold3 still requires parameters" in markdown
+    assert "not supported by this notebook on T4/≤16 GiB devices" in markdown
 
     configure = _cell_source("configure-run")
-    assert configure.count("# @param") == 10
+    assert configure.count("# @param") == 6
     assert "PERSIST_MODEL_ASSETS_TO_DRIVE" not in configure
     assert "PERSIST_MSA_TO_DRIVE" not in configure
+    assert "RUN_MODE" not in configure
+    assert "NUM_SEEDS" not in configure
+    assert "MSA_POLICY" not in configure
+    assert "EXECUTION" not in configure
     assert "CUSTOM_NUM_SAMPLES" not in configure
     assert "DOWNLOAD_RESULTS" not in configure
     assert (
@@ -521,7 +527,14 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
         'foldjax_home / "weights" / "alphafold3"'
         in _cell_source("fetch-weights")
     )
-    assert "CUSTOM_NUM_SAMPLES = 1" in _cell_source("plan-runs")
+    build_job = _cell_source("build-job")
+    assert 'MSA_POLICY = "none"' in build_job
+    plan_runs = _cell_source("plan-runs")
+    assert 'RUN_MODE = "Fast demo"' in plan_runs
+    assert "NUM_SEEDS = 1" in plan_runs
+    assert 'EXECUTION = "Predict"' in plan_runs
+    assert "CONTINUE_ON_ERROR = True" in plan_runs
+    assert "CUSTOM_NUM_SAMPLES = 1" in plan_runs
     assert "DOWNLOAD_RESULTS = True" in _cell_source("download-results")
 
 
@@ -1026,6 +1039,7 @@ def test_colab_default_is_a_protein_rna_ligand_openfold3_demo(
     assert namespace["SELECTED_MODELS"] == (
         "protenix",
         "opendde",
+        "boltz2",
         "openfold3",
     )
     assert 'MODEL_WEIGHTS[model_name] = None' in _cell_source("fetch-weights")
@@ -1035,8 +1049,8 @@ def test_colab_custom_schedule_seeds_msa_representations_and_padding(
     tmp_path: Path, monkeypatch
 ) -> None:
     configure = _cell_source("configure-run")
-    configure = configure.replace('RUN_MODE = "Fast demo"', 'RUN_MODE = "Custom"')
     plan = _cell_source("plan-runs")
+    plan = plan.replace('RUN_MODE = "Fast demo"', 'RUN_MODE = "Custom"')
     plan = plan.replace(
         'CUSTOM_NUM_SAMPLES = 1', 'CUSTOM_NUM_SAMPLES = 2'
     )
@@ -1192,10 +1206,12 @@ def test_colab_msa_preflight_reports_cache_reuse_without_searching(
     namespace = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
     _patch_ipython_display(monkeypatch)
     exec(_cell_source("configure-run"), namespace)
-    namespace["MSA_POLICY"] = "auto"
     namespace["foldjax_table"] = lambda frame, *_args, **_kwargs: tables.append(frame)
 
-    exec(_cell_source("build-job"), namespace)
+    build_job = _cell_source("build-job").replace(
+        'MSA_POLICY = "none"', 'MSA_POLICY = "auto"'
+    )
+    exec(build_job, namespace)
 
     preflight = next(frame for frame in tables if "action" in frame.columns)
     protein = preflight.loc[preflight["entity"] == "protein 1"].iloc[0]
@@ -1226,10 +1242,12 @@ def test_colab_msa_preflight_rejects_required_rna_without_a_backend(
     namespace = {"WORK_DIR": tmp_path, "OUTPUT_BASE": tmp_path / "outputs"}
     _patch_ipython_display(monkeypatch)
     exec(_cell_source("configure-run"), namespace)
-    namespace["MSA_POLICY"] = "required"
+    build_job = _cell_source("build-job").replace(
+        'MSA_POLICY = "none"', 'MSA_POLICY = "required"'
+    )
 
     with pytest.raises(RuntimeError, match="RNA MSA is required"):
-        exec(_cell_source("build-job"), namespace)
+        exec(build_job, namespace)
 
 
 def test_colab_form_rejects_invalid_nucleic_acid_after_setup(
@@ -1337,6 +1355,86 @@ def test_colab_storage_error_reports_target_free_space_and_requirement(
     assert "has 1.0 GB free" in message
     assert "requires about 8.0 GB" in message
     assert "select storage with more free space" in message
+
+
+def test_colab_blocks_released_esmfold2_on_a_16_gib_device(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "esmfold2",
+        entity_types=("protein", "dna", "rna", "ligand"),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "weights" / "esmfold2",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    namespace = {
+        "SELECTED_MODELS": ("esmfold2",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "DEVICE_MEMORY_BYTES": 16 * 2**30,
+        "foldjax_home": tmp_path,
+        "MODEL_ASSET_STORE": tmp_path,
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(run=lambda *_args, **_kwargs: None),
+        "sys": sys,
+        **_notebook_ui(),
+    }
+
+    with pytest.raises(RuntimeError, match="ESMFold2 Released loads ESMC-6B"):
+        exec(_cell_source("fetch-weights"), namespace)
+
+
+def test_colab_allows_released_esmfold2_above_16_gib(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    _patch_ipython_display(monkeypatch)
+    info = _fake_model_info(
+        "esmfold2",
+        entity_types=("protein", "dna", "rna", "ligand"),
+        fetchable=True,
+        ready=False,
+        weights_path=tmp_path / "weights" / "esmfold2",
+    )
+    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
+    namespace = {
+        "SELECTED_MODELS": ("esmfold2",),
+        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
+        "INPUT_REQUIRED_FEATURES": frozenset(),
+        "DEVICE_MEMORY_BYTES": 24 * 2**30,
+        "foldjax_home": tmp_path,
+        "MODEL_ASSET_STORE": tmp_path,
+        "COMPILE_CACHE": tmp_path / "compile-cache",
+        "OUTPUT_BASE": tmp_path / "outputs",
+        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
+        "PERSIST_MSA_TO_DRIVE": False,
+        "PERSIST_OUTPUTS_TO_DRIVE": False,
+        "Path": Path,
+        "display": lambda *_args: None,
+        "shutil": SimpleNamespace(
+            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
+        ),
+        "subprocess": SimpleNamespace(
+            run=lambda *args, **kwargs: calls.append((args, kwargs))
+        ),
+        "sys": sys,
+        **_notebook_ui(),
+    }
+
+    exec(_cell_source("fetch-weights"), namespace)
+
+    assert calls[0][0][0][-2:] == ["--model", "esmfold2"]
 
 
 def test_colab_accepts_esmfold2_all_biomolecule_input(
@@ -1559,14 +1657,14 @@ def test_colab_prediction_and_output_cells_execute_together(
     seen: list[PredictionRequest] = []
 
     def fake_resolve(request: PredictionRequest):
-        assert request.model in ("protenix", "opendde", "openfold3")
+        assert request.model in ("protenix", "opendde", "boltz2", "openfold3")
         return (request,)
 
     def fake_predict_batch(request: PredictionRequest) -> BatchReport:
         seen.append(request)
         model = request.model
         assert model is not None
-        index = ("protenix", "opendde", "openfold3").index(model)
+        index = ("protenix", "opendde", "boltz2", "openfold3").index(model)
         output_dir = Path(request.output_dir)
         output_dir.mkdir(parents=True)
         structure = output_dir / f"{model}.cif"
@@ -1617,11 +1715,13 @@ def test_colab_prediction_and_output_cells_execute_together(
             "MODEL_WEIGHTS": {
                 "protenix": None,
                 "opendde": None,
+                "boltz2": None,
                 "openfold3": None,
             },
             "MODEL_PROFILES": {
                 "protenix": None,
                 "opendde": None,
+                "boltz2": None,
                 "openfold3": None,
             },
             "ACCELERATOR_KIND": "tpu",
@@ -1635,6 +1735,7 @@ def test_colab_prediction_and_output_cells_execute_together(
     assert tuple(request.model for request in seen) == (
         "protenix",
         "opendde",
+        "boltz2",
         "openfold3",
     )
     assert seen[0].options == {
@@ -1645,7 +1746,11 @@ def test_colab_prediction_and_output_cells_execute_together(
         "dtype": "float32",
         "attention_kernel": "xla",
     }
-    assert seen[2].options == {"triangle_kernel": "xla"}
+    assert seen[2].options == {
+        "attention_kernel": "xla",
+        "triangle_kernel": "xla",
+    }
+    assert seen[3].options == {"triangle_kernel": "xla"}
     assert all(
         (request.num_samples, request.num_steps, request.num_recycles) == (1, 20, 1)
         for request in seen
@@ -1657,11 +1762,12 @@ def test_colab_prediction_and_output_cells_execute_together(
         for request in seen
     )
     assert tuple(namespace["comparison"]["model"]) == (
+        "boltz2",
         "opendde",
         "openfold3",
         "protenix",
     )
-    assert len(namespace["STRUCTURES"]) == 3
+    assert len(namespace["STRUCTURES"]) == 4
 
     viewer_calls: list[tuple] = []
 
@@ -1734,6 +1840,7 @@ def test_colab_prediction_and_output_cells_execute_together(
         "batch_report.json",
         "outputs/protenix/protein-rna-atp-demo/protenix.cif",
         "outputs/opendde/protein-rna-atp-demo/opendde.cif",
+        "outputs/boltz2/protein-rna-atp-demo/boltz2.cif",
         "outputs/openfold3/protein-rna-atp-demo/openfold3.cif",
     }.issubset(names)
 
