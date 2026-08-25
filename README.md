@@ -572,14 +572,24 @@ architecture trained to a 2025-06-30 wwPDB cutoff instead of the release's
 benchmarks, since comparing against AlphaFold 3 needs AlphaFold 3's cutoff, and
 FoldJAX follows that split.
 
-**Protenix v2 is carried but cannot be fetched.** The port runs the
-architecture — `model_name=protenix-v2` selects its sampler schedule and its
-2,560-token limit — but ByteDance has not published `protenix-v2.pt`. Its URL
-answers anonymous requests with `AccessDenied`, and upstream's position is that
-accessibility is under internal review with no timeline
+**Protenix ships two supported models and `setup` fetches both.**
+`--profile v2` (or `model_name=protenix-v2`) selects Protenix v2 — 464M
+parameters against the release's 368M, announced 2026-04-08, with clear gains
+on antibody-antigen targets — and carries its sampler schedule and its
+2,560-token limit. The port needs no architecture change for it: its blocks
+read their widths from the parameters they are handed, so v2's c_z=256 and its
+eight triangle heads arrive with the checkpoint.
+
+Its provenance is worth stating. ByteDance's own CDN key stopped serving
+`protenix-v2.pt` the day it was announced and upstream says accessibility is
+under internal review
 ([bytedance/Protenix#295](https://github.com/bytedance/Protenix/issues/295),
-open since the 2026-04-08 announcement). If you have the file, pass it with
-`--weights` and keep `model_name=protenix-v2`. OpenFold3's 2.29 GB p1
+still open), so FoldJAX fetches a mirror of that object and pins its SHA-256.
+The archive was checked before the hash was recorded: 464,442,431 parameters,
+matching the 464.44 M upstream documents, with Pairformer weights of
+`tri_mul_out.linear_a_p (256, 256)` and `tri_att_start.linear (8, 256)` —
+exactly what `hidden_scale_up` produces at c_z=256. A substituted file fails
+on the hash before it is loaded. OpenFold3's 2.29 GB p1
 checkpoint comes from the publisher's own unsigned S3 key, pinned by SHA-256,
 so it needs no account and no request; upstream p2 and OpenBind v0.5 target
 newer incompatible architectures and are not substituted.

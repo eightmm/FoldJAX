@@ -465,17 +465,21 @@ def test_setup_fetches_defaults_and_reports_opt_in_or_manual_models(
     )
     fetched = []
     monkeypatch.setattr(
-        assets, "fetch", lambda name, **kw: fetched.append(name) or tmp_path / name
+        assets,
+        "fetch",
+        lambda name, **kw: fetched.append((name, kw.get("profile")))
+        or tmp_path / name,
     )
 
     assert main(["setup"]) == 0
     out = capsys.readouterr().out
     assert fetched == [
-        "boltz2",
-        "opendde",
-        "openfold3",
-        "protenix",
-    ], "every model whose weights are published"
+        ("boltz2", None),
+        ("opendde", None),
+        ("openfold3", None),
+        ("protenix", None),
+        ("protenix", "v2"),
+    ], "every published bundle, including Protenix's second supported model"
     assert "alphafold3  manual" in out
     assert "download af3.bin.zst directly from Google" in out
     # AlphaFold 3 is the only model a person has to fetch by hand, because it
@@ -509,18 +513,26 @@ def test_setup_all_takes_the_models_held_back_for_their_size(
     )
     fetched = []
     monkeypatch.setattr(
-        assets, "fetch", lambda name, **kw: fetched.append(name) or tmp_path / name
+        assets,
+        "fetch",
+        lambda name, **kw: fetched.append((name, kw.get("profile")))
+        or tmp_path / name,
     )
 
     assert main(["setup", "--all"]) == 0
     out = capsys.readouterr().out
     assert fetched == [
-        "boltz2",
-        "esmfold2",
-        "opendde",
-        "openfold3",
-        "protenix",
-    ], "every published model, ESMFold2 included"
+        ("boltz2", None),
+        ("esmfold2", None),
+        ("esmfold2", "structure-only"),
+        ("opendde", None),
+        ("openfold3", None),
+        ("protenix", None),
+        ("protenix", "v2"),
+        ("protenix", "base-20250630"),
+        ("protenix", "mini-esm-v0.5.0"),
+        ("protenix", "mini-ism-v0.5.0"),
+    ], "every published bundle, every profile of it included"
     assert "alphafold3  manual" in out, "a licence is not a size"
     assert "runtime" in out
     assert "foldjax runtime prepare --model alphafold3" in out

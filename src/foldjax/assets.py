@@ -47,6 +47,10 @@ STRUCTURE_ONLY_PROFILE = "structure-only"
 #: AlphaFold 3 needs the matching cutoff. That is why this is a profile rather
 #: than the default: it predicts better on recent targets and worse on the one
 #: question the benchmark table asks.
+#: Protenix's current release, announced 2026-04-08 with a technical report:
+#: the same blocks at c_z=256 with `hidden_scale_up`, 464M parameters against
+#: the base model's 368M, and clear gains on antibody-antigen targets.
+PROTENIX_V2_PROFILE = "v2"
 PROTENIX_BASE_20250630_PROFILE = "base-20250630"
 PROTENIX_MINI_ESM_PROFILE = "mini-esm-v0.5.0"
 PROTENIX_MINI_ISM_PROFILE = "mini-ism-v0.5.0"
@@ -689,6 +693,40 @@ _PROTENIX_BASE_20250630 = Download(
     size=1_475_945_945,
 )
 
+#: ByteDance has not served this file since the announcement -- their key
+#: answers anonymous requests with `AccessDenied`, reported the same day in
+#: bytedance/Protenix#294 and #295 and still open, with the maintainers saying
+#: accessibility is under company-level internal review. The copy below is a
+#: mirror of that original CDN object, and its authenticity is checked rather
+#: than assumed: the archive carries 464,442,431 parameters, matching the
+#: 464.44 M upstream documents, and its Pairformer weights are
+#: `tri_mul_out.linear_a_p (256, 256)` and `tri_att_start.linear (8, 256)` --
+#: exactly the `c_hidden_mul = c_z` and `no_heads_pair = c_z // 32` that
+#: `hidden_scale_up` produces at c_z=256. Verified 2026-08-25; the SHA-256 is
+#: pinned here, so a substituted file fails before it is ever loaded.
+_PROTENIX_V2 = Download(
+    name="protenix.pt",
+    url=(
+        "https://huggingface.co/TMF001/protenix-v2-weights/resolve/main/"
+        "protenix-v2.pt"
+    ),
+    sha256="8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
+    size=1_859_785_497,
+)
+
+#: Verified by download on 2026-08-25: the publisher serves no checksum, so
+#: this is FoldJAX's own hash of the file at that URL, the same way the release
+#: checkpoint's was recorded.
+_PROTENIX_BASE_20250630 = Download(
+    name="protenix.pt",
+    url=(
+        "https://protenix.tos-cn-beijing.volces.com/checkpoint/"
+        "protenix_base_20250630_v1.0.0.pt"
+    ),
+    sha256="e850a6b16b3d254ba9a7f67cefd9b59e111fb2036ae036d2703d050aff6ab611",
+    size=1_475_945_945,
+)
+
 _PROTENIX_VARIANTS = {
     PROTENIX_MINI_ESM_PROFILE: _ProtenixVariant(
         profile=PROTENIX_MINI_ESM_PROFILE,
@@ -743,10 +781,12 @@ _PROTENIX_PROFILE_BY_INTERNAL_MODEL = {
 #: Its own storage root, so its converted weights cannot overwrite the
 #: release's: both files would otherwise be `protenix.pt` converted into the
 #: same directory, and the second fetch would silently replace the first.
+_PROTENIX_V2_MODEL = "protenix-v2"
 _PROTENIX_BASE_20250630_MODEL = "protenix-base-20250630"
 _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_BASE_20250630_MODEL] = (
     PROTENIX_BASE_20250630_PROFILE
 )
+_PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_V2_MODEL] = PROTENIX_V2_PROFILE
 
 
 def _public_model_name(model: str) -> str:
@@ -1654,6 +1694,38 @@ REGISTRY: dict[str, ModelAssets] = {
 }
 
 
+def _protenix_v2_assets() -> ModelAssets:
+    """Protenix v2: the same code path, wider weights, its own storage root.
+
+    The port needs no architecture change for this. Its blocks read their
+    widths from the parameters they are handed -- the triangle head count is
+    `tri_att_start.linear.weight.shape[0]` -- so c_z=256 and eight heads arrive
+    with the checkpoint. What the model name carries is the rest of v2: its
+    sampler schedule and the 2,560-token limit `runtime_policy` enforces.
+    """
+    base = REGISTRY["protenix"]
+    shared = tuple(item for item in base.downloads if item.shared)
+    native = "protenix-v2.jax"
+    return dataclasses.replace(
+        base,
+        model=_PROTENIX_V2_MODEL,
+        downloads=(_PROTENIX_V2, *shared),
+        native=native,
+        requires=(native,),
+        conversion_sources=("protenix.pt",),
+        conversion_schema="protenix-v2-native-v1",
+        notes=(
+            "Protenix v2, 464M parameters against the base model's 368M, "
+            "announced 2026-04-08. ByteDance's own CDN key stopped serving it "
+            "the same day and upstream says accessibility is under internal "
+            "review, so this fetches a mirror of that object and pins its "
+            "SHA-256: the archive was checked to carry v2's exact parameter "
+            "count and its c_z=256 Pairformer weights before the hash was "
+            "recorded. Predicts up to 2,560 tokens."
+        ),
+    )
+
+
 def _protenix_base_20250630_assets() -> ModelAssets:
     """The release entry with its checkpoint swapped and its own storage root.
 
@@ -1739,6 +1811,7 @@ def available_profiles(model: str) -> tuple[str, ...]:
     if normalized == "protenix":
         return (
             RELEASED_PROFILE,
+            PROTENIX_V2_PROFILE,
             PROTENIX_BASE_20250630_PROFILE,
             PROTENIX_MINI_ESM_PROFILE,
             PROTENIX_MINI_ISM_PROFILE,
@@ -1778,6 +1851,8 @@ def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
         return spec
 
     if normalized == "protenix":
+        if selected == PROTENIX_V2_PROFILE:
+            return _protenix_v2_assets()
         if selected == PROTENIX_BASE_20250630_PROFILE:
             return _protenix_base_20250630_assets()
         return _protenix_variant_assets(selected)

@@ -807,13 +807,26 @@ def _run_setup(args: argparse.Namespace) -> int:
     print(f"store: {paths.foldjax_home()}\n")
     print("weights")
     failed = False
+    # Profiles, not just models. A model's alternative checkpoints are separate
+    # bundles with their own `in_default_setup`, and Protenix's v2 is one: the
+    # release and v2 are both supported and both fetched, so iterating models
+    # alone would silently skip the newer of the two.
+    targets: list[tuple[str, str | None]] = []
     for name in assets.available():
-        spec = assets.assets_for(name)
+        for profile in assets.available_profiles(name):
+            targets.append(
+                (name, None if profile == assets.RELEASED_PROFILE else profile)
+            )
+
+    for name, profile in targets:
+        spec = assets.assets_for(name, profile=profile)
+        label = name if profile is None else f"{name}/{profile}"
         if not spec.in_default_setup and not args.fetch_all:
             state = "ready" if spec.ready() else "opt-in"
-            print(f"  {name:<11s} {state}")
+            print(f"  {label:<11s} {state}")
             if not spec.ready():
-                print(f"    fetch: foldjax weights fetch --model {name}")
+                suffix = "" if profile is None else f" --profile {profile}"
+                print(f"    fetch: foldjax weights fetch --model {name}{suffix}")
                 print(f"    {spec.notes}")
                 print("    or run `foldjax setup --all` to take it with the rest")
             continue
@@ -821,7 +834,7 @@ def _run_setup(args: argparse.Namespace) -> int:
             # Gated or non-redistributable: the instruction differs per model,
             # so `notes` is the only honest text.
             state = "ready" if spec.ready() else "manual"
-            print(f"  {name:<11s} {state}")
+            print(f"  {label:<11s} {state}")
             if not spec.ready():
                 print(f"    {spec.notes}")
                 print(f"    goes in: {assets.weights_dir(name)}")
@@ -830,17 +843,18 @@ def _run_setup(args: argparse.Namespace) -> int:
             reporter = _WeightReporter()
             result = assets.fetch(
                 name,
+                profile=profile,
                 on_progress=reporter.progress,
                 on_event=reporter.event,
                 convert=not args.download_only,
             )
         except (RuntimeError, OSError, ValueError) as error:
             reporter.finish_progress()
-            print(f"  {name:<11s} failed: {error}", file=sys.stderr)
+            print(f"  {label:<11s} failed: {error}", file=sys.stderr)
             failed = True
             continue
         reporter.finish_progress()
-        print(f"\r  {name:<11s} ready  {result}" + " " * 20)
+        print(f"\r  {label:<11s} ready  {result}" + " " * 20)
 
     runtime = model_info("alphafold3").runtime
     state = "ready" if runtime.ready else "not ready"

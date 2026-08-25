@@ -784,6 +784,7 @@ def test_esmfold2_profiles_publish_their_exact_transfer_contract() -> None:
 def test_protenix_profiles_publish_isolated_structure_and_encoder_bundles() -> None:
     assert assets.available_profiles("protenix") == (
         "released",
+        "v2",
         "base-20250630",
         "mini-esm-v0.5.0",
         "mini-ism-v0.5.0",

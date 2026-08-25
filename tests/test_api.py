@@ -1875,24 +1875,38 @@ def test_request_requires_a_real_compile_cache_boolean(
         _request(tmp_path, use_compile_cache=value)
 
 
-def test_protenix_v2_says_why_it_cannot_be_fetched(tmp_path: Path) -> None:
-    """The port runs Protenix v2; ByteDance does not publish its checkpoint.
+def test_protenix_v2_is_a_managed_profile_pinned_by_its_own_hash() -> None:
+    """Selecting v2 by name resolves the managed bundle, not the release.
 
-    Selecting it without supplying weights used to fail with a message about
-    the 'released' profile conflicting, which reads as a choice the caller got
-    wrong. It is not one: no profile selects v2 because there is nothing to
-    download. Checked 2026-08-25, that key answers anonymous requests with
-    AccessDenied while a key that does not exist answers 404.
+    `model_name` is not cosmetic: it carries v2's sampler schedule and its
+    2,560-token limit. If the name did not select a profile of its own, asking
+    for v2 would either error or quietly fetch the 368M release and run it as
+    though it were the 464M model.
+
+    The checkpoint is a mirror of ByteDance's CDN object, which stopped serving
+    anonymously the day v2 was announced, so the hash is what makes it
+    trustworthy rather than the host. It was recorded from an archive checked
+    to carry v2's architecture: 464,442,431 parameters and c_z=256 Pairformer
+    weights.
     """
-    from foldjax.backends.protenix import apply_managed_profile
+    from foldjax import assets
+    from foldjax.backends.protenix import apply_managed_profile, managed_asset_profile
 
-    with pytest.raises(ValueError) as error:
-        apply_managed_profile({"model_name": "protenix-v2"}, "released")
+    assert managed_asset_profile({"model_name": "protenix-v2"}) == "v2"
+    assert apply_managed_profile({}, "v2") == {"model_name": "protenix-v2"}
 
-    message = str(error.value)
-    assert "--weights" in message, "must say how to run it anyway"
-    assert "protenix-v2.pt" in message, "must name the file to supply"
-    assert "conflicts with" not in message, "the old message blamed the caller"
+    spec = assets.assets_for("protenix", profile="v2")
+    release = assets.assets_for("protenix")
+    assert spec.model != release.model, "a shared root would overwrite one file"
+    assert spec.native == "protenix-v2.jax"
+    assert spec.in_default_setup, "both supported Protenix models are fetched"
+
+    checkpoint = spec.downloads[0]
+    assert checkpoint.size == 1_859_785_497
+    assert checkpoint.sha256 == (
+        "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599"
+    )
+    assert checkpoint.sha256 != release.downloads[0].sha256
 
 
 def test_protenix_v2_runs_from_supplied_weights(tmp_path: Path) -> None:

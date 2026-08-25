@@ -72,6 +72,7 @@ _CONFIDENCE_INFIX = "_summary_confidence_sample_"
 
 _PROFILE_MODEL_NAMES = {
     "released": "protenix_base_default_v1.0.0",
+    "v2": "protenix-v2",
     "base-20250630": "protenix_base_20250630_v1.0.0",
     "mini-esm-v0.5.0": "protenix_mini_esm_v0.5.0",
     "mini-ism-v0.5.0": "protenix_mini_ism_v0.5.0",
@@ -95,35 +96,6 @@ def managed_asset_profile(options: dict[str, Any]) -> str:
     return _MANAGED_ASSET_PROFILES.get(model_name, "released")
 
 
-#: Protenix architectures the vendored port runs but FoldJAX cannot fetch, and
-#: why. `protenix-v2` is the current release -- announced 2026-04-08 with a
-#: technical report -- and the port already carries it: its sampler defaults
-#: and its 2,560-token limit are in `runtime_policy`. The checkpoint was never
-#: published. ByteDance's own key for it answers anonymous requests with
-#: `AccessDenied` where the v1 checkpoints serve normally, and checked
-#: 2026-08-25 it returns 403 while a key that does not exist returns 404 --
-#: which is how a private object differs from a missing one.
-#:
-#: This is the publisher's position rather than an outage. Reported the day of
-#: the announcement (bytedance/Protenix#294 and #295, both still open, with
-#: #296, #309 and #332 behind them), a maintainer's answer is that "the
-#: accessibility of the protenix-v2 checkpoint is currently under review as
-#: part of our company-level internal evaluation process" with no timeline.
-_UNPUBLISHED_MODEL_NAMES = {
-    "protenix-v2": (
-        "ByteDance has not published protenix-v2.pt: its URL returns "
-        "AccessDenied, and upstream says accessibility is under internal "
-        "review with no timeline (bytedance/Protenix#295, open since the "
-        "2026-04-08 announcement). FoldJAX cannot fetch what is not served. "
-        "The port runs the architecture, so supply the checkpoint yourself "
-        "with --weights /path/to/protenix-v2.pt and keep "
-        "model_name=protenix-v2, which selects its sampler schedule and its "
-        "2,560-token limit. The published base checkpoints are "
-        "--profile released and --profile base-20250630."
-    ),
-}
-
-
 def apply_managed_profile(
     options: dict[str, Any],
     profile: str,
@@ -144,11 +116,6 @@ def apply_managed_profile(
     model_name = merged.get("model_name", "auto")
     if not isinstance(model_name, str):
         raise ValueError("model_name must be a string")
-    if model_name in _UNPUBLISHED_MODEL_NAMES:
-        # Without this the message is about a profile conflict, which sends the
-        # reader looking for the profile that selects this model. There is not
-        # one, and the reason is not something they can fix by choosing better.
-        raise ValueError(_UNPUBLISHED_MODEL_NAMES[model_name])
     if model_name not in {"auto", expected_model_name}:
         raise ValueError(
             f"profile {profile!r} selects model_name {expected_model_name!r}, "

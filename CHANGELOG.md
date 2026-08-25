@@ -12,8 +12,32 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
-- **Protenix gains its other published base checkpoint, and says why v2 is not
-  one.** `--profile base-20250630` fetches
+- **Protenix v2 is supported and fetched, alongside the release.**
+  `--profile v2`, or `model_name=protenix-v2`, selects the 464M model announced
+  2026-04-08 against the release's 368M, and `foldjax setup` now takes both:
+  it iterates a model's profiles rather than the model alone, so a second
+  supported checkpoint is no longer silently skipped. The port needed no
+  architecture change. v2 is the same blocks at wider dimensions — c_z 256 with
+  `hidden_scale_up`, which sets triangle multiplication hidden to c_z and
+  triangle attention heads to c_z // 32 — and these blocks read those widths
+  from the parameters they are handed rather than from a config. What the model
+  name carries is the rest of v2: its sampler schedule and the 2,560-token
+  limit.
+
+  The checkpoint comes from a mirror, and that is stated rather than hidden.
+  ByteDance's own CDN key stopped serving `protenix-v2.pt` the day of the
+  announcement — it answers anonymous requests with `AccessDenied` where the v1
+  checkpoints serve normally, and a key that does not exist answers 404 — and
+  upstream says accessibility is under company-level internal review with no
+  timeline (bytedance/Protenix#294, #295, both open since 2026-04-08). The
+  mirrored archive was verified before its SHA-256 was pinned here: 464,442,431
+  parameters against the 464.44 M upstream documents, Pairformer weights of
+  `tri_mul_out.linear_a_p (256, 256)` and `tri_att_start.linear (8, 256)`, and
+  a clean load through the port's own mapping. A substituted file fails on the
+  hash before it is ever loaded.
+
+- **Protenix gains its other published base checkpoint.**
+  `--profile base-20250630` fetches
   `protenix_base_20250630_v1.0.0.pt`: the same 368M architecture as the
   release, trained to a 2025-06-30 wwPDB cutoff instead of AlphaFold 3's
   2021-09-30. Upstream recommends it for practical use and keeps the release
@@ -24,21 +48,6 @@ command predicts unless it says so here, in its own paragraph.
   does not pick up the ESM/ISM staging the mini profiles need, having no
   encoder beside it. Its SHA-256 is FoldJAX's own, recorded from the file at
   that URL on 2026-08-25; the publisher serves no checksum.
-
-  Selecting `model_name=protenix-v2` without supplying weights used to fail
-  with a message about the `released` profile conflicting, which reads as a
-  choice the caller got wrong. It is not one. The port carries v2 — its
-  sampler defaults and its 2,560-token limit are in `runtime_policy`, and its
-  blocks run at v2's wider dimensions unchanged, since they take those from
-  the weights rather than a config — but ByteDance has not published
-  `protenix-v2.pt`. The URL answers anonymous requests with `AccessDenied`
-  where the v1 checkpoints serve normally, and a key that does not exist
-  answers 404, which is how a private object differs from a missing one.
-  Upstream's answer, on issues open since the 2026-04-08 announcement, is that
-  accessibility is under company-level internal review with no timeline. The
-  error now says that, and says to pass the file with `--weights` if you have
-  it.
-
 
 - **`foldjax setup` now fetches OpenFold3's weights, leaving AlphaFold 3 as the
   only model anyone has to supply by hand.** The port's `of3_ft3_v1.pt` was
