@@ -457,7 +457,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert 'INPUT_MODE = "Form"' in source
     assert 'MAX_MSA_DEPTH = 0' in source
     assert 'PREFLIGHT_ONLY = EXECUTION == "Setup only"' in source
-    assert 'ESMFOLD2_PROFILE = "Released"' in source
+    assert "ESMFOLD2_PROFILE" not in source
+    assert "profile_status" not in source
     assert 'REPRESENTATIONS = "None"' in source
     assert 'PADDING_MODE = "Off"' in source
     assert 'MSA_POLICY = "none"' in source
@@ -499,7 +500,8 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     )
     assert "p2/OpenBind checkpoints are not compatible" in markdown
     assert "AlphaFold3 still requires parameters" in markdown
-    assert "not supported by this notebook on T4/≤16 GiB devices" in markdown
+    assert "requires a runtime reporting more than 16 GiB" in markdown
+    assert "structure-only" not in markdown.lower()
 
     configure = _cell_source("configure-run")
     assert configure.count("# @param") == 6
@@ -1488,69 +1490,6 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
 
     assert len(calls) == 1
     assert calls[0][0][0][-2:] == ["--model", "esmfold2"]
-
-
-def test_colab_fetches_the_explicit_esmfold2_structure_only_profile(
-    tmp_path: Path, monkeypatch
-) -> None:
-    calls = []
-    _patch_ipython_display(monkeypatch)
-    info = _fake_model_info(
-        "esmfold2",
-        entity_types=("protein", "dna", "rna", "ligand"),
-        features=("unpaired_msa",),
-        fetchable=True,
-        ready=False,
-        weights_path=tmp_path / "released",
-    )
-    monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
-    monkeypatch.setattr(
-        "foldjax.assets.profile_status",
-        lambda _model: (
-            {
-                "profile": "structure-only",
-                "ready": False,
-                "download_bytes": 1_360_000_000,
-                "path": str(tmp_path / "structure-only"),
-                "notes": "test structure-only profile",
-            },
-        ),
-    )
-    namespace = {
-        "SELECTED_MODELS": ("esmfold2",),
-        "INPUT_ENTITY_TYPES": frozenset({"protein"}),
-        "INPUT_REQUIRED_FEATURES": frozenset(),
-        "MODEL_PROFILES": {"esmfold2": "structure-only"},
-        "foldjax_home": tmp_path,
-        "COMPILE_CACHE": tmp_path / "compile-cache",
-        "OUTPUT_BASE": tmp_path / "outputs",
-        "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
-        "PERSIST_MSA_TO_DRIVE": False,
-        "PERSIST_OUTPUTS_TO_DRIVE": False,
-        "MODEL_ASSET_STORE": tmp_path,
-        "Path": Path,
-        "display": lambda *_args: None,
-        "shutil": SimpleNamespace(
-            disk_usage=lambda _path: SimpleNamespace(free=100_000_000_000)
-        ),
-        "subprocess": SimpleNamespace(
-            run=lambda *args, **kwargs: calls.append((args, kwargs))
-        ),
-        "sys": sys,
-        **_notebook_ui(),
-    }
-
-    fetch = _cell_source("fetch-weights").replace(
-        'ESMFOLD2_PROFILE = "Released"',
-        'ESMFOLD2_PROFILE = "Structure-only (no language model)"',
-    )
-    exec(fetch, namespace)
-
-    command = calls[0][0][0]
-    assert command[-4:] == ["--model", "esmfold2", "--profile", "structure-only"]
-    assert namespace["model_asset_states"]["esmfold2"]["download_bytes"] == (
-        1_360_000_000
-    )
 
 
 def test_colab_fetches_public_openfold3_p1_automatically(
