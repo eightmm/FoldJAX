@@ -125,6 +125,7 @@ def test_colab_notebook_installs_the_detected_accelerator_runtime() -> None:
     assert 'Path("/dev/accel0").exists()' in install
     assert 'shutil.which("nvidia-smi")' in install
     assert '["nvidia-smi", "-L"]' in install
+    assert '"--query-gpu=compute_cap"' in install
     assert '"Dependencies installed"' in install
     assert "The runtime will restart once" in install
     assert "signal.SIGKILL" in install
@@ -248,6 +249,36 @@ def test_colab_accelerator_detection_requires_a_working_gpu_probe(
     detect_accelerator = _cell_function("install-foldjax", "detect_accelerator")
 
     assert detect_accelerator() == "gpu"
+
+
+@pytest.mark.parametrize(
+    ("accelerator", "probe", "expected"),
+    (
+        ("tpu", SimpleNamespace(returncode=0, stdout="8.0\n"), None),
+        ("gpu", SimpleNamespace(returncode=0, stdout="7.5\n"), (7, 5)),
+        ("gpu", SimpleNamespace(returncode=0, stdout="8.0\n"), (8, 0)),
+        ("gpu", SimpleNamespace(returncode=1, stdout=""), None),
+        ("gpu", SimpleNamespace(returncode=0, stdout="unknown\n"), None),
+    ),
+)
+def test_colab_detects_gpu_compute_capability_conservatively(
+    accelerator: str,
+    probe: SimpleNamespace,
+    expected: tuple[int, int] | None,
+    monkeypatch,
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: calls.append(command) or probe,
+    )
+    detect = _cell_function("install-foldjax", "detect_gpu_compute_capability")
+
+    assert detect(accelerator) == expected
+    assert bool(calls) is (accelerator == "gpu")
+    if calls:
+        assert "--query-gpu=compute_cap" in calls[0]
 
 
 def test_colab_accelerator_detection_rejects_an_unusable_gpu_probe(
@@ -620,14 +651,23 @@ def test_colab_notebook_python_cells_are_syntactically_valid() -> None:
 
 
 @pytest.mark.parametrize(
-    ("accelerator", "multiplication_backend", "attention_backend", "profile"),
     (
-        ("gpu", "cueq", "cueq_jit", "CUDA fused"),
-        ("tpu", "xla", "xla_jit", "portable XLA"),
+        "accelerator",
+        "gpu_capability",
+        "multiplication_backend",
+        "attention_backend",
+        "profile",
+    ),
+    (
+        ("gpu", (7, 5), "xla", "xla_jit", "portable XLA"),
+        ("gpu", (8, 0), "cueq", "cueq_jit", "CUDA fused"),
+        ("gpu", None, "xla", "xla_jit", "portable XLA"),
+        ("tpu", None, "xla", "xla_jit", "portable XLA"),
     ),
 )
 def test_colab_configures_accelerator_specific_kernels(
     accelerator: str,
+    gpu_capability: tuple[int, int] | None,
     multiplication_backend: str,
     attention_backend: str,
     profile: str,
@@ -646,6 +686,7 @@ def test_colab_configures_accelerator_specific_kernels(
     monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
     namespace = {
         "ACCELERATOR_KIND": accelerator,
+        "GPU_COMPUTE_CAPABILITY": gpu_capability,
         "SELECTED_MODELS": (),
         "PERSIST_MODEL_ASSETS_TO_DRIVE": False,
         "PERSIST_MSA_TO_DRIVE": False,
@@ -722,6 +763,7 @@ def test_colab_can_persist_model_assets_msa_and_outputs_to_drive(
     monkeypatch.setitem(sys.modules, "google.colab", colab)
     namespace = {
         "ACCELERATOR_KIND": "tpu",
+        "GPU_COMPUTE_CAPABILITY": None,
         "SELECTED_MODELS": ("openfold3", "alphafold3"),
         "PERSIST_MODEL_ASSETS_TO_DRIVE": True,
         "PERSIST_MSA_TO_DRIVE": True,
@@ -779,6 +821,7 @@ def test_colab_can_persist_model_assets_without_persisting_msa(
     monkeypatch.setitem(sys.modules, "google.colab", colab)
     namespace = {
         "ACCELERATOR_KIND": "gpu",
+        "GPU_COMPUTE_CAPABILITY": None,
         "SELECTED_MODELS": ("openfold3",),
         "Path": Path,
         "os": __import__("os"),
@@ -834,6 +877,7 @@ def test_colab_detects_private_alphafold3_parameters_in_the_drive_store(
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "local-cache"))
     namespace = {
         "ACCELERATOR_KIND": "tpu",
+        "GPU_COMPUTE_CAPABILITY": None,
         "SELECTED_MODELS": ("alphafold3",),
         "Path": Path,
         "os": __import__("os"),
@@ -848,14 +892,24 @@ def test_colab_detects_private_alphafold3_parameters_in_the_drive_store(
 
 
 @pytest.mark.parametrize(
-    ("accelerator", "triangle_kernel", "alphafold_attention"),
     (
-        ("gpu", "cueq", "auto"),
-        ("tpu", "xla", "xla"),
+        "accelerator",
+        "gpu_capability",
+        "use_fused_triangle_kernels",
+        "triangle_kernel",
+        "alphafold_attention",
+    ),
+    (
+        ("gpu", (7, 5), False, "xla", "auto"),
+        ("gpu", (8, 0), True, "cueq", "auto"),
+        ("gpu", None, False, "xla", "auto"),
+        ("tpu", None, False, "xla", "xla"),
     ),
 )
 def test_colab_plans_all_model_kernels_for_the_accelerator(
     accelerator: str,
+    gpu_capability: tuple[int, int] | None,
+    use_fused_triangle_kernels: bool,
     triangle_kernel: str,
     alphafold_attention: str,
     tmp_path: Path,
@@ -878,6 +932,8 @@ def test_colab_plans_all_model_kernels_for_the_accelerator(
     job_path.write_text("{}", encoding="utf-8")
     namespace = {
         "ACCELERATOR_KIND": accelerator,
+        "GPU_COMPUTE_CAPABILITY": gpu_capability,
+        "USE_FUSED_TRIANGLE_KERNELS": use_fused_triangle_kernels,
         "SELECTED_MODELS": models,
         "RUN_MODE": "Default",
         "JOB_SLUG": "job",
@@ -1063,6 +1119,7 @@ def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
     namespace.update(
         {
             "ACCELERATOR_KIND": "tpu",
+            "USE_FUSED_TRIANGLE_KERNELS": False,
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "MODEL_WEIGHTS": dict.fromkeys(namespace["SELECTED_MODELS"]),
             "MODEL_PROFILES": dict.fromkeys(namespace["SELECTED_MODELS"]),
@@ -1127,6 +1184,7 @@ def test_colab_custom_schedule_seeds_msa_and_representations(
     namespace.update(
         {
             "ACCELERATOR_KIND": "tpu",
+            "USE_FUSED_TRIANGLE_KERNELS": False,
             "COMPILE_CACHE": tmp_path / "compile-cache",
             "MODEL_WEIGHTS": dict.fromkeys(namespace["SELECTED_MODELS"]),
             "MODEL_PROFILES": dict.fromkeys(namespace["SELECTED_MODELS"]),
@@ -1711,6 +1769,7 @@ def test_colab_prediction_and_output_cells_execute_together(
                 "openfold3": None,
             },
             "ACCELERATOR_KIND": "tpu",
+            "USE_FUSED_TRIANGLE_KERNELS": False,
         }
     )
     exec(_cell_source("build-job"), namespace)
