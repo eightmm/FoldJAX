@@ -463,7 +463,7 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "PADDING_MODE" not in source
     assert "PADDING_REQUESTS" not in source
     assert "PAD_TOKENS" not in source
-    assert 'MSA_POLICY = "none"' in source
+    assert 'MSA_POLICY = "auto"' in source
     assert "job_path.read_text()" not in source
     assert '{"num_samples": 1, "num_steps": 20, "num_recycles": 1}' in source
     assert "protein=protein_sequences" in source
@@ -532,8 +532,11 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
         in _cell_source("fetch-weights")
     )
     build_job = _cell_source("build-job")
-    assert 'MSA_POLICY = "none"' in build_job
+    assert 'MSA_POLICY = "auto"' in build_job
     plan_runs = _cell_source("plan-runs")
+    assert "Sampling and memory" not in plan_runs
+    assert "Custom schedule — used only when Run mode is Custom" in plan_runs
+    assert "Optional overrides — apply to every run mode" in plan_runs
     assert 'RUN_MODE = "Fast demo"' in plan_runs
     assert "NUM_SEEDS = 1" in plan_runs
     assert 'EXECUTION = "Predict"' in plan_runs
@@ -1074,7 +1077,7 @@ def test_colab_default_run_mode_keeps_each_models_native_sampling_defaults(
     assert namespace["RUN_LABEL"] == "default"
     assert namespace["SAMPLING_OVERRIDE"] == {}
     assert {row["schedule"] for row in namespace["plan_rows"]} == {
-        "native model default"
+        "native default (varies by model)"
     }
     for request in namespace["model_requests"]:
         assert request.num_samples is None
@@ -1243,9 +1246,7 @@ def test_colab_msa_preflight_reports_cache_reuse_without_searching(
     exec(_cell_source("configure-run"), namespace)
     namespace["foldjax_table"] = lambda frame, *_args, **_kwargs: tables.append(frame)
 
-    build_job = _cell_source("build-job").replace(
-        'MSA_POLICY = "none"', 'MSA_POLICY = "auto"'
-    )
+    build_job = _cell_source("build-job")
     exec(build_job, namespace)
 
     preflight = next(frame for frame in tables if "action" in frame.columns)
@@ -1278,7 +1279,7 @@ def test_colab_msa_preflight_rejects_required_rna_without_a_backend(
     _patch_ipython_display(monkeypatch)
     exec(_cell_source("configure-run"), namespace)
     build_job = _cell_source("build-job").replace(
-        'MSA_POLICY = "none"', 'MSA_POLICY = "required"'
+        'MSA_POLICY = "auto"', 'MSA_POLICY = "required"'
     )
 
     with pytest.raises(RuntimeError, match="RNA MSA is required"):
@@ -1728,7 +1729,7 @@ def test_colab_prediction_and_output_cells_execute_together(
         for request in seen
     )
     assert all(request.num_seeds == 1 for request in seen)
-    assert all(request.msa == "none" for request in seen)
+    assert all(request.msa == "auto" for request in seen)
     assert all(
         str(request.output_dir).startswith(str(tmp_path / "persistent-outputs"))
         for request in seen
