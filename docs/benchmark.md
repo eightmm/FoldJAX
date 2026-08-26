@@ -12,7 +12,7 @@ row, one process per measurement, results written as they land.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmark-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003 and 3,012 tokens" src="benchmark-dark.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 2,096 and 3,012 tokens" src="benchmark-dark.png">
 </picture>
 
 **The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
@@ -35,12 +35,27 @@ upstream, which is what makes the comparison mean anything.
 | 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm | 0.9307 | 0.9300 |
 | 1003 | protenix | 67 | 99 | 6.7 | 12.7 | 1.49x | 1.89x | ranking_score | 0.1921 | 0.1922 |
 | 1003 | protenix-v2 | 110 | 138 | 10.1 | 13.3 | 1.26x | 1.32x | ranking_score | 0.1931 | 0.1927 |
+| 2096 | alphafold3 | 571 | - | 20.5 | - | - | - | - | - | - |
+| 2096 | boltz2 | 347 | 543 | 21.9 | 46.6 | 1.56x | 2.13x | complex_plddt | 0.9799 | 0.9795 |
+| 2096 | opendde | failed | failed | failed | failed | - | - | - | - | - |
+| 2096 | openfold3 | 547 | 2,411 | 29.3 | 91.2 | 4.41x | 3.11x | ptm | 0.9058 | 0.9175 |
+| 2096 | protenix | 240 | 323 | 23.2 | 40.8 | 1.35x | 1.76x | ranking_score | 0.9602 | 0.9604 |
+| 2096 | protenix-v2 | 434 | 569 | 39.0 | 47.5 | 1.31x | 1.22x | ranking_score | 0.9645 | 0.9652 |
 | 3012 | alphafold3 | 1,019 | - | 41.3 | - | - | - | - | - | - |
 | 3012 | boltz2 | 1,016 | failed | 43.0 | failed | - | - | - | - | - |
 | 3012 | opendde | failed | failed | failed | failed | - | - | - | - | - |
 | 3012 | openfold3 | 1,385 | 6,722 | 58.4 | 81.3 | 4.85x | 1.39x | ptm | 0.8711 | 0.8748 |
 | 3012 | protenix | 723 | 797 | 43.7 | 56.0 | 1.10x | 1.28x | ranking_score | 0.9554 | 0.9502 |
 | 3012 | protenix-v2 | 2,054 | failed | 78.2 | failed | - | - | - | - | - |
+
+**2,096 tokens is the last size most of these upstreams reach.** Upstream
+Boltz-2 and upstream Protenix v2 both complete here and neither survives 3,012
+-- one runs out of memory, the other refuses by assertion. OpenDDE is already
+gone on both sides, which puts its wall between 1,003 and 2,096 rather than
+anywhere near the top of the table. Upstream OpenFold3 is at its widest margin
+here, 4.41x on time and 3.11x on memory, and its 91.2 GiB is 93% of the card;
+that its peak then *falls* at 3,012 is the chunk-size search described under
+[How the cost grows](#how-the-cost-grows), not a measurement error.
 
 **`protenix-v2` is a second checkpoint, not a sixth port.** Protenix ships two
 supported models and FoldJAX runs both through the same code: v2 is the same
@@ -100,7 +115,7 @@ verify both.
 
 ## How the cost grows
 
-The table is three sizes. The question that decides whether a sequence is
+The table is four sizes. The question that decides whether a sequence is
 affordable is a different one -- how steeply the cost climbs -- and its answer
 is a slope, not a number.
 
@@ -192,8 +207,8 @@ statistic this benchmark never measured.
   part of that steepness is why its memory curve bends down. Upstream tunes its
   attention chunk size at runtime, binary-searching the largest chunk that does
   not raise (`chunk_utils.py`, `tune_chunk_size` defaults to `True` in
-  `model_config.py:47`). At 2,096 tokens a large chunk fits: 93.4 GiB, 2,410 s.
-  At 3,012 it does not, so the search falls back to a smaller one: 83.2 GiB,
+  `model_config.py:47`). At 2,096 tokens a large chunk fits: 91.2 GiB, 2,411 s.
+  At 3,012 it does not, so the search falls back to a smaller one: 81.3 GiB,
   6,722 s. **The peak came down because the time went up** -- memory traded for
   time by the implementation itself, at a size it chose. Reading either panel
   alone gets this backwards, which is also why that point is drawn where it was

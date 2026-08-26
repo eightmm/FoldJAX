@@ -48,7 +48,7 @@ before using it.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003 and 3,012 tokens" src="docs/benchmark-dark.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 2,096 and 3,012 tokens" src="docs/benchmark-dark.png">
 </picture>
 
 *Each port against the repository it came from — same job, same schedule, same

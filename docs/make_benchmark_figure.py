@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from figure_style import THEMES, apply_theme, did_not_run  # noqa: E402
 
 MODELS = ("boltz2", "protenix", "protenix-v2", "openfold3", "opendde", "alphafold3")
-SIZES = (499, 1003, 3012)
+SIZES = (499, 1003, 2096, 3012)
 CARD_GIB = 97.9
 
 
