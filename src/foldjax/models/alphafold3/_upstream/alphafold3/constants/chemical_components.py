@@ -19,22 +19,28 @@
 
 """Chemical Components found in PDB (CCD) constants."""
 
-from collections.abc import ItemsView, Iterator, KeysView, Mapping, Sequence, ValuesView
 import dataclasses
 import functools
 import os
+from collections import OrderedDict
+from collections.abc import (
+  ItemsView,
+  Iterator,
+  KeysView,
+  Mapping,
+  Sequence,
+  ValuesView,
+)
 
-from alphafold3.common import resources
-from alphafold3.common import safe_pickle
+from alphafold3.common import resources, safe_pickle
 from alphafold3.cpp import cif_dict
-
 
 _CCD_PICKLE_FILE = resources.filename(
     resources.ROOT / 'constants/converters/ccd.pickle'
 )
 
 
-@functools.cache
+@functools.lru_cache(maxsize=2)
 def _load_ccd_pickle_cached(
     path: os.PathLike[str],
 ) -> dict[str, Mapping[str, Sequence[str]]]:
@@ -52,7 +58,12 @@ class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):
   Wraps the dict to prevent accidental mutation.
   """
 
-  __slots__ = ('_dict', '_ccd_pickle_path')
+  __slots__ = (
+      '_component_info_cache',
+      '_dict',
+      '_ccd_pickle_path',
+      '__weakref__',
+  )
 
   def __init__(
       self,
@@ -70,7 +81,11 @@ class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):
         be used to override specific entries in the CCD if desired.
     """
     self._ccd_pickle_path = ccd_pickle_path or _CCD_PICKLE_FILE
-    self._dict = _load_ccd_pickle_cached(self._ccd_pickle_path)
+    # Component metadata is cheap but repeatedly requested within one job.
+    # Keeping its small LRU on the owning CCD preserves that reuse without a
+    # module cache retaining up to 128 per-job user-CCD dictionary copies.
+    self._component_info_cache = OrderedDict()
+    base_ccd = _load_ccd_pickle_cached(self._ccd_pickle_path)
 
     if user_ccd is not None:
       if not user_ccd:
@@ -79,7 +94,13 @@ class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):
           key: value.to_dict()
           for key, value in cif_dict.parse_multi_data_cif(user_ccd).items()
       }
+      # The base CCD is process-global and deliberately shared because it is
+      # hundreds of megabytes. Never write user entries into that cached dict:
+      # doing so leaks one job's overrides into every later prediction.
+      self._dict = dict(base_ccd)
       self._dict.update(user_ccd_cifs)
+    else:
+      self._dict = base_ccd
 
   def __getitem__(self, key: object) -> Mapping[str, Sequence[str]]:
     if not isinstance(key, str):
@@ -179,12 +200,24 @@ def mmcif_to_info(mmcif: Mapping[str, Sequence[str]]) -> ComponentInfo:
   )
 
 
-@functools.lru_cache(maxsize=128)
 def component_name_to_info(ccd: Ccd, res_name: str) -> ComponentInfo | None:
+  try:
+    info = ccd._component_info_cache.pop(res_name)
+  except KeyError:
+    pass
+  else:
+    ccd._component_info_cache[res_name] = info
+    return info
+
   component = ccd.get(res_name)
   if component is None:
-    return None
-  return mmcif_to_info(component)
+    info = None
+  else:
+    info = mmcif_to_info(component)
+  while len(ccd._component_info_cache) >= 128:
+    ccd._component_info_cache.popitem(last=False)
+  ccd._component_info_cache[res_name] = info
+  return info
 
 
 def type_symbol(ccd: Ccd, res_name: str, atom_name: str) -> str:

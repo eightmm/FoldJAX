@@ -65,6 +65,34 @@ def test_compact_token_bond_static_choice_crosses_the_mesh_context(
     assert seen == [True, False]
 
 
+def test_compact_language_model_input_crosses_the_mesh_context(monkeypatch) -> None:
+    from foldjax.models.esmfold2 import inference
+
+    seen = []
+
+    def fake_predict(*args, **kwargs):
+        del args
+        seen.append((kwargs["lm_hidden_states"], kwargs["lm_embedding"]))
+        return {}
+
+    embedding = object()
+    monkeypatch.setattr(inference.structure_model, "predict", fake_predict)
+    with context_parallel(1):
+        inference._run(
+            None,
+            {},
+            {},
+            embedding,
+            None,
+            1,
+            False,
+            compact_lm_input=True,
+        )
+        inference._run(None, {}, {}, embedding, None, 1, False)
+
+    assert seen == [(None, embedding), (embedding, None)]
+
+
 _DISTOGRAM_ROUTE_PROBE = textwrap.dedent(
     """
     import jax

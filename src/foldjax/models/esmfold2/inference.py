@@ -51,6 +51,10 @@ LANGUAGE_MODEL_FEATURES = (
     "token_attention_mask",
 )
 
+# Explicit capability marker for backend wrappers. Merely having a helper with
+# a similar name is not enough to authorize the new predict keyword.
+COMPACT_LANGUAGE_MODEL_API = True
+
 
 @dataclass(frozen=True)
 class LoadedModel:
@@ -138,6 +142,77 @@ def language_model_states(
         settings=model.esmc_settings,
         packed_length=packed_length,
     )
+
+
+_LANGUAGE_MODEL_EMBEDDING_PARAMETERS = (
+    "language_model.base_z_linear.0.weight",
+    "language_model.base_z_linear.0.bias",
+    "language_model.base_z_linear.1.weight",
+    "language_model.base_z_linear.1.bias",
+    "language_model.base_z_combine",
+)
+
+
+@lru_cache(maxsize=8)
+def _compiled_language_model_embedding(
+    compute_dtype: str,
+    input_signature: tuple[object, ...],
+) -> Callable[[jnp.ndarray, Mapping[str, jnp.ndarray]], jnp.ndarray]:
+    """One bounded JIT owner for an exact hidden/parameter signature."""
+
+    del input_signature
+
+    compute = jnp.dtype(compute_dtype)
+
+    def run(
+        hidden_states: jnp.ndarray, parameters: Mapping[str, jnp.ndarray]
+    ) -> jnp.ndarray:
+        trunk_params = structure_model._cast(  # noqa: SLF001
+            parameters, structure_model.TRUNK_PREFIXES, compute
+        )
+        return structure_model.language_model_embedding(
+            hidden_states.astype(compute), trunk_params
+        )
+
+    return jax.jit(run)
+
+
+def _language_model_embedding_from_states(
+    hidden_states: jnp.ndarray,
+    model: LoadedModel,
+) -> jnp.ndarray:
+    """Project one stack through a bounded, signature-specific JIT owner."""
+    parameters = {
+        name: model.parameters[name]
+        for name in _LANGUAGE_MODEL_EMBEDDING_PARAMETERS
+    }
+    signature = (
+        tuple(hidden_states.shape),
+        str(hidden_states.dtype),
+        tuple(
+            (name, tuple(value.shape), str(value.dtype))
+            for name, value in parameters.items()
+        ),
+    )
+    return _compiled_language_model_embedding(
+        str(model.settings.trunk_dtype), signature
+    )(hidden_states, parameters)
+
+
+def language_model_embedding(
+    features: Mapping[str, np.ndarray],
+    model: LoadedModel,
+    *,
+    packed_length: int | None = None,
+) -> jnp.ndarray | None:
+    """Return the compact seed-independent ESMC embedding for one input."""
+
+    hidden_states = language_model_states(
+        features, model, packed_length=packed_length
+    )
+    if hidden_states is None:
+        return None
+    return _language_model_embedding_from_states(hidden_states, model)
 
 
 def language_model_length(features: Mapping[str, np.ndarray]) -> int:
@@ -270,12 +345,13 @@ def predict(
     msa_max_depth: int | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
+    precomputed_lm_embedding: jnp.ndarray | None = None,
     compile_it: bool = True,
     preserve_prefix_rng: bool = False,
     #: Context-parallel shard count; same contract as the other ports. More
     #: than one shards the pair state across that many visible JAX devices,
     #: requires the compiled path, and replicates everything token-linear --
-    #: the ESMC hidden states and the checkpoint included.
+    #: the ESMC hidden states or compact embedding and the checkpoint included.
     cp_shards: int = 1,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
@@ -300,7 +376,16 @@ def predict(
         for name, value in features.items()
         if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
     }
-    hidden = precomputed_lm_states
+    if precomputed_lm_states is not None and precomputed_lm_embedding is not None:
+        raise ValueError(
+            "pass precomputed_lm_states or precomputed_lm_embedding, not both"
+        )
+    compact_lm_input = precomputed_lm_embedding is not None
+    hidden = (
+        precomputed_lm_embedding
+        if compact_lm_input
+        else precomputed_lm_states
+    )
     if hidden is None:
         hidden = language_model_states(
             features, model, packed_length=language_model_tokens
@@ -328,6 +413,7 @@ def predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
             compact_token_bond_encoding, return_distogram_logits,
+            compact_lm_input,
         )
         if compile_it
         else _run
@@ -359,6 +445,7 @@ def predict(
             contiguous_atom_groups,
             compact_token_bond_encoding,
             return_distogram_logits,
+            compact_lm_input,
         )
 
 
@@ -376,6 +463,7 @@ def _run(
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
+    compact_lm_input: bool = False,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -388,7 +476,8 @@ def _run(
         features,
         parameters,
         settings=settings,
-        lm_hidden_states=lm_hidden_states,
+        lm_hidden_states=None if compact_lm_input else lm_hidden_states,
+        lm_embedding=lm_hidden_states if compact_lm_input else None,
         n_chains=n_chains,
         preserve_prefix_rng=preserve_prefix_rng,
         return_representations=return_representations,
@@ -410,6 +499,7 @@ def compiled_predict(
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
+    compact_lm_input: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -418,16 +508,13 @@ def compiled_predict(
     exact-shape calls or masked serving draws, and `cp_shards` decides whether
     the trace carries sharding constraints -- a mesh change must be a retrace,
     never a stale cache hit. The real token and atom counts remain data in the
-    masks and never enter this cache key. The penultimate boolean selects the
-    normalized contiguous-atom reducer; external feature mappings that do not
-    satisfy its host-checked contract receive a distinct generic graph.  The
-    next boolean similarly replaces the unbiased token-bond projection with
-    its exact channel-wise signed-zero vector only when the host proves the
-    compact contract. The final boolean retains the direct API's native
-    distogram output or omits the backend-dead branch; those graphs must not
-    share one cached callable.
+    masks and never enter this cache key. The trailing booleans select the
+    normalized contiguous-atom reducer, the proven-zero token-bond projection,
+    native distogram retention, and whether the language-model input is the
+    raw layer stack or its separately compiled compact embedding. Each choice
+    changes the graph and therefore has its own cached callable.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12))
+    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
 
 
 def predict_job(
@@ -578,6 +665,7 @@ __all__ = [
     "build_common_job_features",
     "esmc_directory",
     "language_model_length",
+    "language_model_embedding",
     "language_model_states",
     "load",
     "msa_loop_row_indices",

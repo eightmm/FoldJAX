@@ -19,24 +19,21 @@
 
 """Functions for running the MSA and template tools for the AlphaFold model."""
 
-from concurrent import futures
 import dataclasses
 import datetime
 import functools
 import logging
 import time
+from collections.abc import Callable
+from concurrent import futures
 
 from alphafold3.common import folding_input
 from alphafold3.constants import mmcif_names
-from alphafold3.data import msa
-from alphafold3.data import msa_config
-from alphafold3.data import structure_stores
+from alphafold3.data import msa, msa_config, structure_stores
 from alphafold3.data import templates as templates_lib
 from etils import epath
 
 
-# Cache to avoid re-running template search for the same sequence in homomers.
-@functools.cache
 def _get_protein_templates(
     sequence: str,
     input_msa_a3m: str,
@@ -76,8 +73,6 @@ def _get_protein_templates(
   return protein_templates
 
 
-# Cache to avoid re-running the MSA tools for the same sequence in homomers.
-@functools.cache
 def _get_protein_msa_and_templates(
     sequence: str,
     run_template_search: bool,
@@ -87,6 +82,10 @@ def _get_protein_msa_and_templates(
     uniprot_msa_config: msa_config.RunConfig,
     templates_config: msa_config.TemplatesConfig,
     pdb_database_path: epath.PathLike,
+    *,
+    get_protein_templates: Callable[..., templates_lib.Templates] = (
+        _get_protein_templates
+    ),
 ) -> tuple[msa.Msa, msa.Msa, templates_lib.Templates]:
   """Processes a single protein chain."""
   logging.info('Getting protein MSAs for sequence %s', sequence)
@@ -150,7 +149,7 @@ def _get_protein_msa_and_templates(
       paired_protein_msa.depth,
   )
 
-  protein_templates = _get_protein_templates(
+  protein_templates = get_protein_templates(
       sequence=sequence,
       input_msa_a3m=unpaired_protein_msa.to_a3m(),
       run_template_search=run_template_search,
@@ -161,8 +160,6 @@ def _get_protein_msa_and_templates(
   return unpaired_protein_msa, paired_protein_msa, protein_templates
 
 
-# Cache to avoid re-running the Nhmmer for the same sequence in homomers.
-@functools.cache
 def _get_rna_msa(
     sequence: str,
     nt_rna_msa_config: msa_config.RunConfig,
@@ -208,6 +205,37 @@ def _get_rna_msa(
       rna_msa.depth,
   )
   return rna_msa
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _PipelineRunCaches:
+  """Homomer search caches whose lifetime is exactly one input job."""
+
+  protein_templates: Callable[..., templates_lib.Templates]
+  protein_msa_and_templates: Callable[
+      ..., tuple[msa.Msa, msa.Msa, templates_lib.Templates]
+  ]
+  rna_msa: Callable[..., msa.Msa]
+
+  @classmethod
+  def create(cls) -> '_PipelineRunCaches':
+    protein_templates = functools.cache(_get_protein_templates)
+    protein_msa_impl = _get_protein_msa_and_templates
+
+    def get_protein_msa_and_templates(*args, **kwargs):
+      return protein_msa_impl(
+          *args,
+          **kwargs,
+          get_protein_templates=protein_templates,
+      )
+
+    return cls(
+        protein_templates=protein_templates,
+        protein_msa_and_templates=functools.cache(
+            get_protein_msa_and_templates
+        ),
+        rna_msa=functools.cache(_get_rna_msa),
+    )
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -465,7 +493,10 @@ class DataPipeline:
     self._pdb_database_path = data_pipeline_config.pdb_database_path
 
   def process_protein_chain(
-      self, chain: folding_input.ProteinChain
+      self,
+      chain: folding_input.ProteinChain,
+      *,
+      run_caches: _PipelineRunCaches | None = None,
   ) -> folding_input.ProteinChain:
     """Processes a single protein chain."""
     has_unpaired_msa = chain.unpaired_msa is not None
@@ -474,7 +505,12 @@ class DataPipeline:
 
     if not has_unpaired_msa and not has_paired_msa and not chain.templates:
       # MSA None - search. Templates either [] - don't search, or None - search.
-      unpaired_msa, paired_msa, template_hits = _get_protein_msa_and_templates(
+      get_msa_and_templates = (
+          _get_protein_msa_and_templates
+          if run_caches is None
+          else run_caches.protein_msa_and_templates
+      )
+      unpaired_msa, paired_msa, template_hits = get_msa_and_templates(
           sequence=chain.sequence,
           run_template_search=not has_templates,  # Skip template search if [].
           uniref90_msa_config=self._uniref90_msa_config,
@@ -501,7 +537,12 @@ class DataPipeline:
       ).to_a3m()
       unpaired_msa = chain.unpaired_msa or empty_msa
       paired_msa = chain.paired_msa or empty_msa
-      template_hits = _get_protein_templates(
+      get_templates = (
+          _get_protein_templates
+          if run_caches is None
+          else run_caches.protein_templates
+      )
+      template_hits = get_templates(
           sequence=chain.sequence,
           input_msa_a3m=unpaired_msa,
           run_template_search=True,
@@ -555,7 +596,10 @@ class DataPipeline:
     )
 
   def process_rna_chain(
-      self, chain: folding_input.RnaChain
+      self,
+      chain: folding_input.RnaChain,
+      *,
+      run_caches: _PipelineRunCaches | None = None,
   ) -> folding_input.RnaChain:
     """Processes a single RNA chain."""
     if chain.unpaired_msa is not None:
@@ -571,7 +615,8 @@ class DataPipeline:
       ).to_a3m()
       unpaired_msa = chain.unpaired_msa or empty_msa
     else:
-      unpaired_msa = _get_rna_msa(
+      get_rna_msa = _get_rna_msa if run_caches is None else run_caches.rna_msa
+      unpaired_msa = get_rna_msa(
           sequence=chain.sequence,
           nt_rna_msa_config=self._nt_rna_msa_config,
           rfam_msa_config=self._rfam_msa_config,
@@ -587,15 +632,23 @@ class DataPipeline:
 
   def process(self, fold_input: folding_input.Input) -> folding_input.Input:
     """Runs MSA and template tools and returns a new Input with the results."""
+    # Homomer chains reuse searches within this job. Keeping these wrappers
+    # local prevents every distinct sequence and full A3M payload seen by a
+    # long-lived service from being retained for the lifetime of the process.
+    run_caches = _PipelineRunCaches.create()
     processed_chains = []
     for chain in fold_input.chains:
       print(f'Running data pipeline for chain {chain.id}...')
       process_chain_start_time = time.time()
       match chain:
         case folding_input.ProteinChain():
-          processed_chains.append(self.process_protein_chain(chain))
+          processed_chains.append(
+              self.process_protein_chain(chain, run_caches=run_caches)
+          )
         case folding_input.RnaChain():
-          processed_chains.append(self.process_rna_chain(chain))
+          processed_chains.append(
+              self.process_rna_chain(chain, run_caches=run_caches)
+          )
         case _:
           processed_chains.append(chain)
       print(

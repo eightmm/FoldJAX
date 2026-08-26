@@ -218,7 +218,7 @@ def test_padded_inference_routes_omission_into_the_compiled_identity(
 
     def fake_compiled_predict(*identity):
         def run(*args):
-            seen.append((identity[-1], args[-1]))
+            seen.append((identity[-2], args[-2]))
             return {}
 
         return run

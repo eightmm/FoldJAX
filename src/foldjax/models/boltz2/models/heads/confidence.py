@@ -367,9 +367,10 @@ def _nearest_nonpolymer_frames(
     rep_atom_pad_mask = jnp.take_along_axis(atom_pad_mask, rep_atom_idx, axis=1)
     rep_asym_id_atom = jnp.take_along_axis(asym_id_atom, rep_atom_idx, axis=1)
 
-    # Only representative-atom rows are consumed by confidence frames. Retain
-    # the historical full atom-axis sort for each such row, including its tie
-    # order, while avoiding the unused atom-by-atom distance matrix.
+    # Only representative-atom rows are consumed by confidence frames, and
+    # each frame needs only the closest three atoms. A stable top-k on the
+    # negated distances preserves the historical ascending tie order without
+    # sorting the rest of the atom axis.
     delta = rep_atom_coords[:, :, :, None, :] - pred_atom_coords[:, :, None, :, :]
     dist_mat = jnp.sqrt(jnp.maximum(jnp.sum(delta * delta, axis=-1), 0.0))
     same_chain = rep_asym_id_atom[:, :, None] == asym_id_atom[:, None, :]
@@ -379,7 +380,18 @@ def _nearest_nonpolymer_frames(
         & atom_pad_mask[:, None, :].astype(bool)
     )
     dist_mat = jnp.where(valid_atom_pair[:, None, :, :], dist_mat, jnp.inf)
-    nearest = jnp.argsort(dist_mat, axis=-1)[..., :3]
+    if dist_mat.shape[-1] < 3:
+        nearest = jnp.argsort(dist_mat, axis=-1)[..., :3]
+    else:
+        # Stable top-k is exactly ascending argsort for finite distances and
+        # tied infinities. NaNs have backend-specific top-k ordering, so the
+        # uncommon nonfinite row path retains the historical full argsort.
+        nearest = jax.lax.cond(
+            jnp.any(jnp.isnan(dist_mat)),
+            lambda values: jnp.argsort(values, axis=-1)[..., :3],
+            lambda values: jax.lax.top_k(-values, 3, is_stable=True)[1],
+            dist_mat,
+        )
     return nearest[..., jnp.array([1, 0, 2])]
 
 

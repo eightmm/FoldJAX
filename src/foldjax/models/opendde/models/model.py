@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from functools import partial, wraps
+from functools import wraps
 from typing import Any, NamedTuple
 
 import jax
@@ -27,6 +27,7 @@ from foldjax.models._graph import (
     split_static_flags,
     traceable_features,
 )
+from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.opendde.models.diffusion_conditioning import (
     diffusion_conditioning_prepare_cache,
 )
@@ -938,11 +939,7 @@ GRAPH_STATIC_ARGNAMES = (
     "validate_feature_values",
 )
 
-@partial(
-    jax.jit,
-    static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
-)
-def _compiled_opendde_infer(
+def _opendde_infer_graph(
     input_feature_dict: dict[str, Any],
     param_arrays: tuple,
     noise_schedule: jnp.ndarray,
@@ -958,6 +955,12 @@ def _compiled_opendde_infer(
         validate_feature_values=False,
         **kwargs,
     )
+
+
+_compiled_opendde_infer = BoundedJitPool(
+    _opendde_infer_graph,
+    static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
+)
 
 
 def opendde_infer_compiled(

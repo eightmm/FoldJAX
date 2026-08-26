@@ -156,3 +156,44 @@ def test_a_chunked_run_equals_an_unchunked_one(recorded, computed) -> None:
             atol=2e-6,
             err_msg=field,
         )
+
+
+def test_density_mask_is_formed_per_chunk_instead_of_embedded_in_full() -> None:
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models.opendde.models.shape_complementarity import (
+        ShapeCompTokenFeatures,
+        _token_centers_and_normals,
+    )
+
+    n_token, n_atom, chunk = 16, 64, 4
+    owner = np.repeat(np.arange(n_token), n_atom // n_token)
+    resolved = ShapeCompTokenFeatures(
+        atom_to_token_idx=owner,
+        rep_atom_indices=np.arange(0, n_atom, n_atom // n_token),
+        rep_atom_valid=np.ones(n_token, dtype=bool),
+        token_asym_id=np.arange(n_token) % 2,
+        token_role_id=np.full(n_token, -1),
+        is_structural=False,
+        is_protein_token=np.ones(n_token, dtype=bool),
+    )
+
+    lowered = jax.jit(
+        lambda coordinate, mask: _token_centers_and_normals(
+            coordinate,
+            mask,
+            resolved,
+            n_token=n_token,
+            density_sigma=1.5,
+            chunk_size=chunk,
+            eps=1e-6,
+        )
+    ).lower(
+        jnp.zeros((n_atom, 3), jnp.float32),
+        jnp.ones(n_atom, bool),
+    )
+    hlo = str(lowered.compiler_ir(dialect="stablehlo"))
+
+    assert f"tensor<{n_token}x{n_atom}xi1>" not in hlo
+    assert f"tensor<{chunk}x{n_atom}xi1>" in hlo

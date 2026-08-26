@@ -367,14 +367,26 @@ def _fake_session_modules(tmp_path, calls):
         calls["lm"].append((packed_length, state.copy()))
         return state
 
+    def language_model_embedding(features, loaded, *, packed_length):
+        state = language_model_states(
+            features, loaded, packed_length=packed_length
+        )
+        embedding = state + np.float32(100.0)
+        calls.setdefault("embedding", []).append(embedding.copy())
+        return embedding
+
     def predict(key, features, loaded, **kwargs):
         del features, loaded
+        lm_input = kwargs.get(
+            "precomputed_lm_embedding", kwargs.get("precomputed_lm_states")
+        )
         calls["predict"].append(
-            (key, kwargs["precomputed_lm_states"], dict(kwargs))
+            (key, lm_input, dict(kwargs))
         )
         return {}
 
     inference = SimpleNamespace(
+        COMPACT_LANGUAGE_MODEL_API=True,
         LANGUAGE_MODEL_FEATURES=(
             "input_ids",
             "asym_id",
@@ -387,6 +399,7 @@ def _fake_session_modules(tmp_path, calls):
         build_job_features=build_job_features,
         language_model_length=lambda features: int(features["input_ids"].shape[-1]) + 2,
         language_model_states=language_model_states,
+        language_model_embedding=language_model_embedding,
         predict=predict,
     )
     output = SimpleNamespace(
@@ -455,9 +468,15 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
 
     assert len(calls["load"]) == 1
     assert len(calls["lm"]) == 2
+    assert len(calls["embedding"]) == 2
     assert len(calls["predict"]) == 6
     assert all(
         call[2]["return_distogram_logits"] is False for call in calls["predict"]
+    )
+    assert all(
+        "precomputed_lm_embedding" in call[2]
+        and "precomputed_lm_states" not in call[2]
+        for call in calls["predict"]
     )
     assert calls["predict"][0][1] is calls["predict"][1][1]
     assert calls["predict"][1][1] is calls["predict"][2][1]
@@ -465,7 +484,49 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
     assert calls["predict"][3][1] is calls["predict"][4][1]
     assert calls["predict"][4][1] is calls["predict"][5][1]
     assert backend._loaded_model is None
-    assert backend._lm_state is None
+    assert backend._lm_embedding is None
+
+
+def test_legacy_split_wrapper_recomputes_raw_states_without_retaining_them(
+    tmp_path, monkeypatch
+) -> None:
+    calls = {"load": [], "lm": [], "predict": []}
+    _model, modules = _fake_session_modules(tmp_path, calls)
+    inference = modules["foldjax.models.esmfold2.inference"]
+    del inference.language_model_embedding
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(
+            tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]
+        ),
+        weights=weights,
+        output_dir=tmp_path / "out",
+        num_seeds=2,
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        for seed in request.resolved_seeds:
+            backend.predict(
+                dataclasses.replace(
+                    request,
+                    seed=seed,
+                    num_seeds=None,
+                    output_dir=tmp_path / f"out-{seed}",
+                )
+            )
+
+    assert len(calls["lm"]) == 2
+    assert all(
+        "precomputed_lm_states" in call[2]
+        and "precomputed_lm_embedding" not in call[2]
+        for call in calls["predict"]
+    )
+    assert backend._lm_embedding is None
 
 
 def test_session_is_lazy_when_every_run_is_resumed(tmp_path, monkeypatch) -> None:
@@ -559,13 +620,13 @@ def test_unowned_model_never_reuses_another_models_lm_state() -> None:
     np.testing.assert_array_equal(second_state, [2])
 
 
-def test_hidden_cache_releases_the_previous_input_before_computing_next() -> None:
+def test_embedding_cache_releases_the_previous_input_before_computing_next() -> None:
     backend = ESMFold2Backend()
     model = SimpleNamespace(has_language_model=True)
     backend._session_active = True
     backend._loaded_model = model
-    backend._lm_state = np.ones((4, 4), dtype=np.float32)
-    backend._lm_state_key = "previous-input"
+    backend._lm_embedding = np.ones((4, 4), dtype=np.float32)
+    backend._lm_embedding_key = "previous-input"
     features = {
         "input_ids": np.asarray([[4, 5]]),
         "asym_id": np.asarray([[0, 0]]),
@@ -576,21 +637,21 @@ def test_hidden_cache_releases_the_previous_input_before_computing_next() -> Non
 
     def compute(features, loaded, *, packed_length):
         del features, loaded, packed_length
-        assert backend._lm_state is None
-        assert backend._lm_state_key is None
+        assert backend._lm_embedding is None
+        assert backend._lm_embedding_key is None
         return np.asarray([42.0], dtype=np.float32)
 
     inference = SimpleNamespace(
         LANGUAGE_MODEL_FEATURES=tuple(features),
-        language_model_states=compute,
+        language_model_embedding=compute,
     )
 
-    state = backend._language_model_states(
+    state = backend._language_model_embedding(
         inference, features, model, packed_length=None
     )
 
     np.testing.assert_array_equal(state, [42.0])
-    assert backend._lm_state is state
+    assert backend._lm_embedding is state
 
 
 def test_resumed_seed_anchors_weights_before_the_first_load(

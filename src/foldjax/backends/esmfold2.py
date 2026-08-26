@@ -378,12 +378,12 @@ class ESMFold2Backend(Backend):
             ]
             | None
         ) = None
-        self._lm_state: Any | None = None
-        self._lm_state_key: str | None = None
+        self._lm_embedding: Any | None = None
+        self._lm_embedding_key: str | None = None
 
     @contextmanager
     def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
-        """Reuse one model and one input's ESMC states within this API call."""
+        """Reuse one model and one input's compact ESMC embedding."""
 
         if self._session_open:
             raise RuntimeError("nested ESMFold2 backend sessions are not supported")
@@ -402,8 +402,8 @@ class ESMFold2Backend(Backend):
             self._session_open = False
 
     def invalidate_session(self) -> None:
-        self._lm_state = None
-        self._lm_state_key = None
+        self._lm_embedding = None
+        self._lm_embedding_key = None
         self._loaded_model = None
         self._loaded_model_key = None
 
@@ -523,7 +523,26 @@ class ESMFold2Backend(Backend):
         *,
         packed_length: int | None,
     ) -> Any | None:
-        """Return seed-independent ESMC states, retaining at most one input."""
+        """Return raw ESMC states for a legacy split inference wrapper."""
+
+        if not model.has_language_model:
+            return None
+        # Raw 81-layer stacks are intentionally never retained. Wrappers that
+        # predate the compact embedding API remain compatible, but recompute
+        # the stack for each seed instead of pinning hundreds of megabytes.
+        return inference.language_model_states(
+            features, model, packed_length=packed_length
+        )
+
+    def _language_model_embedding(
+        self,
+        inference: Any,
+        features: Mapping[str, np.ndarray],
+        model: Any,
+        *,
+        packed_length: int | None,
+    ) -> Any | None:
+        """Return one compact ESMC embedding, retaining at most one input."""
 
         if not model.has_language_model:
             return None
@@ -531,7 +550,7 @@ class ESMFold2Backend(Backend):
         # object that produced it. Unverifiable checkpoints are deliberately
         # loaded afresh and must never participate in an identity cache.
         if not self._session_active or self._loaded_model is not model:
-            return inference.language_model_states(
+            return inference.language_model_embedding(
                 features, model, packed_length=packed_length
             )
         key = _language_model_feature_key(
@@ -539,18 +558,19 @@ class ESMFold2Backend(Backend):
             packed_length,
             inference.LANGUAGE_MODEL_FEATURES,
         )
-        if self._lm_state is not None and self._lm_state_key == key:
-            return self._lm_state
-        # Do not hold two full 81-layer token-state stacks while computing the
-        # next input. At 1,000 tokens one BF16 state is about 415 MB.
-        self._lm_state = None
-        self._lm_state_key = None
-        state = inference.language_model_states(
+        if self._lm_embedding is not None and self._lm_embedding_key == key:
+            return self._lm_embedding
+        # Drop the prior compact result before ESMC and the projection allocate
+        # the next input. The transient raw stack is owned only by the helper;
+        # this session retains the roughly 810-times-smaller combined result.
+        self._lm_embedding = None
+        self._lm_embedding_key = None
+        embedding = inference.language_model_embedding(
             features, model, packed_length=packed_length
         )
-        self._lm_state = state
-        self._lm_state_key = key
-        return state
+        self._lm_embedding = embedding
+        self._lm_embedding_key = key
+        return embedding
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         managed_asset_profile(options)
@@ -636,7 +656,7 @@ class ESMFold2Backend(Backend):
         )
         padding_plan = None
         lm_target = None
-        cached_lm_api = all(
+        split_lm_api = all(
             hasattr(inference, name)
             for name in (
                 "LANGUAGE_MODEL_FEATURES",
@@ -644,6 +664,11 @@ class ESMFold2Backend(Backend):
                 "language_model_states",
                 "predict",
             )
+        )
+        compact_lm_api = (
+            split_lm_api
+            and bool(getattr(inference, "COMPACT_LANGUAGE_MODEL_API", False))
+            and hasattr(inference, "language_model_embedding")
         )
         prebuilt_features = None
         if all_atom_input:
@@ -658,7 +683,7 @@ class ESMFold2Backend(Backend):
             )
 
         if not all_atom_input and request.padding is None and (
-            not self._session_active or not cached_lm_api
+            not self._session_active or not split_lm_api
         ):
             # Preserve the original, public no-padding path exactly.  Besides
             # avoiding an unnecessary API split for ordinary callers, wrappers
@@ -716,20 +741,32 @@ class ESMFold2Backend(Backend):
                     n_msa=padding_plan.target["msa"],
                 )
                 lm_target = padding_plan.target.get("language_model_tokens")
-            hidden = self._language_model_states(
-                inference,
-                features,
-                model,
-                packed_length=lm_target,
-            )
+            if self._session_active and compact_lm_api:
+                lm_input = {
+                    "precomputed_lm_embedding": self._language_model_embedding(
+                        inference,
+                        features,
+                        model,
+                        packed_length=lm_target,
+                    )
+                }
+            else:
+                lm_input = {
+                    "precomputed_lm_states": self._language_model_states(
+                        inference,
+                        features,
+                        model,
+                        packed_length=lm_target,
+                    )
+                }
             prediction = inference.predict(
                 prediction_key,
                 features,
                 model,
                 language_model_tokens=lm_target,
-                precomputed_lm_states=hidden,
                 preserve_prefix_rng=request.padding is not None,
                 return_distogram_logits=False,
+                **lm_input,
                 **overrides,
             )
 

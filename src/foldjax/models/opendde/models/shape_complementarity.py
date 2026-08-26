@@ -270,18 +270,22 @@ def _token_centers_and_normals(
         token_center = rep_center
         center_valid = rep_valid
 
-    same_chain = jnp.asarray(
-        resolved.token_asym_id[:, None]
-        == resolved.token_asym_id[resolved.atom_to_token_idx][None, :]
-    ) & atom_mask[None, :]
+    token_asym_id = jnp.asarray(resolved.token_asym_id)
+    atom_asym_id = jnp.asarray(
+        resolved.token_asym_id[resolved.atom_to_token_idx]
+    )
 
     def gradient_chunk(start: int, size: int) -> jnp.ndarray:
         centers = jax.lax.dynamic_slice_in_dim(token_center, start, size, axis=0)
+        center_asym_id = jax.lax.dynamic_slice_in_dim(
+            token_asym_id, start, size, axis=0
+        )
         delta = centers[:, None, :] - coordinate[None, :, :]
         weight = jnp.exp(-jnp.sum(delta * delta, -1) / (2.0 * density_sigma**2))
-        weight = weight * jax.lax.dynamic_slice_in_dim(
-            same_chain, start, size, axis=0
-        ).astype(coordinate.dtype)
+        same_chain = (center_asym_id[:, None] == atom_asym_id[None, :]) & atom_mask[
+            None, :
+        ]
+        weight = weight * same_chain.astype(coordinate.dtype)
         return jnp.sum(weight[..., None] * delta, axis=-2) / (density_sigma**2)
 
     gradient = jnp.concatenate(
@@ -337,9 +341,7 @@ def compute_shape_complementarity(
         & jnp.asarray(resolved.is_protein_token)
         & (strength > float(settings["normal_strength_min"]))
     )
-    cross_chain = jnp.asarray(
-        resolved.token_asym_id[:, None] != resolved.token_asym_id[None, :]
-    )
+    token_asym_id = jnp.asarray(resolved.token_asym_id)
 
     token_scores: list[jnp.ndarray] = []
     token_masks: list[jnp.ndarray] = []
@@ -352,6 +354,9 @@ def compute_shape_complementarity(
         centers = jax.lax.dynamic_slice_in_dim(center, start, size, axis=0)
         normals = jax.lax.dynamic_slice_in_dim(normal, start, size, axis=0)
         valid = jax.lax.dynamic_slice_in_dim(token_valid, start, size, axis=0)
+        row_asym_id = jax.lax.dynamic_slice_in_dim(
+            token_asym_id, start, size, axis=0
+        )
 
         delta = center[None, :, :] - centers[:, None, :]
         distance = jnp.linalg.norm(delta, axis=-1)
@@ -377,7 +382,7 @@ def compute_shape_complementarity(
         pair_mask = (
             valid[:, None]
             & token_valid[None, :]
-            & jax.lax.dynamic_slice_in_dim(cross_chain, start, size, axis=0)
+            & (row_asym_id[:, None] != token_asym_id[None, :])
             & (distance <= float(settings["interface_cutoff"]))
         )
         pair_score = jnp.where(pair_mask, facing * opposite * gap * anti_clash, 0.0)

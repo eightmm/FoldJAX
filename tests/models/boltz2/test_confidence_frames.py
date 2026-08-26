@@ -407,3 +407,4 @@ def test_representative_rows_remove_the_dense_atom_square_from_cpu_hlo() -> None
     compact_temp = compact_lowered.compile().memory_analysis().temp_size_in_bytes
     legacy_temp = legacy_lowered.compile().memory_analysis().temp_size_in_bytes
     assert compact_temp * 4 < legacy_temp
+    assert "chlo.top_k" in compact_hlo

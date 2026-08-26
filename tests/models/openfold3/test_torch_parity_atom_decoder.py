@@ -50,9 +50,14 @@ def _decoder():
 
 
 def _batch(torch) -> dict:
+    atom_to_token = torch.repeat_interleave(
+        torch.arange(N_TOKEN, dtype=torch.long),
+        torch.tensor(COUNTS, dtype=torch.long),
+    )
     return {
         "token_mask": torch.ones(1, N_TOKEN),
         "num_atoms_per_token": torch.tensor([COUNTS], dtype=torch.float32),
+        "atom_to_token_index": atom_to_token.reshape(1, N_ATOM),
         "atom_mask": torch.ones(1, N_ATOM),
     }
 

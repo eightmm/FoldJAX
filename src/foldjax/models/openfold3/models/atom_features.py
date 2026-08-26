@@ -164,6 +164,7 @@ def noisy_position_embedder(
         batch["num_atoms_per_token"],
         single,
         n_atom=cl.shape[-2],
+        atom_to_token_index=batch["atom_to_token_index"],
     )
 
     pair = linear(layer_norm(zij_trunk, params.layer_norm_z, eps=eps), params.linear_z)
@@ -379,6 +380,8 @@ def atom_attention_decoder(
 
     Args:
         batch: needs ``token_mask``, ``num_atoms_per_token`` and ``atom_mask``.
+            A validated ``atom_to_token_index`` selects the indexed fast path;
+            direct callers without it retain the count-based fallback.
         ai: ``[..., N_token, c_token]`` token representation.
         ql: ``[..., N_atom, c_atom]`` atom single representation.
         cl: ``[..., N_atom, c_atom]`` atom single conditioning.
@@ -398,6 +401,7 @@ def atom_attention_decoder(
         batch["num_atoms_per_token"],
         linear(ai, params.linear_q_in),
         n_atom=ql.shape[-2],
+        atom_to_token_index=batch.get("atom_to_token_index"),
     )
 
     ql = atom_transformer(

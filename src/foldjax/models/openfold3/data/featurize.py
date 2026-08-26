@@ -238,6 +238,12 @@ def _featurize_query(
             "them, "
             "so this would fail later as a KeyError inside predict"
         )
+    # The indexed atom path trusts the same prefix/count/owner invariants as a
+    # loaded archive. Validate freshly constructed features at the boundary as
+    # well, before weights or JAX compilation make a malformed job expensive.
+    from foldjax.models.openfold3.data.validation import validate_features
+
+    validate_features(features)
     metadata = output_metadata_from_atom_array(raw.atom_array, features)
     return features, metadata
 

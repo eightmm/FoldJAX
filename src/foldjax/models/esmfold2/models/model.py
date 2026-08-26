@@ -416,14 +416,15 @@ def inputs_embedding(
     return inputs_embedder_tail(tokens, res_type_one_hot, profile, deletion_mean)
 
 
-def language_model_pair(
+def language_model_embedding(
     hidden_states: jnp.ndarray, params: Params, prefix: str = "language_model"
 ) -> jnp.ndarray:
-    """`LanguageModelShim`: combine the PLM's layers, then lift to a pair.
+    """Project and combine ESMC's layer stack into one token embedding.
 
     `base_z_combine` is a softmax over the layer axis -- all 81 of ESMC's
     hidden states including the embedding -- so the shim reads the whole stack
-    rather than its last layer.
+    rather than its last layer. Keeping this prefix separate lets a multi-seed
+    session retain the small combined result instead of the complete stack.
     """
     dot = f"{prefix}." if prefix else ""
     projected = linear(
@@ -436,12 +437,28 @@ def language_model_pair(
         f"{dot}base_z_linear.1",
     )
     weights = jax.nn.softmax(params[f"{dot}base_z_combine"], axis=0)
-    combined = jnp.einsum("l,bnld->bnd", weights, projected)
+    return jnp.einsum("l,bnld->bnd", weights, projected)
+
+
+def language_model_pair_from_embedding(
+    combined: jnp.ndarray, params: Params, prefix: str = "language_model"
+) -> jnp.ndarray:
+    """Lift one already-combined language-model embedding to a pair."""
+    dot = f"{prefix}." if prefix else ""
     pair = single_to_pair(combined, params, f"{dot}base_z_mlp.0")
     return layer_norm(
         pair,
         params[f"{dot}base_z_mlp.1.weight"],
         params[f"{dot}base_z_mlp.1.bias"],
+    )
+
+
+def language_model_pair(
+    hidden_states: jnp.ndarray, params: Params, prefix: str = "language_model"
+) -> jnp.ndarray:
+    """`LanguageModelShim`: combine the PLM's layers, then lift to a pair."""
+    return language_model_pair_from_embedding(
+        language_model_embedding(hidden_states, params, prefix), params, prefix
     )
 
 
@@ -664,6 +681,7 @@ def predict(
     *,
     settings: ModelSettings,
     lm_hidden_states: jnp.ndarray | None = None,
+    lm_embedding: jnp.ndarray | None = None,
     initial_pair_state: jnp.ndarray | None = None,
     n_chains: int | None = None,
     preserve_prefix_rng: bool = False,
@@ -677,8 +695,9 @@ def predict(
 
     `features` uses upstream's own key names, so a featuriser written against
     the torch model feeds this unchanged. `lm_hidden_states` is ESMC's stacked
-    layer output; without it the language-model branch is simply absent, which
-    is what upstream does when no PLM is loaded.
+    layer output. Internal session callers may instead supply the equivalent
+    projected-and-combined `lm_embedding`; direct callers retain the historical
+    raw-state API. Without either, the language-model branch is absent.
 
     `initial_pair_state` replaces the truncated-normal draw the trunk starts
     from. Supplying it makes the trunk -- and so the distogram -- reproducible,
@@ -811,8 +830,16 @@ def predict(
     rel_pos = shard_pair_rows(rel_pos)
     z_init = shard_pair_rows(z_init + rel_pos + token_bonds_encoding)
 
+    if lm_hidden_states is not None and lm_embedding is not None:
+        raise ValueError("pass lm_hidden_states or lm_embedding, not both")
     lm_pair = None
-    if lm_hidden_states is not None:
+    if lm_embedding is not None:
+        lm_pair = shard_pair_rows(
+            language_model_pair_from_embedding(
+                lm_embedding.astype(compute), trunk_params
+            )
+        )
+    elif lm_hidden_states is not None:
         lm_pair = shard_pair_rows(
             language_model_pair(lm_hidden_states.astype(compute), trunk_params)
         )
@@ -1099,6 +1126,8 @@ __all__ = [
     "ModelSettings",
     "inputs_embedding",
     "language_model_pair",
+    "language_model_embedding",
+    "language_model_pair_from_embedding",
     "predict",
     "run_loops",
     "settings_from_config",

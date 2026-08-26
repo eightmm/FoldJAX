@@ -22,6 +22,7 @@ def broadcast_token_feat_to_atoms(
     token_feat: jnp.ndarray,
     *,
     n_atom: int,
+    atom_to_token_index: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Broadcast a per-token feature to per-atom.
 
@@ -30,6 +31,10 @@ def broadcast_token_feat_to_atoms(
         num_atoms_per_token: ``[..., N_token]`` atom count per token.
         token_feat: ``[..., N_token, C]`` token feature.
         n_atom: static output atom count.
+        atom_to_token_index: optional validated ``[..., n_atom]`` owner table.
+            Supplying it avoids rebuilding the owner table from all token
+            boundaries. Its real-atom prefix must describe the same runs as
+            ``num_atoms_per_token``; padded owner values are ignored.
 
     Returns:
         ``[..., n_atom, C]``. Atoms past the last token's boundary are zero, as
@@ -38,18 +43,31 @@ def broadcast_token_feat_to_atoms(
     if token_feat.ndim < 2:
         raise ValueError("token_feat must have a trailing feature axis")
 
-    counts = num_atoms_per_token * token_mask
     token_feat = token_feat * token_mask[..., None]
+    n_token = token_mask.shape[-1]
+    counts = num_atoms_per_token * token_mask
+    positions = jnp.arange(n_atom)
+
+    if atom_to_token_index is not None:
+        if atom_to_token_index.shape[-1] != n_atom:
+            raise ValueError(
+                "atom_to_token_index length must equal the requested atom count"
+            )
+        safe = jnp.clip(atom_to_token_index.astype(jnp.int32), 0, n_token - 1)
+        atom_feat = jnp.take_along_axis(token_feat, safe[..., None], axis=-2)
+        # Preserve the count-based primitive's exact validity semantics. The
+        # high-level owner table has the same prefix contract, but deriving
+        # validity here also keeps direct calls compatible for padded lanes.
+        valid = positions < jnp.sum(counts, axis=-1, keepdims=True)
+        return jnp.where(valid[..., None], atom_feat, 0.0)
 
     # [..., N_token] exclusive-end boundaries of each token's atom run.
     boundaries = jnp.cumsum(counts, axis=-1)
 
-    positions = jnp.arange(n_atom)
     # Number of boundaries at or below each position = owning token index.
     index = jnp.sum(
         positions[..., None] >= boundaries[..., None, :], axis=-1
     ).astype(jnp.int32)
-    n_token = token_mask.shape[-1]
     safe = jnp.clip(index, 0, n_token - 1)
 
     atom_feat = jnp.take_along_axis(token_feat, safe[..., None], axis=-2)

@@ -179,13 +179,10 @@ def compute_chain_pair_iptm(
     valid = token_mask.astype(bool)
     chain_masks = [valid & (asym_id == chain) for chain in range(n_chain)]
 
-    rows = []
+    zero = jnp.zeros(logits.shape[0], dtype=logits.dtype)
+    matrix = [[zero for _ in range(n_chain)] for _ in range(n_chain)]
     for i in range(n_chain):
-        row = []
-        for j in range(n_chain):
-            if i == j:
-                row.append(jnp.zeros(logits.shape[0], dtype=logits.dtype))
-                continue
+        for j in range(i + 1, n_chain):
             pair_mask = chain_masks[i] | chain_masks[j]
             both_present = jnp.any(chain_masks[i]) & jnp.any(chain_masks[j])
             value = compute_ptm(
@@ -198,9 +195,10 @@ def compute_chain_pair_iptm(
                 asym_id=asym_id,
                 interface=True,
             )
-            row.append(jnp.where(both_present, value, 0.0))
-        rows.append(jnp.stack(row, axis=-1))
-    return jnp.stack(rows, axis=-2)
+            value = jnp.where(both_present, value, 0.0)
+            matrix[i][j] = value
+            matrix[j][i] = value
+    return jnp.stack([jnp.stack(row, axis=-1) for row in matrix], axis=-2)
 
 
 def compute_chain_mean_iptm(

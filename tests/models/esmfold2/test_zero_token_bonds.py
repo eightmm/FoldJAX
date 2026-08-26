@@ -176,12 +176,14 @@ def test_inference_routes_the_zero_contract_into_the_compile_identity(
     routed: list[bool] = []
 
     def fake_compiled_predict(*identity):
-        routed.append(identity[-2])
-        assert identity[-1] is True
+        routed.append(identity[-3])
+        assert identity[-2] is True
+        assert identity[-1] is False
 
         def run(*args):
-            assert args[-2] is identity[-2]
-            assert args[-1] is True
+            assert args[-3] is identity[-3]
+            assert args[-2] is True
+            assert args[-1] is False
             return {}
 
         return run

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from functools import partial
 from typing import Any, NamedTuple
 
 import jax
@@ -26,6 +25,7 @@ from foldjax.models._graph import (
     split_static_flags,
     traceable_features,
 )
+from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
@@ -511,11 +511,7 @@ GRAPH_STATIC_ARGNAMES = (
 )
 
 
-@partial(
-    jax.jit,
-    static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
-)
-def _compiled_protenix_infer(
+def _protenix_infer_graph(
     input_feature_dict: dict[str, Any],
     param_arrays: tuple,
     noise_schedule: jnp.ndarray,
@@ -530,6 +526,12 @@ def _compiled_protenix_infer(
         noise_schedule,
         **kwargs,
     )
+
+
+_compiled_protenix_infer = BoundedJitPool(
+    _protenix_infer_graph,
+    static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
+)
 
 
 def protenix_infer_compiled(
