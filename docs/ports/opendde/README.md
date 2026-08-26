@@ -189,9 +189,9 @@ instead of copying that output bug.
 The current CPU verification gate is:
 
 ```bash
-uv sync --group dev
-JAX_PLATFORMS=cpu uv run --group dev pytest -q tests/models/opendde
-uv run --group dev ruff check .
+uv sync
+JAX_PLATFORMS=cpu uv run pytest -q tests/models/opendde
+uv run ruff check .
 ```
 
 The final gate is intentionally expressed as commands rather than a fixed test

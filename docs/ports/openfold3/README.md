@@ -68,7 +68,7 @@ around this model's `predict` call rather than changing JAX globally:
 ## Setup
 
 ```bash
-uv sync --extra cuda13 --extra openfold3-preprocess --group dev
+uv sync --extra openfold3-preprocess
 ```
 
 The preprocessing extra contains chemistry and data libraries only. No
@@ -78,7 +78,7 @@ FoldJAX extra installs PyTorch, Lightning, or TorchMetrics.
 
 ```bash
 # production and NumPy/JAX preprocessing paths
-JAX_PLATFORMS=cpu uv run --extra openfold3-preprocess --group dev \
+JAX_PLATFORMS=cpu uv run \
   pytest -q tests/models/openfold3
 ```
 

@@ -63,6 +63,28 @@ def test_supported_python_and_accelerator_runtime_are_consistent() -> None:
     assert "triton==3.7.1" in extras["cuda13"]
     assert "dm-haiku==0.0.17" in extras["alphafold3"]
 
+    # A bare `uv sync` has to produce a working GPU environment, and only a
+    # dependency group can be enabled by default -- an extra cannot. So the
+    # CUDA 13 pins exist twice, once as the published extra and once as the
+    # default `gpu` group, and this is what stops the two copies from drifting.
+    groups = document["dependency-groups"]
+    settings = document["tool"]["uv"]
+    assert set(groups["gpu"]) == set(extras["cuda13"])
+    assert settings["default-groups"] == ["dev", "gpu"]
+    # Without this pair `--extra cuda12` installs both CUDA generations side by
+    # side instead of failing, because the group is on by default.
+    assert [{"extra": "cuda12"}, {"group": "gpu"}] in settings["conflicts"]
+    # Every CPU-only install in CI must opt out of that default group. A runner
+    # that silently gained 3.3 GB of CUDA wheels still passes, until it does
+    # not, so this covers steps nobody has written yet rather than a count.
+    sync_commands = [
+        line.strip()
+        for line in workflow.splitlines()
+        if "uv sync" in line and not line.strip().startswith("#")
+    ]
+    assert sync_commands
+    assert all("--no-default-groups" in command for command in sync_commands)
+
 
 def test_alphafold3_uv_build_uses_the_active_python(
     tmp_path: Path, monkeypatch

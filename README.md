@@ -66,10 +66,14 @@ FoldJAX requires Python 3.13. Its lockfile pins JAX 0.11.1 and the matching
 cuEquivariance JAX/CUDA packages for reproducible CPU and GPU environments.
 
 ```bash
-uv sync --extra cuda13 --group dev
+uv sync
 uv run foldjax weights fetch --model boltz2      # download, verify, convert once
 uv run foldjax predict --model boltz2 --input job.yaml
 ```
+
+`uv sync` installs the CUDA 13 runtime and the test tools without being asked;
+a CPU-only machine wants `uv sync --no-default-groups --group dev` instead, and
+a CUDA 12 one is in [docs/install.md](docs/install.md).
 
 Two models want an extra: `--extra alphafold3` (its compiled half and CCD
 tables build themselves on first use) and `--extra openfold3-preprocess` (only
@@ -128,15 +132,15 @@ Per-model notes: [AlphaFold 3](docs/alphafold3.md) ·
 ## Tests
 
 ```bash
-JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q
-uv run --extra cuda13 --group dev ruff check .
+JAX_PLATFORMS=cpu uv run pytest -q
+uv run ruff check .
 
 # One file, or one test, with no coverage gate in the way:
-JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q tests/test_cache.py
+JAX_PLATFORMS=cpu uv run pytest -q tests/test_cache.py
 
 # The 80% orchestration-layer gate, which only means anything on a full run.
 # This is what CI enforces.
-JAX_PLATFORMS=cpu uv run --extra cuda13 --group dev pytest -q \
+JAX_PLATFORMS=cpu uv run pytest -q \
     --cov=foldjax --cov-report=term-missing --cov-fail-under=80
 ```
 

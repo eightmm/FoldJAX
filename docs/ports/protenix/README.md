@@ -51,7 +51,7 @@ FoldJAX currently targets Python 3.13. The recommended environment manager is
 
 ```bash
 # NVIDIA CUDA 13 runtime and development tools
-uv sync --extra cuda13 --group dev
+uv sync
 uv run foldjax weights fetch --model protenix
 uv run foldjax predict --model protenix --input job.json
 ```
@@ -62,6 +62,7 @@ Optional extras:
 |---|---|
 | `cuda12` | JAX CUDA 12 runtime; select XLA triangle backends explicitly |
 | `cuda13` | JAX CUDA 13 plus cuEquivariance JAX kernels |
+| `gpu` group | the same pins as `cuda13`, enabled by default so a bare `uv sync` is a GPU install |
 | base install | RDKit/NumPy preprocessing, restricted checkpoint reader, and JAX ESM/ISM |
 | `dev` group | pytest and Ruff |
 
@@ -90,7 +91,7 @@ is imported. Native `.jax` weights use FoldJAX's restricted container.
 Run directly from a Protenix inference JSON file:
 
 ```bash
-uv run --extra cuda13 protenix-jax-predict \
+uv run protenix-jax-predict \
   --weights weights/protenix_base_default_v1.0.0-jax.pkl \
   --input-json examples/input.json \
   --model-name protenix_base_default_v1.0.0 \
@@ -120,7 +121,7 @@ JAX_PLATFORMS=cpu uv run protenix-jax-featurize-json \
 Then predict from the bundle:
 
 ```bash
-uv run --extra cuda13 protenix-jax-predict \
+uv run protenix-jax-predict \
   --weights weights/protenix-v2-jax.pkl \
   --features outputs/features.npz \
   --model-name protenix-v2 \
@@ -177,7 +178,7 @@ the database release, wrapper version, and search options with every result.
 Pass the original Protenix guidance mapping as JSON:
 
 ```bash
-uv run --extra cuda13 protenix-jax-predict \
+uv run protenix-jax-predict \
   --weights weights/protenix_base_default_v1.0.0-jax.pkl \
   --input-json examples/input.json \
   --guidance-config configs/guidance.json \
@@ -224,7 +225,7 @@ can prewarm its representative inputs on the same GPU and software image that
 will serve requests:
 
 ```bash
-uv run --extra cuda13 protenix-jax-predict \
+uv run protenix-jax-predict \
   --weights weights/protenix_base_default_v1.0.0-jax.pkl \
   --features outputs/features_768.npz \
   --model-name protenix_base_default_v1.0.0 \
@@ -267,9 +268,9 @@ checks reached maximum energy and gradient differences of approximately
 ## Development
 
 ```bash
-uv sync --group dev
-JAX_PLATFORMS=cpu uv run --group dev pytest -q tests/models/protenix
-uv run --group dev ruff check src tests
+uv sync
+JAX_PLATFORMS=cpu uv run pytest -q tests/models/protenix
+uv run ruff check src tests
 uv build
 ```
 

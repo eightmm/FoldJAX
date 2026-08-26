@@ -16,7 +16,7 @@ the CUDA extra that matches the machine, then inspect or
 prepare the generated runtime explicitly:
 
 ```bash
-uv sync --extra cuda13 --extra alphafold3
+uv sync --extra alphafold3
 foldjax runtime status --model alphafold3
 foldjax runtime prepare --model alphafold3
 ```

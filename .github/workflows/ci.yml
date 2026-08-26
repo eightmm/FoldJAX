@@ -41,9 +41,14 @@ jobs:
       # outside the distribution. This job is the regression test
       # for all of it: uv resolves every extra to build the lockfile, so a path
       # dependency that exists on one machine breaks `uv sync` on every other.
+      #
+      # `--no-default-groups --group dev` rather than a bare `--group dev`: the
+      # `gpu` group is enabled by default so that a bare `uv sync` produces a
+      # working GPU environment, and a GPU-less runner has no use for 3.3 GB of
+      # CUDA wheels.
       - name: Install
         run: >
-          uv sync --group dev --frozen
+          uv sync --no-default-groups --group dev --frozen
           --extra alphafold3
           --extra openfold3-preprocess
 
@@ -87,8 +92,10 @@ jobs:
           enable-cache: true
           python-version: "3.13"
 
+      # Without `--no-default-groups` this installs the default `gpu` group's
+      # CUDA wheels on a CPU runner.
       - name: Install without dev dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --no-default-groups
 
       # Importing the package is not the same as reaching each adapter: a
       # backend is resolved lazily, so a broken import in one of them stays

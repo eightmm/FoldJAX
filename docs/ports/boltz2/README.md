@@ -62,7 +62,7 @@ low-precision inference — selectable per backend without changing weights.
 Install one JAX/CUDA runtime, fetch the managed publisher assets, and predict:
 
 ```bash
-uv sync --extra cuda13 --group dev
+uv sync
 uv run foldjax weights fetch --model boltz2
 uv run foldjax predict --model boltz2 --input job.yaml
 ```
@@ -71,8 +71,9 @@ uv run foldjax predict --model boltz2 --input job.yaml
 FoldJAX's restricted NumPy archive reader, and stages the molecule database.
 Raw YAML featurization uses the in-package NumPy compatibility layer. Neither
 setup, conversion, featurization, nor prediction imports PyTorch or Lightning.
-Use `--extra cuda12` instead on CUDA 12 hosts; the CUDA extras conflict by
-construction, so select exactly one.
+CUDA 12 hosts export `UV_NO_GROUP=gpu` and sync `--extra cuda12` instead: the
+default `gpu` group is the CUDA 13 runtime, and it conflicts with that extra by
+construction, so exactly one generation is ever installed.
 
 Managed assets and caches live below the directory reported by `foldjax home`
 (`.foldjax/` in a checkout when that directory exists, otherwise the user cache
@@ -221,8 +222,8 @@ the CLI and top-level inference API select both cuEq triangle kernels by
 default:
 
 ```bash
-uv sync --extra cuda13
-uv run --extra cuda13 python scripts/predict.py INPUT.yaml \
+uv sync
+uv run python scripts/predict.py INPUT.yaml \
   --compute-dtype bfloat16 --diffusion-samples 5
 ```
 

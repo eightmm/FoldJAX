@@ -59,7 +59,7 @@ UNKNOWN_ELEMENT_BIN = 118
 # need it, and losing the structures is not a reason to lose the scores too.
 _GEMMI_MISSING = (
     "writing mmCIF needs gemmi, which is a base FoldJAX dependency -- this "
-    "environment is incomplete. Reinstall it (`uv sync --extra cuda13`), or "
+    "environment is incomplete. Reinstall it (`uv sync`), or "
     "use write_scores/write_arrays, which do not need it."
 )
 

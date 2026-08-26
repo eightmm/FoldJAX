@@ -150,7 +150,19 @@ alphafold3 = [
 # their publisher's terms.
 
 [tool.uv]
-conflicts = [[{ extra = "cuda12" }, { extra = "cuda13" }]]
+# `uv sync` with no flags is the CUDA 13 development environment. The `gpu`
+# group below carries the same pins as the `cuda13` extra and is enabled by
+# default; the extras stay because they are the *published* surface, and a
+# wheel or a `foldjax[cuda12] @ git+...` install can only ask for an extra.
+# CPU-only environments opt out with `--no-default-groups`.
+default-groups = ["dev", "gpu"]
+# The two CUDA generations conflict by construction, and so does the default
+# `gpu` group with the CUDA 12 extra: without that second pair `--extra cuda12`
+# installs both plugin sets instead of failing.
+conflicts = [
+    [{ extra = "cuda12" }, { extra = "cuda13" }],
+    [{ extra = "cuda12" }, { group = "gpu" }],
+]
 
 [project.urls]
 Homepage = "https://github.com/eightmm/foldjax"
@@ -230,6 +242,17 @@ dev = [
     "ruff>=0.6.0",
     # The vendored Boltz-2 suite compares against an einx reference.
     "einx>=0.4.3",
+]
+# The `cuda13` extra's pins again, duplicated deliberately: a dependency group
+# can be a default and an extra cannot, so this is what makes a bare `uv sync`
+# produce a GPU environment. Writing `foldjax[cuda13]` here instead would keep
+# one copy of the pins, but uv 0.10.3 -- the version CI installs -- ignores a
+# self-referential extra in a group without a word and hands back a CPU-only
+# environment. `tests/test_distribution.py` asserts the two sets stay equal.
+gpu = [
+    "cuequivariance-ops-jax-cu13==0.11.1",
+    "jax[cuda13]==0.11.1",
+    "triton==3.7.1",
 ]
 
 [tool.ruff]

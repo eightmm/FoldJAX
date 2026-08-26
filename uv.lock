@@ -9,6 +9,9 @@ resolution-markers = [
 conflicts = [[
     { package = "foldjax", extra = "cuda12" },
     { package = "foldjax", extra = "cuda13" },
+], [
+    { package = "foldjax", extra = "cuda12" },
+    { package = "foldjax", group = "gpu" },
 ]]
 
 [[package]]
@@ -235,7 +238,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -325,7 +328,7 @@ name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
@@ -370,7 +373,7 @@ name = "cryptography"
 version = "50.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/de/41/6cbdcf9142d00fe82836fbb51e503e58088575cf7a0fe1dbff6695bf0840/cryptography-50.0.0.tar.gz", hash = "sha256:eeac2acb5a20ed25e0ad6d1df9891a520b78b404266b6d11778f25d5d691a6c9", size = 880201, upload-time = "2026-07-31T14:25:10.11Z" }
 wheels = [
@@ -453,8 +456,8 @@ name = "cuequivariance-ops-cu13"
 version = "0.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", version = "13.1.1.3", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'emscripten' and extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'win32' and extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
-    { name = "nvidia-cublas", version = "13.6.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'emscripten' and extra == 'extra-7-foldjax-cuda13') or (sys_platform == 'win32' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "nvidia-cublas", version = "13.1.1.3", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-7-foldjax-cuda12') or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
+    { name = "nvidia-cublas", version = "13.6.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'emscripten' and extra != 'extra-7-foldjax-cuda12') or (sys_platform == 'win32' and extra != 'extra-7-foldjax-cuda12') or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
     { name = "nvidia-ml-py" },
     { name = "platformdirs" },
     { name = "tqdm" },
@@ -648,7 +651,7 @@ cuda12 = [
 ]
 cuda13 = [
     { name = "cuequivariance-ops-jax-cu13" },
-    { name = "jax", extra = ["cuda13"], marker = "extra == 'extra-7-foldjax-cuda13'" },
+    { name = "jax", extra = ["cuda13"], marker = "extra == 'extra-7-foldjax-cuda13' or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
     { name = "triton" },
 ]
 openfold3-preprocess = [
@@ -675,6 +678,11 @@ dev = [
     { name = "pytest-cov" },
     { name = "pyyaml" },
     { name = "ruff" },
+]
+gpu = [
+    { name = "cuequivariance-ops-jax-cu13" },
+    { name = "jax", extra = ["cuda13"], marker = "extra == 'extra-7-foldjax-cuda13' or extra == 'group-7-foldjax-gpu' or extra != 'extra-7-foldjax-cuda12'" },
+    { name = "triton" },
 ]
 
 [package.metadata]
@@ -740,6 +748,11 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "ruff", specifier = ">=0.6.0" },
+]
+gpu = [
+    { name = "cuequivariance-ops-jax-cu13", specifier = "==0.11.1" },
+    { name = "jax", extras = ["cuda13"], specifier = "==0.11.1" },
+    { name = "triton", specifier = "==3.7.1" },
 ]
 
 [[package]]
@@ -1152,7 +1165,7 @@ cuda12 = [
     { name = "jaxlib" },
 ]
 cuda13 = [
-    { name = "jax-cuda13-plugin", extra = ["with-cuda"], marker = "extra == 'extra-7-foldjax-cuda13'" },
+    { name = "jax-cuda13-plugin", extra = ["with-cuda"], marker = "extra == 'extra-7-foldjax-cuda13' or extra == 'group-7-foldjax-gpu' or extra != 'extra-7-foldjax-cuda12'" },
     { name = "jaxlib" },
 ]
 
@@ -2016,7 +2029,7 @@ dependencies = [
     { name = "humanize" },
     { name = "jax" },
     { name = "msgpack" },
-    { name = "nest-asyncio", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "nest-asyncio", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
     { name = "numpy" },
     { name = "prometheus-client" },
     { name = "protobuf" },
@@ -2025,7 +2038,7 @@ dependencies = [
     { name = "simplejson" },
     { name = "tensorstore" },
     { name = "typing-extensions" },
-    { name = "uvloop", marker = "sys_platform != 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "uvloop", marker = "sys_platform != 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5c/70/e8b4c7f382c77d198128c50076611b9b3b7b18e795f6d7d5931755af0106/orbax_checkpoint-0.12.1.tar.gz", hash = "sha256:e9b014ccad4c9b2648cdb9946cd2550339bc3eb388ac1f494a27fda4739b4e19", size = 703150, upload-time = "2026-06-24T19:13:15.993Z" }
 wheels = [
@@ -2048,7 +2061,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "python-dateutil" },
-    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/be/4f/5f3422a2afec5ffc46308b79e53291365a93748b498ac2e58bead0197916/pandas-3.0.5.tar.gz", hash = "sha256:dca3734d6ab7c906e6730f0788b0a1dbb9f2467731f9711f77995c8e9d62d712", size = 4658219, upload-time = "2026-07-22T22:19:28.819Z" }
 wheels = [
@@ -2304,7 +2317,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2680,7 +2693,7 @@ name = "tqdm"
 version = "4.68.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-foldjax-cuda12' and extra == 'extra-7-foldjax-cuda13') or (extra == 'extra-7-foldjax-cuda12' and extra == 'group-7-foldjax-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ae/5f/57ff8b434839e70dab45601284ea413e947a63799891b7553e5960a793a8/tqdm-4.68.4.tar.gz", hash = "sha256:19829c9673638f2a0b8617da4cdcb927e831cd88bcfcb6e78d42a4d1af131520", size = 792418, upload-time = "2026-07-07T09:58:18.369Z" }
 wheels = [

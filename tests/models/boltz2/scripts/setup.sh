@@ -5,6 +5,10 @@
 # Usage:
 #   bash scripts/setup.sh            # CUDA 13 (default)
 #   CUDA=cuda12 bash scripts/setup.sh
+#
+# On a CUDA 12 host, keep `UV_NO_GROUP=gpu` exported in the shell you predict
+# from as well: `gpu` is a default dependency group carrying the CUDA 13
+# runtime, and `uv run` re-syncs the default groups before it runs anything.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,10 +27,18 @@ if [ -z "${CUDA:-}" ]; then
 fi
 echo "==> CUDA extra: $CUDA"
 
+# The default `gpu` group is the CUDA 13 runtime, and it conflicts with the
+# CUDA 12 extra by declaration -- `uv sync --extra cuda12` alone fails. Turning
+# the group off through the environment rather than a flag also covers the
+# `uv run` below, which would otherwise sync CUDA 13 back in.
+if [ "$CUDA" = "cuda12" ]; then
+  export UV_NO_GROUP=gpu
+fi
+
 mkdir -p "$CACHE"
 
-echo "==> Installing FoldJAX dependencies (uv sync --extra $CUDA --group dev)"
-uv sync --extra "$CUDA" --group dev
+echo "==> Installing FoldJAX dependencies (uv sync --extra $CUDA)"
+uv sync --extra "$CUDA"
 
 fetch() {  # fetch <url> <dest>
   if [ -f "$2" ]; then echo "    have $(basename "$2")"; else

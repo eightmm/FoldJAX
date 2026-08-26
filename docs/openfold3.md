@@ -103,7 +103,7 @@ construction live outside this tree.
 Raw featurization still needs its chemistry/data extra:
 
 ```bash
-uv sync --extra cuda13 --extra openfold3-preprocess
+uv sync --extra openfold3-preprocess
 ```
 
 The extra contains no training framework or second tensor runtime. `deepspeed`,

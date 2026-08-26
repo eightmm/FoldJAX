@@ -12,6 +12,21 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`uv sync` with no arguments is now the environment to have.** The CUDA 13
+  runtime also lives in a `gpu` dependency group, and uv enables that group by
+  default, so the documented install lost both of its flags: `uv sync --extra
+  cuda13 --group dev` is now `uv sync`, and `dev` had in fact been a default
+  group all along. The `cuda12` and `cuda13` extras are unchanged and remain
+  the published surface, because a wheel or a `foldjax[cuda12] @ git+...`
+  install can only ask for an extra, never a group; the CUDA 13 pins therefore
+  exist in both places and a test keeps the two copies equal. Two departures
+  still take a flag. A CPU-only machine syncs `--no-default-groups --group
+  dev`, which is what CI now does. A CUDA 12 node exports `UV_NO_GROUP=gpu` for
+  its whole shell rather than passing a flag once, because `uv run` re-syncs
+  the default groups before it runs anything and would otherwise reinstall the
+  CUDA 13 wheels beside the CUDA 12 ones; forgetting it stops with a conflict
+  error instead of installing both generations.
+
 - **Protenix v2 runs past upstream's 2,560-token limit, and says what that
   costs.** Upstream refuses protenix-v2 above 2,560 tokens by assertion, before
   allocating anything, and its own message gives the reason: "It might cause
