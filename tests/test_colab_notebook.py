@@ -2580,20 +2580,36 @@ def test_colab_trunk_mode_reports_representations_without_structures() -> None:
     assert namespace["comparison"].iloc[0]["representations"] == "single, pair"
 
 
-def test_readme_links_to_and_explains_the_colab_workflow() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    prose = " ".join(readme.split())
+def test_readme_links_to_the_colab_workflow_and_the_doc_explains_it() -> None:
+    """The README was cut to a front page; the explanation moved, not away.
 
-    assert "## Examples" in readme
-    assert "### Google Colab: compare models from one input" in readme
+    Both halves are checked here because a reader reaches the notebook through
+    one of two doors -- the badge at the top of the README, or its `Try it`
+    section -- and what the notebook actually does now lives in `docs/colab.md`.
+    A README that keeps its links while the doc loses the behaviour, or a doc
+    that keeps the behaviour while the README stops pointing at it, are the two
+    ways this can quietly stop being true.
+    """
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    colab_doc = (ROOT / "docs" / "colab.md").read_text(encoding="utf-8")
+    colab_prose = " ".join(colab_doc.split())
+
     assert (
         "https://colab.research.google.com/github/eightmm/FoldJAX/blob/"
         "main/notebooks/FoldJAX_Colab.ipynb"
     ) in readme
-    assert "[Google Colab workflow](notebooks/FoldJAX_Colab.ipynb)" in readme
-    assert 'models=("protenix", "opendde", "openfold3")' in readme
+    assert "[Colab notebook](notebooks/FoldJAX_Colab.ipynb)" in readme
+    assert "[docs/colab.md](docs/colab.md)" in readme
+    # The one worked example the front page keeps is the multi-model one:
+    # running several models over a single input is what FoldJAX does that no
+    # publisher's own code does.
     assert "predict_batch" in readme
-    assert "protein, DNA, RNA, CCD ligands, and SMILES ligands" in prose
-    assert "is an all-biomolecule model" in readme
-    assert "FoldJAX ports that input contract without Torch" in prose
-    assert "OpenFold3" in readme
+    assert 'models=("protenix", "opendde", "openfold3")' in readme
+
+    assert "[Google Colab workflow](../notebooks/FoldJAX_Colab.ipynb)" in colab_doc
+    assert "protein, DNA, RNA, CCD ligands, and SMILES ligands" in colab_prose
+    assert "ESMFold2 accepts the same protein, DNA, RNA," in colab_prose
+    assert "OpenFold3" in colab_doc
+    # The notebook's short schedule is not any model's released default, and
+    # saying so is the whole reason this document exists.
+    assert "tutorial schedule" in colab_prose
