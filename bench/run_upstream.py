@@ -353,9 +353,24 @@ def main() -> int:
         # a 12-second run that beat everything else.
         record["failed"] = True
         record["reason"] = "exited 0 but produced no structures"
-        errors = sorted(args.output_dir.rglob("ERR/*.txt"))
+        # Each upstream puts its reason somewhere else: OpenDDE in `ERR/`,
+        # OpenFold3 in its own `logs/predict_err_rank*.log`. Reading only one
+        # of them made the same out-of-memory show up as two different results
+        # -- one explained, one bare -- purely by where it had been written.
+        errors = sorted(args.output_dir.rglob("ERR/*.txt")) or sorted(
+            args.output_dir.rglob("logs/*err*.log")
+        )
         if errors:
             record["stderr_tail"] = errors[0].read_text(errors="replace")[-2000:]
+        else:
+            # `ERR/` is OpenDDE's convention, not a general one. Boltz-2 also
+            # exits 0 with nothing predicted and writes no such file, and this
+            # branch used to drop the stderr it had already captured -- leaving
+            # a `failed` row whose only evidence was a peak. Reading a failure
+            # off a peak is guessing; at 4,926 tokens the peak was 92.2 GiB on a
+            # 95.0 GiB card, which looks like an out-of-memory and is not proof
+            # of one.
+            record["stderr_tail"] = completed.stderr[-2000:]
     text = json.dumps(record, sort_keys=True)
     print(text)
     if args.json_out:

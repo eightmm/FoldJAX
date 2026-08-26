@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from figure_style import THEMES, apply_theme, did_not_run  # noqa: E402
 
 MODELS = ("boltz2", "protenix", "protenix-v2", "openfold3", "opendde", "alphafold3")
-SIZES = (499, 1003, 2096, 3012)
+SIZES = (499, 1003, 1354, 2096, 3012, 4926)
 CARD_GIB = 97.9
 
 
@@ -62,12 +62,27 @@ def _value(body: dict | None, metric: str) -> float | None:
 
 
 def _absent_label(body: dict | None) -> str | None:
-    """Why this cell has no bar, in the fewest words that stay true."""
-    if body is None:
+    """Why this cell has no bar, in the fewest words that stay true.
+
+    Three outcomes, not two. `out of memory` used to be the default for
+    anything that was not a refusal, which put a cause on cells that have no
+    evidence for one: upstream Boltz-2 at 4,926 tokens reaches 92.2 GiB,
+    produces nothing, exits 0 and writes no error anywhere. A peak that is
+    close to the card is not proof of an allocation that failed, and labelling
+    it as one is the figure asserting something the run never said.
+
+    The refusal is read from the recorded text rather than from prose someone
+    remembered to write: at 3,012 tokens the row carries a hand-written reason,
+    while at 4,926 the same refusal only reaches `stderr_tail`.
+    """
+    if body is None or not body.get("failed"):
         return None
-    if not body.get("failed"):
-        return None
-    return "refused" if "refuses" in str(body.get("reason") or "") else "out of memory"
+    evidence = f"{body.get('reason') or ''}\n{body.get('stderr_tail') or ''}"
+    if "refuses" in evidence or "does not support n_token" in evidence:
+        return "refused"
+    if "out of memory" in evidence.lower() or "MemoryError" in evidence:
+        return "out of memory"
+    return "no structure"
 
 
 def render(records: dict, out: Path, theme) -> Path:

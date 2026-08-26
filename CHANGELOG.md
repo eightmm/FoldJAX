@@ -26,6 +26,105 @@ command predicts unless it says so here, in its own paragraph.
   out-of-memory explainer names the variable actually in effect rather than a
   constant.
 
+- **Two more benchmark sizes, and the one where FoldJAX runs what its upstream
+  cannot.** At 1,354 tokens OpenDDE finishes in 529 s at 77.8 GiB while upstream
+  OpenDDE holds 91.15 GiB, asks for 9.82 more, and dies on a 94.97 GiB card. The
+  size was chosen rather than found: upstream's 1,003-token peak is 59.5 GiB
+  against FoldJAX's 42.9, which puts the two ceilings about 250 tokens apart,
+  and a first attempt at 1,531 confirmed the upper edge by failing on both
+  sides. At 4,926 tokens nothing here runs, on either side, which is also a
+  result -- and not one failure but three: three FoldJAX runs ask for more than
+  the device holds, Protenix asks for less and still fails with the pool raised
+  to 0.98, and upstream Protenix v2 refuses above 2,560 tokens before
+  allocating anything.
+
+- **The figure no longer says "out of memory" about runs that never said so.**
+  Its label for a missing bar was "refused, or else out of memory", which put a
+  cause on cells that have no evidence for one: upstream Boltz-2 at 4,926 tokens
+  reaches 92.2 GiB, produces nothing, exits 0 and writes no error anywhere. That
+  is now "no structure". The refusal is also read from the recorded text rather
+  than from prose someone remembered to write, which is why the same refusal
+  showed as a refusal at 3,012 tokens and as an out-of-memory at 4,926.
+
+- **An upstream that exits 0 with nothing predicted keeps its reason.**
+  `bench/run_upstream.py` looked only in `ERR/`, which is OpenDDE's convention.
+  Boltz-2 writes no such file and had its captured stderr discarded, leaving a
+  failed row whose only evidence was a peak; OpenFold3 writes to its own
+  `logs/predict_err_rank*.log` and had its out-of-memory reported as a bare
+  failure. Both are read now, and the captured stderr is the fallback.
+
+- **Long-lived processes now bound the largest inference and preprocessing
+  caches.** Protenix and OpenDDE whole-model graphs are owned by an eight-entry
+  least-recently-used JIT pool; evicting an identity explicitly clears its JAX
+  executable rather than retaining every unpadded shape and static option ever
+  seen. AlphaFold 3 protein/RNA search results are now memoized only for the
+  duration of one input job, which keeps homomer reuse without retaining full
+  MSAs and templates across unrelated jobs. Its process-wide CCD loader keeps
+  at most two base dictionaries, and a user CCD is applied to a shallow copy so
+  one job can no longer alter the chemical-component table seen by later jobs.
+  Component metadata keeps its 128-entry reuse window on that CCD instance, so
+  the helper cache cannot retain job-specific dictionary copies after the job.
+
+- **OpenFold3 uses its validated atom-owner table for token-to-atom
+  broadcasts.** The high-level feature validator already proves that
+  `atom_to_token_index`, atom counts and masks describe the same layout. The
+  noisy-position encoder and atom decoder now gather through that table instead
+  of reconstructing it with an `[atom, token]` comparison and reduction on
+  every trace. The public count-based primitive remains the fallback for direct
+  callers. FP32/BF16, padded, nonfinite and signed-zero CPU regressions are
+  byte-identical; an isolated 256-atom/64-token StableHLO no longer contains the
+  `[1, 256, 64]` predicate or its reduction. This is a source-level graph and
+  temporary reduction, not a whole-model or GPU peak claim.
+
+- **A directory of jobs is now a batch from Python, not only from the CLI.**
+  `PredictionRequest(inputs=(directory,))` expands to the job documents
+  directly inside it, sorted, so running a sweep no longer starts with a glob
+  the caller writes themselves. Sorting is half the point: `iterdir` returns
+  filesystem order, so a hand-written batch runs in an order that depends on
+  which machine created the files. The CLI keeps expanding the wider set it can
+  convert -- FASTA and deposited structures become job documents first -- and
+  both spellings now go through one implementation. `input` is one run, so it
+  refuses a directory and names `inputs` in the message rather than reporting
+  "is not a file" and leaving the caller to guess.
+
+- **OpenDDE forms shape-complementarity chain masks inside their existing
+  chunks.** The floating-point calculation was already bounded to 128 token
+  rows, but two NumPy-derived boolean masks were still materialized in full as
+  `[token, atom]` and `[token, token]` constants. Keeping only the two chain-id
+  vectors and comparing each row chunk removes those quadratic constants
+  without changing any arithmetic. A synthetic CPU density-stage probe at 512
+  tokens and 4,096 atoms reduced StableHLO from about 4.21 million to 57,000
+  characters and warm time from 8.73 to 6.67 ms; outputs were byte-identical.
+
+- **OpenFold3 computes each symmetric chain-pair ipTM only once.** The union
+  mask, chain-presence test and interface pTM call are identical for `(i, j)`
+  and `(j, i)`, so the upper-triangle result is now reused for its mirror while
+  the diagonal remains zero. This preserves bytes while halving the unrolled
+  pair calls and roughly halved the isolated 16-chain StableHLO. Runtime may
+  not move because XLA could already common-subexpression-eliminate the two
+  copies; this is principally a trace and compile-size reduction.
+
+- **Boltz-2 selects three ligand-frame atoms with stable top-k on the ordinary
+  finite path.** The confidence head previously sorted every atom distance and
+  kept only three indices. Equal finite distances and infinities retain their
+  historical input order; rows containing NaNs keep the full stable argsort so
+  nonfinite direct-call semantics are unchanged. In an isolated CPU probe with
+  three samples, 128 representative rows and 1,024 atoms, warm time fell from
+  9.65 to 2.03 ms. This is a confidence-stage result, not a whole-model or GPU
+  latency claim.
+
+- **Multi-seed ESMFold2 sessions retain the combined language-model embedding,
+  not all 81 ESMC layer states.** A separately compiled layer-normalize,
+  projection, softmax and layer-combination prefix turns the seed-independent
+  `[B, N, 81, 2560]` stack into `[B, N, 256]` before it enters the session
+  cache. At 1,000 tokens in BF16 that is 414,720,000 retained bytes versus
+  512,000, while the pair lift and every seed-dependent structure operation
+  remain in the structure graph. Direct/model APIs still accept and default to
+  raw hidden states, and legacy split wrappers recompute rather than retaining
+  them. FP32 and BF16 CPU split-boundary tests are byte-identical; fresh-process
+  released-weight CUDA peak and latency remain deployment gates because the
+  extra compiled boundary can affect device fusion and initial peak.
+
 - **`uv sync` with no arguments is now the environment to have.** The CUDA 13
   runtime also lives in a `gpu` dependency group, and uv enables that group by
   default, so the documented install lost both of its flags: `uv sync --extra

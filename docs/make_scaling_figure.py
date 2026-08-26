@@ -11,7 +11,7 @@ the same curve. The FoldJAX column has no such licence -- its own code changed
 between the two sweeps -- which is why the faceted figure does not pool them.
 
 
-The benchmark table answers "what did this cost" at four sizes. The question
+The benchmark table answers "what did this cost" at six sizes. The question
 this figure answers is a different one -- *how fast does the cost grow* -- and
 the answer is a slope, not a number. Both axes are logarithmic, so a power law
 is a straight line and its exponent is the slope: time proportional to n^2 rises

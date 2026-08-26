@@ -12,7 +12,7 @@ row, one process per measurement, results written as they land.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmark-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 2,096 and 3,012 tokens" src="benchmark-dark.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012 and 4,926 tokens" src="benchmark-dark.png">
 </picture>
 
 **The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
@@ -35,6 +35,12 @@ upstream, which is what makes the comparison mean anything.
 | 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm | 0.9307 | 0.9300 |
 | 1003 | protenix | 67 | 99 | 6.7 | 12.7 | 1.49x | 1.89x | ranking_score | 0.1921 | 0.1922 |
 | 1003 | protenix-v2 | 110 | 138 | 10.1 | 13.3 | 1.26x | 1.32x | ranking_score | 0.1931 | 0.1927 |
+| 1354 | alphafold3 | 478 | - | 11.0 | - | - | - | - | - | - |
+| 1354 | boltz2 | 150 | 204 | 10.2 | 20.6 | 1.36x | 2.02x | complex_plddt | 0.8275 | 0.8305 |
+| 1354 | opendde | 529 | failed | 77.8 | failed | - | - | - | - | - |
+| 1354 | openfold3 | 230 | 652 | 15.4 | 42.7 | 2.83x | 2.78x | ptm | 0.8264 | 0.8360 |
+| 1354 | protenix | 106 | 133 | 9.8 | 21.6 | 1.26x | 2.20x | ranking_score | 0.1800 | 0.1799 |
+| 1354 | protenix-v2 | 186 | 217 | 16.9 | 22.5 | 1.17x | 1.33x | ranking_score | 0.1810 | 0.1811 |
 | 2096 | alphafold3 | 571 | - | 20.5 | - | - | - | - | - | - |
 | 2096 | boltz2 | 347 | 543 | 21.9 | 46.6 | 1.56x | 2.13x | complex_plddt | 0.9799 | 0.9795 |
 | 2096 | opendde | failed | failed | failed | failed | - | - | - | - | - |
@@ -47,6 +53,23 @@ upstream, which is what makes the comparison mean anything.
 | 3012 | openfold3 | 1,385 | 6,722 | 58.4 | 81.3 | 4.85x | 1.39x | ptm | 0.8711 | 0.8748 |
 | 3012 | protenix | 723 | 797 | 43.7 | 56.0 | 1.10x | 1.28x | ranking_score | 0.9554 | 0.9502 |
 | 3012 | protenix-v2 | 2,054 | failed | 78.2 | failed | - | - | - | - | - |
+| 4926 | alphafold3 | failed | - | failed | - | - | - | - | - | - |
+| 4926 | boltz2 | failed | failed | failed | failed | - | - | - | - | - |
+| 4926 | opendde | failed | failed | failed | failed | - | - | - | - | - |
+| 4926 | openfold3 | failed | failed | failed | failed | - | - | - | - | - |
+| 4926 | protenix | failed | failed | failed | failed | - | - | - | - | - |
+| 4926 | protenix-v2 | failed | failed | failed | failed | - | - | - | - | - |
+
+**1,354 tokens is where FoldJAX runs a size its upstream cannot.** OpenDDE
+finishes in 529 s at 77.8 GiB. Upstream OpenDDE holds 91.15 GiB, asks for
+another 9.82, and dies on a 94.97 GiB card -- then writes that to an `ERR/`
+file and exits 0, which is why the row reads `failed` rather than a
+twelve-second run that beat everything else. The size was chosen rather than
+guessed: at 1,003 tokens upstream peaks at 59.5 GiB against FoldJAX's 42.9, and
+carrying both forward puts upstream's ceiling near 1,270 tokens and FoldJAX's
+near 1,520. The window is about 250 tokens wide, and 1,531 is already outside
+it on both sides. OpenFold3's margin is also at its widest here, 2.83x on time
+and 2.78x on memory.
 
 **2,096 tokens is the last size most of these upstreams reach.** Upstream
 Boltz-2 and upstream Protenix v2 both complete here and neither survives 3,012
@@ -75,6 +98,50 @@ to another that uses 1.2x to 1.3x less. FoldJAX warns with the expected size
 and runs: 3,012 tokens completed five samples at 78.2 GiB. `strict_token_limit`
 restores upstream's refusal for a caller who wants it. Neither implementation
 validates the model at that length, which the warning says too.
+
+**4,926 tokens is past every model here, on both sides.** The row is entirely
+failures, and it is in the table because a size nothing reaches is a result --
+but they are not the same failure. Three FoldJAX runs ask for more than the
+95.0 GiB device holds, so no allocator setting reaches them. Protenix is the
+one that does not: it needed 90.5 GiB, inside the device, and still failed with
+the pool raised to 0.98, which makes its wall fragmentation rather than total
+size. Upstream Protenix v2 never allocates at all -- it refuses above 2,560
+tokens by assertion, the same refusal as at 3,012. Upstream Boltz-2 reaches
+92.2 GiB, produces nothing, exits 0, and writes no reason anywhere; that row is
+`failed` on the absence of a structure, which is the only thing it is honest to
+say.
+
+The sizes those runs report at the moment they fail are not peaks, and ranking
+them would be a mistake. A run dies at the first allocation that does not fit,
+so an implementation that dies early reports a *smaller* number than one that
+gets further: OpenDDE reports 127.1 GiB, the second largest here, while its own
+measured growth puts what it would actually have needed at this size near a
+thousand.
+
+**AlphaFold 3's own repository says 5,120 tokens fit on an 80 GB card, and
+this one does not get there.** Upstream's `docs/performance.md` puts a
+5,120-token fold at 2,547 s on an A100 80 GB and 1,416 s on an H100 80 GB, with
+`XLA_PYTHON_CLIENT_PREALLOCATE=true` and `XLA_CLIENT_MEM_FRACTION=0.95`;
+unified memory is what it recommends *above* that size, not for it. Here the
+same model asks for 102.8 GiB at 4,888 tokens, past a 95.0 GiB device. What
+could reasonably differ was checked and does not: the vendored
+`pair_transition_shard_spec` is upstream's 80 GB profile, flash attention is
+`triton` on both sides, the input is padded to the same 5,120-token bucket, and
+the schedule is AlphaFold 3's released default. The input is not it either --
+a six-chain 4,926-token assembly needs 104.5 GiB and a single-chain 4,888-token
+protein 102.8, and that single chain carries an 11,320-row alignment against
+the assembly's 377, so depth is not driving it. Nor is the allocator: raising
+the pool to upstream's 0.95 changes nothing, because the request is past the
+device rather than past the pool, and preallocation is already on here -- with
+nothing set, one tiny array takes 73,573 MiB of 97,887, which is JAX's own
+0.75. The gap is real and unexplained. What is ruled out is written down so the
+next attempt does not begin by ruling it out again.
+
+This row's alignment is also shallower than the rest of the table's -- 377 rows
+against 2,658 at 1,354 tokens -- because the target is a bacterial toxin with
+few homologues. Both columns read the same file, so the comparison between them
+is unaffected; the growth curve is, and this size sits below the trend the
+other five set.
 
 **The FoldJAX columns were re-measured on 2026-08-24 at `0c2d70b`; the upstream
 columns are the runs already on record.** Nothing upstream changed between the
@@ -115,7 +182,7 @@ verify both.
 
 ## How the cost grows
 
-The table is four sizes. The question that decides whether a sequence is
+The table is six sizes. The question that decides whether a sequence is
 affordable is a different one -- how steeply the cost climbs -- and its answer
 is a slope, not a number.
 
