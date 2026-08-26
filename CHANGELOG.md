@@ -12,6 +12,32 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The out-of-memory explainer told people to raise a fraction that could not
+  help.** Its branch compared the total against the *device* and then reported
+  the *pool*, so an allocation that fits both printed "This is the pool's limit
+  and not the card's" and advised `=0.95`. Measured, a 90.5 GiB need failed
+  inside a 93.1 GiB pool and failed again at 0.98: the pool is assembled
+  piecewise and can hold a total it cannot serve in one block. There are three
+  outcomes now -- past the device, past the pool, and fits both -- and the third
+  says it is fragmentation and that a larger fraction will not help.
+
+- **`bench/structures.py` had never once reported on `protenix-v2`.** It split
+  each run directory on every hyphen and read the second field as the
+  implementation, so `protenix-v2-foldjax-...` became model `protenix` with
+  implementation `v2`, matched neither side, and was dropped without a word. It
+  splits on the implementation now. `bench/drive.py` likewise spawned a
+  hard-coded `.venv/bin/python`, which silently ignored
+  `UV_PROJECT_ENVIRONMENT` and measured the wrong environment; it uses the
+  interpreter it is running under.
+
+- **ESMFold2 is in the benchmark table, and OpenDDE's precision lever is
+  written down.** ESMFold2 had been measured under the same schedule all along
+  and the table dropped its rows, so a reader could not tell "not measured"
+  from "left out". The published table now matches what `bench/report.py`
+  emits. The structure-level gate, which the doc said it had not spent a card
+  on repeating, was repeated at 1,354 tokens for free from structures the run
+  had already written.
+
 - **Importing FoldJAX no longer costs you the GPU for following jaxlib's
   documentation.** jaxlib renamed the pool-fraction variable to
   `XLA_CLIENT_MEM_FRACTION`; either spelling works alone, and both together

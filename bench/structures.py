@@ -242,10 +242,19 @@ def main() -> int:
     for directory in sorted(args.work.iterdir()):
         if not directory.is_dir() or directory.name.endswith("-warmup"):
             continue
-        parts = directory.name.split("-")
-        if len(parts) < 3:
+        # Split on the implementation, not on every hyphen. A model whose name
+        # contains one -- `protenix-v2` -- parsed as model "protenix" with
+        # implementation "v2", which matches neither side, so every one of its
+        # runs was dropped and the table simply had one fewer model in it than
+        # the matrix had measured.
+        for impl in ("foldjax", "upstream"):
+            model, marker, case = directory.name.partition(f"-{impl}-")
+            if marker:
+                break
+        else:
             continue
-        model, impl, case = parts[0], parts[1], parts[-1]
+        if not case:
+            continue
         coords = [ca_coords(path) for path in structures(directory)]
         coords = [c for c in coords if c[0].size]
         if coords:

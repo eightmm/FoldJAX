@@ -127,6 +127,10 @@ def main() -> int:
                 gpu_idle()
                 print(f"[run ] {model} {impl} {case_name}", flush=True)
 
+                # The interpreter this driver is running under, not a fixed
+                # `.venv/bin/python`: a hard-coded path silently ignores
+                # `UV_PROJECT_ENVIRONMENT`, so a matrix aimed at a second
+                # environment measures the first one and says nothing.
                 if impl == "foldjax":
                     # Fill the compile cache first and throw the run away. A
                     # cold JAX run is dominated by XLA compilation, which the
@@ -140,7 +144,7 @@ def main() -> int:
                     print(f"[warm] {model} {case_name}", flush=True)
                     filled = subprocess.run(
                         [
-                            str(REPO / ".venv/bin/python"), "-m", "bench.run_foldjax",
+                            sys.executable, "-m", "bench.run_foldjax",
                             "--model", model, "--case", case_name,
                             "--output-dir", str(warm), "--warmup",
                         ],
@@ -163,14 +167,14 @@ def main() -> int:
                     subprocess.run(["rm", "-rf", str(warm)], check=False)
                     gpu_idle()
                     argv = [
-                        str(REPO / ".venv/bin/python"), "-m", "bench.run_foldjax",
+                        sys.executable, "-m", "bench.run_foldjax",
                         "--model", model, "--case", case_name,
                         "--output-dir", str(work), "--json-out", str(row),
                     ]
                 else:
                     job = native_input(model, case, work / "input")
                     argv = [
-                        str(REPO / ".venv/bin/python"), "-m", "bench.run_upstream",
+                        sys.executable, "-m", "bench.run_upstream",
                         "--model", model, "--case", case_name,
                         "--job", str(job), "--output-dir", str(work / "out"),
                         "--json-out", str(row), "--timeout", str(args.timeout),
@@ -181,7 +185,7 @@ def main() -> int:
                     # is byte-for-byte the one an untraced matrix runs, so a
                     # trace and its table row can never be of different things.
                     argv = [
-                        str(REPO / ".venv/bin/python"), "-m", "bench.trace", "run",
+                        sys.executable, "-m", "bench.trace", "run",
                         "--model", model, "--impl", impl, "--case", case_name,
                         "--out",
                         str(args.traces / f"{model}-{impl}-{case_name}.jsonl"),

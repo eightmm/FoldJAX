@@ -196,3 +196,38 @@ def test_importing_a_model_keeps_a_chosen_pool_fraction_alone() -> None:
     )
     assert completed.returncode == 0, completed.stderr[-2000:]
     assert completed.stdout.strip() == "None"
+
+
+@pytest.mark.parametrize(
+    ("used_gib", "requested_gib", "expected"),
+    [
+        (2.0, 120.0, "past the device itself"),
+        (2.0, 88.0, "past the pool"),
+        (2.0, 60.0, "fragmentation and a larger fraction will not help"),
+    ],
+)
+def test_the_explainer_separates_a_pool_limit_from_fragmentation(
+    monkeypatch, used_gib, requested_gib, expected
+) -> None:
+    """It used to call all three "past the pool" and advise a bigger fraction.
+
+    The branch compared the total against the *card* and then reported the
+    *pool*, so a request that fits both printed "This is the pool's limit" and
+    sent the reader to raise a fraction that cannot help. Measured: a 90.5 GiB
+    need failed inside a 93.1 GiB pool, and failed again at 0.98.
+    """
+    gib = 2**30
+    monkeypatch.setattr(
+        oom,
+        "_pool_card_and_used",
+        lambda: (90.0 * gib, 95.0 * gib, used_gib * gib),
+    )
+    error = RuntimeError(
+        f"RESOURCE_EXHAUSTED: Out of memory while trying to "
+        f"allocate {requested_gib:.2f}GiB."
+    )
+
+    explanation = oom.diagnose(error)
+
+    assert explanation is not None
+    assert expected in explanation

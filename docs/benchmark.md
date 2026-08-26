@@ -25,12 +25,14 @@ upstream, which is what makes the comparison mean anything.
 |---|---|---|---|---|---|---|---|---|---|---|
 | 499 | alphafold3 | 302 | - | 3.0 | - | - | - | - | - | - |
 | 499 | boltz2 | 34 | 55 | 4.5 | 8.2 | 1.65x | 1.81x | complex_plddt | 0.9704 | 0.9700 |
+| 499 | esmfold2 | 31 | - | 16.1 | - | - | - | - | - | - |
 | 499 | opendde | 80 | 75 | 12.5 | 18.1 | 0.94x | 1.44x | ranking_score | 0.1946 | 0.1947 |
 | 499 | openfold3 | 35 | 97 | 9.9 | 18.7 | 2.76x | 1.88x | ptm | 0.9325 | 0.9274 |
 | 499 | protenix | 27 | 63 | 4.6 | 5.0 | 2.36x | 1.08x | ranking_score | 0.1937 | 0.1935 |
 | 499 | protenix-v2 | 38 | 72 | 6.5 | 7.0 | 1.89x | 1.08x | ranking_score | 0.1950 | 0.1947 |
 | 1003 | alphafold3 | 386 | - | 6.7 | - | - | - | - | - | - |
 | 1003 | boltz2 | 96 | 141 | 6.9 | 15.8 | 1.47x | 2.30x | complex_plddt | 0.9495 | 0.9482 |
+| 1003 | esmfold2 | 69 | - | 23.1 | - | - | - | - | - | - |
 | 1003 | opendde | 281 | 287 | 42.9 | 59.5 | 1.02x | 1.38x | ranking_score | 0.1926 | 0.1930 |
 | 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm | 0.9307 | 0.9300 |
 | 1003 | protenix | 67 | 99 | 6.7 | 12.7 | 1.49x | 1.89x | ranking_score | 0.1921 | 0.1922 |
@@ -71,6 +73,20 @@ near 1,520. The window is about 250 tokens wide, and 1,531 is already outside
 it on both sides. OpenFold3's margin is also at its widest here, 2.83x on time
 and 2.78x on memory.
 
+**OpenDDE has a lever this table cannot use.** It is the first model to fail
+here, and its `dtype=bfloat16` option runs sizes its fp32 default cannot: at
+1,531 tokens fp32 asks for 86.7 GiB and dies, where bf16 finishes in 443 s at
+44.2 GiB. At 1,354 tokens, where both run, bf16 takes 335 s and 34.7 GiB
+against fp32's 529 s and 77.8 GiB -- 1.58x the speed on 2.24x less memory. The
+structures agree: across the two precisions the median TM-score is 0.964,
+against 0.962 within each precision's own five samples, so they differ no more
+than this model's diffusion sampling already does.
+
+The table stays fp32 because upstream OpenDDE ships fp32 with TF32 on, and a
+comparison run at two different precisions is not a comparison. That is what
+this note is separate for: it is a setting a user has, not a result the
+FoldJAX-versus-upstream columns measured.
+
 **2,096 tokens is the last size most of these upstreams reach.** Upstream
 Boltz-2 and upstream Protenix v2 both complete here and neither survives 3,012
 -- one runs out of memory, the other refuses by assertion. OpenDDE is already
@@ -79,6 +95,15 @@ anywhere near the top of the table. Upstream OpenFold3 is at its widest margin
 here, 4.41x on time and 3.11x on memory, and its 91.2 GiB is 93% of the card;
 that its peak then *falls* at 3,012 is the chunk-size search described under
 [How the cost grows](#how-the-cost-grows), not a measurement error.
+
+**ESMFold2 has two rows and no upstream column.** No torch ESMFold2
+environment is provisioned on this host, so there is nothing to compare against
+-- the same reason AlphaFold 3's column is blank, arrived at differently. It
+runs the same schedule as every other row. It stops at 1,003 tokens because its
+peak is one `num_samples * L^2 * 4*c_z` arena and the larger sizes were not
+attempted, and it is absent from the figure for that reason: two of six sizes
+is a gap in a panel, not a series. Its rows are here rather than dropped,
+because a reader cannot otherwise tell "not measured" from "left out".
 
 **`protenix-v2` is a second checkpoint, not a sixth port.** Protenix ships two
 supported models and FoldJAX runs both through the same code: v2 is the same
@@ -359,7 +384,34 @@ median TM-score was **0.99298** with median aligned RMSD **2.318 Å**, against
 0.99225 median TM-score for FoldJAX's own ten within-run pairs -- so the
 cross-implementation difference was no larger than its own diffusion-sampling
 spread. Repeating it needs the upstream structures re-generated, which is the
-part this re-measurement deliberately did not spend a card on.
+part that re-measurement deliberately did not spend a card on.
+
+**It was repeated at 1,354 tokens, and cost nothing.** That matrix kept both
+sides' written structures, so `python -m bench.structures` ran on what was
+already on disk. Read `cross` against the two `within` columns: torch and JAX
+draw different diffusion noise from the same seed, so how well an
+implementation agrees with *itself* across its own samples is the closest a
+correct port can come.
+
+| model | cross TM | within FoldJAX | within upstream | cross RMSD A |
+|---|---|---|---|---|
+| boltz2 | 0.954 | 0.959 | 0.953 | 4.506 |
+| openfold3 | 0.958 | 0.957 | 0.962 | 8.169 |
+| protenix | 0.956 | 0.973 | 0.964 | 10.154 |
+| protenix-v2 | 0.961 | 0.959 | 0.961 | 8.786 |
+
+Three of the four sit inside their own sampling spread. Protenix is the one
+that does not, 0.956 against 0.973 and 0.964 within -- about 0.01 TM, which is
+small and is not nothing, and is the only place in this comparison worth
+looking at again. AlphaFold 3 and OpenDDE have no upstream side here, the first
+by construction and the second because upstream ran out of memory at this size;
+their own within-run spreads are 0.977 and 0.962.
+
+**`protenix-v2` had never appeared in this comparison at all.** The tool split
+each run directory on every hyphen and read the second field as the
+implementation, so `protenix-v2-foldjax-...` parsed as model `protenix` with
+implementation `v2`, matched neither side, and was dropped without a word. The
+table above is the first time that model has been in it.
 
     python -m bench.drive --models boltz2 protenix openfold3 opendde \
         --impls foldjax upstream --cases L1000_3og2 \

@@ -157,12 +157,20 @@ def diagnose(error: BaseException) -> str | None:
     ]
     requested = _requested_bytes(str(error))
     # The allocation that failed, on top of what the pool already holds, is the
-    # smallest total this run needed. If that total fits the device, the pool is
-    # what stopped it -- and only the pool. Comparing the failed allocation
-    # against the device on its own proves nothing: it is a fraction of the need.
+    # smallest total this run needed. Three outcomes, and they take different
+    # actions: past the device, no setting helps; past the pool but inside the
+    # device, the fraction is the lever; inside both, the total fits and a
+    # contiguous block of it does not, and raising the fraction is wasted work.
+    # Comparing the failed allocation against the device on its own proves
+    # nothing: it is a fraction of the need.
     if requested is not None and used is not None:
         need = used + requested
-        if need <= card:
+        if need > card:
+            lines.append(
+                f"With the {used / gib:.1f} GiB already held that is "
+                f"{need / gib:.1f} GiB, past the device itself."
+            )
+        elif need > pool:
             lines.append(
                 f"It already held {used / gib:.1f} GiB, so it needed "
                 f"{need / gib:.1f} GiB at that moment -- inside the "
@@ -170,13 +178,24 @@ def diagnose(error: BaseException) -> str | None:
                 "pool's limit and not the card's."
             )
         else:
+            # Fits the pool and the device, and still failed. The pool is
+            # assembled piecewise, so it can hold the total and be unable to
+            # serve one contiguous block of it. Saying "past the pool" here --
+            # which this branch used to, because it only compared against the
+            # card -- sends the reader to raise a fraction that cannot help:
+            # measured, a 90.5 GiB need failed inside a 93.1 GiB pool and
+            # failed again at 0.98.
             lines.append(
-                f"With the {used / gib:.1f} GiB already held that is "
-                f"{need / gib:.1f} GiB, past the device itself."
+                f"It already held {used / gib:.1f} GiB, so it needed "
+                f"{need / gib:.1f} GiB at that moment -- inside both the "
+                f"{pool / gib:.1f} GiB pool and the {card / gib:.1f} GiB "
+                "device. The total fits and one contiguous block of it does "
+                "not, so this is fragmentation and a larger fraction will not "
+                "help."
             )
     lines.append(
         f"Raise it with {configured_fraction_env() or CURRENT_FRACTION_ENV}"
-        "=0.95, or lower the job's cost "
+        "=0.95 if the total is past the pool, or lower the job's cost "
         "(--num-samples, --max-msa-depth). If the run needs more than the device "
         "has, the fraction will not help."
     )
