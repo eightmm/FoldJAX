@@ -1,7 +1,5 @@
 """Standalone JAX inference port for OpenFold3."""
 
-import os
-
 # Take the pool up front. Growing the allocator on demand was the historical
 # setting here, justified as stopping a large token bucket from failing before
 # it had a chance to run; measured at 3,012 tokens with a cold compilation
@@ -10,7 +8,9 @@ import os
 # free, so the run dies asking for a block that would have fit. Only the
 # fraction is set, and only as a default: an explicit process-level setting
 # still wins.
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
+from foldjax import oom as _oom  # noqa: E402
+
+_oom.set_mem_fraction(0.90)
 
 # The matmul precision OpenFold3 needs is applied by `openfold3_precision`
 # around `predict`, not here. `jax.config.update` is process-global, so setting

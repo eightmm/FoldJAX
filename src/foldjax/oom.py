@@ -34,7 +34,37 @@ DEFAULT_MEM_FRACTION = 0.75
 #: 9.6 GiB on that device against a measured need of 73.33.
 PREDICT_MEM_FRACTION = 0.9
 
+#: jaxlib renamed this knob. Both spellings still work *alone*, and setting
+#: both together is a hard error inside the CUDA plugin's initialize(): it
+#: raises, the plugin does not load, and JAX then reports "an NVIDIA GPU may be
+#: present on this machine, but a CUDA-enabled jaxlib is not installed" and
+#: falls back to the CPU. The jaxlib is installed; nothing about that message
+#: points at the pair of variables that caused it. So FoldJAX must never add
+#: its spelling next to one the caller already chose.
+CURRENT_FRACTION_ENV = "XLA_CLIENT_MEM_FRACTION"
 FRACTION_ENV = "XLA_PYTHON_CLIENT_MEM_FRACTION"
+
+
+def configured_fraction_env() -> str | None:
+    """Whichever spelling of the pool fraction this process already carries."""
+    for name in (CURRENT_FRACTION_ENV, FRACTION_ENV):
+        if name in os.environ:
+            return name
+    return None
+
+
+def set_mem_fraction(value: float, *, override: bool = False) -> None:
+    """Ask XLA for a pool fraction without costing the caller their GPU.
+
+    ``override`` replaces whichever spelling is already present rather than
+    adding a second one. With no spelling present the current name is written,
+    because that is the one jaxlib documents.
+    """
+    existing = configured_fraction_env()
+    if existing is None:
+        os.environ[CURRENT_FRACTION_ENV] = str(value)
+    elif override:
+        os.environ[existing] = str(value)
 _PREALLOCATE_ENV = "XLA_PYTHON_CLIENT_PREALLOCATE"
 _REQUESTED = re.compile(r"allocate ([0-9.]+)([KMG]i?B)")
 _UNITS = {"KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "B": 1}
@@ -47,7 +77,8 @@ def is_out_of_memory(error: BaseException) -> bool:
 
 def mem_fraction() -> float:
     """The configured pool fraction, or JAX's default."""
-    raw = os.environ.get(FRACTION_ENV)
+    name = configured_fraction_env()
+    raw = os.environ.get(name) if name else None
     if raw is None:
         return DEFAULT_MEM_FRACTION
     try:
@@ -122,7 +153,7 @@ def diagnose(error: BaseException) -> str | None:
     lines = [
         f"the allocator's pool is {pool / gib:.1f} GiB -- "
         f"{mem_fraction():g} of a {card / gib:.1f} GiB device, set by "
-        f"{FRACTION_ENV}."
+        f"{configured_fraction_env() or CURRENT_FRACTION_ENV}."
     ]
     requested = _requested_bytes(str(error))
     # The allocation that failed, on top of what the pool already holds, is the
@@ -144,7 +175,8 @@ def diagnose(error: BaseException) -> str | None:
                 f"{need / gib:.1f} GiB, past the device itself."
             )
     lines.append(
-        f"Raise it with {FRACTION_ENV}=0.95, or lower the job's cost "
+        f"Raise it with {configured_fraction_env() or CURRENT_FRACTION_ENV}"
+        "=0.95, or lower the job's cost "
         "(--num-samples, --max-msa-depth). If the run needs more than the device "
         "has, the fraction will not help."
     )

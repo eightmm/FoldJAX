@@ -108,8 +108,11 @@ def test_allocator_env_is_set_on_import() -> None:
     """
     code = (
         "import foldjax.models.openfold3, os; "
+        "from foldjax import oom; "
         "print(os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '<unset>'), "
-        "os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'])"
+        # The fraction, not the spelling it was written under: jaxlib has two
+        # names for it and writing ours beside a caller's costs them the GPU.
+        "oom.mem_fraction())"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -118,7 +121,9 @@ def test_allocator_env_is_set_on_import() -> None:
         check=True,
         env={"JAX_PLATFORMS": "cpu", **inherited_environment()},
     )
-    assert result.stdout.split() == ["<unset>", "0.90"]
+    preallocate, fraction = result.stdout.split()
+    assert preallocate == "<unset>"
+    assert float(fraction) == 0.90
 
 
 @requires_gpu

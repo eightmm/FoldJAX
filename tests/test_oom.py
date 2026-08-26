@@ -83,7 +83,11 @@ def test_preallocation_off_means_there_is_no_pool_to_be_short_of(monkeypatch):
 
 
 def test_an_unparseable_fraction_falls_back_to_jax_s_default(monkeypatch):
-    monkeypatch.setenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "not-a-number")
+    # Importing any model sets the current spelling process-wide, and it is
+    # read first, so pinning only the deprecated one leaves this test reading
+    # somebody else's import.
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
+    monkeypatch.setenv(oom.FRACTION_ENV, "not-a-number")
     assert oom.mem_fraction() == oom.DEFAULT_MEM_FRACTION
 
 
@@ -95,9 +99,13 @@ def test_the_cli_asks_for_more_of_the_card_than_jax_would(monkeypatch):
     """
     from foldjax import cli
 
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
     monkeypatch.delenv(oom.FRACTION_ENV, raising=False)
     cli._apply_mem_fraction(None)
-    assert float(__import__("os").environ[oom.FRACTION_ENV]) == oom.PREDICT_MEM_FRACTION
+    # The property, not the spelling: jaxlib has two names for this, and
+    # adding ours beside a caller's choice costs them the GPU -- so which
+    # name gets written is exactly the part that may change.
+    assert oom.mem_fraction() == oom.PREDICT_MEM_FRACTION
     assert oom.PREDICT_MEM_FRACTION > oom.DEFAULT_MEM_FRACTION
 
 
@@ -105,23 +113,86 @@ def test_an_explicit_environment_setting_is_not_overridden(monkeypatch):
     """Someone who exported it is sharing the card, and knows better than a default."""
     from foldjax import cli
 
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
     monkeypatch.setenv(oom.FRACTION_ENV, "0.4")
     cli._apply_mem_fraction(None)
-    assert __import__("os").environ[oom.FRACTION_ENV] == "0.4"
+    assert oom.mem_fraction() == 0.4
 
 
 def test_the_flag_beats_both(monkeypatch):
     from foldjax import cli
 
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
     monkeypatch.setenv(oom.FRACTION_ENV, "0.4")
     cli._apply_mem_fraction(0.55)
-    assert __import__("os").environ[oom.FRACTION_ENV] == "0.55"
+    assert oom.mem_fraction() == 0.55
+    # Replaced in place, not added beside it: the pair is what breaks CUDA.
+    assert oom.CURRENT_FRACTION_ENV not in __import__("os").environ
 
 
 @pytest.mark.parametrize("bad", [0.0, -0.1, 1.01, 2.0])
 def test_a_fraction_outside_the_unit_interval_is_refused(bad, monkeypatch):
     from foldjax import cli
 
+    monkeypatch.delenv(oom.CURRENT_FRACTION_ENV, raising=False)
     monkeypatch.delenv(oom.FRACTION_ENV, raising=False)
     with pytest.raises(ValueError, match="must be in"):
         cli._apply_mem_fraction(bad)
+
+
+def test_pool_fraction_is_never_set_as_a_second_spelling() -> None:
+    """Both spellings at once cost the caller their GPU, quietly.
+
+    jaxlib renamed this knob. Either name works alone; together they raise
+    inside the CUDA plugin's `initialize()`, so the plugin does not load and
+    JAX reports "an NVIDIA GPU may be present on this machine, but a
+    CUDA-enabled jaxlib is not installed" and runs on the CPU. The jaxlib is
+    installed, and nothing in that message points at the pair of variables.
+    FoldJAX used to add its own spelling with `setdefault`, so a caller who
+    followed jaxlib's current documentation lost the GPU by importing us.
+    """
+    import os
+
+    from foldjax import oom
+
+    for present, absent in (
+        (oom.CURRENT_FRACTION_ENV, oom.FRACTION_ENV),
+        (oom.FRACTION_ENV, oom.CURRENT_FRACTION_ENV),
+    ):
+        environment = {present: "0.95"}
+        original = dict(os.environ)
+        try:
+            os.environ.clear()
+            os.environ.update(environment)
+            oom.set_mem_fraction(0.90)
+            assert os.environ[present] == "0.95", "an explicit choice must stand"
+            assert absent not in os.environ, "the other spelling must stay absent"
+            assert oom.mem_fraction() == 0.95
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+
+
+def test_importing_a_model_keeps_a_chosen_pool_fraction_alone() -> None:
+    """The import that used to break it: a real interpreter, not a monkeypatch."""
+    import os
+    import subprocess
+    import sys
+
+    program = (
+        "import os, foldjax.models.openfold3;"
+        "print(os.environ.get('XLA_PYTHON_CLIENT_MEM_FRACTION'))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key != "XLA_PYTHON_CLIENT_MEM_FRACTION"
+        }
+        | {"XLA_CLIENT_MEM_FRACTION": "0.95", "JAX_PLATFORMS": "cpu"},
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    assert completed.stdout.strip() == "None"

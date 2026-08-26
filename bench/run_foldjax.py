@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -47,10 +46,10 @@ from pathlib import Path
 # `jit_run_model`'s 73.5 GiB fitting and missing a 71.2 GiB pool by 0.6, and it
 # was reported as OOM in a table next to an upstream that had the whole card.
 # `oom.py` had already recorded this exact case; the benchmark had not.
-os.environ.setdefault(
-    "XLA_PYTHON_CLIENT_MEM_FRACTION",
-    str(__import__("foldjax.oom", fromlist=["oom"]).PREDICT_MEM_FRACTION),
-)
+_oom = __import__("foldjax.oom", fromlist=["oom"])
+# Never as a second spelling beside one the caller chose: jaxlib rejects the
+# pair and falls back to the CPU, and its message blames a missing CUDA jaxlib.
+_oom.set_mem_fraction(_oom.PREDICT_MEM_FRACTION)
 
 
 def main() -> int:

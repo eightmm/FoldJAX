@@ -1301,9 +1301,9 @@ def _apply_mem_fraction(requested: float | None) -> None:
     """
     _validate_mem_fraction(requested)
     if requested is not None:
-        os.environ[oom.FRACTION_ENV] = str(requested)
-    elif oom.FRACTION_ENV not in os.environ:
-        os.environ[oom.FRACTION_ENV] = str(oom.PREDICT_MEM_FRACTION)
+        oom.set_mem_fraction(requested, override=True)
+    else:
+        oom.set_mem_fraction(oom.PREDICT_MEM_FRACTION)
 
 
 def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
