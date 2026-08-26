@@ -1829,8 +1829,18 @@ def test_scalar_resolver_points_plural_callers_to_plural_resolver(
 
 
 def test_request_rejects_an_input_directory(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="is not a file"):
-        PredictionRequest(model="boltz2", input=tmp_path)
+    """One run cannot be several, so the scalar spelling says what to use.
+
+    `inputs` expands a directory into the jobs inside it; `input` is one run
+    and cannot. Saying only "is not a file" left the caller to guess which of
+    the two spellings they wanted.
+    """
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "a.json").write_text("version: 1\n")
+
+    with pytest.raises(IsADirectoryError, match=r"use inputs=\('jobs',\)"):
+        PredictionRequest(model="boltz2", input=jobs)
 
 
 def test_request_normalizes_and_copies_option_mappings(tmp_path: Path) -> None:
@@ -1970,3 +1980,50 @@ def test_switch_options_reach_protenix_as_switches(tmp_path: Path) -> None:
     assert _render_switch("strict_token_limit", False) == []
     with pytest.raises(ValueError, match="switch"):
         _render_switch("strict_token_limit", "maybe")
+
+
+def test_inputs_expands_a_directory_of_jobs_in_sorted_order(tmp_path: Path) -> None:
+    """A batch is a directory on disk; the caller should not write the glob.
+
+    Sorting is the point as much as the expansion is. `iterdir` returns
+    filesystem order, so a batch built by hand runs in an order that depends on
+    which machine created the files -- and a benchmark or a resumed sweep then
+    reports rows in an order nobody chose.
+    """
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    for name in ("c.json", "a.yaml", "b.yml"):
+        (jobs / name).write_text("version: 1\n")
+    (jobs / "notes.txt").write_text("not a job\n")
+    (jobs / "nested").mkdir()
+
+    request = PredictionRequest(model="boltz2", inputs=(jobs,))
+
+    assert request.resolved_inputs == (
+        jobs / "a.yaml",
+        jobs / "b.yml",
+        jobs / "c.json",
+    )
+
+
+def test_inputs_mixes_a_directory_with_named_files(tmp_path: Path) -> None:
+    """Expansion happens in place, so a directory and a file can be listed together."""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "b.json").write_text("version: 1\n")
+    single = tmp_path / "a.json"
+    single.write_text("version: 1\n")
+
+    request = PredictionRequest(model="boltz2", inputs=(single, jobs))
+
+    assert request.resolved_inputs == (single, jobs / "b.json")
+
+
+def test_inputs_rejects_a_directory_with_no_job_documents(tmp_path: Path) -> None:
+    """An empty batch is a mistake, and running zero jobs would hide it."""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "readme.md").write_text("nothing to run\n")
+
+    with pytest.raises(FileNotFoundError, match="no job files in directory"):
+        PredictionRequest(model="boltz2", inputs=(jobs,))

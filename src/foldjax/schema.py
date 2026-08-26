@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -284,6 +284,49 @@ class PaddingConfig:
         }
 
 
+#: What a directory of jobs may hold when a request names the directory rather
+#: than the files. Deliberately narrower than the CLI's accepted set: the CLI
+#: can turn a FASTA or a deposited structure into a job document first, and a
+#: request carries job documents.
+JOB_DOCUMENT_SUFFIXES = frozenset({".json", ".yaml", ".yml"})
+
+
+def expand_input_directories(
+    paths: Sequence[Path],
+    *,
+    suffixes: frozenset[str] = JOB_DOCUMENT_SUFFIXES,
+) -> tuple[Path, ...]:
+    """Replace every directory among ``paths`` with the job files inside it.
+
+    A large batch is usually a directory, and "run every job in here" should not
+    make the caller write the glob. Writing it by hand is also how an unsorted,
+    filesystem-dependent run order reaches a benchmark, so the expansion sorts.
+
+    Anything that is not a directory passes through untouched, including a path
+    that does not exist -- reporting that is the caller's existing job, and a
+    ``structure:`` selector is not a path at all. Listing is one level deep: a
+    directory of directories is a different intent from a directory of jobs,
+    and silently guessing between them is worse than not guessing.
+    """
+    expanded: list[Path] = []
+    for path in paths:
+        if not path.is_dir():
+            expanded.append(path)
+            continue
+        found = sorted(
+            item
+            for item in path.iterdir()
+            if item.is_file() and item.suffix.lower() in suffixes
+        )
+        if not found:
+            raise FileNotFoundError(
+                f"no job files in directory: {path} "
+                f"(looked for {', '.join(sorted(suffixes))})"
+            )
+        expanded.extend(found)
+    return tuple(expanded)
+
+
 @dataclass(frozen=True, slots=True)
 class PredictionRequest:
     """One model-neutral prediction job.
@@ -476,8 +519,18 @@ class PredictionRequest:
             inputs = tuple(Path(value) for value in self.inputs)
             if not inputs:
                 raise ValueError("inputs must not be empty")
+            # A directory here means "every job in it", which is what a batch
+            # of any size actually looks like on disk.
+            inputs = expand_input_directories(inputs)
             object.__setattr__(self, "inputs", inputs)
         for path in self.resolved_inputs:
+            if path.is_dir():
+                # Only the plural spelling expands: a directory is plural by
+                # nature, and one run cannot be several.
+                raise IsADirectoryError(
+                    f"input names a directory: {path}; use "
+                    f"inputs=({path.name!r},) to run every job inside it"
+                )
             if not path.is_file():
                 detail = "does not exist" if not path.exists() else "is not a file"
                 raise FileNotFoundError(f"input {detail}: {path}")

@@ -28,6 +28,7 @@ from foldjax.schema import (
     PredictionError,
     PredictionRequest,
     PredictionResult,
+    expand_input_directories,
 )
 
 
@@ -600,26 +601,21 @@ def _resolve_inputs(args: argparse.Namespace) -> list[Path]:
             "with its own properties field"
         )
 
-    expanded: list[Path] = []
+    selected: list[Path] = []
     for path in args.input:
         # `structure:` says "take the chemistry out of this file", which is the
         # one thing an extension cannot say for `.cif`: that suffix is also a
-        # perfectly good name for a job document in a workflow directory.
+        # perfectly good name for a job document in a workflow directory. It is
+        # not a path, so the directory expansion below leaves it alone.
         text = str(path)
         if text.startswith("structure:"):
-            expanded.append(Path(f"structure:{Path(text[10:]).resolve()}"))
+            selected.append(Path(f"structure:{Path(text[10:]).resolve()}"))
             continue
-        if path.is_dir():
-            found = sorted(
-                item
-                for item in path.iterdir()
-                if item.is_file() and item.suffix.lower() in _JOB_SUFFIXES
-            )
-            if not found:
-                raise FileNotFoundError(f"no job files in directory: {path}")
-            expanded.extend(found)
-        else:
-            expanded.append(path)
+        selected.append(path)
+    # The same expansion a `PredictionRequest` performs, over the wider set the
+    # CLI accepts: it can turn a FASTA or a deposited structure into a job
+    # document, which a request cannot.
+    expanded = expand_input_directories(selected, suffixes=_JOB_SUFFIXES)
     return [_as_job_file(path) for path in expanded]
 
 

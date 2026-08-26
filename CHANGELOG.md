@@ -12,6 +12,55 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **A directory of jobs is now a batch from Python, not only from the CLI.**
+  `PredictionRequest(inputs=(directory,))` expands to the job documents
+  directly inside it, sorted, so running a sweep no longer starts with a glob
+  the caller writes themselves. Sorting is half the point: `iterdir` returns
+  filesystem order, so a hand-written batch runs in an order that depends on
+  which machine created the files. The CLI keeps expanding the wider set it can
+  convert -- FASTA and deposited structures become job documents first -- and
+  both spellings now go through one implementation. `input` is one run, so it
+  refuses a directory and names `inputs` in the message rather than reporting
+  "is not a file" and leaving the caller to guess.
+
+- **OpenDDE forms shape-complementarity chain masks inside their existing
+  chunks.** The floating-point calculation was already bounded to 128 token
+  rows, but two NumPy-derived boolean masks were still materialized in full as
+  `[token, atom]` and `[token, token]` constants. Keeping only the two chain-id
+  vectors and comparing each row chunk removes those quadratic constants
+  without changing any arithmetic. A synthetic CPU density-stage probe at 512
+  tokens and 4,096 atoms reduced StableHLO from about 4.21 million to 57,000
+  characters and warm time from 8.73 to 6.67 ms; outputs were byte-identical.
+
+- **OpenFold3 computes each symmetric chain-pair ipTM only once.** The union
+  mask, chain-presence test and interface pTM call are identical for `(i, j)`
+  and `(j, i)`, so the upper-triangle result is now reused for its mirror while
+  the diagonal remains zero. This preserves bytes while halving the unrolled
+  pair calls and roughly halved the isolated 16-chain StableHLO. Runtime may
+  not move because XLA could already common-subexpression-eliminate the two
+  copies; this is principally a trace and compile-size reduction.
+
+- **Boltz-2 selects three ligand-frame atoms with stable top-k on the ordinary
+  finite path.** The confidence head previously sorted every atom distance and
+  kept only three indices. Equal finite distances and infinities retain their
+  historical input order; rows containing NaNs keep the full stable argsort so
+  nonfinite direct-call semantics are unchanged. In an isolated CPU probe with
+  three samples, 128 representative rows and 1,024 atoms, warm time fell from
+  9.65 to 2.03 ms. This is a confidence-stage result, not a whole-model or GPU
+  latency claim.
+
+- **Multi-seed ESMFold2 sessions retain the combined language-model embedding,
+  not all 81 ESMC layer states.** A separately compiled layer-normalize,
+  projection, softmax and layer-combination prefix turns the seed-independent
+  `[B, N, 81, 2560]` stack into `[B, N, 256]` before it enters the session
+  cache. At 1,000 tokens in BF16 that is 414,720,000 retained bytes versus
+  512,000, while the pair lift and every seed-dependent structure operation
+  remain in the structure graph. Direct/model APIs still accept and default to
+  raw hidden states, and legacy split wrappers recompute rather than retaining
+  them. FP32 and BF16 CPU split-boundary tests are byte-identical; fresh-process
+  released-weight CUDA peak and latency remain deployment gates because the
+  extra compiled boundary can affect device fusion and initial peak.
+
 - **`uv sync` with no arguments is now the environment to have.** The CUDA 13
   runtime also lives in a `gpu` dependency group, and uv enables that group by
   default, so the documented install lost both of its flags: `uv sync --extra
