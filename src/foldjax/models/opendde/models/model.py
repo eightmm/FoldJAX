@@ -477,6 +477,7 @@ def opendde_infer_static(
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     rotations: jnp.ndarray | None = None,
     translations: jnp.ndarray | None = None,
+    preserve_prefix_rng: bool = False,
     num_recycles: int = 10,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,
@@ -814,6 +815,7 @@ def opendde_infer_static(
             step_scale_eta=step_scale_eta,
             use_scan=use_sampler_scan,
             atom_mask=atom_mask,
+            preserve_prefix_rng=preserve_prefix_rng,
         )
 
     coordinates = sample(key, init_noise, step_noises, rotations, translations)
@@ -914,6 +916,7 @@ GRAPH_STATIC_ARGNAMES = (
     "n_queries",
     "num_samples",
     "noise_scale_lambda",
+    "preserve_prefix_rng",
     "return_representations",
     "stop_after_trunk",
     "capture_names",

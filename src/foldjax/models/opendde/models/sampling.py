@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.opendde.models.geometry import (
     centre_random_augmentation,
     uniform_random_rotations,
@@ -71,6 +72,29 @@ def make_padded_random_tapes(
     )
 
 
+def _prefix_atom_normal(
+    key: jax.Array,
+    atom_mask: jnp.ndarray,
+    *,
+    leading_shape: Sequence[int],
+    dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """Draw one padded coordinate field from the compact atom prefix."""
+
+    prefix_mask = jnp.broadcast_to(
+        jnp.asarray(atom_mask, dtype=bool),
+        (*tuple(leading_shape), atom_mask.shape[0]),
+    )
+    return masked_prefix_draw(
+        lambda normal_key, shape: jax.random.normal(
+            normal_key, shape, dtype=dtype
+        ),
+        key,
+        prefix_mask,
+        trailing_shape=(3,),
+    )
+
+
 def sample_diffusion(
     denoise_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
     noise_schedule: jnp.ndarray,
@@ -90,6 +114,7 @@ def sample_diffusion(
     dtype: jnp.dtype = jnp.float32,
     use_scan: bool = False,
     atom_mask: jnp.ndarray | None = None,
+    preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
     """Run OpenDDE's loop sampler with optional shared random tapes.
 
@@ -105,6 +130,29 @@ def sample_diffusion(
     n_steps = int(noise_schedule.shape[0]) - 1
     if n_steps < 1:
         raise ValueError("noise schedule must contain at least two levels")
+    if atom_mask is not None:
+        atom_mask = jnp.asarray(atom_mask, dtype=dtype)
+        if tuple(atom_mask.shape) != (n_atom,):
+            raise ValueError(
+                f"atom_mask expected shape {(n_atom,)}, got {atom_mask.shape}"
+            )
+    if preserve_prefix_rng:
+        if not supports_masked_prefix_draw():
+            raise ValueError(
+                "prefix-preserving padding noise requires "
+                "jax_default_prng_impl='threefry2x32' and "
+                "jax_threefry_partitionable=True"
+            )
+        if atom_mask is None:
+            raise ValueError("prefix-preserving padding noise requires atom_mask")
+        if any(
+            tape is not None
+            for tape in (init_noise, step_noises, rotations, translations)
+        ):
+            raise ValueError(
+                "prefix-preserving padding noise and explicit random tapes are "
+                "mutually exclusive"
+            )
     tapes_complete = all(
         tape is not None for tape in (init_noise, step_noises, rotations, translations)
     )
@@ -113,12 +161,24 @@ def sample_diffusion(
 
     if key is not None:
         init_key, step_key, rotation_key, translation_key = jax.random.split(key, 4)
-    if init_noise is None:
-        init_noise = jax.random.normal(
-            init_key,
-            (*batch_shape, num_samples, n_atom, 3),
+    leading_shape = (*batch_shape, num_samples)
+
+    def draw_normal(draw_key):
+        if preserve_prefix_rng:
+            return _prefix_atom_normal(
+                draw_key,
+                atom_mask,
+                leading_shape=leading_shape,
+                dtype=dtype,
+            )
+        return jax.random.normal(
+            draw_key,
+            (*leading_shape, n_atom, 3),
             dtype=dtype,
         )
+
+    if init_noise is None:
+        init_noise = draw_normal(init_key)
     else:
         init_noise = jnp.asarray(init_noise, dtype=dtype)
     expected_shape = (*batch_shape, num_samples, n_atom, 3)
@@ -127,20 +187,17 @@ def sample_diffusion(
             f"init_noise expected shape {expected_shape}, got {init_noise.shape}"
         )
     if atom_mask is not None:
-        atom_mask = jnp.asarray(atom_mask, dtype=dtype)
-        if tuple(atom_mask.shape) != (n_atom,):
-            raise ValueError(
-                f"atom_mask expected shape {(n_atom,)}, got {atom_mask.shape}"
-            )
         init_noise = init_noise * atom_mask[..., None]
 
     leading_shape = init_noise.shape[:-2]
+    step_noise_keys = preserve_prefix_rng and step_noises is None
     packed_step_noises = step_noises is not None and hasattr(step_noises, "shape")
     if step_noises is None:
         step_keys = jax.random.split(step_key, n_steps)
-        step_noises = tuple(
-            jax.random.normal(step_key_i, init_noise.shape, dtype=dtype)
-            for step_key_i in step_keys
+        step_noises = (
+            step_keys
+            if step_noise_keys
+            else tuple(draw_normal(step_key_i) for step_key_i in step_keys)
         )
     elif packed_step_noises:
         step_noises = jnp.asarray(step_noises, dtype=dtype)
@@ -153,6 +210,9 @@ def sample_diffusion(
                 f"packed step_noises expected shape {expected_step_shape}, "
                 f"got {step_noises.shape}"
             )
+    elif step_noise_keys:
+        if len(step_noises) != n_steps:
+            raise ValueError("step noise keys must match the number of steps")
     elif len(step_noises) != n_steps or any(
         noise.shape != init_noise.shape for noise in step_noises
     ):
@@ -219,12 +279,16 @@ def sample_diffusion(
         return x_next
 
     if use_scan:
-        stacked_noises = step_noises if packed_step_noises else jnp.stack(
-            tuple(step_noises), axis=0
+        stacked_noises = (
+            step_noises
+            if packed_step_noises or step_noise_keys
+            else jnp.stack(tuple(step_noises), axis=0)
         )
 
         def body(x_carry, xs):
             c_tau_last, c_tau, step_noise, rotation, translation = xs
+            if step_noise_keys:
+                step_noise = draw_normal(step_noise)
             return one_step(
                 x_carry, c_tau_last, c_tau, step_noise, rotation, translation
             ), None
@@ -243,11 +307,14 @@ def sample_diffusion(
         return x_l
 
     for step_index in range(n_steps):
+        step_noise = step_noises[step_index]
+        if step_noise_keys:
+            step_noise = draw_normal(step_noise)
         x_l = one_step(
             x_l,
             noise_schedule[step_index],
             noise_schedule[step_index + 1],
-            step_noises[step_index],
+            step_noise,
             rotations[step_index],
             translations[step_index],
         )

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -274,7 +275,9 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
     cycles = seen["cycle_msa_features"]
     assert len(cycles) == 2
     assert all(cycle["msa"].shape == (64, 256) for cycle in cycles)
-    assert seen["step_noises"].shape == (1, 1, 256, 3)
+    assert seen["preserve_prefix_rng"] is True
+    for name in ("init_noise", "step_noises", "rotations", "translations"):
+        assert name not in seen
     assert profiles == [
         {
             "actual": {
@@ -299,6 +302,87 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
             "static": {"chains": 1},
         }
     ]
+
+
+def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_path = tmp_path / "job.json"
+    weights_path = tmp_path / "weights.npz"
+    input_path.write_text(json.dumps([{"name": "job"}]), encoding="utf-8")
+    weights_path.write_bytes(b"native")
+    features = _opendde_features(msa_depth=5)
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(predict_impl, "_load_jobs", lambda _path: [{"name": "job"}])
+    monkeypatch.setattr(predict_impl, "_load_weights", lambda _path: object())
+    monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
+    monkeypatch.setattr(predict_impl, "_prefix_rng_is_supported", lambda: False)
+
+    sentinels = tuple(object() for _ in range(4))
+    tape_calls: list[dict[str, object]] = []
+
+    def fake_tapes(**kwargs):
+        tape_calls.append(kwargs)
+        return sentinels
+
+    monkeypatch.setattr(
+        "foldjax.models.opendde.models.sampling.make_padded_random_tapes",
+        fake_tapes,
+    )
+
+    def fake_predict(_features, _params, **kwargs):
+        seen.update(kwargs)
+        return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
+    monkeypatch.setattr(
+        predict_impl,
+        "_score",
+        lambda output, _features, *, num_recycles: output,
+    )
+    output_path = tmp_path / "out" / "job.cif"
+    monkeypatch.setattr(
+        predict_impl,
+        "_write",
+        lambda _root, **_kwargs: [output_path],
+    )
+
+    predict_impl.main(
+        [
+            "--input-json",
+            str(input_path),
+            "--weights",
+            str(weights_path),
+            "--out",
+            str(tmp_path / "out"),
+            "--n-sample",
+            "1",
+            "--n-step",
+            "1",
+            "--n-cycle",
+            "2",
+        ],
+        padding=PaddingConfig(msa=64),
+    )
+
+    assert seen["preserve_prefix_rng"] is False
+    assert tuple(
+        seen[name]
+        for name in ("init_noise", "step_noises", "rotations", "translations")
+    ) == sentinels
+    assert len(tape_calls) == 1
+    np.testing.assert_array_equal(
+        tape_calls[0].pop("key"),
+        jax.random.PRNGKey(101),
+    )
+    assert tape_calls[0] == {
+        "n_sample": 1,
+        "n_steps": 1,
+        "actual_atom": 3,
+        "target_atom": 256,
+    }
 
 
 def test_full_opendde_padding_masks_every_axis_and_crops_outputs() -> None:
@@ -350,8 +434,6 @@ def test_full_opendde_padding_masks_every_axis_and_crops_outputs() -> None:
 
 
 def test_padded_random_tapes_preserve_the_unpadded_real_prefix() -> None:
-    import jax
-
     key = jax.random.PRNGKey(13)
     padded = make_padded_random_tapes(
         key=key,

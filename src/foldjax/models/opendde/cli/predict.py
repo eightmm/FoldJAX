@@ -33,6 +33,13 @@ def _load_weights(path: Path) -> Any:
     return load_native_weights(path)
 
 
+def _prefix_rng_is_supported() -> bool:
+    """Whether masked padding draws preserve JAX's compact random prefix."""
+
+    from foldjax.models._random import supports_masked_prefix_draw
+
+    return supports_masked_prefix_draw()
+
 
 #: Arena size per structural-token pair, in MiB, measured 2026-08-23 on a
 #: 95.6 GiB card at HEAD 9af2892 and validated at a second size to 0.2%.
@@ -148,6 +155,7 @@ def _predict(
     step_noises: Any = None,
     rotations: Any = None,
     translations: Any = None,
+    preserve_prefix_rng: bool = False,
 ) -> dict[str, Any]:
     import jax
 
@@ -279,6 +287,7 @@ def _predict(
         step_noises=step_noises,
         rotations=rotations,
         translations=translations,
+        preserve_prefix_rng=preserve_prefix_rng,
         **scans,
     )
 
@@ -646,21 +655,24 @@ def main(
                         )
                     )
                     model_features = select_opendde_model_features(padded_features)
-                    init_noise, step_noises, rotations, translations = (
-                        make_padded_random_tapes(
-                            key=jax.random.PRNGKey(seed),
-                            num_samples=args.num_samples,
-                            n_steps=args.num_steps,
-                            actual_atom=padding_plan.actual["atoms"],
-                            target_atom=padding_plan.target["atoms"],
+                    preserve_prefix_rng = _prefix_rng_is_supported()
+                    random_tapes = {"preserve_prefix_rng": preserve_prefix_rng}
+                    if not preserve_prefix_rng:
+                        init_noise, step_noises, rotations, translations = (
+                            make_padded_random_tapes(
+                                key=jax.random.PRNGKey(seed),
+                                num_samples=args.num_samples,
+                                n_steps=args.num_steps,
+                                actual_atom=padding_plan.actual["atoms"],
+                                target_atom=padding_plan.target["atoms"],
+                            )
                         )
-                    )
-                    random_tapes = {
-                        "init_noise": init_noise,
-                        "step_noises": step_noises,
-                        "rotations": rotations,
-                        "translations": translations,
-                    }
+                        random_tapes.update(
+                            init_noise=init_noise,
+                            step_noises=step_noises,
+                            rotations=rotations,
+                            translations=translations,
+                        )
                     profile = padding_plan.summary()
                     if n_chain is not None:
                         # Confidence reductions unroll one loop per chain, so

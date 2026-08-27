@@ -144,6 +144,7 @@ def test_value_checks_can_be_skipped_for_tracing() -> None:
     assert "validate_feature_values" in signature.parameters
     assert signature.parameters["validate_feature_values"].default is True
     assert "validate_feature_values" in GRAPH_STATIC_ARGNAMES
+    assert "preserve_prefix_rng" in GRAPH_STATIC_ARGNAMES
 
 
 class _ConfidenceOnly(NamedTuple):

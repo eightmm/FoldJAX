@@ -151,6 +151,19 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Padded OpenDDE inference likewise generates coordinate noise inside the
+  sampler instead of carrying four complete random tapes into the graph.** The
+  graph receives the existing atom mask and PRNG key, reconstructs the exact
+  unpadded Threefry prefix for initial and per-step coordinate noise, and draws
+  rotations and translations from their unchanged split keys. Both the loop
+  and scanned sampler, including batched leading axes, are raw-byte identical
+  to the former materialized route. Unsupported PRNG modes conservatively keep
+  that route, while direct library calls default to it as before. In an isolated
+  CPU compile at 5 samples, 8,192 padded atoms and 200 steps, entry arguments
+  fall from 98,851,712 to 8,200 bytes; sampler temp rises from 524,792 to
+  3,246,056 bytes while output stays 491,520 bytes. These are synthetic
+  sampler-only CPU numbers; released GPU peak and latency remain unmeasured.
+
 - **Padded Protenix inference no longer retains a 200-step coordinate-noise
   tape as a compiled-graph input.** With JAX's default partitionable Threefry
   stream, the graph now receives the existing atom mask and PRNG key, draws one
