@@ -401,9 +401,19 @@ correct port can come.
 | protenix-v2 | 0.961 | 0.959 | 0.961 | 8.786 |
 
 Three of the four sit inside their own sampling spread. Protenix is the one
-that does not, 0.956 against 0.973 and 0.964 within -- about 0.01 TM, which is
-small and is not nothing, and is the only place in this comparison worth
-looking at again. AlphaFold 3 and OpenDDE have no upstream side here, the first
+that does not, 0.956 against 0.973 and 0.964 within -- about 0.01 TM, and its
+cross *minimum* falls below both within minima, so it is the distribution that
+moved and not just its middle.
+
+**It was looked at, and it does not reproduce.** The same comparison at 1,003
+tokens puts Protenix's cross TM at 0.992 against 0.987 within FoldJAX and 0.998
+within upstream -- between the two, which is the shape the other three have
+here. What separates the two sizes is how converged the target is: at 1,003
+every number is around 0.99, and at 1,354 every model's own samples agree only
+to about 0.96. That is the regime `bench/structures.py` warns about in its own
+docstring, where reading a low cross score as a porting defect is a mistake.
+Ten within-pairs on a target whose sampling is that loose is a noisy estimator,
+and this is what its noise looks like. AlphaFold 3 and OpenDDE have no upstream side here, the first
 by construction and the second because upstream ran out of memory at this size;
 their own within-run spreads are 0.977 and 0.962.
 
