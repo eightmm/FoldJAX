@@ -161,7 +161,7 @@ command predicts unless it says so here, in its own paragraph.
   vectorized fallback. Both preserve NumPy's reduction traversal and every
   output bit. For five samples at 3,012 tokens, isolated CPU measurements cut
   chain-pair temporary allocation from 362,920,968 to 181,477,544 bytes and
-  weighted-summary peak from 254,219,108 to 108,993,580 bytes, with matched
+  weighted-summary peak from 254,219,108 to 72,704,668 bytes, with matched
   times of 0.267 to 0.265 and 0.138 to 0.137 seconds respectively. Multimers,
   direct layout fallbacks and empty inputs retain their result and shape.
 

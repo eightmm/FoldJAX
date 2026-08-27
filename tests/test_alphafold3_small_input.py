@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
@@ -136,9 +137,16 @@ def test_pde_single_streams_standard_sample_products(monkeypatch) -> None:
         )
     real_samplewise = confidences._samplewise_weighted_mean
     calls = []
+    first_pair_mask = None
 
     def tracked_samplewise(mask, value, axis):
+        nonlocal first_pair_mask
         calls.append((value.shape, axis))
+        if axis == (-2, -1):
+            if first_pair_mask is None:
+                first_pair_mask = weakref.ref(mask)
+            else:
+                assert first_pair_mask() is None
         return real_samplewise(mask, value, axis)
 
     monkeypatch.setattr(

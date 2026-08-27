@@ -314,15 +314,17 @@ def pde_single(
 
   for idx, asym_id in enumerate(unique_asym_ids):
     my_asym_id = asym_ids == asym_id
-    imask = my_asym_id[:, :, None] * my_asym_id[:, None, :]
-    xmask = my_asym_id[:, :, None] * ~my_asym_id[:, None, :]
-    imask = imask * contact_probs
-    xmask = xmask * contact_probs
+    pair_mask = my_asym_id[:, :, None] * my_asym_id[:, None, :]
+    pair_mask = pair_mask * contact_probs
     ichain[:, idx] = _samplewise_weighted_mean(
-        mask=imask, value=full_pde, axis=(-2, -1)
+        mask=pair_mask, value=full_pde, axis=(-2, -1)
     )
+    # Do not keep both O(N^2) chain masks alive while the sample products are
+    # reduced. Reusing the binding releases the intra-chain mask first.
+    pair_mask = my_asym_id[:, :, None] * ~my_asym_id[:, None, :]
+    pair_mask = pair_mask * contact_probs
     xchain[:, idx] = _samplewise_weighted_mean(
-        mask=xmask, value=full_pde, axis=(-2, -1)
+        mask=pair_mask, value=full_pde, axis=(-2, -1)
     )
 
   full_chain = _samplewise_weighted_mean(
