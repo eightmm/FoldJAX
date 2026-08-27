@@ -31,12 +31,17 @@ from __future__ import annotations
 import contextlib
 import math
 from collections.abc import Iterator, Sequence
+from contextvars import ContextVar
 from typing import Any
 
 #: Names the active trace should hand back. Read at trace time only.
-_WANTED: frozenset[str] = frozenset()
+_WANTED: ContextVar[frozenset[str]] = ContextVar(
+    "foldjax_capture_wanted", default=frozenset()
+)
 #: What this trace has recorded so far, in the order the model built it.
-_COLLECTED: dict[str, Any] = {}
+_COLLECTED: ContextVar[dict[str, Any] | None] = ContextVar(
+    "foldjax_capture_collected", default=None
+)
 
 #: A stacked loop capture larger than this is refused unless the caller
 #: raises the budget explicitly. Two gigabytes is enough for a per-block
@@ -54,24 +59,24 @@ def capturing(names: Sequence[str] | None) -> Iterator[dict[str, Any]]:
     returns what it finds. Reading it after the trace gives concrete arrays
     only because the caller returned them.
     """
-    global _WANTED, _COLLECTED
-    previous_wanted, previous_collected = _WANTED, _COLLECTED
-    _WANTED = frozenset(names or ())
-    _COLLECTED = {}
+    active: dict[str, Any] = {}
+    wanted_context = _WANTED.set(frozenset(names or ()))
+    collected_context = _COLLECTED.set(active)
     try:
-        yield _COLLECTED
+        yield active
     finally:
-        _WANTED, _COLLECTED = previous_wanted, previous_collected
+        _COLLECTED.reset(collected_context)
+        _WANTED.reset(wanted_context)
 
 
 def wanted() -> frozenset[str]:
     """The names the active trace was asked for."""
-    return _WANTED
+    return _WANTED.get()
 
 
 def is_wanted(name: str) -> bool:
     """Whether ``name`` would be recorded, for call sites that can skip work."""
-    return name in _WANTED
+    return name in _WANTED.get()
 
 
 def capture(name: str, value):
@@ -80,14 +85,15 @@ def capture(name: str, value):
     Always returns its argument, so a call site reads as an annotation rather
     than a branch: ``z = capture("trunk.pair", z)``.
     """
-    if name in _WANTED:
-        _COLLECTED[name] = value
+    active = _COLLECTED.get()
+    if name in _WANTED.get() and active is not None:
+        active[name] = value
     return value
 
 
 def collected() -> dict[str, Any]:
     """What the active trace recorded, in build order."""
-    return dict(_COLLECTED)
+    return dict(_COLLECTED.get() or {})
 
 
 def stacked_bytes(value, length: int) -> int:
@@ -110,7 +116,7 @@ def capture_in_loop(
     more than the budget -- with the number in the message, because "it OOMed
     after twenty minutes" is a much worse way to learn this.
     """
-    if name not in _WANTED:
+    if name not in _WANTED.get():
         return False
     cost = stacked_bytes(value, length)
     if cost > budget_bytes:

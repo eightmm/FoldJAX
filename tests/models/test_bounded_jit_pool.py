@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import threading
 import weakref
 
 import jax.numpy as jnp
 
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models.esmfold2 import inference as esmfold2_inference
 from foldjax.models.opendde.models import model as opendde_model
+from foldjax.models.protenix.data import esm as protenix_esm
 from foldjax.models.protenix.models import model as protenix_model
 
 
@@ -304,5 +307,73 @@ def test_discarded_lowerings_release_their_private_owners() -> None:
 def test_whole_model_jits_use_bounded_owners() -> None:
     assert isinstance(protenix_model._compiled_protenix_infer, BoundedJitPool)
     assert isinstance(opendde_model._compiled_opendde_infer, BoundedJitPool)
+    assert isinstance(esmfold2_inference._compiled_predict_pool, BoundedJitPool)
+    assert isinstance(protenix_esm._compiled_esm2_layer, BoundedJitPool)
     assert protenix_model._compiled_protenix_infer._limit == 8
     assert opendde_model._compiled_opendde_infer._limit == 8
+    assert esmfold2_inference._compiled_predict_pool._limit == 8
+    assert protenix_esm._compiled_esm2_layer._limit == 8
+
+
+def test_esmfold2_static_choices_create_distinct_bounded_owners(
+    monkeypatch,
+) -> None:
+    parameters = tuple(inspect.signature(esmfold2_inference._run).parameters)
+    assert esmfold2_inference._COMPILED_PREDICT_STATIC_ARGNAMES == parameters[4:]
+
+    pool = esmfold2_inference._compiled_predict_pool
+    created = []
+
+    class FakeOwner:
+        def __init__(self) -> None:
+            self.size = 0
+
+        def __call__(self, *_args, **_kwargs):
+            self.size = 1
+            return {}
+
+        def _cache_size(self) -> int:
+            return self.size
+
+        def _clear_cache(self) -> None:
+            self.size = 0
+
+    def new_owner():
+        owner = FakeOwner()
+        created.append(owner)
+        return owner
+
+    settings = esmfold2_inference.structure_model.ModelSettings()
+    base = (
+        jnp.zeros((2,), dtype=jnp.uint32),
+        {},
+        {},
+        None,
+        settings,
+        1,
+        False,
+        1,
+        (),
+        False,
+        False,
+        False,
+        True,
+        False,
+    )
+    compact_bonds = (*base[:11], True, *base[12:])
+    no_distogram = (*base[:12], False, *base[13:])
+
+    pool.clear_cache()
+    monkeypatch.setattr(pool, "_new", new_owner)
+    try:
+        pool(*base)
+        pool(*compact_bonds)
+        pool(*no_distogram)
+        assert pool._entry_count() == 3
+        assert len(created) == 3
+
+        pool(*base)
+        assert pool._entry_count() == 3
+        assert len(created) == 3
+    finally:
+        pool.clear_cache()

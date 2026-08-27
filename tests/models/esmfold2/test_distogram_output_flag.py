@@ -235,7 +235,7 @@ def test_padded_inference_routes_omission_into_the_compiled_identity(
     assert seen == [(False, False)]
 
 
-def test_distogram_choice_has_distinct_cached_jit_owners() -> None:
+def test_distogram_choice_has_distinct_compiled_factory_keys() -> None:
     settings = dataclasses.replace(
         structure_model.ModelSettings(), trunk_n_layers=0, coda_n_layers=0
     )

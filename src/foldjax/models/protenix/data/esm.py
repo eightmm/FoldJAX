@@ -24,6 +24,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._jit_pool import BoundedJitPool
+
 ESM_MODELS = {
     "esm2-3b": "esm2_t36_3B_UR50D.pt",
     "esm2-3b-ism": "esm2_t36_3B_UR50D_ism.pt",
@@ -284,9 +286,10 @@ def _esm2_layer(
     return residual + x
 
 
-_compiled_esm2_layer = jax.jit(
+_compiled_esm2_layer = BoundedJitPool(
     _esm2_layer,
     static_argnames=("attention_heads", "layer_norm_eps"),
+    limit=8,
 )
 
 

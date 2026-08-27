@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -30,6 +31,7 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
 from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
 from foldjax.models.esmfold2.data import all_atom as all_atom_featurisation
@@ -488,7 +490,69 @@ def _run(
     )
 
 
+_COMPILED_PREDICT_STATIC_ARGNAMES = (
+    "settings",
+    "n_chains",
+    "preserve_prefix_rng",
+    "cp_shards",
+    "return_representations",
+    "stop_after_trunk",
+    "contiguous_atom_groups",
+    "compact_token_bond_encoding",
+    "return_distogram_logits",
+    "compact_lm_input",
+)
+_compiled_predict_pool = BoundedJitPool(
+    _run,
+    static_argnames=_COMPILED_PREDICT_STATIC_ARGNAMES,
+    limit=8,
+)
+
+
+class _CompiledPredictFacade:
+    """One public factory result backed by the shared bounded owner pool."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> dict[str, jnp.ndarray]:
+        return _compiled_predict_pool(*args, **kwargs)
+
+    def lower(self, *args: Any, **kwargs: Any) -> Any:
+        return _compiled_predict_pool.lower(*args, **kwargs)
+
+    def clear_cache(self) -> None:
+        _compiled_predict_pool.clear_cache()
+
+    def _cache_size(self) -> int:
+        return _compiled_predict_pool._cache_size()  # noqa: SLF001
+
+
 @lru_cache(maxsize=8)
+def _compiled_predict_factory(
+    settings: structure_model.ModelSettings,
+    n_chains: int,
+    preserve_prefix_rng: bool = False,
+    cp_shards: int = 1,
+    return_representations: tuple[str, ...] = (),
+    stop_after_trunk: bool = False,
+    contiguous_atom_groups: bool = False,
+    compact_token_bond_encoding: bool = False,
+    return_distogram_logits: bool = True,
+    compact_lm_input: bool = False,
+) -> _CompiledPredictFacade:
+    del (
+        settings,
+        n_chains,
+        preserve_prefix_rng,
+        cp_shards,
+        return_representations,
+        stop_after_trunk,
+        contiguous_atom_groups,
+        compact_token_bond_encoding,
+        return_distogram_logits,
+        compact_lm_input,
+    )
+    return _CompiledPredictFacade()
+
+
 def compiled_predict(
     settings: structure_model.ModelSettings,
     n_chains: int,
@@ -512,9 +576,31 @@ def compiled_predict(
     normalized contiguous-atom reducer, the proven-zero token-bond projection,
     native distogram retention, and whether the language-model input is the
     raw layer stack or its separately compiled compact embedding. Each choice
-    changes the graph and therefore has its own cached callable.
+    contributes to a distinct executable identity in the shared eight-entry
+    owner pool; the lightweight factory facades preserve the historical
+    callable-identity API without retaining an unbounded executable set.
     """
-    return jax.jit(_run, static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+    return _compiled_predict_factory(
+        settings,
+        n_chains,
+        preserve_prefix_rng,
+        cp_shards,
+        return_representations,
+        stop_after_trunk,
+        contiguous_atom_groups,
+        compact_token_bond_encoding,
+        return_distogram_logits,
+        compact_lm_input,
+    )
+
+
+def _clear_compiled_predict_cache() -> None:
+    _compiled_predict_factory.cache_clear()
+    _compiled_predict_pool.clear_cache()
+
+
+compiled_predict.cache_clear = _clear_compiled_predict_cache  # type: ignore[attr-defined]
+compiled_predict.cache_info = _compiled_predict_factory.cache_info  # type: ignore[attr-defined]
 
 
 def predict_job(

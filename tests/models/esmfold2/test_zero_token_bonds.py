@@ -246,7 +246,7 @@ def test_inference_routes_the_zero_contract_into_the_compile_identity(
     assert routed == [True, False, False, False, False, False, True, False]
 
 
-def test_zero_contract_is_part_of_the_compiled_function_cache_key() -> None:
+def test_zero_contract_is_part_of_the_compiled_factory_cache_key() -> None:
     settings = dataclasses.replace(
         structure_model.ModelSettings(), trunk_n_layers=0, coda_n_layers=0
     )
