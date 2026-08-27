@@ -415,7 +415,10 @@ def _msa_features(
 
 
 def _empty_template_features(
-    n_tokens: int, *, n_templates: int = 4
+    n_tokens: int,
+    *,
+    n_templates: int = 4,
+    lazy_pair_features: bool = False,
 ) -> dict[str, np.ndarray]:
     """Released-shape template features for a query with no templates."""
     from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
@@ -424,20 +427,21 @@ def _empty_template_features(
 
     gap = STANDARD_RESIDUES_WITH_GAP_3.index("GAP")
     indices = np.full((n_templates, n_tokens), gap, dtype=np.int64)
+
+    def zero(shape: tuple[int, ...]) -> np.ndarray:
+        if not lazy_pair_features:
+            return np.zeros(shape, dtype=np.float32)
+        # Raw prediction compacts these exact-zero fields immediately after
+        # validation.  A zero-stride view preserves their complete shape and
+        # dtype contract without materializing the quadratic storage first.
+        return np.broadcast_to(np.zeros((), dtype=np.float32), shape)
+
     return {
         "template_restype": _one_hot(indices, len(STANDARD_RESIDUES_WITH_GAP_3)),
-        "template_pseudo_beta_mask": np.zeros(
-            (n_templates, n_tokens), dtype=np.float32
-        ),
-        "template_backbone_frame_mask": np.zeros(
-            (n_templates, n_tokens), dtype=np.float32
-        ),
-        "template_distogram": np.zeros(
-            (n_templates, n_tokens, n_tokens, 39), dtype=np.float32
-        ),
-        "template_unit_vector": np.zeros(
-            (n_templates, n_tokens, n_tokens, 3), dtype=np.float32
-        ),
+        "template_pseudo_beta_mask": zero((n_templates, n_tokens)),
+        "template_backbone_frame_mask": zero((n_templates, n_tokens)),
+        "template_distogram": zero((n_templates, n_tokens, n_tokens, 39)),
+        "template_unit_vector": zero((n_templates, n_tokens, n_tokens, 3)),
     }
 
 
@@ -1063,6 +1067,7 @@ def _template_features(
     *,
     ccd_file_path: str | None,
     n_templates: int = 4,
+    lazy_empty_pair_features: bool = False,
 ) -> dict[str, np.ndarray]:
     """Featurize optional templates with local NumPy geometry."""
     from biotite.structure.io import pdbx
@@ -1084,7 +1089,11 @@ def _template_features(
         for chain in query.chains
     )
     if not has_input:
-        return _empty_template_features(n_tokens, n_templates=n_templates)
+        return _empty_template_features(
+            n_tokens,
+            n_templates=n_templates,
+            lazy_pair_features=lazy_empty_pair_features,
+        )
 
     ccd = (
         BiotiteCCDWrapper()
@@ -1160,6 +1169,7 @@ def featurize_query_numpy(
     msa_settings: Any,
     ccd_file_path: str | None = None,
     msa_depth: int | None = None,
+    lazy_empty_template_pairs: bool = False,
 ) -> RawFeatures:
     """Build released inference features without importing PyTorch.
 
@@ -1211,6 +1221,7 @@ def featurize_query_numpy(
             atom_array,
             n_tokens,
             ccd_file_path=ccd_file_path,
+            lazy_empty_pair_features=lazy_empty_template_pairs,
         )
     )
     return RawFeatures(features=features, atom_array=atom_array)

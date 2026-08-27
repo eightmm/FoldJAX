@@ -1381,6 +1381,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
         "asym_id": np.asarray([[5, 20, 999]], dtype=np.int64),
         "is_atomized": np.asarray([[0, 0, 1]], dtype=np.int32),
+        "_foldjax_zero_template_pair_features": np.zeros((), dtype=np.float32),
     }
     prediction = object()
     output_metadata = object()
@@ -1391,14 +1392,22 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     scores.write_text('{"samples": []}')
 
     def fake_predict(key, batch, params, config, table, *, n_chain=None):
-        seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
+        seen.update(
+            n_chain=n_chain,
+            asym_id=np.asarray(batch["asym_id"]),
+            compact_marker=batch.get("_foldjax_zero_template_pair_features"),
+        )
         return prediction
 
     def fake_compile(config, table, *, n_chain=None, **compile_options):
         seen["compile_options"] = compile_options
 
         def compiled(key, batch, params):
-            seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
+            seen.update(
+                n_chain=n_chain,
+                asym_id=np.asarray(batch["asym_id"]),
+                compact_marker=batch.get("_foldjax_zero_template_pair_features"),
+            )
             return prediction
 
         return compiled
@@ -1409,11 +1418,17 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     def fake_featurize(*args, **kwargs):
         seen["preprocess_msa_depth"] = kwargs.get("msa_depth")
+        seen["compact_empty_template_pairs"] = kwargs.get(
+            "compact_empty_template_pairs"
+        )
         return features, output_metadata
 
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         return SimpleNamespace(msa_depth=1024)
+
+    def unexpected_compaction(batch):
+        raise AssertionError("precompacted raw templates were compacted twice")
 
     def load_checkpoint(path):
         checkpoint_events.append("load")
@@ -1433,10 +1448,15 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
+            MODEL_FEATURES=("token_mask", "atom_mask", "asym_id", "is_atomized"),
+            PRIVATE_MODEL_FEATURES=("_foldjax_zero_template_pair_features",),
             featurize_query_with_metadata=fake_featurize,
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
-            compact_zero_template_pair_features=lambda batch: batch,
+            compact_zero_template_pair_features=unexpected_compaction,
+            has_compact_zero_template_pair_features=lambda batch: (
+                "_foldjax_zero_template_pair_features" in batch
+            ),
             has_atomized_tokens=has_atomized_tokens,
             normalize_asym_ids=normalize_asym_ids,
         ),
@@ -1478,6 +1498,8 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
     assert seen["preprocess_msa_depth"] == 1024
+    assert seen["compact_empty_template_pairs"] is True
+    np.testing.assert_array_equal(seen["compact_marker"], np.zeros((), np.float32))
     if not eager:
         assert seen["compile_options"] == {
             "triangle_kernel": None,

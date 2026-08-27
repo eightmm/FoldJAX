@@ -11,7 +11,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from foldjax.models.openfold3.data import MODEL_FEATURES, featurize_query
+from foldjax.models.openfold3.data import (
+    MODEL_FEATURES,
+    compact_zero_template_pair_features,
+    featurize_query,
+    featurize_query_with_metadata,
+)
 
 SEQUENCE = "ACDEFGHIK"
 TEMPLATE_SEQUENCE = "GAAG"
@@ -111,6 +116,40 @@ def test_pre_one_hot_msa_cap_matches_the_historical_host_subsample(
         np.testing.assert_array_equal(compact[name], historical[name], err_msg=name)
 
 
+def test_raw_inference_compacts_empty_template_pairs_before_return() -> None:
+    dense = featurize_query(_spec(), seed=13)
+    historical = compact_zero_template_pair_features(dense)
+    compact, _metadata = featurize_query_with_metadata(
+        _spec(),
+        seed=13,
+        compact_empty_template_pairs=True,
+    )
+
+    assert set(compact) == set(historical)
+    for name in compact:
+        np.testing.assert_array_equal(compact[name], historical[name], err_msg=name)
+
+
+def test_lazy_empty_template_pair_views_do_not_materialize_quadratic_storage() -> None:
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+
+    tokens = 64
+    dense = numpy_features._empty_template_features(tokens)
+    lazy = numpy_features._empty_template_features(tokens, lazy_pair_features=True)
+
+    for name in (
+        "template_pseudo_beta_mask",
+        "template_backbone_frame_mask",
+        "template_distogram",
+        "template_unit_vector",
+    ):
+        np.testing.assert_array_equal(lazy[name], dense[name], err_msg=name)
+        assert dense[name].flags.writeable
+        assert not lazy[name].flags.writeable
+        assert all(stride == 0 for stride in lazy[name].strides)
+        assert lazy[name].base is not None
+
+
 def test_direct_cif_template_is_torch_free_and_nonempty() -> None:
     cif = LOCAL_TEMPLATE_CIF
     assert cif.is_file()
@@ -150,6 +189,33 @@ assert not any(name == "torch" or name.startswith("torch.") for name in sys.modu
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_raw_inference_keeps_real_template_geometry_dense() -> None:
+    spec = {
+        "queries": {
+            "query": {
+                "chains": [
+                    {
+                        "molecule_type": "protein",
+                        "chain_ids": ["A"],
+                        "sequence": TEMPLATE_SEQUENCE,
+                        "template_cif_paths": [str(LOCAL_TEMPLATE_CIF)],
+                        "template_cif_chain_ids": ["A"],
+                    }
+                ]
+            }
+        }
+    }
+
+    features, _metadata = featurize_query_with_metadata(
+        spec,
+        compact_empty_template_pairs=True,
+    )
+
+    assert "_foldjax_zero_template_pair_features" not in features
+    assert float(features["template_distogram"].sum()) > 0
+    assert float(np.abs(features["template_unit_vector"]).sum()) > 0
 
 
 def test_preprocessed_template_cache_and_adjacent_structures_are_torch_free(

@@ -278,6 +278,12 @@ class OpenFold3Backend(Backend):
             query_id=query_id,
             ccd_file_path=ccd_file_path,
             msa_depth=preprocess_msa_depth,
+            compact_empty_template_pairs=True,
+        )
+        precompacted_empty_templates = bool(
+            getattr(data, "has_compact_zero_template_pair_features", lambda _: False)(
+                features
+            )
         )
         # Portable archives may carry numeric host-side annotations in
         # addition to the model ABI.  They are useful to archive tooling but
@@ -285,9 +291,18 @@ class OpenFold3Backend(Backend):
         model_feature_names = getattr(data, "MODEL_FEATURES", None)
         if model_feature_names is not None:
             optional_feature_names = getattr(data, "OPTIONAL_MODEL_FEATURES", ())
+            private_feature_names = (
+                getattr(data, "PRIVATE_MODEL_FEATURES", ())
+                if precompacted_empty_templates
+                else ()
+            )
             features = {
                 name: features[name]
-                for name in (*model_feature_names, *optional_feature_names)
+                for name in (
+                    *model_feature_names,
+                    *optional_feature_names,
+                    *private_feature_names,
+                )
                 if name in features
             }
         n_token = features["token_mask"].shape[-1]
@@ -349,7 +364,8 @@ class OpenFold3Backend(Backend):
         # Empty-template geometry is exact +0.  Compact it only after serving
         # padding has established the final template/token shapes; the helper's
         # private marker gives the resulting mapping its own JIT PyTree identity.
-        features = data.compact_zero_template_pair_features(features)
+        if not precompacted_empty_templates:
+            features = data.compact_zero_template_pair_features(features)
 
         # The complete checkpoint remains visible to inspection and verification.
         # Only the inference path drops upstream's second registration of the
@@ -533,6 +549,7 @@ def _features_chemistry_and_metadata(
     query_id: str | None,
     ccd_file_path: str | Path | None,
     msa_depth: int | None = None,
+    compact_empty_template_pairs: bool = False,
 ) -> tuple[dict[str, Any], Any | None, Any | None]:
     """Load a JAX-only archive or run FoldJAX's NumPy raw-job preprocessor."""
     path = Path(request.input)
@@ -555,6 +572,7 @@ def _features_chemistry_and_metadata(
         seed=request.seed,
         ccd_file_path=ccd_file_path,
         msa_depth=msa_depth,
+        compact_empty_template_pairs=compact_empty_template_pairs,
     )
     return features, None, output_metadata
 

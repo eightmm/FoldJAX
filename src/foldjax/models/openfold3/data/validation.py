@@ -44,6 +44,15 @@ _EXPECTED_DTYPES = {
 }
 
 
+def _non_repeated_view(array: np.ndarray) -> np.ndarray:
+    """Drop axes whose zero stride repeats one value for validation."""
+    selection = tuple(
+        0 if stride == 0 and size > 0 else slice(None)
+        for size, stride in zip(array.shape, array.strides, strict=True)
+    )
+    return array[selection]
+
+
 def _expected_shapes(
     *, tokens: int, atoms: int, msa_rows: int, templates: int
 ) -> dict[str, tuple[int, ...]]:
@@ -124,7 +133,7 @@ def validate_features(features: Mapping[str, np.ndarray]) -> None:
             raise ValueError(
                 f"OpenFold3 feature {name!r} must be numeric; got {array.dtype}"
             )
-        if not np.isfinite(array).all():
+        if not np.isfinite(_non_repeated_view(array)).all():
             raise ValueError(f"OpenFold3 feature {name!r} contains NaN or infinity")
         arrays[name] = array
 

@@ -71,6 +71,10 @@ _ZERO_TEMPLATE_PAIR_FEATURES = (
     "template_backbone_frame_mask",
 )
 
+# Private runtime-only features are never part of portable archives, but must
+# survive the backend's model-ABI filter after trusted raw preprocessing.
+PRIVATE_MODEL_FEATURES = (_ZERO_TEMPLATE_PAIR_MARKER,)
+
 # Produced by the dataset for bookkeeping, not consumed by the model.
 _NON_FEATURES = frozenset(
     {"query_id", "seed", "repeated_sample", "valid_sample", "num_paired_seqs"}
@@ -154,6 +158,7 @@ def _featurize_query(
     ccd_file_path: str | Path | None = None,
     max_atoms_per_token: int = 23,
     msa_depth: int | None = None,
+    compact_empty_template_pairs: bool = False,
 ) -> tuple[dict[str, np.ndarray], OutputMetadata]:
     """Featurize one query from a specification.
 
@@ -170,6 +175,9 @@ def _featurize_query(
         msa_depth: optional inference row cap applied before the 32-channel MSA
             one-hot is built. ``None`` keeps the complete alignment for portable
             feature archives.
+        compact_empty_template_pairs: use the model's scalar zero-template
+            representation for raw inference. Direct/archive callers leave this
+            disabled and retain the complete writable feature ABI.
 
     Returns:
         Features with a leading batch axis of 1 and exact output metadata.
@@ -223,6 +231,7 @@ def _featurize_query(
             msa_settings=msa_settings,
             ccd_file_path=None if ccd_file_path is None else str(ccd_file_path),
             msa_depth=msa_depth,
+            lazy_empty_template_pairs=compact_empty_template_pairs,
         )
     except ImportError as error:  # pragma: no cover - environment-dependent
         raise ImportError(_MISSING) from error
@@ -249,6 +258,8 @@ def _featurize_query(
     from foldjax.models.openfold3.data.validation import validate_features
 
     validate_features(features)
+    if compact_empty_template_pairs:
+        features = compact_zero_template_pair_features(features)
     metadata = output_metadata_from_atom_array(raw.atom_array, features)
     return features, metadata
 
@@ -282,6 +293,7 @@ def featurize_query_with_metadata(
     ccd_file_path: str | Path | None = None,
     max_atoms_per_token: int = 23,
     msa_depth: int | None = None,
+    compact_empty_template_pairs: bool = False,
 ) -> tuple[dict[str, np.ndarray], OutputMetadata]:
     """Featurize one query and retain exact atoms and covalent connectivity."""
     return _featurize_query(
@@ -291,6 +303,7 @@ def featurize_query_with_metadata(
         ccd_file_path=ccd_file_path,
         max_atoms_per_token=max_atoms_per_token,
         msa_depth=msa_depth,
+        compact_empty_template_pairs=compact_empty_template_pairs,
     )
 
 
@@ -1189,10 +1202,23 @@ def compact_zero_template_pair_features(
     # emitted by the no-template featurizer.  Check small masks before scanning
     # the quadratic fields, which can be multiple GiB at serving sizes.
     for array in sorted(arrays.values(), key=lambda value: value.nbytes):
-        if np.any(array.view(np.uint32)):
+        selection = tuple(
+            0 if stride == 0 and size > 0 else slice(None)
+            for size, stride in zip(array.shape, array.strides, strict=True)
+        )
+        if np.any(array[selection].view(np.uint32)):
             return out
 
     for name in _ZERO_TEMPLATE_PAIR_FEATURES:
         del out[name]
     out[_ZERO_TEMPLATE_PAIR_MARKER] = np.zeros((), dtype=np.float32)
     return out
+
+
+def has_compact_zero_template_pair_features(
+    features: Mapping[str, np.ndarray],
+) -> bool:
+    """Whether a validated mapping already uses the private compact form."""
+    return _ZERO_TEMPLATE_PAIR_MARKER in features and all(
+        name not in features for name in _ZERO_TEMPLATE_PAIR_FEATURES
+    )

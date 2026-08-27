@@ -61,6 +61,42 @@ def test_non_numeric_extra_payload_cannot_reach_jax() -> None:
         validate_features(features)
 
 
+def test_validation_checks_only_unique_values_in_zero_stride_views(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from foldjax.models.openfold3.data import validation
+
+    features = _features()
+    features["broadcast_extra"] = np.broadcast_to(
+        np.zeros((), dtype=np.float32), (128, 128, 39)
+    )
+    features["empty_extra"] = np.broadcast_to(
+        np.zeros((0, 1), dtype=np.float32), (0, 128)
+    )
+    original = np.isfinite
+    observed_sizes: list[int] = []
+
+    def tracked(value):
+        observed_sizes.append(np.asarray(value).size)
+        return original(value)
+
+    monkeypatch.setattr(validation.np, "isfinite", tracked)
+    validate_features(features)
+
+    assert 128 * 128 * 39 not in observed_sizes
+    assert 1 in observed_sizes
+
+
+def test_validation_rejects_a_repeated_nonfinite_value() -> None:
+    features = _features()
+    features["broadcast_extra"] = np.broadcast_to(
+        np.asarray(np.nan, dtype=np.float32), (128, 128, 39)
+    )
+
+    with pytest.raises(ValueError, match="NaN or infinity"):
+        validate_features(features)
+
+
 def test_archive_loader_enforces_the_feature_abi(tmp_path) -> None:
     features = _features()
     features["token_bonds"] = np.zeros((1, 2, 3), dtype=np.int32)

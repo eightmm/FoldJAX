@@ -155,6 +155,18 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **Template-free raw OpenFold3 prediction no longer materializes quadratic
+  zero geometry before compacting it.** The raw-inference-only path validates
+  exact positive-zero, zero-stride views and immediately replaces the four
+  empty geometric features with the existing scalar provenance marker; default
+  direct featurizer calls and portable feature archives retain their complete
+  writable ABI, and real-template inputs retain the dense path. In an isolated
+  512-token host helper probe, traced peak fell from 178,354,393 to 2,183,793 bytes while
+  producing the same compact mapping in the same elapsed time. The released
+  four-template zero inputs occupy 645.24 MiB at 1,003 tokens and 5.68 GiB at
+  3,012 tokens before this change. Model-side projection order, NaN/Inf weight
+  semantics, padding and prediction arithmetic are unchanged.
+
 - **Raw OpenFold3 prediction applies its released 1,024-row MSA cap before
   one-hot expansion.** The same valid-first stable selection that previously
   ran after featurization now selects categorical rows before constructing the
