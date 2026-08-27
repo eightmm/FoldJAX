@@ -23,6 +23,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 logger = logging.getLogger(__name__)
+_MAX_TEMPLATE_ALIGNMENT_HITS = 200
 
 
 class RawFeatures(NamedTuple):
@@ -535,6 +536,21 @@ def _candidate_cif_path(source: Path, entry_id: str) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
+def _read_a3m_template_prefix(path: Path, *, max_hits: int) -> str:
+    """Read only the query and hit records an A3M parser can return."""
+
+    lines: list[str] = []
+    records = 0
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if line.strip().startswith(">"):
+                if records >= max_hits + 1:
+                    break
+                records += 1
+            lines.append(line)
+    return "".join(lines)
+
+
 def _alignment_templates(path: Path, query_sequence: str) -> list[Any]:
     """Read ordered template hits while preserving residue-wise coordinates."""
     from foldjax.models.openfold3._upstream.openfold3.core.data.io.sequence.template import (  # noqa: E501
@@ -549,7 +565,14 @@ def _alignment_templates(path: Path, query_sequence: str) -> list[Any]:
             "OpenFold3 template alignment must be .a3m, .sto, or a preprocessed "
             f".npz cache, got {path}"
         )
-    parsed = parser_type(max_sequences=200)(path.read_text(), query_sequence)
+    alignment_source = (
+        _read_a3m_template_prefix(path, max_hits=_MAX_TEMPLATE_ALIGNMENT_HITS)
+        if path.suffix.lower() == ".a3m"
+        else path.read_text()
+    )
+    parsed = parser_type(max_sequences=_MAX_TEMPLATE_ALIGNMENT_HITS)(
+        alignment_source, query_sequence
+    )
     templates = list(parsed.values())
     if templates and templates[0].seq == query_sequence:
         templates = templates[1:]

@@ -155,6 +155,16 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **OpenFold3 template A3M parsing stops after the 200 released hit slots.**
+  The query and first 200 hit records are read before invoking the unchanged
+  upstream parser, rather than parsing every later FASTA row only to slice it
+  away. Stockholm inputs retain their full read because one sequence can be
+  continued in later blocks. On a synthetic 200,000-hit, 80-column A3M, an
+  isolated CPU probe reduced traced peak from 71,742,332 to 517,459 bytes and
+  parse time from 0.397 to 0.099 seconds; all 200 returned template records
+  matched the full-file parser. Template order, alignments and the released hit
+  cap are unchanged.
+
 - **ESMFold2 stops parsing A3M rows once its requested MSA depth is full.**
   Both the protein-only and all-biomolecule featurizers now consume the same
   historical A3M parser as a bounded record iterator instead of first building

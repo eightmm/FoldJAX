@@ -206,6 +206,70 @@ def test_template_alignment_never_fetches_a_missing_cif(tmp_path: Path) -> None:
         )
 
 
+def test_template_a3m_reads_only_the_records_the_parser_can_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from foldjax.models.openfold3._upstream.openfold3.core.data.io.sequence import (
+        template as template_io,
+    )
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+
+    alignment = tmp_path / "templates.a3m"
+    alignment.write_text(
+        ">query/1-4\nACDE\n"
+        ">first_A/1-4\nACDE\n"
+        ">second_A/1-4\nACDE\n"
+        ">tail-must-not-be-read_A/1-4\nACDE\n",
+        encoding="utf-8",
+    )
+    captured: list[str] = []
+
+    class RecordingParser:
+        def __init__(self, max_sequences: int) -> None:
+            assert max_sequences == 2
+
+        def __call__(self, source: str, query_sequence: str) -> dict:
+            assert query_sequence == "ACDE"
+            captured.append(source)
+            return {}
+
+    monkeypatch.setattr(numpy_features, "_MAX_TEMPLATE_ALIGNMENT_HITS", 2)
+    monkeypatch.setattr(template_io, "A3mParser", RecordingParser)
+
+    assert numpy_features._alignment_templates(alignment, "ACDE") == []
+    assert "second_A" in captured[0]
+    assert "tail-must-not-be-read" not in captured[0]
+
+
+def test_bounded_template_a3m_matches_the_full_parser_prefix(tmp_path: Path) -> None:
+    from foldjax.models.openfold3._upstream.openfold3.core.data.io.sequence.template import (  # noqa: E501
+        A3mParser,
+    )
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+
+    alignment = tmp_path / "templates.a3m"
+    alignment.write_text(
+        ">query_X/1-4\nACDE\n"
+        + "".join(f">{index:04d}_A/1-4\nACDE\n" for index in range(300)),
+        encoding="utf-8",
+    )
+    parsed = A3mParser(max_sequences=200)(alignment.read_text(), "ACDE")
+    expected = list(parsed.values())[1:]
+
+    actual = numpy_features._alignment_templates(alignment, "ACDE")
+
+    assert len(actual) == len(expected) == 200
+    for observed, reference in zip(actual, expected, strict=True):
+        assert observed.entry_id == reference.entry_id
+        assert observed.chain_id == reference.chain_id
+        assert observed.seq == reference.seq
+        np.testing.assert_array_equal(observed.query_aln_pos, reference.query_aln_pos)
+        np.testing.assert_array_equal(observed.aln_pos, reference.aln_pos)
+        assert observed.seq_id == reference.seq_id
+        assert observed.q_cov == reference.q_cov
+
+
 def test_direct_cif_candidates_are_quality_ranked_filtered_and_reindexed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
