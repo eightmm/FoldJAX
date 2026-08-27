@@ -151,6 +151,15 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Repeated hits from one template structure reuse its decoded mmCIF and chain
+  index.** Protenix and OpenDDE now read and parse each coordinate file once per
+  template-resolution call instead of repeating both for each selected chain or
+  duplicate hit. On the real 4,343,785-byte ``1hf9.cif`` with four uses, an
+  isolated CPU probe fell from 0.359 to 0.094 seconds and from 24.4 to 8.7 MB
+  traced peak. The returned template dictionaries still contain the same mmCIF
+  text, chain, residue mapping and ordering; they merely share the immutable
+  string and parsed chain map in memory.
+
 - **AlphaFold 3 structure helpers no longer retain 128 previous CCD jobs.**
   Representative-atom and residue-atom-name memoization now lives in two
   bounded 128-entry maps on the owning ``Ccd`` instead of module LRU keys that

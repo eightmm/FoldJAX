@@ -417,6 +417,15 @@ def test_template_resolution_honors_max_four_and_missing_coordinate_errors(
             for index, residue in enumerate("RSTVW")
         )
     )
+    parse_calls = 0
+    parse_mmcif = template_search._mmcif_chain_sequences
+
+    def track_mmcif_parse(mmcif: str):
+        nonlocal parse_calls
+        parse_calls += 1
+        return parse_mmcif(mmcif)
+
+    monkeypatch.setattr(template_search, "_mmcif_chain_sequences", track_mmcif_parse)
     resolved = resolve_template_search_hits(
         artifact,
         query_sequence=query,
@@ -427,6 +436,8 @@ def test_template_resolution_honors_max_four_and_missing_coordinate_errors(
     )
     assert len(resolved) == 4
     assert all(hit["chainId"] == "A" for hit in resolved)
+    assert parse_calls == 1
+    assert all(hit["mmcif"] is resolved[0]["mmcif"] for hit in resolved)
 
     missing = tmp_path / "missing.a3m"
     missing.write_text(f">query\n{query}\n>9xyz_A mol:protein 1-12\n{'Y' * 12}\n")

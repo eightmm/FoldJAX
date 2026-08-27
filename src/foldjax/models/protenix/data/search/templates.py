@@ -551,7 +551,12 @@ def _mmcif_chain_sequences(mmcif_string: str) -> dict[str, _MmcifChainSequence]:
 def _template_chain_sequence(
     mmcif_string: str, chain_id: str | None
 ) -> tuple[str, _MmcifChainSequence]:
-    chains = _mmcif_chain_sequences(mmcif_string)
+    return _select_template_chain(_mmcif_chain_sequences(mmcif_string), chain_id)
+
+
+def _select_template_chain(
+    chains: Mapping[str, _MmcifChainSequence], chain_id: str | None
+) -> tuple[str, _MmcifChainSequence]:
     if not chains:
         raise ValueError("template mmCIF contains no observed protein chain SEQRES")
     if chain_id is not None and chain_id in chains:
@@ -873,6 +878,7 @@ def resolve_template_search_hits(
     resolved: list[dict[str, Any]] = []
     missing_coordinates: list[str] = []
     resolved_kalign_binary: str | None = None
+    mmcif_cache: dict[Path, tuple[str, dict[str, _MmcifChainSequence]]] = {}
     for hit, pdb_id, chain_id in candidates:
         if len(resolved) >= limit:
             break
@@ -881,14 +887,21 @@ def resolve_template_search_hits(
         except FileNotFoundError:
             missing_coordinates.append(pdb_id)
             continue
-        if path.suffix == ".gz":
-            with gzip.open(path, "rt", encoding="utf-8") as handle:
-                mmcif = handle.read()
+        cached_mmcif = mmcif_cache.get(path)
+        if cached_mmcif is None:
+            if path.suffix == ".gz":
+                with gzip.open(path, "rt", encoding="utf-8") as handle:
+                    mmcif = handle.read()
+            else:
+                mmcif = path.read_text(encoding="utf-8")
         else:
-            mmcif = path.read_text(encoding="utf-8")
+            mmcif, chains = cached_mmcif
         if resolved_kalign_binary is None:
             resolved_kalign_binary = _resolve_kalign_binary(kalign_binary)
-        actual_chain_id, chain = _template_chain_sequence(mmcif, chain_id)
+        if cached_mmcif is None:
+            chains = _mmcif_chain_sequences(mmcif)
+            mmcif_cache[path] = (mmcif, chains)
+        actual_chain_id, chain = _select_template_chain(chains, chain_id)
         mapping = _align_query_to_template(
             search["query_sequence"],
             chain.sequence,
