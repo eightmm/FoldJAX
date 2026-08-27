@@ -35,6 +35,33 @@ from foldjax.models.boltz2.data.types import (
 # HELPERS
 ####################################################################################################
 
+_MSA_PROFILE_CLASSES = np.arange(const.num_tokens)
+_MSA_PROFILE_TEMP_BUDGET = 64 << 20
+
+
+def _msa_profile(msa: Tensor) -> Tensor:
+    """Match ``one_hot(msa).float().mean(0)`` with bounded host memory."""
+
+    values = np.asarray(msa)
+    if values.ndim != 2 or values.shape[0] == 0:
+        raise ValueError(
+            f"MSA profile expects nonempty [rows, tokens], got {values.shape}"
+        )
+    row_bytes = max(1, int(values.shape[1]) * len(_MSA_PROFILE_CLASSES))
+    rows_per_chunk = max(1, _MSA_PROFILE_TEMP_BUDGET // row_bytes)
+    counts = np.zeros(
+        (values.shape[1], len(_MSA_PROFILE_CLASSES)), dtype=np.int64
+    )
+    for start in range(0, values.shape[0], rows_per_chunk):
+        chunk = values[start : start + rows_per_chunk]
+        counts += np.sum(
+            chunk[..., None] == _MSA_PROFILE_CLASSES,
+            axis=0,
+            dtype=np.int64,
+        )
+    profile = counts.astype(np.float32) / np.float32(values.shape[0])
+    return from_numpy(profile)
+
 
 def convert_atom_name(name: str) -> tuple[int, int, int, int]:
     """Convert an atom name to a standard format.
@@ -1613,9 +1640,8 @@ def process_msa_features(
 
     # Prepare features
     assert torch.all(msa >= 0) and torch.all(msa < const.num_tokens)
-    msa_one_hot = torch.nn.functional.one_hot(msa, num_classes=const.num_tokens)
     msa_mask = torch.ones_like(msa)
-    profile = msa_one_hot.float().mean(dim=0)
+    profile = _msa_profile(msa)
     has_deletion = deletion > 0
     deletion = torch.pi / 2 * torch.atan(deletion / 3)
     deletion_mean = deletion.mean(axis=0)

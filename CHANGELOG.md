@@ -169,6 +169,15 @@ command predicts unless it says so here, in its own paragraph.
   At 16,384 rows the removed float32 one-hot alone would occupy about 1.96 GiB;
   the counting expansion is capped at 64 MiB.
 
+- **Boltz-2 no longer builds an int64 and float32 copy of the complete MSA
+  one-hot just to compute its profile.** It now accumulates the same 33-class
+  integer counts in row chunks and performs the same final float32 division.
+  At 2,048 rows and 1,003 tokens, an isolated CPU probe reduced traced peak
+  from 813,441,920 to 67,753,873 bytes and profile time from 0.205 to 0.066
+  seconds. At the 16,384-row limit, the former int64 one-hot would occupy about
+  4.04 GiB and its float32 conversion another 2.02 GiB. The stored MSA and
+  returned profile are unchanged.
+
 - **OpenFold3 no longer retains 512 complete Kalign inputs and outputs.** The
   alignment cache now keeps the 32 most recent calls, preserving within-job and
   immediate-retry reuse while allowing older query/template sequence strings
