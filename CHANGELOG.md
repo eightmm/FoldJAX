@@ -155,6 +155,8 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **AlphaFold 3 PAE/PDE summaries bound full pair-matrix copies.** The
+  chain-pair postprocessor now creates the same Fortran-layout
   buffer produced by the historical pair of advanced-index operations in one
   step. Its weighted summaries also reduce standard JAX-to-NumPy sample
   products one at a time; unusual Fortran/transposed direct inputs retain the
@@ -166,6 +168,8 @@ command predicts unless it says so here, in its own paragraph.
   direct layout fallbacks and empty inputs retain their result and shape. A
   two-chain measurement at the same shape reduced chain-pair peak from
   226,824,572 to 53,895,504 bytes while taking 0.272 versus 0.333 seconds.
+  Applying the same bounded selector to masked PAE summaries reduced their
+  peak from 342,511,780 to 229,133,916 bytes (0.606 versus 0.629 seconds).
 
 - **Protenix and OpenDDE bound the temporary used to compute an MSA profile.**
   Profile counts are now accumulated over row chunks whose 32-class boolean

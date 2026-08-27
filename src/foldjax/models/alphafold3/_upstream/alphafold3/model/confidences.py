@@ -334,29 +334,30 @@ def pde_single(
   return ichain, xchain, full_chain
 
 
-def _chain_pair_pde_submatrix(
-    full_pde: np.ndarray,
+def _chain_pair_submatrix(
+    values: np.ndarray,
     row_indices: np.ndarray,
     column_indices: np.ndarray,
 ) -> np.ndarray:
   """Select one chain pair with the historical layout and bounded scratch."""
-  num_samples = full_pde.shape[0]
+  leading_shape = values.shape[:-2]
   selected = np.empty(
-      (num_samples, row_indices.size, column_indices.size),
-      dtype=full_pde.dtype,
+      leading_shape + (row_indices.size, column_indices.size),
+      dtype=values.dtype,
       order='F',
   )
   # Advanced indexing both pair axes at once would allocate another complete
   # selected matrix before copying it into the required Fortran layout. Fill
   # columns in blocks whose temporary is at most 8 MiB instead.
+  leading_size = int(np.prod(leading_shape, dtype=np.int64))
   bytes_per_column = max(
-      1, num_samples * row_indices.size * full_pde.dtype.itemsize
+      1, leading_size * row_indices.size * values.dtype.itemsize
   )
   columns_per_block = max(1, (8 * 2**20) // bytes_per_column)
   for start in range(0, column_indices.size, columns_per_block):
     columns = column_indices[start : start + columns_per_block]
-    selected[:, :, start : start + columns.size] = full_pde[
-        :, row_indices[:, None], columns
+    selected[..., :, start : start + columns.size] = values[
+        ..., row_indices[:, None], columns
     ]
   return selected
 
@@ -400,7 +401,7 @@ def chain_pair_pde(
     row_indices = np.flatnonzero(asym_ids == asym_id_1)
     for idx2, asym_id_2 in enumerate(unique_asym_ids):
       column_indices = np.flatnonzero(asym_ids == asym_id_2)
-      subsubset = _chain_pair_pde_submatrix(
+      subsubset = _chain_pair_submatrix(
           full_pde, row_indices, column_indices
       )
       chain_pair_pred_err_mean[:, idx1, idx2] = np.mean(subsubset, axis=(1, 2))
@@ -517,13 +518,18 @@ def chain_pair_pae(
     contact_probs = contact_probs[:num_tokens, :num_tokens]
 
   for idx1, asym_id_1 in enumerate(unique_asym_ids):
-    subset = full_pae[:, asym_ids == asym_id_1, :]
-    subset_mask = mask[asym_ids == asym_id_1, :]
-    subset_contact_probs = contact_probs[asym_ids == asym_id_1, :]
+    row_indices = np.flatnonzero(asym_ids == asym_id_1)
     for idx2, asym_id_2 in enumerate(unique_asym_ids):
-      subsubset = subset[:, :, asym_ids == asym_id_2]
-      subsubset_mask = subset_mask[:, asym_ids == asym_id_2]
-      subsubset_contact_probs = subset_contact_probs[:, asym_ids == asym_id_2]
+      column_indices = np.flatnonzero(asym_ids == asym_id_2)
+      subsubset = _chain_pair_submatrix(
+          full_pae, row_indices, column_indices
+      )
+      subsubset_mask = _chain_pair_submatrix(
+          mask, row_indices, column_indices
+      )
+      subsubset_contact_probs = _chain_pair_submatrix(
+          contact_probs, row_indices, column_indices
+      )
       (flat_mask_idxs,) = np.where(subsubset_mask.flatten() > 0)
       flat_subsubset = subsubset.reshape([num_samples, -1])
       flat_contact_probs = subsubset_contact_probs.flatten()
@@ -533,14 +539,23 @@ def chain_pair_pae(
         chain_pair_pred_err_mean[:, idx1, idx2] = np.nan
         chain_pair_pred_err_min[:, idx1, idx2] = np.nan
       else:
-        chain_pair_pred_err_min[:, idx1, idx2] = np.min(
-            flat_subsubset[:, flat_mask_idxs], axis=1
-        )
+        selected_values = flat_subsubset[:, flat_mask_idxs]
+        selected_contact_probs = flat_contact_probs[flat_mask_idxs]
+        chain_pair_pred_err_min[:, idx1, idx2] = np.min(selected_values, axis=1)
         chain_pair_pred_err_mean[:, idx1, idx2] = weighted_mean(
-            mask=flat_contact_probs[flat_mask_idxs],
-            value=flat_subsubset[:, flat_mask_idxs],
+            mask=selected_contact_probs,
+            value=selected_values,
             axis=-1,
         )
+        del selected_values, selected_contact_probs
+      del (
+          subsubset,
+          subsubset_mask,
+          subsubset_contact_probs,
+          flat_mask_idxs,
+          flat_subsubset,
+          flat_contact_probs,
+      )
   return chain_pair_pred_err_mean, chain_pair_pred_err_min, unique_asym_ids
 
 

@@ -262,7 +262,7 @@ def test_multimer_chain_pair_pde_bounds_selection_scratch(monkeypatch) -> None:
             asym_ids=asym_ids,
             full_pde=full_pde,
         )
-    real_submatrix = confidences._chain_pair_pde_submatrix
+    real_submatrix = confidences._chain_pair_submatrix
     calls = []
     previous = None
 
@@ -277,7 +277,7 @@ def test_multimer_chain_pair_pde_bounds_selection_scratch(monkeypatch) -> None:
         return selected
 
     monkeypatch.setattr(
-        confidences, "_chain_pair_pde_submatrix", tracked_submatrix
+        confidences, "_chain_pair_submatrix", tracked_submatrix
     )
     with np.errstate(invalid="ignore"):
         actual = confidences.chain_pair_pde(13, asym_ids, full_pde)
@@ -421,7 +421,7 @@ def test_empty_chain_pair_pae_keeps_the_empty_shapes() -> None:
     assert chain_ids.shape == (0,)
 
 
-def test_multimer_chain_pair_pae_keeps_the_generic_path() -> None:
+def test_multimer_chain_pair_pae_keeps_the_generic_path(monkeypatch) -> None:
     from foldjax.models.alphafold3 import build
 
     build.register_runtime()
@@ -441,6 +441,17 @@ def test_multimer_chain_pair_pae_keeps_the_generic_path() -> None:
         mask=mask,
         contact_probs=contact_probs,
     )
+    real_submatrix = confidences._chain_pair_submatrix
+    calls = []
+
+    def tracked_submatrix(values, rows, columns):
+        selected = real_submatrix(values, rows, columns)
+        calls.append((values.ndim, selected.flags.f_contiguous))
+        return selected
+
+    monkeypatch.setattr(
+        confidences, "_chain_pair_submatrix", tracked_submatrix
+    )
     actual = confidences.chain_pair_pae(
         num_tokens=8,
         asym_ids=asym_ids,
@@ -450,6 +461,7 @@ def test_multimer_chain_pair_pae_keeps_the_generic_path() -> None:
     )
     for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
         _assert_nan_exact(actual_leaf, expected_leaf)
+    assert calls == [(3, True), (2, True), (2, True)] * 4
 
 
 def test_numpy_rank_metric_reduces_each_sample_separately(monkeypatch) -> None:
