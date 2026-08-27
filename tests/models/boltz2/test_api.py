@@ -412,8 +412,9 @@ def test_neutral_padding_noise_tape_preserves_the_real_unpadded_prefix() -> None
     assert not np.any(np.asarray(noises[:, :, 5:]))
 
 
-def test_padding_noise_tapes_use_each_stage_storage_stride(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("prefix_supported", [False, True])
+def test_padding_noise_uses_each_stage_storage_stride(
+    tmp_path, monkeypatch, prefix_supported: bool
 ) -> None:
     confidence_weights = tmp_path / "boltz2_conf"
     affinity_weights = tmp_path / "boltz2_aff"
@@ -435,7 +436,11 @@ def test_padding_noise_tapes_use_each_stage_storage_stride(
         "foldjax.models.boltz2.bridge.native.load_params", fake_load_params
     )
     monkeypatch.setattr(api, "_prepare_affinity_features", lambda **kwargs: affinity)
+    monkeypatch.setattr(
+        api, "_prefix_rng_is_supported", lambda: prefix_supported
+    )
     tape_calls = []
+    prefix_calls = []
 
     def fake_tape(key, *, multiplicity, storage_atoms, target_atoms, steps):
         tape_calls.append((multiplicity, storage_atoms, target_atoms, steps))
@@ -446,7 +451,22 @@ def test_padding_noise_tapes_use_each_stage_storage_stride(
 
     monkeypatch.setattr(api, "_prefix_stable_noise_tape", fake_tape)
 
+    def fake_prefix_size(*, storage_atoms, target_atoms):
+        prefix_calls.append((storage_atoms, target_atoms))
+        return np.asarray(storage_atoms, dtype=np.int32)
+
+    monkeypatch.setattr(api, "_storage_prefix_size", fake_prefix_size)
+
+    routed_noise = []
+
     def fake_predict(params, feats, key, **kwargs):
+        routed_noise.append(
+            (
+                "noise_storage_atoms" in kwargs,
+                "init_noise" in kwargs,
+                "step_noises" in kwargs,
+            )
+        )
         samples = kwargs["multiplicity"]
         atoms = feats["atom_pad_mask"].shape[-1]
         tokens = feats["token_pad_mask"].shape[-1]
@@ -477,7 +497,14 @@ def test_padding_noise_tapes_use_each_stage_storage_stride(
         padding=PaddingConfig(tokens=8, atoms=32, msa=1),
     )
 
-    assert tape_calls == [(2, 5, 32, 2), (3, 7, 32, 2)]
+    if prefix_supported:
+        assert tape_calls == []
+        assert prefix_calls == [(5, 32), (7, 32)]
+        assert routed_noise == [(True, False, False), (True, False, False)]
+    else:
+        assert tape_calls == [(2, 5, 32, 2), (3, 7, 32, 2)]
+        assert prefix_calls == []
+        assert routed_noise == [(False, True, True), (False, True, True)]
     assert out["coords"].shape == (2, 3, 3)
     assert out["padding"]["primary"]["static"] == {
         "use_template": False,

@@ -12,6 +12,7 @@ from foldjax.models._cp import CP_AXIS, CP_ROW_AXIS
 from foldjax.models._cp import cp_layout as _cp_layout
 from foldjax.models._cp import cp_mesh as _cp_mesh
 from foldjax.models._cp_atom import shard_atoms
+from foldjax.models._random import supports_masked_prefix_draw
 from foldjax.models.boltz2.models.diffusion.diffusion import (
     conditioned_diffusion_score_forward,
     diffusion_score_model_forward,
@@ -38,6 +39,35 @@ from foldjax.models.boltz2.models.trunk_blocks.template import (
 )
 
 Params = Mapping[str, object]
+
+
+def _prefix_atom_normal(
+    key: jax.Array,
+    storage_atoms: jnp.ndarray,
+    *,
+    multiplicity: int,
+    target_atoms: int,
+    dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """Draw Boltz's compact storage stream into a padded atom bucket."""
+
+    storage_atoms = jnp.asarray(storage_atoms, dtype=jnp.int32)
+    source = jax.random.normal(
+        key,
+        (multiplicity * target_atoms, 3),
+        dtype=dtype,
+    )
+    atom_index = jnp.arange(target_atoms, dtype=jnp.int32)
+    source_index = (
+        jnp.arange(multiplicity, dtype=jnp.int32)[:, None] * storage_atoms
+        + atom_index[None, :]
+    )
+    gathered = jnp.take(source, source_index, axis=0, mode="clip")
+    return jnp.where(
+        atom_index[None, :, None] < storage_atoms,
+        gathered,
+        jnp.zeros((), dtype=dtype),
+    )
 
 
 def resolve_long_sequence_chunks(
@@ -245,6 +275,7 @@ def boltz2_sample_forward(
     steering_args: Mapping[str, object] | None = None,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | None = None,
+    noise_storage_atoms: jnp.ndarray | None = None,
     aug_transforms: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     use_scan: bool = True,
     trunk_use_scan: bool | None = None,
@@ -292,6 +323,11 @@ def boltz2_sample_forward(
     1, 3)``. When provided AND ``augmentation`` is True, the per-step random
     augmentation samples are replaced by these fixed transforms instead of being
     drawn from ``key``. Default None is fully inert (original behaviour).
+
+    ``noise_storage_atoms`` is the high-level padding path's dynamic native
+    storage stride. It reconstructs the same compact Threefry coordinate stream
+    inside the sampler without retaining a full padded tape; direct callers
+    leave it unset and keep the historical route.
 
     ``chunk_size`` (default 128) is threaded to the triangle / outer-product-mean
     ops; it is bit-exact (the reduction axis is never split) and only reorders
@@ -397,6 +433,30 @@ def boltz2_sample_forward(
                 dtype=jnp.float32,
             )
 
+    storage_atoms = None
+    if noise_storage_atoms is not None:
+        if not supports_masked_prefix_draw():
+            raise ValueError(
+                "prefix-preserving padding noise requires "
+                "jax_default_prng_impl='threefry2x32' and "
+                "jax_threefry_partitionable=True"
+            )
+        if init_noise is not None or step_noises is not None:
+            raise ValueError(
+                "prefix-preserving padding noise and explicit noise tapes are "
+                "mutually exclusive"
+            )
+        storage_atoms = jnp.asarray(noise_storage_atoms, dtype=jnp.int32)
+        if storage_atoms.shape:
+            raise ValueError(
+                "noise_storage_atoms must be a scalar; got "
+                f"shape {storage_atoms.shape}"
+            )
+        if feats["atom_pad_mask"].shape[0] != 1:
+            raise ValueError(
+                "noise_storage_atoms requires Boltz's singleton feature batch"
+            )
+
     atom_mask = jnp.repeat(feats["atom_pad_mask"], multiplicity, axis=0)
     if atom_context_parallel:
         atom_mask = shard_atoms(atom_mask, atom_axis=1)
@@ -404,6 +464,14 @@ def boltz2_sample_forward(
     key, init_key = jax.random.split(key)
     if init_noise is not None:
         atom_coords = sigmas[0] * jnp.asarray(init_noise, dtype=jnp.float32)
+    elif storage_atoms is not None:
+        atom_coords = sigmas[0] * _prefix_atom_normal(
+            init_key,
+            storage_atoms,
+            multiplicity=multiplicity,
+            target_atoms=shape[-2],
+            dtype=jnp.float32,
+        )
     else:
         atom_coords = sigmas[0] * jax.random.normal(init_key, shape, dtype=jnp.float32)
     if atom_context_parallel:
@@ -451,6 +519,14 @@ def boltz2_sample_forward(
             key_c, noise_key = jax.random.split(key_c)
             if step_noises is not None:
                 eps_noise = injected.astype(atom_coords_c.dtype)
+            elif storage_atoms is not None:
+                eps_noise = _prefix_atom_normal(
+                    noise_key,
+                    storage_atoms,
+                    multiplicity=multiplicity,
+                    target_atoms=shape[-2],
+                    dtype=atom_coords_c.dtype,
+                )
             else:
                 eps_noise = jax.random.normal(
                     noise_key, shape, dtype=atom_coords_c.dtype
@@ -542,6 +618,14 @@ def boltz2_sample_forward(
         key, noise_key = jax.random.split(key)
         if step_noises is not None:
             eps_noise = jnp.asarray(step_noises[step_idx], dtype=atom_coords.dtype)
+        elif storage_atoms is not None:
+            eps_noise = _prefix_atom_normal(
+                noise_key,
+                storage_atoms,
+                multiplicity=multiplicity,
+                target_atoms=shape[-2],
+                dtype=atom_coords.dtype,
+            )
         else:
             eps_noise = jax.random.normal(noise_key, shape, dtype=atom_coords.dtype)
         noise = jnp.sqrt(noise_var) * eps_noise

@@ -96,6 +96,25 @@ def _prefix_stable_noise_tape(
     return init_noise, jnp.stack(step_noises, axis=0)
 
 
+def _prefix_rng_is_supported() -> bool:
+    """Whether masked padding draws preserve JAX's compact random prefix."""
+
+    from foldjax.models._random import supports_masked_prefix_draw
+
+    return supports_masked_prefix_draw()
+
+
+def _storage_prefix_size(*, storage_atoms: int, target_atoms: int) -> np.ndarray:
+    """Return Boltz's dynamic storage stride after validating its bucket."""
+
+    if storage_atoms < 0 or target_atoms < storage_atoms:
+        raise ValueError(
+            f"noise target atoms {target_atoms} is smaller than storage atoms "
+            f"{storage_atoms}"
+        )
+    return np.asarray(storage_atoms, dtype=np.int32)
+
+
 def _pinned_matmul_precision(function):
     """Run `function` with the matmul precision scoped, not latched.
 
@@ -370,14 +389,14 @@ def _runner_identity(
     *,
     predict_function: Any,
     predict_kwargs: Mapping[str, Any],
-    noise_tape: bool,
+    noise_mode: str,
     runtime: tuple[Any, ...],
 ) -> tuple[Any, ...]:
     """Everything captured by one retained ``jax.jit`` wrapper."""
 
     return (
         ("model_function", id(predict_function)),
-        ("noise_tape", noise_tape),
+        ("noise_mode", noise_mode),
         ("kwargs", _static_runtime_identity(predict_kwargs)),
         ("runtime", runtime),
     )
@@ -656,21 +675,28 @@ def predict(
     # features placed; the compiled path lets `jax.jit` prune the ones the
     # graph never reads before anything is transferred (see `_graph_features`).
     feats = _graph_features(feats_np, place=steering_active or cp_devices > 1)
-    padding_noise_tape = (
-        _prefix_stable_noise_tape(
-            jax.random.PRNGKey(seed),
-            multiplicity=num_samples,
-            storage_atoms=padding_plan.storage["atoms"],
-            target_atoms=padding_plan.target["atoms"],
-            steps=num_steps,
-        )
-        if (
-            stop_after != "trunk"
-            and padding_plan is not None
-            and padding_plan.target["atoms"] > padding_plan.storage["atoms"]
-        )
-        else None
-    )
+    padding_noise_mode = "none"
+    padding_noise_arg = None
+    if (
+        stop_after != "trunk"
+        and padding_plan is not None
+        and padding_plan.target["atoms"] > padding_plan.storage["atoms"]
+    ):
+        if _prefix_rng_is_supported():
+            padding_noise_mode = "storage_prefix"
+            padding_noise_arg = _storage_prefix_size(
+                storage_atoms=padding_plan.storage["atoms"],
+                target_atoms=padding_plan.target["atoms"],
+            )
+        else:
+            padding_noise_mode = "tape"
+            padding_noise_arg = _prefix_stable_noise_tape(
+                jax.random.PRNGKey(seed),
+                multiplicity=num_samples,
+                storage_atoms=padding_plan.storage["atoms"],
+                target_atoms=padding_plan.target["atoms"],
+                steps=num_steps,
+            )
     wanted_representations = _representations.resolve(
         representations, _representations.specs_for("boltz2")
     )
@@ -710,7 +736,7 @@ def predict(
         "use_template": predict_kwargs["use_template"],
         "recompute_nonpolymer_frames": predict_kwargs["recompute_nonpolymer_frames"],
     }
-    if padding_noise_tape is not None:
+    if padding_noise_mode == "tape":
 
         def run_model(model_params, model_feats, model_key, init_noise, step_noises):
             return boltz2_predict(
@@ -726,7 +752,24 @@ def predict(
             params,
             feats,
             jax.random.PRNGKey(seed),
-            *padding_noise_tape,
+            *padding_noise_arg,
+        )
+    elif padding_noise_mode == "storage_prefix":
+
+        def run_model(model_params, model_feats, model_key, noise_storage_atoms):
+            return boltz2_predict(
+                model_params,
+                model_feats,
+                model_key,
+                noise_storage_atoms=noise_storage_atoms,
+                **predict_kwargs,
+            )
+
+        model_args = (
+            params,
+            feats,
+            jax.random.PRNGKey(seed),
+            padding_noise_arg,
         )
     else:
 
@@ -750,7 +793,7 @@ def predict(
             _runner_identity(
                 predict_function=boltz2_predict,
                 predict_kwargs=predict_kwargs,
-                noise_tape=padding_noise_tape is not None,
+                noise_mode=padding_noise_mode,
                 runtime=runtime_identity,
             ),
             run_model,
@@ -793,9 +836,13 @@ def predict(
                 placed_args[2],
                 shard_pair_features=False,
             )
-            if cp_atom_active and len(placed_args) == 5:
+            if cp_atom_active and padding_noise_mode == "tape":
                 placed_args[3] = place_atoms(placed_args[3], atom_axis=-2)
                 placed_args[4] = place_atoms(placed_args[4], atom_axis=-2)
+            elif padding_noise_mode == "storage_prefix":
+                placed_args[3] = replicate_tree(
+                    placed_args[3], shard_pair_features=False
+                )
             model_args = tuple(placed_args)
         out = runner(*model_args)
     if stop_after == "trunk":
@@ -924,13 +971,27 @@ def predict(
             ],
         }
         if padding is not None and affinity_padding_plan is not None:
-            affinity_noise_tape = _prefix_stable_noise_tape(
-                jax.random.PRNGKey(seed),
-                multiplicity=affinity_num_samples,
-                storage_atoms=affinity_padding_plan.storage["atoms"],
-                target_atoms=affinity_padding_plan.target["atoms"],
-                steps=affinity_num_steps,
-            )
+            if _prefix_rng_is_supported():
+                affinity_noise_mode = "storage_prefix"
+                affinity_noise_arg = _storage_prefix_size(
+                    storage_atoms=affinity_padding_plan.storage["atoms"],
+                    target_atoms=affinity_padding_plan.target["atoms"],
+                )
+            else:
+                affinity_noise_mode = "tape"
+                affinity_noise_arg = _prefix_stable_noise_tape(
+                    jax.random.PRNGKey(seed),
+                    multiplicity=affinity_num_samples,
+                    storage_atoms=affinity_padding_plan.storage["atoms"],
+                    target_atoms=affinity_padding_plan.target["atoms"],
+                    steps=affinity_num_steps,
+                )
+
+        else:
+            affinity_noise_mode = "none"
+            affinity_noise_arg = None
+
+        if affinity_noise_mode == "tape":
 
             def run_affinity(
                 model_params, model_feats, model_key, init_noise, step_noises
@@ -948,7 +1009,26 @@ def predict(
                 affinity_model_params,
                 affinity_feats,
                 jax.random.PRNGKey(seed),
-                *affinity_noise_tape,
+                *affinity_noise_arg,
+            )
+        elif affinity_noise_mode == "storage_prefix":
+
+            def run_affinity(
+                model_params, model_feats, model_key, noise_storage_atoms
+            ):
+                return boltz2_predict(
+                    model_params,
+                    model_feats,
+                    model_key,
+                    noise_storage_atoms=noise_storage_atoms,
+                    **affinity_kwargs,
+                )
+
+            affinity_args = (
+                affinity_model_params,
+                affinity_feats,
+                jax.random.PRNGKey(seed),
+                affinity_noise_arg,
             )
         else:
 
@@ -971,7 +1051,7 @@ def predict(
                 _runner_identity(
                     predict_function=boltz2_predict,
                     predict_kwargs=affinity_kwargs,
-                    noise_tape=len(affinity_args) == 5,
+                    noise_mode=affinity_noise_mode,
                     runtime=runtime_identity,
                 ),
                 run_affinity,

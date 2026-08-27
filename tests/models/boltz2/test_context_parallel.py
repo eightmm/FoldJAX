@@ -407,6 +407,59 @@ _FILTERED_PLACEMENT_PROBE = textwrap.dedent(
     """
 )
 
+_PADDING_RNG_PROBE = textwrap.dedent(
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models._cp_atom import shard_atoms
+    from foldjax.models.boltz2.api import _prefix_stable_noise_tape
+    from foldjax.models.boltz2.models.trunk_blocks.trunk import _prefix_atom_normal
+
+    jax.config.update("jax_threefry_partitionable", True)
+    key = jax.random.PRNGKey(17)
+    multiplicity, storage_atoms, target_atoms = 3, 5, 32
+    expected = _prefix_stable_noise_tape(
+        key,
+        multiplicity=multiplicity,
+        storage_atoms=storage_atoms,
+        target_atoms=target_atoms,
+        steps=1,
+    )[0]
+    _, init_key = jax.random.split(key)
+
+    for layout in ("1d", "2d"):
+        with context_parallel(4, layout=layout):
+            run = jax.jit(
+                lambda draw_key, storage: shard_atoms(
+                    _prefix_atom_normal(
+                        draw_key,
+                        storage,
+                        multiplicity=multiplicity,
+                        target_atoms=target_atoms,
+                        dtype=jnp.float32,
+                    ),
+                    atom_axis=1,
+                )
+            )
+            actual = run(init_key, jnp.asarray(storage_atoms, dtype=jnp.int32))
+            executable = run.lower(
+                init_key, jnp.asarray(storage_atoms, dtype=jnp.int32)
+            ).compile()
+            hlo = executable.runtime_executable().hlo_modules()[0].to_string().lower()
+        np.testing.assert_array_equal(
+            np.asarray(actual).view(np.uint8), np.asarray(expected).view(np.uint8)
+        )
+        assert "all-gather(" not in hlo
+        assert "all-reduce(" not in hlo
+        assert "collective-permute(" not in hlo
+
+    print("CP_PADDING_RNG_OK")
+    """
+)
+
 
 def test_cp_placement_is_the_same_from_numpy_and_from_placed_leaves() -> None:
     """`predict` hands the compiled path NumPy features; CP still gets placed ones.
@@ -424,3 +477,7 @@ def test_cp_placement_is_the_same_from_numpy_and_from_placed_leaves() -> None:
 
 def test_cp_never_places_features_dead_to_the_nonsteering_graph() -> None:
     assert "CP_DEAD_FEATURE_FILTER_OK" in _run_probe(_FILTERED_PLACEMENT_PROBE)
+
+
+def test_cp_storage_prefix_rng_is_exact_without_new_collectives() -> None:
+    assert "CP_PADDING_RNG_OK" in _run_probe(_PADDING_RNG_PROBE)

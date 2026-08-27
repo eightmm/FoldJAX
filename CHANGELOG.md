@@ -151,6 +151,21 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Padded Boltz-2 sampling no longer sends its initial and 200-step noise
+  tapes through the compiled model.** The high-level prediction path now sends
+  one dynamic storage-atom count and reconstructs the same flattened Threefry
+  prefix one step at a time. The count deliberately includes masked atoms
+  already present in native storage, because they consumed RNG offsets before
+  the serving suffix was added. Loop and scanned sampling are raw-byte
+  identical to the former tapes, and the RNG stage adds no collective under
+  forced four-CPU 1-D/2-D atom sharding. Unsupported PRNG modes keep the
+  materialized fallback; direct model calls retain their historical default.
+  In an isolated CPU compile at 5 samples, 8,192 padded atoms and 200 steps,
+  entry arguments fall from
+  98,795,520 to 12 bytes; sampler temp rises from 3,396 to 3,125,124 bytes
+  while output stays 491,520 bytes. These are synthetic sampler-only CPU
+  numbers; released GPU peak and latency remain unmeasured.
+
 - **Padded OpenDDE inference likewise generates coordinate noise inside the
   sampler instead of carrying four complete random tapes into the graph.** The
   graph receives the existing atom mask and PRNG key, reconstructs the exact
