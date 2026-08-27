@@ -153,12 +153,17 @@ command predicts unless it says so here, in its own paragraph.
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
 - **AlphaFold 3 monomer PDE summaries no longer copy the full sample matrix
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
+- **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
+  copy live.** The chain-pair postprocessor now creates the same Fortran-layout
   buffer produced by the historical pair of advanced-index operations in one
-  step, preserving NumPy's exact float32 reduction traversal and every output
-  bit. For five samples at 3,012 tokens, an isolated CPU measurement reduced
-  traced temporary allocation from 362,920,968 to 181,477,544 bytes; median
-  time in the matched two-run probe was 0.267 to 0.265 seconds. Multimers and
-  empty inputs retain the original path and shapes.
+  step. Its weighted summaries also reduce standard JAX-to-NumPy sample
+  products one at a time; unusual Fortran/transposed direct inputs retain the
+  vectorized fallback. Both preserve NumPy's reduction traversal and every
+  output bit. For five samples at 3,012 tokens, isolated CPU measurements cut
+  chain-pair temporary allocation from 362,920,968 to 181,477,544 bytes and
+  weighted-summary peak from 254,219,108 to 108,993,580 bytes, with matched
+  times of 0.267 to 0.265 and 0.138 to 0.137 seconds respectively. Multimers,
+  direct layout fallbacks and empty inputs retain their result and shape.
 
 - **Protenix and OpenDDE bound the temporary used to compute an MSA profile.**
   Profile counts are now accumulated over row chunks whose 32-class boolean

@@ -80,6 +80,115 @@ def _generic_chain_pair_pde_reference(
     return means, minima
 
 
+def _generic_pde_single_reference(
+    confidences, *, num_tokens, asym_ids, full_pde, contact_probs
+):
+    """The historical vectorised products used by ``pde_single``."""
+    full_pde = full_pde[:, :num_tokens, :num_tokens]
+    contact_probs = contact_probs[:num_tokens, :num_tokens]
+    asym_ids = asym_ids[:num_tokens]
+    unique_asym_ids = np.unique(asym_ids)
+    samples = full_pde.shape[0]
+    expanded_asym_ids = asym_ids[None]
+    expanded_contacts = contact_probs[None]
+    ichain = np.zeros((samples, len(unique_asym_ids)))
+    xchain = np.zeros_like(ichain)
+    for index, asym_id in enumerate(unique_asym_ids):
+        mine = expanded_asym_ids == asym_id
+        imask = mine[:, :, None] * mine[:, None, :]
+        xmask = mine[:, :, None] * ~mine[:, None, :]
+        imask = imask * expanded_contacts
+        xmask = xmask * expanded_contacts
+        ichain[:, index] = confidences.weighted_mean(
+            mask=imask, value=full_pde, axis=(-2, -1)
+        )
+        xchain[:, index] = confidences.weighted_mean(
+            mask=xmask, value=full_pde, axis=(-2, -1)
+        )
+    full_chain = confidences.weighted_mean(
+        mask=expanded_contacts, value=full_pde, axis=(-1,)
+    )
+    return ichain, xchain, full_chain
+
+
+def test_pde_single_streams_standard_sample_products(monkeypatch) -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(41)
+    padded = rng.normal(size=(5, 13, 13)).astype(np.float32)
+    padded[0, 1, 2] = np.nan
+    padded[1, 3, 4] = np.inf
+    padded[2, 5, 6] = -np.inf
+    padded[3, 7, 1] = -0.0
+    contact_probs = rng.random((13, 13), dtype=np.float32)
+    asym_ids = np.ones(13, dtype=np.int32)
+    with np.errstate(invalid="ignore"):
+        expected = _generic_pde_single_reference(
+            confidences,
+            num_tokens=9,
+            asym_ids=asym_ids,
+            full_pde=padded,
+            contact_probs=contact_probs,
+        )
+    real_samplewise = confidences._samplewise_weighted_mean
+    calls = []
+
+    def tracked_samplewise(mask, value, axis):
+        calls.append((value.shape, axis))
+        return real_samplewise(mask, value, axis)
+
+    monkeypatch.setattr(
+        confidences, "_samplewise_weighted_mean", tracked_samplewise
+    )
+    with np.errstate(invalid="ignore"):
+        actual = confidences.pde_single(
+            9,
+            asym_ids,
+            padded,
+            contact_probs,
+        )
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        _assert_nan_exact(actual_leaf, expected_leaf)
+        np.testing.assert_array_equal(
+            np.signbit(actual_leaf), np.signbit(expected_leaf)
+        )
+    assert calls == [
+        ((5, 9, 9), (-2, -1)),
+        ((5, 9, 9), (-2, -1)),
+        ((5, 9, 9), (-1,)),
+    ]
+
+
+def test_pde_single_keeps_fortran_reduction_order() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(42)
+    full_pde = np.asfortranarray(rng.normal(size=(4, 11, 11)).astype(np.float32))
+    contact_probs = rng.random((11, 11), dtype=np.float32)
+    asym_ids = np.asarray([1] * 6 + [2] * 5, dtype=np.int32)
+    expected = _generic_pde_single_reference(
+        confidences,
+        num_tokens=11,
+        asym_ids=asym_ids,
+        full_pde=full_pde,
+        contact_probs=contact_probs,
+    )
+    actual = confidences.pde_single(11, asym_ids, full_pde, contact_probs)
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        _assert_nan_exact(actual_leaf, expected_leaf)
+        np.testing.assert_array_equal(
+            np.signbit(actual_leaf), np.signbit(expected_leaf)
+        )
+
+
 def test_monomer_chain_pair_pde_uses_one_layout_preserving_copy(monkeypatch) -> None:
     from foldjax.models.alphafold3 import build
 

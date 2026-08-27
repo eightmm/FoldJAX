@@ -248,6 +248,28 @@ def weighted_mean(mask, value, axis):
   return np.mean(mask * value, axis=axis) / (1e-8 + np.mean(mask, axis=axis))
 
 
+def _samplewise_weighted_mean(mask, value, axis):
+  """Apply ``weighted_mean`` without stacking independent sample products."""
+  if (
+      value.shape[0] > 1
+      and mask.shape[0] == 1
+      and value.strides[-1] == value.dtype.itemsize
+  ):
+    # A JAX result, including an active-token slice of a padded result, has a
+    # contiguous final pair axis. Multiplication therefore creates the same
+    # C-order [N, N] product for each sample that the vectorised expression
+    # places in its [S, N, N] result. Reducing those products one at a time is
+    # bit-exact and keeps only one alive. Unusual Fortran/transposed direct
+    # inputs retain the literal vectorised expression and its traversal order.
+    sample_mask = mask[0]
+    denominator = 1e-8 + np.mean(sample_mask, axis=axis)
+    return np.asarray([
+        np.mean(sample_mask * sample, axis=axis) / denominator
+        for sample in value
+    ])
+  return weighted_mean(mask, value, axis)
+
+
 def pde_single(
     num_tokens: int,
     asym_ids: np.ndarray,
@@ -296,10 +318,16 @@ def pde_single(
     xmask = my_asym_id[:, :, None] * ~my_asym_id[:, None, :]
     imask = imask * contact_probs
     xmask = xmask * contact_probs
-    ichain[:, idx] = weighted_mean(mask=imask, value=full_pde, axis=(-2, -1))
-    xchain[:, idx] = weighted_mean(mask=xmask, value=full_pde, axis=(-2, -1))
+    ichain[:, idx] = _samplewise_weighted_mean(
+        mask=imask, value=full_pde, axis=(-2, -1)
+    )
+    xchain[:, idx] = _samplewise_weighted_mean(
+        mask=xmask, value=full_pde, axis=(-2, -1)
+    )
 
-  full_chain = weighted_mean(mask=contact_probs, value=full_pde, axis=(-1,))
+  full_chain = _samplewise_weighted_mean(
+      mask=contact_probs, value=full_pde, axis=(-1,)
+  )
 
   return ichain, xchain, full_chain
 
