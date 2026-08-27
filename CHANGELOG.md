@@ -151,6 +151,14 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Template-search cache hashing no longer copies a complete MSA or cached
+  artifact into one Python ``bytes`` object.** Protenix and OpenDDE now stream
+  the same SHA-256 identity in 1 MiB chunks before lookup and on cache hits;
+  the backend still receives the original file and cache keys and validation
+  are unchanged. On a real 56,272,223-byte A3M, isolated CPU ``tracemalloc``
+  peak fell from 56,276,761 to 2,102,270 bytes and the digest was identical.
+  This changes host I/O memory only, not parsing, features, or model arithmetic.
+
 - **Protenix and OpenDDE no longer retain a second 136 MiB CCD snapshot while
   constructing the RDKit component dictionary.** Their shared arbitrary-CCD
   loader still hashes every byte before unpickling and still deserializes the

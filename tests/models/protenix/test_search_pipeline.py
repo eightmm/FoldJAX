@@ -19,6 +19,7 @@ from foldjax.models.protenix.data.search import (
     SearchError,
     load_template_search_artifact,
 )
+from foldjax.models.protenix.data.search import templates as template_search
 from foldjax.models.protenix.data.search.msa import (
     LocalRnaMsaClient,
     RnaMsaPayload,
@@ -813,6 +814,7 @@ def test_official_opendde_template_mappings_and_features_match_hashes(
 
 def test_local_template_search_pipeline_caches_and_applies_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
 
@@ -830,6 +832,14 @@ def test_local_template_search_pipeline_caches_and_applies_paths(
         ["fake-template-wrapper"], version="pdb-2026", runner=runner
     )
     pipeline = TemplateSearchPipeline(tmp_path / "cache", backend)
+    hashed_paths: list[Path] = []
+    original_sha256_file = template_search._sha256_file
+
+    def track_streamed_hash(path: Path) -> str:
+        hashed_paths.append(path)
+        return original_sha256_file(path)
+
+    monkeypatch.setattr(template_search, "_sha256_file", track_streamed_hash)
     inference = {
         "sequences": [
             {"proteinChain": {"sequence": "ACDEF", "unpairedMsaPath": str(msa)}}
@@ -843,6 +853,7 @@ def test_local_template_search_pipeline_caches_and_applies_paths(
     assert Path(path).name == "templates.a3m"
     provenance = json.loads((Path(path).parent / "provenance.json").read_text())
     assert provenance["backend"] == {"name": "local-template", "version": "pdb-2026"}
+    assert hashed_paths == [msa, msa, Path(path)]
 
 
 def test_template_search_requires_protein_msa_path(tmp_path: Path) -> None:
