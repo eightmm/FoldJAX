@@ -61,6 +61,11 @@ def test_the_rotary_tables_match_upstream() -> None:
     Upstream takes the dtype as an argument now, where the old free function
     did not, so the two can be compared as the same thing. They are
     bit-identical, and this asserts that rather than a tolerance.
+
+    This one is comparable at all because `EsmFold2RotaryEmbedding` holds no
+    parameters and no buffers -- it computes from the config. Everything below
+    it needs a checkpoint, and there the library and the published weights no
+    longer share names; see the skip on the encoder test.
     """
     torch = pytest.importorskip("torch")
     modeling = _upstream()
@@ -118,12 +123,18 @@ def test_the_window_is_measured_in_packed_rank() -> None:
 
 
 @pytest.mark.skip(
-    reason="upstream's atom encoder is built from EsmFold2Config plus an atom "
-    "sub-config now, not the explicit widths this passes, and its parameter "
-    "names moved with it -- so `torch_state_to_numpy` would map onto a "
-    "different state dict. Rewriting it against the current API is real work, "
-    "and a comparison that silently lines up the wrong tensors is worse than "
-    "one that says it is not running."
+    reason="`transformers` and the published checkpoint have diverged in "
+    "parameter naming, and FoldJAX follows the checkpoint. Measured against "
+    "transformers 5.16.1: its EsmFold2Model carries 2,226 parameter names, the "
+    "published safetensors carries 1,594, and 12 names appear in both. That is "
+    "a different layout, not a rename, so `torch_state_to_numpy` on a "
+    "library-built module hands FoldJAX names it has never heard of -- it "
+    "raises on `atom_transformer.blocks.0.adaln_modulation.1.weight`, which the "
+    "checkpoint has and the library does not. Running this faithfully needs "
+    "transformers' own re-exported weights, which is a separate artifact from "
+    "the one this port loads. A hand-written mapping would reintroduce exactly "
+    "the rename table that naming after the checkpoint was chosen to delete, "
+    "and a mapping that lines up the wrong tensors passes."
 )
 def test_the_atom_encoder_matches() -> None:
     modeling = _upstream()

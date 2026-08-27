@@ -12,6 +12,16 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Why the ESMFold2 encoder parity test does not run is now a measurement
+  rather than a guess.** `transformers` and the published checkpoint have
+  diverged in parameter naming: against transformers 5.16.1 the library's
+  `EsmFold2Model` carries 2,226 names, the released safetensors carries 1,594,
+  and 12 appear in both. Loading the published file through the library reports
+  every tensor as unexpected. FoldJAX follows the checkpoint -- which is why
+  `assets.py` converts nothing -- so a parity run against the library's modules
+  needs the library's own re-exported weights, a separate artifact. The rotary
+  comparison works because that module holds no parameters at all.
+
 - **The ESMFold2 rotary parity test asserts bit-identity instead of a
   tolerance three times the one its own file uses.** It compared at
   `atol=rtol=3e-3`, without the reason `PROJECT.md` requires above 1e-3, in a

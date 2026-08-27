@@ -199,3 +199,30 @@ import path matters -- upstream moved this from
 to `modeling_esmfold2`, which builds modules from a config. The old path is
 still importable-looking enough that the file simply reported "skipped" on a
 machine that could have run it.
+
+### Why only the rotary comparison runs
+
+`EsmFold2RotaryEmbedding` holds no parameters and no buffers: it builds its
+tables from the config, so nothing has to be mapped and the two sides can be
+compared directly. Everything below it needs a checkpoint, and there the
+library and the published weights no longer share names.
+
+Measured against `transformers` 5.16.1 and the released `model.safetensors`:
+
+| source | parameter names |
+|---|---|
+| `EsmFold2Model` as the library builds it | 2,226 |
+| the published checkpoint | 1,594 |
+| names in both | 12 |
+
+That is a different layout rather than a rename. The checkpoint has
+`inputs_embedder.atom_attention_encoder.atom_transformer.blocks.0.adaln_modulation.1.weight`;
+the library has `layers.0.adaln_linear.weight`. Loading the published file
+through the library reports every tensor as unexpected.
+
+**FoldJAX follows the checkpoint, and `assets.py` converts nothing for exactly
+that reason.** A parity run against the library's modules therefore needs the
+library's own re-exported weights, which is a separate artifact from the one
+this port loads -- or a 1,594-entry mapping, which is the rename table that
+naming after the checkpoint was chosen to delete, and which passes just as
+happily when it lines up the wrong tensors.
