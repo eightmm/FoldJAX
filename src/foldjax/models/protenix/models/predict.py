@@ -18,6 +18,7 @@ from foldjax.models.protenix.models.model import (
     protenix_infer_compiled,
     protenix_infer_static,
 )
+from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
 
 
 def protenix_predict_static(
@@ -84,6 +85,7 @@ def protenix_predict_static(
     matmul_precision: str = "high",
     trunk_dtype: jnp.dtype | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
+    cycle_msa_index_tape: MSACycleIndexTape | None = None,
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     graph_jit: bool = True,
@@ -196,6 +198,7 @@ def protenix_predict_static(
             preserve_prefix_rng=preserve_prefix_rng,
             trunk_dtype=trunk_dtype,
             cycle_msa_features=cycle_msa_features,
+            cycle_msa_index_tape=cycle_msa_index_tape,
             guidance_config=guidance_config,
             guidance_features=guidance_features,
             **compiled_only_kwargs,

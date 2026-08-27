@@ -416,7 +416,7 @@ def main(
     from foldjax.models.protenix.models.predict import protenix_predict_static
     from foldjax.models.protenix.models.trunk_blocks.msa import (
         pad_msa_features_to_bucket,
-        sample_msa_cycle_features,
+        sample_msa_cycle_index_tape,
     )
     from foldjax.models.protenix.runtime_policy import (
         KNOWN_MODEL_NAMES,
@@ -845,14 +845,13 @@ def main(
                     target_atom=padding_plan.target["atoms"],
                     diffusion_chunk_size=chunk_config.diffusion_chunk_size,
                 )
-            cycle_msa_features = None
+            cycle_msa_index_tape = None
             if not args.full_depth_msa:
-                sampled = sample_msa_cycle_features(
+                cycle_msa_index_tape = sample_msa_cycle_index_tape(
                     features,
                     num_recycles=num_recycles,
                     seed=seed,
                 )
-                cycle_msa_features = sampled or None
             output = protenix_predict_static(
                 params,
                 features,
@@ -897,7 +896,7 @@ def main(
                 opm_chunk_size=chunk_config.opm_chunk_size,
                 diffusion_chunk_size=chunk_config.diffusion_chunk_size,
                 trunk_dtype=trunk_dtype,
-                cycle_msa_features=cycle_msa_features,
+                cycle_msa_index_tape=cycle_msa_index_tape,
                 gamma0=gamma0,
                 step_scale_eta=eta,
                 preserve_prefix_rng=preserve_prefix_rng,

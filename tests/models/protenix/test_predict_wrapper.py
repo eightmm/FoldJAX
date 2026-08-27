@@ -6,6 +6,10 @@ import numpy as np
 from foldjax.models.protenix.models.diffusion.diffusion import inference_noise_schedule
 from foldjax.models.protenix.models.model import protenix_infer_static
 from foldjax.models.protenix.models.predict import protenix_predict_static
+from foldjax.models.protenix.models.trunk_blocks.msa import (
+    sample_msa_cycle_features,
+    sample_msa_cycle_index_tape,
+)
 
 from .test_model import _toy_features, _toy_params
 
@@ -74,6 +78,55 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
             rtol=1e-4,
             atol=1e-4,
             err_msg=f"consolidated graph diverged on {key}",
+        )
+
+
+def test_compiled_predict_accepts_the_compact_cycle_msa_tape() -> None:
+    features = dict(_toy_features())
+    features.update(
+        {
+            "msa": jnp.asarray([[1, 2], [3, 4], [5, 6]], dtype=jnp.int32),
+            "has_deletion": jnp.asarray(
+                [[0.0, 1.0], [1.0, 0.0], [1.0, 1.0]], dtype=jnp.float32
+            ),
+            "deletion_value": jnp.asarray(
+                [[0.0, 0.5], [0.25, 0.0], [1.0, -0.0]], dtype=jnp.float32
+            ),
+        }
+    )
+    cycles = sample_msa_cycle_features(features, num_recycles=2, seed=5)
+    tape = sample_msa_cycle_index_tape(features, num_recycles=2, seed=5)
+    assert tape is not None
+
+    def run(**cycle_kwargs):
+        return protenix_predict_static(
+            _toy_params(),
+            features,
+            key=None,
+            num_samples=1,
+            num_sampling_steps=1,
+            recycling_steps=2,
+            input_atom_heads=1,
+            atom_encoder_heads=1,
+            token_heads=1,
+            atom_decoder_heads=1,
+            n_queries=2,
+            n_keys=4,
+            sigma_data=4.0,
+            stop_after_trunk=True,
+            capture_names=("single", "pair"),
+            graph_jit=True,
+            **cycle_kwargs,
+        )
+
+    expected = run(cycle_msa_features=cycles)
+    actual = run(cycle_msa_index_tape=tape)
+
+    assert actual.keys() == expected.keys() == {"single", "pair"}
+    for name in expected:
+        np.testing.assert_array_equal(
+            np.asarray(actual[name]).reshape(-1).view(np.uint8),
+            np.asarray(expected[name]).reshape(-1).view(np.uint8),
         )
 
 

@@ -15,10 +15,18 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
+from foldjax.models.protenix.bridge.torch_mapping import (
+    map_pairformer_output_state_dict,
+)
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
+)
+from foldjax.models.protenix.models.trunk_blocks.msa import (
+    sample_msa_cycle_features,
+    sample_msa_cycle_index_tape,
 )
 from foldjax.models.protenix.models.trunk_blocks.trunk import (
     RecyclingProjectionParams,
@@ -179,3 +187,102 @@ def test_the_scan_body_gets_the_feature_dict_not_none(monkeypatch) -> None:
     for received in seen:
         assert received is not None, "the scan body forwarded lax.scan's None"
         assert "relp" in received
+
+
+@pytest.mark.parametrize("use_cycle_scan", [False, True])
+def test_cycle_msa_index_tape_matches_materialized_trunk_cycles(
+    use_cycle_scan: bool,
+) -> None:
+    """Gathering inside recycling preserves the complete MSA/trunk result."""
+    from foldjax.models.protenix.models.trunk_blocks.trunk import (
+        pairformer_output_from_s_inputs,
+    )
+
+    from .test_trunk import _pairformer_output_state
+
+    rng = np.random.default_rng(51)
+    n_token = 4
+    features = {
+        "relp": np.zeros((n_token, n_token, 139), dtype=np.float32),
+        "token_bonds": np.zeros((n_token, n_token), dtype=np.float32),
+        "msa": rng.integers(0, 32, size=(7, n_token), dtype=np.int32),
+        "has_deletion": rng.integers(0, 2, size=(7, n_token)).astype(np.float32),
+        "deletion_value": rng.normal(size=(7, n_token)).astype(np.float32),
+    }
+    num_recycles = 3
+    materialized = sample_msa_cycle_features(
+        features, num_recycles=num_recycles, seed=29, bucket_size=4
+    )
+    tape = sample_msa_cycle_index_tape(
+        features, num_recycles=num_recycles, seed=29, bucket_size=4
+    )
+    assert tape is not None
+    params = map_pairformer_output_state_dict(_pairformer_output_state())
+    s_inputs = rng.normal(size=(n_token, 2)).astype(np.float32)
+
+    def run(**cycle_kwargs):
+        return pairformer_output_from_s_inputs(
+            features,
+            s_inputs,
+            params,
+            num_recycles=num_recycles,
+            use_cycle_scan=use_cycle_scan,
+            single_attention_backend="xla",
+            triangle_attention_backend="xla",
+            **cycle_kwargs,
+        )
+
+    expected = run(cycle_msa_features=materialized)
+    actual = run(cycle_msa_index_tape=tape)
+
+    for name, expected_value, actual_value in zip(
+        ("single_inputs", "single", "pair"), expected, actual, strict=True
+    ):
+        expected_host = np.asarray(expected_value)
+        actual_host = np.asarray(actual_value)
+        assert actual_host.dtype == expected_host.dtype
+        np.testing.assert_array_equal(
+            actual_host.reshape(-1).view(np.uint8),
+            expected_host.reshape(-1).view(np.uint8),
+            err_msg=f"{name} changed on the compact cycle-MSA path",
+        )
+
+
+def test_cycle_msa_index_tape_rejects_ambiguous_or_malformed_inputs() -> None:
+    from foldjax.models.protenix.models.trunk_blocks.trunk import (
+        pairformer_output_from_s_inputs,
+    )
+
+    from .test_trunk import _pairformer_output_params
+
+    features = {
+        "relp": jnp.zeros((2, 2, 2), dtype=jnp.float32),
+        "token_bonds": jnp.zeros((2, 2), dtype=jnp.float32),
+    }
+    s_inputs = jnp.zeros((2, 2), dtype=jnp.float32)
+    cycle = {"msa": jnp.zeros((1, 2), dtype=jnp.int32)}
+    from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
+
+    tape = MSACycleIndexTape(
+        row_indices=jnp.zeros((1, 1), dtype=jnp.int32),
+        row_mask=jnp.ones((1, 1), dtype=bool),
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        pairformer_output_from_s_inputs(
+            features,
+            s_inputs,
+            _pairformer_output_params(),
+            num_recycles=1,
+            cycle_msa_features=(cycle,),
+            cycle_msa_index_tape=tape,
+        )
+
+    bad_tape = tape._replace(row_mask=jnp.ones((1, 2), dtype=bool))
+    with pytest.raises(ValueError, match="row mask"):
+        pairformer_output_from_s_inputs(
+            features,
+            s_inputs,
+            _pairformer_output_params(),
+            num_recycles=1,
+            cycle_msa_index_tape=bad_tape,
+        )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from foldjax.models.protenix.bridge.torch_mapping import (
     map_msa_block_state_dict,
@@ -14,14 +15,19 @@ from foldjax.models.protenix.models.primitives.primitives import transition
 from foldjax.models.protenix.models.trunk_blocks import msa as msa_blocks
 from foldjax.models.protenix.models.trunk_blocks.msa import (
     MSABlockParams,
+    MSACycleIndexTape,
     msa_block,
     msa_module,
     msa_pair_weighted_averaging,
     outer_product_mean,
     pad_msa_features_to_bucket,
     sample_msa_cycle_features,
+    sample_msa_cycle_index_tape,
 )
 from foldjax.models.protenix.models.trunk_blocks.pairformer import pairformer_block
+from foldjax.models.protenix.models.trunk_blocks.trunk import (
+    _materialize_msa_cycle_from_index_tape,
+)
 
 
 def test_outer_product_mean_matches_reference_formula() -> None:
@@ -522,12 +528,36 @@ def test_sample_msa_cycle_features_is_deterministic_and_aligned() -> None:
         "deletion_value": np.arange(30).reshape(5, 6) + 200,
     }
 
-    first = sample_msa_cycle_features(features, num_recycles=4, seed=101, bucket_size=4)
+    first = sample_msa_cycle_features(
+        features, num_recycles=4, seed=101, bucket_size=4
+    )
     second = sample_msa_cycle_features(
+        features, num_recycles=4, seed=101, bucket_size=4
+    )
+    tape = sample_msa_cycle_index_tape(
         features, num_recycles=4, seed=101, bucket_size=4
     )
 
     assert len(first) == 4
+    assert tape is not None
+    np.testing.assert_array_equal(
+        tape.row_indices,
+        [
+            [1, 0, 0, 0, 0],
+            [2, 3, 0, 0, 0],
+            [2, 0, 3, 1, 4],
+            [3, 0, 0, 0, 0],
+        ],
+    )
+    np.testing.assert_array_equal(
+        tape.row_mask,
+        [
+            [True, True, False, False, False],
+            [True, True, False, False, False],
+            [True, True, True, True, True],
+            [True, False, False, False, False],
+        ],
+    )
     padded_depths = {cycle["msa"].shape[-2] for cycle in first}
     assert len(padded_depths) == 1
     assert next(iter(padded_depths)) <= 5
@@ -543,6 +573,112 @@ def test_sample_msa_cycle_features_is_deterministic_and_aligned() -> None:
         np.testing.assert_array_equal(
             left["deletion_value"][selected] - 200,
             left["msa"][selected],
+        )
+
+
+def test_cycle_msa_index_tape_reconstructs_the_materialized_cycles_bitwise() -> None:
+    """The compact route changes transport, not the rows handed to the trunk."""
+    rng = np.random.default_rng(44)
+    shape = (2, 17, 31)
+    has_deletion = rng.normal(size=shape).astype(np.float32)
+    deletion_value = rng.normal(size=shape).astype(np.float32)
+    has_deletion.reshape(-1)[:5] = [0.0, -0.0, np.nan, np.inf, -np.inf]
+    deletion_value.reshape(-1)[:5] = [-0.0, 0.0, -np.inf, np.inf, np.nan]
+    features = {
+        "msa": rng.integers(0, 32, size=shape, dtype=np.int32),
+        "has_deletion": has_deletion,
+        "deletion_value": deletion_value,
+    }
+    cycles = sample_msa_cycle_features(
+        features, num_recycles=10, seed=37, bucket_size=8
+    )
+    tape = sample_msa_cycle_index_tape(
+        features, num_recycles=10, seed=37, bucket_size=8
+    )
+    assert tape is not None
+
+    for cycle_index, materialized in enumerate(cycles):
+        row_mask = tape.row_mask[cycle_index]
+        real_depth = int(row_mask.sum())
+        selected_indices = tape.row_indices[cycle_index, :real_depth]
+        expected = {}
+        for name, values in features.items():
+            selected = np.take(values, selected_indices, axis=-2)
+            pad_width = [(0, 0)] * selected.ndim
+            pad_width[-2] = (0, row_mask.size - real_depth)
+            expected[name] = np.pad(selected, pad_width, mode="constant")
+        expected["msa_mask"] = np.zeros(expected["msa"].shape, dtype=np.float32)
+        expected["msa_mask"][..., :real_depth, :] = 1.0
+        one_cycle = MSACycleIndexTape(
+            row_indices=tape.row_indices[cycle_index],
+            row_mask=row_mask,
+        )
+        actual = _materialize_msa_cycle_from_index_tape(
+            jax.tree.map(jnp.asarray, features), one_cycle
+        )
+        for name, expected_value in expected.items():
+            expected_host = np.asarray(jnp.asarray(expected_value))
+            for route, actual_value in (
+                ("compatibility", materialized[name]),
+                ("compact", actual[name]),
+            ):
+                actual_host = np.asarray(actual_value)
+                assert actual_host.dtype == expected_host.dtype
+                assert actual_host.shape == expected_host.shape
+                np.testing.assert_array_equal(
+                    actual_host.reshape(-1).view(np.uint8),
+                    expected_host.reshape(-1).view(np.uint8),
+                    err_msg=(
+                        f"{name} cycle {cycle_index} changed bits on {route} route"
+                    ),
+                )
+
+    materialized_bytes = sum(
+        value.nbytes for cycle in cycles for value in cycle.values()
+    )
+    tape_bytes = tape.row_indices.nbytes + tape.row_mask.nbytes
+    assert tape_bytes * 50 < materialized_bytes
+
+
+def test_cycle_msa_index_tape_has_a_gather_not_token_wide_cycle_inputs() -> None:
+    features = {
+        "msa": jnp.arange(35, dtype=jnp.int32).reshape(7, 5),
+        "has_deletion": jnp.arange(35, dtype=jnp.float32).reshape(7, 5),
+        "deletion_value": jnp.zeros((7, 5), dtype=jnp.float32),
+    }
+    tape = sample_msa_cycle_index_tape(
+        features, num_recycles=2, seed=9, bucket_size=4
+    )
+    assert tape is not None
+    one_cycle = MSACycleIndexTape(tape.row_indices[0], tape.row_mask[0])
+
+    lowered = jax.jit(_materialize_msa_cycle_from_index_tape).lower(
+        features, one_cycle
+    )
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+
+    assert "stablehlo.gather" in stablehlo
+    materialized_bytes = sum(
+        value.nbytes
+        for value in _materialize_msa_cycle_from_index_tape(
+            features, one_cycle
+        ).values()
+    )
+    assert one_cycle.row_indices.nbytes + one_cycle.row_mask.nbytes < materialized_bytes
+
+
+def test_cycle_msa_index_tape_skips_missing_or_empty_alignments() -> None:
+    assert sample_msa_cycle_index_tape({}, num_recycles=2, seed=0) is None
+    empty = {
+        name: np.zeros((0, 3), dtype=np.float32)
+        for name in ("msa", "has_deletion", "deletion_value")
+    }
+    assert sample_msa_cycle_index_tape(empty, num_recycles=2, seed=0) is None
+    with pytest.raises(ValueError, match="num_recycles"):
+        sample_msa_cycle_index_tape(empty, num_recycles=0, seed=0)
+    with pytest.raises(ValueError, match="bucket_size"):
+        sample_msa_cycle_index_tape(
+            empty, num_recycles=1, seed=0, bucket_size=0
         )
 
 

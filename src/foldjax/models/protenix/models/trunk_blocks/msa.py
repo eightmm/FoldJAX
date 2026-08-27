@@ -63,6 +63,20 @@ class MSAModuleParams(NamedTuple):
     blocks: tuple[MSABlockParams, ...]
 
 
+class MSACycleIndexTape(NamedTuple):
+    """Compact row selections for every recycled MSA pass.
+
+    ``row_indices`` and ``row_mask`` both have shape ``[cycle, padded_depth]``.
+    The mask distinguishes real selections from the zero index used to fill the
+    common row bucket.  Keeping only these two small arrays lets the trunk gather
+    one cycle from the already-present raw MSA instead of receiving ten complete
+    copies of all row features.
+    """
+
+    row_indices: np.ndarray
+    row_mask: np.ndarray
+
+
 def pad_msa_features_to_bucket(
     input_feature_dict: dict,
     *,
@@ -108,39 +122,34 @@ def sample_msa_cycle_features(
 ) -> tuple[dict[str, np.ndarray], ...]:
     """Build deterministic, fixed-shape MSA subsets using upstream's policy."""
 
-    if num_recycles <= 0:
-        raise ValueError("num_recycles must be positive")
-    if bucket_size <= 0:
-        raise ValueError("bucket_size must be positive")
-    msa_fields = ("msa", "has_deletion", "deletion_value")
-    if any(field not in input_feature_dict for field in msa_fields):
-        return tuple()
-    n_msa = int(input_feature_dict["msa"].shape[-2])
-    if n_msa <= 0:
-        return tuple()
-    rng = np.random.default_rng(seed)
-    sampled_cycles = []
-    for _ in range(num_recycles):
-        sample_size = int(rng.integers(1, n_msa + 1))
-        indices = rng.permutation(n_msa)[:sample_size]
-        sampled_cycles.append(
-            {
-                field: np.take(np.asarray(input_feature_dict[field]), indices, axis=-2)
-                for field in msa_fields
-            }
-        )
-    max_depth = max(int(cycle["msa"].shape[-2]) for cycle in sampled_cycles)
-    padded_depth = min(
-        n_msa, ((max_depth + bucket_size - 1) // bucket_size) * bucket_size
+    tape = sample_msa_cycle_index_tape(
+        input_feature_dict,
+        num_recycles=num_recycles,
+        seed=seed,
+        bucket_size=bucket_size,
     )
+    if tape is None:
+        return tuple()
+
+    msa_fields = ("msa", "has_deletion", "deletion_value")
     cycles = []
-    for cycle in sampled_cycles:
-        real_depth = int(cycle["msa"].shape[-2])
-        pad_width = [(0, 0)] * cycle["msa"].ndim
-        pad_width[-2] = (0, padded_depth - real_depth)
+    for row_indices, row_mask in zip(
+        tape.row_indices, tape.row_mask, strict=True
+    ):
+        real_depth = int(row_mask.sum())
+        selected = {
+            field: np.take(
+                np.asarray(input_feature_dict[field]),
+                row_indices[:real_depth],
+                axis=-2,
+            )
+            for field in msa_fields
+        }
+        pad_width = [(0, 0)] * selected["msa"].ndim
+        pad_width[-2] = (0, row_mask.size - real_depth)
         padded = {
             field: np.pad(values, pad_width, mode="constant")
-            for field, values in cycle.items()
+            for field, values in selected.items()
         }
         mask = np.zeros(padded["msa"].shape, dtype=np.float32)
         real_slice = [slice(None)] * mask.ndim
@@ -149,6 +158,46 @@ def sample_msa_cycle_features(
         padded["msa_mask"] = mask
         cycles.append(padded)
     return tuple(cycles)
+
+
+def sample_msa_cycle_index_tape(
+    input_feature_dict: dict,
+    *,
+    num_recycles: int,
+    seed: int,
+    bucket_size: int = 64,
+) -> MSACycleIndexTape | None:
+    """Return upstream's row choices without copying their token-wide values."""
+
+    if num_recycles <= 0:
+        raise ValueError("num_recycles must be positive")
+    if bucket_size <= 0:
+        raise ValueError("bucket_size must be positive")
+    msa_fields = ("msa", "has_deletion", "deletion_value")
+    if any(field not in input_feature_dict for field in msa_fields):
+        return None
+    n_msa = int(input_feature_dict["msa"].shape[-2])
+    if n_msa <= 0:
+        return None
+    if n_msa > np.iinfo(np.int32).max:
+        raise ValueError("MSA depth exceeds the compact int32 row-index range")
+    rng = np.random.default_rng(seed)
+    sampled_indices = []
+    for _ in range(num_recycles):
+        sample_size = int(rng.integers(1, n_msa + 1))
+        indices = rng.permutation(n_msa)[:sample_size]
+        sampled_indices.append(indices)
+    max_depth = max(int(indices.size) for indices in sampled_indices)
+    padded_depth = min(
+        n_msa, ((max_depth + bucket_size - 1) // bucket_size) * bucket_size
+    )
+    row_indices = np.zeros((num_recycles, padded_depth), dtype=np.int32)
+    row_mask = np.zeros((num_recycles, padded_depth), dtype=bool)
+    for cycle, indices in enumerate(sampled_indices):
+        real_depth = int(indices.size)
+        row_indices[cycle, :real_depth] = indices
+        row_mask[cycle, :real_depth] = True
+    return MSACycleIndexTape(row_indices=row_indices, row_mask=row_mask)
 
 
 # The outer product widens ``[M, N, C]`` into ``[N, N, C, C]`` before

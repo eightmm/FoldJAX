@@ -45,6 +45,7 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
 )
+from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
 from foldjax.models.protenix.models.trunk_blocks.trunk import (
     PairformerOutputParams,
     pairformer_output_from_s_inputs,
@@ -191,6 +192,7 @@ def protenix_infer_static(
     preserve_prefix_rng: bool = False,
     trunk_dtype: jnp.dtype | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
+    cycle_msa_index_tape: MSACycleIndexTape | None = None,
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     n_chain: int | None = None,
@@ -273,6 +275,7 @@ def protenix_infer_static(
         single_attention_backend=trunk_single_attention_backend,
         triangle_attention_backend=trunk_triangle_attention_backend,
         cycle_msa_features=cycle_msa_features,
+        cycle_msa_index_tape=cycle_msa_index_tape,
     )
     s_inputs = _capture.capture("single_inputs", s_inputs)
     s_trunk = _capture.capture("single", s_trunk)

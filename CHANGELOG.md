@@ -424,6 +424,18 @@ command predicts unless it says so here, in its own paragraph.
   arguments fall from 98,828,288 to 32,776 bytes; sampler temp rises from 196
   to 3,197,776 bytes while output stays 491,520 bytes. These are synthetic
   sampler-only CPU numbers; released GPU peak and latency remain unmeasured.
+- **Protenix's per-recycle MSA sampling no longer sends ten token-wide copies
+  of the alignment into the compiled graph.** `--sample-msa-per-cycle` still
+  draws the same row counts and permutations from the same NumPy generator,
+  but now passes an int32 row-index tape plus a boolean row mask and gathers
+  the current cycle from the raw MSA already present in the model inputs. The
+  former materialized-cycle API remains available to direct callers, and both
+  scanned and unrolled recycling are raw-byte identical on the CPU regression,
+  including signed zero and nonfinite deletion features. At 16,384 source rows,
+  1,003 tokens, ten cycles and seed 101, input-tree accounting falls from
+  2,485,514,240 bytes of cycle arrays to a 774,400-byte tape; the single raw MSA
+  is unchanged. This is a scoped CPU/input-buffer measurement, not a released
+  GPU peak or latency claim; full-depth MSA inference is unchanged.
 
 - **Why the ESMFold2 encoder parity test does not run is now a measurement
   rather than a guess.** `transformers` and the published checkpoint have

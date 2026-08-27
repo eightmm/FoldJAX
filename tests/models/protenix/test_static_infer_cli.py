@@ -196,6 +196,79 @@ def test_static_infer_prewarm_populates_graph_without_writing_output(
     assert "prewarmed:" in capsys.readouterr().out
 
 
+def test_static_infer_passes_compact_cycle_msa_indices_to_the_model(
+    tmp_path, monkeypatch
+) -> None:
+    from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    features_path = tmp_path / "toy_features.npz"
+    out_path = tmp_path / "must_not_exist.npz"
+    save_native_weights(weights_path, _toy_params(), compress=False)
+    save_static_feature_npz(features_path, _toy_features())
+    tape = MSACycleIndexTape(
+        row_indices=np.asarray([[2, 0], [1, 0]], dtype=np.int32),
+        row_mask=np.asarray([[True, False], [True, True]]),
+    )
+    sampled = []
+    captured = {}
+
+    def fake_sample(features, *, num_recycles, seed, bucket_size=64):
+        sampled.append((features, num_recycles, seed, bucket_size))
+        return tape
+
+    def fake_predict(_params, features, **kwargs):
+        captured.update(kwargs)
+        return {
+            "coordinate": np.zeros(
+                (1, len(features["atom_to_token_idx"]), 3), dtype=np.float32
+            )
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.trunk_blocks.msa."
+        "sample_msa_cycle_index_tape",
+        fake_sample,
+    )
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+
+    main(
+        [
+            "--model-name",
+            "unknown",
+            "--weights",
+            str(weights_path),
+            "--features",
+            str(features_path),
+            "--out",
+            str(out_path),
+            "--n-sample",
+            "1",
+            "--n-step",
+            "1",
+            "--n-cycle",
+            "2",
+            "--sample-msa-per-cycle",
+            "--seeds",
+            "7",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--prewarm-only",
+            "--cpu-only",
+            "--no-compile-cache",
+        ]
+    )
+
+    assert len(sampled) == 1
+    assert sampled[0][1:] == (2, 7, 64)
+    assert captured["cycle_msa_index_tape"] is tape
+    assert "cycle_msa_features" not in captured
+
+
 def test_static_infer_runs_from_sequence_json_features(tmp_path) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     features_path = tmp_path / "json_features.npz"

@@ -21,7 +21,11 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import (
     relative_position_encoding,
     relative_position_features,
 )
-from foldjax.models.protenix.models.trunk_blocks.msa import MSAModuleParams, msa_module
+from foldjax.models.protenix.models.trunk_blocks.msa import (
+    MSACycleIndexTape,
+    MSAModuleParams,
+    msa_module,
+)
 from foldjax.models.protenix.models.trunk_blocks.pairformer import (
     PairformerStackParams,
     pairformer_stack,
@@ -131,6 +135,7 @@ def pairformer_output_from_s_inputs(
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
+    cycle_msa_index_tape: MSACycleIndexTape | None = None,
     use_cycle_scan: bool = True,
     msa_stack_first: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -188,8 +193,22 @@ def pairformer_output_from_s_inputs(
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
+    if cycle_msa_features is not None and cycle_msa_index_tape is not None:
+        raise ValueError(
+            "cycle_msa_features and cycle_msa_index_tape are mutually exclusive"
+        )
     if cycle_msa_features is not None and len(cycle_msa_features) != num_recycles:
         raise ValueError("cycle_msa_features length must equal num_recycles")
+    if cycle_msa_index_tape is not None:
+        if cycle_msa_index_tape.row_indices.ndim != 2:
+            raise ValueError("cycle MSA row indices must have shape [cycle, row]")
+        if (
+            cycle_msa_index_tape.row_mask.shape
+            != cycle_msa_index_tape.row_indices.shape
+        ):
+            raise ValueError("cycle MSA row mask must match the row-index shape")
+        if cycle_msa_index_tape.row_indices.shape[0] != num_recycles:
+            raise ValueError("cycle MSA index tape length must equal num_recycles")
 
     def one_cycle(carry, msa_features):
         s, z = carry
@@ -197,7 +216,11 @@ def pairformer_output_from_s_inputs(
         # signal that the alignment is not resampled per cycle -- every cycle then
         # reads the same MSA features out of the feature dict. Forwarding the
         # ``None`` instead reaches ``msa_module`` as a missing feature dict.
-        if msa_features is None:
+        if cycle_msa_index_tape is not None:
+            msa_features = _materialize_msa_cycle_from_index_tape(
+                input_feature_dict, msa_features
+            )
+        elif msa_features is None:
             msa_features = input_feature_dict
         # Per-cycle alignments are sampled from the raw features, not from the
         # trunk's own (already narrowed) feature dict, so they arrive float32
@@ -267,19 +290,62 @@ def pairformer_output_from_s_inputs(
     # matters at Protenix's released depth: ten cycles over a 48-block Pairformer
     # unroll into a graph ten times larger, and compile time tracks graph size.
     stacked_msa = _stacked_cycle_msa(cycle_msa_features) if use_cycle_scan else None
-    if use_cycle_scan and cycle_msa_features is None and num_recycles > 1:
-        (s, z), _ = jax.lax.scan(one_cycle, (s, z), xs=None, length=num_recycles)
+    if use_cycle_scan and cycle_msa_index_tape is not None and num_recycles > 1:
+        (s, z), _ = jax.lax.scan(one_cycle, (s, z), cycle_msa_index_tape)
+    elif use_cycle_scan and cycle_msa_features is None and num_recycles > 1:
+        (s, z), _ = jax.lax.scan(
+            one_cycle, (s, z), xs=None, length=num_recycles
+        )
     elif stacked_msa is not None and num_recycles > 1:
         (s, z), _ = jax.lax.scan(one_cycle, (s, z), stacked_msa)
     else:
         for cycle_index in range(num_recycles):
-            msa_features = (
-                input_feature_dict
-                if cycle_msa_features is None
-                else cycle_msa_features[cycle_index]
-            )
+            if cycle_msa_index_tape is not None:
+                msa_features = jax.tree.map(
+                    lambda value: value[cycle_index],
+                    cycle_msa_index_tape,
+                )
+            else:
+                msa_features = (
+                    input_feature_dict
+                    if cycle_msa_features is None
+                    else cycle_msa_features[cycle_index]
+                )
             (s, z), _ = one_cycle((s, z), msa_features)
     return s_inputs, s, z
+
+
+def _materialize_msa_cycle_from_index_tape(
+    input_feature_dict: dict[str, jnp.ndarray],
+    tape: MSACycleIndexTape,
+) -> dict[str, jnp.ndarray]:
+    """Gather one recycled MSA view from the single retained raw alignment."""
+
+    required = ("msa", "has_deletion", "deletion_value")
+    missing = [name for name in required if name not in input_feature_dict]
+    if missing:
+        raise ValueError(
+            "cycle MSA index tape requires raw features: " + ", ".join(missing)
+        )
+    row_indices = jnp.asarray(tape.row_indices)
+    row_mask = jnp.asarray(tape.row_mask, dtype=bool)
+    if row_indices.ndim != 1 or row_mask.shape != row_indices.shape:
+        raise ValueError("one cycle MSA index tape must have shape [row]")
+
+    output = {}
+    for name in required:
+        selected = jnp.take(input_feature_dict[name], row_indices, axis=-2)
+        mask_shape = (1,) * (selected.ndim - 2) + (row_mask.shape[0], 1)
+        output[name] = jnp.where(
+            row_mask.reshape(mask_shape),
+            selected,
+            jnp.zeros((), dtype=selected.dtype),
+        )
+    mask_shape = (1,) * (output["msa"].ndim - 2) + (row_mask.shape[0], 1)
+    output["msa_mask"] = jnp.broadcast_to(
+        row_mask.reshape(mask_shape), output["msa"].shape
+    ).astype(jnp.float32)
+    return output
 
 
 def _stacked_cycle_msa(
