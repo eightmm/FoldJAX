@@ -228,6 +228,49 @@ class Job:
         path.write_text(json.dumps(self.to_document(), indent=2), encoding="utf-8")
         return path
 
+    def store(self) -> Path:
+        """Write the job into the FoldJAX store and return its path.
+
+        The sibling of :meth:`write` for when the caller has no opinion about
+        where the file goes -- which is the common case, because the file is a
+        means rather than an artifact. `write` keeps taking an explicit path
+        for when it is the artifact.
+
+        This is what the command line has always done for `--sequence`, and
+        the Python API had no way to ask for it: it had to invent a filename,
+        which then lived in the working directory and could disagree with
+        `name`. Generated input is still input -- it is hashed into the run
+        manifest and it is what `plan` prints -- so it belongs in the store
+        beside everything else FoldJAX manages.
+
+        Re-storing the same job returns the same path. A *different* job whose
+        name collides gets a digest suffix, so two jobs never quietly share one
+        file.
+        """
+        import hashlib
+
+        from foldjax import paths
+        from foldjax.output import safe_job_name
+
+        root = paths.runtime_dir("jobs")
+        root.mkdir(parents=True, exist_ok=True)
+        document = json.dumps(self.to_document(), sort_keys=True)
+        name = safe_job_name(self.name)
+        # The plain name is what ends up in `foldjax-outputs/<stem>`, so keep it
+        # readable. The digest is added only on a real collision.
+        candidate = root / f"{name}.json"
+        if candidate.is_file():
+            try:
+                existing = json.dumps(
+                    json.loads(candidate.read_text(encoding="utf-8")), sort_keys=True
+                )
+            except (OSError, json.JSONDecodeError):
+                existing = None
+            if existing != document:
+                digest = hashlib.sha256(document.encode()).hexdigest()[:8]
+                candidate = root / f"{name}-{digest}.json"
+        return self.write(candidate)
+
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> Job:
         """Structure a job mapping. Unknown fields raise rather than vanish."""

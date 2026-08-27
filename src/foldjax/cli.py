@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import errno
-import hashlib
 import json
 import os
 import sys
@@ -537,36 +536,6 @@ _JOB_SUFFIXES = (
 )
 
 
-def _generated_job_path(job: Job) -> Path:
-    """Write a generated job into the FoldJAX store and return its path.
-
-    Generated input is still input: it is hashed into the run manifest, it is
-    what `plan` prints, and re-running the same sequences finds the same file.
-    """
-    from foldjax.output import safe_job_name
-
-    root = paths.runtime_dir("jobs")
-    root.mkdir(parents=True, exist_ok=True)
-    document = json.dumps(job.to_document(), sort_keys=True)
-    name = safe_job_name(job.name)
-    # The plain name is what ends up in `foldjax-outputs/<stem>`, so keep it
-    # readable. A digest is added only when that name is already taken by a
-    # *different* job: re-running the same sequences must reuse one file, and
-    # two different jobs must never quietly share one.
-    candidate = root / f"{name}.json"
-    if candidate.is_file():
-        try:
-            existing = json.dumps(
-                json.loads(candidate.read_text(encoding="utf-8")), sort_keys=True
-            )
-        except (OSError, json.JSONDecodeError):
-            existing = None
-        if existing != document:
-            digest = hashlib.sha256(document.encode()).hexdigest()[:8]
-            candidate = root / f"{name}-{digest}.json"
-    return job.write(candidate)
-
-
 def _resolve_inputs(args: argparse.Namespace) -> list[Path]:
     """Turn everything the CLI accepts as input into common job/native files."""
     sequences = bool(args.sequence or args.dna or args.rna)
@@ -579,17 +548,15 @@ def _resolve_inputs(args: argparse.Namespace) -> list[Path]:
         if not sequences:
             raise ValueError("a ligand needs a --sequence to bind to")
         return [
-            _generated_job_path(
-                Job.from_sequences(
-                    args.sequence,
-                    dna=args.dna,
-                    rna=args.rna,
-                    ligand_ccd=args.ligand,
-                    ligand_smiles=args.ligand_smiles,
-                    name=args.name or "job",
-                    affinity_binder=args.affinity_binder,
-                )
-            )
+            Job.from_sequences(
+                args.sequence,
+                dna=args.dna,
+                rna=args.rna,
+                ligand_ccd=args.ligand,
+                ligand_smiles=args.ligand_smiles,
+                name=args.name or "job",
+                affinity_binder=args.affinity_binder,
+            ).store()
         ]
     if not args.input:
         raise ValueError("one of --input and --sequence is required")
@@ -628,12 +595,12 @@ def _as_job_file(path: Path) -> Path:
     """
     text = str(path)
     if text.startswith("structure:"):
-        return _generated_job_path(Job.from_structure(Path(text[10:])))
+        return Job.from_structure(Path(text[10:])).store()
     suffix = path.suffix.lower()
     if suffix in _FASTA_SUFFIXES:
-        return _generated_job_path(Job.from_fasta(path))
+        return Job.from_fasta(path).store()
     if suffix in _STRUCTURE_SUFFIXES:
-        return _generated_job_path(Job.from_structure(path))
+        return Job.from_structure(path).store()
     return path
 
 

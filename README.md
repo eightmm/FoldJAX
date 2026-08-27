@@ -101,7 +101,7 @@ job_path = Job.from_sequences(
     rna=("GGGAAACCC",),
     ligand_ccd=("ATP",),
     name="protein-rna-atp-demo",
-).write("protein-rna-atp-demo.json")
+).store()
 report = predict_batch(
     PredictionRequest(
         models=("protenix", "opendde", "openfold3"),

@@ -12,6 +12,19 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`Job.store()` gives the Python API the step the command line already
+  had.** `foldjax predict --sequence ...` has always written the generated job
+  into the FoldJAX store, content-addressed, and handed the path on. The Python
+  API could not ask for that: `Job.write(path)` needs a path, so callers
+  invented one -- the README invented `"protein-rna-atp-demo.json"` -- which
+  landed in the working directory and could drift from the job's own `name`.
+  `store()` is the managed-location sibling of `write()`: same job, same path;
+  a different job whose name collides gets a digest suffix, so two jobs never
+  quietly share a file. Input still arrives as a file, which is the interface
+  `write` was deliberately built around; what changes is that the caller no
+  longer has to name it. The code is the CLI's, moved rather than copied --
+  `cli.py` now calls the method.
+
 - **Every port spells the four sampling knobs the way FoldJAX does.** They
   had kept whatever their upstream called them, so one concept had five names:
   `num_samples` was also `diffusion_samples` and `n_sample`; `num_steps` was
