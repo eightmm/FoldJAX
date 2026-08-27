@@ -23,7 +23,6 @@ from collections.abc import Collection, Mapping, MutableMapping, Sequence
 import dataclasses
 import datetime
 import enum
-import functools
 import itertools
 from typing import TypeAlias
 
@@ -134,17 +133,27 @@ def _get_representative_atom(
       raise ValueError(sequence_format)
 
 
-@functools.lru_cache(maxsize=128)
 def _get_first_non_leaving_atom(
     ccd: chemical_components.Ccd, res_name: str
 ) -> str:
   """Returns first definitely non-leaving atom if exists, as a stand-in."""
+  try:
+    representative_atom = ccd._first_non_leaving_atom_cache.pop(res_name)
+  except KeyError:
+    pass
+  else:
+    ccd._first_non_leaving_atom_cache[res_name] = representative_atom
+    return representative_atom
+
   all_atoms = struc_chem_comps.get_all_atoms_in_entry(ccd, res_name=res_name)[
       '_chem_comp_atom.atom_id'
   ]
   representative_atom = all_atoms[0]
   if representative_atom == 'O1' and len(all_atoms) > 1:
     representative_atom = all_atoms[1]
+  while len(ccd._first_non_leaving_atom_cache) >= 128:
+    ccd._first_non_leaving_atom_cache.popitem(last=False)
+  ccd._first_non_leaving_atom_cache[res_name] = representative_atom
   return representative_atom
 
 

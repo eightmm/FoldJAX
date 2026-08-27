@@ -21,7 +21,6 @@
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
 import dataclasses
-import functools
 from typing import Any, Self
 
 from alphafold3.constants import chemical_components
@@ -545,8 +544,19 @@ def get_all_atoms_in_entry(
   return res_atoms
 
 
-@functools.lru_cache(maxsize=128)
 def get_res_atom_names(ccd: chemical_components.Ccd, res_name: str) -> set[str]:
   """Gets the names of the atoms in a given CCD residue."""
+  try:
+    atoms = ccd._res_atom_names_cache.pop(res_name)
+  except KeyError:
+    pass
+  else:
+    ccd._res_atom_names_cache[res_name] = atoms
+    return atoms
+
   atoms = get_all_atoms_in_entry(ccd, res_name)['_chem_comp_atom.atom_id']
-  return set(atoms)
+  atom_names = set(atoms)
+  while len(ccd._res_atom_names_cache) >= 128:
+    ccd._res_atom_names_cache.popitem(last=False)
+  ccd._res_atom_names_cache[res_name] = atom_names
+  return atom_names

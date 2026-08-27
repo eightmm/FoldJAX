@@ -62,6 +62,8 @@ class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):
       '_component_info_cache',
       '_dict',
       '_ccd_pickle_path',
+      '_first_non_leaving_atom_cache',
+      '_res_atom_names_cache',
       '__weakref__',
   )
 
@@ -85,6 +87,8 @@ class Ccd(Mapping[str, Mapping[str, Sequence[str]]]):
     # Keeping its small LRU on the owning CCD preserves that reuse without a
     # module cache retaining up to 128 per-job user-CCD dictionary copies.
     self._component_info_cache = OrderedDict()
+    self._first_non_leaving_atom_cache = OrderedDict()
+    self._res_atom_names_cache = OrderedDict()
     base_ccd = _load_ccd_pickle_cached(self._ccd_pickle_path)
 
     if user_ccd is not None:

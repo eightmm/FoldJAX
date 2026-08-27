@@ -151,6 +151,15 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **AlphaFold 3 structure helpers no longer retain 128 previous CCD jobs.**
+  Representative-atom and residue-atom-name memoization now lives in two
+  bounded 128-entry maps on the owning ``Ccd`` instead of module LRU keys that
+  held each job and its custom dictionary alive. A synthetic 50,256-component
+  base with 160 distinct job objects left 128 alive and retained 246,185,372
+  traced Python bytes before this change; the same probe now leaves zero jobs
+  alive and 14,223 traced bytes. The within-job lookups remain cached. Returned
+  atoms and structure parsing are unchanged.
+
 - **Switching AlphaFold 3 CCD roots no longer keeps two complete dictionaries
   alive.** Repeated jobs on the same pickle still reuse one base dictionary, while
   the process cache now owns only its latest path; an active ``Ccd`` keeps its

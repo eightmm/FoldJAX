@@ -124,6 +124,39 @@ def test_component_info_cache_is_bounded_by_the_ccd_lifetime(monkeypatch) -> Non
     assert ccd_ref() is None
 
 
+def test_structure_ccd_caches_are_bounded_by_the_job_lifetime(monkeypatch) -> None:
+    chemical_components, _pipeline = _runtime_modules()
+    from alphafold3.structure import chemical_components as structure_components
+    from alphafold3.structure import parsing
+
+    base = {
+        f"LIG{index}": {"_chem_comp_atom.atom_id": ["C1", "C2"]}
+        for index in range(130)
+    }
+    monkeypatch.setattr(
+        chemical_components,
+        "_load_ccd_pickle_cached",
+        lambda _path: base,
+    )
+    ccd = chemical_components.Ccd()
+
+    for name in base:
+        assert parsing._get_first_non_leaving_atom(ccd, name) == "C1"
+        assert structure_components.get_res_atom_names(ccd, name) == {"C1", "C2"}
+
+    assert len(ccd._first_non_leaving_atom_cache) == 128
+    assert len(ccd._res_atom_names_cache) == 128
+    assert "LIG0" not in ccd._first_non_leaving_atom_cache
+    assert "LIG0" not in ccd._res_atom_names_cache
+    assert "LIG129" in ccd._first_non_leaving_atom_cache
+    assert "LIG129" in ccd._res_atom_names_cache
+
+    ccd_ref = weakref.ref(ccd)
+    del ccd
+    gc.collect()
+    assert ccd_ref() is None
+
+
 def test_pipeline_search_cache_is_reused_only_within_one_job(monkeypatch) -> None:
     _chemical_components, pipeline = _runtime_modules()
     calls = {"templates": 0, "protein": 0, "rna": 0}
