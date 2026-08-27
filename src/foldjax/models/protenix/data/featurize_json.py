@@ -228,7 +228,7 @@ def featurize_protein_json(
     base_dir: str | Path | None = None,
     n_queries: int = 32,
     n_keys: int = 128,
-    max_msa_rows: int = 16384,
+    max_msa_depth: int = 16384,
     seed: int | None = None,
 ) -> dict[str, Any]:
     """Build static features for proteinChain inputs."""
@@ -251,8 +251,8 @@ def featurize_protein_json(
 
     if n_keys < n_queries or n_queries % 2 or n_keys % 2:
         raise ValueError("n_keys must be >= n_queries and both must be even")
-    if max_msa_rows <= 0:
-        raise ValueError("max_msa_rows must be positive")
+    if max_msa_depth <= 0:
+        raise ValueError("max_msa_depth must be positive")
     chains = _expand_chains(job, base_dir=base_dir)
     chemistry_rng = random.Random(_resolve_featurization_seed(job, seed))
     _remove_polymer_link_leaving_groups(chains, rng=chemistry_rng)
@@ -369,7 +369,7 @@ def featurize_protein_json(
         token_index=token_index,
     )
     msa, deletion_matrix, assembled_profile, assembled_deletion_mean = (
-        _assemble_msa_features(chains, max_msa_rows=max_msa_rows)
+        _assemble_msa_features(chains, max_msa_depth=max_msa_depth)
     )
     profile[:] = assembled_profile
     deletion_mean[:] = assembled_deletion_mean
@@ -490,7 +490,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--n-queries", type=int, default=32)
     parser.add_argument("--n-keys", type=int, default=128)
-    parser.add_argument("--max-msa-rows", type=int, default=16384)
+    parser.add_argument(
+        "--max-msa-depth",
+        "--max-msa-rows",
+        dest="max_msa_depth",
+        type=int,
+        default=16384,
+    )
     args = parser.parse_args(argv)
 
     features = featurize_protein_json(
@@ -498,7 +504,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         base_dir=args.input.parent,
         n_queries=args.n_queries,
         n_keys=args.n_keys,
-        max_msa_rows=args.max_msa_rows,
+        max_msa_depth=args.max_msa_depth,
     )
     save_static_feature_npz(args.out, features)
     print(f"wrote: {args.out}")
@@ -1400,7 +1406,7 @@ def _merge_feature(chains: list[dict[str, np.ndarray]], key: str) -> np.ndarray:
 def _assemble_msa_features(
     chains: list[dict[str, Any]],
     *,
-    max_msa_rows: int,
+    max_msa_depth: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Port of torch ``FeatureAssemblyLine.assemble`` for inference inputs."""
 
@@ -1462,7 +1468,7 @@ def _assemble_msa_features(
         feat["deletion_mean"] = np.mean(feat["deletion_matrix"], axis=0)
         raw_chains.append(feat)
 
-    max_p = max_msa_rows // 2
+    max_p = max_msa_depth // 2
     if need_pairing:
         raw_chains = _pair_chains_by_species(raw_chains, max_p, active, 600)
         raw_chains = _cleanup_unpaired(raw_chains)
@@ -1473,7 +1479,7 @@ def _assemble_msa_features(
     for c in raw_chains:
         p_msa = c.get("msa_all_seq")
         ps = min(p_msa.shape[0], max_p) if p_msa is not None else 0
-        us = max(0, min(c["msa"].shape[0], max_msa_rows - ps))
+        us = max(0, min(c["msa"].shape[0], max_msa_depth - ps))
         cr: dict[str, np.ndarray] = {
             "asym_id": c["asym_id"],
             "profile": c["profile"],

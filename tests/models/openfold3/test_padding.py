@@ -180,14 +180,14 @@ def test_padded_sampler_tape_keeps_the_exact_real_atom_prefix() -> None:
     exact = padded_noise_tape(
         jax.random.key(17),
         n_steps=3,
-        n_sample=2,
+        num_samples=2,
         actual_atoms=5,
         target_atoms=5,
     )
     padded = padded_noise_tape(
         jax.random.key(17),
         n_steps=3,
-        n_sample=2,
+        num_samples=2,
         actual_atoms=5,
         target_atoms=11,
     )

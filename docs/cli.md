@@ -19,15 +19,27 @@ With one model and one input, the compatible default remains
 default. Batch requests add canonical model namespaces below their output root
 so different models cannot overwrite one another.
 
-`--num-samples`, `--num-steps`, and `--num-recycles` are model-neutral. Each
-backend calls them something different, and FoldJAX translates:
+`--num-samples`, `--num-steps`, `--num-recycles` and `--max-msa-depth` are
+model-neutral, and every port now spells them that way inside as well. Each
+port used to keep whatever its upstream called them, so this table listed six
+columns of synonyms -- `diffusion_samples`, `n_sample`, `num_loops`,
+`no_rollout_steps`, `max_msa_rows` -- and the adapters translated between them.
+The names are FoldJAX's own now, so there is nothing left to translate:
 
-| neutral | alphafold3 | boltz2 | esmfold2 | openfold3 | opendde / protenix |
-|---|---|---|---|---|---|
-| `--num-samples` | `heads.diffusion.eval.num_samples` | `diffusion_samples` | `num_samples` | `num_samples` | `n_sample` |
-| `--num-steps` | `heads.diffusion.eval.steps` | `steps` | `num_steps` | `no_rollout_steps` | `n_step` |
-| `--num-recycles` | `num_recycles` | `recycling` | `num_loops` | `num_cycles` | `n_cycle` |
-| `--max-msa-depth` | `evoformer.num_msa` | `max_msa_depth` | `msa_max_depth` | *feature cut* | `max_msa_rows` |
+| neutral | every port's own name | where it lands |
+|---|---|---|
+| `--num-samples` | `num_samples` | AlphaFold 3 `heads.diffusion.eval.num_samples` |
+| `--num-steps` | `num_steps` | AlphaFold 3 `heads.diffusion.eval.steps` |
+| `--num-recycles` | `num_recycles` | AlphaFold 3 `num_recycles` |
+| `--max-msa-depth` | `max_msa_depth` | AlphaFold 3 `evoformer.num_msa`; OpenFold3 cuts the feature |
+
+The right-hand column is upstream's own config path, which is a different
+thing and stays upstream's. What changed is FoldJAX's vocabulary, not the
+checkpoints or the configs it writes into.
+
+Protenix's and OpenDDE's native CLIs kept their old flags as aliases:
+`--n-sample`, `--n-step`, `--n-cycle` and `--max-msa-rows` still work and mean
+what they always meant.
 
 All four reach all six models; setting both a neutral knob and its native
 name is an error, and `--option KEY=VALUE` passes anything native straight

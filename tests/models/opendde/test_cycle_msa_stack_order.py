@@ -91,7 +91,7 @@ def test_opendde_cycle_features_stack_in_a_fixed_order() -> None:
             "has_deletion": msa.astype(np.float32),
             "deletion_value": msa.astype(np.float32),
         },
-        n_cycle=4,
+        num_recycles=4,
         seed=101,
     )
 
@@ -138,7 +138,7 @@ def test_sampled_msa_source_pruning_keeps_trunk_hlo_and_bounds_cache(
             features,
             s_inputs,
             params,
-            n_cycle=2,
+            num_recycles=2,
             cycle_msa_features=sampled,
             single_attention_backend="xla",
             triangle_attention_backend="xla",

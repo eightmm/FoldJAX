@@ -344,18 +344,18 @@ def test_a_wrong_encoding_width_is_refused() -> None:
         atom_metadata(features)
 
 
-def _fake_prediction(n_token: int, n_bin: int, n_sample: int = 5):
+def _fake_prediction(n_token: int, n_bin: int, num_samples: int = 5):
     """A prediction whose pair logits are the only large thing in it."""
     from foldjax.models.openfold3.inference import Prediction
 
     return Prediction(
-        coordinates=np.zeros((n_sample, n_token * 8, 3), dtype=np.float32),
-        plddt=np.zeros((n_sample, n_token * 8), dtype=np.float32),
-        ptm=np.zeros((n_sample,), dtype=np.float32),
+        coordinates=np.zeros((num_samples, n_token * 8, 3), dtype=np.float32),
+        plddt=np.zeros((num_samples, n_token * 8), dtype=np.float32),
+        ptm=np.zeros((num_samples,), dtype=np.float32),
         iptm=None,
         chain_pair_iptm=None,
-        pae_logits=np.zeros((n_sample, n_token, n_token, n_bin), dtype=np.float32),
-        pde_logits=np.zeros((n_sample, n_token, n_token, n_bin), dtype=np.float32),
+        pae_logits=np.zeros((num_samples, n_token, n_token, n_bin), dtype=np.float32),
+        pde_logits=np.zeros((num_samples, n_token, n_token, n_bin), dtype=np.float32),
         distogram_logits=np.zeros((1, n_token, n_token, n_bin), dtype=np.float32),
         experimentally_resolved_logits=None,
     )
@@ -396,7 +396,7 @@ def test_write_arrays_drops_largest_first(tmp_path) -> None:
     """
     from foldjax.models.openfold3.output import write_arrays
 
-    prediction = _fake_prediction(n_token=64, n_bin=64, n_sample=5)
+    prediction = _fake_prediction(n_token=64, n_bin=64, num_samples=5)
     pae_bytes = prediction.pae_logits.nbytes
     everything = sum(
         value.nbytes for value in prediction._asdict().values() if value is not None

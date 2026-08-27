@@ -154,9 +154,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = released_config(
         n_token=n_token,
         n_atom=n_atom,
-        num_cycles=args.cycles,
+        num_recycles=args.cycles,
         num_samples=args.samples,
-        no_rollout_steps=args.steps,
+        num_steps=args.steps,
     )
     batch_np = subsample_msa_rows(batch_np, config.msa_depth)
     batch_np, n_chain = normalize_asym_ids(batch_np)

@@ -84,10 +84,10 @@ def reference(request, openfold3_source: Path, randomized):
     batch = make_batch(n_token=N_TOKEN, n_msa=N_MSA, n_templ=N_TEMPL)
     # Recycling is itself a composition: each cycle re-projects the previous
     # output, so a single cycle would not exercise the recycling projections.
-    num_cycles = request.param
+    num_recycles = request.param
     with torch.no_grad():
-        s_input, s, z = model.run_trunk(batch=batch, num_cycles=num_cycles)
-    return model, batch, (s_input, s, z), num_cycles
+        s_input, s, z = model.run_trunk(batch=batch, num_recycles=num_recycles)
+    return model, batch, (s_input, s, z), num_recycles
 
 
 def _as_jax(batch: dict) -> dict:
@@ -109,14 +109,14 @@ def test_upstream_trunk_consumes_this_batch(reference) -> None:
 
 
 def test_trunk_matches_upstream(reference) -> None:
-    model, batch, (s_input_ref, s_ref, z_ref), num_cycles = reference
+    model, batch, (s_input_ref, s_ref, z_ref), num_recycles = reference
     config = _reduced_config().architecture
 
     params = map_trunk(dict(model.state_dict()))
     s_input, s, z = trunk(
         _as_jax(batch),
         params,
-        num_cycles=num_cycles,
+        num_recycles=num_recycles,
         n_query=config.input_embedder.atom_attn_enc.n_query,
         n_key=config.input_embedder.atom_attn_enc.n_key,
         atom_heads=config.input_embedder.atom_attn_enc.no_heads,
@@ -155,7 +155,7 @@ def test_masked_msa_rows_are_a_no_op(reference) -> None:
     """
     import torch
 
-    model, batch, _out, num_cycles = reference
+    model, batch, _out, num_recycles = reference
     params = map_trunk(dict(model.state_dict()))
     config = _reduced_config().architecture
 
@@ -163,7 +163,7 @@ def test_masked_msa_rows_are_a_no_op(reference) -> None:
         return trunk(
             _as_jax(features),
             params,
-            num_cycles=num_cycles,
+            num_recycles=num_recycles,
             n_query=config.input_embedder.atom_attn_enc.n_query,
             n_key=config.input_embedder.atom_attn_enc.n_key,
             atom_heads=config.input_embedder.atom_attn_enc.no_heads,

@@ -135,7 +135,7 @@ def test_boltz_gives_each_sample_its_own_confidence(
 ) -> None:
     """Ranking samples is the reason to generate more than one.
 
-    Boltz-2 reports pLDDT as [n_sample, n_token] and the pTM family as one
+    Boltz-2 reports pLDDT as [num_samples, n_token] and the pTM family as one
     value per sample. The adapter used to average pLDDT over the whole batch,
     take element 0 of iptm, and copy that one dict onto every sample -- so
     three structures came back with three identical score sets and nothing to
@@ -263,7 +263,7 @@ def test_boltz_rejects_a_single_diffusion_step_before_loading_model(
         options={},
     )
 
-    with pytest.raises(ValueError, match="steps must be at least 2"):
+    with pytest.raises(ValueError, match="num_steps must be at least 2"):
         Boltz2Backend().validate_request(request)
 
 
@@ -401,8 +401,8 @@ def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) ->
         _request(
             tmp_path,
             "protenix",
-            n_sample=2,
-            n_step=20,
+            num_samples=2,
+            num_steps=20,
             esm_checkpoint_dir=tmp_path / "esm-checkpoint",
             cli_args=("--gamma0", "0.2"),
         )
@@ -416,8 +416,8 @@ def test_protenix_adapter_invokes_cli_in_process(tmp_path: Path, monkeypatch) ->
         "--out",
         str(tmp_path / "out"),
     ]
-    assert "--n-sample" in seen and "2" in seen
-    assert "--n-step" in seen and "20" in seen
+    assert "--num-samples" in seen and "2" in seen
+    assert "--num-steps" in seen and "20" in seen
     assert seen[seen.index("--esm-checkpoint-dir") + 1] == str(
         tmp_path / "esm-checkpoint"
     )
@@ -547,9 +547,9 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
         _request(
             tmp_path,
             "opendde",
-            n_sample=2,
-            n_step=20,
-            n_cycle=3,
+            num_samples=2,
+            num_steps=20,
+            num_recycles=3,
             n_queries=8,
             components_cif=components_path,
             ccd_rdkit_cache=rdkit_cache_path,
@@ -570,9 +570,9 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
         str(tmp_path / "out"),
     ]
     assert seen[seen.index("--seed") + 1] == "5"
-    assert seen[seen.index("--n-sample") + 1] == "2"
-    assert seen[seen.index("--n-step") + 1] == "20"
-    assert seen[seen.index("--n-cycle") + 1] == "3"
+    assert seen[seen.index("--num-samples") + 1] == "2"
+    assert seen[seen.index("--num-steps") + 1] == "20"
+    assert seen[seen.index("--num-recycles") + 1] == "3"
     assert seen[seen.index("--n-queries") + 1] == "8"
     assert seen[seen.index("--components-cif") + 1] == str(components_path)
     assert seen[seen.index("--ccd-rdkit-cache") + 1] == str(rdkit_cache_path)
@@ -814,7 +814,7 @@ def test_alphafold3_requires_real_booleans_for_output_options(
 
 
 def test_alphafold3_adapter_invokes_cloned_runner(tmp_path: Path, monkeypatch) -> None:
-    request = _request(tmp_path, "alphafold3", diffusion_samples=2)
+    request = _request(tmp_path, "alphafold3", num_samples=2)
     runner_file = tmp_path / "af3" / "run_alphafold.py"
     runner_file.parent.mkdir()
     runner_file.touch()

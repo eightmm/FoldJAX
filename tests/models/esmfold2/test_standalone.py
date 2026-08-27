@@ -77,7 +77,7 @@ def test_the_released_checkpoint_folds_with_no_torch(without_torch, tmp_path) ->
         [("MQIFVKTLTGKTITLE", "A", 0, 0)],
         None,
         model,
-        num_loops=0,
+        num_recycles=0,
         num_samples=1,
         num_steps=2,
     )

@@ -71,10 +71,10 @@ def test_protenix_infer_static_returns_core_outputs() -> None:
         params,
         noise_schedule,
         key=None,
-        n_sample=1,
+        num_samples=1,
         init_noise=init_noise,
         step_noises=(step_noise,),
-        n_cycle=1,
+        num_recycles=1,
         input_atom_heads=1,
         atom_encoder_heads=1,
         token_heads=1,
@@ -183,10 +183,10 @@ def test_protenix_infer_sampler_scan_matches_loop() -> None:
     step_noises = (jnp.zeros_like(init_noise), jnp.ones_like(init_noise) * 0.1)
     kwargs = {
         "key": None,
-        "n_sample": 1,
+        "num_samples": 1,
         "init_noise": init_noise,
         "step_noises": step_noises,
-        "n_cycle": 1,
+        "num_recycles": 1,
         "input_atom_heads": 1,
         "atom_encoder_heads": 1,
         "token_heads": 1,
@@ -226,10 +226,10 @@ def test_protenix_infer_diffusion_efficient_fusion_matches_standard() -> None:
     step_noises = (jnp.zeros_like(init_noise), jnp.ones_like(init_noise) * 0.1)
     kwargs = {
         "key": None,
-        "n_sample": 1,
+        "num_samples": 1,
         "init_noise": init_noise,
         "step_noises": step_noises,
-        "n_cycle": 1,
+        "num_recycles": 1,
         "input_atom_heads": 1,
         "atom_encoder_heads": 1,
         "token_heads": 1,
@@ -269,10 +269,10 @@ def test_protenix_infer_denoiser_jit_matches_eager() -> None:
     step_noises = (jnp.zeros_like(init_noise), jnp.ones_like(init_noise) * 0.1)
     kwargs = {
         "key": None,
-        "n_sample": 1,
+        "num_samples": 1,
         "init_noise": init_noise,
         "step_noises": step_noises,
-        "n_cycle": 1,
+        "num_recycles": 1,
         "input_atom_heads": 1,
         "atom_encoder_heads": 1,
         "token_heads": 1,

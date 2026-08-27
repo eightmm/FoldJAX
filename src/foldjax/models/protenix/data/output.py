@@ -79,13 +79,13 @@ def write_protenix_outputs(
 
     coordinates = np.asarray(output.get("coordinate"))
     if coordinates.ndim != 3 or coordinates.shape[-1] != 3:
-        raise ValueError("coordinate must have shape (n_sample, n_atom, 3)")
+        raise ValueError("coordinate must have shape (num_samples, n_atom, 3)")
     require_finite_coordinates(coordinates, model="Protenix/OpenDDE")
     if "atom_plddt" not in output:
         raise ValueError("original-style output requires atom_plddt confidence")
     atom_plddt = np.asarray(output["atom_plddt"])
     if atom_plddt.shape != coordinates.shape[:2]:
-        raise ValueError("atom_plddt must have shape (n_sample, n_atom)")
+        raise ValueError("atom_plddt must have shape (num_samples, n_atom)")
 
     safe_name = sanitize_job_name(job_name)
     prediction_dir = Path(root) / safe_name / f"seed_{int(seed)}" / "predictions"
@@ -150,19 +150,19 @@ def sanitize_job_name(name: str) -> str:
     return safe or "prediction"
 
 
-def _sample_ranks(output: dict[str, Any], n_sample: int) -> np.ndarray:
+def _sample_ranks(output: dict[str, Any], num_samples: int) -> np.ndarray:
     if "summary_ranking_score" in output:
         score = np.asarray(output["summary_ranking_score"])
-        if score.shape == (n_sample,):
+        if score.shape == (num_samples,):
             order = np.argsort(-score, kind="stable")
-            ranks = np.empty(n_sample, dtype=np.int64)
-            ranks[order] = np.arange(n_sample)
+            ranks = np.empty(num_samples, dtype=np.int64)
+            ranks[order] = np.arange(num_samples)
             return ranks
-    return np.arange(n_sample, dtype=np.int64)
+    return np.arange(num_samples, dtype=np.int64)
 
 
 def _sample_summary(
-    output: dict[str, Any], sample_index: int, n_sample: int
+    output: dict[str, Any], sample_index: int, num_samples: int
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for key, value in output.items():
@@ -179,7 +179,7 @@ def _sample_summary(
         if key == "num_recycles" and array.ndim == 0:
             summary[json_key] = _json_value(array)
             continue
-        if array.ndim == 0 or array.shape[0] != n_sample:
+        if array.ndim == 0 or array.shape[0] != num_samples:
             continue
         summary[json_key] = _json_value(array[sample_index])
     return summary

@@ -46,7 +46,7 @@ def sample_diffusion(
         key: PRNG key.
         noise_schedule: ``[no_steps + 1]`` descending noise levels.
         shape: shape of the coordinate tensor to sample, e.g.
-            ``(n_sample, N_atom, 3)``.
+            ``(num_samples, N_atom, 3)``.
         denoise_fn: ``(xl_noisy, t) -> xl_denoised``; close over the batch,
             conditioning and parameters before calling.
         gamma_0: noise inflation factor.
@@ -161,13 +161,13 @@ def padded_noise_tape(
     key: jax.Array,
     *,
     n_steps: int,
-    n_sample: int,
+    num_samples: int,
     actual_atoms: int,
     target_atoms: int,
 ) -> jnp.ndarray:
     """Replay the ordinary sampler draws, then suffix-pad only their atom axis."""
 
-    if n_steps < 1 or n_sample < 1 or actual_atoms < 1:
+    if n_steps < 1 or num_samples < 1 or actual_atoms < 1:
         raise ValueError("noise tape dimensions must be positive")
     if target_atoms < actual_atoms:
         raise ValueError("target_atoms cannot be smaller than actual_atoms")
@@ -175,7 +175,7 @@ def padded_noise_tape(
     keys = (init_key, *jax.random.split(noise_root, n_steps))
     natural = jnp.stack(
         [
-            jax.random.normal(draw_key, (n_sample, actual_atoms, 3))
+            jax.random.normal(draw_key, (num_samples, actual_atoms, 3))
             for draw_key in keys
         ]
     )

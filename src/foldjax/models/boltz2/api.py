@@ -399,11 +399,11 @@ def predict(
     representations: Sequence[str] | str | None = None,
     stop_after: str = "full",
     representations_dir: str | Path | None = None,
-    steps: int = 200,
-    recycling: int = 3,
-    diffusion_samples: int = 1,
-    affinity_steps: int = 200,
-    affinity_diffusion_samples: int = 5,
+    num_steps: int = 200,
+    num_recycles: int = 3,
+    num_samples: int = 1,
+    affinity_num_steps: int = 200,
+    affinity_num_samples: int = 5,
     affinity_mw_correction: bool = False,
     seed: int = 0,
     # Upstream's predict path is `Trainer(..., precision="bf16-mixed")`
@@ -472,8 +472,8 @@ def predict(
     from foldjax.models.boltz2.bridge.native import load_params
     from foldjax.models.boltz2.models.predict import boltz2_predict
 
-    if diffusion_samples <= 0:
-        raise ValueError("diffusion_samples must be positive")
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
     if padding is not None and bucket:
         raise ValueError("padding and legacy bucket=True cannot be used together")
     if cp_devices < 1:
@@ -659,10 +659,10 @@ def predict(
     padding_noise_tape = (
         _prefix_stable_noise_tape(
             jax.random.PRNGKey(seed),
-            multiplicity=diffusion_samples,
+            multiplicity=num_samples,
             storage_atoms=padding_plan.storage["atoms"],
             target_atoms=padding_plan.target["atoms"],
-            steps=steps,
+            steps=num_steps,
         )
         if (
             stop_after != "trunk"
@@ -675,8 +675,8 @@ def predict(
         representations, _representations.specs_for("boltz2")
     )
     predict_kwargs = {
-        "recycling_steps": recycling,
-        "num_sampling_steps": steps,
+        "recycling_steps": num_recycles,
+        "num_sampling_steps": num_steps,
         "augmentation": False,
         "steering_args": steering_args,
         "run_confidence": True,
@@ -689,7 +689,7 @@ def predict(
         "use_scan": True,
         "trunk_use_scan": True,
         "score_use_scan": True,
-        "multiplicity": diffusion_samples,
+        "multiplicity": num_samples,
         "atom_context_parallel": cp_atom_active,
         "attention_backend": attention_backend,
         "triangle_backend": (
@@ -698,7 +698,7 @@ def predict(
             "xla" if cp_devices > 1 and triangle_backend == "cueq" else triangle_backend
         ),
         "glu_backend": glu_backend,
-        "confidence_sequentially": diffusion_samples > 1,
+        "confidence_sequentially": num_samples > 1,
         "return_pair_chains_iptm": False,
         "recompute_nonpolymer_frames": bool(np.any(feats_np["mol_type"] == 3)),
         # The featurizer always emits template_* arrays, zero-filled when no
@@ -846,8 +846,8 @@ def predict(
         jax.block_until_ready(out["sample_atom_coords"]),
         model="Boltz2",
         atom_mask=feats_np["atom_pad_mask"],
-    ).reshape(diffusion_samples, -1, 3)
-    plddt_batched = np.asarray(out["plddt"]).reshape(diffusion_samples, -1)
+    ).reshape(num_samples, -1, 3)
+    plddt_batched = np.asarray(out["plddt"]).reshape(num_samples, -1)
 
     affinity_padding_plan = None
     if affinity_model_params is not None:
@@ -904,11 +904,11 @@ def predict(
         affinity_kwargs = {
             **predict_kwargs,
             "recycling_steps": 5,
-            "num_sampling_steps": affinity_steps,
+            "num_sampling_steps": affinity_num_steps,
             "steering_args": None,
-            "multiplicity": affinity_diffusion_samples,
+            "multiplicity": affinity_num_samples,
             "run_bfactor": "bfactor" in affinity_model_params,
-            "confidence_sequentially": affinity_diffusion_samples > 1,
+            "confidence_sequentially": affinity_num_samples > 1,
             "recompute_nonpolymer_frames": True,
             "affinity_mw_correction": affinity_mw_correction,
             "use_template": (
@@ -926,10 +926,10 @@ def predict(
         if padding is not None and affinity_padding_plan is not None:
             affinity_noise_tape = _prefix_stable_noise_tape(
                 jax.random.PRNGKey(seed),
-                multiplicity=affinity_diffusion_samples,
+                multiplicity=affinity_num_samples,
                 storage_atoms=affinity_padding_plan.storage["atoms"],
                 target_atoms=affinity_padding_plan.target["atoms"],
-                steps=affinity_steps,
+                steps=affinity_num_steps,
             )
 
             def run_affinity(
@@ -1007,10 +1007,10 @@ def predict(
         plddt_batched[:, :public_tokens] if padding_plan is not None else plddt_batched
     )
     public_coords = (
-        public_coords_batched[0] if diffusion_samples == 1 else public_coords_batched
+        public_coords_batched[0] if num_samples == 1 else public_coords_batched
     )
     public_plddt = (
-        public_plddt_batched[0] if diffusion_samples == 1 else public_plddt_batched
+        public_plddt_batched[0] if num_samples == 1 else public_plddt_batched
     )
     result: dict[str, Any] = {
         "coords": public_coords,
@@ -1054,8 +1054,8 @@ def predict(
         dest = Path(out_dir) if out_dir is not None else struct_dir.parent
         dest.mkdir(parents=True, exist_ok=True)
         paths = []
-        for model_idx in range(diffusion_samples):
-            suffix = "" if diffusion_samples == 1 else f"_model_{model_idx}"
+        for model_idx in range(num_samples):
+            suffix = "" if num_samples == 1 else f"_model_{model_idx}"
             out_path = dest / f"{record_id}{suffix}.{write_fmt}"
             paths.append(
                 write_prediction(
@@ -1067,7 +1067,7 @@ def predict(
                     fmt=write_fmt,
                 )
             )
-        if diffusion_samples == 1:
+        if num_samples == 1:
             result["out_path"] = paths[0]
         else:
             result["out_paths"] = paths

@@ -387,7 +387,7 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         params,
         jnp.asarray([1.0, 0.0]),
         key=None,
-        n_sample=1,
+        num_samples=1,
         pair_mask=residue_pair_mask,
         return_representations=return_representations,
     )

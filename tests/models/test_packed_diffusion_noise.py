@@ -25,17 +25,17 @@ def _opendde_runner(
     use_scan: bool = True,
 ) -> Callable[[jnp.ndarray | Sequence[jnp.ndarray]], jnp.ndarray]:
     n_steps = schedule.shape[0] - 1
-    n_sample, n_atom = init_noise.shape[:2]
+    num_samples, n_atom = init_noise.shape[:2]
     rotations = jnp.broadcast_to(
-        jnp.eye(3, dtype=jnp.float32), (n_steps, n_sample, 3, 3)
+        jnp.eye(3, dtype=jnp.float32), (n_steps, num_samples, 3, 3)
     )
-    translations = jnp.zeros((n_steps, n_sample, 3), dtype=jnp.float32)
+    translations = jnp.zeros((n_steps, num_samples, 3), dtype=jnp.float32)
 
     def run(step_noises):
         return sample_opendde(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=None,
             init_noise=init_noise,
@@ -55,13 +55,13 @@ def _protenix_runner(
     diffusion_chunk_size: int | None = None,
     use_scan: bool = True,
 ) -> Callable[[jnp.ndarray | Sequence[jnp.ndarray]], jnp.ndarray]:
-    n_sample, n_atom = init_noise.shape[:2]
+    num_samples, n_atom = init_noise.shape[:2]
 
     def run(step_noises):
         return sample_protenix(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=None,
             init_noise=init_noise,
@@ -119,10 +119,10 @@ def test_protenix_packed_step_noise_keeps_sample_chunking_bitwise() -> None:
 
 def test_protenix_batched_packed_noise_chunks_the_minus_three_sample_axis() -> None:
     schedule = jnp.asarray([8.0, 4.0, 0.5, 0.0], dtype=jnp.float32)
-    n_batch, n_sample, n_atom, n_steps = 2, 5, 4, 3
+    n_batch, num_samples, n_atom, n_steps = 2, 5, 4, 3
     init_noise = (
-        jnp.arange(n_batch * n_sample * n_atom * 3, dtype=jnp.float32).reshape(
-            n_batch, n_sample, n_atom, 3
+        jnp.arange(n_batch * num_samples * n_atom * 3, dtype=jnp.float32).reshape(
+            n_batch, num_samples, n_atom, 3
         )
         / 10.0
     )
@@ -135,7 +135,7 @@ def test_protenix_batched_packed_noise_chunks_the_minus_three_sample_axis() -> N
         return sample_protenix(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=None,
             init_noise=init_noise,
@@ -147,7 +147,7 @@ def test_protenix_batched_packed_noise_chunks_the_minus_three_sample_axis() -> N
 
     expected = run(tuple_tape)
     actual = run(packed)
-    assert actual.shape == (n_batch, n_sample, n_atom, 3)
+    assert actual.shape == (n_batch, num_samples, n_atom, 3)
     np.testing.assert_array_equal(actual, expected)
 
 
@@ -173,27 +173,27 @@ def test_malformed_packed_step_noise_has_an_explicit_shape_error(model: str) -> 
 @pytest.mark.parametrize("model", ["opendde", "protenix"])
 def test_no_tape_rng_route_matches_the_historical_split_order(model: str) -> None:
     schedule = jnp.asarray([8.0, 4.0, 0.5, 0.0], dtype=jnp.float32)
-    n_steps, n_sample, n_atom = 3, 2, 4
+    n_steps, num_samples, n_atom = 3, 2, 4
     key = jax.random.PRNGKey(19)
     if model == "opendde":
         init_key, step_key, rotation_key, translation_key = jax.random.split(key, 4)
         init_noise = jax.random.normal(
-            init_key, (n_sample, n_atom, 3), dtype=jnp.float32
+            init_key, (num_samples, n_atom, 3), dtype=jnp.float32
         )
         tuple_tape = tuple(
             jax.random.normal(
-                step_key_i, (n_sample, n_atom, 3), dtype=jnp.float32
+                step_key_i, (num_samples, n_atom, 3), dtype=jnp.float32
             )
             for step_key_i in jax.random.split(step_key, n_steps)
         )
-        rotations = uniform_random_rotations(rotation_key, (n_steps, n_sample))
+        rotations = uniform_random_rotations(rotation_key, (n_steps, num_samples))
         translations = jax.random.normal(
-            translation_key, (n_steps, n_sample, 3), dtype=jnp.float32
+            translation_key, (n_steps, num_samples, 3), dtype=jnp.float32
         )
         random_result = sample_opendde(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=key,
             use_scan=True,
@@ -201,7 +201,7 @@ def test_no_tape_rng_route_matches_the_historical_split_order(model: str) -> Non
         explicit_result = sample_opendde(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=None,
             init_noise=init_noise,
@@ -213,18 +213,18 @@ def test_no_tape_rng_route_matches_the_historical_split_order(model: str) -> Non
     else:
         step_key, init_key = jax.random.split(key)
         init_noise = jax.random.normal(
-            init_key, (n_sample, n_atom, 3), dtype=jnp.float32
+            init_key, (num_samples, n_atom, 3), dtype=jnp.float32
         )
         tuple_tape = tuple(
             jax.random.normal(
-                step_key_i, (n_sample, n_atom, 3), dtype=jnp.float32
+                step_key_i, (num_samples, n_atom, 3), dtype=jnp.float32
             )
             for step_key_i in jax.random.split(step_key, n_steps)
         )
         random_result = sample_protenix(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=key,
             centre_each_step=False,
@@ -233,7 +233,7 @@ def test_no_tape_rng_route_matches_the_historical_split_order(model: str) -> Non
         explicit_result = sample_protenix(
             _denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=None,
             init_noise=init_noise,
@@ -305,15 +305,15 @@ def test_packed_and_sequence_tapes_have_distinct_reused_jit_identities(
 @pytest.mark.parametrize("model", ["opendde", "protenix"])
 def test_packed_200_step_scan_removes_stack_hlo_and_temporary(model: str) -> None:
     cpu = jax.devices("cpu")[0]
-    n_steps, n_sample, n_atom = 200, 5, 32
+    n_steps, num_samples, n_atom = 200, 5, 32
     schedule = jax.device_put(
         jnp.linspace(8.0, 0.05, n_steps + 1, dtype=jnp.float32), cpu
     )
     init_noise = jax.device_put(
-        jnp.zeros((n_sample, n_atom, 3), dtype=jnp.float32), cpu
+        jnp.zeros((num_samples, n_atom, 3), dtype=jnp.float32), cpu
     )
     packed = jax.device_put(
-        jnp.zeros((n_steps, n_sample, n_atom, 3), dtype=jnp.float32), cpu
+        jnp.zeros((n_steps, num_samples, n_atom, 3), dtype=jnp.float32), cpu
     )
     tuple_tape = tuple(packed[index] for index in range(n_steps))
     run = (

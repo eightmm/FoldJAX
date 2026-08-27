@@ -271,7 +271,7 @@ def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -
     params = map_inference_params(dict(model.state_dict()))
 
     config = released_config(
-        n_token=n_token, n_atom=n_atom, num_samples=1, no_rollout_steps=2
+        n_token=n_token, n_atom=n_atom, num_samples=1, num_steps=2
     )
     prediction = predict(
         jax.random.key(0),

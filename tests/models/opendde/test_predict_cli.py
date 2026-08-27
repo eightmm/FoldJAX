@@ -13,9 +13,9 @@ from foldjax.models.opendde.cli import predict as predict_impl
 def _predict_kwargs() -> dict[str, object]:
     return {
         "seed": 101,
-        "n_sample": 1,
-        "n_step": 2,
-        "n_cycle": 2,
+        "num_samples": 1,
+        "num_steps": 2,
+        "num_recycles": 2,
         "n_queries": 8,
         "n_keys": 16,
         "diffusion_attention_backend": "xla",
@@ -221,9 +221,9 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert calls[0][0] is features
     assert calls[0][1] is params
     assert calls[0][2]["seed"] == 101
-    assert calls[0][2]["n_sample"] == 1
-    assert calls[0][2]["n_step"] == 2
-    assert calls[0][2]["n_cycle"] == 3
+    assert calls[0][2]["num_samples"] == 1
+    assert calls[0][2]["num_steps"] == 2
+    assert calls[0][2]["num_recycles"] == 3
     assert featurize_calls[0][0] is job
     assert featurize_calls[0][1]["seed"] == 101
     assert os.environ["PROTENIX_CCD_COMPONENTS_FILE"] == str(components_path.resolve())

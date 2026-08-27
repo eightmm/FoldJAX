@@ -199,7 +199,7 @@ def test_pairformer_output_from_s_inputs_matches_recycling_order() -> None:
         features,
         s_inputs,
         params,
-        n_cycle=2,
+        num_recycles=2,
     )
 
     s_init, z_init = trunk_initial_embeddings(

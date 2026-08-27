@@ -57,7 +57,7 @@ def protenix_dynamic_token_chunk_size(n_token: int) -> int | None:
 def resolve_chunk_config(
     *,
     n_token: int,
-    n_sample: int,
+    num_samples: int,
     policy: ChunkPolicyName = "auto",
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
@@ -68,8 +68,8 @@ def resolve_chunk_config(
 ) -> ChunkConfig:
     """Resolve static inference chunk knobs from policy and explicit overrides."""
 
-    if n_sample <= 0:
-        raise ValueError("n_sample must be positive")
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
     if policy == "off":
         return ChunkConfig()
     if policy == "manual":
@@ -87,7 +87,7 @@ def resolve_chunk_config(
     token_chunk_size = protenix_dynamic_token_chunk_size(n_token)
     auto_diffusion_chunk_size = (
         PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE
-        if n_sample > PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE
+        if num_samples > PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE
         else None
     )
     return ChunkConfig(

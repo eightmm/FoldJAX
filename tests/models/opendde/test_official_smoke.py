@@ -23,8 +23,8 @@ def test_load_random_tape_validates_and_returns_shared_arrays(tmp_path) -> None:
 
     schedule, tape = load_random_tape(
         path,
-        n_step=1,
-        n_sample=1,
+        num_steps=1,
+        num_samples=1,
         n_atom=3,
     )
 
@@ -47,7 +47,7 @@ def test_load_random_tape_rejects_wrong_atom_count(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="init_noise expected shape"):
-        load_random_tape(path, n_step=1, n_sample=1, n_atom=3)
+        load_random_tape(path, num_steps=1, num_samples=1, n_atom=3)
 
 
 def test_collect_raw_arrays_preserves_named_model_tensors() -> None:

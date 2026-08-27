@@ -21,7 +21,7 @@ def test_sample_diffusion_applies_shared_rigid_tape_before_euler_step() -> None:
     actual = sample_diffusion(
         lambda x, t: jnp.zeros_like(x),
         schedule,
-        n_sample=1,
+        num_samples=1,
         n_atom=2,
         key=None,
         init_noise=init_noise,
@@ -61,7 +61,7 @@ def test_sample_diffusion_churns_noise_when_the_level_is_above_gamma_min() -> No
     actual = sample_diffusion(
         lambda x, t: jnp.zeros_like(x),
         schedule,
-        n_sample=1,
+        num_samples=1,
         n_atom=2,
         key=None,
         init_noise=init_noise,
@@ -93,14 +93,14 @@ def test_sample_diffusion_key_path_is_reproducible() -> None:
     first = sample_diffusion(
         lambda x, t: 0.25 * x,
         schedule,
-        n_sample=2,
+        num_samples=2,
         n_atom=3,
         key=jax.random.key(7),
     )
     second = sample_diffusion(
         lambda x, t: 0.25 * x,
         schedule,
-        n_sample=2,
+        num_samples=2,
         n_atom=3,
         key=jax.random.key(7),
     )
@@ -117,7 +117,7 @@ def test_sample_diffusion_requires_key_or_complete_tapes() -> None:
         sample_diffusion(
             lambda x, t: x,
             schedule,
-            n_sample=1,
+            num_samples=1,
             n_atom=2,
             key=None,
             init_noise=init_noise,

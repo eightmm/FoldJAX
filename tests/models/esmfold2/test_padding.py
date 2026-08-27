@@ -85,7 +85,7 @@ def test_padding_plan_carries_real_storage_and_target_dimensions() -> None:
     plan = _padding_plan(
         built,
         PaddingConfig(),
-        msa_max_depth=1024,
+        max_msa_depth=1024,
         language_model_tokens=11,
     )
 
@@ -105,7 +105,7 @@ def test_deep_msa_plan_normalizes_to_the_active_standard_cap() -> None:
     plan = _padding_plan(
         built,
         PaddingConfig(),
-        msa_max_depth=1024,
+        max_msa_depth=1024,
         language_model_tokens=None,
     )
 
@@ -119,7 +119,7 @@ def test_explicit_msa_bucket_cannot_change_the_models_scientific_cap() -> None:
         _padding_plan(
             _alignment_rows(_features(), 130),
             PaddingConfig(msa=64),
-            msa_max_depth=1024,
+            max_msa_depth=1024,
             language_model_tokens=None,
         )
 
@@ -128,7 +128,7 @@ def test_nonstandard_active_msa_cap_is_a_stable_target() -> None:
     plan = _padding_plan(
         _alignment_rows(_features(), 130),
         PaddingConfig(),
-        msa_max_depth=100,
+        max_msa_depth=100,
         language_model_tokens=None,
     )
 
@@ -142,7 +142,7 @@ def test_padding_plan_can_drop_only_stored_msa_suffix_padding() -> None:
     plan = _padding_plan(
         stored,
         PaddingConfig(),
-        msa_max_depth=3,
+        max_msa_depth=3,
         language_model_tokens=None,
     )
 
@@ -156,7 +156,7 @@ def test_msa_padding_cannot_cross_the_active_sampling_depth() -> None:
         _padding_plan(
             _features(),
             PaddingConfig(msa=64),
-            msa_max_depth=1,
+            max_msa_depth=1,
             language_model_tokens=None,
         )
 
@@ -166,7 +166,7 @@ def test_deep_msa_normalization_keeps_query_order_and_full_profile() -> None:
     original_deletion_mean = built["deletion_mean"].copy()
     key = jax.random.key(73)
     row_indices = inference.msa_loop_row_indices(
-        key, depth=5, msa_max_depth=3, total_steps=4
+        key, depth=5, max_msa_depth=3, total_steps=4
     )
 
     normalized = features.normalize_msa_features(
@@ -196,7 +196,7 @@ def test_deep_msa_normalization_keeps_query_order_and_full_profile() -> None:
 def test_msa_loop_tape_mirrors_every_released_key_split() -> None:
     key = jax.random.key(91)
     actual = inference.msa_loop_row_indices(
-        key, depth=9, msa_max_depth=4, total_steps=5
+        key, depth=9, max_msa_depth=4, total_steps=5
     )
 
     _, _, _, loop_key, _ = jax.random.split(key, 5)
@@ -218,7 +218,7 @@ def test_msa_wrapper_ignores_suffix_storage_width() -> None:
             key,
             _store_msa(compact, storage),
             n_msa=3,
-            msa_max_depth=3,
+            max_msa_depth=3,
             total_steps=4,
         )
         for storage in (8, 11)
@@ -254,7 +254,7 @@ def test_deep_msa_tape_matches_default_loop_subsampling(
         key,
         _store_msa(built, 11),
         n_msa=3,
-        msa_max_depth=3,
+        max_msa_depth=3,
         total_steps=total_steps,
     )
 
@@ -315,9 +315,9 @@ def test_deep_msa_tape_matches_default_loop_subsampling(
     settings = structure_model.ModelSettings(
         d_pair=1,
         msa_n_layers=1,
-        msa_max_depth=3,
+        max_msa_depth=3,
         trunk_n_layers=1,
-        num_loops=2,
+        num_recycles=2,
     )
     params = {
         "parcae_log_delta": jnp.zeros((1,), dtype=jnp.float32),
@@ -399,7 +399,7 @@ def test_explicit_atom_bucket_must_follow_the_native_block() -> None:
         _padding_plan(
             _features(),
             PaddingConfig(atoms=257),
-            msa_max_depth=1024,
+            max_msa_depth=1024,
             language_model_tokens=None,
         )
 

@@ -25,7 +25,7 @@ def protenix_predict_static(
     features: Mapping[str, jnp.ndarray | Mapping[str, jnp.ndarray]],
     key: jax.Array | None,
     *,
-    n_sample: int = 1,
+    num_samples: int = 1,
     num_sampling_steps: int = 200,
     s_max: float = 160.0,
     s_min: float = 4.0e-4,
@@ -115,7 +115,7 @@ def protenix_predict_static(
         resolved_matmul_precision(matmul_precision)
     ):
         noise_schedule = inference_noise_schedule(
-            n_step=num_sampling_steps,
+            num_steps=num_sampling_steps,
             s_max=s_max,
             s_min=s_min,
             rho=rho,
@@ -152,10 +152,10 @@ def protenix_predict_static(
             params,
             noise_schedule,
             key=key,
-            n_sample=n_sample,
+            num_samples=num_samples,
             init_noise=init_noise,
             step_noises=step_noises,
-            n_cycle=recycling_steps,
+            num_recycles=recycling_steps,
             pair_mask=pair_mask,
             input_atom_heads=input_atom_heads,
             atom_encoder_heads=atom_encoder_heads,

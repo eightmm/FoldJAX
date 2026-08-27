@@ -175,11 +175,11 @@ def test_openfold3_sampling_translates_recycles_but_keeps_native_cycles(
         model="openfold3",
         input=input_path,
         weights=weights,
-        options={"num_cycles": 3},
+        options={"num_recycles": 3},
     )
 
-    assert backend.apply_sampling(neutral)["num_cycles"] == 4
-    assert backend.apply_sampling(native)["num_cycles"] == 3
+    assert backend.apply_sampling(neutral)["num_recycles"] == 4
+    assert backend.apply_sampling(native)["num_recycles"] == 3
 
 
 def test_openfold3_msa_depth_is_a_cap_on_the_released_default(
@@ -252,8 +252,8 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         return SimpleNamespace(
             msa_depth=1024,
             num_samples=5,
-            no_rollout_steps=200,
-            num_cycles=4,
+            num_steps=200,
+            num_recycles=4,
             pair_chunk_size=None,
         )
 

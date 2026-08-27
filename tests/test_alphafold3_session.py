@@ -499,7 +499,7 @@ def test_runner_identity_change_drops_the_old_model_before_rebuilding(
     if changed_identity == "device":
         options["device"] = 1
     elif changed_identity == "config":
-        options["diffusion_samples"] = 6
+        options["num_samples"] = 6
     elif changed_identity == "cache":
         second_cache = tmp_path / "cache-b"
     elif changed_identity == "autotune":

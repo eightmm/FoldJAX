@@ -65,7 +65,7 @@ class DiffusionModuleParams(NamedTuple):
 
 def inference_noise_schedule(
     *,
-    n_step: int = 200,
+    num_steps: int = 200,
     s_max: float = 160.0,
     s_min: float = 4.0e-4,
     rho: float = 7.0,
@@ -74,13 +74,13 @@ def inference_noise_schedule(
 ) -> jnp.ndarray:
     """Return the Protenix inference noise schedule."""
 
-    step_indices = jnp.arange(n_step + 1, dtype=dtype)
+    step_indices = jnp.arange(num_steps + 1, dtype=dtype)
     schedule = (
         sigma_data
         * (
             s_max ** (1.0 / rho)
             + step_indices
-            / jnp.asarray(n_step, dtype=dtype)
+            / jnp.asarray(num_steps, dtype=dtype)
             * (s_min ** (1.0 / rho) - s_max ** (1.0 / rho))
         )
         ** rho
@@ -106,7 +106,7 @@ def sample_diffusion(
     denoise_fn,
     noise_schedule: jnp.ndarray,
     *,
-    n_sample: int,
+    num_samples: int,
     n_atom: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
@@ -129,7 +129,7 @@ def sample_diffusion(
         return _sample_diffusion_chunk(
             denoise_fn,
             noise_schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=key,
             init_noise=init_noise,
@@ -149,10 +149,10 @@ def sample_diffusion(
     outputs = []
     keys = None
     if key is not None:
-        n_chunks = (n_sample + diffusion_chunk_size - 1) // diffusion_chunk_size
+        n_chunks = (num_samples + diffusion_chunk_size - 1) // diffusion_chunk_size
         keys = jax.random.split(key, n_chunks)
-    for chunk_index, start in enumerate(range(0, n_sample, diffusion_chunk_size)):
-        chunk_n = min(diffusion_chunk_size, n_sample - start)
+    for chunk_index, start in enumerate(range(0, num_samples, diffusion_chunk_size)):
+        chunk_n = min(diffusion_chunk_size, num_samples - start)
         init_chunk = None
         if init_noise is not None:
             init_chunk = _slice_sample_axis(init_noise, start, chunk_n)
@@ -169,7 +169,7 @@ def sample_diffusion(
             _sample_diffusion_chunk(
                 denoise_fn,
                 noise_schedule,
-                n_sample=chunk_n,
+                num_samples=chunk_n,
                 n_atom=n_atom,
                 key=None if keys is None else keys[chunk_index],
                 init_noise=init_chunk,
@@ -197,7 +197,7 @@ def sample_diffusion_with_module(
     params: DiffusionModuleParams,
     noise_schedule: jnp.ndarray,
     *,
-    n_sample: int,
+    num_samples: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
@@ -285,7 +285,7 @@ def sample_diffusion_with_module(
     return sample_diffusion(
         denoiser,
         noise_schedule,
-        n_sample=n_sample,
+        num_samples=num_samples,
         n_atom=n_atom,
         key=key,
         init_noise=init_noise,
@@ -569,7 +569,7 @@ def diffusion_module_forward(
 # is *exactly* zero whenever gamma is zero — which is every step once the noise
 # level drops below `gamma_min`. Under `lax.scan` XLA contracts the expression,
 # so the cancellation leaves rounding noise instead of zero: measured at
-# n_step=20 on CPU it produced -4.3e-10 at one step, and `sqrt` of that is NaN,
+# num_steps=20 on CPU it produced -4.3e-10 at one step, and `sqrt` of that is NaN,
 # which then poisons every coordinate and every confidence score downstream.
 # Neighbouring steps landed on the positive side and injected ~1e-4 of noise
 # that Algorithm 18 does not call for. GPU fuses differently and happened not to
@@ -582,7 +582,7 @@ def _sample_diffusion_chunk(
     denoise_fn,
     noise_schedule: jnp.ndarray,
     *,
-    n_sample: int,
+    num_samples: int,
     n_atom: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None,
@@ -618,7 +618,7 @@ def _sample_diffusion_chunk(
         if key is None:
             raise ValueError("key is required when init_noise is not provided")
         key, init_key = jax.random.split(key)
-        init_noise = jax.random.normal(init_key, (n_sample, n_atom, 3), dtype=dtype)
+        init_noise = jax.random.normal(init_key, (num_samples, n_atom, 3), dtype=dtype)
     if atom_mask is not None:
         atom_mask = jnp.asarray(atom_mask, dtype=dtype)
         if atom_mask.shape != (n_atom,):

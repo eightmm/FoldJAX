@@ -183,15 +183,15 @@ def load_features(path: Path) -> dict[str, jnp.ndarray]:
 
 def load_tape(path: Path, meta: dict) -> dict[str, np.ndarray]:
     """Load the sampler tape and assert every shape the sampler will assume."""
-    n_step = int(meta["n_step"])
-    n_sample = int(meta["n_sample"])
+    num_steps = int(meta["num_steps"])
+    num_samples = int(meta["num_samples"])
     n_atom = int(meta["n_atom"])
     contracts = {
-        "sigmas": (n_step + 1,),
-        "init_noise": (n_sample, n_atom, 3),
-        "step_noises": (n_step, n_sample, n_atom, 3),
-        "rotations": (n_step, n_sample, 3, 3),
-        "translations": (n_step, n_sample, 1, 3),
+        "sigmas": (num_steps + 1,),
+        "init_noise": (num_samples, n_atom, 3),
+        "step_noises": (num_steps, num_samples, n_atom, 3),
+        "rotations": (num_steps, num_samples, 3, 3),
+        "translations": (num_steps, num_samples, 1, 3),
     }
     with np.load(path, allow_pickle=False) as archive:
         missing = set(contracts).difference(archive.files)
@@ -242,7 +242,7 @@ def main() -> int:
     # of a coordinate RMSD later.
     jax_sigmas = np.asarray(
         _sample_schedule(
-            int(meta["n_step"]),
+            int(meta["num_steps"]),
             sigma_min=0.0001,
             sigma_max=160.0,
             sigma_data=16.0,
@@ -274,7 +274,7 @@ def main() -> int:
     trunk = boltz2_trunk_forward(
         trunk_params,
         trunk_features,
-        recycling_steps=int(meta["n_cycle"]),
+        recycling_steps=int(meta["num_recycles"]),
         use_scan=use_scan,
         subsample_msa=subsample_msa,
         num_subsampled_msa=subsample_depth,
@@ -312,9 +312,9 @@ def main() -> int:
         features,
         jax.random.PRNGKey(int(meta["seed"])),
         trunk=sampler_trunk,
-        recycling_steps=int(meta["n_cycle"]),
-        num_sampling_steps=int(meta["n_step"]),
-        multiplicity=int(meta["n_sample"]),
+        recycling_steps=int(meta["num_recycles"]),
+        num_sampling_steps=int(meta["num_steps"]),
+        multiplicity=int(meta["num_samples"]),
         step_scale=float(meta["step_scale"]),
         gamma_0=float(meta["gamma_0"]),
         gamma_min=float(meta["gamma_min"]),
@@ -349,9 +349,9 @@ def main() -> int:
         "atoms": int(meta["n_atom"]),
         "resolved_atoms": int(resolved.sum()),
         "msa_depth": int(meta["msa_depth"]),
-        "recycles": int(meta["n_cycle"]),
-        "diffusion_steps": int(meta["n_step"]),
-        "samples": int(meta["n_sample"]),
+        "num_recycles": int(meta["num_recycles"]),
+        "num_steps": int(meta["num_steps"]),
+        "samples": int(meta["num_samples"]),
         "upstream_precision": meta["precision"],
         "upstream_kernels": meta["kernels"],
         "upstream_subsample_msa": meta["subsample_msa"],

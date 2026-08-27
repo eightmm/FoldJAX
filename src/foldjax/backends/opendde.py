@@ -39,17 +39,17 @@ _CLI_OPTIONS = {
     "cp_layout",
     "diffusion_attention_backend",
     "kalign_binary",
-    "max_msa_rows",
+    "max_msa_depth",
     "token_q_chunk_size",
     "single_att_q_chunk_size",
     "triangle_att_q_chunk_size",
     "triangle_mul_chunk_size",
     "chunk_policy",
-    "n_cycle",
+    "num_recycles",
     "n_keys",
     "n_queries",
-    "n_sample",
-    "n_step",
+    "num_samples",
+    "num_steps",
     "structural_single_attention_backend",
     "template_mmcif_dir",
     "template_obsolete_map",
@@ -68,10 +68,10 @@ class OpenDDEBackend(Backend):
     padding_axes = ("tokens", "atoms", "msa", "structural_tokens")
     native_options = frozenset(_CLI_OPTIONS | {"include_raw"})
     sampling_options = {
-        "num_samples": "n_sample",
-        "num_steps": "n_step",
-        "num_recycles": "n_cycle",
-        "max_msa_depth": "max_msa_rows",
+        "num_samples": "num_samples",
+        "num_steps": "num_steps",
+        "num_recycles": "num_recycles",
+        "max_msa_depth": "max_msa_depth",
     }
     # OpenDDE has no triangle-kernel option of its own -- it drives Protenix's
     # trunk but exposes only the chunk sizes -- so `triangle_kernel` is absent

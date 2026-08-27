@@ -594,7 +594,7 @@ def test_pinned_official_example_resolves_legacy_msa_from_repository_root() -> N
         base_dir=input_path.parent,
         n_queries=2,
         n_keys=4,
-        max_msa_rows=4,
+        max_msa_depth=4,
         seed=101,
     )
 

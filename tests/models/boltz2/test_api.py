@@ -155,7 +155,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         mols=tmp_path,
         out_dir=tmp_path,
         steering_args={"fk_steering": False},
-        diffusion_samples=2,
+        num_samples=2,
         attention_backend="xla",
         triangle_backend="xla",
         glu_backend="xla",
@@ -238,7 +238,7 @@ def test_bucket_api_crops_public_and_raw_outputs(tmp_path, monkeypatch) -> None:
         mols=tmp_path,
         out_dir=tmp_path,
         bucket=True,
-        diffusion_samples=2,
+        num_samples=2,
     )
 
     assert out["coords"].shape == (2, 3, 3)
@@ -289,7 +289,7 @@ def test_nonsteering_exact_and_bucket_routes_filter_dead_features(
         mols=tmp_path,
         out_dir=tmp_path,
         bucket=bucket,
-        steps=1,
+        num_steps=1,
     )
 
     assert len(seen) == 1
@@ -327,7 +327,7 @@ def test_active_steering_retains_variable_and_host_features(
         mols=tmp_path,
         out_dir=tmp_path,
         steering_args={"fk_steering": True},
-        steps=1,
+        num_steps=1,
     )
 
     assert seen == [frozenset(feats)]
@@ -470,10 +470,10 @@ def test_padding_noise_tapes_use_each_stage_storage_stride(
         affinity_weights=affinity_weights,
         mols=tmp_path,
         out_dir=tmp_path,
-        diffusion_samples=2,
-        affinity_diffusion_samples=3,
-        steps=2,
-        affinity_steps=2,
+        num_samples=2,
+        affinity_num_samples=3,
+        num_steps=2,
+        affinity_num_steps=2,
         padding=PaddingConfig(tokens=8, atoms=32, msa=1),
     )
 
@@ -512,7 +512,7 @@ def test_explicit_padding_overflow_fails_before_primary_inference(
             weights=tmp_path / "boltz2_conf",
             mols=tmp_path,
             out_dir=tmp_path,
-            steps=2,
+            num_steps=2,
             padding=PaddingConfig(tokens=1, atoms=32, msa=1),
         )
 
@@ -635,12 +635,12 @@ def test_backend_shape_profile_reports_both_compiled_affinity_stages() -> None:
 
 
 def test_api_rejects_nonpositive_diffusion_samples(tmp_path) -> None:
-    with pytest.raises(ValueError, match="diffusion_samples"):
+    with pytest.raises(ValueError, match="num_samples"):
         api.predict(
             seq=["ACD"],
             weights=tmp_path / "boltz2_conf",
             mols=tmp_path,
-            diffusion_samples=0,
+            num_samples=0,
         )
 
 

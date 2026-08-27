@@ -148,12 +148,12 @@ def released_prediction(released_reference):
         n_token=N_TOKEN,
         n_atom=n_atom,
         num_samples=SAMPLES,
-        no_rollout_steps=STEPS,
+        num_steps=STEPS,
     )
     assert len(params.trunk.pairformer_stack.blocks) == 48
     assert len(params.trunk.msa_module.blocks) == 4
     assert len(params.denoiser.diffusion_transformer.blocks) == 24
-    assert config.num_cycles == architecture.shared.num_recycles + 1
+    assert config.num_recycles == architecture.shared.num_recycles + 1
 
     # compile_predict does not expose noise_fn -- injecting another
     # implementation's random stream is a test concern -- so the same binding it

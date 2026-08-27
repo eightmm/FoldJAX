@@ -57,8 +57,8 @@ def compute_ptm(
     """Return pTM, or ipTM when ``interface`` is set (AF3 SI 5.9.1, Eqs. 17-18).
 
     Args:
-        logits: ``[n_sample, N_token, N_token, no_bins]`` pair-distance logits.
-        has_frame: ``[n_sample, N_token]`` tokens with a valid frame.
+        logits: ``[num_samples, N_token, N_token, no_bins]`` pair-distance logits.
+        has_frame: ``[num_samples, N_token]`` tokens with a valid frame.
         mask_i: ``[N_token]`` boolean mask of the token set to consider.
         bin_min: lower bin edge.
         bin_max: upper bin edge.
@@ -68,7 +68,7 @@ def compute_ptm(
         eps: denominator floor.
 
     Returns:
-        ``[n_sample]`` score.
+        ``[num_samples]`` score.
     """
     if interface and asym_id is None:
         raise ValueError("asym_id is required when interface=True")
@@ -118,8 +118,8 @@ def compute_chain_ptm(
     because the loop is unrolled at trace time.
 
     Args:
-        logits: ``[n_sample, N_token, N_token, no_bins]`` pair-distance logits.
-        has_frame: ``[n_sample, N_token]`` tokens with a valid frame.
+        logits: ``[num_samples, N_token, N_token, no_bins]`` pair-distance logits.
+        has_frame: ``[num_samples, N_token]`` tokens with a valid frame.
         token_mask: ``[N_token]`` valid-token mask.
         asym_id: ``[N_token]`` chain id per token.
         n_chain: static chain-id upper bound.
@@ -128,7 +128,7 @@ def compute_chain_ptm(
         no_bins: bin count.
 
     Returns:
-        ``[n_sample, n_chain]``. Chains with no tokens score 0.
+        ``[num_samples, n_chain]``. Chains with no tokens score 0.
     """
     scores = []
     for chain in range(n_chain):
@@ -164,8 +164,8 @@ def compute_chain_pair_iptm(
     chain has no interface with itself.
 
     Args:
-        logits: ``[n_sample, N_token, N_token, no_bins]`` pair-distance logits.
-        has_frame: ``[n_sample, N_token]`` tokens with a valid frame.
+        logits: ``[num_samples, N_token, N_token, no_bins]`` pair-distance logits.
+        has_frame: ``[num_samples, N_token]`` tokens with a valid frame.
         token_mask: ``[N_token]`` valid-token mask.
         asym_id: ``[N_token]`` chain id per token.
         n_chain: static chain-id upper bound.
@@ -174,7 +174,7 @@ def compute_chain_pair_iptm(
         no_bins: bin count.
 
     Returns:
-        ``[n_sample, n_chain, n_chain]``, symmetric with a zero diagonal.
+        ``[num_samples, n_chain, n_chain]``, symmetric with a zero diagonal.
     """
     valid = token_mask.astype(bool)
     chain_masks = [valid & (asym_id == chain) for chain in range(n_chain)]
@@ -221,14 +221,14 @@ def compute_chain_mean_iptm(
     unqualified ``.any()``.
 
     Args:
-        chain_pair_iptm: ``[n_sample, n_chain, n_chain]`` pair matrix.
-        has_frame: ``[n_sample, N_token]`` tokens with a valid frame.
+        chain_pair_iptm: ``[num_samples, n_chain, n_chain]`` pair matrix.
+        has_frame: ``[num_samples, N_token]`` tokens with a valid frame.
         token_mask: ``[N_token]`` valid-token mask.
         asym_id: ``[N_token]`` chain id per token.
         n_chain: static chain-id upper bound.
 
     Returns:
-        ``[n_sample, n_chain]``; chains with no contributing entries score 0.
+        ``[num_samples, n_chain]``; chains with no contributing entries score 0.
     """
     valid = token_mask.astype(bool)
     any_frame = jnp.any(has_frame.astype(bool), axis=0)
@@ -271,14 +271,14 @@ def compute_bespoke_iptm(
     and is left intact.
 
     Args:
-        chain_mean_iptm: ``[n_sample, n_chain]`` per-chain mean ipTM.
+        chain_mean_iptm: ``[num_samples, n_chain]`` per-chain mean ipTM.
         token_mask: ``[N_token]`` valid-token mask.
         asym_id: ``[N_token]`` chain id per token.
         is_ligand: ``[N_token]`` ligand flag per token.
         n_chain: static chain-id upper bound.
 
     Returns:
-        ``[n_sample, n_chain, n_chain]`` with a zero diagonal.
+        ``[num_samples, n_chain, n_chain]`` with a zero diagonal.
     """
     valid = token_mask.astype(bool)
     ligand_flags = []

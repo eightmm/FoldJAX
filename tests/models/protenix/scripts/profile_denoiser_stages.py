@@ -82,7 +82,7 @@ def main() -> None:
             features,
             s_inputs,
             params.pairformer_output,
-            n_cycle=args.cycles,
+            num_recycles=args.cycles,
             use_pairformer_scan=False,
         )
     )

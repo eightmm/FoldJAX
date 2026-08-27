@@ -105,14 +105,14 @@ def main() -> None:
     if not args.full_depth_msa:
         sampled = sample_msa_cycle_features(
             features,
-            n_cycle=args.cycles,
+            num_recycles=args.cycles,
             seed=args.seed,
         )
         cycle_msa_features = sampled or None
     n_token = int(features["restype"].shape[-2])
     chunks = resolve_chunk_config(
         n_token=n_token,
-        n_sample=args.samples,
+        num_samples=args.samples,
         policy="auto",
     )
 
@@ -121,7 +121,7 @@ def main() -> None:
             params,
             features,
             key=jax.random.PRNGKey(args.seed),
-            n_sample=args.samples,
+            num_samples=args.samples,
             num_sampling_steps=args.steps,
             recycling_steps=args.cycles,
             use_pairformer_scan=False,
@@ -186,7 +186,7 @@ def main() -> None:
             else [int(cycle["msa"].shape[-2]) for cycle in cycle_msa_features]
         ),
         "cycles": args.cycles,
-        "diffusion_steps": args.steps,
+        "num_steps": args.steps,
         "samples": args.samples,
         "cold_seconds": cold_seconds,
         "warm_seconds": warm_seconds,

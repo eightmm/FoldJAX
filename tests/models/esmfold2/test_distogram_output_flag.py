@@ -55,7 +55,7 @@ def test_direct_eager_default_retains_distogram_and_false_skips_it(
         coda_n_layers=0,
         confidence_n_layers=0,
         msa_n_layers=None,
-        num_loops=0,
+        num_recycles=0,
         num_samples=1,
         confidence_sample_sequential=False,
         trunk_dtype="float32",

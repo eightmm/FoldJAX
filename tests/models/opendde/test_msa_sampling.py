@@ -116,7 +116,7 @@ def test_opendde_msa_sampling_uses_fixed_depth_and_preserves_duplicates() -> Non
 
     cycles = sample_opendde_msa_cycle_features(
         _features(msa),
-        n_cycle=3,
+        num_recycles=3,
         seed=101,
         msa_depth=1280,
     )
@@ -152,7 +152,7 @@ def test_opendde_msa_sampling_prioritizes_valid_rows_before_all_gap_rows() -> No
 
     cycles = sample_opendde_msa_cycle_features(
         _features(msa),
-        n_cycle=4,
+        num_recycles=4,
         seed=37,
         msa_depth=3,
         gap_token=gap,
@@ -173,7 +173,7 @@ def test_opendde_msa_sampling_uses_mask_only_for_row_priority() -> None:
 
     (cycle,) = sample_opendde_msa_cycle_features(
         features,
-        n_cycle=1,
+        num_recycles=1,
         seed=17,
         msa_depth=2,
     )

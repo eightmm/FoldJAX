@@ -29,12 +29,12 @@ def test_contact_threshold_includes_bin_with_top_exactly_eight_angstrom() -> Non
 
 
 def test_opendde_confidence_scores_replace_contact_dependent_summaries() -> None:
-    n_sample, n_token, n_atom = 1, 2, 3
+    num_samples, n_token, n_atom = 1, 2, 3
     output = {
-        "coordinate": jnp.zeros((n_sample, n_atom, 3), dtype=jnp.float32),
-        "plddt": jnp.zeros((n_sample, n_atom, 50), dtype=jnp.float32),
-        "pae": jnp.zeros((n_sample, n_token, n_token, 64), dtype=jnp.float32),
-        "pde": jnp.zeros((n_sample, n_token, n_token, 64), dtype=jnp.float32),
+        "coordinate": jnp.zeros((num_samples, n_atom, 3), dtype=jnp.float32),
+        "plddt": jnp.zeros((num_samples, n_atom, 50), dtype=jnp.float32),
+        "pae": jnp.zeros((num_samples, n_token, n_token, 64), dtype=jnp.float32),
+        "pde": jnp.zeros((num_samples, n_token, n_token, 64), dtype=jnp.float32),
         "distogram_logits": jnp.zeros((n_token, n_token, 96), dtype=jnp.float32),
     }
     features = {
@@ -48,10 +48,10 @@ def test_opendde_confidence_scores_replace_contact_dependent_summaries() -> None
 
     np.testing.assert_allclose(actual["contact_probs"], 0.25, atol=1e-7)
     np.testing.assert_allclose(actual["summary_gpde"], 16.0, atol=1e-6)
-    assert actual["atom_plddt"].shape == (n_sample, n_atom)
-    assert actual["summary_ranking_score"].shape == (n_sample,)
+    assert actual["atom_plddt"].shape == (num_samples, n_atom)
+    assert actual["summary_ranking_score"].shape == (num_samples,)
     assert int(actual["num_recycles"]) == 10
-    assert set(_sample_summary(actual, 0, n_sample)) == {
+    assert set(_sample_summary(actual, 0, num_samples)) == {
         "plddt",
         "gpde",
         "ptm",
@@ -72,15 +72,15 @@ def test_opendde_confidence_scores_replace_contact_dependent_summaries() -> None
 
 
 def test_opendde_confidence_excludes_ligands_from_af3_clash_and_vdw_summary() -> None:
-    n_sample, n_token, n_atom = 1, 2, 2
+    num_samples, n_token, n_atom = 1, 2, 2
     output = {
         "coordinate": jnp.asarray(
             [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.2]]],
             dtype=jnp.float32,
         ),
-        "plddt": jnp.zeros((n_sample, n_atom, 50), dtype=jnp.float32),
-        "pae": jnp.zeros((n_sample, n_token, n_token, 64), dtype=jnp.float32),
-        "pde": jnp.zeros((n_sample, n_token, n_token, 64), dtype=jnp.float32),
+        "plddt": jnp.zeros((num_samples, n_atom, 50), dtype=jnp.float32),
+        "pae": jnp.zeros((num_samples, n_token, n_token, 64), dtype=jnp.float32),
+        "pde": jnp.zeros((num_samples, n_token, n_token, 64), dtype=jnp.float32),
         "distogram_logits": jnp.zeros((n_token, n_token, 96), dtype=jnp.float32),
     }
     features = {

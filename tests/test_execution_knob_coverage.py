@@ -139,3 +139,36 @@ def test_the_backend_takes_the_option_out_of_the_dict(backend: str) -> None:
         from foldjax.execution import resolved_matmul_precision
 
         assert resolved_matmul_precision("highest") == "high"
+
+
+def _backend_class(name: str):
+    module = importlib.import_module(f"foldjax.backends.{name}")
+    return next(
+        attribute
+        for attribute in vars(module).values()
+        if isinstance(getattr(attribute, "execution_options", None), dict)
+        and getattr(attribute, "execution_options")
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_compile_options_name_options_that_exist(backend: str) -> None:
+    """Every cache-key name is an option some declaration actually produces.
+
+    These names are written down three times -- in `sampling_options`, in
+    `compile_options`, and again wherever the adapter reads the value -- and
+    nothing makes the copies agree. Renaming the port's option and missing one
+    copy does not fail loudly: an orphan in `compile_options` silently stops
+    contributing to the compile-cache key, and the same slip in
+    `validate_native_options` silently stops validating. That second one
+    happened while these names were being unified, and only a test that
+    asserted the rejection caught it.
+
+    This checks the copy that has no behavioural test of its own.
+    """
+    cls = _backend_class(backend)
+    declared = set(cls.sampling_options.values())
+    declared |= {native for native, _values in cls.execution_options.values()}
+    declared |= set(cls.native_options or ())
+    orphans = sorted(set(cls.compile_options) - declared)
+    assert not orphans, f"{backend} caches on options it does not declare: {orphans}"

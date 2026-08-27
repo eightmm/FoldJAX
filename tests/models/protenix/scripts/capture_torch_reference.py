@@ -202,7 +202,7 @@ def main() -> None:
         "msa_rows": int(features["msa"].shape[-2]),
         "msa_sampling": "full_depth_topk",
         "cycles": args.cycles,
-        "diffusion_steps": args.steps,
+        "num_steps": args.steps,
         "trunk_seconds": trunk_seconds,
         "diffusion_seconds": diffusion_seconds,
         "warm_compute_seconds": trunk_seconds + diffusion_seconds,

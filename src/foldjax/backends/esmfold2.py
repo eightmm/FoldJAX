@@ -61,10 +61,10 @@ from foldjax.schema import (
 #: README table quotes them -- and because they are *not* the dataclass
 #: defaults in upstream's source, which say 20 loops and 68 steps.
 DEFAULTS = {
-    "num_loops": 3,
+    "num_recycles": 3,
     "num_sampling_steps": 14,
     "num_diffusion_samples": 32,
-    "msa_max_depth": 1024,
+    "max_msa_depth": 1024,
 }
 
 
@@ -203,7 +203,7 @@ def _padding_plan(
     features: Mapping[str, np.ndarray],
     config: PaddingConfig,
     *,
-    msa_max_depth: int | None,
+    max_msa_depth: int | None,
     language_model_tokens: int | None,
 ) -> PaddingPlan:
     """Resolve every ESMFold2 input axis without changing the feature values."""
@@ -231,35 +231,35 @@ def _padding_plan(
         for axis in ("tokens", "atoms")
     }
 
-    if msa_max_depth is not None and msa_max_depth < 1:
+    if max_msa_depth is not None and max_msa_depth < 1:
         raise ValueError(
-            f"ESMFold2 msa_max_depth must be positive; got {msa_max_depth}"
+            f"ESMFold2 max_msa_depth must be positive; got {max_msa_depth}"
         )
     selected_msa = (
         actual["msa"]
-        if msa_max_depth is None
-        else min(actual["msa"], msa_max_depth)
+        if max_msa_depth is None
+        else min(actual["msa"], max_msa_depth)
     )
     if config.msa is not None:
         target_msa = config.msa
-        if msa_max_depth is not None and target_msa > msa_max_depth:
+        if max_msa_depth is not None and target_msa > max_msa_depth:
             raise ValueError(
                 f"padding.msa={target_msa} exceeds ESMFold2's active "
-                f"msa_max_depth={msa_max_depth}; padded rows could be sampled"
+                f"max_msa_depth={max_msa_depth}; padded rows could be sampled"
             )
     else:
         target_msa = resolve_axis(selected_msa, config, "msa")
         # A non-standard user cap (for example 100) can sit between the shared
         # 64 and 128 buckets. Use that stable cap rather than crossing it.
-        if msa_max_depth is not None:
-            target_msa = min(target_msa, msa_max_depth)
+        if max_msa_depth is not None:
+            target_msa = min(target_msa, max_msa_depth)
     if target_msa < selected_msa:
         raise ValueError(
             f"padding.msa={target_msa} would discard rows from ESMFold2's "
             f"selected depth {selected_msa} (active {actual['msa']}, stored "
             f"{storage['msa']}); exact loop-wise normalization is only "
             "possible when padding.msa equals or exceeds the selected depth "
-            f"min(active rows, msa_max_depth={msa_max_depth})"
+            f"min(active rows, max_msa_depth={max_msa_depth})"
         )
     target["msa"] = target_msa
 
@@ -344,8 +344,8 @@ class ESMFold2Backend(Backend):
     sampling_options = {
         "num_samples": "num_samples",
         "num_steps": "num_steps",
-        "num_recycles": "num_loops",
-        "max_msa_depth": "msa_max_depth",
+        "num_recycles": "num_recycles",
+        "max_msa_depth": "max_msa_depth",
     }
     # No `attention_kernel`: the port's attention is XLA's, and the fused and
     # cuEquivariance paths the torch model selected between do not exist here.
@@ -358,8 +358,8 @@ class ESMFold2Backend(Backend):
     compile_options = (
         "num_samples",
         "num_steps",
-        "num_loops",
-        "msa_max_depth",
+        "num_recycles",
+        "max_msa_depth",
         "no_language_model",
         "cp_devices",
     )
@@ -619,7 +619,7 @@ class ESMFold2Backend(Backend):
         all_atom_input = _requires_all_atom_features(document)
         overrides = {
             name: int(options.pop(name))
-            for name in ("num_loops", "num_steps", "num_samples", "msa_max_depth")
+            for name in ("num_recycles", "num_steps", "num_samples", "max_msa_depth")
             if name in options
         }
         if "cp_devices" in options:
@@ -715,7 +715,7 @@ class ESMFold2Backend(Backend):
                 else None
             )
             configured_msa_depth = overrides.get(
-                "msa_max_depth", model.settings.msa_max_depth
+                "max_msa_depth", model.settings.max_msa_depth
             )
             active_msa_depth = (
                 configured_msa_depth
@@ -726,17 +726,17 @@ class ESMFold2Backend(Backend):
                 padding_plan = _padding_plan(
                     features,
                     request.padding,
-                    msa_max_depth=active_msa_depth,
+                    max_msa_depth=active_msa_depth,
                     language_model_tokens=lm_tokens,
                 )
                 features = inference.normalize_msa_features(
                     prediction_key,
                     features,
                     n_msa=padding_plan.target["msa"],
-                    msa_max_depth=active_msa_depth,
+                    max_msa_depth=active_msa_depth,
                     total_steps=max(
                         1,
-                        overrides.get("num_loops", model.settings.num_loops) + 1,
+                        overrides.get("num_recycles", model.settings.num_recycles) + 1,
                     ),
                 )
                 features = inference.pad_features(

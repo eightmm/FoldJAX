@@ -22,14 +22,14 @@ from foldjax.scores import scalar_scores
 _CLI_OPTIONS = {
     "cp_devices",
     "cp_layout",
-    "n_sample",
-    "n_step",
-    "n_cycle",
+    "num_samples",
+    "num_steps",
+    "num_recycles",
     "model_name",
     "strict_token_limit",
     "esm_checkpoint_dir",
     "trunk_dtype",
-    "max_msa_rows",
+    "max_msa_depth",
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
     "trunk_triangle_attention_backend",
@@ -198,10 +198,10 @@ class ProtenixBackend(Backend):
     )
     native_options = frozenset(_CLI_OPTIONS | {"cli_args", "output_format"})
     sampling_options = {
-        "num_samples": "n_sample",
-        "num_steps": "n_step",
-        "num_recycles": "n_cycle",
-        "max_msa_depth": "max_msa_rows",
+        "num_samples": "num_samples",
+        "num_steps": "num_steps",
+        "num_recycles": "num_recycles",
+        "max_msa_depth": "max_msa_depth",
     }
     # Protenix spells both the names and the values its own way: `bf16` for the
     # dtype, and `_jit` suffixes on the kernels for the traced variants.
@@ -218,12 +218,12 @@ class ProtenixBackend(Backend):
         ),
     }
     compile_options = (
-        "n_sample",
-        "n_step",
-        "n_cycle",
+        "num_samples",
+        "num_steps",
+        "num_recycles",
         "model_name",
         "trunk_dtype",
-        "max_msa_rows",
+        "max_msa_depth",
         "diffusion_attention_backend",
         "trunk_single_attention_backend",
         "trunk_triangle_attention_backend",

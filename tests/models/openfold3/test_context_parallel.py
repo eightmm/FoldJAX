@@ -40,13 +40,13 @@ def test_shard_count_must_match_the_active_mesh() -> None:
         no_heads_pair_bias=1,
         max_relative_idx=1,
         max_relative_chain=1,
-        num_cycles=1,
+        num_recycles=1,
         num_samples=1,
         max_atoms_per_token=1,
         plddt_bins=1,
         pae_bins=1,
         pae_bin_max=1.0,
-        no_rollout_steps=1,
+        num_steps=1,
         cp_shards=2,
     )
     with pytest.raises(RuntimeError, match="cp_shards=2"):
@@ -515,8 +515,8 @@ def test_auto_layout_stays_on_the_one_dimensional_default() -> None:
                 n_token=1, n_atom=1, n_query=1, n_key=1, atom_heads=1,
                 token_heads=1, no_heads_msa=1, no_heads_pair=1,
                 no_heads_pair_bias=1, max_relative_idx=1, max_relative_chain=1,
-                num_cycles=1, num_samples=1, max_atoms_per_token=1,
-                plddt_bins=1, pae_bins=1, pae_bin_max=1.0, no_rollout_steps=1,
+                num_recycles=1, num_samples=1, max_atoms_per_token=1,
+                plddt_bins=1, pae_bins=1, pae_bin_max=1.0, num_steps=1,
                 cp_shards=shards, cp_layout=requested,
             )
         )

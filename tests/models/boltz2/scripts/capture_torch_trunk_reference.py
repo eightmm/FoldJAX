@@ -81,7 +81,7 @@ def main() -> None:
                 batch,
                 recycling_steps=args.recycling,
                 num_sampling_steps=2,
-                diffusion_samples=1,
+                num_samples=1,
                 max_parallel_samples=1,
                 run_confidence_sequentially=True,
             )

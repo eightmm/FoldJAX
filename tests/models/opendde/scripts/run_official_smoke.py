@@ -69,8 +69,8 @@ def coordinate_error_metrics(
 def load_random_tape(
     path: Path,
     *,
-    n_step: int,
-    n_sample: int,
+    num_steps: int,
+    num_samples: int,
     n_atom: int,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Load an upstream-generated sampler tape with strict shape checks."""
@@ -90,11 +90,11 @@ def load_random_tape(
             name: np.asarray(archive[name], dtype=np.float32) for name in expected
         }
 
-    expected_init = (n_sample, n_atom, 3)
-    expected_steps = (n_step, n_sample, n_atom, 3)
-    expected_rotations = (n_step, n_sample, 3, 3)
-    expected_translations = (n_step, n_sample, 3)
-    expected_schedule = (n_step + 1,)
+    expected_init = (num_samples, n_atom, 3)
+    expected_steps = (num_steps, num_samples, n_atom, 3)
+    expected_rotations = (num_steps, num_samples, 3, 3)
+    expected_translations = (num_steps, num_samples, 3)
+    expected_schedule = (num_steps + 1,)
     shape_contracts = {
         "noise_schedule": expected_schedule,
         "init_noise": expected_init,
@@ -138,14 +138,14 @@ def main() -> None:
         seed=args.seed,
     )
     params = load_native_weights(args.weights)
-    noise_schedule = inference_noise_schedule(n_step=args.n_step)
+    noise_schedule = inference_noise_schedule(num_steps=args.num_steps)
     random_kwargs: dict[str, object] = {}
     key: jax.Array | None = jax.random.PRNGKey(args.seed)
     if args.random_tape is not None:
         noise_schedule, random_kwargs = load_random_tape(
             args.random_tape,
-            n_step=args.n_step,
-            n_sample=1,
+            num_steps=args.num_steps,
+            num_samples=1,
             n_atom=int(features["ref_pos"].shape[0]),
         )
         key = None
@@ -155,8 +155,8 @@ def main() -> None:
         params,
         noise_schedule,
         key=key,
-        n_sample=1,
-        n_cycle=args.n_cycle,
+        num_samples=1,
+        num_recycles=args.num_recycles,
         run_confidence=False,
         diffusion_attention_backend="xla",
         trunk_single_attention_backend="xla",
@@ -175,8 +175,8 @@ def main() -> None:
         "n_atom": int(features["ref_pos"].shape[0]),
         "n_residue_units": int(features["restype"].shape[0]),
         "n_structural_units": int(features["parent_residue_idx"].shape[0]),
-        "n_cycle": args.n_cycle,
-        "n_step": args.n_step,
+        "num_recycles": args.num_recycles,
+        "num_steps": args.num_steps,
         "seed": args.seed,
         "shared_random_tape": args.random_tape is not None,
     }

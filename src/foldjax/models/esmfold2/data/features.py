@@ -289,7 +289,7 @@ def normalize_msa_features(
 ) -> dict[str, np.ndarray]:
     """Materialize exact per-loop MSA rows before serving-bucket padding.
 
-    The released model samples at most ``msa_max_depth`` rows separately in
+    The released model samples at most ``max_msa_depth`` rows separately in
     every trunk loop.  A serving bucket cannot retain an arbitrarily deep raw
     alignment, however, and padding invalid rows above the sampling cap would
     let the random permutation select dummy rows. On the opt-in padding path,

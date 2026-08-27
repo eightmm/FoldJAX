@@ -46,13 +46,19 @@ def main(
         default="npz",
         help="Write legacy NPZ, ranked CIF/JSON output, or both.",
     )
-    parser.add_argument("--n-sample", type=int, default=5)
-    parser.add_argument("--n-step", type=int)
+    parser.add_argument(
+        "--num-samples",
+        "--n-sample",
+        dest="num_samples",
+        type=int,
+        default=5,
+    )
+    parser.add_argument("--num-steps", "--n-step", dest="num_steps", type=int)
     parser.add_argument("--s-max", type=float, default=160.0)
     parser.add_argument("--s-min", type=float, default=4e-4)
     parser.add_argument("--rho", type=float, default=7.0)
     parser.add_argument("--sigma-data", type=float, default=16.0)
-    parser.add_argument("--n-cycle", type=int)
+    parser.add_argument("--num-recycles", "--n-cycle", dest="num_recycles", type=int)
     parser.add_argument("--gamma0", type=float)
     parser.add_argument(
         "--eta",
@@ -63,7 +69,13 @@ def main(
     )
     parser.add_argument("--n-queries", type=int, default=32)
     parser.add_argument("--n-keys", type=int, default=128)
-    parser.add_argument("--max-msa-rows", type=int, default=16384)
+    parser.add_argument(
+        "--max-msa-depth",
+        "--max-msa-rows",
+        dest="max_msa_depth",
+        type=int,
+        default=16384,
+    )
     parser.add_argument(
         "--msa-search",
         choices=("off", "local", "remote"),
@@ -435,8 +447,8 @@ def main(
         model_name = None
     if model_name is None:
         sampler_defaults = {
-            "n_cycle": 10,
-            "n_step": 200,
+            "num_recycles": 10,
+            "num_steps": 200,
             "gamma0": 0.8,
             "step_scale_eta": 1.5,
         }
@@ -445,8 +457,16 @@ def main(
             sampler_defaults = model_inference_defaults(model_name)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
-    n_cycle = args.n_cycle if args.n_cycle is not None else sampler_defaults["n_cycle"]
-    n_step = args.n_step if args.n_step is not None else sampler_defaults["n_step"]
+    num_recycles = (
+        args.num_recycles
+        if args.num_recycles is not None
+        else sampler_defaults["num_recycles"]
+    )
+    num_steps = (
+        args.num_steps
+        if args.num_steps is not None
+        else sampler_defaults["num_steps"]
+    )
     gamma0 = args.gamma0 if args.gamma0 is not None else sampler_defaults["gamma0"]
     eta = args.eta if args.eta is not None else sampler_defaults["step_scale_eta"]
 
@@ -606,7 +626,7 @@ def main(
                     base_dir=args.input_json.parent,
                     n_queries=args.n_queries,
                     n_keys=args.n_keys,
-                    max_msa_rows=args.max_msa_rows,
+                    max_msa_depth=args.max_msa_depth,
                 )
                 language_model_profile = None
                 if esm_provider is not None and padding_config is not None:
@@ -782,7 +802,7 @@ def main(
     written: list[Path] = []
     # Only the raw-npz path reads the trunk representations or the full-bin
     # logits; the protenix cif+JSON path consumes the in-graph summaries alone.
-    # Keeping unread [n_sample, N, N, 64] logits as program outputs held 21.6
+    # Keeping unread [num_samples, N, N, 64] logits as program outputs held 21.6
     # GiB at 3,012 tokens (EXPERIMENT_LOG: the 84.1 vs 57.3 attribution).
     wants_raw = args.output_format in ("npz", "both")
     for job, seeds in zip(jobs, job_seeds, strict=True):
@@ -801,7 +821,7 @@ def main(
         n_token = int(features["restype"].shape[-2])
         chunk_config = resolve_chunk_config(
             n_token=n_token,
-            n_sample=args.n_sample,
+            num_samples=args.num_samples,
             policy=args.chunk_policy,
             triangle_mul_chunk_size=args.triangle_mul_chunk_size,
             triangle_att_q_chunk_size=args.triangle_att_q_chunk_size,
@@ -816,8 +836,8 @@ def main(
             if padding_plan is not None:
                 init_noise, step_noises = _padded_noise_tapes(
                     seed=seed,
-                    n_sample=args.n_sample,
-                    n_step=n_step,
+                    num_samples=args.num_samples,
+                    num_steps=num_steps,
                     actual_atom=padding_plan.actual["atoms"],
                     target_atom=padding_plan.target["atoms"],
                     diffusion_chunk_size=chunk_config.diffusion_chunk_size,
@@ -826,7 +846,7 @@ def main(
             if not args.full_depth_msa:
                 sampled = sample_msa_cycle_features(
                     features,
-                    n_cycle=n_cycle,
+                    num_recycles=num_recycles,
                     seed=seed,
                 )
                 cycle_msa_features = sampled or None
@@ -834,13 +854,13 @@ def main(
                 params,
                 features,
                 key=jax.random.PRNGKey(seed),
-                n_sample=args.n_sample,
-                num_sampling_steps=n_step,
+                num_samples=args.num_samples,
+                num_sampling_steps=num_steps,
                 s_max=args.s_max,
                 s_min=args.s_min,
                 rho=args.rho,
                 sigma_data=args.sigma_data,
-                recycling_steps=n_cycle,
+                recycling_steps=num_recycles,
                 input_atom_heads=args.input_atom_heads,
                 atom_encoder_heads=args.atom_encoder_heads,
                 token_heads=args.token_heads,
@@ -892,7 +912,7 @@ def main(
                     "prewarmed: "
                     f"job={job['name']} tokens={n_token} "
                     f"atoms={features['atom_to_token_idx'].shape[0]} "
-                    f"samples={args.n_sample}"
+                    f"samples={args.num_samples}"
                 )
                 break
             if padding_plan is not None:
@@ -982,8 +1002,8 @@ def main(
 def _padded_noise_tapes(
     *,
     seed: int,
-    n_sample: int,
-    n_step: int,
+    num_samples: int,
+    num_steps: int,
     actual_atom: int,
     target_atom: int,
     diffusion_chunk_size: int | None,
@@ -1005,17 +1025,17 @@ def _padded_noise_tapes(
 
     root_key = jax.random.PRNGKey(seed)
     if diffusion_chunk_size is None or diffusion_chunk_size <= 0:
-        chunk_sizes = (n_sample,)
+        chunk_sizes = (num_samples,)
         chunk_keys = (root_key,)
     else:
         chunk_sizes = tuple(
-            min(diffusion_chunk_size, n_sample - start)
-            for start in range(0, n_sample, diffusion_chunk_size)
+            min(diffusion_chunk_size, num_samples - start)
+            for start in range(0, num_samples, diffusion_chunk_size)
         )
         chunk_keys = tuple(jax.random.split(root_key, len(chunk_sizes)))
 
     init_chunks = []
-    step_chunks: list[list[Any]] = [[] for _ in range(n_step)]
+    step_chunks: list[list[Any]] = [[] for _ in range(num_steps)]
     for chunk_size, chunk_key in zip(chunk_sizes, chunk_keys, strict=True):
         chunk_key, init_key = jax.random.split(chunk_key)
         init_chunks.append(
@@ -1025,7 +1045,7 @@ def _padded_noise_tapes(
                 dtype=jnp.float32,
             )
         )
-        for step_index, step_key in enumerate(jax.random.split(chunk_key, n_step)):
+        for step_index, step_key in enumerate(jax.random.split(chunk_key, num_steps)):
             step_chunks[step_index].append(
                 jax.random.normal(
                     step_key,

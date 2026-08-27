@@ -16,7 +16,7 @@ from foldjax.models.opendde.models.geometry import (
 def make_padded_random_tapes(
     *,
     key: jax.Array,
-    n_sample: int,
+    num_samples: int,
     n_steps: int,
     actual_atom: int,
     target_atom: int,
@@ -33,7 +33,7 @@ def make_padded_random_tapes(
     have no atom axis and are reused unchanged.
     """
 
-    if n_sample < 1 or n_steps < 1 or actual_atom < 1:
+    if num_samples < 1 or n_steps < 1 or actual_atom < 1:
         raise ValueError(
             "padded random tapes require positive sample/step/atom sizes"
         )
@@ -44,7 +44,7 @@ def make_padded_random_tapes(
     from foldjax.models.protenix.data.padding import pad_atom_noise
 
     init_key, step_key, rotation_key, translation_key = jax.random.split(key, 4)
-    real_shape = (*batch_shape, n_sample, actual_atom, 3)
+    real_shape = (*batch_shape, num_samples, actual_atom, 3)
     init_noise = jax.random.normal(init_key, real_shape, dtype=dtype)
     step_noises = jnp.stack(
         tuple(
@@ -75,7 +75,7 @@ def sample_diffusion(
     denoise_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
     noise_schedule: jnp.ndarray,
     *,
-    n_sample: int,
+    num_samples: int,
     n_atom: int,
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
@@ -116,12 +116,12 @@ def sample_diffusion(
     if init_noise is None:
         init_noise = jax.random.normal(
             init_key,
-            (*batch_shape, n_sample, n_atom, 3),
+            (*batch_shape, num_samples, n_atom, 3),
             dtype=dtype,
         )
     else:
         init_noise = jnp.asarray(init_noise, dtype=dtype)
-    expected_shape = (*batch_shape, n_sample, n_atom, 3)
+    expected_shape = (*batch_shape, num_samples, n_atom, 3)
     if tuple(init_noise.shape) != expected_shape:
         raise ValueError(
             f"init_noise expected shape {expected_shape}, got {init_noise.shape}"
@@ -192,7 +192,7 @@ def sample_diffusion(
         """One Algorithm 18 step. Shared by the rolled and unrolled paths."""
         augmented = centre_random_augmentation(
             x_current,
-            n_sample=1,
+            num_samples=1,
             mask=atom_mask,
             rotations=rotation[..., None, :, :],
             translations=translation[..., None, :],

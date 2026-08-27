@@ -52,7 +52,7 @@ def _sampled_cycles(
 ) -> tuple[dict[str, np.ndarray], ...]:
     return sample_opendde_msa_cycle_features(
         _msa_features(depth, tokens),
-        n_cycle=cycles,
+        num_recycles=cycles,
         seed=17,
     )
 
@@ -138,7 +138,7 @@ def test_opendde_msa_padding_refuses_shrink_nonprefix_and_grid_overflow() -> Non
 
     over_grid = sample_opendde_msa_cycle_features(
         _msa_features(16385, tokens=1),
-        n_cycle=1,
+        num_recycles=1,
         seed=17,
         msa_depth=20000,
     )
@@ -303,7 +303,7 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
 
 def test_full_opendde_padding_masks_every_axis_and_crops_outputs() -> None:
     features = _opendde_features(msa_depth=5)
-    sampled = sample_opendde_msa_cycle_features(features, n_cycle=2, seed=7)
+    sampled = sample_opendde_msa_cycle_features(features, num_recycles=2, seed=7)
 
     padded, cycles, plan = pad_opendde_features(
         features,
@@ -355,7 +355,7 @@ def test_padded_random_tapes_preserve_the_unpadded_real_prefix() -> None:
     key = jax.random.PRNGKey(13)
     padded = make_padded_random_tapes(
         key=key,
-        n_sample=2,
+        num_samples=2,
         n_steps=3,
         actual_atom=3,
         target_atom=5,
@@ -387,7 +387,7 @@ def test_atom_only_padding_cannot_mark_token_zero_as_ligand(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     features = _opendde_features(msa_depth=1)
-    sampled = sample_opendde_msa_cycle_features(features, n_cycle=1, seed=7)
+    sampled = sample_opendde_msa_cycle_features(features, num_recycles=1, seed=7)
     padded, _cycles, plan = pad_opendde_features(
         features,
         sampled,
@@ -528,8 +528,8 @@ def test_opendde_graph_routes_residue_structural_and_atom_masks(
         params,
         jnp.asarray([1.0, 0.5]),
         key=None,
-        n_sample=1,
-        n_cycle=1,
+        num_samples=1,
+        num_recycles=1,
         run_confidence=False,
     )
 

@@ -14,26 +14,26 @@ import jax.numpy as jnp
 
 
 def noise_schedule(
-    no_rollout_steps: int,
+    num_steps: int,
     *,
     sigma_data: float,
     s_max: float,
     s_min: float,
     p: int,
 ) -> jnp.ndarray:
-    """Return the ``no_rollout_steps + 1`` noise levels, descending.
+    """Return the ``num_steps + 1`` noise levels, descending.
 
     Args:
-        no_rollout_steps: number of sampler steps.
+        num_steps: number of sampler steps.
         sigma_data: data standard deviation.
         s_max: maximum noise level, in units of ``sigma_data``.
         s_min: minimum noise level, in units of ``sigma_data``.
         p: interpolation exponent; larger ``p`` spends more steps near ``s_min``.
 
     Returns:
-        ``[no_rollout_steps + 1]`` noise levels.
+        ``[num_steps + 1]`` noise levels.
     """
-    t = jnp.arange(0, 1 + no_rollout_steps, dtype=jnp.float32) / no_rollout_steps
+    t = jnp.arange(0, 1 + num_steps, dtype=jnp.float32) / num_steps
     return sigma_data * (
         s_max ** (1 / p) + t * (s_min ** (1 / p) - s_max ** (1 / p))
     ) ** p

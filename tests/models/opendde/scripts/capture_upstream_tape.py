@@ -535,15 +535,15 @@ def main() -> int:
     coordinate = captured["coordinate"]
     schedule = captured["schedule"]
 
-    n_step = len(schedule) - 1
+    num_steps = len(schedule) - 1
     coordinate_draws, translations = recorder.split()
-    if len(coordinate_draws) != n_step + 1:
+    if len(coordinate_draws) != num_steps + 1:
         raise RuntimeError(
-            f"expected {n_step + 1} coordinate draws, got {len(coordinate_draws)}"
+            f"expected {num_steps + 1} coordinate draws, got {len(coordinate_draws)}"
         )
-    if len(recorder.rotations) != n_step or len(translations) != n_step:
+    if len(recorder.rotations) != num_steps or len(translations) != num_steps:
         raise RuntimeError(
-            f"expected {n_step} augmentations, got {len(recorder.rotations)} "
+            f"expected {num_steps} augmentations, got {len(recorder.rotations)} "
             f"rotations and {len(translations)} translations"
         )
 
@@ -564,7 +564,7 @@ def main() -> int:
         if coordinate.ndim > 3
         else coordinate.astype(np.float32),
     )
-    msa_summary = _write_msa(args.out_dir, msa_recorder, n_cycle=args.n_cycle)
+    msa_summary = _write_msa(args.out_dir, msa_recorder, num_recycles=args.num_recycles)
     stages = stage_recorder.finish()
     if not stages:
         raise RuntimeError("no trunk stages were recorded")
@@ -580,9 +580,9 @@ def main() -> int:
     (args.out_dir / "tape.json").write_text(
         json.dumps(
             {
-                "n_step": n_step,
-                "n_sample": args.n_sample,
-                "n_cycle": args.n_cycle,
+                "num_steps": num_steps,
+                "num_samples": args.num_samples,
+                "num_recycles": args.num_recycles,
                 "seed": args.seed,
                 "coordinate_shape": list(coordinate.shape),
                 "stages": {
@@ -596,7 +596,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "steps": n_step,
+                "steps": num_steps,
                 "coordinate_draws": len(coordinate_draws),
                 "rotations": len(recorder.rotations),
                 "translations": len(translations),
@@ -611,7 +611,9 @@ def main() -> int:
     return 0
 
 
-def _write_msa(out_dir: Path, msa_recorder: MSARowRecorder, *, n_cycle: int) -> dict:
+def _write_msa(
+    out_dir: Path, msa_recorder: MSARowRecorder, *, num_recycles: int
+) -> dict:
     """Write the alignment upstream read and the rows every pass drew.
 
     Both are written. The indices alone would let a port re-select from its own
@@ -624,9 +626,9 @@ def _write_msa(out_dir: Path, msa_recorder: MSARowRecorder, *, n_cycle: int) -> 
             "the MSA subsampler was never called; either this build does not "
             "subsample or the patch did not reach it"
         )
-    if len(msa_recorder.rows) != n_cycle:
+    if len(msa_recorder.rows) != num_recycles:
         raise RuntimeError(
-            f"expected {n_cycle} MSA row draws, one per trunk pass, got "
+            f"expected {num_recycles} MSA row draws, one per trunk pass, got "
             f"{len(msa_recorder.rows)}"
         )
     widths = {row.shape for row in msa_recorder.rows}
@@ -681,11 +683,11 @@ def _run(args) -> None:
         "--seeds",
         str(args.seed),
         "--model.N_cycle",
-        str(args.n_cycle),
+        str(args.num_recycles),
         "--sample_diffusion.N_step",
-        str(args.n_step),
+        str(args.num_steps),
         "--sample_diffusion.N_sample",
-        str(args.n_sample),
+        str(args.num_samples),
         "--data.ccd_components_file",
         str(assets / "components.cif"),
         "--data.ccd_components_rdkit_mol_file",

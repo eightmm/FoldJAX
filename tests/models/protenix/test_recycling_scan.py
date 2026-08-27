@@ -144,7 +144,7 @@ def test_the_scan_body_gets_the_feature_dict_not_none(monkeypatch) -> None:
     ``TypeError: argument of type 'NoneType' is not iterable`` -- which is what
     happened on a real 2030-token target after the recycling loop became a scan.
 
-    The existing trunk test calls this same function with ``n_cycle=2`` and did not
+    The existing trunk test calls this same function with ``num_recycles=2`` and did not
     catch it: its fixture has no MSA blocks, and ``msa_module`` returns early on
     ``not params.blocks`` before the dict is ever indexed. So the check here is on
     what ``msa_module`` is *handed*, which holds whether or not it would use it.
@@ -172,7 +172,7 @@ def test_the_scan_body_gets_the_feature_dict_not_none(monkeypatch) -> None:
         features,
         jnp.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32),
         _pairformer_output_params(),
-        n_cycle=3,
+        num_recycles=3,
     )
 
     assert seen, "msa_module was never called"

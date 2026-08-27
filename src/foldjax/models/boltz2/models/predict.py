@@ -63,7 +63,7 @@ def boltz2_predict(
     run_bfactor: bool = False,
     #: Whether the confidence head's full-bin logits stay in the result. The
     #: summaries (plddt, pae, complex_* scalars, ptm family) are computed here
-    #: either way; the pae/pde logits alone are f32[n_sample, N, N, 64] -- 10.8
+    #: either way; the pae/pde logits alone are f32[num_samples, N, N, 64] -- 10.8
     #: GiB each at 3,012 tokens, 5 samples -- and as jit outputs they stay
     #: resident alongside the temp arena for the whole run. Same finding as
     #: Protenix (EXPERIMENT_LOG: the 84.1 vs 57.3 attribution).

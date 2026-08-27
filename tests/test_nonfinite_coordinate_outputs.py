@@ -80,12 +80,12 @@ def test_finite_guard_ignores_masked_serving_padding() -> None:
 
 
 def _openfold3_prediction(coordinates: np.ndarray) -> Prediction:
-    n_sample, n_atom, _ = coordinates.shape
+    num_samples, n_atom, _ = coordinates.shape
     return Prediction(
         coordinates=coordinates,
-        plddt=np.full((n_sample, n_atom), 0.9, dtype=np.float32),
-        ptm=np.full((n_sample,), 0.7, dtype=np.float32),
-        iptm=np.full((n_sample,), 0.6, dtype=np.float32),
+        plddt=np.full((num_samples, n_atom), 0.9, dtype=np.float32),
+        ptm=np.full((num_samples,), 0.7, dtype=np.float32),
+        iptm=np.full((num_samples,), 0.6, dtype=np.float32),
         chain_pair_iptm=None,
         pae_logits=None,
         pde_logits=None,
@@ -162,7 +162,7 @@ api.predict(
     weights=root / "weights",
     mols=root,
     out_dir=root / "masked-padding",
-    diffusion_samples=1,
+    num_samples=1,
     write_fmt=None,
 )
 next_coordinates = jnp.asarray([[[jnp.nan, 0.0, 0.0], [0.0, 0.0, 0.0]]])
@@ -172,7 +172,7 @@ try:
         weights=root / "weights",
         mols=root,
         out_dir=root / "out",
-        diffusion_samples=1,
+        num_samples=1,
         write_fmt=None,
     )
 except ValueError as error:

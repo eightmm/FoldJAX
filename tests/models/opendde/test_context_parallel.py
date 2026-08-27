@@ -41,7 +41,7 @@ def test_shard_count_must_match_the_active_mesh() -> None:
     from foldjax.models.opendde.models.model import opendde_infer_static
 
     with pytest.raises(RuntimeError, match="cp_shards=2"):
-        opendde_infer_static({}, None, None, key=None, n_sample=1, cp_shards=2)
+        opendde_infer_static({}, None, None, key=None, num_samples=1, cp_shards=2)
 
 
 _PARITY_PROBE = textwrap.dedent(

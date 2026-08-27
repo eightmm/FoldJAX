@@ -74,7 +74,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--n-queries", type=int, default=32)
     parser.add_argument("--n-keys", type=int, default=128)
-    parser.add_argument("--max-msa-rows", type=int, default=16384)
+    parser.add_argument(
+        "--max-msa-depth",
+        "--max-msa-rows",
+        dest="max_msa_depth",
+        type=int,
+        default=16384,
+    )
     args = parser.parse_args(argv)
 
     root = args.input_root.expanduser().resolve()
@@ -95,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 seed=seed,
                 n_queries=args.n_queries,
                 n_keys=args.n_keys,
-                max_msa_rows=args.max_msa_rows,
+                max_msa_depth=args.max_msa_depth,
                 augment_reference=False,
             )
             summary = _job_summary(path, root, job_index, job, features, seed)

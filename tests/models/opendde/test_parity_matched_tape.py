@@ -44,7 +44,7 @@ def test_upstream_source_hands_back_the_rows_upstream_selected() -> None:
     archive = _archive(features, rows)
 
     cycles, agreement = build_cycle_msa(
-        features, archive, source="upstream", n_cycle=2
+        features, archive, source="upstream", num_recycles=2
     )
 
     assert cycles is not None and len(cycles) == 2
@@ -65,8 +65,8 @@ def test_indices_source_matches_upstream_source_when_featurizers_agree() -> None
     rows = np.asarray([[5, 0, 2]], dtype=np.int64)
     archive = _archive(features, rows)
 
-    by_rows, _ = build_cycle_msa(features, archive, source="indices", n_cycle=1)
-    by_arrays, _ = build_cycle_msa(features, archive, source="upstream", n_cycle=1)
+    by_rows, _ = build_cycle_msa(features, archive, source="indices", num_recycles=1)
+    by_arrays, _ = build_cycle_msa(features, archive, source="upstream", num_recycles=1)
 
     assert by_rows is not None and by_arrays is not None
     for name in FIELDS:
@@ -87,7 +87,7 @@ def test_featurizer_disagreement_is_reported_rather_than_assumed() -> None:
     shifted = dict(features)
     shifted["msa"] = features["msa"][::-1].copy()
 
-    _, agreement = build_cycle_msa(shifted, archive, source="upstream", n_cycle=1)
+    _, agreement = build_cycle_msa(shifted, archive, source="upstream", num_recycles=1)
 
     assert agreement["featurizer_msa_rows_identical"] is False
     assert agreement["featurizer_msa_row_match_fraction"] < 1.0
@@ -97,7 +97,9 @@ def test_whole_source_leaves_the_alignment_untouched() -> None:
     features = _features()
     archive = _archive(features, np.asarray([[0, 1]], dtype=np.int64))
 
-    cycles, agreement = build_cycle_msa(features, archive, source="whole", n_cycle=1)
+    cycles, agreement = build_cycle_msa(
+        features, archive, source="whole", num_recycles=1
+    )
 
     assert cycles is None
     assert agreement["jax_msa_rows"] == 6
@@ -108,4 +110,4 @@ def test_a_capture_with_the_wrong_cycle_count_is_rejected() -> None:
     archive = _archive(features, np.asarray([[0, 1]], dtype=np.int64))
 
     with pytest.raises(ValueError, match="MSA row draws"):
-        build_cycle_msa(features, archive, source="upstream", n_cycle=2)
+        build_cycle_msa(features, archive, source="upstream", num_recycles=2)

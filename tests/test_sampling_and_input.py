@@ -88,10 +88,10 @@ def test_yaml_common_input_materializes_like_its_json_twin(tmp_path: Path) -> No
     [
         (
             Boltz2Backend(),
-            {"diffusion_samples": 3, "steps": 40, "recycling": 2},
+            {"num_samples": 3, "num_steps": 40, "num_recycles": 2},
         ),
-        (OpenDDEBackend(), {"n_sample": 3, "n_step": 40, "n_cycle": 2}),
-        (ProtenixBackend(), {"n_sample": 3, "n_step": 40, "n_cycle": 2}),
+        (OpenDDEBackend(), {"num_samples": 3, "num_steps": 40, "num_recycles": 2}),
+        (ProtenixBackend(), {"num_samples": 3, "num_steps": 40, "num_recycles": 2}),
     ],
     ids=["boltz2", "opendde", "protenix"],
 )
@@ -130,7 +130,7 @@ def test_setting_a_knob_and_its_native_name_together_is_rejected(
         input=_job_file(tmp_path),
         weights=_weights(tmp_path),
         num_samples=3,
-        options={"n_sample": 5},
+        options={"num_samples": 5},
     )
     with pytest.raises(ValueError, match="both set"):
         OpenDDEBackend().apply_sampling(request)
@@ -149,7 +149,7 @@ def test_a_knob_the_backend_cannot_express_is_rejected(tmp_path: Path) -> None:
 
     class OneKnobBackend(Backend):
         name = "one-knob"
-        sampling_options = {"num_samples": "n_sample"}
+        sampling_options = {"num_samples": "num_samples"}
 
         def capabilities(self):  # pragma: no cover - not what this checks
             raise NotImplementedError
@@ -293,7 +293,7 @@ def test_sampling_knobs_survive_the_whole_predict_path(tmp_path: Path) -> None:
         )
     assert backend.seen is not None
     assert backend.seen.num_samples == 4
-    assert OpenDDEBackend().apply_sampling(backend.seen)["n_sample"] == 4
+    assert OpenDDEBackend().apply_sampling(backend.seen)["num_samples"] == 4
 
 
 # --------------------------------------------------------------------------
@@ -464,8 +464,8 @@ def test_openfold3_knobs_use_the_names_its_config_takes(tmp_path: Path) -> None:
     """The map has to land on `released_config`'s own argument names.
 
     It mapped `num_steps` and `num_recycles` onto themselves, while the config
-    and the adapter's own pop list call them `no_rollout_steps` and
-    `num_cycles`. Both therefore stayed in the leftover options and the adapter
+    and the adapter's own pop list call them `num_steps` and
+    `num_recycles`. Both therefore stayed in the leftover options and the adapter
     raised "unsupported OpenFold3 options" -- two of the three knobs it
     advertised could only ever fail. The port is not installed here, so this
     checks the translation rather than a run.
@@ -483,10 +483,10 @@ def test_openfold3_knobs_use_the_names_its_config_takes(tmp_path: Path) -> None:
     )
     assert backend.apply_sampling(request) == {
         "num_samples": 3,
-        "no_rollout_steps": 40,
+        "num_steps": 40,
         # OpenFold3's native config is the number of executed cycles, while the
         # neutral knob follows upstream's num_recycles + 1 convention.
-        "num_cycles": 3,
+        "num_recycles": 3,
     }
     # Every translated name must also be one the cache namespace knows about,
     # or two different schedules would share a compiled program.

@@ -32,7 +32,7 @@ def case(openfold3_source, randomized):
     return (
         _batch(torch),
         _params(torch, randomized),
-        _config()._replace(num_cycles=CYCLES),
+        _config()._replace(num_recycles=CYCLES),
     )
 
 
@@ -45,7 +45,7 @@ def _run(batch, params, config, **overrides):
         lambda b, p: trunk(
             b,
             p,
-            num_cycles=config.num_cycles,
+            num_recycles=config.num_recycles,
             n_query=config.n_query,
             n_key=config.n_key,
             atom_heads=config.atom_heads,
@@ -62,7 +62,7 @@ def _run(batch, params, config, **overrides):
 
 def test_looped_recycling_matches_unrolled(case) -> None:
     batch, params, config = case
-    if config.num_cycles < 2:
+    if config.num_recycles < 2:
         pytest.skip("one cycle cannot show a recycling difference")
 
     looped = _run(batch, params, config, scan_cycles=True)
@@ -88,10 +88,10 @@ def test_recycling_actually_changes_the_representations(case) -> None:
     prove nothing. So one cycle and several cycles have to *differ*.
     """
     batch, params, config = case
-    if config.num_cycles < 2:
+    if config.num_recycles < 2:
         pytest.skip("one cycle cannot show a recycling difference")
 
-    one = _run(batch, params, config._replace(num_cycles=1), scan_cycles=True)
+    one = _run(batch, params, config._replace(num_recycles=1), scan_cycles=True)
     many = _run(batch, params, config, scan_cycles=True)
     assert not np.allclose(
         np.asarray(one[2], dtype=np.float64),

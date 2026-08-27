@@ -118,7 +118,7 @@ def test_the_released_settings_are_read_from_the_file() -> None:
     """Not the dataclass defaults, which differ in almost every field."""
     settings = checkpoint.load_settings(_weights())
     assert settings.trunk_n_layers == 48
-    assert settings.num_loops == 3
+    assert settings.num_recycles == 3
     assert settings.msa_n_layers == 4
     assert settings.diffusion.num_steps == 14
     # The churn the dataclass calls zero. A sampler that took the default
@@ -131,7 +131,7 @@ def test_the_whole_model_runs_on_the_released_weights() -> None:
     directory = _weights()
     parameters = checkpoint.load_parameters(directory)
     settings = jax_model.with_overrides(
-        checkpoint.load_settings(directory), num_loops=1, num_samples=2, num_steps=2
+        checkpoint.load_settings(directory), num_recycles=1, num_samples=2, num_steps=2
     )
     features = _features()
     hidden = np.zeros((1, N_TOKENS, 81, 2560), dtype=np.float32)
@@ -187,7 +187,7 @@ def test_a_job_folds_from_sequence_to_pdb(tmp_path) -> None:
         [(peptide, "A", 0, 0)],
         None,
         model,
-        num_loops=0,
+        num_recycles=0,
         num_samples=1,
         num_steps=2,
     )
@@ -264,7 +264,7 @@ def test_the_trunk_runs_at_the_dtype_it_was_configured_for(monkeypatch) -> None:
         settings = dataclasses.replace(
             jax_model.with_overrides(
                 checkpoint.load_settings(directory),
-                num_loops=1,
+                num_recycles=1,
                 num_samples=1,
                 num_steps=1,
             ),

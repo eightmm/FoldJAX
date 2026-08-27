@@ -178,7 +178,7 @@ def main() -> None:
         "msa_rows_materialized": int(features["msa"].shape[-2]),
         "msa_sampling": "full_depth_topk" if args.full_depth_msa else "upstream_random",
         "cycles": args.cycles,
-        "diffusion_steps": args.steps,
+        "num_steps": args.steps,
         "samples": args.samples,
         "warm_seconds": warm_seconds,
         "warm_seconds_samples": warm_samples,

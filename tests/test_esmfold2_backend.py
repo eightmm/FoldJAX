@@ -36,7 +36,7 @@ def _job(tmp_path, entities) -> str:
 
 
 def test_the_neutral_schedule_reaches_the_ports_own_names(tmp_path) -> None:
-    """`num_recycles` is `num_loops` here; the other three keep their names."""
+    """`num_recycles` is `num_recycles` here; the other three keep their names."""
     job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACDEF"}])
     options = ESMFold2Backend().apply_sampling(
         PredictionRequest(
@@ -51,8 +51,8 @@ def test_the_neutral_schedule_reaches_the_ports_own_names(tmp_path) -> None:
     assert options == {
         "num_samples": 5,
         "num_steps": 200,
-        "num_loops": 10,
-        "msa_max_depth": 1024,
+        "num_recycles": 10,
+        "max_msa_depth": 1024,
     }
 
 
@@ -252,7 +252,7 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
     seen = {}
     model = SimpleNamespace(
         has_language_model=False,
-        settings=SimpleNamespace(msa_max_depth=16, msa_n_layers=1, num_loops=3),
+        settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
     )
 
     def build_common(value, **kwargs):
@@ -342,7 +342,7 @@ def test_a_non_foldjax_document_says_so(tmp_path) -> None:
 def _fake_session_modules(tmp_path, calls):
     model = SimpleNamespace(
         has_language_model=True,
-        settings=SimpleNamespace(msa_max_depth=16, msa_n_layers=1, num_loops=3),
+        settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
     )
 
     def load(path, *, esmc, language_model):
@@ -808,12 +808,12 @@ def test_the_defaults_are_the_released_config_not_what_fits_on_a_card() -> None:
     weight store is present, and they are the ones that matter: they compare
     against the release artifact instead of against a restatement of it, which
     is the difference between pinning a value and pinning the *source* of a
-    value. `msa_max_depth` is deliberately not among them -- it appears nowhere
+    value. `max_msa_depth` is deliberately not among them -- it appears nowhere
     in the released config, so it is the port's own choice and this test would
     be asserting our opinion back to ourselves.
     """
     assert DEFAULTS["num_diffusion_samples"] == 32
-    assert DEFAULTS["num_loops"] == 3
+    assert DEFAULTS["num_recycles"] == 3
     assert DEFAULTS["num_sampling_steps"] == 14
 
     config = weights_dir("esmfold2") / "config.json"
@@ -823,7 +823,7 @@ def test_the_defaults_are_the_released_config_not_what_fits_on_a_card() -> None:
     document = json.loads(config.read_text(encoding="utf-8"))
     assert document["type"] == "release", document.get("type")
     assert document["num_diffusion_samples"] == DEFAULTS["num_diffusion_samples"]
-    assert document["num_loops"] == DEFAULTS["num_loops"]
+    assert document["num_recycles"] == DEFAULTS["num_recycles"]
     assert (
         document["structure_head"]["inference_num_steps"]
         == DEFAULTS["num_sampling_steps"]

@@ -131,7 +131,7 @@ def featurize_opendde_json(
     base_dir: str | Path | None = None,
     n_queries: int = 32,
     n_keys: int = 128,
-    max_msa_rows: int = 16384,
+    max_msa_depth: int = 16384,
     seed: int | None = None,
     augment_reference: bool = True,
 ) -> dict[str, Any]:
@@ -150,7 +150,7 @@ def featurize_opendde_json(
         base_dir=base_dir,
         n_queries=n_queries,
         n_keys=n_keys,
-        max_msa_rows=max_msa_rows,
+        max_msa_depth=max_msa_depth,
         seed=resolved_seed,
     )
     _prepare_reference_features(

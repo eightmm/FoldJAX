@@ -34,7 +34,7 @@ def test_the_cap_is_a_neutral_knob(model: str) -> None:
 
 @pytest.mark.parametrize(
     ("model", "native"),
-    [("protenix", "max_msa_rows"), ("opendde", "max_msa_rows"),
+    [("protenix", "max_msa_depth"), ("opendde", "max_msa_depth"),
      ("boltz2", "max_msa_depth")],
 )
 def test_the_cap_reaches_each_backend_under_its_own_name(
@@ -49,7 +49,7 @@ def test_the_cap_reaches_each_backend_under_its_own_name(
 def test_an_unset_cap_leaves_the_backend_default_alone(tmp_path) -> None:
     """Omitting it must not pin a depth, or the port's own default is gone."""
     options = get_backend("protenix").apply_sampling(_request(tmp_path, "protenix"))
-    assert "max_msa_rows" not in options
+    assert "max_msa_depth" not in options
 
 
 def test_the_cap_must_be_positive(tmp_path) -> None:
@@ -62,7 +62,7 @@ def test_setting_both_spellings_is_an_error(tmp_path) -> None:
     exit code -- the same rule the other neutral knobs follow."""
     request = _request(
         tmp_path, "protenix", max_msa_depth=1024,
-        options={"max_msa_rows": 4096},
+        options={"max_msa_depth": 4096},
     )
     with pytest.raises(ValueError, match="both set"):
         get_backend("protenix").apply_sampling(request)
@@ -71,7 +71,7 @@ def test_setting_both_spellings_is_an_error(tmp_path) -> None:
 def test_the_cap_changes_the_compile_cache_namespace(tmp_path) -> None:
     """It changes the compiled program's shapes, so it cannot share an entry."""
     backend = get_backend("protenix")
-    assert "max_msa_rows" in backend.compile_options
+    assert "max_msa_depth" in backend.compile_options
 
 
 def test_a_chunk_size_the_kernel_cannot_honour_is_not_silent() -> None:

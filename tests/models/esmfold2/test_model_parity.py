@@ -35,7 +35,7 @@ def _config():
     return configuration.ESMFold2Config(
         d_single=24,
         d_pair=D_PAIR,
-        num_loops=1,
+        num_recycles=1,
         num_diffusion_samples=1,
         lm_d_model=LM_WIDTH,
         lm_num_layers=LM_LAYERS,

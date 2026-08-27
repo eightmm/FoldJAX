@@ -365,8 +365,8 @@ def test_backend_padding_flags_and_shape_profile_are_opt_in(
 def test_padded_noise_keeps_every_sample_real_prefix(chunk_size) -> None:
     padded_init, padded_steps = _padded_noise_tapes(
         seed=17,
-        n_sample=2,
-        n_step=3,
+        num_samples=2,
+        num_steps=3,
         actual_atom=3,
         target_atom=7,
         diffusion_chunk_size=chunk_size,

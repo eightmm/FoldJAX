@@ -101,7 +101,7 @@ def main() -> None:
             features,
             s_inputs,
             params.pairformer_output,
-            n_cycle=args.cycles,
+            num_recycles=args.cycles,
             use_pairformer_scan=not args.no_pairformer_scan,
             single_attention_backend=args.trunk_single_attention_backend,
             triangle_attention_backend=args.trunk_triangle_attention_backend,
@@ -183,7 +183,7 @@ def main() -> None:
     (pair_z, p_lm, c_l), conditioning_seconds = warm_measure(
         prepare_diffusion_cache
     )
-    schedule = inference_noise_schedule(n_step=args.steps)
+    schedule = inference_noise_schedule(num_steps=args.steps)
     coordinate, diffusion_seconds = warm_measure(
         lambda: sample_diffusion_with_module(
             features,
@@ -192,7 +192,7 @@ def main() -> None:
             z_trunk,
             params.diffusion,
             schedule,
-            n_sample=1,
+            num_samples=1,
             key=jax.random.PRNGKey(0),
             init_noise=init_noise,
             step_noises=step_noises,
@@ -211,7 +211,7 @@ def main() -> None:
         "atoms": int(features["atom_to_token_idx"].shape[-1]),
         "msa_rows": int(features["msa"].shape[-2]),
         "cycles": args.cycles,
-        "diffusion_steps": args.steps,
+        "num_steps": args.steps,
         "diffusion_scan": args.diffusion_scan,
         "sampler_scan": args.sampler_scan,
         "denoiser_jit": args.denoiser_jit,

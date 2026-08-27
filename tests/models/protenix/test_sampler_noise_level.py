@@ -4,7 +4,7 @@ Raising the noise level from `c` to `t_hat = c * (gamma + 1)` adds
 `sqrt(t_hat**2 - c**2)`. Written literally that is a difference of two nearly
 equal squares which is *exactly* zero whenever gamma is zero — every step once
 the noise level falls below `gamma_min`. Under `lax.scan`, XLA contracts the
-expression and the cancellation leaves rounding noise: on CPU at n_step=20 one
+expression and the cancellation leaves rounding noise: on CPU at num_steps=20 one
 step produced -4.3e-10, and `sqrt` of that is NaN, which then poisoned every
 coordinate and confidence score. GPU fused differently and happened not to cross
 zero, so this presented as a CPU-only fault.
@@ -33,9 +33,9 @@ def _delta_noise_level(c_last, c_tau):
     return c_last * jnp.sqrt(gamma * (gamma + 2.0))
 
 
-@pytest.mark.parametrize("n_step", [5, 8, 20, 50, 200])
-def test_noise_level_step_is_finite_under_scan(n_step: int) -> None:
-    schedule = inference_noise_schedule(n_step=n_step)
+@pytest.mark.parametrize("num_steps", [5, 8, 20, 50, 200])
+def test_noise_level_step_is_finite_under_scan(num_steps: int) -> None:
+    schedule = inference_noise_schedule(num_steps=num_steps)
 
     def body(carry, xs):
         return carry, _delta_noise_level(xs[0], xs[1])
@@ -49,7 +49,7 @@ def test_noise_level_step_is_finite_under_scan(n_step: int) -> None:
 
 def test_it_is_exactly_zero_when_no_noise_is_added() -> None:
     """gamma == 0 means Algorithm 18 adds nothing; 1e-4 of noise is not nothing."""
-    schedule = inference_noise_schedule(n_step=20)
+    schedule = inference_noise_schedule(num_steps=20)
 
     def body(carry, xs):
         return carry, _delta_noise_level(xs[0], xs[1])
@@ -62,7 +62,7 @@ def test_it_is_exactly_zero_when_no_noise_is_added() -> None:
 
 def test_it_still_matches_the_algebraic_form_where_noise_is_added() -> None:
     """Equal to sqrt(t_hat**2 - c**2) wherever that form is well conditioned."""
-    schedule = inference_noise_schedule(n_step=20)
+    schedule = inference_noise_schedule(num_steps=20)
     loud = np.asarray(schedule[1:]) > GAMMA_MIN
     c_last = np.asarray(schedule[:-1])[loud]
 
@@ -74,11 +74,11 @@ def test_it_still_matches_the_algebraic_form_where_noise_is_added() -> None:
 @pytest.mark.parametrize("use_scan", [False, True])
 def test_the_sampler_returns_finite_coordinates(use_scan: bool) -> None:
     """End to end through the sampler, with a denoiser that cannot itself NaN."""
-    schedule = inference_noise_schedule(n_step=20)
+    schedule = inference_noise_schedule(num_steps=20)
     coordinates = _sample_diffusion_chunk(
         lambda x_noisy, t_hat: x_noisy * 0.5,
         schedule,
-        n_sample=1,
+        num_samples=1,
         n_atom=8,
         key=jax.random.PRNGKey(0),
         init_noise=None,
@@ -98,10 +98,10 @@ def test_the_sampler_returns_finite_coordinates(use_scan: bool) -> None:
 
 def test_scan_and_loop_sampler_paths_agree() -> None:
     """They differed only because one of them was producing NaN."""
-    schedule = inference_noise_schedule(n_step=20)
+    schedule = inference_noise_schedule(num_steps=20)
     key = jax.random.PRNGKey(3)
     shared = dict(
-        n_sample=1, n_atom=6, key=key, gamma0=GAMMA0, gamma_min=GAMMA_MIN,
+        num_samples=1, n_atom=6, key=key, gamma0=GAMMA0, gamma_min=GAMMA_MIN,
         centre_each_step=False,
     )
     denoise = lambda x_noisy, t_hat: x_noisy * 0.25  # noqa: E731

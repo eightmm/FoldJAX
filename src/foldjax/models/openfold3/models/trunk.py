@@ -69,7 +69,7 @@ def trunk(
     batch: Mapping[str, jnp.ndarray],
     params: TrunkParams,
     *,
-    num_cycles: int,
+    num_recycles: int,
     n_query: int,
     n_key: int,
     atom_heads: int,
@@ -86,12 +86,12 @@ def trunk(
     scan_blocks: bool = True,
     scan_cycles: bool = True,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Run the trunk for ``num_cycles`` recycling iterations.
+    """Run the trunk for ``num_recycles`` recycling iterations.
 
     Args:
         batch: features for the input embedder, MSA embedder and masks.
         params: mapped trunk parameters.
-        num_cycles: recycling iterations; must be at least one.
+        num_recycles: recycling iterations; must be at least one.
         n_query: atom query block height.
         n_key: atom key window width.
         atom_heads: atom transformer head count.
@@ -115,8 +115,8 @@ def trunk(
     Returns:
         ``(s_input, s, z)``.
     """
-    if num_cycles < 1:
-        raise ValueError("num_cycles must be at least 1")
+    if num_recycles < 1:
+        raise ValueError("num_recycles must be at least 1")
 
     s_input, s_init, z_init = input_embedder(
         batch,
@@ -206,13 +206,15 @@ def trunk(
 
     # Every cycle is the same computation on a different carry -- same weights, same
     # features -- so a loop is exact and emits the body once instead of
-    # ``num_cycles`` times. That matters here because the body contains the 48-block
+    # ``num_recycles`` times. That matters here because the body contains the 48-block
     # Pairformer and the template stack: unrolled, the released four cycles produce
     # a graph four times larger, and compile time follows it.
-    if scan_cycles and num_cycles > 1:
-        s, z = jax.lax.fori_loop(0, num_cycles, lambda _i, carry: cycle(carry), (s, z))
+    if scan_cycles and num_recycles > 1:
+        s, z = jax.lax.fori_loop(
+            0, num_recycles, lambda _i, carry: cycle(carry), (s, z)
+        )
     else:
-        for _cycle in range(num_cycles):
+        for _cycle in range(num_recycles):
             s, z = cycle((s, z))
 
     return s_input, s, z

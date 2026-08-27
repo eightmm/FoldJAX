@@ -58,8 +58,8 @@ def test_resolving_from_the_residue_count_never_narrows_further(
     something if the threshold table is ever re-tuned: whatever the bands are,
     resolving from the larger count can only ever chunk harder.
     """
-    from_residue = resolve_chunk_config(n_token=residue, n_sample=5)
-    from_max = resolve_chunk_config(n_token=max(residue, structural), n_sample=5)
+    from_residue = resolve_chunk_config(n_token=residue, num_samples=5)
+    from_max = resolve_chunk_config(n_token=max(residue, structural), num_samples=5)
 
     def rows(value: int | None) -> float:
         return float("inf") if value is None else value

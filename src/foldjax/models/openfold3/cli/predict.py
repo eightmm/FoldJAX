@@ -192,8 +192,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         name: value
         for name, value in (
             ("num_samples", args.samples),
-            ("no_rollout_steps", args.steps),
-            ("num_cycles", args.cycles),
+            ("num_steps", args.steps),
+            ("num_recycles", args.cycles),
         )
         if value is not None
     }
@@ -240,7 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"{n_token} tokens, {n_atom} atoms | {config.num_samples} samples x "
-        f"{config.no_rollout_steps} steps, {config.num_cycles} cycles"
+        f"{config.num_steps} steps, {config.num_recycles} cycles"
     )
 
     state = load_checkpoint(args.checkpoint)

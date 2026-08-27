@@ -66,7 +66,7 @@ def main() -> None:
     n_token = int(features["restype"].shape[-2])
     chunks = resolve_chunk_config(
         n_token=n_token,
-        n_sample=args.samples,
+        num_samples=args.samples,
         policy="auto",
     )
     s_inputs, input_seconds = warm_measure(
@@ -85,7 +85,7 @@ def main() -> None:
             features,
             s_inputs,
             params.pairformer_output,
-            n_cycle=args.cycles,
+            num_recycles=args.cycles,
             use_pairformer_scan=False,
             single_attention_backend="xla_jit",
             triangle_attention_backend="xla_jit",
@@ -115,7 +115,7 @@ def main() -> None:
         return pair_z, p_lm, c_l
 
     (pair_z, p_lm, c_l), cache_seconds = warm_measure(prepare_cache)
-    schedule = inference_noise_schedule(n_step=args.steps)
+    schedule = inference_noise_schedule(num_steps=args.steps)
     coordinates, diffusion_seconds = warm_measure(
         lambda: sample_diffusion_with_module(
             features,
@@ -124,7 +124,7 @@ def main() -> None:
             z_trunk,
             params.diffusion,
             schedule,
-            n_sample=args.samples,
+            num_samples=args.samples,
             key=jax.random.PRNGKey(args.seed),
             pair_z=pair_z,
             p_lm=p_lm,
@@ -184,7 +184,7 @@ def main() -> None:
         "tokens": n_token,
         "atoms": int(features["atom_to_token_idx"].shape[-1]),
         "cycles": args.cycles,
-        "diffusion_steps": args.steps,
+        "num_steps": args.steps,
         "samples": args.samples,
         "stages": stages,
         "stage_sum_seconds": sum(stages.values()),

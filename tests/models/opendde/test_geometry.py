@@ -30,7 +30,7 @@ def test_centre_random_augmentation_matches_shared_rigid_tape() -> None:
 
     actual = centre_random_augmentation(
         coords,
-        n_sample=2,
+        num_samples=2,
         mask=mask,
         rotations=rotations,
         translations=translations,
@@ -54,7 +54,7 @@ def test_centre_only_repeats_masked_centered_coordinates() -> None:
 
     actual = centre_random_augmentation(
         coords,
-        n_sample=3,
+        num_samples=3,
         centre_only=True,
         mask=mask,
     )
@@ -97,8 +97,8 @@ def test_random_augmentation_from_key_is_deterministic() -> None:
     coords = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
     key = jax.random.key(31)
 
-    first = centre_random_augmentation(coords, n_sample=2, key=key)
-    second = centre_random_augmentation(coords, n_sample=2, key=key)
+    first = centre_random_augmentation(coords, num_samples=2, key=key)
+    second = centre_random_augmentation(coords, num_samples=2, key=key)
 
     np.testing.assert_array_equal(first, second)
     assert first.shape == (2, 4, 3)

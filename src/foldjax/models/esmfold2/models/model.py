@@ -6,7 +6,7 @@ per-channel decay,
 
     z <- a * z + norm(injected) B^T,   then the folding trunk,
 
-run `num_loops + 1` times from a *randomly initialised* state. Two consequences
+run `num_recycles + 1` times from a *randomly initialised* state. Two consequences
 follow and neither is a defect to be fixed:
 
 * the model is stochastic at inference. The pair state is drawn from a
@@ -83,9 +83,9 @@ class ModelSettings:
     confidence_n_layers: int = 4
     msa_n_layers: int | None = None
     msa_encoder_overwrite: bool = True
-    msa_max_depth: int | None = 1024
+    max_msa_depth: int | None = 1024
     msa_column_mask_rate: float = 0.1
-    num_loops: int = 20
+    num_recycles: int = 20
     num_samples: int = 8
     #: Run the confidence head one structure at a time instead of batching
     #: every sample through it. Off by default, so nothing a recorded command
@@ -265,7 +265,7 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
             int(number(msa, "n_layers", 4)) if msa.get("enabled", False) else None
         ),
         msa_encoder_overwrite=bool(config.get("msa_encoder_overwrite", True)),
-        num_loops=int(number(config, "num_loops", base.num_loops)),
+        num_recycles=int(number(config, "num_recycles", base.num_recycles)),
         num_samples=int(number(config, "num_diffusion_samples", base.num_samples)),
         diffusion=diffusion.settings_from_config(config),
     )
@@ -613,7 +613,7 @@ def run_loops(
 
         if msa_inputs is not None and settings.msa_n_layers is not None:
             if loop_inputs is None:
-                rows = _subsample_msa(msa_key, depth, settings.msa_max_depth)
+                rows = _subsample_msa(msa_key, depth, settings.max_msa_depth)
                 one_hot = msa_inputs["msa_one_hot"]
                 msa_mask = msa_inputs["msa_mask"]
                 has_deletion = msa_inputs["has_deletion"]
@@ -884,7 +884,7 @@ def predict(
             assert loop_mask is not None
             assert loop_has_deletion is not None
             assert loop_deletion_value is not None
-            total_steps = max(1, settings.num_loops + 1)
+            total_steps = max(1, settings.num_recycles + 1)
             if loop_msa.shape[0] != total_steps:
                 raise ValueError(
                     "ESMFold2 MSA tape loop count does not match the model: "
@@ -969,7 +969,7 @@ def predict(
         pair_mask,
         trunk_params,
         settings=settings,
-        total_steps=max(1, settings.num_loops + 1),
+        total_steps=max(1, settings.num_recycles + 1),
         preserve_prefix_rng=preserve_prefix_rng,
     )
     z = linear(z, trunk_params, "parcae_readout")
@@ -1104,19 +1104,19 @@ def predict(
 def with_overrides(
     settings: ModelSettings,
     *,
-    num_loops: int | None = None,
+    num_recycles: int | None = None,
     num_samples: int | None = None,
     num_steps: int | None = None,
-    msa_max_depth: int | None = None,
+    max_msa_depth: int | None = None,
 ) -> ModelSettings:
     """The four knobs a caller actually varies, applied without reconstruction."""
     updates: dict[str, object] = {}
-    if num_loops is not None:
-        updates["num_loops"] = num_loops
+    if num_recycles is not None:
+        updates["num_recycles"] = num_recycles
     if num_samples is not None:
         updates["num_samples"] = num_samples
-    if msa_max_depth is not None:
-        updates["msa_max_depth"] = msa_max_depth
+    if max_msa_depth is not None:
+        updates["max_msa_depth"] = max_msa_depth
     if num_steps is not None:
         updates["diffusion"] = replace(settings.diffusion, num_steps=num_steps)
     return replace(settings, **updates)  # type: ignore[arg-type]

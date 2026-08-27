@@ -24,13 +24,13 @@ def _denoise(x_noisy: jnp.ndarray, t_hat: jnp.ndarray) -> jnp.ndarray:
 
 @pytest.mark.parametrize("n_steps", [4, 25])
 def test_scanned_and_unrolled_samplers_agree(n_steps: int) -> None:
-    n_sample, n_atom = 3, 7
+    num_samples, n_atom = 3, 7
     schedule = jnp.linspace(8.0, 0.05, n_steps + 1)
     key = jax.random.PRNGKey(0)
 
     shared = dict(
         noise_schedule=schedule,
-        n_sample=n_sample,
+        num_samples=num_samples,
         n_atom=n_atom,
         key=key,
         gamma0=0.8,
@@ -39,7 +39,7 @@ def test_scanned_and_unrolled_samplers_agree(n_steps: int) -> None:
     rolled = sample_diffusion(_denoise, use_scan=True, **shared)
     unrolled = sample_diffusion(_denoise, use_scan=False, **shared)
 
-    assert rolled.shape == (n_sample, n_atom, 3)
+    assert rolled.shape == (num_samples, n_atom, 3)
     # Same arithmetic in a different graph shape: XLA may reassociate, so this
     # is a numerical agreement rather than a bit-for-bit one.
     np.testing.assert_allclose(rolled, unrolled, rtol=2e-5, atol=2e-5)
@@ -47,20 +47,20 @@ def test_scanned_and_unrolled_samplers_agree(n_steps: int) -> None:
 
 def test_the_scan_consumes_the_same_random_tape(tmp_path=None) -> None:
     """With explicit tapes both paths must be driven by identical noise."""
-    n_sample, n_atom, n_steps = 2, 5, 6
+    num_samples, n_atom, n_steps = 2, 5, 6
     schedule = jnp.linspace(6.0, 0.1, n_steps + 1)
     rng = np.random.default_rng(7)
-    init = jnp.asarray(rng.normal(size=(n_sample, n_atom, 3)), dtype=jnp.float32)
+    init = jnp.asarray(rng.normal(size=(num_samples, n_atom, 3)), dtype=jnp.float32)
     noises = tuple(
-        jnp.asarray(rng.normal(size=(n_sample, n_atom, 3)), dtype=jnp.float32)
+        jnp.asarray(rng.normal(size=(num_samples, n_atom, 3)), dtype=jnp.float32)
         for _ in range(n_steps)
     )
-    rotations = jnp.broadcast_to(jnp.eye(3), (n_steps, n_sample, 3, 3))
-    translations = jnp.zeros((n_steps, n_sample, 3))
+    rotations = jnp.broadcast_to(jnp.eye(3), (n_steps, num_samples, 3, 3))
+    translations = jnp.zeros((n_steps, num_samples, 3))
 
     shared = dict(
         noise_schedule=schedule,
-        n_sample=n_sample,
+        num_samples=num_samples,
         n_atom=n_atom,
         key=None,
         init_noise=init,

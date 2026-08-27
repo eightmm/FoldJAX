@@ -2,7 +2,7 @@
 
 An earlier version of this test parsed upstream's ``model_config.py`` as text,
 which only checked the numbers that happened to be written as literals there. It
-missed ``num_cycles``, which is not a literal at all: upstream stores
+missed ``num_recycles``, which is not a literal at all: upstream stores
 ``shared.num_recycles`` and runs ``num_recycles + 1`` cycles, so the released value
 is 4 and this preset claimed 10.
 
@@ -66,9 +66,9 @@ def _expected(config) -> dict:
         "max_relative_idx": conditioning.max_relative_idx,
         "max_relative_chain": conditioning.max_relative_chain,
         # Derived, not a literal: upstream runs num_recycles + 1 cycles.
-        "num_cycles": architecture.shared.num_recycles + 1,
+        "num_recycles": architecture.shared.num_recycles + 1,
         "num_samples": diffusion.no_full_rollout_samples,
-        "no_rollout_steps": diffusion.no_full_rollout_steps,
+        "num_steps": diffusion.no_full_rollout_steps,
         "max_atoms_per_token": heads.max_atoms_per_token,
         "plddt_bins": heads.lddt.c_out,
         "pae_bins": heads.pae.c_out,

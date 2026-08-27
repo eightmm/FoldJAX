@@ -30,7 +30,7 @@ class _ResumeBackend(Backend):
     sampling_options = {
         "num_samples": "samples",
         "num_steps": "steps",
-        "num_recycles": "recycles",
+        "num_recycles": "num_recycles",
         "max_msa_depth": "msa_depth",
     }
 

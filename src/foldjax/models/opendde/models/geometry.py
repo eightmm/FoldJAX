@@ -36,7 +36,7 @@ def uniform_random_rotations(
 def centre_random_augmentation(
     coordinates: jnp.ndarray,
     *,
-    n_sample: int = 1,
+    num_samples: int = 1,
     s_trans: float = 1.0,
     centre_only: bool = False,
     mask: jnp.ndarray | None = None,
@@ -61,7 +61,7 @@ def centre_random_augmentation(
         denominator = jnp.sum(mask, axis=-1, keepdims=True) + eps
         center = (numerator / denominator)[..., None, :]
     centered = (coordinates - center).astype(jnp.float32)
-    sample_shape = (*centered.shape[:-2], n_sample)
+    sample_shape = (*centered.shape[:-2], num_samples)
     expanded = jnp.broadcast_to(
         centered[..., None, :, :],
         (*sample_shape, *centered.shape[-2:]),

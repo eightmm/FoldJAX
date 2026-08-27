@@ -84,13 +84,13 @@ class InferenceConfig(NamedTuple):
     no_heads_pair_bias: int
     max_relative_idx: int
     max_relative_chain: int
-    num_cycles: int
+    num_recycles: int
     num_samples: int
     max_atoms_per_token: int
     plddt_bins: int
     pae_bins: int
     pae_bin_max: float
-    no_rollout_steps: int
+    num_steps: int
     sigma_data: float = 16.0
     s_max: float = 160.0
     s_min: float = 4e-4
@@ -189,7 +189,7 @@ class Prediction(NamedTuple):
     iptm: jnp.ndarray | None
     chain_pair_iptm: jnp.ndarray | None
     #: None when the config's ``returned_pair_logits`` excludes them: these are
-    #: [n_sample, N, N, bins] entry outputs that stay resident for the whole
+    #: [num_samples, N, N, bins] entry outputs that stay resident for the whole
     #: run, and above `output.DEFAULT_ARRAY_BUDGET_BYTES` the npz writer drops
     #: them unwritten anyway. `write_arrays` already skips None fields.
     pae_logits: jnp.ndarray | None
@@ -441,7 +441,7 @@ def predict(
     s_input, s_trunk, z = trunk(
         batch,
         params.trunk,
-        num_cycles=config.num_cycles,
+        num_recycles=config.num_recycles,
         n_query=config.n_query,
         n_key=config.n_key,
         atom_heads=config.atom_heads,
@@ -456,7 +456,7 @@ def predict(
     )
 
     schedule = noise_schedule(
-        config.no_rollout_steps,
+        config.num_steps,
         sigma_data=config.sigma_data,
         s_max=config.s_max,
         s_min=config.s_min,
@@ -751,9 +751,9 @@ def released_config(
     n_token: int,
     n_atom: int,
     # shared.num_recycles is 3, and upstream runs num_recycles + 1 cycles.
-    num_cycles: int = 4,
+    num_recycles: int = 4,
     num_samples: int = 5,
-    no_rollout_steps: int = 200,
+    num_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
     per_sample_token_cutoff: int | None = 750,
     msa_depth: int | None = 1024,
@@ -798,13 +798,13 @@ def released_config(
         no_heads_pair_bias=16,
         max_relative_idx=32,
         max_relative_chain=2,
-        num_cycles=num_cycles,
+        num_recycles=num_recycles,
         num_samples=num_samples,
         max_atoms_per_token=23,
         plddt_bins=50,
         pae_bins=64,
         pae_bin_max=32.0,
-        no_rollout_steps=no_rollout_steps,
+        num_steps=num_steps,
         sigma_data=16.0,
         s_max=160.0,
         s_min=4e-4,

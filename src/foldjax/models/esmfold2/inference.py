@@ -339,10 +339,10 @@ def predict(
     features: Mapping[str, np.ndarray],
     model: LoadedModel,
     *,
-    num_loops: int | None = None,
+    num_recycles: int | None = None,
     num_samples: int | None = None,
     num_steps: int | None = None,
-    msa_max_depth: int | None = None,
+    max_msa_depth: int | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
@@ -366,10 +366,10 @@ def predict(
     """
     settings = structure_model.with_overrides(
         model.settings,
-        num_loops=num_loops,
+        num_recycles=num_recycles,
         num_samples=num_samples,
         num_steps=num_steps,
-        msa_max_depth=msa_max_depth,
+        max_msa_depth=max_msa_depth,
     )
     arrays = {
         name: jnp.asarray(value)
@@ -580,7 +580,7 @@ def normalize_msa_features(
     features: dict[str, np.ndarray],
     *,
     n_msa: int,
-    msa_max_depth: int | None,
+    max_msa_depth: int | None,
     total_steps: int,
 ) -> dict[str, np.ndarray]:
     """Build the exact released per-loop row-selection tape on the host."""
@@ -599,7 +599,7 @@ def normalize_msa_features(
     compact_indices = msa_loop_row_indices(
         key,
         depth=int(active_rows.size),
-        msa_max_depth=msa_max_depth,
+        max_msa_depth=max_msa_depth,
         total_steps=total_steps,
     )
     # The released selection is defined over real MSA rows. Storage padding is
@@ -615,7 +615,7 @@ def msa_loop_row_indices(
     key: jnp.ndarray,
     *,
     depth: int,
-    msa_max_depth: int | None,
+    max_msa_depth: int | None,
     total_steps: int,
 ) -> np.ndarray:
     """Mirror the model's key splits and return each loop's exact MSA rows."""
@@ -635,7 +635,7 @@ def msa_loop_row_indices(
     for _ in range(total_steps):
         loop_key, _, msa_key = jax.random.split(loop_key, 3)
         selected = structure_model._subsample_msa(
-            msa_key, depth, msa_max_depth
+            msa_key, depth, max_msa_depth
         )
         rows = (
             np.arange(depth, dtype=np.int64)

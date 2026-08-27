@@ -121,7 +121,7 @@ def pairformer_output_from_s_inputs(
     s_inputs: jnp.ndarray,
     params: PairformerOutputParams,
     *,
-    n_cycle: int = 1,
+    num_recycles: int = 1,
     pair_mask: jnp.ndarray | None = None,
     use_pairformer_scan: bool = True,
     triangle_mul_chunk_size: int | None = None,
@@ -188,8 +188,8 @@ def pairformer_output_from_s_inputs(
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
-    if cycle_msa_features is not None and len(cycle_msa_features) != n_cycle:
-        raise ValueError("cycle_msa_features length must equal n_cycle")
+    if cycle_msa_features is not None and len(cycle_msa_features) != num_recycles:
+        raise ValueError("cycle_msa_features length must equal num_recycles")
 
     def one_cycle(carry, msa_features):
         s, z = carry
@@ -263,16 +263,16 @@ def pairformer_output_from_s_inputs(
 
     # Recycling is the same computation every cycle, differing only in the carry and
     # -- when the alignment is resampled per cycle -- in the MSA features. Both are
-    # scannable, so the body is emitted once instead of ``n_cycle`` times. That
+    # scannable, so the body is emitted once instead of ``num_recycles`` times. That
     # matters at Protenix's released depth: ten cycles over a 48-block Pairformer
     # unroll into a graph ten times larger, and compile time tracks graph size.
     stacked_msa = _stacked_cycle_msa(cycle_msa_features) if use_cycle_scan else None
-    if use_cycle_scan and cycle_msa_features is None and n_cycle > 1:
-        (s, z), _ = jax.lax.scan(one_cycle, (s, z), xs=None, length=n_cycle)
-    elif stacked_msa is not None and n_cycle > 1:
+    if use_cycle_scan and cycle_msa_features is None and num_recycles > 1:
+        (s, z), _ = jax.lax.scan(one_cycle, (s, z), xs=None, length=num_recycles)
+    elif stacked_msa is not None and num_recycles > 1:
         (s, z), _ = jax.lax.scan(one_cycle, (s, z), stacked_msa)
     else:
-        for cycle_index in range(n_cycle):
+        for cycle_index in range(num_recycles):
             msa_features = (
                 input_feature_dict
                 if cycle_msa_features is None

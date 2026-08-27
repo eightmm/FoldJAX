@@ -596,17 +596,17 @@ def test_resolution_validates_native_values_before_model_or_output_work(
 @pytest.mark.parametrize(
     ("model", "input_name", "input_format", "native_sampling"),
     [
-        ("alphafold3", "job.json", "native", "diffusion_steps"),
-        ("boltz2", "job.yaml", "native", "steps"),
+        ("alphafold3", "job.json", "native", "num_steps"),
+        ("boltz2", "job.yaml", "native", "num_steps"),
         ("esmfold2", "job.json", "foldjax", "num_steps"),
-        ("opendde", "job.json", "native", "n_step"),
+        ("opendde", "job.json", "native", "num_steps"),
         (
             "openfold3",
             "features.npz",
             "openfold3-features",
-            "no_rollout_steps",
+            "num_steps",
         ),
-        ("protenix", "job.json", "native", "n_step"),
+        ("protenix", "job.json", "native", "num_steps"),
     ],
 )
 def test_every_backend_validates_native_sampling_during_resolution(
@@ -1844,17 +1844,17 @@ def test_request_rejects_an_input_directory(tmp_path: Path) -> None:
 
 
 def test_request_normalizes_and_copies_option_mappings(tmp_path: Path) -> None:
-    source = {"  n_step  ": 20}
+    source = {"  num_steps  ": 20}
     request = _request(tmp_path, options=MappingProxyType(source))
 
-    source["  n_step  "] = 99
+    source["  num_steps  "] = 99
     source["new"] = True
 
-    assert request.options == {"n_step": 20}
+    assert request.options == {"num_steps": 20}
     assert isinstance(request.options, dict)
 
 
-@pytest.mark.parametrize("options", [None, [("n_step", 20)], "n_step=20"])
+@pytest.mark.parametrize("options", [None, [("num_steps", 20)], "num_steps=20"])
 def test_request_requires_options_to_be_a_mapping(
     tmp_path: Path, options: object
 ) -> None:
@@ -1874,7 +1874,7 @@ def test_request_rejects_option_keys_that_collide_after_trimming(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="set more than once after trimming"):
-        _request(tmp_path, options={"n_step": 20, " n_step ": 40})
+        _request(tmp_path, options={"num_steps": 20, " num_steps ": 40})
 
 
 @pytest.mark.parametrize("value", [0, 1, None, "false"])

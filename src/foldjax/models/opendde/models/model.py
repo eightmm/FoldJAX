@@ -472,12 +472,12 @@ def opendde_infer_static(
     noise_schedule: jnp.ndarray,
     *,
     key: jax.Array | None,
-    n_sample: int,
+    num_samples: int,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     rotations: jnp.ndarray | None = None,
     translations: jnp.ndarray | None = None,
-    n_cycle: int = 10,
+    num_recycles: int = 10,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,
     atom_encoder_heads: int = 4,
@@ -507,7 +507,7 @@ def opendde_infer_static(
     run_confidence: bool = True,
     #: Compute the released confidence summaries inside the graph. Off, the
     #: caller must reduce the raw logits on the host -- which forces the
-    #: program to return plddt/pae/pde at [n_sample, N, N, bins] full width:
+    #: program to return plddt/pae/pde at [num_samples, N, N, bins] full width:
     #: 21.6 GiB of entry outputs at 3,012 tokens, resident next to the temp
     #: arena. Same finding and same shape of fix as Protenix and Boltz-2.
     run_confidence_scores: bool = False,
@@ -574,10 +574,10 @@ def opendde_infer_static(
         require_residue_confidence_mask=run_confidence,
         check_values=validate_feature_values,
     )
-    if n_sample < 1:
-        raise ValueError("n_sample must be at least one")
-    if n_cycle < 1:
-        raise ValueError("n_cycle must be at least one")
+    if num_samples < 1:
+        raise ValueError("num_samples must be at least one")
+    if num_recycles < 1:
+        raise ValueError("num_recycles must be at least one")
     if pair_mask is not None and tuple(pair_mask.shape) != (
         n_residue_token,
         n_residue_token,
@@ -636,7 +636,7 @@ def opendde_infer_static(
         trunk_features,
         s_inputs_residue,
         params.pairformer_output,
-        n_cycle=n_cycle,
+        num_recycles=num_recycles,
         pair_mask=trunk_pair_mask,
         use_pairformer_scan=use_pairformer_scan,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
@@ -800,7 +800,7 @@ def opendde_infer_static(
         return sample_diffusion(
             denoise_fn,
             noise_schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=n_atom,
             key=key,
             init_noise=init_noise,
@@ -879,7 +879,7 @@ def opendde_infer_static(
                 opendde_confidence_scores(
                     output,
                     input_feature_dict,
-                    num_recycles=n_cycle,
+                    num_recycles=num_recycles,
                     n_chain=n_chain,
                     # numpy-based, untraceable; finished on the host by the
                     # postprocess passthrough.
@@ -909,10 +909,10 @@ GRAPH_STATIC_ARGNAMES = (
     "gamma0",
     "gamma_min",
     "input_atom_heads",
-    "n_cycle",
+    "num_recycles",
     "n_keys",
     "n_queries",
-    "n_sample",
+    "num_samples",
     "noise_scale_lambda",
     "return_representations",
     "stop_after_trunk",

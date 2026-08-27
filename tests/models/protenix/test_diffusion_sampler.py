@@ -39,7 +39,7 @@ def test_slow_scan_and_unhelpful_fusion_are_disabled_by_default() -> None:
 
 def test_inference_noise_schedule_matches_protenix_formula() -> None:
     schedule = inference_noise_schedule(
-        n_step=4,
+        num_steps=4,
         s_max=10.0,
         s_min=0.1,
         rho=2.0,
@@ -66,7 +66,7 @@ def test_sample_diffusion_zero_denoiser_matches_euler_formula() -> None:
     out = sample_diffusion(
         zero_denoiser,
         noise_schedule,
-        n_sample=1,
+        num_samples=1,
         n_atom=2,
         key=None,
         init_noise=init_noise,
@@ -98,7 +98,7 @@ def test_sample_diffusion_chunks_samples() -> None:
     out = sample_diffusion(
         identity_denoiser,
         noise_schedule,
-        n_sample=3,
+        num_samples=3,
         n_atom=2,
         key=None,
         init_noise=init_noise,
@@ -122,7 +122,7 @@ def test_sample_diffusion_scan_matches_loop_with_injected_noise() -> None:
         return x_noisy / (1.0 + t_hat[..., None, None])
 
     kwargs = {
-        "n_sample": 2,
+        "num_samples": 2,
         "n_atom": 3,
         "key": None,
         "init_noise": init_noise,
@@ -158,7 +158,7 @@ def test_disabled_guidance_is_bitwise_identical() -> None:
         return x_noisy / (1.0 + t_hat[..., None, None])
 
     kwargs = dict(
-        n_sample=2,
+        num_samples=2,
         n_atom=3,
         key=None,
         init_noise=init_noise,
@@ -178,7 +178,7 @@ def test_disabled_guidance_is_bitwise_identical() -> None:
     random_baseline = sample_diffusion(
         denoiser,
         schedule,
-        n_sample=2,
+        num_samples=2,
         n_atom=3,
         key=jax.random.key(11),
         centre_each_step=False,
@@ -186,7 +186,7 @@ def test_disabled_guidance_is_bitwise_identical() -> None:
     random_disabled = sample_diffusion(
         denoiser,
         schedule,
-        n_sample=2,
+        num_samples=2,
         n_atom=3,
         key=jax.random.key(11),
         centre_each_step=False,
@@ -200,7 +200,7 @@ def test_enabled_guidance_changes_sampler_result() -> None:
     schedule = jnp.asarray([2.0, 0.0], dtype=jnp.float32)
     init_noise = jnp.asarray([[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]], dtype=jnp.float32)
     kwargs = dict(
-        n_sample=1,
+        num_samples=1,
         n_atom=2,
         key=None,
         init_noise=init_noise,
@@ -238,7 +238,7 @@ def test_guidance_mc_sampler_is_deterministic_for_key() -> None:
     kwargs = dict(
         denoise_fn=lambda x, _: x,
         noise_schedule=schedule,
-        n_sample=1,
+        num_samples=1,
         n_atom=2,
         init_noise=jnp.asarray([[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]]),
         step_noises=(jnp.zeros((1, 2, 3), dtype=jnp.float32),),

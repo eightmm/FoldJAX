@@ -126,10 +126,10 @@ def protenix_infer_static(
     noise_schedule: jnp.ndarray,
     *,
     key: jax.Array | None,
-    n_sample: int,
+    num_samples: int,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
-    n_cycle: int = 1,
+    num_recycles: int = 1,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,
     atom_encoder_heads: int = 4,
@@ -164,7 +164,7 @@ def protenix_infer_static(
     #: Whether the raw representations and full-bin logits are program outputs.
     #: XLA entry outputs stay resident for the whole execution, alongside the
     #: temp arena -- and at 3,012 tokens the PAE and PDE logits are
-    #: f32[n_sample, N, N, 64] = 10.8 GiB *each*, returned right next to the
+    #: f32[num_samples, N, N, 64] = 10.8 GiB *each*, returned right next to the
     #: summaries computed from them in-graph. A caller writing cif + confidence
     #: JSON reads none of it; only the raw-npz path does. Defaults stay True so
     #: the library API keeps its shape; the CLI passes what its output format
@@ -174,7 +174,7 @@ def protenix_infer_static(
     capture_names: tuple[str, ...] = (),
     return_confidence_logits: bool = True,
     #: Score each sample's logits inside the per-sample confidence loop instead
-    #: of stacking [n_sample, N, N, 64] first. Bit-identical outputs; the False
+    #: of stacking [num_samples, N, N, 64] first. Bit-identical outputs; the False
     #: path exists as the reference the equivalence test compares against.
     confidence_sample_sequential: bool = True,
     triangle_mul_chunk_size: int | None = None,
@@ -262,7 +262,7 @@ def protenix_infer_static(
         trunk_features,
         s_inputs,
         params.pairformer_output,
-        n_cycle=n_cycle,
+        num_recycles=num_recycles,
         pair_mask=trunk_pair_mask,
         use_pairformer_scan=use_pairformer_scan,
         triangle_mul_chunk_size=triangle_mul_chunk_size,
@@ -321,7 +321,7 @@ def protenix_infer_static(
             diffusion_z_trunk,
             params.diffusion,
             noise_schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             key=key,
             pair_z=pair_z,
             p_lm=p_lm,
@@ -382,7 +382,7 @@ def protenix_infer_static(
             """Head and summaries for one sample's coordinates.
 
             The head already loops samples one at a time -- what kept three
-            f32[n_sample, N, N, 64] stacks (32 GiB at 3,012 tokens) live at
+            f32[num_samples, N, N, 64] stacks (32 GiB at 3,012 tokens) live at
             once was stacking every sample's logits and only then reducing
             them. Scoring inside the per-sample loop reduces each sample's
             logits while they are [1, N, N, 64], the same shape of fix as
@@ -429,7 +429,7 @@ def protenix_infer_static(
                             jnp.argmax(input_feature_dict["restype"], axis=-1)
                             == 20,
                         ),
-                        num_recycles=n_cycle,
+                        num_recycles=num_recycles,
                         n_chain=n_chain,
                         token_mask=token_padding_mask,
                         atom_mask=atom_padding_mask,
@@ -477,10 +477,10 @@ GRAPH_STATIC_ARGNAMES = (
     "gamma0",
     "gamma_min",
     "input_atom_heads",
-    "n_cycle",
+    "num_recycles",
     "n_keys",
     "n_queries",
-    "n_sample",
+    "num_samples",
     "noise_scale_lambda",
     "run_confidence",
     "run_confidence_scores",

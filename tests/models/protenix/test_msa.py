@@ -522,8 +522,10 @@ def test_sample_msa_cycle_features_is_deterministic_and_aligned() -> None:
         "deletion_value": np.arange(30).reshape(5, 6) + 200,
     }
 
-    first = sample_msa_cycle_features(features, n_cycle=4, seed=101, bucket_size=4)
-    second = sample_msa_cycle_features(features, n_cycle=4, seed=101, bucket_size=4)
+    first = sample_msa_cycle_features(features, num_recycles=4, seed=101, bucket_size=4)
+    second = sample_msa_cycle_features(
+        features, num_recycles=4, seed=101, bucket_size=4
+    )
 
     assert len(first) == 4
     padded_depths = {cycle["msa"].shape[-2] for cycle in first}

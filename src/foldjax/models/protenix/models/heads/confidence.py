@@ -1388,12 +1388,12 @@ def confidence_head(
         size=n_token,
     )[0]
     x_pred_rep_coords = jnp.take(x_pred_coords, rep_atom_idx, axis=-2)
-    n_sample = int(x_pred_rep_coords.shape[-3])
+    num_samples = int(x_pred_rep_coords.shape[-3])
     atom_to_token_idx = input_feature_dict["atom_to_token_idx"]
     atom_to_tokatom_idx = input_feature_dict["atom_to_tokatom_idx"]
 
     outputs = []
-    for sample_index in range(n_sample):
+    for sample_index in range(num_samples):
         outputs.append(
             confidence_head_single_sample(
                 s_inputs,

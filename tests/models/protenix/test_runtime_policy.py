@@ -10,7 +10,7 @@ from foldjax.models.protenix.runtime_policy import (
 
 
 @pytest.mark.parametrize(
-    ("model_name", "n_cycle", "n_step", "gamma0", "step_scale_eta"),
+    ("model_name", "num_recycles", "num_steps", "gamma0", "step_scale_eta"),
     [
         ("protenix_base_default_v1.0.0", 10, 200, 0.8, 1.5),
         ("protenix_base_constraint_v0.5.0", 10, 200, 0.8, 1.5),
@@ -22,14 +22,14 @@ from foldjax.models.protenix.runtime_policy import (
 )
 def test_original_model_inference_defaults(
     model_name: str,
-    n_cycle: int,
-    n_step: int,
+    num_recycles: int,
+    num_steps: int,
     gamma0: float,
     step_scale_eta: float,
 ) -> None:
     assert model_inference_defaults(model_name) == {
-        "n_cycle": n_cycle,
-        "n_step": n_step,
+        "num_recycles": num_recycles,
+        "num_steps": num_steps,
         "gamma0": gamma0,
         "step_scale_eta": step_scale_eta,
     }

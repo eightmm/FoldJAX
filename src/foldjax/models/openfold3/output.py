@@ -597,7 +597,7 @@ def write_arrays(
 ) -> tuple[Path, tuple[str, ...]]:
     """Write a prediction's arrays to ``.npz``, and say what was left out.
 
-    The pair logits are `[n_sample, N_token, N_token, n_bin]`, so at 2076 tokens PAE
+    The pair logits are `[num_samples, N_token, N_token, n_bin]`, so at 2076 tokens PAE
     and PDE are 25.7 GiB each and the distogram another 5.1. Writing them
     unconditionally turns a prediction that takes eight minutes to compute into one
     that spends longer than that saving a file most callers will not read. Above

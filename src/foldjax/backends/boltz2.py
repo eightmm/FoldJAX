@@ -157,7 +157,7 @@ def _sample_scores(
     """
     scores: dict[str, float] = {}
     if plddt.size:
-        # [n_sample, n_token] when more than one was requested, else [n_token].
+        # [num_samples, n_token] when more than one was requested, else [n_token].
         per_sample = plddt[index] if plddt.ndim == 2 else plddt
         scores["mean_plddt"] = float(per_sample.mean())
     raw = output.get("raw")
@@ -208,9 +208,9 @@ class Boltz2Backend(Backend):
     padding_axes = ("tokens", "atoms", "msa")
     native_options = frozenset(
         {
-            "affinity_diffusion_samples",
+            "affinity_num_samples",
             "affinity_mw_correction",
-            "affinity_steps",
+            "affinity_num_steps",
             "affinity_weights",
             "bucket",
             "cp_atom_windows",
@@ -232,9 +232,9 @@ class Boltz2Backend(Backend):
         }
     )
     sampling_options = {
-        "num_samples": "diffusion_samples",
-        "num_steps": "steps",
-        "num_recycles": "recycling",
+        "num_samples": "num_samples",
+        "num_steps": "num_steps",
+        "num_recycles": "num_recycles",
         "max_msa_depth": "max_msa_depth",
     }
     # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
@@ -252,14 +252,14 @@ class Boltz2Backend(Backend):
         ),
     }
     compile_options = (
-        "steps",
-        "recycling",
-        "diffusion_samples",
+        "num_steps",
+        "num_recycles",
+        "num_samples",
         "cp_atom_windows",
         "cp_devices",
         "cp_layout",
-        "affinity_steps",
-        "affinity_diffusion_samples",
+        "affinity_num_steps",
+        "affinity_num_samples",
         "compute_dtype",
         "max_msa_depth",
         "attention_backend",
@@ -467,11 +467,11 @@ class Boltz2Backend(Backend):
         return runner
 
     def validate_native_options(self, options: dict[str, object]) -> None:
-        if "steps" in options:
-            # The published Karras schedule divides by ``steps - 1``.  One
+        if "num_steps" in options:
+            # The published Karras schedule divides by ``num_steps - 1``.  One
             # step therefore produces a NaN schedule and only fails after an
             # expensive model compile; reject it while planning instead.
-            _strict_integer(options["steps"], name="steps", minimum=2)
+            _strict_integer(options["num_steps"], name="num_steps", minimum=2)
         if "cp_devices" in options:
             _strict_integer(options["cp_devices"], name="cp_devices", minimum=1)
         if "cp_layout" in options and options["cp_layout"] not in {

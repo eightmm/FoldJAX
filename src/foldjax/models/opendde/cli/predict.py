@@ -121,9 +121,9 @@ def _predict(
     params: Any,
     *,
     seed: int,
-    n_sample: int,
-    n_step: int,
-    n_cycle: int,
+    num_samples: int,
+    num_steps: int,
+    num_recycles: int,
     n_queries: int,
     n_keys: int,
     diffusion_attention_backend: str,
@@ -168,7 +168,7 @@ def _predict(
     if sampled is None:
         sampled = sample_opendde_msa_cycle_features(
             features,
-            n_cycle=n_cycle,
+            num_recycles=num_recycles,
             seed=seed,
         )
     # The compiled wrapper places the entire feature tree on a CP mesh before
@@ -245,17 +245,17 @@ def _predict(
     # (see the note above), and `_row_block` only ever narrows.
     chunks = resolve_chunk_config(
         n_token=n_residue,
-        n_sample=n_sample,
+        num_samples=num_samples,
         policy=chunk_policy,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
     return infer(
         model_features,
         params,
-        inference_noise_schedule(n_step=n_step),
+        inference_noise_schedule(num_steps=num_steps),
         key=jax.random.PRNGKey(seed),
-        n_sample=n_sample,
-        n_cycle=n_cycle,
+        num_samples=num_samples,
+        num_recycles=num_recycles,
         n_queries=n_queries,
         n_keys=n_keys,
         diffusion_attention_backend=diffusion_attention_backend,
@@ -345,12 +345,36 @@ def main(
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--n-sample", type=int, default=5)
-    parser.add_argument("--n-step", type=int, default=200)
-    parser.add_argument("--n-cycle", type=int, default=10)
+    parser.add_argument(
+        "--num-samples",
+        "--n-sample",
+        dest="num_samples",
+        type=int,
+        default=5,
+    )
+    parser.add_argument(
+        "--num-steps",
+        "--n-step",
+        dest="num_steps",
+        type=int,
+        default=200,
+    )
+    parser.add_argument(
+        "--num-recycles",
+        "--n-cycle",
+        dest="num_recycles",
+        type=int,
+        default=10,
+    )
     parser.add_argument("--n-queries", type=int, default=32)
     parser.add_argument("--n-keys", type=int, default=128)
-    parser.add_argument("--max-msa-rows", type=int, default=16384)
+    parser.add_argument(
+        "--max-msa-depth",
+        "--max-msa-rows",
+        dest="max_msa_depth",
+        type=int,
+        default=16384,
+    )
     parser.add_argument(
         "--diffusion-attention-backend",
         choices=("xla", "xla_jit", "xla_sdpa"),
@@ -496,7 +520,7 @@ def main(
         raise SystemExit(f"missing input JSON: {args.input_json}")
     if not args.weights.is_file():
         raise SystemExit(f"missing native weights: {args.weights}")
-    if args.n_sample < 1 or args.n_step < 1 or args.n_cycle < 1:
+    if args.num_samples < 1 or args.num_steps < 1 or args.num_recycles < 1:
         raise SystemExit("n-sample, n-step, and n-cycle must be positive")
     if args.cp_devices < 1:
         raise SystemExit("cp-devices must be positive")
@@ -580,7 +604,7 @@ def main(
                     base_dir=args.input_json.parent,
                     n_queries=args.n_queries,
                     n_keys=args.n_keys,
-                    max_msa_rows=args.max_msa_rows,
+                    max_msa_depth=args.max_msa_depth,
                     seed=seed,
                 )
                 output_features = features
@@ -609,7 +633,7 @@ def main(
 
                     sampled = sample_opendde_msa_cycle_features(
                         features,
-                        n_cycle=args.n_cycle,
+                        num_recycles=args.num_recycles,
                         seed=seed,
                     )
                     padded_features, cycle_msa_features, padding_plan = (
@@ -625,8 +649,8 @@ def main(
                     init_noise, step_noises, rotations, translations = (
                         make_padded_random_tapes(
                             key=jax.random.PRNGKey(seed),
-                            n_sample=args.n_sample,
-                            n_steps=args.n_step,
+                            num_samples=args.num_samples,
+                            n_steps=args.num_steps,
                             actual_atom=padding_plan.actual["atoms"],
                             target_atom=padding_plan.target["atoms"],
                         )
@@ -661,9 +685,9 @@ def main(
                     model_features,
                     params,
                     seed=seed,
-                    n_sample=args.n_sample,
-                    n_step=args.n_step,
-                    n_cycle=args.n_cycle,
+                    num_samples=args.num_samples,
+                    num_steps=args.num_steps,
+                    num_recycles=args.num_recycles,
                     n_queries=args.n_queries,
                     n_keys=args.n_keys,
                     diffusion_attention_backend=args.diffusion_attention_backend,
@@ -720,7 +744,7 @@ def main(
                 scored = _score(
                     output,
                     output_features,
-                    num_recycles=args.n_cycle,
+                    num_recycles=args.num_recycles,
                 )
                 paths = _write(
                     args.out,

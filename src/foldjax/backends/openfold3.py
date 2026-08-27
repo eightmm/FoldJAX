@@ -44,8 +44,8 @@ from foldjax.schema import (
 # Everything else here only affects what is written.
 _COMPILE_OPTIONS = (
     "num_samples",
-    "no_rollout_steps",
-    "num_cycles",
+    "num_steps",
+    "num_recycles",
     "pair_chunk_size",
     "max_msa_depth",
     "cp_devices",
@@ -130,7 +130,7 @@ class OpenFold3Backend(Backend):
             "query_id",
         }
     )
-    # OpenFold3 spells these `no_rollout_steps` and `num_cycles`, which is what
+    # OpenFold3 spells these `num_steps` and `num_recycles`, which is what
     # `released_config` takes and what `predict` below pops. Mapping them onto
     # their own neutral names put `num_steps` and `num_recycles` into the option
     # dict, where nothing consumed them, so both knobs raised "unsupported
@@ -140,8 +140,8 @@ class OpenFold3Backend(Backend):
     # has rather than imposing one it lacks.
     sampling_options = {
         "num_samples": "num_samples",
-        "num_steps": "no_rollout_steps",
-        "num_recycles": "num_cycles",
+        "num_steps": "num_steps",
+        "num_recycles": "num_recycles",
         "max_msa_depth": "max_msa_depth",
     }
     # OpenFold3 selects its triangle kernel from an environment variable rather
@@ -185,7 +185,7 @@ class OpenFold3Backend(Backend):
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _compile_enabled(dict(options))
-        for name in ("num_samples", "no_rollout_steps", "num_cycles"):
+        for name in ("num_samples", "num_steps", "num_recycles"):
             if name in options:
                 try:
                     int(options[name])
@@ -201,10 +201,10 @@ class OpenFold3Backend(Backend):
         """Translate neutral semantics that differ from OpenFold3's literals."""
         options = super().apply_sampling(request)
         # Upstream exposes ``num_recycles`` but executes recycle + 1 trunk
-        # cycles. A caller using the native ``num_cycles`` option has already
+        # cycles. A caller using the native ``num_recycles`` option has already
         # specified the executed count, so only the neutral knob gets +1.
         if request.num_recycles is not None:
-            options["num_cycles"] = request.num_recycles + 1
+            options["num_recycles"] = request.num_recycles + 1
         if options.get("max_msa_depth") is not None:
             options["max_msa_depth"] = min(
                 _RELEASED_MSA_DEPTH, int(options["max_msa_depth"])
@@ -285,7 +285,7 @@ class OpenFold3Backend(Backend):
 
         overrides = {
             key: int(options.pop(key))
-            for key in ("num_samples", "no_rollout_steps", "num_cycles")
+            for key in ("num_samples", "num_steps", "num_recycles")
             if key in options
         }
         chunk = options.pop("pair_chunk_size", None)

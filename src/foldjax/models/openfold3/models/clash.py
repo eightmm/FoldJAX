@@ -5,7 +5,7 @@ boolean indexing, so both the loop count and the slice sizes depend on the data.
 This port keeps the shapes static: a chain-membership one-hot turns the per-pair
 clash count into one einsum over the full distance matrix.
 
-That costs an ``[n_sample, N_atom, N_atom]`` intermediate, which is the honest
+That costs an ``[num_samples, N_atom, N_atom]`` intermediate, which is the honest
 trade for static shapes. For large complexes this should be chunked over atoms
 before it goes near a real structure; correctness comes first here.
 """
@@ -26,14 +26,14 @@ def compute_has_clash(
     violation_abs: int = 100,
     violation_frac: float = 0.5,
 ) -> jnp.ndarray:
-    """Return ``[n_sample]``, 1.0 where two distinct polymer chains clash.
+    """Return ``[num_samples]``, 1.0 where two distinct polymer chains clash.
 
     A chain counts as a polymer chain only if *every* one of its atoms is marked
     polymer, matching upstream's ``((asym_id != aid) | is_polymer).all()``.
 
     Args:
         asym_id: ``[N_atom]`` chain id per atom.
-        atom_positions: ``[n_sample, N_atom, 3]`` predicted coordinates.
+        atom_positions: ``[num_samples, N_atom, 3]`` predicted coordinates.
         atom_mask: ``[N_atom]`` valid-atom mask.
         is_polymer: ``[N_atom]`` polymer flag per atom.
         n_chain: static upper bound on chain ids (ids must be in ``[0, n_chain)``).
@@ -43,7 +43,7 @@ def compute_has_clash(
             trips the flag.
 
     Returns:
-        ``[n_sample]`` float array of 0.0/1.0.
+        ``[num_samples]`` float array of 0.0/1.0.
     """
     chains = jnp.arange(n_chain)
     # [N_atom, n_chain]
@@ -62,13 +62,13 @@ def compute_has_clash(
     # [n_chain] valid atoms per polymer chain.
     counts = jnp.sum(member, axis=0)
 
-    # [n_sample, N_atom, N_atom]
+    # [num_samples, N_atom, N_atom]
     deltas = atom_positions[:, :, None, :] - atom_positions[:, None, :, :]
     close = (jnp.sqrt(jnp.sum(deltas**2, axis=-1)) < threshold).astype(
         atom_positions.dtype
     )
 
-    # [n_sample, n_chain, n_chain] clashes between each ordered chain pair.
+    # [num_samples, n_chain, n_chain] clashes between each ordered chain pair.
     pair_clashes = jnp.einsum("sab,ac,bd->scd", close, member, member)
 
     smaller = jnp.minimum(counts[:, None], counts[None, :])
@@ -104,17 +104,17 @@ def sample_ranking_score(
     when RASA is unavailable.
 
     Args:
-        ptm: ``[n_sample]`` pTM.
-        iptm: ``[n_sample]`` ipTM.
-        has_clash: ``[n_sample]`` 0.0/1.0 clash flag.
-        disorder: ``[n_sample]`` disorder fraction, or ``None`` for zeros.
+        ptm: ``[num_samples]`` pTM.
+        iptm: ``[num_samples]`` ipTM.
+        has_clash: ``[num_samples]`` 0.0/1.0 clash flag.
+        disorder: ``[num_samples]`` disorder fraction, or ``None`` for zeros.
         ptm_weight: pTM coefficient.
         iptm_weight: ipTM coefficient.
         disorder_weight: disorder coefficient.
         has_clash_weight: clash penalty.
 
     Returns:
-        ``[n_sample]`` ranking score; higher is better.
+        ``[num_samples]`` ranking score; higher is better.
     """
     if disorder is None:
         disorder = jnp.zeros_like(ptm)

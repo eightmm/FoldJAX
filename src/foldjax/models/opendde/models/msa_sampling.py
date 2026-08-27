@@ -72,7 +72,7 @@ def drop_sampled_msa_source_features(
 def sample_opendde_msa_cycle_features(
     input_feature_dict: Mapping[str, Any],
     *,
-    n_cycle: int,
+    num_recycles: int,
     seed: int,
     msa_depth: int = 1280,
     gap_token: int = 31,
@@ -84,8 +84,8 @@ def sample_opendde_msa_cycle_features(
     it does not choose a random depth and it does not remove duplicate rows.
     """
 
-    if n_cycle <= 0:
-        raise ValueError("n_cycle must be positive")
+    if num_recycles <= 0:
+        raise ValueError("num_recycles must be positive")
     if msa_depth <= 0:
         raise ValueError("msa_depth must be positive")
 
@@ -123,7 +123,7 @@ def sample_opendde_msa_cycle_features(
     sample_size = min(msa_depth, n_msa)
     rng = np.random.default_rng(seed)
     cycles: list[dict[str, np.ndarray]] = []
-    for _ in range(n_cycle):
+    for _ in range(num_recycles):
         valid_perm = rng.permutation(valid_idx)
         invalid_perm = rng.permutation(invalid_idx)
         indices = np.concatenate((valid_perm, invalid_perm))[:sample_size]

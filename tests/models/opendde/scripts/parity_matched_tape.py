@@ -212,13 +212,13 @@ def _squeeze_batch(array: np.ndarray, rank: int) -> np.ndarray:
     return array
 
 
-def load_tape(path: Path, *, n_step: int, n_atom: int) -> tuple[np.ndarray, dict]:
+def load_tape(path: Path, *, num_steps: int, n_atom: int) -> tuple[np.ndarray, dict]:
     contracts = {
-        "noise_schedule": (n_step + 1,),
+        "noise_schedule": (num_steps + 1,),
         "init_noise": (1, n_atom, 3),
-        "step_noises": (n_step, 1, n_atom, 3),
-        "rotations": (n_step, 1, 3, 3),
-        "translations": (n_step, 1, 3),
+        "step_noises": (num_steps, 1, n_atom, 3),
+        "rotations": (num_steps, 1, 3, 3),
+        "translations": (num_steps, 1, 3),
     }
     with np.load(path, allow_pickle=False) as archive:
         missing = set(contracts).difference(archive.files)
@@ -243,7 +243,7 @@ def build_cycle_msa(
     archive: dict[str, np.ndarray],
     *,
     source: str,
-    n_cycle: int,
+    num_recycles: int,
 ) -> tuple[tuple[dict, ...] | None, dict]:
     """Per-cycle MSA features for the JAX trunk, plus what they are based on.
 
@@ -255,10 +255,10 @@ def build_cycle_msa(
 
     fields = ("msa", "has_deletion", "deletion_value")
     rows = np.asarray(archive["rows"])
-    if rows.shape[0] != n_cycle:
+    if rows.shape[0] != num_recycles:
         raise ValueError(
             f"capture holds {rows.shape[0]} MSA row draws but this run has "
-            f"{n_cycle} cycles"
+            f"{num_recycles} cycles"
         )
 
     upstream_full = {
@@ -285,7 +285,7 @@ def build_cycle_msa(
         return None, agreement
 
     cycles: list[dict] = []
-    for cycle in range(n_cycle):
+    for cycle in range(num_recycles):
         if source == "upstream":
             selected = {
                 name: _squeeze_batch(
@@ -316,7 +316,7 @@ def trunk_stages(
     params,
     *,
     cycle_msa: tuple[dict, ...] | None,
-    n_cycle: int,
+    num_recycles: int,
 ) -> dict[str, np.ndarray]:
     """Run the residue trunk one stage at a time, keeping the last cycle's state.
 
@@ -358,7 +358,7 @@ def trunk_stages(
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
-    for cycle in range(n_cycle):
+    for cycle in range(num_recycles):
         msa_features = features
         if cycle_msa is not None:
             msa_features = {**features, **cycle_msa[cycle]}
@@ -509,8 +509,8 @@ def main() -> int:
     from foldjax.models.opendde.models.model import opendde_infer_static
 
     meta = json.loads((args.tape_dir / "tape.json").read_text(encoding="utf-8"))
-    n_cycle = int(meta["n_cycle"])
-    n_step = int(meta["n_step"])
+    num_recycles = int(meta["num_recycles"])
+    num_steps = int(meta["num_steps"])
     seed = int(meta["seed"])
 
     with np.load(args.tape_dir / "msa.npz", allow_pickle=False) as archive:
@@ -539,7 +539,7 @@ def main() -> int:
     features = featurize_opendde_json(job, base_dir=args.input_json.parent, seed=seed)
     n_atom = int(features["ref_pos"].shape[0])
     noise_schedule, tape = load_tape(
-        args.tape_dir / "tape.npz", n_step=n_step, n_atom=n_atom
+        args.tape_dir / "tape.npz", num_steps=num_steps, n_atom=n_atom
     )
 
     params = load_native_weights(args.weights)
@@ -552,11 +552,13 @@ def main() -> int:
         # bf16 run narrows -- embedder and both trunks, heads left in float32.
         params = cast_trunk_params(params, jnp.bfloat16)
     cycle_msa, agreement = build_cycle_msa(
-        features, msa_archive, source=args.msa_source, n_cycle=n_cycle
+        features, msa_archive, source=args.msa_source, num_recycles=num_recycles
     )
 
     started = time.perf_counter()
-    stages = trunk_stages(features, params, cycle_msa=cycle_msa, n_cycle=n_cycle)
+    stages = trunk_stages(
+        features, params, cycle_msa=cycle_msa, num_recycles=num_recycles
+    )
     jax.block_until_ready(stages["after_pairformer_z"])
     trunk_seconds = time.perf_counter() - started
 
@@ -569,9 +571,9 @@ def main() -> int:
 
     metrics: dict = {
         "msa_source": args.msa_source,
-        "recycles": n_cycle,
-        "diffusion_steps": n_step,
-        "samples": int(meta["n_sample"]),
+        "num_recycles": num_recycles,
+        "num_steps": num_steps,
+        "samples": int(meta["num_samples"]),
         "stages_deliberately_absent": stages_deliberately_absent,
         "atoms": n_atom,
         "tokens": int(features["restype"].shape[-2]),
@@ -587,8 +589,8 @@ def main() -> int:
             params,
             noise_schedule,
             key=None,
-            n_sample=1,
-            n_cycle=n_cycle,
+            num_samples=1,
+            num_recycles=num_recycles,
             run_confidence=False,
             cycle_msa_features=cycle_msa,
             diffusion_attention_backend="xla",

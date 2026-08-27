@@ -38,7 +38,7 @@ def _settings(directory, *, logits: bool):
     return dataclasses.replace(
         jax_model.with_overrides(
             checkpoint.load_settings(directory),
-            num_loops=1,
+            num_recycles=1,
             num_samples=2,
             num_steps=1,
         ),

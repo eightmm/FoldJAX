@@ -153,9 +153,9 @@ def _batch(torch) -> dict:
     return {k: jnp.asarray(v.numpy()) for k, v in raw.items()}
 
 
-def _kwargs(num_cycles: int) -> dict:
+def _kwargs(num_recycles: int) -> dict:
     return {
-        "num_cycles": num_cycles,
+        "num_recycles": num_recycles,
         "n_query": N_QUERY,
         "n_key": N_KEY,
         "atom_heads": HEADS,

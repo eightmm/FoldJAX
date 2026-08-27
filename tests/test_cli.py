@@ -600,7 +600,7 @@ def test_predict_cli_prints_result_summary(tmp_path: Path, monkeypatch, capsys) 
             "--cache-dir",
             str(tmp_path / "cache"),
             "--option",
-            "n_step=20",
+            "num_steps=20",
         ]
     )
     assert code == 0
@@ -608,7 +608,7 @@ def test_predict_cli_prints_result_summary(tmp_path: Path, monkeypatch, capsys) 
     assert seen["request"].seed == 3
     assert seen["request"].cache_dir == tmp_path / "cache"
     assert seen["request"].profile == "released"
-    assert seen["request"].options == {"n_step": 20}
+    assert seen["request"].options == {"num_steps": 20}
 
 
 def test_cache_warm_cli_reports_execute_once_and_cache_delta(

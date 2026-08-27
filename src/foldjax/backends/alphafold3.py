@@ -638,9 +638,9 @@ class AlphaFold3Backend(Backend):
     # made AlphaFold 3 the one backend that could not be held to the same
     # schedule as the others, and so could not be benchmarked against them.
     sampling_options: dict[str, str] = {
-        "num_samples": "diffusion_samples",
-        "num_steps": "diffusion_steps",
-        "num_recycles": "recycles",
+        "num_samples": "num_samples",
+        "num_steps": "num_steps",
+        "num_recycles": "num_recycles",
         "max_msa_depth": "max_msa_depth",
     }
     # AlphaFold 3 runs `bfloat16: 'all'` inside the model it ships, so there is
@@ -653,9 +653,9 @@ class AlphaFold3Backend(Backend):
         ),
     }
     compile_options = (
-        "diffusion_samples",
-        "diffusion_steps",
-        "recycles",
+        "num_samples",
+        "num_steps",
+        "num_recycles",
         "max_msa_depth",
         "buckets",
         "attention_backend",
@@ -901,15 +901,15 @@ class AlphaFold3Backend(Backend):
             )
             device = devices[int(options.pop("device", 0))]
             attention_backend = options.pop("attention_backend", "triton")
-            diffusion_samples = int(options.pop("diffusion_samples", 5))
-            recycles = int(options.pop("recycles", 10))
+            num_samples = int(options.pop("num_samples", 5))
+            num_recycles = int(options.pop("num_recycles", 10))
             return_embeddings = _strict_boolean(
                 options.pop("return_embeddings", False), name="return_embeddings"
             )
             return_distogram = _strict_boolean(
                 options.pop("return_distogram", False), name="return_distogram"
             )
-            diffusion_steps = options.pop("diffusion_steps", None)
+            num_steps = options.pop("num_steps", None)
             max_msa_depth = options.pop("max_msa_depth", None)
             kernel_fallback = str(options.pop("kernel_autotuning", "autotune"))
             if options:
@@ -918,20 +918,20 @@ class AlphaFold3Backend(Backend):
                 )
             config = runner.make_model_config(
                 flash_attention_implementation=attention_backend,
-                num_diffusion_samples=diffusion_samples,
-                num_recycles=recycles,
+                num_diffusion_samples=num_samples,
+                num_recycles=num_recycles,
                 return_embeddings=return_embeddings,
                 return_distogram=return_distogram,
             )
-            _set_nested(config, _DIFFUSION_STEPS, diffusion_steps)
+            _set_nested(config, _DIFFUSION_STEPS, num_steps)
             _set_nested(config, _MSA_DEPTH, max_msa_depth)
             config_identity = (
                 ("attention_backend", attention_backend),
-                ("diffusion_samples", diffusion_samples),
-                ("recycles", recycles),
+                ("num_samples", num_samples),
+                ("num_recycles", num_recycles),
                 ("return_embeddings", return_embeddings),
                 ("return_distogram", return_distogram),
-                ("diffusion_steps", diffusion_steps),
+                ("num_steps", num_steps),
                 ("max_msa_depth", max_msa_depth),
             )
             model_runner, model_runner_key = self._select_model_runner(

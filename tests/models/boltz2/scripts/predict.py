@@ -153,7 +153,7 @@ def main() -> None:
         args.msa_api_key_value = args.msa_api_key_value or os.environ.get(
             "MSA_API_KEY_VALUE"
         )
-    assert args.diffusion_samples > 0, "--diffusion-samples must be positive"
+    assert args.num_samples > 0, "--diffusion-samples must be positive"
     os.environ["BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"] = (
         args.triangle_multiplication_backend
     )
@@ -287,10 +287,10 @@ def main() -> None:
         "run_bfactor": True,
         "compute_dtype": compute_dtype,
         "use_scan": True,
-        "multiplicity": args.diffusion_samples,
+        "multiplicity": args.num_samples,
         "triangle_backend": args.triangle_backend,
         "glu_backend": args.glu_backend,
-        "confidence_sequentially": args.diffusion_samples > 1,
+        "confidence_sequentially": args.num_samples > 1,
         "return_pair_chains_iptm": False,
         "recompute_nonpolymer_frames": bool(np.any(feats_np["mol_type"] == 3)),
         "steering_args": steering_args,
@@ -309,7 +309,7 @@ def main() -> None:
     if affinity_model_params is not None:
         from foldjax.models.boltz2.api import _prepare_affinity_features
 
-        coords_batched = coords.reshape(args.diffusion_samples, -1, 3)
+        coords_batched = coords.reshape(args.num_samples, -1, 3)
         best_idx = int(np.argmax(np.asarray(out["iptm"])))
         affinity_feats_np = _prepare_affinity_features(
             input_path=args.input,
@@ -369,7 +369,7 @@ def main() -> None:
             "prewarmed: "
             f"tokens={feats_np['token_pad_mask'].shape[-1]} "
             f"atoms={feats_np['atom_pad_mask'].shape[-1]} "
-            f"samples={args.diffusion_samples}"
+            f"samples={args.num_samples}"
         )
         return
 
@@ -377,13 +377,13 @@ def main() -> None:
     from foldjax.models.boltz2.data.write.structure import write_prediction
 
     atom_pad_mask = feats_np["atom_pad_mask"].reshape(-1)
-    padded_coords = coords.reshape(args.diffusion_samples, -1, 3)
+    padded_coords = coords.reshape(args.num_samples, -1, 3)
     coords = padded_coords[:, :original_atoms]
-    plddt = np.asarray(out["plddt"]).reshape(args.diffusion_samples, -1)
+    plddt = np.asarray(out["plddt"]).reshape(args.num_samples, -1)
     plddt = plddt[:, :original_tokens]
     written = []
-    for model_idx in range(args.diffusion_samples):
-        suffix = "" if args.diffusion_samples == 1 else f"_model_{model_idx}"
+    for model_idx in range(args.num_samples):
+        suffix = "" if args.num_samples == 1 else f"_model_{model_idx}"
         out_path = args.out_dir / f"{record_id}{suffix}.{args.fmt}"
         written.append(
             write_prediction(

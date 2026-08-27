@@ -45,7 +45,7 @@ def test_protenix_dynamic_token_chunk_size_matches_upstream_config() -> None:
 
 
 def test_auto_chunk_config_applies_token_policy_to_attention_chunks() -> None:
-    config = resolve_chunk_config(n_token=2000, n_sample=1)
+    config = resolve_chunk_config(n_token=2000, num_samples=1)
 
     assert config.triangle_mul_chunk_size == 256
     assert config.triangle_att_q_chunk_size == 256
@@ -61,7 +61,7 @@ def test_auto_chunk_config_leaves_the_first_band_unchunked() -> None:
     memory, which is what kept the extra thresholds in place. Nothing measured
     ever required them: a job this size peaks around 11 GiB.
     """
-    config = resolve_chunk_config(n_token=952, n_sample=5)
+    config = resolve_chunk_config(n_token=952, num_samples=5)
 
     assert config.triangle_mul_chunk_size is None
     assert config.triangle_att_q_chunk_size is None
@@ -74,7 +74,7 @@ def test_auto_chunk_config_chunks_large_sample_batches() -> None:
     # live and the assertion cannot pass on one of them alone.
     config = resolve_chunk_config(
         n_token=1500,
-        n_sample=PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE + 1,
+        num_samples=PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE + 1,
     )
 
     assert config.triangle_mul_chunk_size == 512
@@ -84,7 +84,7 @@ def test_auto_chunk_config_chunks_large_sample_batches() -> None:
 def test_auto_chunk_config_preserves_explicit_overrides() -> None:
     config = resolve_chunk_config(
         n_token=2000,
-        n_sample=16,
+        num_samples=16,
         triangle_mul_chunk_size=64,
         token_q_chunk_size=96,
         diffusion_chunk_size=2,
@@ -100,13 +100,13 @@ def test_auto_chunk_config_preserves_explicit_overrides() -> None:
 def test_manual_and_off_chunk_policies_do_not_auto_fill() -> None:
     manual = resolve_chunk_config(
         n_token=3000,
-        n_sample=16,
+        num_samples=16,
         policy="manual",
         token_q_chunk_size=128,
     )
     off = resolve_chunk_config(
         n_token=3000,
-        n_sample=16,
+        num_samples=16,
         policy="off",
         token_q_chunk_size=128,
     )
@@ -120,5 +120,5 @@ def test_manual_and_off_chunk_policies_do_not_auto_fill() -> None:
 def test_chunk_policy_rejects_invalid_sizes() -> None:
     with pytest.raises(ValueError, match="n_token"):
         protenix_dynamic_token_chunk_size(0)
-    with pytest.raises(ValueError, match="n_sample"):
-        resolve_chunk_config(n_token=1, n_sample=0)
+    with pytest.raises(ValueError, match="num_samples"):
+        resolve_chunk_config(n_token=1, num_samples=0)

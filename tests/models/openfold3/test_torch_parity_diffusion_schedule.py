@@ -50,7 +50,7 @@ def test_noise_schedule_matches_torch(
 ) -> None:
     torch = _torch()
     expected = _upstream()(
-        no_rollout_steps=steps,
+        num_steps=steps,
         sigma_data=SIGMA_DATA,
         s_max=s_max,
         s_min=s_min,

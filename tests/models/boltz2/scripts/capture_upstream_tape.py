@@ -359,11 +359,11 @@ def main() -> int:
         "--model",
         "boltz2",
         "--recycling_steps",
-        str(args.n_cycle),
+        str(args.num_recycles),
         "--sampling_steps",
-        str(args.n_step),
-        "--diffusion_samples",
-        str(args.n_sample),
+        str(args.num_steps),
+        "--num_samples",
+        str(args.num_samples),
         "--seed",
         str(args.seed),
         "--accelerator",
@@ -399,19 +399,19 @@ def _write(args, recorder: TapeRecorder, captured: dict) -> int:
         if name not in captured:
             raise RuntimeError(f"upstream never produced {name!r}")
 
-    n_step = args.n_step
-    if len(captured["sigmas"]) != n_step + 1:
+    num_steps = args.num_steps
+    if len(captured["sigmas"]) != num_steps + 1:
         raise RuntimeError(
-            f"expected {n_step + 1} sigmas, got {len(captured['sigmas'])}"
+            f"expected {num_steps + 1} sigmas, got {len(captured['sigmas'])}"
         )
     coordinate_draws, translation_draws = recorder.split()
-    if len(coordinate_draws) != n_step + 1:
+    if len(coordinate_draws) != num_steps + 1:
         raise RuntimeError(
-            f"expected {n_step + 1} coordinate draws, got {len(coordinate_draws)}"
+            f"expected {num_steps + 1} coordinate draws, got {len(coordinate_draws)}"
         )
-    if len(recorder.rotations) != n_step or len(translation_draws) != n_step:
+    if len(recorder.rotations) != num_steps or len(translation_draws) != num_steps:
         raise RuntimeError(
-            f"expected {n_step} augmentations, got {len(recorder.rotations)} "
+            f"expected {num_steps} augmentations, got {len(recorder.rotations)} "
             f"rotations and {len(translation_draws)} translation draws"
         )
 
@@ -426,7 +426,7 @@ def _write(args, recorder: TapeRecorder, captured: dict) -> int:
     }
     np.savez_compressed(args.out_dir / "tape.npz", **tape)
 
-    passes = args.n_cycle + 1
+    passes = args.num_recycles + 1
     rows = None
     if args.subsample_msa:
         if len(recorder.msa_rows) != passes:
@@ -454,9 +454,9 @@ def _write(args, recorder: TapeRecorder, captured: dict) -> int:
     )
 
     summary = {
-        "n_step": n_step,
-        "n_sample": args.n_sample,
-        "n_cycle": args.n_cycle,
+        "num_steps": num_steps,
+        "num_samples": args.num_samples,
+        "num_recycles": args.num_recycles,
         "seed": args.seed,
         "precision": args.precision,
         "kernels": bool(args.kernels),

@@ -102,14 +102,14 @@ def pad_msa_features_to_bucket(
 def sample_msa_cycle_features(
     input_feature_dict: dict,
     *,
-    n_cycle: int,
+    num_recycles: int,
     seed: int,
     bucket_size: int = 64,
 ) -> tuple[dict[str, np.ndarray], ...]:
     """Build deterministic, fixed-shape MSA subsets using upstream's policy."""
 
-    if n_cycle <= 0:
-        raise ValueError("n_cycle must be positive")
+    if num_recycles <= 0:
+        raise ValueError("num_recycles must be positive")
     if bucket_size <= 0:
         raise ValueError("bucket_size must be positive")
     msa_fields = ("msa", "has_deletion", "deletion_value")
@@ -120,7 +120,7 @@ def sample_msa_cycle_features(
         return tuple()
     rng = np.random.default_rng(seed)
     sampled_cycles = []
-    for _ in range(n_cycle):
+    for _ in range(num_recycles):
         sample_size = int(rng.integers(1, n_msa + 1))
         indices = rng.permutation(n_msa)[:sample_size]
         sampled_cycles.append(

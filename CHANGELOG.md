@@ -12,6 +12,38 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Every port spells the four sampling knobs the way FoldJAX does.** They
+  had kept whatever their upstream called them, so one concept had five names:
+  `num_samples` was also `diffusion_samples` and `n_sample`; `num_steps` was
+  also `steps`, `n_step`, `no_rollout_steps` and `diffusion_steps`;
+  `num_recycles` was also `recycling`, `num_loops`, `n_cycle`, `num_cycles`
+  and `recycles`; `max_msa_depth` was also `msa_max_depth` and `max_msa_rows`.
+  The adapters translated between them, which meant a script that ran one
+  model could not run another without knowing which port it was talking to.
+  820 references across 110 files now use one vocabulary, and the evidence is
+  that all five translation tables collapsed to identity -- there is nothing
+  left to translate. Boltz-2's `affinity_diffusion_samples` and
+  `affinity_steps` came along, because leaving them would have made that port
+  inconsistent with itself.
+
+  **The published names did not change.** Protenix's and OpenDDE's native CLIs
+  keep `--n-sample`, `--n-step`, `--n-cycle` and `--max-msa-rows` as aliases of
+  the new flags. Upstream's own spellings stay upstream's: the checkpoint keys,
+  AlphaFold 3's `heads.diffusion.eval.steps` config path, upstream Boltz-2's
+  `recycling_steps=` argument, and Protenix's guidance `steps`, which is a
+  different concept that happens to share a word.
+
+- **A rename can stop a validator without failing.** Unifying these names
+  re-keyed Boltz-2's option dictionary but left `validate_native_options`
+  looking for `"steps"`, so the guard that rejects a one-step Karras schedule
+  -- which divides by `num_steps - 1` and would otherwise NaN after an
+  expensive compile -- quietly stopped running. Nothing raised; one test that
+  asserted the rejection caught it. `tests/test_execution_knob_coverage.py`
+  now also asserts that every name in a backend's `compile_options` is an
+  option that backend actually declares, which is the same slip in the copy
+  that has no behavioural test of its own: an orphan there silently stops
+  contributing to the compile-cache key.
+
 - **`matmul_precision` is a knob you can actually turn, on all six models.**
   It had been in the neutral vocabulary all along, and all six backends
   answered `does not support matmul_precision` -- the one knob the vocabulary

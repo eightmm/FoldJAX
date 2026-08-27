@@ -47,13 +47,13 @@ def _config(**changes) -> inference.InferenceConfig:
         no_heads_pair_bias=1,
         max_relative_idx=1,
         max_relative_chain=1,
-        num_cycles=1,
+        num_recycles=1,
         num_samples=1,
         max_atoms_per_token=1,
         plddt_bins=1,
         pae_bins=1,
         pae_bin_max=1.0,
-        no_rollout_steps=1,
+        num_steps=1,
     )
     return config._replace(**changes)
 
@@ -1187,9 +1187,9 @@ _FOUR_DEVICE_STABLE_JIT_PROBE = textwrap.dedent(
     base = inference.released_config(
         n_token=4,
         n_atom=4,
-        num_cycles=1,
+        num_recycles=1,
         num_samples=1,
-        no_rollout_steps=1,
+        num_steps=1,
         pair_chunk_size=None,
         msa_depth=1,
     )

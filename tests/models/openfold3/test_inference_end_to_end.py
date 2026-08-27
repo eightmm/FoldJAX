@@ -46,14 +46,14 @@ def _config() -> InferenceConfig:
         no_heads_pair_bias=2,
         max_relative_idx=MAX_RELATIVE_IDX,
         max_relative_chain=MAX_RELATIVE_CHAIN,
-        num_cycles=1,
+        num_recycles=1,
         num_samples=2,
         max_atoms_per_token=MAX_ATOMS_PER_TOKEN,
         plddt_bins=PLDDT_BINS,
         pae_bins=PAE_BINS,
         pae_bin_max=32.0,
         confidence_no_bin=CONF_BINS,
-        no_rollout_steps=3,
+        num_steps=3,
     )
 
 

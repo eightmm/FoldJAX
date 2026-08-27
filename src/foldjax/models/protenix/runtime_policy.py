@@ -19,14 +19,14 @@ KNOWN_MODEL_NAMES = (
 )
 
 _BASE_INFERENCE_DEFAULTS = {
-    "n_cycle": 10,
-    "n_step": 200,
+    "num_recycles": 10,
+    "num_steps": 200,
     "gamma0": 0.8,
     "step_scale_eta": 1.5,
 }
 _SMALL_INFERENCE_DEFAULTS = {
-    "n_cycle": 4,
-    "n_step": 5,
+    "num_recycles": 4,
+    "num_steps": 5,
     "gamma0": 0.0,
     "step_scale_eta": 1.0,
 }
