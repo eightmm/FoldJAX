@@ -112,6 +112,31 @@ def test_extensionless_alignment_is_published_with_its_detected_format(
     assert Path(main).read_text() == contents
 
 
+def test_extensionless_alignment_reads_only_its_format_prefix(
+    tmp_path: Path,
+    job: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alignment = tmp_path / "alignment"
+    alignment.write_text(">q\nACD\n" + "A" * 8192, encoding="utf-8")
+    job["entities"][0]["unpaired_msa"] = "alignment"
+    original_read_text = Path.read_text
+
+    def reject_full_alignment_read(path: Path, *args, **kwargs) -> str:
+        if path == alignment:
+            raise AssertionError("format detection must not read the complete MSA")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_full_alignment_read)
+
+    document = _materialize(_write(tmp_path / "job.json", job), tmp_path / "out")
+
+    (main,) = document["queries"]["complex"]["chains"][0][
+        "main_msa_file_paths"
+    ]
+    assert Path(main).name == "colabfold_main.a3m"
+
+
 def test_unknown_extensionless_alignment_fails_at_materialization(
     tmp_path: Path, job: dict
 ) -> None:

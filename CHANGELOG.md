@@ -155,6 +155,14 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **Extensionless OpenFold3 alignments are identified from a bounded prefix.**
+  Format detection now reads the first 4,096 decoded characters directly from
+  the file instead of loading the complete MSA and then slicing that prefix.
+  For a 128 MiB ASCII alignment, an isolated CPU probe reduced traced peak
+  from 268,441,806 to 26,572 bytes and the detection read from 0.092 seconds
+  to below 0.001 seconds. A3M/FASTA and Stockholm classification, generated
+  paths and the alignment consumed by the model are unchanged.
+
 - **Requested representation archives stage one host array at a time.** The
   writer now emits each unchanged NPY member directly into the same uncompressed
   NPZ format and releases its NumPy staging array before transferring the next

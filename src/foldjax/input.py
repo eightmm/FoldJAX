@@ -860,7 +860,8 @@ def _openfold3_msa(
         # workflow artifact store. OpenFold3 itself dispatches on extension,
         # so infer only the two unambiguous text formats and otherwise fail at
         # this boundary instead of passing a file it will silently ignore.
-        prefix = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        with path.open(encoding="utf-8", errors="replace") as source:
+            prefix = source.read(4096)
         content = prefix.lstrip("\ufeff \t\r\n")
         if content.startswith("# STOCKHOLM"):
             suffix = ".sto"
