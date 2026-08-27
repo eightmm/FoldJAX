@@ -12,6 +12,19 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The ESMFold2 atom encoder is checked against upstream's released weights,
+  for the first time.** That test had never run: it imported
+  `modeling_esmfold2_common`, a path in no released `transformers`, so it
+  reported "skipped" everywhere. `transformers` and the published checkpoint
+  have diverged in naming -- 2,226 names against 1,594, 12 in both -- but they
+  hold the same trained tensors, so each side now loads its own artifact and
+  nothing is mapped. The embedding agrees to 4.8e-7. Past it the two differ by
+  1.3e-2, all of it one deliberate cast: this port drops q/k/v to bfloat16 for a
+  float32 caller, which the reference it was ported from did and the current
+  library does not. Removing that cast alone takes the layers to 4.9e-6 and the
+  token output to 2.8e-5, so nothing else disagrees -- and the cast does not
+  fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+
 - **Why the ESMFold2 encoder parity test does not run is now a measurement
   rather than a guess.** `transformers` and the published checkpoint have
   diverged in parameter naming: against transformers 5.16.1 the library's

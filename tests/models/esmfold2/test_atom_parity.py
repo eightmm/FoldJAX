@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+from foldjax import paths  # noqa: E402
 from foldjax.models.esmfold2.models import atom  # noqa: E402
 
 
@@ -122,46 +126,131 @@ def test_the_window_is_measured_in_packed_rank() -> None:
     assert allowed[0, 1, 1], "the diagonal is always allowed, padding included"
 
 
-@pytest.mark.skip(
-    reason="`transformers` and the published checkpoint have diverged in "
-    "parameter naming, and FoldJAX follows the checkpoint. Measured against "
-    "transformers 5.16.1: its EsmFold2Model carries 2,226 parameter names, the "
-    "published safetensors carries 1,594, and 12 names appear in both. That is "
-    "a different layout, not a rename, so `torch_state_to_numpy` on a "
-    "library-built module hands FoldJAX names it has never heard of -- it "
-    "raises on `atom_transformer.blocks.0.adaln_modulation.1.weight`, which the "
-    "checkpoint has and the library does not. Running this faithfully needs "
-    "transformers' own re-exported weights, which is a separate artifact from "
-    "the one this port loads. A hand-written mapping would reintroduce exactly "
-    "the rename table that naming after the checkpoint was chosen to delete, "
-    "and a mapping that lines up the wrong tensors passes."
-)
-def test_the_atom_encoder_matches() -> None:
-    modeling = _upstream()
-    torch = pytest.importorskip("torch")
-    from tests.models.esmfold2.parity import torch_state_to_numpy
+def _released_atom_encoder():
+    """Both sides' real weights, or a skip.
 
-    module = modeling.ESMFold2AtomEncoder(
-        d_atom=D_ATOM, d_token=D_ATOM * 2, n_blocks=2, n_heads=N_HEADS,
-        swa_window_size=4, expansion_ratio=2, structure_prediction=False,
-    ).eval()
+    They are the same trained tensors: `atom_linear.weight`, `atom_norm.weight`,
+    `atom_to_token_linear.weight` and the adaLN projection are bit-identical
+    between the two artifacts, and the checkpoint's fused `Wqkv` is exactly
+    `concat(q_proj, k_proj, v_proj)` from the re-export. Only the names and the
+    QKV packing differ, so each side loads its own file and no name is ever
+    mapped onto another -- which is the rename table that naming after the
+    checkpoint was chosen to delete.
+
+    `tests/models/esmfold2/fetch_hf_atom_weights.py` writes the library's side;
+    `bench/upstream-environments.md` has the recipe.
+    """
+    modeling = _upstream()
+    weights = os.environ.get("ESMFOLD2_HF_ATOM_WEIGHTS")
+    if not weights or not Path(weights).is_file():
+        pytest.skip(
+            "set ESMFOLD2_HF_ATOM_WEIGHTS to the .npz written by "
+            "tests/models/esmfold2/fetch_hf_atom_weights.py"
+        )
+    store = paths.weights_dir("esmfold2") / "model.safetensors"
+    if not store.is_file():
+        pytest.skip("the published ESMFold2 checkpoint is not in the weight store")
+    return modeling, Path(weights), store
+
+
+def test_the_atom_encoder_matches() -> None:
+    """The released atom encoder, both sides on their own real weights.
+
+    The embedding is exact to float32. Past it the two diverge by 1.3e-2, and
+    all of it is one deliberate cast: this port drops q/k/v to bfloat16 when the
+    caller is float32, which the reference it was ported from did and the
+    current library does not. Removing that cast alone takes the layers from
+    4.2e-3 to 4.9e-6 and the token output from 1.3e-2 to 2.8e-5, so nothing
+    else in the stack disagrees.
+
+    The cast is not a defect -- at the released 32 samples and 7,776 atoms the
+    float32 scores would be 29,524 MiB -- and the released path runs bfloat16,
+    where the cast does not fire at all. It is only visible to a float32 caller,
+    which is what this test is. Hence one tight assertion on the embedding and
+    one documented tolerance past it, rather than one loose number over both.
+    """
+    # After the guard, never before it: an unguarded `import torch` turns the
+    # skip this is supposed to take into a failure in the shipped environment,
+    # which is Torch-free on purpose.
+    modeling, hf_weights, store = _released_atom_encoder()
+
+    import torch
+    from safetensors import safe_open
+    from transformers.models.esmfold2.configuration_esmfold2 import EsmFold2Config
+
     data = _atom_inputs(1)
-    with torch.no_grad():
-        expected = module(
-            ref_pos=torch.from_numpy(data["ref_pos"]),
-            atom_attention_mask=torch.from_numpy(data["atom_attention_mask"]),
-            ref_space_uid=torch.from_numpy(data["ref_space_uid"]),
-            ref_charge=torch.from_numpy(data["ref_charge"]),
-            ref_element=torch.from_numpy(data["ref_element"]),
-            ref_atom_name_chars=torch.from_numpy(data["ref_atom_name_chars"]),
-            atom_to_token=torch.from_numpy(data["atom_to_token"]),
-        )[0]
-    got, _, _, _ = atom.atom_encoder(
-        data["ref_pos"], data["atom_attention_mask"], data["ref_space_uid"],
-        data["ref_charge"], data["ref_element"], data["ref_atom_name_chars"],
-        data["atom_to_token"], torch_state_to_numpy(module),
-        n_blocks=2, n_heads=N_HEADS, half_window=2,
+    mask_bool = torch.from_numpy(data["atom_attention_mask"]).bool()
+    tokens = int(data["atom_to_token"].max()) + 1
+
+    config = EsmFold2Config.from_pretrained(str(hf_weights.parent))
+    encoder = modeling.EsmFold2AtomEncoder(config, config.atom_encoder).eval()
+    library = np.load(hf_weights)
+    encoder.load_state_dict(
+        {
+            name[len("input_embedder.atom_encoder.") :]: torch.from_numpy(
+                np.array(library[name])
+            )
+            for name in library.files
+        },
+        strict=True,
     )
+    with torch.no_grad():
+        inputs = modeling.EsmFold2AtomInputs(
+            torch.from_numpy(data["ref_pos"]),
+            torch.from_numpy(data["ref_charge"]),
+            torch.from_numpy(data["atom_attention_mask"]),
+            torch.from_numpy(data["ref_element"]),
+            torch.from_numpy(data["ref_atom_name_chars"]),
+            torch.from_numpy(data["ref_space_uid"]),
+            torch.from_numpy(data["atom_to_token"]),
+        )
+        embeds, position = encoder.embed_atoms(inputs)
+        attention = encoder.build_attention_mask(mask_bool, embeds)
+        expected_tokens, _ = encoder(
+            embeds,
+            embeds,
+            attention,
+            position,
+            mask_bool,
+            torch.from_numpy(data["atom_to_token"]),
+            tokens,
+        )
+
+    prefix = "inputs_embedder.atom_attention_encoder"
+    with safe_open(str(store), framework="numpy") as handle:
+        params = {
+            name: handle.get_tensor(name)
+            for name in handle.keys()
+            if name.startswith(f"{prefix}.")
+        }
+    got_tokens, _, conditioning, _ = atom.atom_encoder(
+        data["ref_pos"],
+        data["atom_attention_mask"],
+        data["ref_space_uid"],
+        data["ref_charge"],
+        data["ref_element"],
+        data["ref_atom_name_chars"],
+        data["atom_to_token"],
+        params,
+        prefix,
+        n_blocks=config.atom_encoder.num_hidden_layers,
+        n_heads=config.atom_encoder.num_attention_heads,
+        half_window=config.sliding_window // 2,
+    )
+
+    # Nothing narrows the dtype before the layers, so this one is exact.
     np.testing.assert_allclose(
-        np.asarray(got), expected.float().numpy(), atol=2e-3, rtol=2e-3
+        np.asarray(conditioning, dtype=np.float32),
+        embeds.float().numpy(),
+        atol=ATOL,
+        rtol=ATOL,
+    )
+    # Past them, the deliberate bfloat16 cast on q/k/v. Measured at 1.3e-2 here
+    # and at 2.8e-5 with the cast removed, so this bound is the cast's size and
+    # is documented rather than chosen.
+    np.testing.assert_allclose(
+        np.asarray(got_tokens, dtype=np.float32),
+        expected_tokens.float().numpy(),
+        atol=2e-2,
+        rtol=2e-2,
     )

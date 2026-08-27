@@ -200,29 +200,54 @@ to `modeling_esmfold2`, which builds modules from a config. The old path is
 still importable-looking enough that the file simply reported "skipped" on a
 machine that could have run it.
 
-### Why only the rotary comparison runs
+### The two artifacts, and why both are needed
 
-`EsmFold2RotaryEmbedding` holds no parameters and no buffers: it builds its
-tables from the config, so nothing has to be mapped and the two sides can be
-compared directly. Everything below it needs a checkpoint, and there the
-library and the published weights no longer share names.
+`transformers` and the published checkpoint have diverged in naming. Against
+`transformers` 5.16.1 and the released `model.safetensors`: the library's
+`EsmFold2Model` carries 2,226 parameter names, the checkpoint carries 1,594, and
+12 appear in both. Loading the published file through the library reports every
+tensor as unexpected. The checkpoint has
+`inputs_embedder.atom_attention_encoder.atom_transformer.blocks.0.adaln_modulation.1.weight`
+where the library has `layers.0.adaln_linear.weight`. ESMFold2 entered
+`transformers` at 5.16.0 and has been named this way since; no released version
+matches the checkpoint, and `modeling_esmfold2_common`, which an earlier version
+of the parity test imported, is in none of them.
 
-Measured against `transformers` 5.16.1 and the released `model.safetensors`:
+**They are the same trained weights.** `atom_linear.weight`,
+`atom_norm.weight`, `atom_to_token_linear.weight` and the adaLN projection are
+bit-identical across the two artifacts, and the checkpoint's fused `Wqkv` is
+exactly `concat(q_proj, k_proj, v_proj)` from the re-export. So the parity test
+gives each side its own file and maps nothing -- FoldJAX loads the published
+checkpoint, upstream loads its re-export, and only the outputs are compared.
+A name mapping would reintroduce the rename table that naming after the
+checkpoint was chosen to delete, and would pass just as happily lining up the
+wrong tensors.
 
-| source | parameter names |
-|---|---|
-| `EsmFold2Model` as the library builds it | 2,226 |
-| the published checkpoint | 1,594 |
-| names in both | 12 |
+The library's side is `biohub/ESMFold2-hf`, 24.5 GB of which almost all is the
+language model. safetensors keeps byte offsets in its header, so the 28
+atom-encoder tensors come out with range requests:
 
-That is a different layout rather than a rename. The checkpoint has
-`inputs_embedder.atom_attention_encoder.atom_transformer.blocks.0.adaln_modulation.1.weight`;
-the library has `layers.0.adaln_linear.weight`. Loading the published file
-through the library reports every tensor as unexpected.
+```bash
+python tests/models/esmfold2/fetch_hf_atom_weights.py \
+    "$FOLDJAX_BENCH_DATA/esmfold2-hf/atom_encoder.npz"
+curl -sLo "$FOLDJAX_BENCH_DATA/esmfold2-hf/config.json" \
+    https://huggingface.co/biohub/ESMFold2-hf/resolve/main/config.json
+ESMFOLD2_HF_ATOM_WEIGHTS="$FOLDJAX_BENCH_DATA/esmfold2-hf/atom_encoder.npz" \
+JAX_PLATFORMS=cpu .venv-parity/bin/python -m pytest \
+    tests/models/esmfold2/test_atom_parity.py
+```
 
-**FoldJAX follows the checkpoint, and `assets.py` converts nothing for exactly
-that reason.** A parity run against the library's modules therefore needs the
-library's own re-exported weights, which is a separate artifact from the one
-this port loads -- or a 1,594-entry mapping, which is the rename table that
-naming after the checkpoint was chosen to delete, and which passes just as
-happily when it lines up the wrong tensors.
+3.6 MiB rather than the 4.7 GiB shard they live in.
+
+### What the encoder comparison found
+
+The atom embedding agrees to 4.8e-7 -- float32 exact. Past it the two diverge
+by 1.3e-2, and all of it is one deliberate cast: this port drops q/k/v to
+bfloat16 when the caller is float32, which the reference it was ported from did
+and `transformers` 5.16.1 does not. Removing that cast alone takes the layers
+from 4.2e-3 to 4.9e-6 and the token output from 1.3e-2 to 2.8e-5, so nothing
+else in the stack disagrees.
+
+The cast is not a defect. At the released 32 samples and 7,776 atoms the
+float32 scores would be 29,524 MiB, and the released path runs bfloat16, where
+the cast does not fire. It is visible only to a float32 caller.
