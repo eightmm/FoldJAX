@@ -425,9 +425,9 @@ def load_template_search_artifact(
     query = "".join(query_sequence.split()).upper()
     if not query or not query.isascii() or not query.isalpha():
         raise ValueError("template query sequence must contain ASCII letters only")
-    raw = artifact.read_bytes()
+    source_digest = _sha256_file(artifact)
     try:
-        content = raw.decode("utf-8")
+        content = artifact.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError(
             f"template search artifact is not UTF-8 text: {artifact}"
@@ -447,7 +447,7 @@ def load_template_search_artifact(
         "query_sequence": query,
         "source": {
             "path": str(artifact.resolve()),
-            "sha256": hashlib.sha256(raw).hexdigest(),
+            "sha256": source_digest,
         },
         "hits": hits,
     }

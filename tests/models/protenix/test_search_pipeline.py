@@ -334,6 +334,38 @@ def test_template_a3m_is_converted_to_intermediate_hits(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "hits.json").read_text()) == intermediate
 
 
+def test_template_artifact_hashes_without_retaining_source_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "hmmsearch.a3m"
+    artifact.write_text(
+        ">query\nACDE\n>1abc_A mol:protein length:4 1-4 Example protein\nACDE\n",
+        encoding="utf-8",
+    )
+    expected_digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    streamed_paths: list[Path] = []
+    original_sha256_file = template_search._sha256_file
+
+    def track_streamed_hash(path: Path) -> str:
+        streamed_paths.append(path)
+        return original_sha256_file(path)
+
+    def reject_full_byte_read(_path: Path) -> bytes:
+        raise AssertionError("template artifacts must not be retained as full bytes")
+
+    monkeypatch.setattr(template_search, "_sha256_file", track_streamed_hash)
+    monkeypatch.setattr(Path, "read_bytes", reject_full_byte_read)
+
+    intermediate = load_template_search_artifact(
+        artifact,
+        query_sequence="ACDE",
+    )
+
+    assert intermediate["source"]["sha256"] == expected_digest
+    assert streamed_paths == [artifact]
+
+
 def test_queryless_hmmsearch_a3m_reconstructs_full_query_columns(
     tmp_path: Path,
 ) -> None:
@@ -864,7 +896,9 @@ def test_local_template_search_pipeline_caches_and_applies_paths(
     assert Path(path).name == "templates.a3m"
     provenance = json.loads((Path(path).parent / "provenance.json").read_text())
     assert provenance["backend"] == {"name": "local-template", "version": "pdb-2026"}
-    assert hashed_paths == [msa, msa, Path(path)]
+    assert hashed_paths[0] == msa
+    assert hashed_paths[1].name == "templates.a3m"
+    assert hashed_paths[2:] == [msa, Path(path)]
 
 
 def test_template_search_requires_protein_msa_path(tmp_path: Path) -> None:

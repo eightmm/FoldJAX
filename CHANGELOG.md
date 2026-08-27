@@ -155,6 +155,15 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **Template-search artifact hashes no longer keep a second full file copy
+  alive during parsing.** Protenix and OpenDDE now hash `.a3m` and `.hhr`
+  inputs in 1 MiB chunks, then decode only the text required by the historical
+  parser instead of retaining both the source bytes and decoded string. For a
+  64 MiB ASCII artifact, an isolated CPU probe reduced traced memory still
+  alive at parser entry from 134,218,632 to 68,159,614 bytes. The decoder's
+  short-lived read peak remains about 135 MiB; the source digest, UTF-8 error
+  handling and parsed metadata are unchanged.
+
 - **AlphaFold 3 PAE/PDE summaries bound full pair-matrix copies.** The
   chain-pair postprocessor now creates the same Fortran-layout
   buffer produced by the historical pair of advanced-index operations in one
