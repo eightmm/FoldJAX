@@ -12,6 +12,18 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The ESMFold2 rotary parity test asserts bit-identity instead of a
+  tolerance three times the one its own file uses.** It compared at
+  `atol=rtol=3e-3`, without the reason `PROJECT.md` requires above 1e-3, in a
+  file whose constant is 2e-5. The gap was real -- 1.9e-3 measured -- and it
+  was a dtype mismatch rather than a disagreement: FoldJAX returns these tables
+  in bfloat16 because upstream hardcodes that, and the comparison took
+  upstream's float32. 2e-3 is what bfloat16 costs on values in [-1, 1], so the
+  tolerance was the size of the cast and hid anything smaller. Upstream takes
+  the dtype as an argument now, so the two are compared as the same thing and
+  come out bit-identical. The window test, which is pure JAX, no longer skips
+  because torch is absent: the import guard was module-level and took it along.
+
 - **The out-of-memory explainer told people to raise a fraction that could not
   help.** Its branch compared the total against the *device* and then reported
   the *pool*, so an allocation that fits both printed "This is the pool's limit

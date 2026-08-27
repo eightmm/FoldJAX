@@ -171,3 +171,31 @@ Disabling the confidence-head host offload (predict preset, token_cutoff
 `chunk_size: 4`, which the predict preset applies at every size; 0.3.1 ships
 no larger-card preset. The offload stays off (peak 81.0 -> 83.2 GiB, still
 fits), and the wall-clock column simply is what upstream does here.
+
+## ESMFold2 — the `transformers` reference for the atom parity test
+
+`tests/models/esmfold2/test_atom_parity.py` compares the atom stack against
+`transformers`. FoldJAX's own environment is Torch-free on purpose, so the two
+tests that need it skip there and only the window test runs. To run all of
+them:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-parity uv sync --extra cuda13
+uv pip install --python .venv-parity/bin/python torch transformers
+JAX_PLATFORMS=cpu .venv-parity/bin/python -m pytest \
+    tests/models/esmfold2/test_atom_parity.py
+```
+
+**`uv pip install` reads `--python` or `VIRTUAL_ENV`, not
+`UV_PROJECT_ENVIRONMENT`.** Setting only the latter installs Torch into the
+project's own `.venv` -- the one environment this repository keeps Torch out of,
+and the one every other measurement runs in. `uv sync` puts it back, but a
+benchmark taken in between would have been taken somewhere else.
+
+Verified 2026-08-27 with `transformers` 5.16.1 and `torch` 2.13.0: the rotary
+tables are bit-identical, and the encoder test skips with its reason. The
+import path matters -- upstream moved this from
+`modeling_esmfold2_common`, which held free functions taking explicit widths,
+to `modeling_esmfold2`, which builds modules from a config. The old path is
+still importable-looking enough that the file simply reported "skipped" on a
+machine that could have run it.
