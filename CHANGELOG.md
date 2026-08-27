@@ -12,6 +12,52 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Related Protenix, OpenDDE and OpenFold3 runs prepare one checkpoint per
+  request, not once per seed.** A multi-seed or multi-input model group now
+  keeps one request-scoped JAX parameter tree after native host loading,
+  pre-stacking, the selected trunk cast and device transfer. It stays
+  device-resident from the first structure load until that model group exits;
+  scalar calls and direct native entry points keep their historical fresh-load
+  path, context-parallel runs still perform the same per-call placement, and
+  the tree is released before the next model group. FoldJAX backend calls for
+  Protenix mini ESM/ISM always construct a per-call 3B encoder and therefore
+  take a non-retaining path, preventing the next seed's encoder from overlapping
+  cached structure parameters; those variants deliberately trade checkpoint
+  reuse for a lower lifetime overlap. The session binds the lexical path,
+  resolved target and full stat identity, refuses changed or unverifiable
+  resumed weights, and discards a failed generation before retrying. Toy native
+  Protenix outputs are
+  byte-identical with the direct and session-aware loader paths; backend tests
+  cover lazy reuse, replacement-before-reload, symlink retargeting, resume and
+  cleanup. The native CLI still parses its arguments, selects a requested CPU
+  platform and validates the job before invoking the session-aware loader, so
+  reuse cannot initialize JAX earlier than a direct run. This removes repeated
+  checkpoint I/O, host conversion and device transfer on eligible batches; it
+  is not a claim of lower whole-run GPU peak memory and does not change model
+  arithmetic, RNG calls or graph choices.
+
+- **Native layer pre-stacking no longer needs two complete host checkpoint
+  trees at once.** The Protenix/OpenDDE pickle loader and Boltz-2 safetensors
+  loader now transfer ownership of their freshly decoded private containers to
+  a consuming traversal. It replaces and releases each unstacked subtree after
+  its stacked form is built; shared-container trees conservatively use the
+  public non-mutating helper. Tree structure, dtypes and leaf values are
+  identical. In a separate-process synthetic 256 MiB CPU checkpoint probe,
+  maximum RSS was 710,352 KiB with the non-mutating traversal and 513,676 KiB
+  with the consuming traversal. This is a loader-stage host measurement, not a
+  released-checkpoint or GPU peak claim.
+
+- **The remaining large process caches have explicit ownership bounds.** The
+  ESMFold2 whole-model graph factory and Protenix mini-ESM layer compiler now
+  use the same eight-entry executable-owner pool as the other JAX model graphs;
+  eviction clears the old JAX owner. ESMFold2 retains at most one verified
+  417 MB CCD dictionary generation, matching that loader's documented
+  single-generation contract. Representation capture state is now task/thread
+  local, so two simultaneous traces cannot overwrite one another. Protenix
+  also releases its mini-ESM/ISM provider as soon as compact conditioning
+  features exist, before loading structure weights. These changes alter
+  lifetimes and cache residency only; focused byte/value parity tests retain
+  the existing single-call results.
 - **`Job.store()` gives the Python API the step the command line already
   had.** `foldjax predict --sequence ...` has always written the generated job
   into the FoldJAX store, content-addressed, and handed the path on. The Python
