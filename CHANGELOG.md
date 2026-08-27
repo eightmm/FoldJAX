@@ -160,6 +160,15 @@ command predicts unless it says so here, in its own paragraph.
   0.484 versus 0.514 seconds; the removed one-shot temporary would be 1.47 GiB
   at 3,012 tokens. The stored MSA and returned profile are unchanged.
 
+- **ESMFold2 serving normalization also bounds its full-alignment profile.**
+  Missing ``msa_profile`` features are now validated and counted in row chunks
+  instead of creating complete active-ID, safe-ID and float32 one-hot copies.
+  The mask, residue validation, integer counts and float32 normalization retain
+  the same result. At 4,096 rows and 1,003 tokens, an isolated CPU probe reduced
+  traced peak from 621,218,117 to 67,754,529 bytes (0.162 versus 0.152 seconds).
+  At 16,384 rows the removed float32 one-hot alone would occupy about 1.96 GiB;
+  the counting expansion is capped at 64 MiB.
+
 - **OpenFold3 no longer retains 512 complete Kalign inputs and outputs.** The
   alignment cache now keeps the 32 most recent calls, preserving within-job and
   immediate-retry reuse while allowing older query/template sequence strings

@@ -193,6 +193,45 @@ def test_deep_msa_normalization_keeps_query_order_and_full_profile() -> None:
     np.testing.assert_array_equal(normalized["msa_profile"], expected)
 
 
+def test_msa_profile_bounds_masked_one_hot_without_changing_bits(monkeypatch) -> None:
+    rng = np.random.default_rng(47)
+    msa = rng.integers(0, structure_model.NUM_RES_TYPES, size=(1, 41, 17))
+    mask = rng.integers(0, 2, size=msa.shape, dtype=np.int8).astype(bool)
+    mask[:, 0] = True
+    safe_ids = np.where(mask, msa, 0)
+    expected_one_hot = np.eye(structure_model.NUM_RES_TYPES, dtype=np.float32)[
+        safe_ids
+    ]
+    expected_one_hot *= mask[..., None].astype(np.float32)
+    expected_counts = np.clip(mask.astype(np.float32).sum(axis=1), 1.0, None)
+    expected = expected_one_hot.sum(axis=1) / expected_counts[..., None]
+
+    budget = 17 * structure_model.NUM_RES_TYPES * 6
+    monkeypatch.setattr(features, "_MSA_PROFILE_TEMP_BUDGET", budget)
+    real_sum = np.sum
+    temporary_sizes: list[int] = []
+
+    def tracked_sum(value, *args, **kwargs):
+        temporary_sizes.append(value.nbytes)
+        return real_sum(value, *args, **kwargs)
+
+    monkeypatch.setattr(features.np, "sum", tracked_sum)
+    actual = features._msa_profile(msa, mask)
+
+    assert np.array_equal(actual, expected)
+    assert len(temporary_sizes) > 1
+    assert max(temporary_sizes) <= budget
+
+
+def test_msa_profile_still_rejects_an_active_out_of_range_id() -> None:
+    msa = np.zeros((1, 2, 3), dtype=np.int64)
+    mask = np.ones_like(msa, dtype=bool)
+    msa[0, 1, 2] = structure_model.NUM_RES_TYPES
+
+    with pytest.raises(ValueError, match="residue ids outside"):
+        features._msa_profile(msa, mask)
+
+
 def test_msa_loop_tape_mirrors_every_released_key_split() -> None:
     key = jax.random.key(91)
     actual = inference.msa_loop_row_indices(

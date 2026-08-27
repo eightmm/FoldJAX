@@ -96,6 +96,49 @@ for _tape_name in _MSA_TAPE_FEATURES.values():
     _TOKEN_AXES[_tape_name] = (-1,)
     _MSA_AXES[_tape_name] = (-2,)
 _NUM_RES_TYPES = 33
+_MSA_PROFILE_CLASSES = np.arange(_NUM_RES_TYPES)
+_MSA_PROFILE_TEMP_BUDGET = 64 << 20
+
+
+def _msa_profile(msa: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Compute a masked profile without a full float32 MSA one-hot tensor."""
+
+    if not np.issubdtype(msa.dtype, np.integer):
+        # Keep the historical NumPy indexing behavior for unsupported custom
+        # dtypes; production features are integer IDs and take the bounded path.
+        active_ids = msa[mask]
+        if np.any(active_ids < 0) or np.any(active_ids >= _NUM_RES_TYPES):
+            raise ValueError(
+                "cannot normalize ESMFold2 MSA with residue ids outside "
+                f"[0, {_NUM_RES_TYPES - 1}]"
+            )
+        safe_ids = np.where(mask, msa, 0)
+        one_hot = np.eye(_NUM_RES_TYPES, dtype=np.float32)[safe_ids]
+        one_hot *= mask[..., None].astype(np.float32)
+        denominators = np.clip(mask.astype(np.float32).sum(axis=1), 1.0, None)
+        return one_hot.sum(axis=1) / denominators[..., None]
+
+    row_bytes = max(1, int(msa.shape[-1]) * len(_MSA_PROFILE_CLASSES))
+    rows_per_chunk = max(1, _MSA_PROFILE_TEMP_BUDGET // row_bytes)
+    counts = np.zeros(
+        (msa.shape[0], msa.shape[-1], len(_MSA_PROFILE_CLASSES)), dtype=np.int64
+    )
+    for start in range(0, msa.shape[1], rows_per_chunk):
+        ids = msa[:, start : start + rows_per_chunk]
+        valid = mask[:, start : start + rows_per_chunk]
+        if np.any(valid & ((ids < 0) | (ids >= _NUM_RES_TYPES))):
+            raise ValueError(
+                "cannot normalize ESMFold2 MSA with residue ids outside "
+                f"[0, {_NUM_RES_TYPES - 1}]"
+            )
+        matches = ids[..., None] == _MSA_PROFILE_CLASSES
+        matches &= valid[..., None]
+        counts += np.sum(matches, axis=1, dtype=np.int64)
+        del matches
+    denominators = np.clip(np.count_nonzero(mask, axis=1), 1, None).astype(
+        np.float32
+    )
+    return counts.astype(np.float32) / denominators[..., None]
 
 
 def build_features(
@@ -367,17 +410,7 @@ def normalize_msa_features(
     normalized = dict(features)
     if "msa_profile" not in normalized:
         msa = np.asarray(features["msa"])
-        active_ids = msa[bool_mask]
-        if np.any(active_ids < 0) or np.any(active_ids >= _NUM_RES_TYPES):
-            raise ValueError(
-                "cannot normalize ESMFold2 MSA with residue ids outside "
-                f"[0, {_NUM_RES_TYPES - 1}]"
-            )
-        safe_ids = np.where(bool_mask, msa, 0)
-        one_hot = np.eye(_NUM_RES_TYPES, dtype=np.float32)[safe_ids]
-        one_hot *= bool_mask[..., None].astype(np.float32)
-        counts = np.clip(bool_mask.astype(np.float32).sum(axis=1), 1.0, None)
-        normalized["msa_profile"] = one_hot.sum(axis=1) / counts[..., None]
+        normalized["msa_profile"] = _msa_profile(msa, bool_mask)
 
     indices = np.asarray(row_indices)
     if (
