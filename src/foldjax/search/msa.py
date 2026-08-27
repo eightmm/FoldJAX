@@ -35,7 +35,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -72,13 +72,17 @@ def _normalize_sequence(sequence: str) -> str:
     return normalized
 
 
-def _first_a3m_sequence(a3m: str, label: str) -> str:
+def _first_a3m_lines(lines: Iterable[str], label: str) -> str:
     header_seen = False
+    complete = False
     sequence: list[str] = []
-    for line in a3m.splitlines():
+    for line in lines:
+        if complete:
+            continue
         if line.startswith(">"):
             if header_seen:
-                break
+                complete = True
+                continue
             header_seen = True
         elif header_seen:
             sequence.append(line.strip())
@@ -87,6 +91,34 @@ def _first_a3m_sequence(a3m: str, label: str) -> str:
     if not header_seen or not sequence:
         raise SearchError(f"{label} is empty or has no query sequence")
     return "".join(c for c in "".join(sequence) if c.isupper() and c != "-")
+
+
+def _first_a3m_sequence(a3m: str, label: str) -> str:
+    return _first_a3m_lines(a3m.splitlines(), label)
+
+
+def _first_verified_a3m_file_sequence(
+    path: Path, label: str, expected_sha256: str | None
+) -> str | None:
+    """Hash one file, then validate its UTF-8/query through the same open fd."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as binary:
+        for chunk in iter(lambda: binary.read(1 << 20), b""):
+            digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            return None
+        binary.seek(0)
+        text = io.TextIOWrapper(binary, encoding="utf-8")
+        try:
+
+            def logical_lines() -> Iterable[str]:
+                for physical_line in text:
+                    yield from physical_line.splitlines()
+
+            return _first_a3m_lines(logical_lines(), label)
+        finally:
+            text.detach()
 
 
 def _validate_payload(sequence: str, payload: MsaPayload) -> None:
@@ -155,7 +187,6 @@ class MsaSearchPipeline:
             ) from exc
         if provenance.get("cache_key") != cache_key:
             raise SearchError(f"MSA cache provenance key mismatch: {provenance_path}")
-        contents: dict[str, str] = {}
         for filename, label in (
             ("pairing.a3m", "paired MSA"),
             ("non_pairing.a3m", "unpaired MSA"),
@@ -163,15 +194,15 @@ class MsaSearchPipeline:
             path = directory / filename
             if not path.is_file():
                 raise SearchError(f"MSA cache is incomplete: {path} is missing")
-            raw = path.read_bytes()
             expected = provenance.get("files", {}).get(filename, {}).get("sha256")
-            if expected != _sha256(raw):
+            query = _first_verified_a3m_file_sequence(path, label, expected)
+            if query is None:
                 raise SearchError(f"MSA cache content hash mismatch: {path}")
-            contents[label] = raw.decode("utf-8")
-        _validate_payload(
-            sequence,
-            MsaPayload(contents["paired MSA"], contents["unpaired MSA"]),
-        )
+            if query != sequence:
+                raise SearchError(
+                    f"{label} query does not match requested protein sequence: "
+                    f"expected {sequence!r}, got {query!r}"
+                )
         return self._paths(directory)
 
     def _materialize(
@@ -332,15 +363,20 @@ class RnaMsaSearchPipeline:
             raise SearchError(
                 f"RNA MSA cache provenance key mismatch: {provenance_path}"
             )
-        raw = msa_path.read_bytes()
         expected = provenance.get("files", {}).get("rna_msa.a3m", {}).get("sha256")
-        if expected != _sha256(raw):
-            raise SearchError(f"RNA MSA cache content hash mismatch: {msa_path}")
         try:
-            content = raw.decode("utf-8")
+            query = _first_verified_a3m_file_sequence(
+                msa_path, "RNA unpaired MSA", expected
+            )
         except UnicodeDecodeError as exc:
             raise SearchError(f"RNA MSA cache is not UTF-8: {msa_path}") from exc
-        _validate_rna_payload(sequence, RnaMsaPayload(content))
+        if query is None:
+            raise SearchError(f"RNA MSA cache content hash mismatch: {msa_path}")
+        if query != sequence:
+            raise SearchError(
+                "RNA unpaired MSA query does not match requested sequence: "
+                f"expected {sequence!r}, got {query!r}"
+            )
         return self._paths(directory)
 
     def _materialize(

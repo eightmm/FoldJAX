@@ -151,6 +151,17 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **MSA cache hits validate files without retaining full byte and text copies.**
+  The shared protein and RNA cache paths still hash every byte, validate the
+  complete UTF-8 stream and require the same first query sequence, but keep
+  only that first A3M entry while scanning. This reduces host-memory pressure
+  for deep cached alignments returned to Protenix, OpenDDE and OpenFold3; file
+  contents, provenance, cache paths and downstream parsing are unchanged. On
+  a real 56,272,223-byte A3M, isolated CPU ``tracemalloc`` peak for hash,
+  decode and query validation fell from about 162 MiB to 2.0 MiB, with the
+  digest and extracted query identical. The bounded route makes a second pass
+  over the same open file after verifying the digest.
+
 - **Template-search cache hashing no longer copies a complete MSA or cached
   artifact into one Python ``bytes`` object.** Protenix and OpenDDE now stream
   the same SHA-256 identity in 1 MiB chunks before lookup and on cache hits;

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -28,7 +30,9 @@ class _Backend:
         )
 
 
-def test_search_writes_alignments_and_caches(tmp_path: Path) -> None:
+def test_search_writes_alignments_and_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     backend = _Backend()
     pipeline = MsaSearchPipeline(cache_dir=tmp_path, backend=backend)
 
@@ -42,9 +46,30 @@ def test_search_writes_alignments_and_caches(tmp_path: Path) -> None:
     assert backend.calls == [SEQUENCE]
 
     # A second search must be served from the cache.
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda path: pytest.fail(f"cache validation read the whole file: {path}"),
+    )
     second = pipeline.search([SEQUENCE])
     assert second == first
     assert backend.calls == [SEQUENCE], "the backend was called again"
+
+
+def test_cache_validation_checks_utf8_after_the_first_entry(tmp_path: Path) -> None:
+    backend = _Backend()
+    pipeline = MsaSearchPipeline(cache_dir=tmp_path, backend=backend)
+    result = pipeline.search([SEQUENCE])[0]
+    paired = Path(result["pairedMsaPath"])
+    raw = paired.read_bytes() + b"\xff"
+    paired.write_bytes(raw)
+    provenance_path = Path(result["provenancePath"])
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    provenance["files"][paired.name]["sha256"] = hashlib.sha256(raw).hexdigest()
+    provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
+
+    with pytest.raises(UnicodeDecodeError):
+        pipeline.search([SEQUENCE])
 
 
 def test_the_cache_layout_is_fixed(tmp_path: Path) -> None:
