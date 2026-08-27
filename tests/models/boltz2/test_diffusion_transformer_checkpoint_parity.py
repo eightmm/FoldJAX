@@ -111,6 +111,26 @@ def test_checkpoint_diffusion_transformer_layer_accepts_flash_backend(
 def test_checkpoint_diffusion_transformer_layer_chunk_matches_unchunked(
     checkpoint_state: dict[str, torch.Tensor],
 ) -> None:
+    """Query-axis chunking is a memory optimisation, not a change of answer.
+
+    ``diffusion.py`` passes a live ``token_attention_chunk`` here, so this
+    guards a production path: each query block attends over every key, which
+    makes chunking exact in arithmetic.
+
+    It is not exact in floating point, and this test used to demand that it
+    was. Slicing the query axis changes the ``bihd,bjhd->bhij`` extent, XLA
+    picks a different contraction schedule for the smaller operand, and the
+    reassociated sum lands on different bits. That is a property of the
+    backend rather than of this port: the same divergence reproduces in a
+    twenty-line script against the bare primitive, with and without torch
+    imported, in both the shipped and the parity environment.
+
+    Measured here on CPU with the released checkpoint: 1.7e-5 absolute and
+    1.1e-4 relative over 3,072 elements. The tolerance below sits about
+    sixty times above that, which leaves room for another machine's schedule
+    while still failing if chunking ever changes the answer for real.
+    """
+
     params = map_diffusion_transformer_layer_state_dict(
         checkpoint_state,
         PREFIX,
@@ -143,8 +163,8 @@ def test_checkpoint_diffusion_transformer_layer_chunk_matches_unchunked(
     np.testing.assert_allclose(
         np.asarray(actual),
         np.asarray(expected),
-        rtol=0,
-        atol=0,
+        rtol=1e-3,
+        atol=1e-3,
     )
 
 

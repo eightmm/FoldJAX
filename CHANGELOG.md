@@ -12,6 +12,34 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **A Boltz-2 parity test asserted something the backend never promised, and
+  no ordinary run could see it.** 24 Boltz-2 modules leave collection when
+  torch is absent, so the shipped environment collects 166 tests where a torch
+  environment collects 267; the missing 101 run in no CI job either, because CI
+  has no torch and the comparison needs the publisher's 2.28 GB checkpoint. Run
+  against the released weights, one failed:
+  `test_checkpoint_diffusion_transformer_layer_chunk_matches_unchunked`
+  demanded that a chunked and an unchunked diffusion-transformer layer agree
+  bit for bit, and they differ by 1.7e-5 absolute on 72% of elements. Nothing
+  regressed -- the repository's first commit fails it too. Chunking slices the
+  query axis, which changes the einsum extent, and XLA picks a different
+  contraction schedule for the smaller operand; a twenty-line script
+  reproduces it against the bare primitive in both environments, with and
+  without torch imported. The test now asserts closeness at 1e-3, about sixty
+  times the measured deviation, with the measurement recorded beside it.
+  Chunking stays a live production path, so the test still fails if it ever
+  changes the answer for real.
+
+- **What the Boltz-2 parity tolerances actually achieve is now written down.**
+  Instrumenting every `assert_allclose` in that suite recorded 111
+  comparisons: 87 use less than 1% of the tolerance they declare, and 23 are
+  bit-identical while declaring as much as 2e-3.
+  `bench/upstream-environments.md` carries the numbers, the command that
+  reproduces them, and the reason they are not an argument for tightening all
+  87 -- they come from one CPU backend, and a threshold calibrated to this
+  machine's contraction schedules would fail on the next one for no real
+  reason.
+
 - **The ESMFold2 atom encoder is checked against upstream's released weights,
   for the first time.** That test had never run: it imported
   `modeling_esmfold2_common`, a path in no released `transformers`, so it

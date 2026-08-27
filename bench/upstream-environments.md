@@ -251,3 +251,62 @@ else in the stack disagrees.
 The cast is not a defect. At the released 32 samples and 7,776 atoms the
 float32 scores would be 29,524 MiB, and the released path runs bfloat16, where
 the cast does not fire. It is visible only to a float32 caller.
+
+## Boltz-2 — the 101 tests that no ordinary run collects
+
+`tests/models/conftest.py` drops 24 Boltz-2 modules from collection when torch
+is absent, because they import it at module scope. That gate is correct and
+documented, but it is worth saying what it costs: the shipped environment
+collects 166 tests under `tests/models/boltz2/`, a torch environment collects
+267. The missing 101 run in no CI job either -- CI has no torch, and the
+comparison needs the publisher's 2.28 GB `boltz2_conf.ckpt`, which is not
+something a runner fetches. They are local-only by construction.
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-parity uv sync --extra cuda13
+uv pip install --python .venv-parity/bin/python torch
+JAX_PLATFORMS=cpu .venv-parity/bin/python -m pytest tests/models/boltz2/
+```
+
+The suite locates upstream as `Path(__file__).parents[4] / "boltz"`, so it wants
+the sibling checkout at its usual place; a git worktree elsewhere needs that
+path symlinked or every checkpoint test skips instead of running.
+
+Verified 2026-08-27 at `a7751e2`: 261 passed, 5 skipped, 1 failed in 115 s.
+
+### The one that failed, and why it was not a regression
+
+`test_checkpoint_diffusion_transformer_layer_chunk_matches_unchunked` asserted
+`rtol=0, atol=0` between a chunked and an unchunked diffusion-transformer
+layer. At `a7751e2` it differed by 1.7e-5 absolute, 1.1e-4 relative, on 72% of
+3,072 elements.
+
+Bisect pointed at a context-parallel commit, which was wrong: the bisect had
+been narrowed to `src/foldjax/models/boltz2` and so never tested the commits in
+between. The parent failed too. So did the commit that introduced the gate, and
+so did the repository's first commit. Nothing regressed.
+
+The premise was false from the start. Chunking slices the query axis, that
+changes the `bihd,bjhd->bhij` extent, and XLA picks a different contraction
+schedule for the smaller operand. A twenty-line script against the bare
+primitive reproduces it at 3.6e-7 with chunk 2 and 2.9e-7 with chunk 4 --
+identically in the shipped `.venv` and in `.venv-parity`, with and without
+torch imported first, so it is neither this port's arithmetic nor torch's
+threading. The test now asserts closeness at 1e-3, roughly sixty times the
+measured deviation, with the measurement written down beside it.
+
+### What the tolerances are actually achieving
+
+Instrumenting every `assert_allclose` in the suite recorded 111 comparisons.
+87 of them use **less than 1%** of the tolerance they declare, and 23 are
+bit-identical -- deviation exactly zero -- while declaring as much as 2e-3.
+Only six use more than a tenth of theirs; the tightest is
+`test_micro_modules.py:54`, at 49% of 1e-3.
+
+This is worth knowing before trusting a pass, because a tolerance can be the
+size of the defect it is meant to catch. It is **not** an argument for
+tightening all 87 to their measured values: these numbers come from one CPU
+backend, and a threshold calibrated against this machine's contraction
+schedules is a threshold that fails on the next one for no real reason. The
+failing test above is the case where the number was demonstrably wrong rather
+than merely generous.
