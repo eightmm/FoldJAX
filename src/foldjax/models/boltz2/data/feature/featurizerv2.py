@@ -63,6 +63,28 @@ def _msa_profile(msa: Tensor) -> Tensor:
     return from_numpy(profile)
 
 
+def _distogram_target(
+    coordinates: np.ndarray,
+    indices: list[int] | range | Tensor,
+    *,
+    min_dist: float,
+    max_dist: float,
+    num_bins: int,
+) -> Tensor:
+    """Build the historical training label, isolated from inference features."""
+
+    target = torch.zeros(
+        coordinates.shape[0], coordinates.shape[0], len(indices), num_bins
+    )
+    boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
+    for index, ensemble_index in enumerate(indices):
+        centers = torch.Tensor(coordinates[:, ensemble_index, :])
+        distances = torch.cdist(centers, centers)
+        bins = (distances.unsqueeze(-1) > boundaries).sum(dim=-1).long()
+        target[:, :, index, :] = one_hot(bins, num_classes=num_bins)
+    return target
+
+
 def convert_atom_name(name: str) -> tuple[int, int, int, int]:
     """Convert an atom name to a standard format.
 
@@ -1150,6 +1172,7 @@ def process_atom_features(
     compute_frames: bool = False,
     override_coords: Tensor | None = None,
     bfactor_md_correction: bool = False,
+    compute_disto_target: bool = True,
 ) -> dict[str, Tensor]:
     """Get the atom features.
 
@@ -1159,6 +1182,8 @@ def process_atom_features(
         The input to the model.
     max_atoms : int, optional
         The maximum number of atoms.
+    compute_disto_target : bool, optional
+        Whether to build the distogram label consumed only by training losses.
 
     Returns
     -------
@@ -1413,9 +1438,6 @@ def process_atom_features(
 
     disto_coords_ensemble = np.array(disto_coords_ensemble)  # (N_TOK, N_ENS, 3)
 
-    # Compute ensemble distogram
-    L = len(data.tokens)
-
     if disto_use_ensemble:
         # Use all available structures to create distogram
         idx_list = range(disto_coords_ensemble.shape[1])
@@ -1423,20 +1445,17 @@ def process_atom_features(
         # Only use a sampled structures to create distogram
         idx_list = ensemble_features["ensemble_ref_idxs"]
 
-    # Create distogram
-    disto_target = torch.zeros(L, L, len(idx_list), num_bins)  # TODO1
-
-    # disto_target = torch.zeros(L, L, num_bins)
-    for i, e_idx in enumerate(idx_list):
-        t_center = torch.Tensor(disto_coords_ensemble[:, e_idx, :])
-        t_dists = torch.cdist(t_center, t_center)
-        boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
-        distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-        # disto_target += one_hot(distogram, num_classes=num_bins)
-        disto_target[:, :, i, :] = one_hot(distogram, num_classes=num_bins)  # TODO1
-
-    # Normalize distogram
-    # disto_target = disto_target / disto_target.sum(-1)[..., None]  # remove TODO1
+    disto_target = (
+        _distogram_target(
+            disto_coords_ensemble,
+            idx_list,
+            min_dist=min_dist,
+            max_dist=max_dist,
+            num_bins=num_bins,
+        )
+        if compute_disto_target
+        else None
+    )
     atom_data = np.concatenate(atom_data)
     atom_name = np.concatenate(atom_name)
     atom_element = np.concatenate(atom_element)
@@ -1557,7 +1576,10 @@ def process_atom_features(
             token_to_rep_atom = pad_dim(token_to_rep_atom, 0, pad_len)
             r_set_to_rep_atom = pad_dim(r_set_to_rep_atom, 0, pad_len)
             token_to_center_atom = pad_dim(token_to_center_atom, 0, pad_len)
-            disto_target = pad_dim(pad_dim(disto_target, 0, pad_len), 1, pad_len)
+            if disto_target is not None:
+                disto_target = pad_dim(
+                    pad_dim(disto_target, 0, pad_len), 1, pad_len
+                )
             disto_coords_ensemble = pad_dim(disto_coords_ensemble, 1, pad_len)
 
             if compute_frames:
@@ -1579,11 +1601,12 @@ def process_atom_features(
         "token_to_rep_atom": token_to_rep_atom,
         "r_set_to_rep_atom": r_set_to_rep_atom,
         "token_to_center_atom": token_to_center_atom,
-        "disto_target": disto_target,
         "disto_coords_ensemble": disto_coords_ensemble,
         "bfactor": bfactor,
         "plddt": plddt,
     }
+    if disto_target is not None:
+        atom_features["disto_target"] = disto_target
 
     if compute_frames:
         atom_features["frames_idx"] = frames
@@ -2294,6 +2317,7 @@ class Boltz2Featurizer:
             compute_frames=compute_frames,
             override_coords=override_coords,
             bfactor_md_correction=bfactor_md_correction,
+            compute_disto_target=training,
         )
 
         # Compute MSA features

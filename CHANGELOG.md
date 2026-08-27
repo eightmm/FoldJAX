@@ -178,6 +178,16 @@ command predicts unless it says so here, in its own paragraph.
   4.04 GiB and its float32 conversion another 2.02 GiB. The stored MSA and
   returned profile are unchanged.
 
+- **Boltz-2 inference no longer constructs its unused training distogram
+  label.** The low-level atom featurizer and ``training=True`` retain the
+  historical ``disto_target`` by default, while prediction datasets omit its
+  independent distance/one-hot branch. This removes an FP32
+  ``[tokens, tokens, ensembles, 64]`` feature (246 MiB at 1,003 tokens and one
+  ensemble) plus its larger construction temporary before JIT placement. At
+  512 tokens, the isolated branch took 0.079 seconds and reached 206,780,983
+  traced bytes for a 67,110,861-byte output; inference now allocates neither.
+  The model never reads the label, so its inputs and outputs are unchanged.
+
 - **OpenFold3 no longer retains 512 complete Kalign inputs and outputs.** The
   alignment cache now keeps the 32 most recent calls, preserving within-job and
   immediate-retry reuse while allowing older query/template sequence strings
