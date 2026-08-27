@@ -87,6 +87,30 @@ assert not any(name == "torch" or name.startswith("torch.") for name in sys.modu
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_pre_one_hot_msa_cap_matches_the_historical_host_subsample(
+    tmp_path: Path,
+) -> None:
+    from foldjax.models.openfold3.data import subsample_msa_rows
+
+    alignment = tmp_path / "colabfold_main.a3m"
+    alignment.write_text(
+        f">query\n{SEQUENCE}\n"
+        + "".join(
+            f">hit-{index}\n{letter * len(SEQUENCE)}\n"
+            for index, letter in enumerate("AGLMW", start=1)
+        ),
+        encoding="utf-8",
+    )
+    spec = _spec(main_msa_file_paths=[str(alignment)])
+
+    full = featurize_query(spec, seed=11)
+    historical = subsample_msa_rows(full, 3)
+    compact = featurize_query(spec, seed=11, msa_depth=3)
+
+    for name in MODEL_FEATURES:
+        np.testing.assert_array_equal(compact[name], historical[name], err_msg=name)
+
+
 def test_direct_cif_template_is_torch_free_and_nonempty() -> None:
     cif = LOCAL_TEMPLATE_CIF
     assert cif.is_file()
@@ -268,6 +292,43 @@ def test_bounded_template_a3m_matches_the_full_parser_prefix(tmp_path: Path) -> 
         np.testing.assert_array_equal(observed.aln_pos, reference.aln_pos)
         assert observed.seq_id == reference.seq_id
         assert observed.q_cov == reference.q_cov
+
+
+def test_msa_precursor_subsampling_matches_the_historical_post_one_hot_cut() -> None:
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+    from foldjax.models.openfold3.data.featurize import (
+        MSA_ROW_FEATURES,
+        subsample_msa_rows,
+    )
+
+    rows, tokens, depth = 7, 5, 3
+    precursor = numpy_features._MsaPrecursor(
+        msa_index=np.arange(rows * tokens, dtype=np.int64).reshape(rows, tokens) % 32,
+        deletion_matrix=(
+            np.arange(rows * tokens, dtype=np.int64).reshape(rows, tokens) % 5
+        ),
+        n_rows_paired=6,
+        msa_mask=np.ones((rows, tokens), dtype=np.float32),
+        profile=np.arange(tokens * 32, dtype=np.float32).reshape(tokens, 32),
+        deletion_mean=np.arange(tokens, dtype=np.float32) / 7,
+    )
+    precursor.msa_mask[[0, 4]] = 0.0
+    full = numpy_features._tensorize_msa_precursor(precursor)
+    historical = subsample_msa_rows(
+        {name: value[None] for name, value in full.items()},
+        depth,
+    )
+
+    selected = numpy_features._subsample_msa_precursor(precursor, depth)
+    compact = numpy_features._tensorize_msa_precursor(selected)
+
+    for name in MSA_ROW_FEATURES:
+        np.testing.assert_array_equal(compact[name], historical[name][0], err_msg=name)
+    for name in ("profile", "deletion_mean", "num_paired_seqs"):
+        np.testing.assert_array_equal(compact[name], full[name], err_msg=name)
+    np.testing.assert_array_equal(
+        selected.msa_index[:, 0], precursor.msa_index[[1, 2, 3], 0]
+    )
 
 
 def test_direct_cif_candidates_are_quality_ranked_filtered_and_reindexed(

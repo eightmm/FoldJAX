@@ -155,6 +155,18 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **Raw OpenFold3 prediction applies its released 1,024-row MSA cap before
+  one-hot expansion.** The same valid-first stable selection that previously
+  ran after featurization now selects categorical rows before constructing the
+  int32 `[rows, tokens, 32]` input. Full-depth standalone feature archives and
+  direct featurizer calls remain unchanged. In a 2,048-row, 512-token probe
+  capped to 128 rows, traced temporary peak fell from 157,097,580 to
+  11,011,480 bytes and host tensorization from 0.057 to 0.002 seconds, with all
+  four row features bitwise equal. At 16,384 rows and 1,003 tokens the former
+  one-hot alone is 2,103,443,456 bytes versus 131,465,216 bytes after the
+  released cap. Full-alignment profile and deletion-mean features, paired-row
+  metadata and model arithmetic are unchanged.
+
 - **OpenFold3 template A3M parsing stops after the 200 released hit slots.**
   The query and first 200 hit records are read before invoking the unchanged
   upstream parser, rather than parsing every later FASTA row only to slice it

@@ -215,6 +215,10 @@ PAIR_SCORE_BUDGET_BYTES = 8 * 2**30
 #: ``auto_pair_chunk_size`` needs it before an ``InferenceConfig`` exists to read it
 #: from; ``test_released_config`` checks the config's copy against upstream.
 _RELEASED_PAIR_HEADS = 4
+# Upstream's inference-only MSA subsampler selects this many rows. Raw FoldJAX
+# preprocessing uses the same value before one-hot expansion; feature-archive
+# generation remains uncapped unless its caller opts in explicitly.
+RELEASED_MSA_DEPTH = 1024
 
 
 def auto_pair_chunk_size(
@@ -756,7 +760,7 @@ def released_config(
     num_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
     per_sample_token_cutoff: int | None = 750,
-    msa_depth: int | None = 1024,
+    msa_depth: int | None = RELEASED_MSA_DEPTH,
     cp_shards: int = 1,
     cp_layout: str = "auto",
     returned_representations: tuple[str, ...] = (),

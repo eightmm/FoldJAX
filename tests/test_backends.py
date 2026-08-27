@@ -1407,6 +1407,10 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         seen["output_metadata"] = kwargs.get("output_metadata")
         return {"structures": (), "scores": scores}
 
+    def fake_featurize(*args, **kwargs):
+        seen["preprocess_msa_depth"] = kwargs.get("msa_depth")
+        return features, output_metadata
+
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         return SimpleNamespace(msa_depth=1024)
@@ -1429,10 +1433,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
-            featurize_query_with_metadata=lambda *args, **kwargs: (
-                features,
-                output_metadata,
-            ),
+            featurize_query_with_metadata=fake_featurize,
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
             compact_zero_template_pair_features=lambda batch: batch,
@@ -1476,6 +1477,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
+    assert seen["preprocess_msa_depth"] == 1024
     if not eager:
         assert seen["compile_options"] == {
             "triangle_kernel": None,

@@ -351,24 +351,32 @@ def _msa_precursor(
     )
 
 
-def _msa_features(
-    query: Any, atom_array: Any, n_tokens: int, settings: Any
-) -> dict[str, np.ndarray]:
-    """Run upstream parsing/pairing, then tensorize the result with NumPy."""
-    from foldjax.models.openfold3._upstream.openfold3.core.config.msa_pipeline_configs import (  # noqa: E501
-        MsaSampleProcessorInputInference,
+def _subsample_msa_precursor(
+    precursor: _MsaPrecursor,
+    msa_depth: int | None,
+) -> _MsaPrecursor:
+    """Apply the inference row selection before expanding categorical MSA IDs."""
+
+    if msa_depth is None or precursor.msa_index.shape[0] <= msa_depth:
+        return precursor
+    if msa_depth < 1:
+        raise ValueError(f"msa_depth must be at least 1; got {msa_depth}")
+    valid = precursor.msa_mask.sum(axis=-1) > 0
+    order = np.argsort(~valid, kind="stable")[:msa_depth]
+    return precursor._replace(
+        msa_index=precursor.msa_index[order],
+        deletion_matrix=precursor.deletion_matrix[order],
+        msa_mask=precursor.msa_mask[order],
     )
-    from foldjax.models.openfold3._upstream.openfold3.core.data.pipelines.sample_processing.msa import (  # noqa: E501
-        MsaSampleProcessorInference,
-    )
+
+
+def _tensorize_msa_precursor(precursor: _MsaPrecursor) -> dict[str, np.ndarray]:
+    """Expand a selected precursor into the released OpenFold3 feature ABI."""
+
     from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
         STANDARD_RESIDUES_WITH_GAP_1,
     )
 
-    create_input = MsaSampleProcessorInputInference.create_from_inference_query_entry
-    processor_input = create_input(inference_query=query)
-    collection = MsaSampleProcessorInference(config=settings)(input=processor_input)
-    precursor = _msa_precursor(atom_array, collection, n_tokens)
     deletion = precursor.deletion_matrix
     return {
         "msa": _one_hot(precursor.msa_index, len(STANDARD_RESIDUES_WITH_GAP_1)),
@@ -381,6 +389,29 @@ def _msa_features(
         "num_paired_seqs": np.asarray([precursor.n_rows_paired], dtype=np.int32),
         "msa_mask": precursor.msa_mask.astype(np.float32, copy=False),
     }
+
+
+def _msa_features(
+    query: Any,
+    atom_array: Any,
+    n_tokens: int,
+    settings: Any,
+    *,
+    msa_depth: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Run upstream parsing/pairing, then tensorize the result with NumPy."""
+    from foldjax.models.openfold3._upstream.openfold3.core.config.msa_pipeline_configs import (  # noqa: E501
+        MsaSampleProcessorInputInference,
+    )
+    from foldjax.models.openfold3._upstream.openfold3.core.data.pipelines.sample_processing.msa import (  # noqa: E501
+        MsaSampleProcessorInference,
+    )
+    create_input = MsaSampleProcessorInputInference.create_from_inference_query_entry
+    processor_input = create_input(inference_query=query)
+    collection = MsaSampleProcessorInference(config=settings)(input=processor_input)
+    precursor = _msa_precursor(atom_array, collection, n_tokens)
+    precursor = _subsample_msa_precursor(precursor, msa_depth)
+    return _tensorize_msa_precursor(precursor)
 
 
 def _empty_template_features(
@@ -1128,8 +1159,14 @@ def featurize_query_numpy(
     seed: int,
     msa_settings: Any,
     ccd_file_path: str | None = None,
+    msa_depth: int | None = None,
 ) -> RawFeatures:
-    """Build all released inference features without importing PyTorch."""
+    """Build released inference features without importing PyTorch.
+
+    ``msa_depth`` is an inference-only host cap applied before categorical MSA
+    indices expand to the 32-channel archive ABI. ``None`` preserves every row
+    for standalone feature archives and direct callers.
+    """
     from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.query import (  # noqa: E501
         structure_with_ref_mols_from_query,
     )
@@ -1159,7 +1196,15 @@ def featurize_query_numpy(
     features.update(
         _conformer_features(processed_reference_molecules, seed=int(seed))
     )
-    features.update(_msa_features(query, atom_array, n_tokens, msa_settings))
+    features.update(
+        _msa_features(
+            query,
+            atom_array,
+            n_tokens,
+            msa_settings,
+            msa_depth=msa_depth,
+        )
+    )
     features.update(
         _template_features(
             query,

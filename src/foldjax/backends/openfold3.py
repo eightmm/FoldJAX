@@ -263,11 +263,21 @@ class OpenFold3Backend(Backend):
 
         query_id = options.pop("query_id", None)
         ccd_file_path = options.pop("ccd_file_path", None)
+        requested_msa_depth = options.get("max_msa_depth")
+        preprocess_msa_depth = (
+            int(requested_msa_depth)
+            if requested_msa_depth is not None
+            else int(getattr(inference, "RELEASED_MSA_DEPTH", 1024))
+        )
+        # Raw preprocessing otherwise builds the complete
+        # [rows, tokens, 32] int32 one-hot before the identical host cut below.
+        # Portable feature archives stay full-depth in the loader branch.
         features, table, output_metadata = _features_chemistry_and_metadata(
             request,
             data=data,
             query_id=query_id,
             ccd_file_path=ccd_file_path,
+            msa_depth=preprocess_msa_depth,
         )
         # Portable archives may carry numeric host-side annotations in
         # addition to the model ABI.  They are useful to archive tooling but
@@ -522,6 +532,7 @@ def _features_chemistry_and_metadata(
     data: Any,
     query_id: str | None,
     ccd_file_path: str | Path | None,
+    msa_depth: int | None = None,
 ) -> tuple[dict[str, Any], Any | None, Any | None]:
     """Load a JAX-only archive or run FoldJAX's NumPy raw-job preprocessor."""
     path = Path(request.input)
@@ -543,6 +554,7 @@ def _features_chemistry_and_metadata(
         query_id=query_id,
         seed=request.seed,
         ccd_file_path=ccd_file_path,
+        msa_depth=msa_depth,
     )
     return features, None, output_metadata
 

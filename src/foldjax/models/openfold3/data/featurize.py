@@ -153,6 +153,7 @@ def _featurize_query(
     seed: int = 0,
     ccd_file_path: str | Path | None = None,
     max_atoms_per_token: int = 23,
+    msa_depth: int | None = None,
 ) -> tuple[dict[str, np.ndarray], OutputMetadata]:
     """Featurize one query from a specification.
 
@@ -166,6 +167,9 @@ def _featurize_query(
         max_atoms_per_token: the padded per-token atom slot count, 23 in the
             released config. Only used to build ``max_atom_per_token_mask``, which
             the dataset does not emit but the confidence heads need.
+        msa_depth: optional inference row cap applied before the 32-channel MSA
+            one-hot is built. ``None`` keeps the complete alignment for portable
+            feature archives.
 
     Returns:
         Features with a leading batch axis of 1 and exact output metadata.
@@ -218,6 +222,7 @@ def _featurize_query(
             seed=seed,
             msa_settings=msa_settings,
             ccd_file_path=None if ccd_file_path is None else str(ccd_file_path),
+            msa_depth=msa_depth,
         )
     except ImportError as error:  # pragma: no cover - environment-dependent
         raise ImportError(_MISSING) from error
@@ -255,6 +260,7 @@ def featurize_query(
     seed: int = 0,
     ccd_file_path: str | Path | None = None,
     max_atoms_per_token: int = 23,
+    msa_depth: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Featurize one query while preserving the established feature-only API."""
     features, _metadata = _featurize_query(
@@ -263,6 +269,7 @@ def featurize_query(
         seed=seed,
         ccd_file_path=ccd_file_path,
         max_atoms_per_token=max_atoms_per_token,
+        msa_depth=msa_depth,
     )
     return features
 
@@ -274,6 +281,7 @@ def featurize_query_with_metadata(
     seed: int = 0,
     ccd_file_path: str | Path | None = None,
     max_atoms_per_token: int = 23,
+    msa_depth: int | None = None,
 ) -> tuple[dict[str, np.ndarray], OutputMetadata]:
     """Featurize one query and retain exact atoms and covalent connectivity."""
     return _featurize_query(
@@ -282,6 +290,7 @@ def featurize_query_with_metadata(
         seed=seed,
         ccd_file_path=ccd_file_path,
         max_atoms_per_token=max_atoms_per_token,
+        msa_depth=msa_depth,
     )
 
 
