@@ -443,10 +443,16 @@ def test_multimer_chain_pair_pae_keeps_the_generic_path(monkeypatch) -> None:
     )
     real_submatrix = confidences._chain_pair_submatrix
     calls = []
+    previous_group = []
 
     def tracked_submatrix(values, rows, columns):
+        nonlocal previous_group
+        if calls and len(calls) % 3 == 0:
+            assert all(reference() is None for reference in previous_group)
+            previous_group = []
         selected = real_submatrix(values, rows, columns)
         calls.append((values.ndim, selected.flags.f_contiguous))
+        previous_group.append(weakref.ref(selected))
         return selected
 
     monkeypatch.setattr(
@@ -462,6 +468,7 @@ def test_multimer_chain_pair_pae_keeps_the_generic_path(monkeypatch) -> None:
     for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
         _assert_nan_exact(actual_leaf, expected_leaf)
     assert calls == [(3, True), (2, True), (2, True)] * 4
+    assert all(reference() is None for reference in previous_group)
 
 
 def test_numpy_rank_metric_reduces_each_sample_separately(monkeypatch) -> None:

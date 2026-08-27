@@ -533,6 +533,10 @@ def chain_pair_pae(
       (flat_mask_idxs,) = np.where(subsubset_mask.flatten() > 0)
       flat_subsubset = subsubset.reshape([num_samples, -1])
       flat_contact_probs = subsubset_contact_probs.flatten()
+      # Both operations above own their flattened values. The Fortran-layout
+      # sources are no longer read, so release them before the next full-width
+      # valid-pair selection and weighted product are allocated.
+      del subsubset, subsubset_mask, subsubset_contact_probs
       # A ligand chain will have no valid frames if it contains fewer than
       # three non-colinear atoms (e.g. a sodium ion).
       if not flat_mask_idxs.size:
@@ -549,9 +553,6 @@ def chain_pair_pae(
         )
         del selected_values, selected_contact_probs
       del (
-          subsubset,
-          subsubset_mask,
-          subsubset_contact_probs,
           flat_mask_idxs,
           flat_subsubset,
           flat_contact_probs,
