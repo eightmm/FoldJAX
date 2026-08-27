@@ -8,6 +8,7 @@ same feature had two contracts depending on the model behind it.
 """
 
 import json
+import weakref
 
 import numpy as np
 import pytest
@@ -64,3 +65,63 @@ def test_a_leading_axis_that_is_not_one_is_refused(tmp_path) -> None:
             _specs(),
             model="boltz2",
         )
+
+
+def test_representation_arrays_are_materialised_and_written_one_at_a_time(
+    tmp_path,
+) -> None:
+    materialised: list[weakref.ReferenceType[np.ndarray]] = []
+
+    class LazyArray:
+        def __init__(self, shape: tuple[int, ...], fill: float) -> None:
+            self.shape = shape
+            self.fill = fill
+
+        def __array__(self, dtype=None, copy=None) -> np.ndarray:
+            assert all(reference() is None for reference in materialised)
+            value = np.full(self.shape, self.fill, dtype=dtype or np.float32)
+            materialised.append(weakref.ref(value))
+            return value
+
+    _representations.save(
+        tmp_path,
+        {
+            "single": LazyArray((7, 5), 1.0),
+            "pair": LazyArray((7, 7, 3), 2.0),
+        },
+        _specs(),
+        model="boltz2",
+    )
+
+    stored = _representations.load(tmp_path)
+    np.testing.assert_array_equal(stored["single"], np.ones((7, 5), np.float32))
+    np.testing.assert_array_equal(stored["pair"], np.full((7, 7, 3), 2.0, np.float32))
+
+
+def test_failed_streamed_write_preserves_archive_and_removes_staging(tmp_path) -> None:
+    _representations.save(
+        tmp_path,
+        {"single": np.ones((7, 5), dtype=np.float32)},
+        _specs(),
+        model="boltz2",
+    )
+    archive = tmp_path / _representations.ARCHIVE_NAME
+    original = archive.read_bytes()
+
+    class InvalidArray:
+        def __array__(self, dtype=None, copy=None) -> np.ndarray:
+            raise ValueError("conversion failed")
+
+    with pytest.raises(ValueError, match="conversion failed"):
+        _representations.save(
+            tmp_path,
+            {
+                "single": np.zeros((7, 5), dtype=np.float32),
+                "pair": InvalidArray(),
+            },
+            _specs(),
+            model="boltz2",
+        )
+
+    assert archive.read_bytes() == original
+    assert not tuple(tmp_path.glob(f".{_representations.ARCHIVE_NAME}.*.tmp"))

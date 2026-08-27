@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import tempfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -258,24 +259,41 @@ def save(
         return None
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    materialised = {
-        name: _conform(name, np.asarray(value), specs.get(name))
-        for name, value in arrays.items()
-    }
     archive = directory / ARCHIVE_NAME
-    np.savez(archive, **materialised)
+    metadata: dict[str, dict[str, Any]] = {}
+    with tempfile.NamedTemporaryFile(
+        dir=directory,
+        prefix=f".{archive.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary:
+        staged = Path(temporary.name)
+    try:
+        with zipfile.ZipFile(
+            staged,
+            mode="w",
+            compression=zipfile.ZIP_STORED,
+            allowZip64=True,
+        ) as destination:
+            for name, source in arrays.items():
+                value = _conform(name, np.asarray(source), specs.get(name))
+                spec = specs.get(name)
+                metadata[name] = {
+                    "shape": list(value.shape),
+                    "dtype": str(value.dtype),
+                    "axes": list(spec.axes) if spec is not None else None,
+                    "space": spec.space if spec is not None else None,
+                    "description": spec.description if spec is not None else None,
+                }
+                with destination.open(f"{name}.npy", "w", force_zip64=True) as member:
+                    np.lib.format.write_array(member, value, allow_pickle=True)
+                del value
+        staged.replace(archive)
+    finally:
+        staged.unlink(missing_ok=True)
     manifest = {
         "model": model,
-        "representations": {
-            name: {
-                "shape": list(value.shape),
-                "dtype": str(value.dtype),
-                "axes": list(specs[name].axes) if name in specs else None,
-                "space": specs[name].space if name in specs else None,
-                "description": specs[name].description if name in specs else None,
-            }
-            for name, value in materialised.items()
-        },
+        "representations": metadata,
     }
     (directory / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n")
     return archive

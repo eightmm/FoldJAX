@@ -155,6 +155,16 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **Requested representation archives stage one host array at a time.** The
+  writer now emits each unchanged NPY member directly into the same uncompressed
+  NPZ format and releases its NumPy staging array before transferring the next
+  representation. In an isolated host-staging probe with two lazy 64 MiB
+  arrays, traced peak fell from 151,007,755 to 83,899,423 bytes while write
+  time remained 0.071 versus 0.066 seconds; archive size and restored values
+  were identical. Default prediction does not request these arrays, and model
+  outputs, representation names, dtypes, shapes and manifest fields are
+  unchanged.
+
 - **Template-search artifact hashes no longer keep a second full file copy
   alive during parsing.** Protenix and OpenDDE now hash `.a3m` and `.hhr`
   inputs in 1 MiB chunks, then decode only the text required by the historical
