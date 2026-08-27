@@ -242,6 +242,53 @@ def test_monomer_chain_pair_pde_uses_one_layout_preserving_copy(monkeypatch) -> 
     assert calls == []
 
 
+def test_multimer_chain_pair_pde_bounds_selection_scratch(monkeypatch) -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(40)
+    full_pde = np.asfortranarray(rng.normal(size=(4, 13, 13)).astype(np.float32))
+    full_pde[0, 1, 8] = np.nan
+    full_pde[1, 7, 2] = np.inf
+    full_pde[2, 9, 4] = -np.inf
+    full_pde[3, 3, 11] = -0.0
+    asym_ids = np.asarray([1, 2, 1, 1, 3, 2, 1, 3, 2, 3, 1, 2, 3])
+    with np.errstate(invalid="ignore"):
+        expected = _generic_chain_pair_pde_reference(
+            num_tokens=13,
+            asym_ids=asym_ids,
+            full_pde=full_pde,
+        )
+    real_submatrix = confidences._chain_pair_pde_submatrix
+    calls = []
+    previous = None
+
+    def tracked_submatrix(values, rows, columns):
+        nonlocal previous
+        if previous is not None:
+            assert previous() is None
+        selected = real_submatrix(values, rows, columns)
+        assert selected.flags.f_contiguous
+        calls.append((tuple(rows), tuple(columns)))
+        previous = weakref.ref(selected)
+        return selected
+
+    monkeypatch.setattr(
+        confidences, "_chain_pair_pde_submatrix", tracked_submatrix
+    )
+    with np.errstate(invalid="ignore"):
+        actual = confidences.chain_pair_pde(13, asym_ids, full_pde)
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        _assert_nan_exact(actual_leaf, expected_leaf)
+        np.testing.assert_array_equal(
+            np.signbit(actual_leaf), np.signbit(expected_leaf)
+        )
+    assert len(calls) == 9
+
+
 def test_empty_chain_pair_pde_keeps_the_empty_shapes() -> None:
     from foldjax.models.alphafold3 import build
 

@@ -163,7 +163,9 @@ command predicts unless it says so here, in its own paragraph.
   chain-pair temporary allocation from 362,920,968 to 181,477,544 bytes and
   weighted-summary peak from 254,219,108 to 72,704,668 bytes, with matched
   times of 0.267 to 0.265 and 0.138 to 0.137 seconds respectively. Multimers,
-  direct layout fallbacks and empty inputs retain their result and shape.
+  direct layout fallbacks and empty inputs retain their result and shape. A
+  two-chain measurement at the same shape reduced chain-pair peak from
+  226,824,572 to 53,895,504 bytes while taking 0.272 versus 0.333 seconds.
 
 - **Protenix and OpenDDE bound the temporary used to compute an MSA profile.**
   Profile counts are now accumulated over row chunks whose 32-class boolean

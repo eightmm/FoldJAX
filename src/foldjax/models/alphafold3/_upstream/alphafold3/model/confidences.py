@@ -334,6 +334,33 @@ def pde_single(
   return ichain, xchain, full_chain
 
 
+def _chain_pair_pde_submatrix(
+    full_pde: np.ndarray,
+    row_indices: np.ndarray,
+    column_indices: np.ndarray,
+) -> np.ndarray:
+  """Select one chain pair with the historical layout and bounded scratch."""
+  num_samples = full_pde.shape[0]
+  selected = np.empty(
+      (num_samples, row_indices.size, column_indices.size),
+      dtype=full_pde.dtype,
+      order='F',
+  )
+  # Advanced indexing both pair axes at once would allocate another complete
+  # selected matrix before copying it into the required Fortran layout. Fill
+  # columns in blocks whose temporary is at most 8 MiB instead.
+  bytes_per_column = max(
+      1, num_samples * row_indices.size * full_pde.dtype.itemsize
+  )
+  columns_per_block = max(1, (8 * 2**20) // bytes_per_column)
+  for start in range(0, column_indices.size, columns_per_block):
+    columns = column_indices[start : start + columns_per_block]
+    selected[:, :, start : start + columns.size] = full_pde[
+        :, row_indices[:, None], columns
+    ]
+  return selected
+
+
 def chain_pair_pde(
     num_tokens: int, asym_ids: np.ndarray, full_pde: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -370,11 +397,15 @@ def chain_pair_pde(
     return chain_pair_pred_err_mean, chain_pair_pred_err_min
 
   for idx1, asym_id_1 in enumerate(unique_asym_ids):
-    subset = full_pde[:, asym_ids == asym_id_1, :]
+    row_indices = np.flatnonzero(asym_ids == asym_id_1)
     for idx2, asym_id_2 in enumerate(unique_asym_ids):
-      subsubset = subset[:, :, asym_ids == asym_id_2]
+      column_indices = np.flatnonzero(asym_ids == asym_id_2)
+      subsubset = _chain_pair_pde_submatrix(
+          full_pde, row_indices, column_indices
+      )
       chain_pair_pred_err_mean[:, idx1, idx2] = np.mean(subsubset, axis=(1, 2))
       chain_pair_pred_err_min[:, idx1, idx2] = np.min(subsubset, axis=(1, 2))
+      del subsubset
   return chain_pair_pred_err_mean, chain_pair_pred_err_min
 
 
