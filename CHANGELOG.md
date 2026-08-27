@@ -151,6 +151,14 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **OpenFold3 no longer retains 512 complete Kalign inputs and outputs.** The
+  alignment cache now keeps the 32 most recent calls, preserving within-job and
+  immediate-retry reuse while allowing older query/template sequence strings
+  to be collected. In a synthetic cache-fill probe with twenty 3,000-residue
+  sequences per call, traced retained memory fell from 62.6 MB at 512 entries
+  to about 3.9 MB at the new bound. Eviction changes only whether an old
+  alignment is recomputed; Kalign and the returned alignment are unchanged.
+
 - **Repeated hits from one template structure reuse its decoded mmCIF and chain
   index.** Protenix and OpenDDE now read and parse each coordinate file once per
   template-resolution call instead of repeating both for each selected chain or

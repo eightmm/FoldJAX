@@ -16,10 +16,19 @@ from functools import lru_cache
 
 import kalign
 
+_KALIGN_CACHE_LIMIT = 32
 
-@lru_cache(maxsize=512)
-def _run_kalign_cached(sequences: tuple[str, ...]) -> str:
-    """Wrapper around kalign.align with caching."""
+
+@lru_cache(maxsize=_KALIGN_CACHE_LIMIT)
+def _run_kalign_cached(sequences: tuple[str, ...]) -> list[str]:
+    """Wrapper around kalign.align with bounded recent-job reuse.
+
+    Both the input tuple and the complete aligned output can contain tens of
+    thousands of residues.  Keeping 512 distinct calls therefore pins old
+    query/template strings long after their jobs finish.  A small LRU retains
+    the useful within-job and immediate retry hits without letting a service's
+    mixed-query history become a large resident sequence store.
+    """
     return kalign.align(list(sequences))
 
 
