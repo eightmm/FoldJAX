@@ -19,9 +19,51 @@ def test_ccd_loader_cache_has_a_fixed_process_bound() -> None:
     chemical_components, _pipeline = _runtime_modules()
 
     assert chemical_components._load_ccd_pickle_cached.cache_parameters() == {
-        "maxsize": 2,
+        "maxsize": 1,
         "typed": False,
     }
+
+
+def test_replaced_ccd_cache_keeps_only_active_callers_alive(
+    tmp_path, monkeypatch
+) -> None:
+    chemical_components, _pipeline = _runtime_modules()
+
+    class WeakDictionary(dict):
+        pass
+
+    loads = 0
+
+    def fake_load(_handle):
+        nonlocal loads
+        value = WeakDictionary(ALA={"name": [str(loads)]})
+        loads += 1
+        return value
+
+    first_path = tmp_path / "first.pickle"
+    second_path = tmp_path / "second.pickle"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    cache = chemical_components._load_ccd_pickle_cached
+    cache.cache_clear()
+    monkeypatch.setattr(chemical_components.safe_pickle, "load", fake_load)
+    try:
+        first = chemical_components.Ccd(ccd_pickle_path=first_path)
+        first_base = weakref.ref(first._dict)
+        reused = chemical_components.Ccd(ccd_pickle_path=first_path)
+        assert reused._dict is first._dict
+        del reused
+
+        second = chemical_components.Ccd(ccd_pickle_path=second_path)
+        assert first["ALA"] == {"name": ["0"]}
+        assert second["ALA"] == {"name": ["1"]}
+        assert cache.cache_info().currsize == 1
+
+        del first
+        gc.collect()
+        assert first_base() is None
+    finally:
+        cache.cache_clear()
 
 
 def test_user_ccd_does_not_mutate_the_process_global_base(monkeypatch) -> None:

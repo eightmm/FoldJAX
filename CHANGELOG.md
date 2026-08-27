@@ -151,6 +151,16 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Switching AlphaFold 3 CCD roots no longer keeps two complete dictionaries
+  alive.** Repeated jobs on the same pickle still reuse one base dictionary, while
+  the process cache now owns only its latest path; an active ``Ccd`` keeps its
+  own dictionary reference safely across replacement. In matched fresh
+  processes using the registered 51,056-component pickle through two path
+  spellings, resident RSS after collection fell from 6,675,496 to 3,651,408
+  KiB. Loading the replacement still overlaps both dictionaries transiently,
+  so its roughly 7.2-million-KiB peak is unchanged. Featurization and user-CCD
+  overlay behavior are unchanged.
+
 - **MSA cache hits validate files without retaining full byte and text copies.**
   The shared protein and RNA cache paths still hash every byte, validate the
   complete UTF-8 stream and require the same first query sequence, but keep

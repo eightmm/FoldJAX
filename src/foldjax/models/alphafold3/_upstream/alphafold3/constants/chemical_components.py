@@ -40,7 +40,7 @@ _CCD_PICKLE_FILE = resources.filename(
 )
 
 
-@functools.lru_cache(maxsize=2)
+@functools.lru_cache(maxsize=1)
 def _load_ccd_pickle_cached(
     path: os.PathLike[str],
 ) -> dict[str, Mapping[str, Sequence[str]]]:
