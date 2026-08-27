@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax.backends.base import Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.padding import TOKEN_BUCKETS, PaddingPlan
 from foldjax.schema import (
@@ -646,6 +646,7 @@ class AlphaFold3Backend(Backend):
     # AlphaFold 3 runs `bfloat16: 'all'` inside the model it ships, so there is
     # no dtype for a caller to choose here; the knob would be a lie.
     execution_options = {
+        **MATMUL_PRECISION_OPTION,
         "attention_kernel": (
             "attention_backend",
             {"auto": "triton", "xla": "xla"},
@@ -862,6 +863,8 @@ class AlphaFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
+        # Out before the leftover-option check: carried by the scope.
+        matmul_precision = self.matmul_precision(options)
         buckets = _prediction_buckets(request, options)
         self._raise_if_poisoned()
         managed_weights = (
@@ -967,16 +970,18 @@ class AlphaFold3Backend(Backend):
                     resolved_plan,
                 ) in run_jobs:
                     if examples is not None:
-                        results = _predict_featurized_structure(
-                            fold_input,
-                            examples,
-                            model_runner,
-                            runner,
-                        )
+                        with matmul_precision():
+                            results = _predict_featurized_structure(
+                                fold_input,
+                                examples,
+                                model_runner,
+                                runner,
+                            )
                     else:
-                        results = runner.predict_structure(
-                            fold_input, model_runner, buckets=buckets
-                        )
+                        with matmul_precision():
+                            results = runner.predict_structure(
+                                fold_input, model_runner, buckets=buckets
+                            )
                     runner.write_outputs(results, job_dir, job_name)
                     all_results.extend(results)
                     if request.padding is not None:

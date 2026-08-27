@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any
 
 from foldjax import execution
@@ -14,6 +15,20 @@ from foldjax.schema import (
     PredictionResult,
     _strict_integer,
 )
+
+#: The `matmul_precision` entry every backend's `execution_options` carries.
+#:
+#: It is one shared object rather than six copies because, unlike the other
+#: neutral knobs, this one is not a rename: every port implements it the same
+#: way, by reading `execution.resolved_matmul_precision` where it used to name
+#: its own constant. Six identical literals would be six chances to spell the
+#: value vocabulary differently.
+MATMUL_PRECISION_OPTION: dict[str, tuple[str, dict[str, str]]] = {
+    "matmul_precision": (
+        "matmul_precision",
+        {"highest": "highest", "high": "high"},
+    )
+}
 
 
 class Backend(ABC):
@@ -78,6 +93,24 @@ class Backend(ABC):
                 )
             options[native] = value
         return options
+
+    def matmul_precision(
+        self, options: dict[str, Any]
+    ) -> Callable[[], AbstractContextManager[None]]:
+        """Take the matmul precision out of `options`; return a scope factory.
+
+        Popped rather than read, because the native option name exists only to
+        carry the value this far -- no model takes it as an argument. Absent,
+        the scope is a no-op and every port keeps the precision it pins for
+        itself.
+
+        A factory rather than one context manager: two of these backends invoke
+        the model more than once per request, and a generator-based context
+        manager cannot be entered twice. `with matmul_precision():` is correct
+        in a loop; `with matmul_precision:` would raise on the second pass.
+        """
+        value = options.pop("matmul_precision", None)
+        return functools.partial(execution.matmul_precision_scope, value)
 
     def validate_request(self, request: PredictionRequest) -> None:
         """Validate the cheap, side-effect-free part of a prediction request.

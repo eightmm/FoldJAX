@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from foldjax.backends._representations import _representations_result
-from foldjax.backends.base import Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
 from foldjax.models.boltz2.weights import resolve_native_weight_bundle
@@ -240,6 +240,7 @@ class Boltz2Backend(Backend):
     # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
     # already spells the values the neutral way; the names are its own.
     execution_options = {
+        **MATMUL_PRECISION_OPTION,
         "dtype": ("compute_dtype", {"float32": "float32", "bfloat16": "bfloat16"}),
         "triangle_kernel": (
             "triangle_backend",
@@ -532,6 +533,9 @@ class Boltz2Backend(Backend):
             _primary, affinity = self._request_weight_paths(request)
             self.prepare(affinity_requested=affinity is not None)
         options = self.apply_sampling(request)
+        # Out before `**options` reaches the native signature: no model takes
+        # this as an argument, the scope carries it.
+        matmul_precision = self.matmul_precision(options)
         mols = options.pop("mols", None) or _default_mols(request.weights)
         if mols is None:
             raise ValueError(
@@ -559,7 +563,8 @@ class Boltz2Backend(Backend):
         )
         if self._session_active:
             native_options["_runtime"] = self
-        output = native.predict(**native_options)
+        with matmul_precision():
+            output = native.predict(**native_options)
         if request.stop_after == "trunk":
             # Nothing was folded, so there are no samples to describe.
             return PredictionResult(

@@ -12,6 +12,31 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`matmul_precision` is a knob you can actually turn, on all six models.**
+  It had been in the neutral vocabulary all along, and all six backends
+  answered `does not support matmul_precision` -- the one knob the vocabulary
+  advertised and no adapter had ever implemented. It could not be delivered by
+  renaming, which is how every other neutral knob works: four ports open their
+  own `jax.default_matmul_precision` scope inside the call, so a scope the
+  adapter opened around them was overridden, and the other two opened none, so
+  there was nothing to reach. The adapter now records the request in a
+  ContextVar and the port that pins reads it where it used to name its own
+  constant. Every default is unchanged -- Boltz-2 stays `highest` because
+  upstream's `main.py:1096` asks for it, OpenFold3 and Protenix stay `high`
+  because their upstreams select TF32, and the three that pinned nothing still
+  pin nothing until asked -- so a run nobody asked to change is the run it
+  already was. It is scoped rather than latched, for the reason those pins
+  already record: a process-global update leaves the next unrelated thing in
+  the caller's precision.
+
+- **A neutral knob cannot be advertised and unimplemented again.**
+  `tests/test_execution_knob_coverage.py` checks the backends against the
+  promise `KNOBS` makes rather than against each other -- which is what let
+  this through, since all six agreed. It also checks that the value survives
+  translation, that the adapter takes the option out of the dict before it can
+  reach a native signature, and that the scope reaches the ports that pin
+  nothing, by reading `highest` back out of the lowered HLO.
+
 - **Four OpenFold3 config fields had escaped the guard built to stop exactly
   that.** `test_no_field_is_left_unchecked` exists so that adding a field to
   `InferenceConfig` cannot silently skip the upstream comparison -- but the

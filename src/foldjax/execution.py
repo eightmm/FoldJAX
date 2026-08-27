@@ -23,11 +23,27 @@ What this does **not** do is decide defaults. A neutral name means the same
 thing everywhere; it does not follow that the same value is right everywhere,
 and for `dtype` it measurably is not -- see `DEFAULTS` in each backend and the
 measurements recorded beside them.
+
+`matmul_precision` is the exception to the rename model, and was the hole in
+it. Naming it here bought nothing for a long time: every one of the six
+backends answered `does not support matmul_precision`, because there was
+nothing to rename it *to*. Four ports open their own
+`jax.default_matmul_precision` scope inside the call, so a scope an adapter
+opened around them was simply overridden -- and the other two opened none, so
+there was nothing to reach. It is now delivered by `matmul_precision_scope`
+below: the adapter records the request, and the port that pins reads it where
+it used to name its own constant. With no request in flight each port keeps
+its own pinned value, which is upstream parity and measured -- Boltz-2 is
+`highest` because `main.py:1096` asks for it, OpenFold3 and Protenix are
+`high` because their upstreams select TF32.
 """
 
 from __future__ import annotations
 
+import contextvars
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 #: Neutral knob -> the values it accepts, in the neutral vocabulary.
@@ -133,3 +149,61 @@ def translate(
             )
         out[native_name] = native_value
     return out
+
+
+#: The float32 matmul precision a caller asked for, or `None` for "whatever
+#: this model pins".
+#:
+#: `matmul_precision` is the one neutral knob that cannot be delivered by
+#: translating a name. Four of the six ports open their own
+#: `jax.default_matmul_precision` scope inside the call, so a scope the adapter
+#: opened around it is simply overridden -- the knob would accept a value,
+#: change nothing, and report success. The port that pins has to be the port
+#: that reads.
+#:
+#: A ContextVar rather than a module global because two predictions can be in
+#: flight in one process, and because the in-process native CLIs run several
+#: frames below the adapter that set it.
+_REQUESTED_MATMUL_PRECISION: contextvars.ContextVar[str | None] = (
+    contextvars.ContextVar("foldjax_matmul_precision", default=None)
+)
+
+
+@contextmanager
+def matmul_precision_scope(value: str | None) -> Iterator[None]:
+    """Ask every port in this call to run float32 matmuls at `value`.
+
+    `None` is not "default" -- it is "do not ask", and leaves each port on the
+    precision it pins for itself. Those pins are upstream parity, measured and
+    recorded next to each one, so they stay the default and this only overrides
+    them when a caller says so.
+
+    The JAX scope is opened here as well as read by the ports, so that the
+    three backends which pin nothing get the setting too.
+    """
+    if value is None:
+        yield
+        return
+    if value not in KNOBS["matmul_precision"]:
+        raise ValueError(
+            f"matmul_precision must be one of {KNOBS['matmul_precision']}, "
+            f"got {value!r}"
+        )
+    import jax
+
+    token = _REQUESTED_MATMUL_PRECISION.set(value)
+    try:
+        with jax.default_matmul_precision(value):
+            yield
+    finally:
+        _REQUESTED_MATMUL_PRECISION.reset(token)
+
+
+def resolved_matmul_precision(default: str) -> str:
+    """What this port should pin: the caller's request, or its own default.
+
+    Ports call this where they used to name a module constant. With no request
+    in flight the constant still wins, so an unasked run is bit-for-bit the run
+    it was before.
+    """
+    return _REQUESTED_MATMUL_PRECISION.get() or default

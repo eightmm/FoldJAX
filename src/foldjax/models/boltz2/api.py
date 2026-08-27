@@ -113,7 +113,11 @@ def _pinned_matmul_precision(function):
     def wrapper(*args, **kwargs):
         import jax
 
-        with jax.default_matmul_precision(MATMUL_PRECISION):
+        from foldjax.execution import resolved_matmul_precision
+
+        with jax.default_matmul_precision(
+            resolved_matmul_precision(MATMUL_PRECISION)
+        ):
             return function(*args, **kwargs)
 
     return wrapper

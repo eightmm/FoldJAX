@@ -9,7 +9,7 @@ from importlib import import_module
 from pathlib import Path
 
 from foldjax.backends._representations import _representations_result
-from foldjax.backends.base import Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.schema import (
     InputRequirement,
@@ -77,6 +77,7 @@ class OpenDDEBackend(Backend):
     # trunk but exposes only the chunk sizes -- so `triangle_kernel` is absent
     # here and asking for it is an error rather than a silent no-op.
     execution_options = {
+        **MATMUL_PRECISION_OPTION,
         "dtype": ("trunk_dtype", {"float32": "fp32", "bfloat16": "bf16"}),
         "attention_kernel": (
             "trunk_single_attention_backend",
@@ -136,6 +137,9 @@ class OpenDDEBackend(Backend):
             )
 
         options = self.apply_sampling(request)
+        # Out before the leftover-option check below: carried by the scope, not
+        # by argv.
+        matmul_precision = self.matmul_precision(options)
         include_raw = options.pop("include_raw", False)
         if not isinstance(include_raw, bool):
             raise ValueError("include_raw must be a boolean")
@@ -172,7 +176,7 @@ class OpenDDEBackend(Backend):
 
         padding_profiles: list[dict[str, object]] = []
         native = import_module("foldjax.models.opendde.cli.predict")
-        with _restored_environment():
+        with matmul_precision(), _restored_environment():
             if request.padding is None:
                 # Keep the historical one-argument native entry point exact for
                 # embedding applications and default-off predictions.

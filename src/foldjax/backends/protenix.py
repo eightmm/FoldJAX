@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax.backends._representations import _representations_result
-from foldjax.backends.base import Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.schema import (
     InputRequirement,
@@ -206,6 +206,7 @@ class ProtenixBackend(Backend):
     # Protenix spells both the names and the values its own way: `bf16` for the
     # dtype, and `_jit` suffixes on the kernels for the traced variants.
     execution_options = {
+        **MATMUL_PRECISION_OPTION,
         "dtype": ("trunk_dtype", {"float32": "fp32", "bfloat16": "bf16"}),
         "triangle_kernel": (
             "trunk_triangle_attention_backend",
@@ -271,6 +272,9 @@ class ProtenixBackend(Backend):
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
         self.validate_native_options(options)
+        # Taken out before the leftover-option check below, which is what makes
+        # a misspelling an error: this one is carried by the scope, not by argv.
+        matmul_precision = self.matmul_precision(options)
         cli_args = _extra_cli_args(options.pop("cli_args", ()))
         argv = [
             "--input-json",
@@ -324,21 +328,27 @@ class ProtenixBackend(Backend):
             argv.extend(("--stop-after", "trunk"))
         padding_plans: list[dict[str, Any]] = []
         module = import_module("foldjax.models.protenix.cli.predict")
-        if request.padding is None:
-            # Keep the default adapter/native callable contract byte-for-byte:
-            # third-party wrappers and older test doubles commonly accept only
-            # ``argv``. The callback exists solely for the opt-in padding path.
-            written = module.main(argv)
-        else:
-            written = module.main(
-                argv,
-                on_padding_plan=lambda plan, static=None: padding_plans.append(
-                    {
-                        **plan.summary(),
-                        **({"static": dict(static)} if static is not None else {}),
-                    }
-                ),
-            )
+        with matmul_precision():
+            if request.padding is None:
+                # Keep the default adapter/native callable contract
+                # byte-for-byte: third-party wrappers and older test doubles
+                # commonly accept only ``argv``. The callback exists solely for
+                # the opt-in padding path.
+                written = module.main(argv)
+            else:
+                written = module.main(
+                    argv,
+                    on_padding_plan=lambda plan, static=None: padding_plans.append(
+                        {
+                            **plan.summary(),
+                            **(
+                                {"static": dict(static)}
+                                if static is not None
+                                else {}
+                            ),
+                        }
+                    ),
+                )
         samples = tuple(
             PredictionSample(
                 seed=request.seed,

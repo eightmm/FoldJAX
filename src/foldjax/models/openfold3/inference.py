@@ -353,7 +353,11 @@ def openfold3_precision(function):
 
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
-        with jax.default_matmul_precision(_MATMUL_PRECISION):
+        from foldjax.execution import resolved_matmul_precision
+
+        with jax.default_matmul_precision(
+            resolved_matmul_precision(_MATMUL_PRECISION)
+        ):
             return function(*args, **kwargs)
 
     return wrapper

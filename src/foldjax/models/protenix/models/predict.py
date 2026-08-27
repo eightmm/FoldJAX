@@ -109,7 +109,11 @@ def protenix_predict_static(
     # behind for everything later in the process -- another port, a notebook
     # cell, a test collected after this one. It went unnoticed while every port
     # pinned the same value; they no longer do.
-    with jax.default_matmul_precision(matmul_precision):
+    from foldjax.execution import resolved_matmul_precision
+
+    with jax.default_matmul_precision(
+        resolved_matmul_precision(matmul_precision)
+    ):
         noise_schedule = inference_noise_schedule(
             n_step=num_sampling_steps,
             s_max=s_max,

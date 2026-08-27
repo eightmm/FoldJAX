@@ -27,7 +27,7 @@ from foldjax._openfold3_compile import (
     triangle_backend as _triangle_backend,
 )
 from foldjax.backends._representations import _representations_result
-from foldjax.backends.base import Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import (
@@ -153,6 +153,7 @@ class OpenFold3Backend(Backend):
     # a whole-trunk bfloat16 cast destroys the prediction (pLDDT 0.858 -> 0.466),
     # and the partial profile that does work is one upstream never validated.
     execution_options = {
+        **MATMUL_PRECISION_OPTION,
         "triangle_kernel": (
             "triangle_kernel", {"auto": "cueq", "cueq": "cueq", "xla": "xla"}
         ),
@@ -246,6 +247,8 @@ class OpenFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
+        # Out before the leftover-option check: carried by the scope.
+        matmul_precision = self.matmul_precision(options)
         # The port is vendored, so these are ordinary in-package imports. They
         # stay inside `predict` only to keep `import foldjax` off JAX's import
         # cost, which is the same reason the other vendored backends do it.
@@ -390,7 +393,7 @@ class OpenFold3Backend(Backend):
         # `_default_backend()` reads this environment variable per call. Keep
         # it set through tracing/execution so it reaches the template stack and
         # confidence head as well as the trunk, then restore the host value.
-        with _triangle_backend(kernel):
+        with matmul_precision(), _triangle_backend(kernel):
             if compile_it:
                 compiled = inference.compile_predict(
                     config,

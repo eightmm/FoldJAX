@@ -41,7 +41,7 @@ from typing import Any
 import numpy as np
 
 from foldjax.backends._representations import _representations_result
-from foldjax.backends.base import Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis
@@ -352,7 +352,9 @@ class ESMFold2Backend(Backend):
     # `no_language_model` is not a performance knob -- it changes which model
     # runs -- but it is the only way to fold without the 25.4 GB download, so
     # it is exposed and named for what it does.
-    execution_options: dict[str, tuple[str, dict[str, Any]]] = {}
+    execution_options: dict[str, tuple[str, dict[str, Any]]] = {
+        **MATMUL_PRECISION_OPTION,
+    }
     compile_options = (
         "num_samples",
         "num_steps",
@@ -597,6 +599,8 @@ class ESMFold2Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
+        # Out before the leftover-option check: carried by the scope.
+        matmul_precision = self.matmul_precision(options)
         # Reject malformed model-selection options before opening the input or
         # importing JAX. This keeps configuration errors deterministic even
         # when the job path is also unavailable.
@@ -689,14 +693,15 @@ class ESMFold2Backend(Backend):
             # avoiding an unnecessary API split for ordinary callers, wrappers
             # that expose only ``predict_job`` keep working in a session; they
             # reuse weights but deliberately forgo the derived-state cache.
-            prediction, features = inference.predict_job(
-                inference.seed_key(request.seed),
-                chains,
-                alignments,
-                model,
-                return_distogram_logits=False,
-                **overrides,
-            )
+            with matmul_precision():
+                prediction, features = inference.predict_job(
+                    inference.seed_key(request.seed),
+                    chains,
+                    alignments,
+                    model,
+                    return_distogram_logits=False,
+                    **overrides,
+                )
         else:
             features = (
                 prebuilt_features
@@ -759,16 +764,17 @@ class ESMFold2Backend(Backend):
                         packed_length=lm_target,
                     )
                 }
-            prediction = inference.predict(
-                prediction_key,
-                features,
-                model,
-                language_model_tokens=lm_target,
-                preserve_prefix_rng=request.padding is not None,
-                return_distogram_logits=False,
-                **lm_input,
-                **overrides,
-            )
+            with matmul_precision():
+                prediction = inference.predict(
+                    prediction_key,
+                    features,
+                    model,
+                    language_model_tokens=lm_target,
+                    preserve_prefix_rng=request.padding is not None,
+                    return_distogram_logits=False,
+                    **lm_input,
+                    **overrides,
+                )
 
         name = Path(request.input).stem
         shape_profile = None
