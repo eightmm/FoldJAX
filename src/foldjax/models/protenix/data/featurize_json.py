@@ -12,6 +12,7 @@ import pickle
 import random
 import re
 import string
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,7 @@ _EXTERNAL_CCD_ATOMS: dict[tuple[Path, str], dict[str, Any]] = {}
 _TRUSTED_CCD_RDKIT_SHA256 = frozenset(
     {"d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35"}
 )
+_CCD_HASH_CHUNK = 1 << 20
 _TOKEN_POLYMER_TYPE = {"ligand": 0, "protein": 1, "dna": 2, "rna": 3}
 
 
@@ -1867,10 +1869,10 @@ def _external_ccd_component(code: str) -> dict[str, np.ndarray]:
     }
 
 
-def _verify_official_rdkit_cache(payload: bytes, *, path: Path) -> None:
-    """Verify the immutable byte snapshot that will be deserialized."""
+def _verify_official_rdkit_cache(digest: str, *, path: Path) -> None:
+    """Verify the digest of the immutable snapshot to be deserialized."""
 
-    actual = hashlib.sha256(payload).hexdigest()
+    actual = digest
     if actual not in _TRUSTED_CCD_RDKIT_SHA256:
         expected = ", ".join(sorted(_TRUSTED_CCD_RDKIT_SHA256))
         raise ValueError(
@@ -1880,12 +1882,23 @@ def _verify_official_rdkit_cache(payload: bytes, *, path: Path) -> None:
 
 
 def _load_verified_rdkit_cache(path: Path) -> Any:
-    """Deserialize exactly the immutable bytes whose digest was verified."""
+    """Verify a bounded-RSS snapshot, then deserialize those exact bytes.
 
-    with path.open("rb") as handle:
-        payload = handle.read()
-    _verify_official_rdkit_cache(payload, path=path)
-    return pickle.loads(payload)
+    The publisher cache is 136 MiB.  Keeping it in one Python ``bytes`` while
+    unpickling retained that complete copy beside the much larger RDKit object
+    tree.  A temporary file keeps the trust boundary unchanged -- unpickling
+    still starts only after the complete immutable snapshot has been hashed --
+    without charging the snapshot itself to process RSS.
+    """
+
+    digest = hashlib.sha256()
+    with tempfile.TemporaryFile() as snapshot, path.open("rb") as source:
+        while chunk := source.read(_CCD_HASH_CHUNK):
+            digest.update(chunk)
+            snapshot.write(chunk)
+        _verify_official_rdkit_cache(digest.hexdigest(), path=path)
+        snapshot.seek(0)
+        return pickle.load(snapshot)
 
 
 def _external_ccd_atom_metadata(code: str) -> dict[str, Any]:

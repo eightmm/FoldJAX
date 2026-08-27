@@ -132,6 +132,13 @@ def test_verified_rdkit_pickle_is_loaded_from_the_hashed_immutable_snapshot(
         "_TRUSTED_CCD_RDKIT_SHA256",
         frozenset({hashlib.sha256(payload).hexdigest()}),
     )
+    monkeypatch.setattr(
+        featurize_impl.pickle,
+        "loads",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the verified cache must not be retained as one in-memory bytes object"
+        ),
+    )
 
     assert featurize_impl._load_verified_rdkit_cache(cache) == {"sentinel": 7}
 

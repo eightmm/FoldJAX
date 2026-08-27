@@ -151,6 +151,17 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Protenix and OpenDDE no longer retain a second 136 MiB CCD snapshot while
+  constructing the RDKit component dictionary.** Their shared arbitrary-CCD
+  loader still hashes every byte before unpickling and still deserializes the
+  exact verified snapshot, but streams that snapshot through an anonymous
+  temporary file instead of one process-resident Python ``bytes`` object. On
+  the registered 142,498,117-byte asset, fresh CPU-process maximum RSS fell
+  from 1,869,424 to 1,718,216 KiB while all 48,965 dictionary entries were
+  loaded; wall time was unchanged within the single-run noise (2.22 versus
+  2.17 seconds). This changes host loading only, not features, model arithmetic,
+  or device placement.
+
 - **Padded Boltz-2 sampling no longer sends its initial and 200-step noise
   tapes through the compiled model.** The high-level prediction path now sends
   one dynamic storage-atom count and reconstructs the same flattened Threefry
