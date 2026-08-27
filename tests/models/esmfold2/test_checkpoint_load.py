@@ -126,6 +126,12 @@ def test_the_released_settings_are_read_from_the_file() -> None:
     assert settings.diffusion.noise_scale == pytest.approx(1.003)
 
 
+def test_settings_keep_the_published_num_loops_checkpoint_key() -> None:
+    settings = jax_model.settings_from_config({"num_loops": 3})
+
+    assert settings.num_recycles == 3
+
+
 @pytest.mark.slow
 def test_the_whole_model_runs_on_the_released_weights() -> None:
     directory = _weights()

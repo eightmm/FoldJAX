@@ -265,7 +265,10 @@ def settings_from_config(config: Mapping[str, object]) -> ModelSettings:
             int(number(msa, "n_layers", 4)) if msa.get("enabled", False) else None
         ),
         msa_encoder_overwrite=bool(config.get("msa_encoder_overwrite", True)),
-        num_recycles=int(number(config, "num_recycles", base.num_recycles)),
+        # ``num_recycles`` is FoldJAX's runtime spelling.  The published
+        # checkpoint schema remains upstream's ``num_loops`` and must not be
+        # renamed while decoding the file.
+        num_recycles=int(number(config, "num_loops", base.num_recycles)),
         num_samples=int(number(config, "num_diffusion_samples", base.num_samples)),
         diffusion=diffusion.settings_from_config(config),
     )
