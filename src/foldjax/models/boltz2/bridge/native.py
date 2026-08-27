@@ -247,18 +247,20 @@ def load_params(path: str | Path, dtype: Any = None, prestack: bool = True) -> A
     if not prestack:
         return unflatten_pytree(arrays, meta.get("scalars", {}))
 
-    from foldjax.models._stacking import prestack_layer_lists
+    from foldjax.models._stacking import prestack_loaded_tree_consuming
 
     # Stack on the host and transfer once. Stacking after the transfer would
     # briefly hold both the per-layer arrays and the stacked copy on the
     # device -- twice the checkpoint, for nothing.
-    params = unflatten_pytree(arrays, meta.get("scalars", {}), to_device=False)
+    loaded = [
+        unflatten_pytree(arrays, meta.get("scalars", {}), to_device=False)
+    ]
     # The nested tree now owns every array leaf. Drop the flat loader mapping
     # before stacking so the unstacked tree can be reclaimed as soon as its
     # stacked replacement is ready, rather than retaining both forms through
     # the device transfer below.
     del arrays
-    params = prestack_layer_lists(params)
+    params = prestack_loaded_tree_consuming(loaded.pop())
     # ``jnp.asarray`` stages one tiny JIT program for every distinct leaf shape.
     # These are already concrete host arrays, so transfer them without tracing.
     return jax.tree.map(

@@ -68,7 +68,7 @@ def test_load_params_releases_flat_mapping_before_prestack(
         mapping_ref = weakref.ref(arrays)
         return arrays
 
-    original_prestack = _stacking.prestack_layer_lists
+    original_prestack = _stacking.prestack_loaded_tree_consuming
     observed: list[bool] = []
 
     def spy_prestack(params: Any) -> Any:
@@ -77,7 +77,7 @@ def test_load_params_releases_flat_mapping_before_prestack(
         return original_prestack(params)
 
     monkeypatch.setattr("safetensors.numpy.load_file", fake_load_file)
-    monkeypatch.setattr(_stacking, "prestack_layer_lists", spy_prestack)
+    monkeypatch.setattr(_stacking, "prestack_loaded_tree_consuming", spy_prestack)
 
     loaded = native.load_params(weights)
 

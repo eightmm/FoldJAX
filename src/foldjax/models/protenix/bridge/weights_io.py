@@ -109,11 +109,16 @@ def load_native_weights(path: str | Path, prestack: bool = True) -> Any:
     path = Path(path)
     opener = gzip.open if _is_gzip_file(path) else open
     with opener(path, "rb") as fh:
-        numpy_tree = _NativeWeightsUnpickler(fh).load()
+        # A holder lets ``pop`` transfer the only root reference into the
+        # consuming traversal; assigning ``numpy_tree = helper(numpy_tree)``
+        # would retain an immutable root until the helper returned.
+        loaded = [_NativeWeightsUnpickler(fh).load()]
     if prestack:
-        from foldjax.models._stacking import prestack_layer_lists
+        from foldjax.models._stacking import prestack_loaded_tree_consuming
 
-        numpy_tree = prestack_layer_lists(numpy_tree)
+        numpy_tree = prestack_loaded_tree_consuming(loaded.pop())
+    else:
+        numpy_tree = loaded.pop()
     return jax.tree.map(_leaf_to_jax, numpy_tree, is_leaf=lambda leaf: leaf is None)
 
 

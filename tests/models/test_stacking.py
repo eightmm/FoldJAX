@@ -22,6 +22,7 @@ import pytest
 from foldjax.models._stacking import (
     StackedLayers,
     prestack_layer_lists,
+    prestack_loaded_tree_consuming,
     stacked_or_stack,
     take_layers,
 )
@@ -206,3 +207,114 @@ def test_an_empty_layer_list_is_an_error():
         StackedLayers.from_layers([])
     with pytest.raises(ValueError, match="empty layer list"):
         stacked_or_stack([])
+
+
+def test_consuming_prestack_matches_the_public_nonmutating_tree() -> None:
+    class Params(NamedTuple):
+        trunk: Any
+        head: Any
+
+    def tree() -> Params:
+        return Params(
+            trunk={"layers": make_layers()},
+            head=tuple(
+                Block(
+                    np.full((2, 2), index, np.float32),
+                    np.full(2, -index, np.float32),
+                    8,
+                )
+                for index in range(3)
+            ),
+        )
+
+    expected = prestack_layer_lists(tree())
+    actual = prestack_loaded_tree_consuming(tree())
+
+    assert jax.tree_util.tree_structure(actual) == jax.tree_util.tree_structure(
+        expected
+    )
+    for actual_leaf, expected_leaf in zip(
+        jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True
+    ):
+        np.testing.assert_array_equal(
+            np.asarray(actual_leaf), np.asarray(expected_leaf)
+        )
+    assert isinstance(actual, Params)
+    assert isinstance(actual.trunk["layers"], StackedLayers)
+    assert isinstance(actual.head, StackedLayers)
+
+
+def test_consuming_prestack_falls_back_without_mutating_shared_containers() -> None:
+    shared = make_layers()
+    tree = {"first": shared, "second": shared}
+
+    actual = prestack_loaded_tree_consuming(tree)
+
+    assert isinstance(actual["first"], StackedLayers)
+    assert isinstance(actual["second"], StackedLayers)
+    assert tree["first"] is shared
+    assert tree["second"] is shared
+    assert isinstance(shared, list)
+
+
+def test_consuming_prestack_ignores_harmless_shared_empty_containers() -> None:
+    empty = []
+    tree = {"first": empty, "second": empty, "layers": make_layers()}
+
+    actual = prestack_loaded_tree_consuming(tree)
+
+    assert actual is tree
+    assert actual["first"] is empty
+    assert actual["second"] is empty
+    assert isinstance(actual["layers"], StackedLayers)
+
+
+def test_consuming_prestack_rejects_a_cycle_even_after_a_shared_alias() -> None:
+    shared = {"weight": np.ones(1, dtype=np.float32)}
+    cycle = []
+    cycle.append(cycle)
+    tree = {"first": shared, "second": shared, "later_cycle": cycle}
+
+    with pytest.raises(ValueError, match="cyclic parameter container"):
+        prestack_loaded_tree_consuming(tree)
+
+
+def test_consuming_prestack_releases_one_stack_before_building_the_next(
+    monkeypatch
+) -> None:
+    import gc
+    import weakref
+
+    from foldjax.models import _stacking
+
+    first_layers = make_layers(count=3, dim=64)
+    first_refs = [
+        weakref.ref(array)
+        for layer in first_layers
+        for array in (layer["kernel"], layer["bias"])
+    ]
+    tree = {
+        "first": first_layers,
+        "second": [
+            {
+                "kernel": np.full((64, 64), 100 + index, np.float32),
+                "bias": np.full(64, 100 + index, np.float32),
+            }
+            for index in range(3)
+        ],
+    }
+    del first_layers
+    original = _stacking.stack_leaves
+    observed = []
+
+    def tracked_stack(*leaves):
+        if float(np.asarray(leaves[0]).reshape(-1)[0]) >= 100:
+            gc.collect()
+            observed.append(all(reference() is None for reference in first_refs))
+        return original(*leaves)
+
+    monkeypatch.setattr(_stacking, "stack_leaves", tracked_stack)
+
+    prestack_loaded_tree_consuming(tree)
+
+    assert observed and all(observed)

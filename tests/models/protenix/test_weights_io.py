@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import gc
 import io
 import pickle
+import weakref
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models import _stacking
 from foldjax.models.protenix.bridge.weights_io import (
     _NativeWeightsUnpickler,
     load_native_weights,
@@ -72,3 +75,46 @@ def test_native_weights_reject_arbitrary_pickle_globals(tmp_path) -> None:
 
     with pytest.raises(pickle.UnpicklingError, match="forbidden global"):
         load_native_weights(path)
+
+
+def test_failed_consuming_prestack_does_not_retain_the_private_loaded_tree(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "weights.pkl"
+    params = {
+        "first": [
+            {
+                "weight": np.full((8, 8), index, dtype=np.float32),
+                "bias": np.full(8, index, dtype=np.float32),
+            }
+            for index in (1, 2)
+        ],
+        "second": [
+            {
+                "weight": np.full((8, 8), index, dtype=np.float32),
+                "bias": np.full(8, index, dtype=np.float32),
+            }
+            for index in (101, 102)
+        ],
+    }
+    save_native_weights(path, params, compress=False)
+    references: list[weakref.ReferenceType[np.ndarray]] = []
+    original = _stacking.stack_leaves
+
+    def fail_on_second_stack(*leaves):
+        references.extend(
+            weakref.ref(leaf) for leaf in leaves if isinstance(leaf, np.ndarray)
+        )
+        if float(np.asarray(leaves[0]).reshape(-1)[0]) >= 100:
+            raise RuntimeError("synthetic stack failure")
+        return original(*leaves)
+
+    monkeypatch.setattr(_stacking, "stack_leaves", fail_on_second_stack)
+
+    with pytest.raises(RuntimeError, match="synthetic stack failure") as error:
+        load_native_weights(path)
+    del error
+    gc.collect()
+
+    assert references
+    assert all(reference() is None for reference in references)

@@ -259,3 +259,125 @@ def prestack_layer_lists(params: Any) -> Any:
     if isinstance(params, tuple):
         return tuple(prestack_layer_lists(value) for value in params)
     return params
+
+
+def prestack_loaded_tree_consuming(params: Any) -> Any:
+    """Pre-stack a freshly loaded private tree while releasing old subtrees.
+
+    Unlike :func:`prestack_layer_lists`, this function owns and may mutate the
+    supplied containers.  Native loaders call it only with a tree returned
+    directly by their restricted decoder.  Replacing one child before moving
+    to the next keeps completed stacks from remaining live beside every
+    unstacked layer list, reducing peak host memory from roughly two complete
+    checkpoints to one checkpoint plus the largest individual stack.
+
+    A tree with shared container aliases takes the public non-mutating fallback;
+    that uncommon shape cannot release one owner without reasoning about every
+    alias first.  An exception may leave an ordinary private input partially
+    consumed; callers discard it and propagate the error, so the public helper
+    remains the right API for any tree owned by application code.
+    """
+
+    if _has_shared_container(params):
+        return prestack_layer_lists(params)
+
+    def consume(value: Any) -> Any:
+        if isinstance(value, StackedLayers):
+            return value
+
+        if _is_layer_sequence(value):
+            layers = value if isinstance(value, list) else list(value)
+            for index in range(len(layers)):
+                child = layers[index]
+                layers[index] = None
+                layers[index] = consume(child)
+                del child
+            result = StackedLayers.from_layers(layers)
+            layers.clear()
+            return result
+
+        if isinstance(value, dict):
+            for key in tuple(value):
+                child = value[key]
+                value[key] = None
+                value[key] = consume(child)
+                del child
+            return value
+
+        if isinstance(value, list):
+            for index in range(len(value)):
+                child = value[index]
+                value[index] = None
+                value[index] = consume(child)
+                del child
+            return value
+
+        if hasattr(value, "_fields") and isinstance(value, tuple):
+            value_type = type(value)
+            children = list(value)
+            del value
+            for index in range(len(children)):
+                child = children[index]
+                children[index] = None
+                children[index] = consume(child)
+                del child
+            result = value_type(*children)
+            children.clear()
+            return result
+
+        if isinstance(value, tuple):
+            children = list(value)
+            del value
+            for index in range(len(children)):
+                child = children[index]
+                children[index] = None
+                children[index] = consume(child)
+                del child
+            result = tuple(children)
+            children.clear()
+            return result
+
+        return value
+
+    return consume(params)
+
+
+def _has_shared_container(params: Any) -> bool:
+    """Whether consuming one container could invalidate another reference."""
+
+    seen_mutable: set[int] = set()
+    active: set[int] = set()
+    shared = False
+
+    def visit(value: Any) -> None:
+        nonlocal shared
+        if isinstance(value, StackedLayers):
+            return
+        if isinstance(value, dict):
+            children = value.values()
+        elif isinstance(value, (list, tuple)):
+            children = value
+        else:
+            return
+
+        identity = id(value)
+        if identity in active:
+            raise ValueError("cannot pre-stack a cyclic parameter container")
+        if isinstance(value, (dict, list)):
+            if identity in seen_mutable:
+                # Reusing an empty mutable sentinel is harmless: consuming it
+                # performs no mutation and must not force a multi-gigabyte
+                # checkpoint back through the non-consuming fallback.
+                if value:
+                    shared = True
+                return
+            seen_mutable.add(identity)
+        active.add(identity)
+        try:
+            for child in children:
+                visit(child)
+        finally:
+            active.remove(identity)
+
+    visit(params)
+    return shared
