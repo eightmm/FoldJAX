@@ -1932,20 +1932,73 @@ def _external_ccd_atom_metadata(code: str) -> dict[str, Any]:
 def _read_ccd_block(path: Path, code: str) -> str:
     """Extract one CCD data block without parsing the full 490 MB dictionary."""
 
-    marker = f"data_{code}\n".encode()
     with path.open("rb") as handle:
         if path.stat().st_size == 0:
             raise ValueError(f"components.cif is empty: {path}")
         with mmap.mmap(handle.fileno(), length=0, access=mmap.ACCESS_READ) as mapped:
-            start = mapped.find(marker)
-            while start > 0 and mapped[start - 1 : start] != b"\n":
-                start = mapped.find(marker, start + 1)
-            if start < 0:
+            bounds = _sorted_ccd_block_bounds(mapped, code.encode())
+            if bounds is None:
+                # Environment overrides are allowed to point at another
+                # components.cif.  The official file is sorted by data-block
+                # code; preserve the historical linear lookup for a custom
+                # file that is not.
+                bounds = _linear_ccd_block_bounds(mapped, code.encode())
+            if bounds is None:
                 raise ValueError(f"unknown CCD code in components.cif: {code!r}")
-            end = mapped.find(b"\ndata_", start + len(marker))
-            if end < 0:
-                end = len(mapped)
+            start, end = bounds
             return mapped[start:end].decode("utf-8")
+
+
+def _sorted_ccd_block_bounds(
+    mapped: mmap.mmap, code: bytes
+) -> tuple[int, int] | None:
+    """Binary-search a code-sorted CCD without first building a 49k-row index."""
+
+    low = 0
+    high = len(mapped)
+    # Byte offsets, rather than record indices, make the search independent of
+    # each component's highly variable atom/bond-table size. ``rfind`` starts
+    # at the midpoint and normally meets the containing block a few KiB away.
+    while low < high:
+        midpoint = (low + high) // 2
+        marker = mapped.rfind(b"\ndata_", 0, midpoint + 1)
+        start = 0 if marker < 0 else marker + 1
+        line_end = mapped.find(b"\n", start + len(b"data_"))
+        if line_end < 0:
+            return None
+        current = mapped[start + len(b"data_") : line_end].rstrip(b"\r")
+        if current == code:
+            end = mapped.find(b"\ndata_", line_end)
+            return start, len(mapped) if end < 0 else end
+        if current < code:
+            next_marker = mapped.find(b"\ndata_", line_end)
+            if next_marker < 0:
+                return None
+            next_start = next_marker + 1
+            if next_start <= low:
+                return None
+            low = next_start
+        else:
+            next_high = midpoint if start >= high else start
+            if next_high >= high:
+                return None
+            high = next_high
+    return None
+
+
+def _linear_ccd_block_bounds(
+    mapped: mmap.mmap, code: bytes
+) -> tuple[int, int] | None:
+    """Historical exact lookup for an unsorted custom components.cif."""
+
+    marker = b"data_" + code + b"\n"
+    start = mapped.find(marker)
+    while start > 0 and mapped[start - 1 : start] != b"\n":
+        start = mapped.find(marker, start + 1)
+    if start < 0:
+        return None
+    end = mapped.find(b"\ndata_", start + len(marker))
+    return start, len(mapped) if end < 0 else end
 
 
 def _parse_ccd_atom_metadata(block: str, code: str) -> dict[str, Any]:

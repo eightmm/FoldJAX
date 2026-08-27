@@ -162,6 +162,15 @@ command predicts unless it says so here, in its own paragraph.
   2.17 seconds). This changes host loading only, not features, model arithmetic,
   or device placement.
 
+- **Arbitrary CCD lookup no longer scans the same 468 MiB components file from
+  its beginning for every new ligand.** The registered Protenix/OpenDDE file
+  is code-sorted, so lookup now binary-searches its memory map by block header;
+  an unsorted environment override falls back to the historical linear search
+  and returns the same block. In the registered 48,965-block file, isolated
+  warm CPU lookup of a middle block fell from 74.05 ms to 0.08 ms and the last
+  block from 143.92 ms to 0.13 ms. Parsing and feature construction after the
+  lookup are unchanged.
+
 - **Padded Boltz-2 sampling no longer sends its initial and 200-step noise
   tapes through the compiled model.** The high-level prediction path now sends
   one dynamic storage-atom count and reconstructs the same flattened Threefry

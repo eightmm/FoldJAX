@@ -143,6 +143,43 @@ def test_verified_rdkit_pickle_is_loaded_from_the_hashed_immutable_snapshot(
     assert featurize_impl._load_verified_rdkit_cache(cache) == {"sentinel": 7}
 
 
+def test_ccd_block_lookup_binary_searches_sorted_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    components = tmp_path / "components.cif"
+    components.write_text(
+        "".join(
+            f"data_{index:04d}\n_value {index}\n#\n" for index in range(1000)
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        featurize_impl,
+        "_linear_ccd_block_bounds",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a sorted CCD lookup must not scan from the beginning"
+        ),
+    )
+
+    assert featurize_impl._read_ccd_block(components, "0999").startswith(
+        "data_0999\n_value 999\n"
+    )
+
+
+def test_ccd_block_lookup_preserves_unsorted_custom_files(tmp_path: Path) -> None:
+    components = tmp_path / "components.cif"
+    components.write_text(
+        "data_ZZZ\n_value last\n#\n"
+        "data_AAA\n_value first\n#\n"
+        "data_MMM\n_value middle\n#\n",
+        encoding="utf-8",
+    )
+
+    assert featurize_impl._read_ccd_block(components, "AAA").startswith(
+        "data_AAA\n_value first\n"
+    )
+
+
 def test_smiles_preserves_charge_stereo_and_bond_graph():
     features = featurize_protein_json(_job(_ligand("C[C@H]([NH3+])C(=O)[O-]")))
     assert features["restype"].shape[0] == 6
