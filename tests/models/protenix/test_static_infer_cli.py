@@ -578,54 +578,74 @@ def test_static_infer_pads_mini_esm_language_model_and_reports_profile(
     monkeypatch.setattr(
         "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
     )
-    predict_main(
-        [
-            "--weights",
-            str(weights_path),
-            "--input-json",
-            str(input_json),
-            "--out",
-            str(tmp_path / "out.npz"),
-            "--model-name",
-            "protenix_mini_esm_v0.5.0",
-            "--trunk-dtype",
-            "fp32",
-            "--n-sample",
-            "1",
-            "--n-queries",
-            "2",
-            "--n-keys",
-            "4",
-            "--padding",
-            "--pad-tokens",
-            "8",
-            "--pad-atoms",
-            "8",
-            "--pad-msa",
-            "4",
-            "--pad-templates",
-            "4",
-            "--pad-language-model-tokens",
-            "16",
-            "--no-compile-cache",
-        ],
-        on_padding_plan=collect_profile,
-    )
+    argv = [
+        "--weights",
+        str(weights_path),
+        "--input-json",
+        str(input_json),
+        "--out",
+        str(tmp_path / "out.npz"),
+        "--model-name",
+        "protenix_mini_esm_v0.5.0",
+        "--trunk-dtype",
+        "fp32",
+        "--n-sample",
+        "1",
+        "--n-queries",
+        "2",
+        "--n-keys",
+        "4",
+        "--padding",
+        "--pad-tokens",
+        "8",
+        "--pad-atoms",
+        "8",
+        "--pad-msa",
+        "4",
+        "--pad-templates",
+        "4",
+        "--pad-language-model-tokens",
+        "16",
+        "--no-compile-cache",
+    ]
+    predict_main(argv, on_padding_plan=collect_profile)
 
     features = captured["features"]
     kwargs = captured["kwargs"]
     assert language_targets == [16]
     assert features["restype"].shape[0] == 8
     assert kwargs["padded_generated_schema"] is True
-    assert kwargs["step_noises"].shape == (
-        kwargs["num_sampling_steps"],
-        1,
-        8,
-        3,
-    )
+    assert kwargs["preserve_prefix_rng"] is True
+    assert kwargs["init_noise"] is None
+    assert kwargs["step_noises"] is None
     plan, static = profiles[0]
     assert plan.target["language_model_tokens"] == 16
     assert static == {"chains": 1}
+
+    fallback_init = object()
+    fallback_steps = object()
+    tape_calls = []
+
+    def fake_tapes(**kwargs):
+        tape_calls.append(kwargs)
+        return fallback_init, fallback_steps
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.cli.predict._prefix_rng_is_supported",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "foldjax.models.protenix.cli.predict._padded_noise_tapes", fake_tapes
+    )
+    captured.clear()
+    predict_main(argv, on_padding_plan=collect_profile)
+
+    fallback_kwargs = captured["kwargs"]
+    assert fallback_kwargs["preserve_prefix_rng"] is False
+    assert fallback_kwargs["init_noise"] is fallback_init
+    assert fallback_kwargs["step_noises"] is fallback_steps
+    assert tape_calls[0]["actual_atom"] == 6
+    assert tape_calls[0]["target_atom"] == 8
 
 
 def test_static_esm_features_bypass_language_model_checkpoint(

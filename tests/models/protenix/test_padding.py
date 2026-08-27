@@ -14,6 +14,10 @@ from foldjax.models.protenix.data.padding import (
     pad_protenix_features,
 )
 from foldjax.models.protenix.models import model as model_impl
+from foldjax.models.protenix.models.diffusion.diffusion import (
+    _prefix_atom_normal,
+    sample_diffusion,
+)
 from foldjax.models.protenix.models.heads.confidence import (
     confidence_scores_from_logits,
 )
@@ -407,6 +411,194 @@ def test_padded_noise_keeps_every_sample_real_prefix(chunk_size) -> None:
     np.testing.assert_array_equal(np.asarray(padded_steps[..., :3, :]), expected_steps)
     np.testing.assert_array_equal(np.asarray(padded_init[:, 3:]), 0)
     np.testing.assert_array_equal(np.asarray(padded_steps[..., 3:, :]), 0)
+
+
+@pytest.mark.parametrize("chunk_size", [None, 1, 2, 4])
+def test_masked_atom_draws_match_the_materialized_noise_tape(chunk_size) -> None:
+    n_sample, n_step, actual_atom, target_atom = 5, 7, 11, 19
+    seed = 23
+    expected_init, expected_steps = _padded_noise_tapes(
+        seed=seed,
+        n_sample=n_sample,
+        n_step=n_step,
+        actual_atom=actual_atom,
+        target_atom=target_atom,
+        diffusion_chunk_size=chunk_size,
+    )
+    root_key = jax.random.PRNGKey(seed)
+    chunk_sizes = (
+        (n_sample,)
+        if chunk_size is None
+        else tuple(
+            min(chunk_size, n_sample - start)
+            for start in range(0, n_sample, chunk_size)
+        )
+    )
+    chunk_keys = (
+        (root_key,)
+        if chunk_size is None
+        else tuple(jax.random.split(root_key, len(chunk_sizes)))
+    )
+    atom_mask = jnp.arange(target_atom) < actual_atom
+    actual_init_chunks = []
+    actual_step_chunks = [[] for _ in range(n_step)]
+    for current_size, chunk_key in zip(chunk_sizes, chunk_keys, strict=True):
+        chunk_key, init_key = jax.random.split(chunk_key)
+        actual_init_chunks.append(
+            _prefix_atom_normal(
+                init_key,
+                atom_mask,
+                n_sample=current_size,
+                dtype=jnp.float32,
+            )
+        )
+        for step_index, step_key in enumerate(jax.random.split(chunk_key, n_step)):
+            actual_step_chunks[step_index].append(
+                _prefix_atom_normal(
+                    step_key,
+                    atom_mask,
+                    n_sample=current_size,
+                    dtype=jnp.float32,
+                )
+            )
+    actual_init = jnp.concatenate(actual_init_chunks, axis=0)
+    actual_steps = jnp.stack(
+        tuple(jnp.concatenate(chunks, axis=0) for chunks in actual_step_chunks),
+        axis=0,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(actual_init).reshape(-1).view(np.uint8),
+        np.asarray(expected_init).reshape(-1).view(np.uint8),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(actual_steps).reshape(-1).view(np.uint8),
+        np.asarray(expected_steps).reshape(-1).view(np.uint8),
+    )
+
+
+@pytest.mark.parametrize("chunk_size", [None, 1, 2, 4])
+@pytest.mark.parametrize("use_scan", [False, True])
+def test_masked_padding_noise_matches_the_materialized_tape_bitwise(
+    chunk_size, use_scan
+) -> None:
+    n_sample, n_step, actual_atom, target_atom = 5, 3, 5, 8
+    seed = 19
+    init_noise, step_noises = _padded_noise_tapes(
+        seed=seed,
+        n_sample=n_sample,
+        n_step=n_step,
+        actual_atom=actual_atom,
+        target_atom=target_atom,
+        diffusion_chunk_size=chunk_size,
+    )
+    schedule = jnp.asarray([2.0, 1.0, 0.4, 0.0], dtype=jnp.float32)
+    atom_mask = jnp.arange(target_atom) < actual_atom
+
+    def denoise(x, t):
+        return x * jnp.asarray(0.83, x.dtype) + t[..., None, None] * 0.01
+
+    common = {
+        "denoise_fn": denoise,
+        "noise_schedule": schedule,
+        "n_sample": n_sample,
+        "n_atom": target_atom,
+        "key": jax.random.PRNGKey(seed),
+        "diffusion_chunk_size": chunk_size,
+        "use_scan": use_scan,
+        "atom_mask": atom_mask,
+    }
+    expected = sample_diffusion(
+        init_noise=init_noise,
+        step_noises=step_noises,
+        **common,
+    )
+    actual = sample_diffusion(preserve_prefix_rng=True, **common)
+
+    np.testing.assert_array_equal(
+        np.asarray(actual).reshape(-1).view(np.uint8),
+        np.asarray(expected).reshape(-1).view(np.uint8),
+    )
+
+
+def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> None:
+    n_sample, n_step, actual_atom, target_atom = 2, 8, 7, 32
+    schedule = jnp.linspace(2.0, 0.0, n_step + 1, dtype=jnp.float32)
+    atom_mask = jnp.arange(target_atom) < actual_atom
+    key = jax.random.PRNGKey(11)
+    init_noise, step_noises = _padded_noise_tapes(
+        seed=11,
+        n_sample=n_sample,
+        n_step=n_step,
+        actual_atom=actual_atom,
+        target_atom=target_atom,
+        diffusion_chunk_size=None,
+    )
+
+    def denoise(x, _t):
+        return x * jnp.asarray(0.9, x.dtype)
+
+    old = jax.jit(
+        lambda init, steps, mask: sample_diffusion(
+            denoise,
+            schedule,
+            n_sample=n_sample,
+            n_atom=target_atom,
+            key=key,
+            init_noise=init,
+            step_noises=steps,
+            atom_mask=mask,
+            use_scan=True,
+        )
+    )
+    compact = jax.jit(
+        lambda random_key, mask: sample_diffusion(
+            denoise,
+            schedule,
+            n_sample=n_sample,
+            n_atom=target_atom,
+            key=random_key,
+            atom_mask=mask,
+            use_scan=True,
+            preserve_prefix_rng=True,
+        )
+    )
+    old_executable = old.lower(init_noise, step_noises, atom_mask).compile()
+    compact_executable = compact.lower(key, atom_mask).compile()
+    old_memory = old_executable.memory_analysis()
+    compact_memory = compact_executable.memory_analysis()
+
+    assert (
+        old_memory.argument_size_in_bytes
+        > 25 * compact_memory.argument_size_in_bytes
+    )
+    compact_hlo = compact.lower(key, atom_mask).compiler_ir(dialect="stablehlo")
+    assert "stablehlo.while" in str(compact_hlo)
+
+    with jax.threefry_partitionable(False):
+        with pytest.raises(ValueError, match="jax_threefry_partitionable"):
+            sample_diffusion(
+                denoise,
+                schedule,
+                n_sample=n_sample,
+                n_atom=target_atom,
+                key=key,
+                atom_mask=atom_mask,
+                use_scan=True,
+                preserve_prefix_rng=True,
+            )
+    with jax.default_prng_impl("rbg"):
+        with pytest.raises(ValueError, match="jax_default_prng_impl"):
+            sample_diffusion(
+                denoise,
+                schedule,
+                n_sample=n_sample,
+                n_atom=target_atom,
+                key=key,
+                atom_mask=atom_mask,
+                use_scan=True,
+                preserve_prefix_rng=True,
+            )
 
 
 def _features() -> dict[str, np.ndarray]:

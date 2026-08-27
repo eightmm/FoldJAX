@@ -9,6 +9,14 @@ import jax
 import jax.numpy as jnp
 
 
+def supports_masked_prefix_draw() -> bool:
+    """Whether the active JAX PRNG has shape-stable Threefry prefixes."""
+
+    return bool(jax.config.jax_threefry_partitionable) and (
+        str(jax.config.jax_default_prng_impl) == "threefry2x32"
+    )
+
+
 def masked_prefix_draw(
     draw: Callable[[jax.Array, tuple[int, ...]], jnp.ndarray],
     key: jax.Array,
@@ -44,4 +52,4 @@ def masked_prefix_draw(
     return output.reshape((*mask.shape, *trailing))
 
 
-__all__ = ["masked_prefix_draw"]
+__all__ = ["masked_prefix_draw", "supports_masked_prefix_draw"]

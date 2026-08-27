@@ -151,6 +151,18 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Padded Protenix inference no longer retains a 200-step coordinate-noise
+  tape as a compiled-graph input.** With JAX's default partitionable Threefry
+  stream, the graph now receives the existing atom mask and PRNG key, draws one
+  step at a time inside the sampler scan, and scatters the compact stream prefix
+  into the padded atom bucket. Chunked and unchunked sampling, with and without the
+  sampler scan, are raw-byte identical to the former materialized tape. Custom
+  PRNG modes or `jax_threefry_partitionable=False` conservatively keep that
+  tape fallback, and direct library calls retain their historical default. In
+  an isolated CPU compile at 5 samples, 8,192 padded atoms and 200 steps, entry
+  arguments fall from 98,828,288 to 32,776 bytes; sampler temp rises from 196
+  to 3,197,776 bytes while output stays 491,520 bytes. These are synthetic
+  sampler-only CPU numbers; released GPU peak and latency remain unmeasured.
 
 - **Why the ESMFold2 encoder parity test does not run is now a measurement
   rather than a guess.** `transformers` and the published checkpoint have

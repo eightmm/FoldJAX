@@ -8,6 +8,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._random import masked_prefix_draw, supports_masked_prefix_draw
 from foldjax.models.protenix.models.diffusion.atom import (
     AtomAttentionDecoderParams,
     AtomAttentionEncoderParams,
@@ -102,6 +103,28 @@ def centre_random_augmentation(
     return (x - numerator / denominator) * mask[..., None]
 
 
+def _prefix_atom_normal(
+    key: jax.Array,
+    atom_mask: jnp.ndarray,
+    *,
+    n_sample: int,
+    dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """Draw one padded coordinate field from the compact sample/atom prefix."""
+
+    prefix_mask = jnp.broadcast_to(
+        jnp.asarray(atom_mask, dtype=bool), (n_sample, atom_mask.shape[0])
+    )
+    return masked_prefix_draw(
+        lambda normal_key, shape: jax.random.normal(
+            normal_key, shape, dtype=dtype
+        ),
+        key,
+        prefix_mask,
+        trailing_shape=(3,),
+    )
+
+
 def sample_diffusion(
     denoise_fn,
     noise_schedule: jnp.ndarray,
@@ -122,6 +145,7 @@ def sample_diffusion(
     guidance_config=None,
     guidance_features=None,
     atom_mask: jnp.ndarray | None = None,
+    preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
     """Run Protenix Algorithm 18 diffusion sampling with a JAX denoiser."""
 
@@ -144,6 +168,7 @@ def sample_diffusion(
             guidance_config=guidance_config,
             guidance_features=guidance_features,
             atom_mask=atom_mask,
+            preserve_prefix_rng=preserve_prefix_rng,
         )
 
     outputs = []
@@ -184,6 +209,7 @@ def sample_diffusion(
                 guidance_config=guidance_config,
                 guidance_features=guidance_features,
                 atom_mask=atom_mask,
+                preserve_prefix_rng=preserve_prefix_rng,
             )
         )
     return jnp.concatenate(outputs, axis=-3)
@@ -227,6 +253,7 @@ def sample_diffusion_with_module(
     centre_each_step: bool = True,
     guidance_config=None,
     guidance_features=None,
+    preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
     """Sample coordinates using ``DiffusionModuleParams`` and static features."""
 
@@ -301,6 +328,7 @@ def sample_diffusion_with_module(
         guidance_config=guidance_config,
         guidance_features=guidance_features,
         atom_mask=atom_padding_mask,
+        preserve_prefix_rng=preserve_prefix_rng,
     )
 
 
@@ -597,6 +625,7 @@ def _sample_diffusion_chunk(
     guidance_config,
     guidance_features,
     atom_mask: jnp.ndarray | None = None,
+    preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
     guidance_engine = None
     if guidance_config is not None:
@@ -614,26 +643,62 @@ def _sample_diffusion_chunk(
                 raise ValueError("TFG guidance currently requires use_scan=False")
             guidance_engine = TFGEngine(config)
     n_steps = int(noise_schedule.shape[0]) - 1
-    if init_noise is None:
-        if key is None:
-            raise ValueError("key is required when init_noise is not provided")
-        key, init_key = jax.random.split(key)
-        init_noise = jax.random.normal(init_key, (num_samples, n_atom, 3), dtype=dtype)
     if atom_mask is not None:
         atom_mask = jnp.asarray(atom_mask, dtype=dtype)
         if atom_mask.shape != (n_atom,):
             raise ValueError("atom_mask must have shape [N_atom]")
+    if preserve_prefix_rng:
+        if not supports_masked_prefix_draw():
+            raise ValueError(
+                "prefix-preserving padding noise requires "
+                "jax_default_prng_impl='threefry2x32' and "
+                "jax_threefry_partitionable=True"
+            )
+        if atom_mask is None:
+            raise ValueError("prefix-preserving padding noise requires atom_mask")
+        if init_noise is not None or step_noises is not None:
+            raise ValueError(
+                "prefix-preserving padding noise and explicit noise tapes are "
+                "mutually exclusive"
+            )
+
+        def draw_normal(draw_key):
+            return _prefix_atom_normal(
+                draw_key,
+                atom_mask,
+                n_sample=num_samples,
+                dtype=dtype,
+            )
+
+    else:
+
+        def draw_normal(draw_key):
+            return jax.random.normal(
+                draw_key, (num_samples, n_atom, 3), dtype=dtype
+            )
+
+    if init_noise is None:
+        if key is None:
+            raise ValueError("key is required when init_noise is not provided")
+        key, init_key = jax.random.split(key)
+        init_noise = draw_normal(init_key)
+    if atom_mask is not None:
         init_noise = init_noise * atom_mask[None, :, None]
     x_l = noise_schedule[0].astype(dtype) * init_noise.astype(dtype)
 
+    step_noise_keys = preserve_prefix_rng and step_noises is None
     packed_step_noises = step_noises is not None and hasattr(step_noises, "shape")
     if step_noises is None:
         if key is None:
             raise ValueError("key is required when step_noises is not provided")
         step_keys = jax.random.split(key, n_steps)
-        step_noises = tuple(
-            jax.random.normal(step_key, x_l.shape, dtype=dtype)
-            for step_key in step_keys
+        step_noises = (
+            step_keys
+            if step_noise_keys
+            else tuple(
+                jax.random.normal(step_key, x_l.shape, dtype=dtype)
+                for step_key in step_keys
+            )
         )
     if packed_step_noises:
         expected_step_shape = (n_steps, *x_l.shape)
@@ -653,11 +718,15 @@ def _sample_diffusion_chunk(
 
     if use_scan:
         stacked_noises = (
-            step_noises if packed_step_noises else jnp.stack(step_noises, axis=0)
+            step_noises
+            if packed_step_noises or step_noise_keys
+            else jnp.stack(step_noises, axis=0)
         )
 
         def body(x_carry, xs):
             c_tau_last, c_tau, step_noise = xs
+            if step_noise_keys:
+                step_noise = draw_normal(step_noise)
             if centre_each_step:
                 x_carry = centre_random_augmentation(x_carry, atom_mask)
             gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
@@ -687,7 +756,10 @@ def _sample_diffusion_chunk(
         gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
         t_hat_scalar = c_tau_last * (gamma + 1.0)
         delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
-        x_noisy = x_l + noise_scale_lambda * delta_noise_level * step_noises[step_i]
+        step_noise = step_noises[step_i]
+        if step_noise_keys:
+            step_noise = draw_normal(step_noise)
+        x_noisy = x_l + noise_scale_lambda * delta_noise_level * step_noise
         if atom_mask is not None:
             x_noisy = x_noisy * atom_mask[None, :, None]
         t_hat = jnp.full(x_noisy.shape[:-2], t_hat_scalar, dtype=dtype)

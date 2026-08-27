@@ -833,7 +833,10 @@ def main(
         for seed in seeds:
             init_noise = None
             step_noises = None
-            if padding_plan is not None:
+            preserve_prefix_rng = (
+                padding_plan is not None and _prefix_rng_is_supported()
+            )
+            if padding_plan is not None and not preserve_prefix_rng:
                 init_noise, step_noises = _padded_noise_tapes(
                     seed=seed,
                     num_samples=args.num_samples,
@@ -897,6 +900,7 @@ def main(
                 cycle_msa_features=cycle_msa_features,
                 gamma0=gamma0,
                 step_scale_eta=eta,
+                preserve_prefix_rng=preserve_prefix_rng,
                 guidance_config=guidance_config,
                 guidance_features=guidance_features,
                 graph_jit=not args.no_graph_jit,
@@ -997,6 +1001,14 @@ def main(
                 written.append(output_path)
                 print(f"wrote: {output_path}")
     return written
+
+
+def _prefix_rng_is_supported() -> bool:
+    """Whether masked padding draws preserve JAX's compact random prefix."""
+
+    from foldjax.models._random import supports_masked_prefix_draw
+
+    return supports_masked_prefix_draw()
 
 
 def _padded_noise_tapes(

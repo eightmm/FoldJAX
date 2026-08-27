@@ -70,6 +70,7 @@ def protenix_predict_static(
     noise_scale_lambda: float = 1.003,
     step_scale_eta: float = 1.5,
     centre_each_step: bool = True,
+    preserve_prefix_rng: bool = False,
     # TF32, which is what upstream's released inference config turns on:
     # `configs_inference.py:32` sets `enable_tf32: True`, and
     # `protenix/model/protenix.py:99` applies it as
@@ -192,6 +193,7 @@ def protenix_predict_static(
             noise_scale_lambda=noise_scale_lambda,
             step_scale_eta=step_scale_eta,
             centre_each_step=centre_each_step,
+            preserve_prefix_rng=preserve_prefix_rng,
             trunk_dtype=trunk_dtype,
             cycle_msa_features=cycle_msa_features,
             guidance_config=guidance_config,

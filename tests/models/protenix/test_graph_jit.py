@@ -109,6 +109,7 @@ def test_the_static_argnames_are_real_parameters():
 
 def test_the_chain_count_is_static():
     assert "n_chain" in GRAPH_STATIC_ARGNAMES
+    assert "preserve_prefix_rng" in GRAPH_STATIC_ARGNAMES
 
 
 class _ConfidenceOnly(NamedTuple):
