@@ -7,10 +7,30 @@ import json
 import os
 import shlex
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from foldjax.models import _representations
+
+# Private backend capability: defer request-scoped reuse until after this CLI
+# has parsed argv, selected its platform and materialised ESM conditioning.
+PREPARED_PARAMS_LOADER_API = True
+
+
+def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
+    """Load and apply the same trunk cast as the native CLI."""
+
+    from foldjax.models.protenix.bridge.weights_io import load_native_weights
+
+    params = load_native_weights(path)
+    if trunk_dtype == "bf16":
+        import jax.numpy as jnp
+
+        from foldjax.models.protenix.models.model import cast_trunk_params
+
+        params = cast_trunk_params(params, jnp.bfloat16)
+    return params
 
 
 def _collect_representations(output, wanted):
@@ -26,6 +46,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     on_padding_plan: Callable[..., None] | None = None,
+    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
 ) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     feature_group = parser.add_mutually_exclusive_group(required=True)
@@ -398,7 +419,6 @@ def main(
         jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
         print(f"compile cache: {cache}")
 
-    from foldjax.models.protenix.bridge.weights_io import load_native_weights
     from foldjax.models.protenix.chunking import resolve_chunk_config
     from foldjax.models.protenix.data.featurize_json import featurize_protein_json
     from foldjax.models.protenix.data.output import (
@@ -412,7 +432,6 @@ def main(
     from foldjax.models.protenix.data.template_features import (
         dedup_templates,
     )
-    from foldjax.models.protenix.models.model import cast_trunk_params
     from foldjax.models.protenix.models.predict import protenix_predict_static
     from foldjax.models.protenix.models.trunk_blocks.msa import (
         pad_msa_features_to_bucket,
@@ -569,6 +588,7 @@ def main(
 
     esm_name = None
     esm_provider = None
+    provider = None
     if model_name is not None and ("_esm_" in model_name or "_ism_" in model_name):
         esm_name = "esm2-3b-ism" if "_ism_" in model_name else "esm2-3b"
         # A static feature NPZ may already carry the publisher-derived
@@ -672,11 +692,10 @@ def main(
                     provider = esm_provider
                     if language_model_profile is not None:
                         _, language_model_target = language_model_profile
-
-                        def provider(sequence: str) -> Any:
-                            return esm_provider.embed(
-                                sequence, target_length=language_model_target
-                            )
+                        provider = partial(
+                            esm_provider.embed,
+                            target_length=language_model_target,
+                        )
 
                     features = add_esm_embeddings(
                         esm_features, job, provider=provider
@@ -783,11 +802,31 @@ def main(
     ):
         raise SystemExit("protenix output format requires confidence scores")
 
-    params = load_native_weights(args.weights)
+    # ESM/ISM conditioning is fully materialised in each job's compact
+    # ``esm_token_embedding`` by this point.  Drop both the direct provider and
+    # a possible ``partial`` that closes over it before the structure checkpoint
+    # is loaded, otherwise the 3B encoder remains live beside the structure
+    # parameters for the entire prediction.
+    used_esm_provider = esm_provider is not None
+    provider = None
+    esm_provider = None
+
     trunk_dtype = None
     if args.trunk_dtype == "bf16":
         trunk_dtype = jnp.bfloat16
-        params = cast_trunk_params(params, trunk_dtype)
+    # The callback is backend-internal. It receives the parser-validated weight
+    # path and compute dtype, plus whether retaining the result is safe across
+    # calls. A mini ESM/ISM provider is reconstructed per native invocation;
+    # keeping the structure tree would overlap it on the next seed.
+    params_loader = _prepared_params_loader or _load_prepared_params
+    if _prepared_params_loader is None:
+        params = params_loader(args.weights, args.trunk_dtype)
+    else:
+        params = params_loader(
+            args.weights,
+            args.trunk_dtype,
+            not used_esm_provider,
+        )
     job_seeds = [_resolve_seeds(args, job.get("modelSeeds")) for job in jobs]
     legacy_npz = (
         args.output_format == "npz" and len(jobs) == 1 and len(job_seeds[0]) == 1

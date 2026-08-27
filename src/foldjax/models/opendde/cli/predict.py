@@ -5,14 +5,18 @@ from __future__ import annotations
 import argparse
 import os
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from foldjax.models import _representations
 from foldjax.models.protenix.chunking import ChunkPolicyName
 from foldjax.models.protenix.data.template_features import dedup_templates
-from foldjax.schema import PaddingConfig
+from foldjax.schema import PaddingConfig, PredictionError
+
+# Private backend capability: defer request-scoped reuse until after this CLI
+# has parsed argv and established the native runtime environment.
+PREPARED_PARAMS_LOADER_API = True
 
 
 def _load_jobs(path: Path) -> list[dict[str, Any]]:
@@ -39,6 +43,19 @@ def _prefix_rng_is_supported() -> bool:
     from foldjax.models._random import supports_masked_prefix_draw
 
     return supports_masked_prefix_draw()
+
+
+def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
+    """Load and apply the same optional trunk cast as the native CLI."""
+
+    params = _load_weights(path)
+    if trunk_dtype == "bf16":
+        import jax.numpy as jnp
+
+        from foldjax.models.opendde.models.model import cast_trunk_params
+
+        params = cast_trunk_params(params, jnp.bfloat16)
+    return params
 
 
 #: Arena size per structural-token pair, in MiB, measured 2026-08-23 on a
@@ -348,6 +365,7 @@ def main(
     *,
     padding: PaddingConfig | None = None,
     padding_profiles: list[dict[str, Any]] | None = None,
+    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
 ) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-json", type=Path, required=True)
@@ -596,15 +614,18 @@ def main(
         jobs = _load_jobs(args.input_json)
         if not jobs:
             raise ValueError("input JSON must contain at least one job")
-        params = _load_weights(args.weights)
         trunk_dtype = None
         if args.trunk_dtype == "bf16":
             import jax.numpy as jnp
 
-            from foldjax.models.opendde.models.model import cast_trunk_params
-
             trunk_dtype = jnp.bfloat16
-            params = cast_trunk_params(params, trunk_dtype)
+        # The callback is backend-internal. It receives the parser-validated
+        # weight path and compute dtype; direct callers keep the native loader.
+        params_loader = _prepared_params_loader or _load_prepared_params
+        if _prepared_params_loader is None:
+            params = params_loader(args.weights, args.trunk_dtype)
+        else:
+            params = params_loader(args.weights, args.trunk_dtype, True)
         for job in jobs:
             job_name = str(job.get("name") or args.input_json.stem)
             for seed in _job_seeds(job, args.seed):
@@ -778,6 +799,8 @@ def main(
                         written.append(archive)
                 written.extend(paths)
                 print(f"wrote: {paths[0].parent}")
+    except PredictionError:
+        raise
     except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     return written

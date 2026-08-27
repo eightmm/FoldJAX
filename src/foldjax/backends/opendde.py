@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 
 from foldjax.backends._representations import _representations_result
+from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.schema import (
@@ -62,6 +63,7 @@ _CONFIDENCE_INFIX = "_summary_confidence_sample_"
 
 class OpenDDEBackend(Backend):
     name = "opendde"
+    session_reuse = True
     # OpenDDE has two token spaces: the residue trunk and the expanded
     # structural diffusion branch.  Both, the atom axis, and sampled MSA rows
     # have end-to-end masks and are cropped before public output.
@@ -85,6 +87,25 @@ class OpenDDEBackend(Backend):
         ),
     }
     compile_options = tuple(sorted(_CLI_OPTIONS))
+
+    def __init__(self) -> None:
+        self._weights = PreparedWeightSession(self.name)
+
+    @contextmanager
+    def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
+        with self._weights.session(requests):
+            yield self
+
+    def invalidate_session(self) -> None:
+        self._weights.invalidate()
+
+    def validate_session(self, request: PredictionRequest) -> None:
+        if self._weights.active and request.weights is not None:
+            self._weights.validate(Path(request.weights))
+
+    def observe_resumed(self, request: PredictionRequest) -> None:
+        if self._weights.active and request.weights is not None:
+            self._weights.validate(Path(request.weights), resumed=True)
 
     def validate_native_options(self, options: dict[str, object]) -> None:
         _strict_boolean(options.get("include_raw", False), name="include_raw")
@@ -176,11 +197,36 @@ class OpenDDEBackend(Backend):
 
         padding_profiles: list[dict[str, object]] = []
         native = import_module("foldjax.models.opendde.cli.predict")
+        use_session_loader = self._weights.active and bool(
+            getattr(native, "PREPARED_PARAMS_LOADER_API", False)
+        )
+
+        def session_params_loader(
+            path: Path,
+            trunk_dtype: str,
+            cacheable: bool,
+        ) -> object:
+            if not cacheable:  # pragma: no cover - OpenDDE always passes True
+                self._weights.invalidate()
+                return native._load_prepared_params(Path(path), trunk_dtype)
+            return self._weights.load(
+                Path(path),
+                lambda source: native._load_prepared_params(source, trunk_dtype),
+                prepare_key=("trunk_dtype", trunk_dtype),
+            )
+
         with matmul_precision(), _restored_environment():
             if request.padding is None:
                 # Keep the historical one-argument native entry point exact for
                 # embedding applications and default-off predictions.
-                written = native.main(argv)
+                written = (
+                    native.main(
+                        argv,
+                        _prepared_params_loader=session_params_loader,
+                    )
+                    if use_session_loader
+                    else native.main(argv)
+                )
             else:
                 unsupported = sorted(
                     set(request.padding.explicit_axes) - set(self.padding_axes)
@@ -190,10 +236,19 @@ class OpenDDEBackend(Backend):
                         "opendde does not support explicit padding axes: "
                         + ", ".join(unsupported)
                     )
-                written = native.main(
-                    argv,
-                    padding=request.padding,
-                    padding_profiles=padding_profiles,
+                written = (
+                    native.main(
+                        argv,
+                        padding=request.padding,
+                        padding_profiles=padding_profiles,
+                        _prepared_params_loader=session_params_loader,
+                    )
+                    if use_session_loader
+                    else native.main(
+                        argv,
+                        padding=request.padding,
+                        padding_profiles=padding_profiles,
+                    )
                 )
         samples = tuple(
             PredictionSample(

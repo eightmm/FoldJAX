@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from foldjax.backends._representations import _representations_result
+from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.schema import (
@@ -189,6 +191,7 @@ def _extra_cli_args(value: Any) -> tuple[str, ...]:
 
 class ProtenixBackend(Backend):
     name = "protenix"
+    session_reuse = True
     padding_axes = (
         "tokens",
         "atoms",
@@ -237,6 +240,25 @@ class ProtenixBackend(Backend):
         "diffusion_chunk_size",
         "cli_args",
     )
+
+    def __init__(self) -> None:
+        self._weights = PreparedWeightSession(self.name)
+
+    @contextmanager
+    def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
+        with self._weights.session(requests):
+            yield self
+
+    def invalidate_session(self) -> None:
+        self._weights.invalidate()
+
+    def validate_session(self, request: PredictionRequest) -> None:
+        if self._weights.active and request.weights is not None:
+            self._weights.validate(Path(request.weights))
+
+    def observe_resumed(self, request: PredictionRequest) -> None:
+        if self._weights.active and request.weights is not None:
+            self._weights.validate(Path(request.weights), resumed=True)
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _extra_cli_args(options.get("cli_args", ()))
@@ -328,26 +350,53 @@ class ProtenixBackend(Backend):
             argv.extend(("--stop-after", "trunk"))
         padding_plans: list[dict[str, Any]] = []
         module = import_module("foldjax.models.protenix.cli.predict")
+        use_session_loader = self._weights.active and bool(
+            getattr(module, "PREPARED_PARAMS_LOADER_API", False)
+        )
+
+        def session_params_loader(
+            path: Path,
+            trunk_dtype: str,
+            cacheable: bool,
+        ) -> Any:
+            if not cacheable:
+                # The native runner just released a per-call mini ESM/ISM
+                # provider. Do not retain structure params into the next call,
+                # where the provider would be reconstructed beside them.
+                self._weights.invalidate()
+                return module._load_prepared_params(Path(path), trunk_dtype)
+            return self._weights.load(
+                Path(path),
+                lambda source: module._load_prepared_params(source, trunk_dtype),
+                prepare_key=("trunk_dtype", trunk_dtype),
+            )
+
         with matmul_precision():
             if request.padding is None:
-                # Keep the default adapter/native callable contract
-                # byte-for-byte: third-party wrappers and older test doubles
-                # commonly accept only ``argv``. The callback exists solely for
-                # the opt-in padding path.
-                written = module.main(argv)
+                # Keep the default adapter/native callable contract byte-for-byte:
+                # third-party wrappers and older test doubles commonly accept only
+                # ``argv``. The private callback is supplied only while an active
+                # FoldJAX session has explicitly negotiated that capability.
+                written = (
+                    module.main(argv, _prepared_params_loader=session_params_loader)
+                    if use_session_loader
+                    else module.main(argv)
+                )
             else:
-                written = module.main(
-                    argv,
-                    on_padding_plan=lambda plan, static=None: padding_plans.append(
-                        {
-                            **plan.summary(),
-                            **(
-                                {"static": dict(static)}
-                                if static is not None
-                                else {}
-                            ),
-                        }
-                    ),
+                callback = lambda plan, static=None: padding_plans.append(  # noqa: E731
+                    {
+                        **plan.summary(),
+                        **({"static": dict(static)} if static is not None else {}),
+                    }
+                )
+                written = (
+                    module.main(
+                        argv,
+                        on_padding_plan=callback,
+                        _prepared_params_loader=session_params_loader,
+                    )
+                    if use_session_loader
+                    else module.main(argv, on_padding_plan=callback)
                 )
         samples = tuple(
             PredictionSample(

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.opendde.cli import predict as predict_impl
+from foldjax.schema import PredictionError
 
 
 def _predict_kwargs() -> dict[str, object]:
@@ -189,34 +190,33 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         lambda root, **kwargs: [expected_path],
     )
 
-    predict_impl.main(
-        [
-            "--input-json",
-            str(input_path),
-            "--weights",
-            str(weights_path),
-            "--out",
-            str(output_dir),
-            "--n-sample",
-            "1",
-            "--n-step",
-            "2",
-            "--n-cycle",
-            "3",
-            "--components-cif",
-            str(components_path),
-            "--ccd-rdkit-cache",
-            str(rdkit_cache_path),
-            "--template-mmcif-dir",
-            str(template_mmcif_dir),
-            "--template-release-dates",
-            str(template_release_dates),
-            "--template-obsolete-map",
-            str(template_obsolete_map),
-            "--kalign-binary",
-            str(kalign_binary),
-        ]
-    )
+    argv = [
+        "--input-json",
+        str(input_path),
+        "--weights",
+        str(weights_path),
+        "--out",
+        str(output_dir),
+        "--n-sample",
+        "1",
+        "--n-step",
+        "2",
+        "--n-cycle",
+        "3",
+        "--components-cif",
+        str(components_path),
+        "--ccd-rdkit-cache",
+        str(rdkit_cache_path),
+        "--template-mmcif-dir",
+        str(template_mmcif_dir),
+        "--template-release-dates",
+        str(template_release_dates),
+        "--template-obsolete-map",
+        str(template_obsolete_map),
+        "--kalign-binary",
+        str(kalign_binary),
+    ]
+    predict_impl.main(argv)
 
     assert calls[0][0] is features
     assert calls[0][1] is params
@@ -239,6 +239,25 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     )
     assert os.environ["PROTENIX_KALIGN_BINARY"] == str(kalign_binary.resolve())
     assert f"wrote: {expected_path.parent}" in capsys.readouterr().out
+
+    calls.clear()
+    monkeypatch.setattr(
+        predict_impl,
+        "_load_weights",
+        lambda _path: pytest.fail("injected params must bypass checkpoint loading"),
+    )
+    predict_impl.main(
+        argv,
+        _prepared_params_loader=lambda _path, _dtype, _cacheable: params,
+    )
+    assert len(calls) == 1
+    assert calls[0][1] is params
+
+    def poisoned_loader(_path, _dtype, _cacheable):
+        raise PredictionError("prepared weight session is poisoned")
+
+    with pytest.raises(PredictionError, match="session is poisoned"):
+        predict_impl.main(argv, _prepared_params_loader=poisoned_loader)
 
 
 def test_predict_cli_rejects_pt_weight_at_runtime(tmp_path) -> None:

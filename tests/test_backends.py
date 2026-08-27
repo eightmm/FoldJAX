@@ -594,6 +594,159 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
 
 
 @pytest.mark.parametrize(
+    ("model", "backend_type", "backend_module", "default_dtype"),
+    [
+        ("protenix", ProtenixBackend, "foldjax.backends.protenix", "bf16"),
+        ("opendde", OpenDDEBackend, "foldjax.backends.opendde", "fp32"),
+    ],
+)
+@pytest.mark.parametrize("invalidate_between", [False, True])
+def test_native_cli_backends_reuse_prepared_params_within_a_session(
+    tmp_path,
+    monkeypatch,
+    model,
+    backend_type,
+    backend_module,
+    default_dtype,
+    invalidate_between,
+) -> None:
+    first = _request(tmp_path, model)
+    second = dataclasses.replace(
+        first,
+        seed=6,
+        output_dir=tmp_path / "out-second",
+    )
+    loads = []
+    seen_params = []
+
+    def load_prepared(path, dtype):
+        value = object()
+        loads.append((path, dtype, value))
+        return value
+
+    def native_main(argv, **kwargs):
+        loader = kwargs.pop("_prepared_params_loader")
+        seen_params.append(
+            loader(Path(argv[argv.index("--weights") + 1]), default_dtype, True)
+        )
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+
+    native = SimpleNamespace(
+        PREPARED_PARAMS_LOADER_API=True,
+        _load_prepared_params=load_prepared,
+        main=native_main,
+    )
+    monkeypatch.setattr(
+        f"{backend_module}.import_module",
+        lambda _name: native,
+    )
+    backend = backend_type()
+
+    with backend.session((first, second)):
+        backend.predict(first)
+        if invalidate_between:
+            backend.invalidate_session()
+        backend.predict(second)
+
+    assert len(loads) == (2 if invalidate_between else 1)
+    assert loads[0][:2] == (first.weights, default_dtype)
+    if invalidate_between:
+        assert seen_params == [loads[0][2], loads[1][2]]
+    else:
+        assert seen_params == [loads[0][2], loads[0][2]]
+
+
+def test_protenix_session_defers_loading_until_native_platform_setup(
+    tmp_path, monkeypatch
+) -> None:
+    first = _request(tmp_path, "protenix", cli_args=("--cpu-only",))
+    second = dataclasses.replace(
+        first,
+        seed=6,
+        output_dir=tmp_path / "out-second",
+    )
+    events = []
+
+    def load_prepared(path, dtype):
+        events.append(("load", path, dtype, os.environ.get("JAX_PLATFORMS")))
+        return object()
+
+    def native_main(argv, **kwargs):
+        events.append(("main", tuple(argv)))
+        assert "--cpu-only" in argv
+        os.environ.setdefault("JAX_PLATFORMS", "cpu")
+        loader = kwargs.pop("_prepared_params_loader")
+        loader(Path(argv[argv.index("--weights") + 1]), "bf16", True)
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+
+    native = SimpleNamespace(
+        PREPARED_PARAMS_LOADER_API=True,
+        _load_prepared_params=load_prepared,
+        main=native_main,
+    )
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module",
+        lambda _name: native,
+    )
+    backend = ProtenixBackend()
+
+    with backend.session((first, second)):
+        backend.predict(first)
+        backend.predict(second)
+
+    assert [event[0] for event in events] == ["main", "load", "main"]
+    assert events[1][1:] == (first.weights, "bf16", "cpu")
+
+
+def test_protenix_session_does_not_retain_params_across_mini_esm_calls(
+    tmp_path, monkeypatch
+) -> None:
+    first = _request(
+        tmp_path,
+        "protenix",
+        model_name="protenix_mini_esm_v0.5.0",
+    )
+    second = dataclasses.replace(
+        first,
+        seed=6,
+        output_dir=tmp_path / "out-second",
+    )
+    loads = []
+    seen_params = []
+
+    def load_prepared(path, dtype):
+        value = object()
+        loads.append((path, dtype, value))
+        return value
+
+    def native_main(argv, **kwargs):
+        loader = kwargs.pop("_prepared_params_loader")
+        seen_params.append(
+            loader(Path(argv[argv.index("--weights") + 1]), "bf16", False)
+        )
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+
+    native = SimpleNamespace(
+        PREPARED_PARAMS_LOADER_API=True,
+        _load_prepared_params=load_prepared,
+        main=native_main,
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module",
+        lambda _name: native,
+    )
+    backend = ProtenixBackend()
+
+    with backend.session((first, second)):
+        backend.predict(first)
+        backend.predict(second)
+
+    assert len(loads) == 2
+    assert seen_params == [loads[0][2], loads[1][2]]
+
+
+@pytest.mark.parametrize(
     ("model", "backend"),
     [("protenix", ProtenixBackend), ("opendde", OpenDDEBackend)],
 )
@@ -1367,9 +1520,19 @@ def test_openfold3_no_compile_boolean_is_consumed() -> None:
     assert _compile_enabled(compiled) is True and compiled == {}
 
 
+@pytest.mark.parametrize(
+    ("session_runs", "invalidate_between", "expected_loads"),
+    [(1, False, 1), (2, False, 1), (2, True, 2)],
+    ids=["scalar", "session", "invalidated-session"],
+)
 @pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
 def test_openfold3_backend_passes_normalized_static_chain_count(
-    tmp_path: Path, monkeypatch, eager: bool
+    tmp_path: Path,
+    monkeypatch,
+    eager: bool,
+    session_runs: int,
+    invalidate_between: bool,
+    expected_loads: int,
 ) -> None:
     from foldjax.models.openfold3.data import (
         has_atomized_tokens,
@@ -1493,7 +1656,20 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         **({"no_compile": True} if eager else {}),
     )
 
-    OpenFold3Backend().predict(request)
+    backend = OpenFold3Backend()
+    if session_runs == 1:
+        backend.predict(request)
+    else:
+        second = dataclasses.replace(
+            request,
+            seed=6,
+            output_dir=tmp_path / "out-second",
+        )
+        with backend.session((request, second)):
+            backend.predict(request)
+            if invalidate_between:
+                backend.invalidate_session()
+            backend.predict(second)
 
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
@@ -1506,12 +1682,13 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             "cache_scope": str(tmp_path / "cache"),
         }
     assert seen["output_metadata"] is output_metadata
-    assert checkpoint_events == [
+    generation_events = [
         "load",
         ("resolve", checkpoint_state, None),
         ("prune", checkpoint_state, "resolved"),
         ("map", checkpoint_state, "resolved"),
     ]
+    assert checkpoint_events == generation_events * expected_loads
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
 
 

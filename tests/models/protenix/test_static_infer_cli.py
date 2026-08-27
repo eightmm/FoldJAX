@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import weakref
 
 import numpy as np
 import pytest
@@ -146,6 +148,70 @@ def test_static_infer_runs_with_native_weights(tmp_path) -> None:
         assert data["coordinate"].shape == (1, 3, 3)
         assert data["distogram_logits"].shape == (2, 2, 3)
         assert data["summary_plddt"].shape == (1,)
+
+
+def test_prepared_params_keep_native_prediction_bytes_identical(
+    tmp_path, monkeypatch
+) -> None:
+    from foldjax.models.protenix.cli import predict as predict_impl
+
+    weights_path = tmp_path / "toy_weights.pkl"
+    features_path = tmp_path / "toy_features.npz"
+    loaded_path = tmp_path / "loaded.npz"
+    injected_path = tmp_path / "injected.npz"
+    save_native_weights(weights_path, _toy_params(), compress=False)
+    save_static_feature_npz(features_path, _toy_features())
+    common = [
+        "--model-name",
+        "unknown",
+        "--weights",
+        str(weights_path),
+        "--features",
+        str(features_path),
+        "--n-sample",
+        "1",
+        "--n-step",
+        "1",
+        "--n-cycle",
+        "1",
+        "--input-atom-heads",
+        "1",
+        "--atom-encoder-heads",
+        "1",
+        "--token-heads",
+        "1",
+        "--atom-decoder-heads",
+        "1",
+        "--n-queries",
+        "2",
+        "--n-keys",
+        "4",
+        "--sigma-data",
+        "4.0",
+        "--cpu-only",
+        "--no-compile-cache",
+    ]
+
+    prepared = predict_impl._load_prepared_params(weights_path, "bf16")
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+
+    def prepared_loader(_path, _dtype, cacheable):
+        assert os.environ.get("JAX_PLATFORMS") == "cpu"
+        assert cacheable is True
+        return prepared
+
+    predict_impl.main(
+        [*common, "--out", str(injected_path)],
+        _prepared_params_loader=prepared_loader,
+    )
+    predict_impl.main([*common, "--out", str(loaded_path)])
+
+    with np.load(loaded_path) as loaded, np.load(injected_path) as injected:
+        assert loaded.files == injected.files
+        for name in loaded.files:
+            assert loaded[name].dtype == injected[name].dtype
+            assert loaded[name].shape == injected[name].shape
+            assert loaded[name].tobytes() == injected[name].tobytes(), name
 
 
 def test_static_infer_prewarm_populates_graph_without_writing_output(
@@ -608,6 +674,64 @@ def test_static_infer_adds_esm_for_esm_model(
 
     assert providers == [(provider_name, checkpoint_dir)]
     assert captured["esm_token_embedding"].shape == (1, 2560)
+
+
+def test_static_infer_releases_esm_provider_before_structure_weights(
+    tmp_path, monkeypatch
+) -> None:
+    from foldjax.models.protenix.cli.predict import main as predict_main
+
+    input_json = tmp_path / "input.json"
+    input_json.write_text(
+        '[{"sequences": [{"proteinChain": {"sequence": "A", "count": 1}}]}]'
+    )
+    provider_refs: list[weakref.ReferenceType[object]] = []
+
+    class FakeProvider:
+        def __init__(self, _model_name, *, checkpoint_dir):
+            del checkpoint_dir
+            provider_refs.append(weakref.ref(self))
+
+        def __call__(self, sequence):
+            return np.ones((len(sequence), 2560), dtype=np.float32)
+
+    def fake_load_weights(_path, trunk_dtype, cacheable):
+        assert provider_refs and provider_refs[0]() is None
+        assert trunk_dtype == "fp32"
+        assert cacheable is False
+        return _toy_params_with_relp_dim(139)
+
+    def fake_predict(_params, features, **_kwargs):
+        n_atom = len(features["atom_to_token_idx"])
+        return {"coordinate": np.zeros((1, n_atom, 3), dtype=np.float32)}
+
+    monkeypatch.setattr("foldjax.models.protenix.data.esm.JaxEsmProvider", FakeProvider)
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+
+    predict_main(
+        [
+            "--weights",
+            str(tmp_path / "unused-structure-weights.jax"),
+            "--input-json",
+            str(input_json),
+            "--out",
+            str(tmp_path / "out.npz"),
+            "--model-name",
+            "protenix_mini_esm_v0.5.0",
+            "--trunk-dtype",
+            "fp32",
+            "--n-queries",
+            "2",
+            "--n-keys",
+            "4",
+            "--no-compile-cache",
+        ],
+        _prepared_params_loader=fake_load_weights,
+    )
+
+    assert provider_refs[0]() is None
 
 
 def test_static_infer_pads_mini_esm_language_model_and_reports_profile(

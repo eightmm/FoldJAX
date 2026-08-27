@@ -14,6 +14,8 @@ the ``openfold3-preprocess`` extra.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from foldjax._openfold3_compile import (
     triangle_backend as _triangle_backend,
 )
 from foldjax.backends._representations import _representations_result
+from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis
@@ -118,6 +121,7 @@ def _compile_enabled(options: dict[str, Any]) -> bool:
 
 class OpenFold3Backend(Backend):
     name = "openfold3"
+    session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "templates")
     native_options = frozenset(
         {
@@ -159,6 +163,25 @@ class OpenFold3Backend(Backend):
         ),
     }
     compile_options = _COMPILE_OPTIONS
+
+    def __init__(self) -> None:
+        self._weights = PreparedWeightSession(self.name)
+
+    @contextmanager
+    def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
+        with self._weights.session(requests):
+            yield self
+
+    def invalidate_session(self) -> None:
+        self._weights.invalidate()
+
+    def validate_session(self, request: PredictionRequest) -> None:
+        if self._weights.active and request.weights is not None:
+            self._weights.validate(Path(request.weights))
+
+    def observe_resumed(self, request: PredictionRequest) -> None:
+        if self._weights.active and request.weights is not None:
+            self._weights.validate(Path(request.weights), resumed=True)
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Name every static OpenFold3 program choice, including defaults."""
@@ -371,14 +394,24 @@ class OpenFold3Backend(Backend):
         # Only the inference path drops upstream's second registration of the
         # denoiser, after the model root is known and before host prestacking can
         # keep both owning NumPy copies live beside the device parameter tree.
-        checkpoint_state = checkpoint.load_checkpoint(request.weights)
-        model_prefix = mapping.resolve_model_prefix(
-            checkpoint_state, options.pop("prefix", None)
+        requested_prefix = options.pop("prefix", None)
+
+        def load_params(path: Path) -> Any:
+            checkpoint_state = checkpoint.load_checkpoint(path)
+            model_prefix = mapping.resolve_model_prefix(
+                checkpoint_state, requested_prefix
+            )
+            mapping.prune_sample_diffusion_aliases(
+                checkpoint_state, prefix=model_prefix
+            )
+            return mapping.map_inference_params(checkpoint_state, model_prefix)
+
+        assert request.weights is not None
+        params = self._weights.load(
+            Path(request.weights),
+            load_params,
+            prepare_key=("prefix", requested_prefix),
         )
-        mapping.prune_sample_diffusion_aliases(
-            checkpoint_state, prefix=model_prefix
-        )
-        params = mapping.map_inference_params(checkpoint_state, model_prefix)
         kernel = options.pop("triangle_kernel", None)
         compile_it = _compile_enabled(options)
         if getattr(config, "cp_shards", 1) > 1 and not compile_it:
