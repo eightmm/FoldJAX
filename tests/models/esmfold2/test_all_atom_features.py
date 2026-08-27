@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.esmfold2 import inference
-from foldjax.models.esmfold2.data import all_atom, features, pdb
+from foldjax.models.esmfold2.data import all_atom, ccd, features, pdb
 from foldjax.models.esmfold2.data.all_atom_constants import (
     MOL_TYPE_DNA,
     MOL_TYPE_NONPOLYMER,
@@ -283,6 +283,42 @@ def test_ccd_pickle_is_rejected_before_deserialization_when_unverified(
 
     with pytest.raises(ValueError, match="registered Biohub asset.*size"):
         CCDStore(path).atoms("ATP")
+
+
+def test_ccd_derived_component_caches_are_lru_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Atom:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def HasProp(self, key: str) -> bool:  # noqa: N802 - RDKit-compatible fake
+            return key in {"leaving_atom", "name"}
+
+        def GetProp(self, key: str) -> str:  # noqa: N802 - RDKit-compatible fake
+            return "1" if key == "leaving_atom" else self.name
+
+    class _Molecule:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.calls = 0
+
+        def GetAtoms(self) -> list[_Atom]:  # noqa: N802 - RDKit-compatible fake
+            self.calls += 1
+            return [_Atom(self.name)]
+
+    molecules = {name: _Molecule(name) for name in ("AAA", "BBB", "CCC", "DDD")}
+    store = CCDStore(tmp_path / "unused.pkl")
+    store._molecules = molecules  # noqa: SLF001 - focused cache contract
+    monkeypatch.setattr(ccd, "_DERIVED_COMPONENT_CACHE_LIMIT", 3)
+
+    for name in ("AAA", "BBB", "CCC", "AAA", "DDD"):
+        assert store.leaving_atoms(name) == {name}
+
+    assert molecules["AAA"].calls == 1
+    assert list(store._leaving_cache) == ["CCC", "AAA", "DDD"]  # noqa: SLF001
+    assert store.leaving_atoms("BBB") == {"BBB"}
+    assert molecules["BBB"].calls == 2
 
 
 @pytest.mark.slow

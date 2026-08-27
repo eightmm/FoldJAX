@@ -181,6 +181,16 @@ command predicts unless it says so here, in its own paragraph.
   86.5 MiB, while 256 entries are about 0.45 MiB. Eviction changes only whether
   a later job reparses a small text block; the returned metadata is unchanged.
 
+- **ESMFold2 bounds the derived half of its Biohub CCD cache.** The verified
+  417 MiB publisher dictionary remains process-reused, but its hydrogen-stripped
+  molecules, conformers, atom lists, bond lists and leaving-atom sets now each
+  retain only the 256 most recently used components instead of growing toward
+  all 50,256 entries across a long-running mixed-ligand service. Deriving all
+  five values for 1,000 randomly selected registered components retained
+  12,837,403 traced Python bytes; the sampled mean extrapolates to about
+  615 MiB at full coverage versus about 3.1 MiB at the new cap. A cache miss
+  reparses the same publisher object and does not change featurization.
+
 - **Padded Boltz-2 sampling no longer sends its initial and 200-step noise
   tapes through the compiled model.** The high-level prediction path now sends
   one dynamic storage-atom count and reconstructs the same flattened Threefry

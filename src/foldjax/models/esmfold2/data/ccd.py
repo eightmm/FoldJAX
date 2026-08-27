@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import pickle
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ BIOHUB_CCD_SHA256 = (
 )
 BIOHUB_CCD_SIZE = 417_306_584
 _HASH_CHUNK = 1 << 20
+_DERIVED_COMPONENT_CACHE_LIMIT = 256
 
 
 class CCDStore:
@@ -36,11 +38,32 @@ class CCDStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._molecules: dict[str, Any] | None = None
-        self._molecule_cache: dict[str, Any | None] = {}
-        self._conformer_cache: dict[str, dict[str, np.ndarray] | None] = {}
-        self._atom_cache: dict[str, list[tuple[str, str, int]] | None] = {}
-        self._bond_cache: dict[str, list[tuple[str, str]] | None] = {}
-        self._leaving_cache: dict[str, set[str]] = {}
+        self._molecule_cache: OrderedDict[str, Any] = OrderedDict()
+        self._conformer_cache: OrderedDict[str, Any] = OrderedDict()
+        self._atom_cache: OrderedDict[str, Any] = OrderedDict()
+        self._bond_cache: OrderedDict[str, Any] = OrderedDict()
+        self._leaving_cache: OrderedDict[str, Any] = OrderedDict()
+
+    @staticmethod
+    def _cached(cache: OrderedDict[str, Any], component: str) -> tuple[bool, Any]:
+        """Read and refresh one entry, including a cached ``None``."""
+
+        try:
+            value = cache.pop(component)
+        except KeyError:
+            return False, None
+        cache[component] = value
+        return True, value
+
+    @staticmethod
+    def _remember(cache: OrderedDict[str, Any], component: str, value: Any) -> Any:
+        """Retain one derived component value without growing for every job."""
+
+        cache[component] = value
+        cache.move_to_end(component)
+        while len(cache) > _DERIVED_COMPONENT_CACHE_LIMIT:
+            cache.popitem(last=False)
+        return value
 
     def _load(self) -> dict[str, Any]:
         if self._molecules is not None:
@@ -80,8 +103,9 @@ class CCDStore:
 
     def _molecule(self, component: str) -> Any | None:
         component = component.upper()
-        if component in self._molecule_cache:
-            return self._molecule_cache[component]
+        found, cached = self._cached(self._molecule_cache, component)
+        if found:
+            return cached
         from rdkit import Chem
 
         source = self._load().get(component)
@@ -91,15 +115,15 @@ class CCDStore:
             molecule = Chem.RemoveHs(source, sanitize=False)
             if molecule.GetNumConformers() == 0:
                 molecule = None
-        self._molecule_cache[component] = molecule
-        return molecule
+        return self._remember(self._molecule_cache, component, molecule)
 
     def conformer(self, component: str) -> dict[str, np.ndarray] | None:
         """Computed conformer, then ideal, then the first available conformer."""
 
         component = component.upper()
-        if component in self._conformer_cache:
-            return self._conformer_cache[component]
+        found, cached = self._cached(self._conformer_cache, component)
+        if found:
+            return cached
         molecule = self._molecule(component)
         if molecule is None:
             result = None
@@ -133,8 +157,7 @@ class CCDStore:
                 )
             if not result:
                 result = None
-        self._conformer_cache[component] = result
-        return result
+        return self._remember(self._conformer_cache, component, result)
 
     def idealized_position(
         self, component: str, atom_name: str
@@ -154,8 +177,9 @@ class CCDStore:
         """Included ``(name, element, formal_charge)`` atoms in CCD order."""
 
         component = component.upper()
-        if component in self._atom_cache:
-            return self._atom_cache[component]
+        found, cached = self._cached(self._atom_cache, component)
+        if found:
+            return cached
         molecule = self._molecule(component)
         result = None
         if molecule is not None:
@@ -165,15 +189,15 @@ class CCDStore:
                 if isinstance(name, str) and name:
                     values.append((name, atom.GetSymbol(), atom.GetFormalCharge()))
             result = values or None
-        self._atom_cache[component] = result
-        return result
+        return self._remember(self._atom_cache, component, result)
 
     def bonds(self, component: str) -> list[tuple[str, str]] | None:
         """Heavy/significant-hydrogen CCD bonds in included atom-name space."""
 
         component = component.upper()
-        if component in self._bond_cache:
-            return self._bond_cache[component]
+        found, cached = self._cached(self._bond_cache, component)
+        if found:
+            return cached
         molecule = self._molecule(component)
         result = None
         if molecule is not None:
@@ -184,13 +208,13 @@ class CCDStore:
                 if isinstance(left, str) and left and isinstance(right, str) and right:
                     values.append((left, right))
             result = values or None
-        self._bond_cache[component] = result
-        return result
+        return self._remember(self._bond_cache, component, result)
 
     def leaving_atoms(self, component: str) -> set[str]:
         component = component.upper()
-        if component in self._leaving_cache:
-            return self._leaving_cache[component]
+        found, cached = self._cached(self._leaving_cache, component)
+        if found:
+            return cached
         molecule = self._load().get(component)
         values = set()
         if molecule is not None:
@@ -198,8 +222,7 @@ class CCDStore:
                 if atom.HasProp("leaving_atom") and atom.GetProp("leaving_atom") == "1":
                     if atom.HasProp("name") and atom.GetProp("name"):
                         values.add(atom.GetProp("name"))
-        self._leaving_cache[component] = values
-        return values
+        return self._remember(self._leaving_cache, component, values)
 
 
 @lru_cache(maxsize=2)
