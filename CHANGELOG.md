@@ -151,6 +151,15 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **Protenix and OpenDDE bound the temporary used to compute an MSA profile.**
+  Profile counts are now accumulated over row chunks whose 32-class boolean
+  expansion is at most 64 MiB, rather than materializing the complete
+  ``[rows, tokens, 32]`` array. The integer counts and final float32 division
+  are unchanged bit for bit. At 16,384 rows and 1,003 tokens, an isolated CPU
+  probe reduced traced peak from 526,249,909 to 67,727,160 bytes while taking
+  0.484 versus 0.514 seconds; the removed one-shot temporary would be 1.47 GiB
+  at 3,012 tokens. The stored MSA and returned profile are unchanged.
+
 - **OpenFold3 no longer retains 512 complete Kalign inputs and outputs.** The
   alignment cache now keeps the 32 most recent calls, preserving within-job and
   immediate-retry reuse while allowing older query/template sequence strings

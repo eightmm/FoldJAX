@@ -122,6 +122,34 @@ _TRUSTED_CCD_RDKIT_SHA256 = frozenset(
 )
 _CCD_HASH_CHUNK = 1 << 20
 _TOKEN_POLYMER_TYPE = {"ligand": 0, "protein": 1, "dna": 2, "rna": 3}
+_MSA_PROFILE_CLASSES = np.arange(32)
+_MSA_PROFILE_TEMP_BUDGET = 64 << 20
+
+
+def _msa_profile(msa: np.ndarray) -> np.ndarray:
+    """Return the historical 32-class profile with a bounded one-hot buffer.
+
+    Broadcasting a deep alignment against all 32 classes at once creates a
+    ``[rows, tokens, 32]`` boolean array.  The counts are integers, so summing
+    independent row chunks and dividing once produces the exact same float32
+    profile while keeping that temporary below a small fixed budget.
+    """
+
+    if msa.ndim != 2 or msa.shape[0] == 0:
+        raise ValueError(
+            f"MSA profile expects nonempty [rows, tokens], got {msa.shape}"
+        )
+    row_bytes = max(1, int(msa.shape[1]) * len(_MSA_PROFILE_CLASSES))
+    rows_per_chunk = max(1, _MSA_PROFILE_TEMP_BUDGET // row_bytes)
+    counts = np.zeros((msa.shape[1], len(_MSA_PROFILE_CLASSES)), dtype=np.int64)
+    for start in range(0, msa.shape[0], rows_per_chunk):
+        chunk = msa[start : start + rows_per_chunk]
+        counts += np.sum(
+            chunk[..., None] == _MSA_PROFILE_CLASSES,
+            axis=0,
+            dtype=np.int64,
+        )
+    return (counts / msa.shape[0]).astype(np.float32)
 
 
 def _ccd_ligands() -> dict[str, dict[str, np.ndarray]]:
@@ -523,8 +551,7 @@ def parse_a3m_profile(
     """Parse protein A3M content into Protenix profile and deletion mean."""
 
     msa, deletion_matrix = parse_a3m_rows(query_sequence, a3m)
-    profile = (msa[..., None] == np.arange(32)).sum(axis=0) / msa.shape[0]
-    return profile.astype(np.float32), deletion_matrix.mean(axis=0)
+    return _msa_profile(msa), deletion_matrix.mean(axis=0)
 
 
 def parse_a3m_rows(
@@ -1469,8 +1496,7 @@ def _assemble_msa_features(
         feat.update({f"{k}_all_seq": v for k, v in p.items()})
         feat["asym_id"] = c["asym_id"]
         msa = feat["msa"]
-        prof = (msa[..., None] == np.arange(32)).sum(axis=0) / msa.shape[0]
-        feat["profile"] = prof.astype(np.float32)
+        feat["profile"] = _msa_profile(msa)
         feat["deletion_mean"] = np.mean(feat["deletion_matrix"], axis=0)
         raw_chains.append(feat)
 

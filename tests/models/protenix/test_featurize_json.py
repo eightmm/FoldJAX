@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.protenix.data.featurize_json import (
+    _msa_profile,
     featurize_protein_json,
     load_first_job,
     main,
@@ -13,6 +14,32 @@ from foldjax.models.protenix.data.featurize_json import (
     parse_a3m_rows,
 )
 from foldjax.models.protenix.data.static_io import load_static_feature_npz
+
+
+def test_msa_profile_bounds_one_hot_chunks_without_changing_bits(monkeypatch) -> None:
+    rng = np.random.default_rng(13)
+    msa = rng.integers(0, 32, size=(37, 19), dtype=np.int64)
+    expected = ((msa[..., None] == np.arange(32)).sum(axis=0) / msa.shape[0]).astype(
+        np.float32
+    )
+
+    import foldjax.models.protenix.data.featurize_json as featurize_json
+
+    budget = 19 * 32 * 5
+    monkeypatch.setattr(featurize_json, "_MSA_PROFILE_TEMP_BUDGET", budget)
+    real_sum = np.sum
+    temporary_sizes: list[int] = []
+
+    def tracked_sum(value, *args, **kwargs):
+        temporary_sizes.append(value.nbytes)
+        return real_sum(value, *args, **kwargs)
+
+    monkeypatch.setattr(featurize_json.np, "sum", tracked_sum)
+    actual = _msa_profile(msa)
+
+    assert np.array_equal(actual, expected)
+    assert len(temporary_sizes) > 1
+    assert max(temporary_sizes) <= budget
 
 
 def test_featurize_sequence_only_protein_json() -> None:
