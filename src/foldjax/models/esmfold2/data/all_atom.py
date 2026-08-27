@@ -676,7 +676,7 @@ def _msa(
     *,
     msa_depth: int | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    from foldjax.models.esmfold2.data.features import read_a3m
+    from foldjax.models.esmfold2.data.features import _iter_a3m
 
     query = np.asarray([token.res_type for token in tokens], dtype=np.int64)
     rows = [query.copy()]
@@ -690,7 +690,7 @@ def _msa(
         token_indices_by_residue: dict[int, list[int]] = defaultdict(list)
         for token in chain.tokens:
             token_indices_by_residue[token.residue_index].append(token.token_index)
-        for sequence, counts in read_a3m(path, query=chain.sequence):
+        for sequence, counts in _iter_a3m(path, query=chain.sequence):
             row = np.full(len(tokens), MSA_GAP_TOKEN_ID, dtype=np.int64)
             deletion = np.zeros(len(tokens), dtype=np.float32)
             for residue_index, (letter, count) in enumerate(

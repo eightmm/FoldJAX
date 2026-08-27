@@ -22,7 +22,7 @@ no-alignment case against `prepare_protein_features` tensor for tensor.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +36,7 @@ ATOM_BLOCK = 32
 # ESMC's tokenizer reserves 1 for right padding.  Keeping the sentinel here
 # avoids importing the 6B model implementation into the NumPy featurizer.
 ESMC_PAD_TOKEN_ID = 1
+_A3M_READ_CHUNK_CHARS = 1 << 20
 
 
 # Explicit semantic axes for the feature dictionary returned below.  Shape
@@ -480,7 +481,7 @@ def build_msa(
             chemistry.RES_TYPE_TO_LETTER.get(value, "X")
             for value in res_type[start:end]
         )
-        for sequence, counts in read_a3m(path, query=query):
+        for sequence, counts in _iter_a3m(path, query=query):
             row = [chemistry.MSA_GAP_TOKEN_ID] * n_token
             deletion = [0.0] * n_token
             for offset, (letter, count) in enumerate(zip(sequence, counts)):
@@ -505,19 +506,36 @@ def build_msa(
     return msa, np.ones(msa.shape, dtype=bool), values > 0, values
 
 
-def read_a3m(path: Path, *, query: str) -> list[tuple[str, list[int]]]:
-    """Aligned rows and their insertion counts, without the query row.
+def _a3m_blocks(path: Path) -> Iterator[str]:
+    """Yield the literal blocks produced by ``read_text().split(">")``.
 
-    a3m writes insertions as lowercase letters, which occupy no query column;
-    each is counted against the column that follows it, which is what
-    `deletion_value` means. A row whose aligned length is not the query's is
-    dropped rather than padded -- it is not an alignment to this sequence --
-    and a row identical to the query is dropped because row 0 already is it.
-    Identity is the test rather than position: a search that does not repeat
-    the query first would otherwise lose a real hit.
+    A3M rows are normally one short FASTA record each. Reading in chunks keeps
+    only the current record alive while retaining the historical treatment of
+    unusual ``>`` characters anywhere in the file, not just at line starts.
     """
-    rows: list[tuple[str, list[int]]] = []
-    for block in Path(path).read_text(encoding="utf-8").split(">")[1:]:
+
+    seen_delimiter = False
+    pending = ""
+    with Path(path).open(encoding="utf-8") as source:
+        while chunk := source.read(_A3M_READ_CHUNK_CHARS):
+            parts = chunk.split(">")
+            if not seen_delimiter:
+                if len(parts) == 1:
+                    continue
+                seen_delimiter = True
+                parts = parts[1:]
+            else:
+                parts[0] = pending + parts[0]
+            yield from parts[:-1]
+            pending = parts[-1]
+    if seen_delimiter:
+        yield pending
+
+
+def _iter_a3m(path: Path, *, query: str) -> Iterator[tuple[str, list[int]]]:
+    """Yield aligned rows and insertion counts without retaining later rows."""
+
+    for block in _a3m_blocks(path):
         if not block.strip():
             continue
         body = "".join(block.split("\n")[1:])
@@ -536,8 +554,21 @@ def read_a3m(path: Path, *, query: str) -> list[tuple[str, list[int]]]:
         sequence = "".join(aligned)
         if sequence == query and not any(counts):
             continue
-        rows.append((sequence, counts))
-    return rows
+        yield sequence, counts
+
+
+def read_a3m(path: Path, *, query: str) -> list[tuple[str, list[int]]]:
+    """Aligned rows and their insertion counts, without the query row.
+
+    a3m writes insertions as lowercase letters, which occupy no query column;
+    each is counted against the column that follows it, which is what
+    `deletion_value` means. A row whose aligned length is not the query's is
+    dropped rather than padded -- it is not an alignment to this sequence --
+    and a row identical to the query is dropped because row 0 already is it.
+    Identity is the test rather than position: a search that does not repeat
+    the query first would otherwise lose a real hit.
+    """
+    return list(_iter_a3m(path, query=query))
 
 
 __all__ = [

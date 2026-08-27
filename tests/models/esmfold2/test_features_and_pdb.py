@@ -9,6 +9,8 @@ handed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -64,6 +66,79 @@ def test_an_alignment_becomes_rows_over_its_own_columns(tmp_path) -> None:
     # The hit covers chain A's columns and is a gap over chain B's.
     assert np.all(built["msa"][0, 1, n:] == chemistry.MSA_GAP_TOKEN_ID)
     assert not np.all(built["msa"][0, 1, :n] == chemistry.MSA_GAP_TOKEN_ID)
+
+
+def test_streamed_a3m_parser_matches_the_historical_literal_split(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = (
+        "ignored preface\r\n"
+        ">query\r\nACDE\r\n"
+        ">hit-one\r\nAaC-DE\r\n"
+        ">hit-two\r\nWYf-E\r\n"
+        ">bad-length\r\nAC\r\n"
+        ">\r\n"
+    )
+    a3m = tmp_path / "chain.a3m"
+    a3m.write_text(content, encoding="utf-8")
+    normalized = a3m.read_text(encoding="utf-8")
+
+    def historical() -> list[tuple[str, list[int]]]:
+        rows: list[tuple[str, list[int]]] = []
+        for block in normalized.split(">")[1:]:
+            if not block.strip():
+                continue
+            body = "".join(block.split("\n")[1:])
+            aligned: list[str] = []
+            counts: list[int] = []
+            pending = 0
+            for character in body:
+                if character.islower():
+                    pending += 1
+                    continue
+                aligned.append(character.upper() if character != "-" else "-")
+                counts.append(pending)
+                pending = 0
+            if len(aligned) != 4:
+                continue
+            sequence = "".join(aligned)
+            if sequence == "ACDE" and not any(counts):
+                continue
+            rows.append((sequence, counts))
+        return rows
+
+    monkeypatch.setattr(features, "_A3M_READ_CHUNK_CHARS", 3)
+
+    assert features.read_a3m(a3m, query="ACDE") == historical()
+
+
+def test_msa_depth_does_not_materialise_the_complete_alignment(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a3m = tmp_path / "chain.a3m"
+    a3m.write_text(
+        f">query\n{PEPTIDE}\n"
+        + "".join(f">hit-{index}\nAADEFGHIK\n" for index in range(10_000)),
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+
+    def reject_full_alignment_read(path: Path, *args, **kwargs) -> str:
+        if path == a3m:
+            raise AssertionError("bounded MSA featurization must stream the alignment")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_full_alignment_read)
+
+    built = features.build_features(
+        [(PEPTIDE, "A", 0, 0)],
+        {0: a3m},
+        msa_depth=2,
+    )
+
+    assert built["msa"].shape == (1, 2, len(PEPTIDE))
 
 
 def test_the_pdb_writer_emits_every_folded_atom() -> None:

@@ -155,6 +155,17 @@ command predicts unless it says so here, in its own paragraph.
   twice.** The chain-pair postprocessor now creates the same Fortran-layout
 - **AlphaFold 3 PDE summaries keep only one sample product or monomer matrix
   copy live.** The chain-pair postprocessor now creates the same Fortran-layout
+- **ESMFold2 stops parsing A3M rows once its requested MSA depth is full.**
+  Both the protein-only and all-biomolecule featurizers now consume the same
+  historical A3M parser as a bounded record iterator instead of first building
+  a list for every row in the file. The public full-file reader retains its
+  list return contract. For a synthetic 200,000-row, 80-column alignment where
+  127 hit rows were needed, an isolated CPU probe reduced traced peak from
+  198,154,357 to 3,926,115 bytes and parsing time from 7.735 to 0.009 seconds;
+  every consumed sequence and insertion count was equal. MSA order, query
+  removal, invalid-length filtering and lowercase insertion semantics are
+  unchanged.
+
 - **Extensionless OpenFold3 alignments are identified from a bounded prefix.**
   Format detection now reads the first 4,096 decoded characters directly from
   the file instead of loading the complete MSA and then slicing that prefix.
