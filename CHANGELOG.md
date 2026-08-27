@@ -171,6 +171,16 @@ command predicts unless it says so here, in its own paragraph.
   block from 143.92 ms to 0.13 ms. Parsing and feature construction after the
   lookup are unchanged.
 
+- **The shared Protenix/OpenDDE CCD metadata cache is bounded and follows file
+  replacement.** Parsed atom names, elements and leaving flags now use a
+  256-entry least-recently-used cache keyed by the components file's inode and
+  stat identity, rather than a path-and-code dictionary that could retain all
+  48,965 blocks and return stale metadata after a symlink target or file was
+  replaced. A 1,000-code sample of the registered file retained 1,852,714
+  traced Python bytes; extrapolating that sampled mean to every code is about
+  86.5 MiB, while 256 entries are about 0.45 MiB. Eviction changes only whether
+  a later job reparses a small text block; the returned metadata is unchanged.
+
 - **Padded Boltz-2 sampling no longer sends its initial and 200-step noise
   tapes through the compiled model.** The high-level prediction path now sends
   one dynamic storage-atom count and reconstructs the same flattened Threefry

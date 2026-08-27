@@ -13,6 +13,7 @@ import random
 import re
 import string
 import tempfile
+from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -112,7 +113,10 @@ _LIGAND_TABLE: dict[str, dict[str, np.ndarray]] | None = None
 _NUCLEIC_TABLE_PATH = Path(__file__).with_name("ccd_nucleotides.npz")
 _NUCLEIC_TABLE: dict[str, dict[str, np.ndarray]] | None = None
 _EXTERNAL_CCD_MOLS: dict[str, Any] | None = None
-_EXTERNAL_CCD_ATOMS: dict[tuple[Path, str], dict[str, Any]] = {}
+_EXTERNAL_CCD_ATOM_CACHE_LIMIT = 256
+_EXTERNAL_CCD_ATOMS: OrderedDict[
+    tuple[Path, tuple[int, int, int, int, int], str], dict[str, Any]
+] = OrderedDict()
 _TRUSTED_CCD_RDKIT_SHA256 = frozenset(
     {"d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35"}
 )
@@ -1919,13 +1923,26 @@ def _external_ccd_atom_metadata(code: str) -> dict[str, Any]:
             "`foldjax weights fetch --model protenix`, which puts it in the "
             "shared asset store, or set PROTENIX_CCD_COMPONENTS_FILE"
         )
-    cache_key = (components_path.resolve(), code)
+    resolved = components_path.resolve()
+    stat = resolved.stat()
+    identity = (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+    cache_key = (resolved, identity, code)
     cached = _EXTERNAL_CCD_ATOMS.get(cache_key)
     if cached is not None:
+        _EXTERNAL_CCD_ATOMS.move_to_end(cache_key)
         return cached
-    block = _read_ccd_block(components_path, code)
+    block = _read_ccd_block(resolved, code)
     metadata = _parse_ccd_atom_metadata(block, code)
     _EXTERNAL_CCD_ATOMS[cache_key] = metadata
+    _EXTERNAL_CCD_ATOMS.move_to_end(cache_key)
+    while len(_EXTERNAL_CCD_ATOMS) > _EXTERNAL_CCD_ATOM_CACHE_LIMIT:
+        _EXTERNAL_CCD_ATOMS.popitem(last=False)
     return metadata
 
 

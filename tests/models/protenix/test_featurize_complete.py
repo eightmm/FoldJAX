@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import pickle
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -178,6 +180,63 @@ def test_ccd_block_lookup_preserves_unsorted_custom_files(tmp_path: Path) -> Non
     assert featurize_impl._read_ccd_block(components, "AAA").startswith(
         "data_AAA\n_value first\n"
     )
+
+
+def test_external_ccd_metadata_cache_is_lru_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    components = tmp_path / "components.cif"
+    components.write_text("cache identity", encoding="utf-8")
+    calls: list[str] = []
+    monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(components))
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOMS", OrderedDict())
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOM_CACHE_LIMIT", 3)
+    monkeypatch.setattr(
+        featurize_impl,
+        "_read_ccd_block",
+        lambda _path, code: calls.append(code) or f"block {code}",
+    )
+    monkeypatch.setattr(
+        featurize_impl,
+        "_parse_ccd_atom_metadata",
+        lambda block, _code: {"block": block},
+    )
+
+    for code in ("AAA", "BBB", "CCC", "AAA", "DDD"):
+        featurize_impl._external_ccd_atom_metadata(code)
+
+    assert calls == ["AAA", "BBB", "CCC", "DDD"]
+    assert [key[-1] for key in featurize_impl._EXTERNAL_CCD_ATOMS] == [
+        "CCC",
+        "AAA",
+        "DDD",
+    ]
+
+
+def test_external_ccd_metadata_cache_tracks_file_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    components = tmp_path / "components.cif"
+    components.write_text("first", encoding="utf-8")
+    replacement = tmp_path / "replacement.cif"
+    replacement.write_text("second", encoding="utf-8")
+    monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(components))
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOMS", OrderedDict())
+    monkeypatch.setattr(
+        featurize_impl,
+        "_read_ccd_block",
+        lambda path, _code: path.read_text(encoding="utf-8"),
+    )
+    monkeypatch.setattr(
+        featurize_impl,
+        "_parse_ccd_atom_metadata",
+        lambda block, _code: {"block": block},
+    )
+
+    assert featurize_impl._external_ccd_atom_metadata("TST") == {"block": "first"}
+    os.replace(replacement, components)
+    assert featurize_impl._external_ccd_atom_metadata("TST") == {"block": "second"}
+    assert len(featurize_impl._EXTERNAL_CCD_ATOMS) == 2
 
 
 def test_smiles_preserves_charge_stereo_and_bond_graph():
