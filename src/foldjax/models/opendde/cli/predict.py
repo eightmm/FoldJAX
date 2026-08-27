@@ -683,7 +683,7 @@ def main(
                             make_padded_random_tapes(
                                 key=jax.random.PRNGKey(seed),
                                 num_samples=args.num_samples,
-                                n_steps=args.num_steps,
+                                num_steps=args.num_steps,
                                 actual_atom=padding_plan.actual["atoms"],
                                 target_atom=padding_plan.target["atoms"],
                             )

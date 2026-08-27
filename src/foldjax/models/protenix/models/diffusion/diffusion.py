@@ -107,13 +107,13 @@ def _prefix_atom_normal(
     key: jax.Array,
     atom_mask: jnp.ndarray,
     *,
-    n_sample: int,
+    num_samples: int,
     dtype: jnp.dtype,
 ) -> jnp.ndarray:
     """Draw one padded coordinate field from the compact sample/atom prefix."""
 
     prefix_mask = jnp.broadcast_to(
-        jnp.asarray(atom_mask, dtype=bool), (n_sample, atom_mask.shape[0])
+        jnp.asarray(atom_mask, dtype=bool), (num_samples, atom_mask.shape[0])
     )
     return masked_prefix_draw(
         lambda normal_key, shape: jax.random.normal(
@@ -666,7 +666,7 @@ def _sample_diffusion_chunk(
             return _prefix_atom_normal(
                 draw_key,
                 atom_mask,
-                n_sample=num_samples,
+                num_samples=num_samples,
                 dtype=dtype,
             )
 

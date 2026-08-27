@@ -378,8 +378,8 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
         jax.random.PRNGKey(101),
     )
     assert tape_calls[0] == {
-        "n_sample": 1,
-        "n_steps": 1,
+        "num_samples": 1,
+        "num_steps": 1,
         "actual_atom": 3,
         "target_atom": 256,
     }
@@ -438,7 +438,7 @@ def test_padded_random_tapes_preserve_the_unpadded_real_prefix() -> None:
     padded = make_padded_random_tapes(
         key=key,
         num_samples=2,
-        n_steps=3,
+        num_steps=3,
         actual_atom=3,
         target_atom=5,
     )

@@ -18,7 +18,7 @@ def make_padded_random_tapes(
     *,
     key: jax.Array,
     num_samples: int,
-    n_steps: int,
+    num_steps: int,
     actual_atom: int,
     target_atom: int,
     batch_shape: Sequence[int] = (),
@@ -34,7 +34,7 @@ def make_padded_random_tapes(
     have no atom axis and are reused unchanged.
     """
 
-    if num_samples < 1 or n_steps < 1 or actual_atom < 1:
+    if num_samples < 1 or num_steps < 1 or actual_atom < 1:
         raise ValueError(
             "padded random tapes require positive sample/step/atom sizes"
         )
@@ -50,18 +50,18 @@ def make_padded_random_tapes(
     step_noises = jnp.stack(
         tuple(
             jax.random.normal(step_key_i, real_shape, dtype=dtype)
-            for step_key_i in jax.random.split(step_key, n_steps)
+            for step_key_i in jax.random.split(step_key, num_steps)
         ),
         axis=0,
     )
     leading_shape = real_shape[:-2]
     rotations = uniform_random_rotations(
         rotation_key,
-        (n_steps, *leading_shape),
+        (num_steps, *leading_shape),
     )
     translations = jax.random.normal(
         translation_key,
-        (n_steps, *leading_shape, 3),
+        (num_steps, *leading_shape, 3),
         dtype=jnp.float32,
     )
     return (

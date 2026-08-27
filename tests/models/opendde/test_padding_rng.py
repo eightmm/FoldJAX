@@ -21,14 +21,14 @@ def test_masked_draw_matches_the_materialized_opendde_tape_bitwise(
     batch_shape,
 ) -> None:
     key = jax.random.PRNGKey(13)
-    n_sample, n_steps, actual_atom, target_atom = 2, 3, 3, 5
+    num_samples, num_steps, actual_atom, target_atom = 2, 3, 3, 5
     atom_mask = jnp.arange(target_atom) < actual_atom
 
     with jax.threefry_partitionable(True):
         expected = make_padded_random_tapes(
             key=key,
-            n_sample=n_sample,
-            n_steps=n_steps,
+            num_samples=num_samples,
+            num_steps=num_steps,
             actual_atom=actual_atom,
             target_atom=target_atom,
             batch_shape=batch_shape,
@@ -39,7 +39,7 @@ def test_masked_draw_matches_the_materialized_opendde_tape_bitwise(
         actual_init = _prefix_atom_normal(
             init_key,
             atom_mask,
-            leading_shape=(*batch_shape, n_sample),
+            leading_shape=(*batch_shape, num_samples),
             dtype=jnp.float32,
         )
         actual_steps = jnp.stack(
@@ -47,10 +47,10 @@ def test_masked_draw_matches_the_materialized_opendde_tape_bitwise(
                 _prefix_atom_normal(
                     step_key_i,
                     atom_mask,
-                    leading_shape=(*batch_shape, n_sample),
+                    leading_shape=(*batch_shape, num_samples),
                     dtype=jnp.float32,
                 )
-                for step_key_i in jax.random.split(step_key, n_steps)
+                for step_key_i in jax.random.split(step_key, num_steps)
             )
         )
 
@@ -65,7 +65,7 @@ def test_lazy_padding_rng_matches_the_complete_tape_sampler_bitwise(
     use_scan,
 ) -> None:
     key = jax.random.PRNGKey(19)
-    n_sample, n_steps, actual_atom, target_atom = 2, 3, 3, 5
+    num_samples, num_steps, actual_atom, target_atom = 2, 3, 3, 5
     atom_mask = jnp.arange(target_atom) < actual_atom
     schedule = jnp.asarray([4.0, 2.0, 1.1, 0.0], dtype=jnp.float32)
 
@@ -75,8 +75,8 @@ def test_lazy_padding_rng_matches_the_complete_tape_sampler_bitwise(
     with jax.threefry_partitionable(True):
         tapes = make_padded_random_tapes(
             key=key,
-            n_sample=n_sample,
-            n_steps=n_steps,
+            num_samples=num_samples,
+            num_steps=num_steps,
             actual_atom=actual_atom,
             target_atom=target_atom,
             batch_shape=batch_shape,
@@ -84,7 +84,7 @@ def test_lazy_padding_rng_matches_the_complete_tape_sampler_bitwise(
         expected = sample_diffusion(
             denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=target_atom,
             key=None,
             init_noise=tapes[0],
@@ -98,7 +98,7 @@ def test_lazy_padding_rng_matches_the_complete_tape_sampler_bitwise(
         actual = sample_diffusion(
             denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=target_atom,
             key=key,
             batch_shape=batch_shape,
@@ -112,9 +112,9 @@ def test_lazy_padding_rng_matches_the_complete_tape_sampler_bitwise(
 
 def test_lazy_padding_rng_removes_the_full_step_tape_from_arguments() -> None:
     key = jax.random.PRNGKey(11)
-    n_sample, n_steps, actual_atom, target_atom = 2, 8, 7, 32
+    num_samples, num_steps, actual_atom, target_atom = 2, 8, 7, 32
     atom_mask = jnp.arange(target_atom) < actual_atom
-    schedule = jnp.linspace(2.0, 0.0, n_steps + 1, dtype=jnp.float32)
+    schedule = jnp.linspace(2.0, 0.0, num_steps + 1, dtype=jnp.float32)
 
     def denoise(x, _t):
         return x * jnp.asarray(0.9, x.dtype)
@@ -122,8 +122,8 @@ def test_lazy_padding_rng_removes_the_full_step_tape_from_arguments() -> None:
     with jax.threefry_partitionable(True):
         tapes = make_padded_random_tapes(
             key=key,
-            n_sample=n_sample,
-            n_steps=n_steps,
+            num_samples=num_samples,
+            num_steps=num_steps,
             actual_atom=actual_atom,
             target_atom=target_atom,
         )
@@ -131,7 +131,7 @@ def test_lazy_padding_rng_removes_the_full_step_tape_from_arguments() -> None:
             lambda init, steps, rotations, translations, mask: sample_diffusion(
                 denoise,
                 schedule,
-                n_sample=n_sample,
+                num_samples=num_samples,
                 n_atom=target_atom,
                 key=None,
                 init_noise=init,
@@ -146,7 +146,7 @@ def test_lazy_padding_rng_removes_the_full_step_tape_from_arguments() -> None:
             lambda random_key, mask: sample_diffusion(
                 denoise,
                 schedule,
-                n_sample=n_sample,
+                num_samples=num_samples,
                 n_atom=target_atom,
                 key=random_key,
                 atom_mask=mask,
@@ -174,7 +174,7 @@ def test_lazy_padding_rng_rejects_unsupported_or_ambiguous_routes() -> None:
     common = {
         "denoise_fn": lambda x, _t: x,
         "noise_schedule": schedule,
-        "n_sample": 1,
+        "num_samples": 1,
         "n_atom": 2,
         "key": key,
         "atom_mask": atom_mask,

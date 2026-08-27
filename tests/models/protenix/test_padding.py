@@ -415,23 +415,23 @@ def test_padded_noise_keeps_every_sample_real_prefix(chunk_size) -> None:
 
 @pytest.mark.parametrize("chunk_size", [None, 1, 2, 4])
 def test_masked_atom_draws_match_the_materialized_noise_tape(chunk_size) -> None:
-    n_sample, n_step, actual_atom, target_atom = 5, 7, 11, 19
+    num_samples, num_steps, actual_atom, target_atom = 5, 7, 11, 19
     seed = 23
     expected_init, expected_steps = _padded_noise_tapes(
         seed=seed,
-        n_sample=n_sample,
-        n_step=n_step,
+        num_samples=num_samples,
+        num_steps=num_steps,
         actual_atom=actual_atom,
         target_atom=target_atom,
         diffusion_chunk_size=chunk_size,
     )
     root_key = jax.random.PRNGKey(seed)
     chunk_sizes = (
-        (n_sample,)
+        (num_samples,)
         if chunk_size is None
         else tuple(
-            min(chunk_size, n_sample - start)
-            for start in range(0, n_sample, chunk_size)
+            min(chunk_size, num_samples - start)
+            for start in range(0, num_samples, chunk_size)
         )
     )
     chunk_keys = (
@@ -441,23 +441,23 @@ def test_masked_atom_draws_match_the_materialized_noise_tape(chunk_size) -> None
     )
     atom_mask = jnp.arange(target_atom) < actual_atom
     actual_init_chunks = []
-    actual_step_chunks = [[] for _ in range(n_step)]
+    actual_step_chunks = [[] for _ in range(num_steps)]
     for current_size, chunk_key in zip(chunk_sizes, chunk_keys, strict=True):
         chunk_key, init_key = jax.random.split(chunk_key)
         actual_init_chunks.append(
             _prefix_atom_normal(
                 init_key,
                 atom_mask,
-                n_sample=current_size,
+                num_samples=current_size,
                 dtype=jnp.float32,
             )
         )
-        for step_index, step_key in enumerate(jax.random.split(chunk_key, n_step)):
+        for step_index, step_key in enumerate(jax.random.split(chunk_key, num_steps)):
             actual_step_chunks[step_index].append(
                 _prefix_atom_normal(
                     step_key,
                     atom_mask,
-                    n_sample=current_size,
+                    num_samples=current_size,
                     dtype=jnp.float32,
                 )
             )
@@ -482,12 +482,12 @@ def test_masked_atom_draws_match_the_materialized_noise_tape(chunk_size) -> None
 def test_masked_padding_noise_matches_the_materialized_tape_bitwise(
     chunk_size, use_scan
 ) -> None:
-    n_sample, n_step, actual_atom, target_atom = 5, 3, 5, 8
+    num_samples, num_steps, actual_atom, target_atom = 5, 3, 5, 8
     seed = 19
     init_noise, step_noises = _padded_noise_tapes(
         seed=seed,
-        n_sample=n_sample,
-        n_step=n_step,
+        num_samples=num_samples,
+        num_steps=num_steps,
         actual_atom=actual_atom,
         target_atom=target_atom,
         diffusion_chunk_size=chunk_size,
@@ -501,7 +501,7 @@ def test_masked_padding_noise_matches_the_materialized_tape_bitwise(
     common = {
         "denoise_fn": denoise,
         "noise_schedule": schedule,
-        "n_sample": n_sample,
+        "num_samples": num_samples,
         "n_atom": target_atom,
         "key": jax.random.PRNGKey(seed),
         "diffusion_chunk_size": chunk_size,
@@ -522,14 +522,14 @@ def test_masked_padding_noise_matches_the_materialized_tape_bitwise(
 
 
 def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> None:
-    n_sample, n_step, actual_atom, target_atom = 2, 8, 7, 32
-    schedule = jnp.linspace(2.0, 0.0, n_step + 1, dtype=jnp.float32)
+    num_samples, num_steps, actual_atom, target_atom = 2, 8, 7, 32
+    schedule = jnp.linspace(2.0, 0.0, num_steps + 1, dtype=jnp.float32)
     atom_mask = jnp.arange(target_atom) < actual_atom
     key = jax.random.PRNGKey(11)
     init_noise, step_noises = _padded_noise_tapes(
         seed=11,
-        n_sample=n_sample,
-        n_step=n_step,
+        num_samples=num_samples,
+        num_steps=num_steps,
         actual_atom=actual_atom,
         target_atom=target_atom,
         diffusion_chunk_size=None,
@@ -542,7 +542,7 @@ def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> N
         lambda init, steps, mask: sample_diffusion(
             denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=target_atom,
             key=key,
             init_noise=init,
@@ -555,7 +555,7 @@ def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> N
         lambda random_key, mask: sample_diffusion(
             denoise,
             schedule,
-            n_sample=n_sample,
+            num_samples=num_samples,
             n_atom=target_atom,
             key=random_key,
             atom_mask=mask,
@@ -580,7 +580,7 @@ def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> N
             sample_diffusion(
                 denoise,
                 schedule,
-                n_sample=n_sample,
+                num_samples=num_samples,
                 n_atom=target_atom,
                 key=key,
                 atom_mask=atom_mask,
@@ -592,7 +592,7 @@ def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> N
             sample_diffusion(
                 denoise,
                 schedule,
-                n_sample=n_sample,
+                num_samples=num_samples,
                 n_atom=target_atom,
                 key=key,
                 atom_mask=atom_mask,
