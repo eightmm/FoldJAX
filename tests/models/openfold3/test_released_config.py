@@ -132,14 +132,29 @@ def test_no_field_is_left_unchecked(upstream) -> None:
     # which is a different mechanism (it chunks more than the pair attention).
     # returned_pair_logits is likewise FoldJAX's own: which [.., N, N, bins]
     # logits stay entry outputs, decided by the npz writer's budget.
-    shapes = {
+    #
+    # The rest are FoldJAX mechanisms that upstream has no name for at all --
+    # `grep` finds none of them anywhere in the OpenFold3 checkout:
+    #   returned_representations / stop_after_trunk  which trunk arrays come
+    #     back, and whether to stop once they exist rather than run the sampler
+    #     and the confidence heads;
+    #   cp_shards / cp_layout  the context-parallel shard count and grid, in the
+    #     config so that a mesh change is a new compilation rather than a stale
+    #     cache hit.
+    # Declaring them here is the point of this test: it is what makes adding a
+    # field a deliberate act instead of a silent escape from the comparison.
+    foldjax_only = {
         "n_token",
         "n_atom",
         "pair_chunk_size",
         "returned_pair_logits",
         "has_atomized_tokens",
+        "returned_representations",
+        "stop_after_trunk",
+        "cp_shards",
+        "cp_layout",
     }
-    unchecked = set(config._fields) - set(_expected(upstream)) - shapes
+    unchecked = set(config._fields) - set(_expected(upstream)) - foldjax_only
     assert not unchecked, f"fields not compared against upstream: {sorted(unchecked)}"
 
 

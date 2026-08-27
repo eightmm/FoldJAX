@@ -310,3 +310,57 @@ backend, and a threshold calibrated against this machine's contraction
 schedules is a threshold that fails on the next one for no real reason. The
 failing test above is the case where the number was demonstrably wrong rather
 than merely generous.
+
+## OpenFold3 — 396 parity tests, and the guard that was switched off
+
+OpenFold3 gates differently from Boltz-2, and better: `openfold3_source` skips
+inside a fixture instead of dropping modules at collection, so the tests stay
+visible and countable. The shipped environment reports 371 passed and 362
+skipped; `-m torch_parity` selects 396 of them, and those 396 run nowhere by
+default.
+
+They need torch, `ml_collections`, the chemistry stack behind
+`--extra openfold3-preprocess`, and Lightning, which upstream's
+`InferenceDataset` imports. Order matters, because `uv sync` prunes anything
+outside the lockfile:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-parity uv sync --extra cuda13 \
+    --extra openfold3-preprocess
+uv pip install --python .venv-parity/bin/python \
+    torch ml_collections pytorch_lightning
+JAX_PLATFORMS=cpu OPENFOLD3_SOURCE=/path/to/openfold3 \
+    .venv-parity/bin/python -m pytest tests/models/openfold3/ -m torch_parity
+```
+
+`OPENFOLD3_SOURCE` is worth using rather than relying on the sibling-directory
+search: from a git worktree the fallback resolves to the worktree's parent, and
+every parity test skips instead of running.
+
+Verified 2026-08-27 at `a29e4a3`: 395 passed, 3 skipped, 4 min 40 s.
+
+A first attempt reported 189 failed and 64 errors in 21.8 seconds. None of it
+was real -- 21.8 seconds is not 189 comparisons failing, it is 189 imports
+collapsing, 252 of them on `biotite`, because that environment had only
+`--extra cuda13`. A parity run that finishes far too quickly is reporting on
+its own provisioning.
+
+### The two that were real
+
+`test_no_field_is_left_unchecked` exists so that adding a field to
+`InferenceConfig` cannot silently escape the upstream comparison. It is itself
+`torch_parity`, so it had not run, and four fields had escaped:
+`cp_layout`, `cp_shards`, `returned_representations` and `stop_after_trunk`.
+All four are FoldJAX's own -- `grep` finds none of them anywhere in the
+OpenFold3 checkout -- so the defect was the missing declaration, not the
+fields. They are now declared with the reason each has no upstream counterpart,
+and the set is called `foldjax_only` rather than `shapes`, which three of its
+entries already were not.
+
+`test_torch_parity_preprocessing.py` guarded `torch` with `importorskip` and
+not `pytorch_lightning`, which upstream pulls in on the way to the tensorizer.
+On an environment with torch and without Lightning -- exactly what
+`--extra openfold3-preprocess` produces -- it failed where it should have
+skipped. Both are fixed: Lightning is now guarded, and installing it lets the
+test actually run, which it had never done. It passes: the NumPy tensorizer
+matches upstream's.

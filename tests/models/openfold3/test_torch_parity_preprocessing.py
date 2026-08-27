@@ -11,6 +11,14 @@ pytest.importorskip(
     "torch",
     reason="OpenFold3 preprocessing parity needs an external PyTorch environment",
 )
+# Upstream's InferenceDataset pulls in Lightning on the way to the tensorizer.
+# Guarding only torch made this file *fail* rather than skip on an environment
+# that had torch and not this -- which is what a torch environment provisioned
+# from `--extra openfold3-preprocess` looks like.
+pytest.importorskip(
+    "pytorch_lightning",
+    reason="upstream OpenFold3's inference dataset imports pytorch_lightning",
+)
 
 from foldjax.models.openfold3.data import MODEL_FEATURES, featurize_query
 

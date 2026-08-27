@@ -12,6 +12,35 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Four OpenFold3 config fields had escaped the guard built to stop exactly
+  that.** `test_no_field_is_left_unchecked` exists so that adding a field to
+  `InferenceConfig` cannot silently skip the upstream comparison -- but the
+  test is itself `torch_parity`, so it ran nowhere, and `cp_layout`,
+  `cp_shards`, `returned_representations` and `stop_after_trunk` had gone
+  undeclared. All four are FoldJAX's own; `grep` finds none of them anywhere in
+  the OpenFold3 checkout. The defect was the missing declaration rather than
+  the fields, so each is now listed with the reason it has no upstream
+  counterpart, and the set is named `foldjax_only` instead of `shapes` -- which
+  three of its entries already were not.
+
+- **A parity test failed where it should have skipped.**
+  `test_torch_parity_preprocessing.py` guarded `torch` with `importorskip` and
+  not `pytorch_lightning`, which upstream's `InferenceDataset` imports on the
+  way to the tensorizer. An environment with torch and without Lightning --
+  what `--extra openfold3-preprocess` produces -- got a failure rather than a
+  skip with a reason. Lightning is now guarded too, and provisioning it lets
+  the test run for the first time: the NumPy tensorizer matches upstream's.
+
+- **The OpenFold3 parity environment is written down, with what it costs to
+  get wrong.** 396 of that suite's tests are `torch_parity` and run nowhere by
+  default. `bench/upstream-environments.md` carries the recipe -- including
+  that `uv sync` prunes anything outside the lockfile, so the extras go first
+  and torch second -- and records 395 passed, 3 skipped at `a29e4a3`. A first
+  attempt reported 189 failed and 64 errors in 21.8 seconds; none of it was
+  real. 21.8 seconds is 189 imports collapsing, 252 of them on `biotite`. A
+  parity run that finishes far too quickly is reporting on its own
+  provisioning.
+
 - **A Boltz-2 parity test asserted something the backend never promised, and
   no ordinary run could see it.** 24 Boltz-2 modules leave collection when
   torch is absent, so the shipped environment collects 166 tests where a torch
