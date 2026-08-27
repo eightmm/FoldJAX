@@ -61,6 +61,86 @@ def _assert_nan_exact(actual, expected) -> None:
     )
 
 
+def _generic_chain_pair_pde_reference(
+    *, num_tokens, asym_ids, full_pde
+) -> tuple[np.ndarray, np.ndarray]:
+    """The pre-specialisation chain loop, including both axis copies."""
+    full_pde = full_pde[:, :num_tokens, :num_tokens]
+    asym_ids = asym_ids[:num_tokens]
+    unique_asym_ids = np.unique(asym_ids)
+    num_samples = full_pde.shape[0]
+    means = np.zeros((num_samples, len(unique_asym_ids), len(unique_asym_ids)))
+    minima = np.zeros_like(means)
+    for row, asym_id_1 in enumerate(unique_asym_ids):
+        subset = full_pde[:, asym_ids == asym_id_1, :]
+        for column, asym_id_2 in enumerate(unique_asym_ids):
+            subsubset = subset[:, :, asym_ids == asym_id_2]
+            means[:, row, column] = np.mean(subsubset, axis=(1, 2))
+            minima[:, row, column] = np.min(subsubset, axis=(1, 2))
+    return means, minima
+
+
+def test_monomer_chain_pair_pde_uses_one_layout_preserving_copy(monkeypatch) -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    rng = np.random.default_rng(39)
+    real_asfortranarray = confidences.np.asfortranarray
+    calls = []
+
+    def tracked_asfortranarray(value):
+        calls.append(np.shape(value))
+        return real_asfortranarray(value)
+
+    monkeypatch.setattr(confidences.np, "asfortranarray", tracked_asfortranarray)
+    for dtype in (np.float32, np.float64):
+        full_pde = rng.normal(size=(5, 11, 11)).astype(dtype)
+        expected = _generic_chain_pair_pde_reference(
+            num_tokens=8,
+            asym_ids=np.ones(11, dtype=np.int32),
+            full_pde=full_pde,
+        )
+        actual = confidences.chain_pair_pde(
+            num_tokens=8,
+            asym_ids=np.ones(11, dtype=np.int32),
+            full_pde=full_pde,
+        )
+        for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+            _assert_nan_exact(actual_leaf, expected_leaf)
+
+    assert calls == [(5, 8, 8), (5, 8, 8)]
+
+    calls.clear()
+    full_pde = rng.normal(size=(3, 8, 8)).astype(np.float32)
+    asym_ids = np.asarray([1, 1, 1, 1, 2, 2, 2, 2], dtype=np.int32)
+    expected = _generic_chain_pair_pde_reference(
+        num_tokens=8, asym_ids=asym_ids, full_pde=full_pde
+    )
+    actual = confidences.chain_pair_pde(8, asym_ids, full_pde)
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        _assert_nan_exact(actual_leaf, expected_leaf)
+    assert calls == []
+
+
+def test_empty_chain_pair_pde_keeps_the_empty_shapes() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import confidences
+
+    mean, minimum = confidences.chain_pair_pde(
+        0,
+        np.zeros(0, dtype=np.int32),
+        np.zeros((3, 0, 0), dtype=np.float32),
+    )
+    assert mean.shape == (3, 0, 0)
+    assert minimum.shape == (3, 0, 0)
+
+
 def test_monomer_chain_pair_pae_avoids_the_duplicate_axis_copy() -> None:
     from foldjax.models.alphafold3 import build
 

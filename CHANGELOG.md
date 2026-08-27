@@ -151,6 +151,15 @@ command predicts unless it says so here, in its own paragraph.
   library does not. Removing that cast alone takes the layers to 4.9e-6 and the
   token output to 2.8e-5, so nothing else disagrees -- and the cast does not
   fire on the released bfloat16 path, where float32 scores would be 29,524 MiB.
+- **AlphaFold 3 monomer PDE summaries no longer copy the full sample matrix
+  twice.** The chain-pair postprocessor now creates the same Fortran-layout
+  buffer produced by the historical pair of advanced-index operations in one
+  step, preserving NumPy's exact float32 reduction traversal and every output
+  bit. For five samples at 3,012 tokens, an isolated CPU measurement reduced
+  traced temporary allocation from 362,920,968 to 181,477,544 bytes; median
+  time in the matched two-run probe was 0.267 to 0.265 seconds. Multimers and
+  empty inputs retain the original path and shapes.
+
 - **Protenix and OpenDDE bound the temporary used to compute an MSA profile.**
   Profile counts are now accumulated over row chunks whose 32-class boolean
   expansion is at most 64 MiB, rather than materializing the complete

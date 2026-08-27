@@ -329,6 +329,16 @@ def chain_pair_pde(
   chain_pair_pred_err_mean = np.zeros((num_samples, num_chains, num_chains))
   chain_pair_pred_err_min = np.zeros((num_samples, num_chains, num_chains))
 
+  if num_chains == 1:
+    # The two all-true advanced-index operations below each copy the complete
+    # [S, N, N] monomer. Their final buffer is Fortran-contiguous, and NumPy's
+    # float32 reduction traversal depends on that layout, so preserve it with
+    # one explicit Fortran copy instead of reducing a C-order view directly.
+    subsubset = np.asfortranarray(full_pde)
+    chain_pair_pred_err_mean[:, 0, 0] = np.mean(subsubset, axis=(1, 2))
+    chain_pair_pred_err_min[:, 0, 0] = np.min(subsubset, axis=(1, 2))
+    return chain_pair_pred_err_mean, chain_pair_pred_err_min
+
   for idx1, asym_id_1 in enumerate(unique_asym_ids):
     subset = full_pde[:, asym_ids == asym_id_1, :]
     for idx2, asym_id_2 in enumerate(unique_asym_ids):
