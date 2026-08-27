@@ -191,6 +191,15 @@ command predicts unless it says so here, in its own paragraph.
   615 MiB at full coverage versus about 3.1 MiB at the new cap. A cache miss
   reparses the same publisher object and does not change featurization.
 
+- **Switching ESMFold2 CCD files no longer retains the previous 50,256-molecule
+  dictionary.** The path-and-file-identity cache now owns only the most recent
+  store, while repeated jobs on that same identity still reuse it and an active
+  caller safely keeps its own reference through a concurrent replacement. In
+  fresh CPU processes, retaining one registered dictionary reached 2,898,652
+  KiB maximum RSS; retaining two different copies reached 5,301,704 KiB. This
+  affects long-running processes that change weight/CCD roots, not ordinary
+  repeated jobs on one bundle.
+
 - **Padded Boltz-2 sampling no longer sends its initial and 200-step noise
   tapes through the compiled model.** The high-level prediction path now sends
   one dynamic storage-atom count and reconstructs the same flattened Threefry

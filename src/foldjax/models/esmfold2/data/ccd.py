@@ -225,7 +225,7 @@ class CCDStore:
         return self._remember(self._leaving_cache, component, values)
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=1)
 def _cached_store(
     path: str,
     identity: tuple[int, int, int, int, int],

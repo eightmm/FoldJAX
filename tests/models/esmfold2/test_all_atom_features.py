@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -319,6 +321,28 @@ def test_ccd_derived_component_caches_are_lru_bounded(
     assert list(store._leaving_cache) == ["CCC", "AAA", "DDD"]  # noqa: SLF001
     assert store.leaving_atoms("BBB") == {"BBB"}
     assert molecules["BBB"].calls == 2
+
+
+def test_ccd_store_cache_releases_a_replaced_file(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.pkl"
+    second_path = tmp_path / "second.pkl"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+    ccd._cached_store.cache_clear()  # noqa: SLF001 - process-cache contract
+    try:
+        first = ccd.get_ccd_store(first_path)
+        same = ccd.get_ccd_store(first_path)
+        assert same is first
+        reference = weakref.ref(first)
+        del first, same
+
+        ccd.get_ccd_store(second_path)
+        gc.collect()
+
+        assert reference() is None
+        assert ccd._cached_store.cache_info().currsize == 1  # noqa: SLF001
+    finally:
+        ccd._cached_store.cache_clear()  # noqa: SLF001
 
 
 @pytest.mark.slow
