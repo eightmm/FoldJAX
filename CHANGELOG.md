@@ -12,6 +12,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **AlphaFold 3's explicit released defaults now reuse the omitted compilation
+  cache namespace.** Exact Python type-and-value matches for the released
+  sampling schedule, Triton attention, disabled optional outputs, automatic
+  kernel tuning, and an empty ordinary bucket list are removed from the cache
+  profile. The nested 200-step and 1,024-row MSA defaults are aliases only for
+  FoldJAX's managed vendored runner; an external `source` keeps them explicit
+  because its omitted config may differ. Non-default schedules, non-empty
+  buckets, XLA attention, enabled embeddings/distograms, heuristic/error kernel
+  fallback, padding, device/runtime/cache identities, and merely equal type
+  lookalikes remain separate.
+
+  Managed retained-runner identity now records the two resolved nested defaults
+  instead of raw `None`, so spelling those same values no longer creates a
+  second 1.1 GB model owner after the persistent scopes have converged. The
+  actual `make_model_config` arguments and optional nested assignments are
+  unchanged. A CPU-only synthetic managed session followed the backend profile
+  through `resolve_cache_dir` and the real JAX owner boundary: omitted and
+  fully explicit defaults used one parameter load, one trace, and one retained
+  runner. Vendored signature/config drift and every preserved non-alias route
+  are regression gated. No released-weight full-model compile or GPU run was
+  performed.
+
 - **Boltz2 retained JIT runners now reuse no-op diffusion-chunk spellings.**
   The runner key canonicalizes a valid resolved width only when the native
   wrapper takes its unchanged unchunked branch (`width >= multiplicity`).

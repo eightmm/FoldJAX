@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import gc
 import json
@@ -18,6 +19,7 @@ import jax.numpy as jnp
 import pytest
 
 import foldjax
+from foldjax.api import resolve_cache_dir
 from foldjax.backends import alphafold3 as af3_backend
 from foldjax.backends.alphafold3 import AlphaFold3Backend
 from foldjax.models.alphafold3 import build as af3_build
@@ -52,6 +54,7 @@ class _MockRuntime:
         self.mutate_on_seed: dict[int, Any] = {}
         self.ranking_score = 0.75
         self.runner_refs: list[weakref.ReferenceType[Any]] = []
+        self.config_kwargs: list[dict[str, Any]] = []
         self.runner_file = tmp_path / "managed-runner.py"
         self.runner_file.write_text("# immutable managed runner\n")
         self.source_dir = tmp_path / "managed-source"
@@ -89,6 +92,7 @@ class _MockRuntime:
 
         def make_model_config(**kwargs: Any) -> Any:
             runtime.counts["configs"] += 1
+            runtime.config_kwargs.append(dict(kwargs))
             return SimpleNamespace(
                 supplied=kwargs,
                 heads=SimpleNamespace(
@@ -185,6 +189,7 @@ class _MockRuntime:
     def reset_counts(self) -> None:
         self.counts.clear()
         self.runner_refs.clear()
+        self.config_kwargs.clear()
 
 
 @pytest.fixture
@@ -228,6 +233,144 @@ def _request(
         resume=resume,
         on_error=on_error,
     )
+
+
+def _function_keyword_defaults(path: Path, name: str) -> dict[str, object]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == name
+    )
+    return {
+        argument.arg: ast.literal_eval(default)
+        for argument, default in zip(
+            function.args.kwonlyargs, function.args.kw_defaults, strict=True
+        )
+        if default is not None
+    }
+
+
+def _annotated_default(path: Path, name: str) -> object:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    matches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == name
+        and node.value is not None
+    ]
+    assert len(matches) == 1
+    return ast.literal_eval(matches[0].value)
+
+
+def _autocreate_defaults(path: Path, name: str) -> dict[str, object]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    matches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == name
+        and isinstance(node.value, ast.Call)
+    ]
+    assert len(matches) == 1
+    return {
+        keyword.arg: ast.literal_eval(keyword.value)
+        for keyword in matches[0].value.keywords
+        if keyword.arg is not None
+    }
+
+
+def test_cache_defaults_track_vendored_model_config() -> None:
+    runner_defaults = _function_keyword_defaults(
+        af3_backend.VENDORED_RUNNER, "make_model_config"
+    )
+    source_root = Path(af3_build.__file__).with_name("_upstream") / "alphafold3"
+    diffusion_defaults = _autocreate_defaults(
+        source_root / "model" / "network" / "diffusion_head.py", "eval"
+    )
+    msa_depth = _annotated_default(
+        source_root / "model" / "network" / "evoformer.py", "num_msa"
+    )
+    expected = {
+        "num_samples": runner_defaults["num_diffusion_samples"],
+        "num_steps": diffusion_defaults["steps"],
+        "num_recycles": runner_defaults["num_recycles"],
+        "max_msa_depth": msa_depth,
+        "attention_backend": runner_defaults["flash_attention_implementation"],
+        "return_embeddings": runner_defaults["return_embeddings"],
+        "return_distogram": runner_defaults["return_distogram"],
+        "kernel_autotuning": "autotune",
+    }
+
+    for name, default in expected.items():
+        assert type(af3_backend._RELEASED_COMPILE_DEFAULTS[name]) is type(default)
+    assert af3_backend._RELEASED_COMPILE_DEFAULTS == expected
+    assert diffusion_defaults["num_samples"] == expected["num_samples"]
+    assert set(expected) <= set(AlphaFold3Backend.compile_options)
+
+
+def test_released_default_aliases_reuse_one_managed_model_runner(
+    tmp_path: Path, mock_runtime: _MockRuntime
+) -> None:
+    weights = _weights(tmp_path)
+    omitted = _request(
+        tmp_path,
+        weights=weights,
+        output="defaults-omitted",
+        cache_dir=tmp_path / "cache",
+    )
+    explicit = _request(
+        tmp_path,
+        weights=weights,
+        output="defaults-explicit",
+        cache_dir=tmp_path / "cache",
+        options={
+            "num_samples": 5,
+            "num_steps": 200,
+            "num_recycles": 10,
+            "max_msa_depth": 1024,
+            "buckets": [],
+            "attention_backend": "triton",
+            "return_embeddings": False,
+            "return_distogram": False,
+            "kernel_autotuning": "autotune",
+        },
+    )
+    backend = AlphaFold3Backend()
+    omitted_scope = resolve_cache_dir(omitted, backend)
+    explicit_scope = resolve_cache_dir(explicit, backend)
+    assert explicit_scope == omitted_scope
+    requests = (
+        dataclasses.replace(omitted, cache_dir=omitted_scope),
+        dataclasses.replace(explicit, cache_dir=explicit_scope),
+    )
+
+    with backend.session(requests):
+        for request in requests:
+            backend.predict(request)
+
+    assert (
+        mock_runtime.config_kwargs
+        == [
+            {
+                "flash_attention_implementation": "triton",
+                "num_diffusion_samples": 5,
+                "num_recycles": 10,
+                "return_embeddings": False,
+                "return_distogram": False,
+            }
+        ]
+        * 2
+    )
+    assert mock_runtime.counts["configs"] == 2
+    assert mock_runtime.counts["model_runners"] == 1
+    assert mock_runtime.counts["parameter_loads"] == 1
+    assert mock_runtime.counts["traces"] == 1
+    assert mock_runtime.counts["inferences"] == 2
 
 
 @pytest.mark.parametrize(
@@ -475,10 +618,26 @@ def test_continued_failure_invalidates_before_the_next_seed(
 
 @pytest.mark.parametrize(
     "changed_identity",
-    ("weights", "device", "config", "cache", "autotune"),
+    (
+        "weights",
+        "device",
+        "num_samples",
+        "num_steps",
+        "max_msa_depth",
+        "buckets",
+        "attention",
+        "return_embeddings",
+        "return_distogram",
+        "cache",
+        "autotune_heuristics",
+        "autotune_error",
+        "padding",
+        "runtime",
+    ),
 )
 def test_runner_identity_change_drops_the_old_model_before_rebuilding(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     mock_runtime: _MockRuntime,
     changed_identity: str,
 ) -> None:
@@ -498,12 +657,35 @@ def test_runner_identity_change_drops_the_old_model_before_rebuilding(
     second_cache = first.cache_dir
     if changed_identity == "device":
         options["device"] = 1
-    elif changed_identity == "config":
+    elif changed_identity == "num_samples":
         options["num_samples"] = 6
+    elif changed_identity == "num_steps":
+        options["num_steps"] = 199
+    elif changed_identity == "max_msa_depth":
+        options["max_msa_depth"] = 512
+    elif changed_identity == "buckets":
+        options["buckets"] = [16]
+    elif changed_identity == "attention":
+        options["attention_backend"] = "xla"
+    elif changed_identity == "return_embeddings":
+        options["return_embeddings"] = True
+    elif changed_identity == "return_distogram":
+        options["return_distogram"] = True
     elif changed_identity == "cache":
         second_cache = tmp_path / "cache-b"
-    elif changed_identity == "autotune":
+    elif changed_identity == "autotune_heuristics":
         options["kernel_autotuning"] = "heuristics"
+    elif changed_identity == "autotune_error":
+        options["kernel_autotuning"] = "error"
+    elif changed_identity == "runtime":
+        alternate = ModuleType("_foldjax_test_alphafold3_runner_alternate")
+        alternate.__file__ = mock_runtime.runner.__file__
+        alternate.ModelRunner = mock_runtime.runner.ModelRunner
+        alternate.make_model_config = mock_runtime.runner.make_model_config
+        alternate.predict_structure = mock_runtime.runner.predict_structure
+        alternate.write_outputs = mock_runtime.runner.write_outputs
+        modules = iter((mock_runtime.runner, alternate))
+        monkeypatch.setattr(af3_backend, "_load_runner", lambda _path: next(modules))
     second = _request(
         tmp_path,
         weights=second_weights,
@@ -511,6 +693,14 @@ def test_runner_identity_change_drops_the_old_model_before_rebuilding(
         cache_dir=second_cache,
         options=options,
     )
+    if changed_identity == "padding":
+        second = dataclasses.replace(second, padding=True)
+
+        def prepare_padded_jobs(jobs, **_kwargs):
+            plan = SimpleNamespace(summary=lambda: {"tokens": 8})
+            return tuple((*job, None, plan) for job in jobs)
+
+        monkeypatch.setattr(af3_backend, "_prepare_padded_jobs", prepare_padded_jobs)
     backend = AlphaFold3Backend()
 
     with backend.session((first, second)):

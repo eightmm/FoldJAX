@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from foldjax.api import resolve_cache_dir
+from foldjax.backends.alphafold3 import AlphaFold3Backend
 from foldjax.backends.base import Backend
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.backends.opendde import OpenDDEBackend
@@ -138,6 +139,111 @@ def test_neutral_and_native_sampling_share_one_cache_namespace(
     )
 
     assert neutral == native
+
+
+def test_alphafold3_released_defaults_share_the_omitted_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    backend = AlphaFold3Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", input_format="native"
+    )
+    native = dataclasses.replace(
+        omitted,
+        options={
+            "num_samples": 5,
+            "num_steps": 200,
+            "num_recycles": 10,
+            "max_msa_depth": 1024,
+            "buckets": [],
+            "attention_backend": "triton",
+            "return_embeddings": False,
+            "return_distogram": False,
+            "kernel_autotuning": "autotune",
+        },
+    )
+    neutral = dataclasses.replace(
+        omitted,
+        num_samples=5,
+        num_steps=200,
+        num_recycles=10,
+        max_msa_depth=1024,
+        options={
+            "buckets": (),
+            "attention_kernel": "auto",
+            "return_embeddings": False,
+            "return_distogram": False,
+            "kernel_autotuning": "autotune",
+        },
+    )
+
+    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(native) == backend.cache_profile(omitted)
+    assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
+    assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
+    assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
+
+
+def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
+    tmp_path: Path,
+) -> None:
+    backend = AlphaFold3Backend()
+    request = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", input_format="native"
+    )
+    source = tmp_path / "external-alphafold3"
+    omitted = dataclasses.replace(request, options={"source": source})
+    explicit = dataclasses.replace(
+        request,
+        options={
+            "source": source,
+            "num_samples": 5,
+            "num_steps": 200,
+            "num_recycles": 10,
+            "max_msa_depth": 1024,
+            "attention_backend": "triton",
+            "return_embeddings": False,
+            "return_distogram": False,
+            "kernel_autotuning": "autotune",
+        },
+    )
+
+    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(explicit) == {
+        "num_steps": 200,
+        "max_msa_depth": 1024,
+    }
+    assert resolve_cache_dir(explicit, backend) != resolve_cache_dir(omitted, backend)
+
+
+@pytest.mark.parametrize(
+    "options",
+    (
+        {"num_samples": 6},
+        {"num_steps": 199},
+        {"num_recycles": 11},
+        {"max_msa_depth": 512},
+        {"buckets": [256]},
+        {"attention_backend": "xla"},
+        {"return_embeddings": True},
+        {"return_distogram": True},
+        {"kernel_autotuning": "heuristics"},
+        {"kernel_autotuning": "error"},
+        {"num_samples": np.int64(5)},
+    ),
+)
+def test_alphafold3_nondefault_and_type_routes_keep_distinct_cache_namespaces(
+    tmp_path: Path,
+    options: dict[str, object],
+) -> None:
+    backend = AlphaFold3Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", input_format="native"
+    )
+    changed = dataclasses.replace(omitted, options=options)
+
+    assert backend.cache_profile(changed) != backend.cache_profile(omitted)
+    assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
 
 
 def test_boltz2_released_defaults_share_the_omitted_cache_namespace(

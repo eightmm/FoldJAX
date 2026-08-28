@@ -333,6 +333,26 @@ _DIFFUSION_STEPS = ("heads", "diffusion", "eval", "steps")
 _MSA_DEPTH = ("evoformer", "num_msa")
 _PREFIX_STABLE_NOISE_FEATURE = "__foldjax_prefix_stable_diffusion_noise"
 
+#: Compile-relevant defaults released by the managed AlphaFold 3 runner.
+#:
+#: Cache planning must not import AlphaFold 3 or prepare its native runtime, so
+#: these lightweight scalar copies live beside the adapter. A source-level
+#: drift test pins them to ``make_model_config`` and the two nested config
+#: defaults. ``num_steps`` and ``max_msa_depth`` are inherited from that config
+#: only on the managed route; an explicit external checkout may carry different
+#: omitted defaults and therefore cannot use those two aliases.
+_RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
+    "num_samples": 5,
+    "num_steps": 200,
+    "num_recycles": 10,
+    "max_msa_depth": 1024,
+    "attention_backend": "triton",
+    "return_embeddings": False,
+    "return_distogram": False,
+    "kernel_autotuning": "autotune",
+}
+_MANAGED_CONFIG_DEFAULTS = frozenset({"num_steps", "max_msa_depth"})
+
 
 def _validated_buckets(value: Any) -> tuple[int, ...]:
     """Normalize the legacy AF3 bucket option without deferring shape errors.
@@ -674,6 +694,33 @@ class AlphaFold3Backend(Backend):
         self._model_runner: Any | None = None
         self._model_runner_key: tuple[Any, ...] | None = None
 
+    def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
+        """Keep exact released-default aliases in one compilation namespace.
+
+        The adapter resolves all but the nested step/MSA values itself. Those
+        two inherit the vendored config only for the managed runner, so an
+        external ``source`` deliberately keeps their explicit spellings.
+        Empty ordinary bucket sequences are the native no-bucketing route.
+        Every non-default and merely equal type lookalike remains distinct.
+        """
+
+        profile = super().cache_profile(request)
+        managed_route = not bool(request.options.get("source"))
+        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
+            if not managed_route and name in _MANAGED_CONFIG_DEFAULTS:
+                continue
+            if name not in profile:
+                continue
+            value = profile[name]
+            # ``bool`` is an ``int`` subclass. Preserve malformed, extended,
+            # or future type variants rather than aliasing equal spellings.
+            if type(value) is type(default) and value == default:
+                profile.pop(name)
+        buckets = profile.get("buckets")
+        if type(buckets) in (list, tuple) and not buckets:
+            profile.pop("buckets")
+        return profile
+
     @contextmanager
     def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
         """Retain one managed ``ModelRunner`` inside one API request only."""
@@ -863,14 +910,13 @@ class AlphaFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
+        managed_route = not bool(options.get("source"))
         # Out before the leftover-option check: carried by the scope.
         matmul_precision = self.matmul_precision(options)
         buckets = _prediction_buckets(request, options)
         self._raise_if_poisoned()
         managed_weights = (
-            Path(request.weights)
-            if self._session_active and not options.get("source")
-            else None
+            Path(request.weights) if self._session_active and managed_route else None
         )
         anchor = (
             self._anchor_assets(managed_weights)
@@ -900,18 +946,37 @@ class AlphaFold3Backend(Backend):
                 jax.local_devices(backend=platform) if platform else jax.local_devices()
             )
             device = devices[int(options.pop("device", 0))]
-            attention_backend = options.pop("attention_backend", "triton")
-            num_samples = int(options.pop("num_samples", 5))
-            num_recycles = int(options.pop("num_recycles", 10))
+            attention_backend = options.pop(
+                "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
+            )
+            num_samples = int(
+                options.pop("num_samples", _RELEASED_COMPILE_DEFAULTS["num_samples"])
+            )
+            num_recycles = int(
+                options.pop("num_recycles", _RELEASED_COMPILE_DEFAULTS["num_recycles"])
+            )
             return_embeddings = _strict_boolean(
-                options.pop("return_embeddings", False), name="return_embeddings"
+                options.pop(
+                    "return_embeddings",
+                    _RELEASED_COMPILE_DEFAULTS["return_embeddings"],
+                ),
+                name="return_embeddings",
             )
             return_distogram = _strict_boolean(
-                options.pop("return_distogram", False), name="return_distogram"
+                options.pop(
+                    "return_distogram",
+                    _RELEASED_COMPILE_DEFAULTS["return_distogram"],
+                ),
+                name="return_distogram",
             )
             num_steps = options.pop("num_steps", None)
             max_msa_depth = options.pop("max_msa_depth", None)
-            kernel_fallback = str(options.pop("kernel_autotuning", "autotune"))
+            kernel_fallback = str(
+                options.pop(
+                    "kernel_autotuning",
+                    _RELEASED_COMPILE_DEFAULTS["kernel_autotuning"],
+                )
+            )
             if options:
                 raise ValueError(
                     f"unsupported AlphaFold 3 options: {', '.join(options)}"
@@ -925,14 +990,25 @@ class AlphaFold3Backend(Backend):
             )
             _set_nested(config, _DIFFUSION_STEPS, num_steps)
             _set_nested(config, _MSA_DEPTH, max_msa_depth)
+            identity_num_steps = None if num_steps is None else int(num_steps)
+            identity_max_msa_depth = (
+                None if max_msa_depth is None else int(max_msa_depth)
+            )
+            if managed_route:
+                if identity_num_steps is None:
+                    identity_num_steps = int(_RELEASED_COMPILE_DEFAULTS["num_steps"])
+                if identity_max_msa_depth is None:
+                    identity_max_msa_depth = int(
+                        _RELEASED_COMPILE_DEFAULTS["max_msa_depth"]
+                    )
             config_identity = (
                 ("attention_backend", attention_backend),
                 ("num_samples", num_samples),
                 ("num_recycles", num_recycles),
                 ("return_embeddings", return_embeddings),
                 ("return_distogram", return_distogram),
-                ("num_steps", num_steps),
-                ("max_msa_depth", max_msa_depth),
+                ("num_steps", identity_num_steps),
+                ("max_msa_depth", identity_max_msa_depth),
             )
             model_runner, model_runner_key = self._select_model_runner(
                 runner=runner,
