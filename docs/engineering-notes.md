@@ -136,6 +136,75 @@ structures moved 0.0209 Å all-atom paired by sample, against a rerun floor of
 own diffusion samples. That is at the floor: the change is not distinguishable
 from running the same arm twice.
 
+### What raising the sample count costs
+
+The benchmark runs five diffusion samples because that is AlphaFold 3's
+released default. Asking for more is a thing users do, and until 2026-08-28 how
+well it went depended entirely on which port you asked. Measured at 1,003
+tokens, peak GiB against `--num-samples`:
+
+| model | 1 | 5 | 16 | 32 | 1 → 32 |
+|---|---|---|---|---|---|
+| protenix | 6.6 | 6.6 | 7.3 | 7.5 | 1.13x |
+| esmfold2 | 20.9 | 21.1 | 21.1 | — | ~1.0x |
+| opendde | 19.0 | 19.1 | — | 31.3 | 1.65x |
+| boltz2 | 6.7 | 6.8 | 11.1 | 20.8 | **3.13x** |
+| openfold3 | 9.0 | 11.0 | 20.9 | 38.2 | **4.24x** |
+
+**The ranking is exactly which ports had a lever.** Protenix resolves a
+`diffusion_chunk_size` from the sample count under its default `auto` policy,
+and maps its confidence head over the samples; ESMFold2 does the second. Boltz-2
+had the confidence half — its `api.py` turns `confidence_sequentially` on
+whenever there is more than one sample — and nothing for the rollout. OpenFold3
+runs its confidence re-embedding per sample above 750 tokens and had nothing for
+the rollout either. OpenDDE's CLI resolved a `diffusion_chunk_size` and then
+passed four of the six knobs it had resolved, dropping this one.
+
+So the fix was not a new idea, it was the one Protenix already had, given to
+the ports that lacked it under the same name:
+
+| model | 32 samples, before | after |
+|---|---|---|
+| boltz2 | 20.84 GiB | **6.79** — its own five-sample peak, flat |
+| openfold3 | 38.24 GiB | **14.68** — 4.24x down to 1.63x |
+| opendde | 31.34 GiB | 31.36 — no change, see below |
+
+The released five-sample runs are untouched to a hundredth of a GiB, because
+the rule resolves to no chunk until there is more than one chunk to run. That
+is what `> DIFFUSION_CHUNK_SIZE` rather than `>=` buys, and it is why this
+could land without re-measuring the benchmark.
+
+**Boltz-2 grew fastest per sample for a reason worth keeping.** Its
+conditioning is `jnp.repeat`-ed where OpenFold3's is `broadcast_to`, so the
+sample axis costs real copies before the denoiser allocates anything.
+OpenFold3's expansion is a view, which is why its width could be made to follow
+the coordinates -- `denoise_fn` now widens to `xl_noisy.shape[0]` instead of to
+the config -- at no copying cost.
+
+**Unlike a blocked matmul, this is not the same arithmetic.** Each chunk draws
+its noise at its own width, so the coordinates are different draws from the same
+distribution rather than the same draws computed differently. OpenFold3 is the
+exception: its noise is drawn at the full sample width and narrowed, which costs
+nothing worth saving -- the draw is `[S, N_atom, 3]`, megabytes against the
+denoiser's gigabytes -- so its chunking agrees with the unchunked rollout to
+9.5e-06 absolute, which is float32 round-off rather than a different sample.
+
+**OpenDDE's growth is not the rollout, and the knob it now has does not move
+it.** 31.34 GiB before and 31.36 after, at thirty-two samples. Its peak at one
+sample is the quadratic trunk arena and the 12 GiB it adds by thirty-two is
+downstream of the sampler; Protenix and ESMFold2 both map their confidence head
+over the sample axis and OpenDDE does not, which is the next thing to measure.
+The wiring landed anyway, because a CLI that resolves a setting and drops it is
+a defect whether or not the setting would have helped.
+
+**One name, one constant.** `diffusion_chunk_size` is what the CLI, the Python
+API, the backend option set and each port's own signature call it, and
+`foldjax.execution.DIFFUSION_CHUNK_SIZE` is the single place the width lives --
+Protenix's `PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE` now reads from it. Two ports
+grew this knob on the same day; without one home they would have grown two
+spellings and two constants, which is the failure `foldjax.execution` exists to
+prevent.
+
 ### Which precision each model runs
 
 Two independent axes. **Element width** is what the trunk's weights and

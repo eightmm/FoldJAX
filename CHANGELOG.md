@@ -89,6 +89,32 @@ command predicts unless it says so here, in its own paragraph.
   both 1-D and 2-D context-parallel layouts. A CUDA test set covering the
   compact reconstruction, padding, and both model families passed 53 tests;
   no released end-to-end GPU peak or latency claim is made.
+- **Raising `num_samples` no longer costs what it used to on Boltz-2 and
+  OpenFold3.** Measured at 1,003 tokens, peak against the sample count went
+  6.7 → 20.8 GiB on Boltz-2 and 9.0 → 38.2 on OpenFold3 between one sample and
+  thirty-two, against 6.6 → 7.5 on Protenix. The ranking was exactly which
+  ports had a lever: Protenix resolves a `diffusion_chunk_size` from the sample
+  count, and the two that grew fastest had nothing for the rollout.
+
+  Both now take the same knob, under the same name and at the same default
+  width. At thirty-two samples Boltz-2 goes 20.84 → 6.79 GiB — its own
+  five-sample peak, flat — and OpenFold3 38.24 → 14.68, from 4.24x growth to
+  1.63x. **The released five-sample runs are unchanged to a hundredth of a
+  GiB**, because the rule resolves to no chunk until there is more than one to
+  run.
+
+  This is not the same arithmetic on Boltz-2: each chunk draws its noise at its
+  own width, so the coordinates are different draws from the same distribution,
+  which is what Protenix's copy of the knob has always done. OpenFold3 draws at
+  the full width and narrows, so it agrees with the unchunked rollout to
+  9.5e-06 absolute — float32 round-off, not a different sample.
+
+  `diffusion_chunk_size` is the name in the CLI, the Python API, the backend
+  option set and each port's own signature, and `foldjax.execution` holds the
+  one constant behind it.
+- **`bench/run_foldjax` takes `--num-samples`**, for the same reason `--seed`
+  exists: the table is pinned to one schedule so its rows compare, and how a
+  peak grows along the sample axis is a different question.
 
 - **OpenFold3's standalone `--all-arrays` now reaches the compiled graph as well
   as the writer.** On large targets the command previously removed PAE/PDE pair
