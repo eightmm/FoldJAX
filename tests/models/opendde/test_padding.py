@@ -13,6 +13,11 @@ import pytest
 from foldjax.backends.opendde import OpenDDEBackend, _shape_profile
 from foldjax.models.opendde import postprocess as postprocess_impl
 from foldjax.models.opendde.cli import predict as predict_impl
+from foldjax.models.opendde.data.compact_categories import (
+    COMPACT_REF_ATOM_NAME_CHAR_IDS,
+    COMPACT_REF_ELEMENT_IDS,
+    compact_ref_atom_category_storage,
+)
 from foldjax.models.opendde.data.padding import (
     crop_opendde_outputs,
     pad_opendde_features,
@@ -490,6 +495,33 @@ def test_opendde_padding_and_model_filter_preserve_compact_relp() -> None:
     np.testing.assert_array_equal(
         np.asarray(compact_relative_position_features(selected)),
         np.pad(original, ((0, 1), (0, 1), (0, 0))),
+    )
+
+
+def test_padding_precedes_private_compact_atom_categories() -> None:
+    features = _opendde_features(msa_depth=2)
+    features["ref_element"] = np.eye(128, dtype=np.int64)[[6, 7, 8]]
+    features["ref_atom_name_chars"] = np.eye(64, dtype=np.int64)[
+        [[32, 32, 32, 32], [33, 33, 33, 33], [34, 34, 34, 34]]
+    ]
+    sampled = sample_opendde_msa_cycle_features(features, num_recycles=1, seed=7)
+
+    padded, _cycles, _plan = pad_opendde_features(
+        features,
+        sampled,
+        PaddingConfig(tokens=4, atoms=5, msa=4, structural_tokens=6),
+        n_queries=2,
+        n_keys=4,
+    )
+    compact = compact_ref_atom_category_storage(select_opendde_model_features(padded))
+
+    # Writer/public input data remains dense after padding; only the model copy
+    # gets IDs, including the two all-zero padded atom rows as sentinels.
+    assert padded["ref_element"].shape == (5, 128)
+    assert padded["ref_atom_name_chars"].shape == (5, 4, 64)
+    np.testing.assert_array_equal(compact[COMPACT_REF_ELEMENT_IDS], [6, 7, 8, 128, 128])
+    np.testing.assert_array_equal(
+        compact[COMPACT_REF_ATOM_NAME_CHAR_IDS][3:], np.full((2, 4), 64, np.uint8)
     )
 
 

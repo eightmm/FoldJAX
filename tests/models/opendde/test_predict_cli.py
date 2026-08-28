@@ -196,7 +196,13 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     monkeypatch.delenv("PROTENIX_TEMPLATE_RELEASE_DATES_FILE", raising=False)
     monkeypatch.delenv("PROTENIX_TEMPLATE_OBSOLETE_FILE", raising=False)
     monkeypatch.delenv("PROTENIX_KALIGN_BINARY", raising=False)
-    features = {"restype": np.zeros((2, 32), dtype=np.float32)}
+    features = {
+        "restype": np.zeros((2, 32), dtype=np.float32),
+        "ref_element": np.eye(128, dtype=np.int64)[[6, 7, 8]],
+        "ref_atom_name_chars": np.eye(64, dtype=np.int64)[
+            [[32, 32, 32, 32], [33, 33, 33, 33], [34, 34, 34, 34]]
+        ],
+    }
     raw_output = {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
     scored_output = {**raw_output, "atom_plddt": np.ones((1, 3))}
     params = _params_double()
@@ -223,11 +229,13 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         lambda output, value, *, num_recycles, return_confidence_details: scored_output,
     )
     expected_path = output_dir / "tiny" / "seed_101" / "predictions" / "tiny.cif"
-    monkeypatch.setattr(
-        predict_impl,
-        "_write",
-        lambda root, **kwargs: [expected_path],
-    )
+    write_calls = []
+
+    def fake_write(root, **kwargs):
+        write_calls.append((root, kwargs))
+        return [expected_path]
+
+    monkeypatch.setattr(predict_impl, "_write", fake_write)
 
     argv = [
         "--input-json",
@@ -257,7 +265,14 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     ]
     predict_impl.main(argv)
 
-    assert calls[0][0] is features
+    model_features = calls[0][0]
+    assert model_features is not features
+    assert "ref_element" not in model_features
+    assert "ref_atom_name_chars" not in model_features
+    assert "_foldjax_compact_ref_atom_categories" in model_features
+    assert write_calls[0][1]["features"] is features
+    assert features["ref_element"].dtype == np.int64
+    assert features["ref_atom_name_chars"].dtype == np.int64
     # Equality, not identity: the shipped bfloat16 trunk casts the weights on
     # the way in, so `cast_trunk_params` hands the model a rebuilt tree. What
     # this pins is that the loaded parameters are what reach the model, which

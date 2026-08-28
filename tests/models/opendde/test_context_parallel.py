@@ -207,6 +207,40 @@ _PARITY_PROBE = textwrap.dedent(
 )
 
 
+_COMPACT_CATEGORY_CP_PROBE = textwrap.dedent(
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models.opendde.data.compact_categories import (
+        compact_ref_atom_category_storage,
+    )
+    from foldjax.models.opendde.models.model import _restore_ref_atom_category_one_hot
+
+    assert jax.device_count() == 4, jax.devices()
+    dense = {
+        "ref_element": np.eye(128, dtype=np.int64)[[6, 7, 8]],
+        "ref_atom_name_chars": np.eye(64, dtype=np.int64)[
+            [[32, 32, 32, 32], [33, 33, 33, 33], [34, 34, 34, 34]]
+        ],
+    }
+    compact = compact_ref_atom_category_storage(dense)
+
+    def run(features):
+        restored = _restore_ref_atom_category_one_hot(features)
+        return restored["ref_element"].sum() + restored["ref_atom_name_chars"].sum()
+
+    for layout in ("1d", "2d"):
+        jax.clear_caches()
+        with context_parallel(4, layout=layout):
+            assert int(jax.jit(run)(compact)) == 15
+    print("COMPACT_CATEGORY_CP_OK")
+    """
+)
+
+
 _GRID_PROBE = textwrap.dedent(
     """
     import os
@@ -557,3 +591,7 @@ def test_context_parallel_matches_the_unsharded_program() -> None:
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "CP_PARITY_OK" in completed.stdout
+
+
+def test_compact_categories_reconstruct_on_forced_cpu_cp_layouts() -> None:
+    assert "COMPACT_CATEGORY_CP_OK" in _run_probe(_COMPACT_CATEGORY_CP_PROBE)

@@ -28,6 +28,13 @@ from foldjax.models._graph import (
     traceable_features,
 )
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models.opendde.data.compact_categories import (
+    COMPACT_REF_ATOM_CATEGORIES_MARKER,
+    COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
+    COMPACT_REF_ATOM_NAME_CHAR_IDS,
+    COMPACT_REF_ELEMENT_IDS,
+    validate_compact_ref_atom_categories,
+)
 from foldjax.models.opendde.models.diffusion_conditioning import (
     diffusion_conditioning_prepare_cache,
 )
@@ -411,6 +418,77 @@ def _validate_static_structural_features(
     return n_residue, n_structural, n_atom
 
 
+def _restore_ref_atom_category_one_hot(
+    features: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Restore private uint8 categories to the historical dense int64 pair.
+
+    This runs at the model boundary, immediately before the existing trunk and
+    atom projections. Dense arrays have priority and discard any stale private
+    provenance.  The compiled wrapper value-validates private arrays on host;
+    here shape/dtype checks remain trace-safe for JIT and direct static calls.
+    """
+
+    has_element = "ref_element" in features
+    has_chars = "ref_atom_name_chars" in features
+    if has_element or has_chars:
+        if not any(
+            name in features for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        ):
+            return features
+        out = dict(features)
+        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
+            out.pop(name, None)
+        return out
+
+    out = dict(features)
+
+    missing = [
+        name
+        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        if name not in features
+    ]
+    if missing:
+        raise KeyError(
+            "OpenDDE input needs dense ref atom categories or complete private "
+            "compact categories; missing " + ", ".join(missing)
+        )
+    # Direct eager callers do not pass through `opendde_infer_compiled`'s host
+    # boundary, so give them the same value-level malformed-provenance error.
+    # Inside the compiled graph these are tracers and the wrapper has already
+    # performed this check before tracing.
+    private_values = tuple(
+        features[name] for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+    )
+    if not any(isinstance(value, jax.core.Tracer) for value in private_values):
+        validate_compact_ref_atom_categories(features)
+    marker = jnp.asarray(features[COMPACT_REF_ATOM_CATEGORIES_MARKER])
+    element_ids = jnp.asarray(features[COMPACT_REF_ELEMENT_IDS])
+    char_ids = jnp.asarray(features[COMPACT_REF_ATOM_NAME_CHAR_IDS])
+    if marker.shape != () or marker.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError(
+            "OpenDDE compact ref atom category marker must be scalar uint8"
+        )
+    if element_ids.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("OpenDDE compact ref element IDs must have dtype uint8")
+    if char_ids.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("OpenDDE compact ref atom-name IDs must have dtype uint8")
+    if element_ids.ndim < 1 or char_ids.shape != (*element_ids.shape, 4):
+        raise ValueError(
+            "OpenDDE compact ref atom category IDs must have shapes [..., A] "
+            "and [..., A, 4]"
+        )
+    out["ref_element"] = jax.nn.one_hot(
+        element_ids.astype(jnp.int32), 128, dtype=jnp.int64
+    )
+    out["ref_atom_name_chars"] = jax.nn.one_hot(
+        char_ids.astype(jnp.int32), 64, dtype=jnp.int64
+    )
+    for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
+        out.pop(name, None)
+    return out
+
+
 def prepare_structural_features(
     residue_features: Mapping[str, Any],
     structural_pair_features: Mapping[str, jnp.ndarray],
@@ -606,6 +684,7 @@ def opendde_infer_static(
             f"{_active_cp_shards()} shard(s); run through "
             "opendde_infer_compiled or activate context_parallel() yourself"
         )
+    input_feature_dict = _restore_ref_atom_category_one_hot(input_feature_dict)
     # Triangle backends are NOT overridden for context parallelism. Attention
     # keeps whatever kernel is configured -- `_triangle_attention_cp` runs it
     # per-shard inside `shard_map`, where each device holds whole rows -- and
@@ -1065,6 +1144,19 @@ def opendde_infer_compiled(
     collapses to one dispatch. This is the same computation: only how much of it
     XLA sees at once changes.
     """
+    # Do value-level private-provenance validation while feature leaves are
+    # concrete.  Dense public arrays take precedence and remove stale private
+    # keys before they can affect the JIT input tree/cache identity.
+    validate_compact_ref_atom_categories(input_feature_dict)
+    if (
+        "ref_element" in input_feature_dict
+        or "ref_atom_name_chars" in input_feature_dict
+    ):
+        input_feature_dict = {
+            name: value
+            for name, value in input_feature_dict.items()
+            if name not in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        }
     restype = input_feature_dict.get("restype")
     if restype is not None:
         input_feature_dict = normalize_relative_position_storage(

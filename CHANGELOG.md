@@ -12,6 +12,25 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed OpenDDE prediction now carries exact atom element and atom-name
+  categories as private compact IDs until the compiled graph consumes them.**
+  Generated, validated (and when requested padded) model copies replace the
+  dense `int64[N_atom, 128]` / `int64[N_atom, 4, 64]` one-hot arrays with a
+  version-1 `uint8` marker plus `uint8[N_atom]` / `uint8[N_atom, 4]` IDs; the
+  all-zero padding vectors use sentinels 128 and 64. The graph reconstructs
+  the historical dense categories directly before the existing projections.
+  Public featurizer results, archives, output-writer metadata, direct/custom
+  calls, and malformed or non-exact inputs retain the dense contract. Dense
+  values take precedence over stale private provenance; an incomplete or
+  malformed private-only form fails before tracing.
+
+  Synthetic CPU tests cover exact reconstruction inside JIT, int64-only
+  admission, 0/1/zero-sentinel handling, FP32/BF16/non-finite/signed-zero and
+  rank/shape fallbacks, JIT argument/HLO shape, CLI writer metadata retention,
+  padding, and the existing forced four-CPU 1-D/2-D context-parallel suite.
+  Released-weight GPU peak/latency and released end-to-end prediction remain
+  unverified.
+
 - **Managed Boltz-2 full and affinity prediction carry atom-to-token ownership
   as compact private IDs.** The publisher-native `int64[B, A, N]` one-hot map
   is proven and converted before model padding to a scalar `uint8` version-1

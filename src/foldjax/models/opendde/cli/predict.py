@@ -11,6 +11,9 @@ from typing import Any
 
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models.opendde.data.compact_categories import (
+    compact_ref_atom_category_storage,
+)
 from foldjax.models.protenix.chunking import ChunkPolicyName
 from foldjax.models.protenix.data.template_features import dedup_templates
 from foldjax.schema import PaddingConfig, PredictionError
@@ -756,6 +759,10 @@ def main(
                 # four. OpenDDE reads the templates every recycle, so the stack
                 # evaluations come off once per cycle rather than once.
                 model_features = dedup_templates(model_features)
+                # Keep public/output features dense for the writer and every
+                # direct/archive ABI.  Only this generated, normalized model
+                # copy may replace exact int64 one-hot atom categories by IDs.
+                model_features = compact_ref_atom_category_storage(model_features)
                 output = _predict(
                     model_features,
                     params,
