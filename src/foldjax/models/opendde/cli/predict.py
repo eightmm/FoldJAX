@@ -297,6 +297,9 @@ def _predict(
         triangle_att_q_chunk_size=chunks.triangle_att_q_chunk_size,
         single_att_q_chunk_size=chunks.single_att_q_chunk_size,
         token_q_chunk_size=chunks.token_q_chunk_size,
+        # Resolved above and, before this, dropped on the floor: four of the six
+        # knobs `resolve_chunk_config` returns were forwarded and this was not.
+        diffusion_chunk_size=chunks.diffusion_chunk_size,
         cycle_msa_features=sampled or None,
         cp_shards=cp_shards,
         cp_layout=cp_layout,

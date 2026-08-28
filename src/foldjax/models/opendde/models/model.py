@@ -475,6 +475,31 @@ def prepare_structural_features(
     }
 
 
+def _slice_samples(value, start: int, size: int):
+    """Narrow a supplied noise/augmentation tape to one chunk of samples.
+
+    `None` passes through: the sampler draws its own when nothing was given.
+    The sample axis is the third from the end on a coordinate tape and the
+    leading one otherwise, which is the same rule Protenix's own slicer uses.
+    """
+    if value is None:
+        return None
+    if value.ndim > 3:
+        return value[..., start : start + size, :, :]
+    if value.ndim == 3:
+        return value[start : start + size]
+    return value[..., start : start + size]
+
+
+def _slice_step_noises(value, start: int, size: int):
+    """`_slice_samples` over a per-step sequence, or over one stacked array."""
+    if value is None:
+        return None
+    if hasattr(value, "shape"):
+        return value[..., start : start + size, :, :]
+    return tuple(_slice_samples(item, start, size) for item in value)
+
+
 @_with_cueq_triangle_defaults
 def opendde_infer_static(
     input_feature_dict: dict[str, Any],
@@ -488,6 +513,10 @@ def opendde_infer_static(
     rotations: jnp.ndarray | None = None,
     translations: jnp.ndarray | None = None,
     preserve_prefix_rng: bool = False,
+    #: Diffusion samples denoised at once. The neutral name every port here
+    #: uses; `None` denoises all of them together. Resolved from the sample
+    #: count by the CLI, which already computes it and, until now, dropped it.
+    diffusion_chunk_size: int | None = None,
     num_recycles: int = 10,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,
@@ -807,11 +836,11 @@ def opendde_infer_static(
             atom_mask=atom_mask,
         )
 
-    def sample(key, init_noise, step_noises, rotations, translations):
+    def sample(key, init_noise, step_noises, rotations, translations, count):
         return sample_diffusion(
             denoise_fn,
             noise_schedule,
-            num_samples=num_samples,
+            num_samples=count,
             n_atom=n_atom,
             key=key,
             init_noise=init_noise,
@@ -828,7 +857,39 @@ def opendde_infer_static(
             preserve_prefix_rng=preserve_prefix_rng,
         )
 
-    coordinates = sample(key, init_noise, step_noises, rotations, translations)
+    # Denoise the samples a chunk at a time when there is more than one chunk
+    # to run. Same knob, same name and same default width as every other port
+    # here; the released five-sample run takes the single call it always took.
+    #
+    # Each chunk draws its noise at its own width, so this changes which draws
+    # come out, not how they are computed -- the same property Protenix's copy
+    # of this knob has. A caller who supplied its own tapes gets them sliced
+    # instead, so those runs are unchanged.
+    if diffusion_chunk_size is not None and num_samples > diffusion_chunk_size:
+        starts = list(range(0, num_samples, diffusion_chunk_size))
+        chunk_keys = (
+            [None] * len(starts)
+            if key is None
+            else list(jax.random.split(key, len(starts)))
+        )
+        pieces = []
+        for chunk_key, start in zip(chunk_keys, starts, strict=True):
+            size = min(diffusion_chunk_size, num_samples - start)
+            pieces.append(
+                sample(
+                    chunk_key,
+                    _slice_samples(init_noise, start, size),
+                    _slice_step_noises(step_noises, start, size),
+                    _slice_samples(rotations, start, size),
+                    _slice_samples(translations, start, size),
+                    size,
+                )
+            )
+        coordinates = jnp.concatenate(pieces, axis=-3)
+    else:
+        coordinates = sample(
+            key, init_noise, step_noises, rotations, translations, num_samples
+        )
 
     head_s_inputs = as_float32(s_inputs_residue)
     head_s_trunk = as_float32(s_residue)
@@ -918,6 +979,9 @@ GRAPH_STATIC_ARGNAMES = (
     "n_chain",
     "return_confidence_logits",
     "diffusion_attention_backend",
+    # Static: it sets how many rollout calls the graph contains, the same way
+    # the query chunk sizes below set how many blocks each attention contains.
+    "diffusion_chunk_size",
     "gamma0",
     "gamma_min",
     "input_atom_heads",
