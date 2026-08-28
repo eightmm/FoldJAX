@@ -122,6 +122,20 @@ class InferenceConfig(NamedTuple):
     # at a time. 750 is upstream's own default (``per_sample_token_cutoff`` in
     # ``model_config.py``); ``None`` always batches the samples.
     per_sample_token_cutoff: int | None = 750
+    #: Diffusion samples the rollout denoises at once. The denoiser holds its
+    #: activations for every sample handed to it, so this is the model's entire
+    #: growth along the sample axis: measured at 1,003 tokens, the peak went
+    #: 9.0 GiB at one sample to 38.2 at thirty-two without it. It is the same
+    #: name and the same default width Protenix resolves it at, because a
+    #: knob that means the same thing should not have two spellings. The
+    #: conditioning is widened at the point of use and the noise is narrowed
+    #: rather than redrawn, so a chunk sees the numbers its samples would have
+    #: seen anyway -- to float32 round-off, 9.5e-06 absolute, not to the bit.
+    #: `None` denoises every sample at once.
+    #:
+    #: Resolved from the sample count by `released_config` rather than pinned
+    #: here, so a one-sample run keeps the single unchunked rollout it had.
+    diffusion_chunk_size: int | None = None
     # Alignment rows the trunk sees. Upstream subsamples inside the network, in
     # ``MSAModuleEmbedder.forward``, with ``subsample_all_msa=True`` and
     # ``min_subsampled_all_msa == max_subsampled_all_msa == 1024`` -- a draw from
@@ -641,7 +655,6 @@ def predict(
         name: _expand_samples(value, config.num_samples)
         for name, value in batch.items()
     }
-    s_trunk_s = _expand_samples(s_trunk, config.num_samples)
 
     # Pair conditioning takes no noise level: it is a function of the batch and the
     # trunk pair representation alone, so it is constant across every rollout step
@@ -652,19 +665,19 @@ def predict(
     # before the projection. Hoisting it out is exact, not an approximation.
     # Born sharded under context parallelism; the sample axis stays a
     # broadcast view, only the row axis is split.
-    zij_s = shard_pair_rows(
-        _expand_samples(
-            shard_pair_rows(
-                pair_conditioning(
-                    batch,
-                    z,
-                    params.diffusion_conditioning,
-                    max_relative_idx=config.max_relative_idx,
-                    max_relative_chain=config.max_relative_chain,
-                    token_mask=batch["token_mask"],
-                )
-            ),
-            config.num_samples,
+    # Kept at its natural leading axis of 1 and widened at the point of use, so
+    # the sample width is a property of the coordinates being denoised rather
+    # than of the config. That is what lets the rollout run a chunk of the
+    # samples at a time: everything here is a `broadcast_to` view, so widening
+    # to 5 instead of 32 costs nothing and copies nothing.
+    zij_base = shard_pair_rows(
+        pair_conditioning(
+            batch,
+            z,
+            params.diffusion_conditioning,
+            max_relative_idx=config.max_relative_idx,
+            max_relative_chain=config.max_relative_chain,
+            token_mask=batch["token_mask"],
         )
     )
 
@@ -672,6 +685,7 @@ def predict(
         # The single path is the only one that reads the noise level, so it is the
         # only one that has to be rebuilt per step. It is still sample-independent:
         # ``t`` is one value per step, shared by every sample.
+        width = xl_noisy.shape[0]
         si = _expand_samples(
             single_conditioning(
                 s_input,
@@ -681,15 +695,15 @@ def predict(
                 sigma_data=config.sigma_data,
                 token_mask=batch["token_mask"],
             ),
-            config.num_samples,
+            width,
         )
         return denoise(
-            sampled_batch,
+            {name: _expand_samples(value, width) for name, value in batch.items()},
             xl_noisy,
             t,
             si,
-            s_trunk_s,
-            zij_s,
+            _expand_samples(s_trunk, width),
+            shard_pair_rows(_expand_samples(zij_base, width)),
             params.denoiser,
             n_query=config.n_query,
             n_key=config.n_key,
@@ -728,8 +742,10 @@ def predict(
             step_scale=config.step_scale,
             augment_fn=(
                 (
+                    # Widened to whatever `xl` carries, not to the config: the
+                    # rollout may be running a chunk of the samples.
                     lambda k, xl: centre_random_augmentation(
-                        k, xl, sampled_batch["atom_mask"]
+                        k, xl, _expand_samples(batch["atom_mask"], xl.shape[0])
                     )
                 )
                 if augment
@@ -738,6 +754,7 @@ def predict(
             noise_fn=noise_fn,
             noise_tape=noise_tape,
             noise_mask=noise_mask,
+            diffusion_chunk_size=config.diffusion_chunk_size,
         )
 
     coordinates = sample(key, noise_tape, noise_mask)
@@ -944,6 +961,18 @@ def predict(
     )
 
 
+#: Diffusion samples denoised at once once the rollout is chunked. Protenix
+#: resolves the same knob at the same width (`PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE`),
+#: and the released schedule asks for five, so the shipped run is unchanged and
+#: only a caller who raises the sample count pays for the loop.
+DIFFUSION_SAMPLE_CHUNK = 5
+
+
+def _auto_diffusion_sample_chunk(num_samples: int) -> int | None:
+    """Chunk the rollout only when there is more than one chunk to run."""
+    return DIFFUSION_SAMPLE_CHUNK if num_samples > DIFFUSION_SAMPLE_CHUNK else None
+
+
 def released_config(
     *,
     n_token: int,
@@ -954,6 +983,7 @@ def released_config(
     num_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
     per_sample_token_cutoff: int | None = 750,
+    diffusion_chunk_size: int | None | str = "auto",
     msa_depth: int | None = RELEASED_MSA_DEPTH,
     cp_shards: int = 1,
     cp_layout: str = "auto",
@@ -1019,6 +1049,11 @@ def released_config(
         step_scale=1.5,
         pair_chunk_size=resolved_chunk,
         per_sample_token_cutoff=per_sample_token_cutoff,
+        diffusion_chunk_size=(
+            _auto_diffusion_sample_chunk(num_samples)
+            if diffusion_chunk_size == "auto"
+            else diffusion_chunk_size
+        ),
         msa_depth=msa_depth,
         cp_shards=cp_shards,
         cp_layout=cp_layout,

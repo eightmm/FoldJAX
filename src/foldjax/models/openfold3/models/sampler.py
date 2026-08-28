@@ -39,6 +39,7 @@ def sample_diffusion(
     noise_fn: Callable[[int, tuple[int, ...]], jnp.ndarray] | None = None,
     noise_tape: jnp.ndarray | None = None,
     noise_mask: jnp.ndarray | None = None,
+    diffusion_chunk_size: int | None = None,
 ) -> jnp.ndarray:
     """Roll out the EDM sampler.
 
@@ -118,43 +119,80 @@ def sample_diffusion(
         injected = jnp.stack([noise_fn(step, shape) for step in range(n_steps + 1)])
         xl = noise_schedule[0] * injected[0]
 
-    def step(xl: jnp.ndarray, carry) -> tuple[jnp.ndarray, None]:
-        previous, c_tau, step_noise, noise_key, augment_key = carry
+    def rollout(xl: jnp.ndarray, rows: slice | None) -> jnp.ndarray:
+        """One scan over the schedule, for all samples or a slice of them."""
 
-        if augment_fn is not None:
-            xl = augment_fn(augment_key, xl)
+        def take(value: jnp.ndarray) -> jnp.ndarray:
+            # Every noise source is drawn at the full sample width and then
+            # narrowed, so a chunked run and a whole one see the same numbers.
+            # The draw is `[S, N_atom, 3]` -- megabytes, against the gigabytes
+            # the denoiser holds -- so drawing it whole costs nothing that
+            # chunking was meant to save.
+            return value if rows is None else value[rows]
 
-        # Inflate the noise level, but only while there is schedule left to run.
-        gamma = jnp.where(c_tau > gamma_min, gamma_0, 0.0)
-        t = previous * (gamma + 1.0)
+        def step(xl: jnp.ndarray, carry) -> tuple[jnp.ndarray, None]:
+            previous, c_tau, step_noise, noise_key, augment_key = carry
 
-        drawn = normal(noise_key) if injected is None else step_noise
-        xl_noisy = xl + (
-            noise_scale * jnp.sqrt(jnp.maximum(t**2 - previous**2, 0.0)) * drawn
+            if augment_fn is not None:
+                xl = augment_fn(augment_key, xl)
+
+            # Inflate the noise level, but only while there is schedule left.
+            gamma = jnp.where(c_tau > gamma_min, gamma_0, 0.0)
+            t = previous * (gamma + 1.0)
+
+            drawn = take(normal(noise_key)) if injected is None else step_noise
+            xl_noisy = xl + (
+                noise_scale * jnp.sqrt(jnp.maximum(t**2 - previous**2, 0.0)) * drawn
+            )
+
+            xl_denoised = denoise_fn(xl_noisy, jnp.atleast_1d(t))
+
+            # Deliberately from xl_noisy, and dt relative to the inflated t.
+            delta = (xl_noisy - xl_denoised) / t
+            dt = c_tau - t
+            return xl_noisy + step_scale * dt * delta, None
+
+        # A scan rather than a Python loop: the released rollout is 200 steps
+        # over a 24-block transformer, and unrolling that under jit produces a
+        # graph whose compile time dominates everything else.
+        if injected is None:
+            steps = jnp.zeros((n_steps,))
+        else:
+            steps = injected[1:] if rows is None else injected[1:, rows]
+        out, _ = jax.lax.scan(
+            step,
+            xl,
+            (
+                noise_schedule[:-1],
+                noise_schedule[1:],
+                steps,
+                noise_keys,
+                augment_keys,
+            ),
         )
+        return out
 
-        xl_denoised = denoise_fn(xl_noisy, jnp.atleast_1d(t))
-
-        # Deliberately from xl_noisy, and dt relative to the inflated t.
-        delta = (xl_noisy - xl_denoised) / t
-        dt = c_tau - t
-        return xl_noisy + step_scale * dt * delta, None
-
-    # A scan rather than a Python loop: the released rollout is 200 steps over a
-    # 24-block transformer, and unrolling that under jit produces a graph whose
-    # compile time dominates everything else.
-    xl, _ = jax.lax.scan(
-        step,
-        xl,
-        (
-            noise_schedule[:-1],
-            noise_schedule[1:],
-            injected[1:] if injected is not None else jnp.zeros((n_steps,)),
-            noise_keys,
-            augment_keys,
-        ),
+    # The denoiser holds its activations for every sample it is handed at once,
+    # which is the whole of this model's growth along the sample axis. Running
+    # the rollout a chunk at a time bounds that, and bounds nothing else: the
+    # conditioning is a broadcast view widened at the point of use, and the
+    # noise above is narrowed rather than redrawn, so a chunk sees the numbers
+    # its samples would have seen anyway. Not bit-identical: the rollout runs
+    # on a different array shape per chunk and XLA fuses it differently, which
+    # measures 9.5e-06 absolute on coordinates of magnitude 10-30.
+    samples = shape[0]
+    if diffusion_chunk_size is None or diffusion_chunk_size >= samples:
+        return rollout(xl, None)
+    return jnp.concatenate(
+        [
+            rollout(
+                xl[start : start + diffusion_chunk_size],
+                slice(start, start + diffusion_chunk_size),
+            )
+            for start in range(0, samples, diffusion_chunk_size)
+        ],
+        axis=0,
     )
-    return xl
 
 
 def padded_noise_tape(

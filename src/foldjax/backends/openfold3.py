@@ -50,6 +50,7 @@ _COMPILE_OPTIONS = (
     "num_steps",
     "num_recycles",
     "pair_chunk_size",
+    "diffusion_chunk_size",
     "max_msa_depth",
     "cp_devices",
     "cp_layout",
@@ -130,6 +131,7 @@ class OpenFold3Backend(Backend):
             "cp_layout",
             "no_compile",
             "pair_chunk_size",
+            "diffusion_chunk_size",
             "prefix",
             "query_id",
         }
@@ -214,6 +216,17 @@ class OpenFold3Backend(Backend):
                     int(options[name])
                 except (TypeError, ValueError) as error:
                     raise ValueError(f"{name} must be an integer") from error
+        if "diffusion_chunk_size" in options:
+            try:
+                if int(options["diffusion_chunk_size"]) < 1:
+                    raise ValueError(
+                        "diffusion_chunk_size must be at least 1; it counts "
+                        "diffusion samples denoised at once"
+                    )
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "diffusion_chunk_size must be a positive integer"
+                ) from error
         if "pair_chunk_size" in options:
             try:
                 int(options["pair_chunk_size"])
@@ -353,6 +366,12 @@ class OpenFold3Backend(Backend):
         chunk = options.pop("pair_chunk_size", None)
         if chunk is not None:
             overrides["pair_chunk_size"] = int(chunk)
+        # Left unset the config resolves it from the sample count, the way
+        # Protenix does, so the shipped five-sample run is untouched and only a
+        # caller who raises the count pays for the loop.
+        sample_chunk = options.pop("diffusion_chunk_size", None)
+        if sample_chunk is not None:
+            overrides["diffusion_chunk_size"] = int(sample_chunk)
         depth = options.pop("max_msa_depth", None)
         if depth is not None:
             overrides["msa_depth"] = int(depth)
