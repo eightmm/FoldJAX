@@ -24,8 +24,12 @@ peak and fixing whatever it named — a habit worth more than any individual fix
 in the list.
 
 **The transition was the largest buffer in three of the four ports** carried at
-the time this was measured; OpenFold3 was vendored later and has not been
-through this pass. It widens
+the time this was measured. OpenFold3 was vendored later, and this line used to
+say it had not been through the pass; it has since -- its `outer_product_mean`
+and its pair transition both block their rows (`models/msa.py`,
+`models/pair_block.py`). ESMFold2, vendored later still, had not, which is what
+[Three operations ESMFold2 never had blocked](#three-operations-esmfold2-never-had-blocked)
+is about. The transition widens
 its input before narrowing it again and holds three copies of the wide form at
 once — `a`, `b`, and `silu(a) * b`. On OpenDDE's structural pair representation
 those were three `f32[946, 946, 768]` buffers, 2,622 MiB apiece: 7,866 MiB of a
@@ -74,6 +78,63 @@ three buffers live. On an MSA representation that is three copies of the largest
 tensor in the trunk, for an add. Routing them through a compiled add that donates
 its update buffer is the same arithmetic and took that port from 8,637 to
 7,576 MiB with scores unchanged to five decimals.
+
+### Three operations ESMFold2 never had blocked
+
+Every other port went through the pass above. ESMFold2 was vendored last and
+did not, so it still carried three shapes this repository had already fixed
+elsewhere -- and XLA's arena accounting had named all three without anyone
+reading it back to the code that owned them.
+
+| what | where | the buffer, at 1,003 tokens |
+|---|---|---|
+| SwiGLU widened whole | `models/primitives.py` `swiglu` | `bf16[N², 2048]` = **3,930 MiB**, seven of them |
+| outer product built whole | `models/trunk.py` `outer_product_mean` | `bf16[N², 1024]` = **1,965 MiB**, four of them |
+| the contraction's operands promoted | `models/trunk.py` `triangle_multiplicative` | `[N², 512]` doubled, 982 → **1,965 MiB** |
+
+The sizes are not estimates. `pair_transition.ffn.w12` is `[2048, 256]` in the
+checkpoint, and `outer_product_mean.W` is `[64, 128]` giving a 32×32 outer that
+flattens to 1,024 -- so the arithmetic on the released widths reproduces the
+arena's own figures exactly, and the five `w12` sites (folding trunk, confidence
+head, LM encoder, MSA encoder, parcae coda) explain why there were seven.
+
+**The third one was a comment that had inverted its source.** It read "Upstream
+forces float32 here", and upstream does the opposite, with its own comment
+saying why (`modeling_esmfold2.py:1098`): it casts the fp32 visibility mask
+*down* to `routed.dtype` "so masking does not promote the O(N^3) contraction to
+fp32". The port reproduced that down-cast faithfully and then promoted the whole
+tensor on the next line. Removing it narrows the operands and keeps the float32
+accumulation explicitly, through the `preferred_element_type` the einsum already
+carried -- `(bf16, bf16) -> f32` in the lowered program.
+
+Measured at 1,003 tokens on the released schedule, two runs per arm, one process
+each:
+
+| | wall | peak | pLDDT | pTM |
+|---|---|---|---|---|
+| before | 17.06 s, 17.07 s | 23.47 GiB | 0.9492 | 0.9798 |
+| **after** | **15.88 s, 15.79 s** | **21.08 GiB** | 0.9492 | 0.9797 |
+
+**-2.39 GiB and -1.23 s, for arithmetic that did not change.** The peak is
+deterministic -- 23.47 twice, 21.08 twice. Switching the outer product's chunk
+back off, with the other two in place, gives 21.87 GiB, so it is worth 0.79 GiB
+and the SwiGLU and the dtype are worth 1.60 together.
+
+**A tighter block is worse, which is worth knowing before anyone tunes it.**
+The budget is 512 MiB, the same figure Protenix uses for the transition it
+shares this shape with. At 128 MiB the peak is 22.55 GiB and at 32 MiB it is
+21.76 -- both *above* the 21.08 that 512 gives. More blocks means more
+concatenation temporaries, and an arena is a packing rather than a sum, so
+bounding the individual buffers harder does not bound their arrangement. That
+the independently chosen 512 lands at the optimum here is luck worth recording
+rather than a rule.
+
+Blocking a leading axis is exact -- nothing reduces across it -- but not
+bit-identical, because the blocked shape draws a different GEMM tiling. The
+structures moved 0.0209 Å all-atom paired by sample, against a rerun floor of
+0.0205 Å before and 0.0368 Å after, and a 0.9192 Å spread between this model's
+own diffusion samples. That is at the floor: the change is not distinguishable
+from running the same arm twice.
 
 ### Which precision each model runs
 

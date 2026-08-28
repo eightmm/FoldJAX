@@ -12,6 +12,38 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 predicts in 21.08 GiB instead of 23.47, and 1.2 s faster, with
+  the same arithmetic.** Three operations in its trunk carried shapes this
+  repository had already fixed in every other port, because ESMFold2 was
+  vendored last and never went through that pass. `swiglu` widened `[N, N, C]`
+  to `[N, N, 2048]` whole -- 3,930 MiB at 1,003 tokens, and XLA's arena
+  accounting named seven of them; `outer_product_mean` built the full
+  `[N, N, 32, 32]` before the projection narrowed it, 1,965 MiB, four of those;
+  and `triangle_multiplicative` promoted its contraction operands to float32,
+  doubling the two widest buffers it owns.
+
+  The first two are now blocked along a leading axis nothing reduces over, at
+  the same 512 MiB budget Protenix uses for the transition it shares the shape
+  with. Measured at 1,003 tokens on the released schedule, two runs per arm:
+  peak 23.47 → 21.08 GiB, wall 17.06 → 15.88 s, `pLDDT` and `pTM` unchanged to
+  four decimals. The outer product's chunk is worth 0.79 GiB of that and the
+  other two 1.60 together.
+
+  Blocking is exact but not bit-identical, since the blocked shape draws a
+  different GEMM tiling: the structures moved 0.0209 Å all-atom paired by
+  sample, against a 0.0205–0.0368 Å rerun floor and a 0.9192 Å spread between
+  this model's own diffusion samples. That is at the floor.
+
+  A tighter block is worse, which is recorded because it is the opposite of
+  what tuning it would assume: 128 MiB gives 22.55 GiB and 32 MiB gives 21.76,
+  both above what 512 gives. An arena is a packing, not a sum.
+
+  The float32 promotion was a comment that had inverted its source. It said
+  "Upstream forces float32 here"; upstream does the opposite and says so
+  (`modeling_esmfold2.py:1098`), casting the mask *down* "so masking does not
+  promote the O(N^3) contraction to fp32". The float32 accumulation is kept
+  explicitly through the `preferred_element_type` the einsum already carried.
+
 - **The precision numbers now sit in the ladder they belong to, and
   `bench/run_foldjax` takes `--seed`.** The bench pins one seed so its rows
   compare, which also meant the spread that pinning hides could not be

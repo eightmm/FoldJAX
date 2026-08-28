@@ -56,8 +56,18 @@ def triangle_multiplicative(
     if mask is not None:
         routed = routed * mask[..., None].astype(routed.dtype)
 
-    # Upstream forces float32 here and keeps `norm_mix` in it too.
-    routed = routed.astype(jnp.float32)
+    # No cast here. Upstream does the opposite, and says so at
+    # `modeling_esmfold2.py:1098`: it casts the fp32 visibility mask *down* to
+    # `routed.dtype` "so masking does not promote the O(N^3) contraction to
+    # fp32". The line above already reproduces that down-cast; promoting the
+    # whole tensor immediately afterwards undid it, on the two widest buffers
+    # this block owns -- `routed` is [N, N, 2*dim] and `left`/`right` are half
+    # that each. The float32 accumulation upstream gets from its bf16 GEMM is
+    # kept explicitly by `preferred_element_type` on the einsum below, so the
+    # arithmetic that mattered is unchanged; only the operand storage narrows.
+    #
+    # The comment this replaces said "Upstream forces float32 here". It does
+    # not, and never did in any released version.
     half = routed.shape[-1] // 2
     left, right = routed[..., :half], routed[..., half:]
     contract_outgoing = outgoing
@@ -152,6 +162,10 @@ def folding_trunk(
     return pair
 
 
+#: Bytes of the widened `c * d` outer product allowed live at once.
+_OPM_OUTER_BUDGET_BYTES = 512 * 1024**2
+
+
 def outer_product_mean(
     msa: jnp.ndarray,
     params: Params,
@@ -177,9 +191,39 @@ def outer_product_mean(
 
     mask = msa_mask.astype(a.dtype)
     valid = jnp.maximum(jnp.einsum("bim,bjm->bij", mask, mask)[..., None], 1.0)
-    outer = jnp.einsum("bimc,bjmd->bijcd", a, b)
-    outer = outer.reshape(outer.shape[:-2] + (half * half,))
-    return linear(outer, params, f"{dot}Wout") / valid
+
+    # The outer product is `[B, N, N, c, d]` and the projection immediately
+    # narrows it to `[B, N, N, C_z]`, so building it whole allocates `c * d /
+    # C_z` times the result -- at this model's widths, `32 * 32 / 256` = four
+    # times over, and 1,965 MiB at 1,003 tokens in bfloat16, which XLA's arena
+    # accounting named four of. Projecting inside the block is what keeps the
+    # `c * d` tensor from ever existing at full width; it is the arrangement
+    # OpenFold3's own `outer_product_mean` already uses, for the same reason.
+    #
+    # Rows of `i` are independent -- the contraction is over `m` -- so this is
+    # exact. The division stays outside, after the projection, because that
+    # order is what scales `Wout`'s bias and is the released arrangement.
+    def project(rows: jnp.ndarray) -> jnp.ndarray:
+        block = jnp.einsum("bimc,bjmd->bijcd", rows, b)
+        block = block.reshape(block.shape[:-2] + (half * half,))
+        return linear(block, params, f"{dot}Wout")
+
+    tokens = a.shape[1]
+    per_row = b.shape[1] * half * half * a.dtype.itemsize * a.shape[0]
+    chunk = (
+        max(1, _OPM_OUTER_BUDGET_BYTES // per_row)
+        if per_row > 0 and per_row * tokens > _OPM_OUTER_BUDGET_BYTES
+        else tokens
+    )
+    if chunk >= tokens:
+        return project(a) / valid
+    return (
+        jnp.concatenate(
+            [project(a[:, start : start + chunk]) for start in range(0, tokens, chunk)],
+            axis=1,
+        )
+        / valid
+    )
 
 
 def msa_pair_weighted_averaging(
