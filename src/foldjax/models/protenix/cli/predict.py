@@ -437,6 +437,7 @@ def main(
     from foldjax.models.protenix.chunking import resolve_chunk_config
     from foldjax.models.protenix.data.featurize_json import featurize_protein_json
     from foldjax.models.protenix.data.output import (
+        project_generated_writer_features,
         sanitize_job_name,
         write_protenix_outputs,
     )
@@ -761,8 +762,13 @@ def main(
             # compaction also avoids retaining the wide native MSA arrays next
             # to their model-bound copies for the duration of the run.
             features = compact_msa_storage(features)
-            output_features = features
-            if compact_generated_atom_categories:
+            keep_output_features = (
+                args.output_format in ("protenix", "both")
+                and args.stop_after != "trunk"
+                and not args.prewarm_only
+            )
+            output_features = features if keep_output_features else None
+            if output_features is not None and compact_generated_atom_categories:
                 # Generated JSON carries complete explicit atom labels, so the
                 # writer does not need to decode the dense categories. The
                 # helper keeps both arrays if that metadata contract ever
@@ -770,7 +776,10 @@ def main(
                 output_features = drop_dense_categories_from_writer_snapshot(
                     output_features
                 )
-            job["output_features"] = output_features
+            if output_features is not None and args.input_json is not None:
+                output_features = project_generated_writer_features(output_features)
+            if output_features is not None:
+                job["output_features"] = output_features
             if padding_config is not None:
                 from foldjax.models.protenix.data.padding import (
                     pad_protenix_features,
@@ -891,7 +900,7 @@ def main(
     wants_raw = args.output_format in ("npz", "both")
     for job, seeds in zip(jobs, job_seeds, strict=True):
         features = job["features"]
-        output_features = job.get("output_features", features)
+        output_features = job.get("output_features")
         padding_plan = job.get("padding_plan")
         guidance_features = None
         if guidance_config is not None and guidance_config.get("enable"):
@@ -1031,6 +1040,8 @@ def main(
                     print(f"wrote: {archive}")
                 continue
             if args.output_format in ("protenix", "both"):
+                if output_features is None:
+                    raise RuntimeError("structured output feature snapshot is missing")
                 paths = write_protenix_outputs(
                     args.out,
                     job_name=job["name"],

@@ -12,6 +12,30 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Protenix and OpenDDE predictions retain only the generated fields
+  their structure-output readers use.** Complete, shape-matched
+  `output_atom_*` metadata lets the Protenix CIF/JSON writer keep an eight-field
+  shallow view; OpenDDE keeps its separate union with shape-complementarity and
+  raw-confidence fallback masks. Direct writer calls, Protenix static/custom
+  archives, and incomplete metadata retain the full historical mapping by
+  identity. Protenix raw-NPZ, prewarm and trunk-only routes keep no writer view;
+  OpenDDE trunk-only keeps none. Padding still feeds the complete model tree and
+  crops outputs before the unpadded writer view, while TFG and model-bound
+  PyTrees are unchanged.
+
+  On template-free generated inputs, template deduplication creates the model's
+  two retained rows but the old writer snapshot also pinned all four original
+  rows. At 512 tokens, combined model/output NumPy ownership fell from 268.20
+  to 91.58 MiB for Protenix and from 281.22 to 104.60 MiB for OpenDDE. The four
+  released float32 pair fields contain 44 channels per template row, or
+  `4 * N^2 * 44 * 4` bytes: 1.537 GiB at 1,531 tokens and 5.948 GiB at 3,012.
+  CPU tests cover multi-job and padded loop-local lifetimes, incomplete-schema
+  fallback, poison mappings for every admitted reader, raw and structured
+  output branches, stable model-side HLO, and byte-identical CIF, JSON and NPZ
+  arrays for protein, ligand, nucleic-acid, ion and covalent inputs. This is a
+  host-only ownership result; no GPU VRAM or runtime improvement is claimed or
+  measured.
+
 - **Managed Protenix generated-JSON prediction carries atom element and
   atom-name categories as private compact IDs.** After final serving padding,
   the consolidated graph replaces exact `float32[N_atom, 128]` and

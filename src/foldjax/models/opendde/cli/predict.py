@@ -673,6 +673,10 @@ def main(
         for job in jobs:
             job_name = str(job.get("name") or args.input_json.stem)
             for seed in _job_seeds(job, args.seed):
+                from foldjax.models.opendde.postprocess import (
+                    project_generated_output_features,
+                )
+
                 features = _featurize(
                     job,
                     base_dir=args.input_json.parent,
@@ -682,14 +686,20 @@ def main(
                     seed=seed,
                 )
                 features = compact_msa_storage(features)
-                output_features = features
+                output_features = (
+                    None
+                    if args.stop_after == "trunk"
+                    else project_generated_output_features(features)
+                )
                 model_features = features
                 cycle_msa_features = None
+                sampled = None
+                padded_features = None
                 padding_plan = None
                 random_tapes: dict[str, Any] = {}
                 n_chain = (
-                    int(__import__("numpy").max(output_features["asym_id"])) + 1
-                    if "asym_id" in output_features
+                    int(__import__("numpy").max(model_features["asym_id"])) + 1
+                    if "asym_id" in model_features
                     else None
                 )
                 if padding is not None:
@@ -763,6 +773,12 @@ def main(
                 # direct/archive ABI.  Only this generated, normalized model
                 # copy may replace exact int64 one-hot atom categories by IDs.
                 model_features = compact_ref_atom_category_storage(model_features)
+                # The model copy and the output view now own every live field.
+                # In particular, neither the native four-row template mapping
+                # nor padding intermediates should span the compiled call.
+                features = None
+                sampled = None
+                padded_features = None
                 output = _predict(
                     model_features,
                     params,
@@ -804,6 +820,11 @@ def main(
                     stop_after_trunk=args.stop_after == "trunk",
                     **random_tapes,
                 )
+                # The remaining host readers consume only ``output_features``;
+                # releasing model inputs here prevents them from overlapping
+                # cropped outputs and shape-complementarity postprocessing.
+                model_features = None
+                cycle_msa_features = None
                 if args.stop_after == "trunk":
                     destination = args.representations_dir or (
                         args.out / job_name / f"seed_{seed}" / "predictions"
@@ -818,6 +839,8 @@ def main(
                         written.append(archive)
                         print(f"wrote: {archive}")
                     continue
+                if output_features is None:
+                    raise RuntimeError("OpenDDE output feature snapshot is missing")
                 if padding_plan is not None:
                     from foldjax.models.opendde.data.padding import (
                         crop_opendde_outputs,

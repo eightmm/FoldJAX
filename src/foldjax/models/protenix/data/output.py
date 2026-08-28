@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import re
 import warnings
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
 import gemmi
 import numpy as np
 
+from foldjax.models._output_features import has_complete_output_atom_metadata
 from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.protenix.data.static_io import save_output_npz
 
@@ -57,6 +58,42 @@ _ELEMENTS = (
     "MD NO LR RF DB SG BH HS MT DS RG CN NH FL MC LV TS OG"
 ).split()
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
+
+# The managed generated-JSON CLI is the only caller allowed to project a
+# writer snapshot to this set.  Direct writer calls and static/custom feature
+# mappings keep their complete historical mapping.  Keep this list beside the
+# reader rather than beside the CLI so a new writer dependency cannot be added
+# without crossing the projection's review surface.
+PROTENIX_GENERATED_OUTPUT_FEATURE_FIELDS = frozenset(
+    {
+        "output_atom_name",
+        "output_atom_element",
+        "output_atom_res_name",
+        "output_atom_chain_id",
+        "output_atom_res_id",
+        "atom_entity_id",
+        "output_atom_polymer_type",
+        "covalent_atom_indices",
+    }
+)
+
+def project_generated_writer_features(
+    features: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Keep only fields read by the writer for a proven generated schema.
+
+    This helper never mutates the input.  Incomplete or shape-drifted metadata
+    returns the original mapping by identity, preserving the writer's encoded
+    feature fallback and every custom/static extension.
+    """
+
+    if not has_complete_output_atom_metadata(features):
+        return features
+    return {
+        name: features[name]
+        for name in PROTENIX_GENERATED_OUTPUT_FEATURE_FIELDS
+        if name in features
+    }
 
 
 def write_protenix_outputs(

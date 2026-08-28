@@ -8,9 +8,48 @@ from typing import Any
 import jax.nn as jnn
 import jax.numpy as jnp
 
+from foldjax.models._output_features import has_complete_output_atom_metadata
 from foldjax.models.protenix.models.heads.confidence import (
     calculate_chain_based_gpde,
     confidence_scores_from_logits,
+)
+
+# OpenDDE's managed CLI uses the shared structure writer and then consumes a
+# separate feature subset for shape complementarity.  This is intentionally an
+# explicit union rather than an import of Protenix's allowlist: the two readers
+# have separate contracts and should fail review independently if either grows.
+OPENDDE_GENERATED_OUTPUT_FEATURE_FIELDS = frozenset(
+    {
+        # Shared structure writer.
+        "output_atom_name",
+        "output_atom_element",
+        "output_atom_res_name",
+        "output_atom_chain_id",
+        "output_atom_res_id",
+        "atom_entity_id",
+        "output_atom_polymer_type",
+        "covalent_atom_indices",
+        # Shape-complementarity resolution.
+        "token_index",
+        "atom_to_token_idx",
+        "asym_id",
+        "distogram_rep_atom_mask",
+        "structural_distogram_rep_atom_mask",
+        "atom_exists_mask",
+        "atom_padding_mask",
+        "subtoken_role_id",
+        "structural_is_protein_token",
+        "is_protein_token",
+        "is_protein",
+        "is_ligand",
+        "is_dna",
+        "is_rna",
+        # Historical host confidence fallback.  The managed full graph emits
+        # summaries, but retaining these linear masks keeps an unexpected raw
+        # output on the same scoring path instead of silently narrowing it.
+        "has_frame",
+        "token_padding_mask",
+    }
 )
 
 SHAPE_COMPLEMENTARITY_SCORE_KEYS = frozenset(
@@ -55,6 +94,20 @@ _OPENDDE_SCORE_KEYS = frozenset(
 CONFIDENCE_DETAIL_KEYS = frozenset(
     {"token_pair_pae", "token_pair_pde", "contact_probs"}
 )
+
+
+def project_generated_output_features(
+    features: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project a managed OpenDDE output snapshot after exact schema proof."""
+
+    if not has_complete_output_atom_metadata(features):
+        return features
+    return {
+        name: features[name]
+        for name in OPENDDE_GENERATED_OUTPUT_FEATURE_FIELDS
+        if name in features
+    }
 
 
 def compute_contact_prob(
@@ -294,7 +347,9 @@ def _shape_complementarity_scores(
 
 __all__ = [
     "CONFIDENCE_DETAIL_KEYS",
+    "OPENDDE_GENERATED_OUTPUT_FEATURE_FIELDS",
     "SHAPE_COMPLEMENTARITY_SCORE_KEYS",
     "compute_contact_prob",
     "opendde_confidence_scores",
+    "project_generated_output_features",
 ]
