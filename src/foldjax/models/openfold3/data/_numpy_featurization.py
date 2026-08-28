@@ -370,16 +370,28 @@ def _subsample_msa_precursor(
     )
 
 
-def _tensorize_msa_precursor(precursor: _MsaPrecursor) -> dict[str, np.ndarray]:
-    """Expand a selected precursor into the released OpenFold3 feature ABI."""
+def _tensorize_msa_precursor(
+    precursor: _MsaPrecursor,
+    *,
+    compact_msa: bool = False,
+) -> dict[str, np.ndarray]:
+    """Tensorize a selected precursor for archives or private prediction.
+
+    Portable/direct callers retain the released 32-channel int32 one-hot. The
+    managed prediction path stores the same categorical IDs as uint8 and lets the
+    first model consumer reconstruct that one-hot inside the compiled graph.
+    """
 
     from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
         STANDARD_RESIDUES_WITH_GAP_1,
     )
 
     deletion = precursor.deletion_matrix
-    return {
-        "msa": _one_hot(precursor.msa_index, len(STANDARD_RESIDUES_WITH_GAP_1)),
+    classes = len(STANDARD_RESIDUES_WITH_GAP_1)
+    msa_index = np.asarray(precursor.msa_index)
+    if np.any(msa_index < 0) or np.any(msa_index >= classes):
+        raise ValueError(f"one-hot index outside [0, {classes}): {msa_index}")
+    features = {
         "has_deletion": (deletion != 0).astype(np.float32),
         "deletion_value": (
             np.arctan(deletion / 3.0) * (8.0 / np.pi)
@@ -389,6 +401,17 @@ def _tensorize_msa_precursor(precursor: _MsaPrecursor) -> dict[str, np.ndarray]:
         "num_paired_seqs": np.asarray([precursor.n_rows_paired], dtype=np.int32),
         "msa_mask": precursor.msa_mask.astype(np.float32, copy=False),
     }
+    if compact_msa:
+        from foldjax.models.openfold3.data.featurize import (
+            _COMPACT_MSA_INDICES,
+            _COMPACT_MSA_MARKER,
+        )
+
+        features[_COMPACT_MSA_INDICES] = msa_index.astype(np.uint8, copy=False)
+        features[_COMPACT_MSA_MARKER] = np.zeros((), dtype=np.float32)
+    else:
+        features["msa"] = _one_hot(msa_index, classes)
+    return features
 
 
 def _msa_features(
@@ -398,6 +421,7 @@ def _msa_features(
     settings: Any,
     *,
     msa_depth: int | None = None,
+    compact_msa: bool = False,
 ) -> dict[str, np.ndarray]:
     """Run upstream parsing/pairing, then tensorize the result with NumPy."""
     from foldjax.models.openfold3._upstream.openfold3.core.config.msa_pipeline_configs import (  # noqa: E501
@@ -411,7 +435,7 @@ def _msa_features(
     collection = MsaSampleProcessorInference(config=settings)(input=processor_input)
     precursor = _msa_precursor(atom_array, collection, n_tokens)
     precursor = _subsample_msa_precursor(precursor, msa_depth)
-    return _tensorize_msa_precursor(precursor)
+    return _tensorize_msa_precursor(precursor, compact_msa=compact_msa)
 
 
 def _empty_template_features(
@@ -1170,12 +1194,14 @@ def featurize_query_numpy(
     ccd_file_path: str | None = None,
     msa_depth: int | None = None,
     lazy_empty_template_pairs: bool = False,
+    compact_msa: bool = False,
 ) -> RawFeatures:
     """Build released inference features without importing PyTorch.
 
     ``msa_depth`` is an inference-only host cap applied before categorical MSA
-    indices expand to the 32-channel archive ABI. ``None`` preserves every row
-    for standalone feature archives and direct callers.
+    storage. ``compact_msa`` keeps those selected IDs as private uint8 graph
+    input; the default expands to the 32-channel archive ABI. ``None`` depth
+    preserves every row for standalone feature archives and direct callers.
     """
     from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.query import (  # noqa: E501
         structure_with_ref_mols_from_query,
@@ -1213,6 +1239,7 @@ def featurize_query_numpy(
             n_tokens,
             msa_settings,
             msa_depth=msa_depth,
+            compact_msa=compact_msa,
         )
     )
     features.update(

@@ -302,11 +302,15 @@ class OpenFold3Backend(Backend):
             ccd_file_path=ccd_file_path,
             msa_depth=preprocess_msa_depth,
             compact_empty_template_pairs=True,
+            compact_msa=True,
         )
         precompacted_empty_templates = bool(
             getattr(data, "has_compact_zero_template_pair_features", lambda _: False)(
                 features
             )
+        )
+        precompacted_msa = bool(
+            getattr(data, "has_compact_msa_features", lambda _: False)(features)
         )
         # Portable archives may carry numeric host-side annotations in
         # addition to the model ABI.  They are useful to archive tooling but
@@ -314,11 +318,21 @@ class OpenFold3Backend(Backend):
         model_feature_names = getattr(data, "MODEL_FEATURES", None)
         if model_feature_names is not None:
             optional_feature_names = getattr(data, "OPTIONAL_MODEL_FEATURES", ())
-            private_feature_names = (
+            all_private_feature_names = tuple(
                 getattr(data, "PRIVATE_MODEL_FEATURES", ())
-                if precompacted_empty_templates
-                else ()
             )
+            compact_msa_feature_names = tuple(
+                getattr(data, "COMPACT_MSA_PRIVATE_FEATURES", ())
+            )
+            private_feature_names: tuple[str, ...] = ()
+            if precompacted_empty_templates:
+                private_feature_names += tuple(
+                    name
+                    for name in all_private_feature_names
+                    if name not in compact_msa_feature_names
+                )
+            if precompacted_msa:
+                private_feature_names += compact_msa_feature_names
             features = {
                 name: features[name]
                 for name in (
@@ -389,6 +403,13 @@ class OpenFold3Backend(Backend):
         # private marker gives the resulting mapping its own JIT PyTree identity.
         if not precompacted_empty_templates:
             features = data.compact_zero_template_pair_features(features)
+        if not precompacted_msa:
+            # Archive inputs retain their portable dense ABI through validation,
+            # row selection and serving padding, then cross the same private
+            # model boundary as raw jobs.
+            features = getattr(data, "compact_msa_features", lambda batch: batch)(
+                features
+            )
 
         # The complete checkpoint remains visible to inspection and verification.
         # Only the inference path drops upstream's second registration of the
@@ -583,6 +604,7 @@ def _features_chemistry_and_metadata(
     ccd_file_path: str | Path | None,
     msa_depth: int | None = None,
     compact_empty_template_pairs: bool = False,
+    compact_msa: bool = False,
 ) -> tuple[dict[str, Any], Any | None, Any | None]:
     """Load a JAX-only archive or run FoldJAX's NumPy raw-job preprocessor."""
     path = Path(request.input)
@@ -606,6 +628,7 @@ def _features_chemistry_and_metadata(
         ccd_file_path=ccd_file_path,
         msa_depth=msa_depth,
         compact_empty_template_pairs=compact_empty_template_pairs,
+        compact_msa=compact_msa,
     )
     return features, None, output_metadata
 

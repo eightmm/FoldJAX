@@ -32,8 +32,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
+from foldjax.models.openfold3.data.featurize import (
+    _COMPACT_MSA_INDICES,
+    _COMPACT_MSA_MARKER,
+)
 from foldjax.models.openfold3.models.atom_features import (
     AtomAttentionEncoderParams,
     atom_attention_encoder,
@@ -47,6 +52,45 @@ class MSAEmbedderParams(NamedTuple):
 
     linear_m: LinearParams
     linear_s_input: LinearParams
+
+
+def _released_msa_one_hot(batch: Mapping[str, jnp.ndarray]) -> jnp.ndarray:
+    """Return the historical dense MSA feature, reconstructing private storage.
+
+    Direct callers keep precedence: whenever public ``msa`` is present it is
+    returned untouched, even if a stale private marker accompanies it. The compact
+    branch requires both private leaves and validates their static contract while
+    tracing. Category 32 is outside the requested class count, so JAX reconstructs
+    serving-padding cells as the historical all-zero vector.
+    """
+
+    dense = batch.get("msa")
+    if dense is not None:
+        return dense
+
+    if _COMPACT_MSA_MARKER not in batch or _COMPACT_MSA_INDICES not in batch:
+        raise KeyError(
+            "OpenFold3 MSA input needs public 'msa' or the complete private "
+            "compact representation"
+        )
+    marker = jnp.asarray(batch[_COMPACT_MSA_MARKER])
+    indices = jnp.asarray(batch[_COMPACT_MSA_INDICES])
+    if marker.shape != () or marker.dtype != jnp.dtype(jnp.float32):
+        raise ValueError("OpenFold3 compact MSA marker must be scalar float32")
+    if indices.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("OpenFold3 compact MSA indices must have dtype uint8")
+    mask = batch.get("msa_mask")
+    if mask is not None and indices.ndim != mask.ndim:
+        raise ValueError(
+            "OpenFold3 compact MSA indices and msa_mask must have the same rank"
+        )
+
+    # ``marker`` is provenance, while ``indices`` is the dynamic data. The key
+    # pattern and shapes already give the compact mapping a distinct JIT PyTree;
+    # using marker as an arithmetic gate would change forged/direct-call semantics.
+    return jax.nn.one_hot(
+        indices.astype(jnp.int32), 32, dtype=jnp.int32
+    )
 
 
 def msa_embedder(
@@ -68,7 +112,7 @@ def msa_embedder(
     """
     msa_feat = jnp.concatenate(
         [
-            batch["msa"],
+            _released_msa_one_hot(batch),
             batch["has_deletion"][..., None],
             batch["deletion_value"][..., None],
         ],

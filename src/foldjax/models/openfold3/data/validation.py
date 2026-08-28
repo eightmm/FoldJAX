@@ -111,7 +111,11 @@ def _prefix_mask(value: np.ndarray, *, name: str) -> int:
     return count
 
 
-def validate_features(features: Mapping[str, np.ndarray]) -> None:
+def validate_features(
+    features: Mapping[str, np.ndarray],
+    *,
+    _allow_compact_msa: bool = False,
+) -> None:
     """Reject malformed archives before weights are loaded or JAX is initialized.
 
     OpenFold3's compiled functions assume an exact batched feature ABI. A bad
@@ -120,9 +124,19 @@ def validate_features(features: Mapping[str, np.ndarray]) -> None:
     every model feature's rank, dimensions and dtype plus the core mask/index
     invariants established by the upstream featurizer.
     """
-    from foldjax.models.openfold3.data.featurize import MODEL_FEATURES
+    from foldjax.models.openfold3.data.featurize import (
+        _COMPACT_MSA_INDICES,
+        _COMPACT_MSA_MARKER,
+        MODEL_FEATURES,
+        has_compact_msa_features,
+    )
 
-    missing = [name for name in MODEL_FEATURES if name not in features]
+    compact_msa = _allow_compact_msa and has_compact_msa_features(features)
+    missing = [
+        name
+        for name in MODEL_FEATURES
+        if name not in features and not (name == "msa" and compact_msa)
+    ]
     if missing:
         raise ValueError(f"OpenFold3 feature archive is missing: {missing}")
 
@@ -151,9 +165,31 @@ def validate_features(features: Mapping[str, np.ndarray]) -> None:
         )
     tokens = token_mask.shape[1]
     atoms = atom_mask.shape[1]
-    msa = arrays["msa"]
+    msa = arrays[_COMPACT_MSA_INDICES] if compact_msa else arrays["msa"]
     templates = arrays["template_restype"]
-    if msa.ndim != 4 or msa.shape[0] != 1 or msa.shape[1] < 1:
+    if compact_msa:
+        marker = arrays[_COMPACT_MSA_MARKER]
+        if (
+            marker.shape != ()
+            or marker.dtype != np.dtype(np.float32)
+            or marker.view(np.uint32).item() != 0
+        ):
+            raise ValueError(
+                "OpenFold3 compact MSA marker must be scalar float32 +0"
+            )
+        if msa.ndim != 3 or msa.shape[0] != 1 or msa.shape[1] < 1:
+            raise ValueError(
+                "OpenFold3 compact MSA indices must have shape "
+                f"(1, positive_rows, num_tokens); got {msa.shape}"
+            )
+        if msa.dtype != np.dtype(np.uint8):
+            raise ValueError(
+                "OpenFold3 compact MSA indices must have dtype uint8; "
+                f"got {msa.dtype}"
+            )
+        if np.any(msa > 32):
+            raise ValueError("OpenFold3 compact MSA indices must be in [0, 32]")
+    elif msa.ndim != 4 or msa.shape[0] != 1 or msa.shape[1] < 1:
         raise ValueError(
             "OpenFold3 feature 'msa' must have shape "
             f"(1, positive_rows, num_tokens, 32); got {msa.shape}"
@@ -171,6 +207,8 @@ def validate_features(features: Mapping[str, np.ndarray]) -> None:
         templates=templates.shape[1],
     )
     for name in MODEL_FEATURES:
+        if name == "msa" and compact_msa:
+            continue
         array = arrays[name]
         expected_shape = expected_shapes[name]
         if array.shape != expected_shape:
@@ -183,6 +221,20 @@ def validate_features(features: Mapping[str, np.ndarray]) -> None:
             raise ValueError(
                 f"OpenFold3 feature {name!r} has dtype {array.dtype}; "
                 f"expected {expected_dtype}"
+            )
+
+    if compact_msa:
+        expected_shape = (1, msa.shape[1], tokens)
+        if msa.shape != expected_shape:
+            raise ValueError(
+                "OpenFold3 compact MSA indices have shape "
+                f"{msa.shape}; expected {expected_shape}"
+            )
+        sentinel = msa == 32
+        if np.any(sentinel & (arrays["msa_mask"] != 0)):
+            raise ValueError(
+                "OpenFold3 compact MSA zero-vector sentinel may appear only "
+                "where msa_mask is zero"
             )
 
     real_tokens = _prefix_mask(token_mask, name="token_mask")

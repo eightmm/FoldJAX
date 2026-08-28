@@ -99,6 +99,27 @@ command predicts unless it says so here, in its own paragraph.
   were unchanged. This is argument-transfer/replication compaction, not yet the
   separate one-hot arithmetic optimization, and no GPU peak claim is made.
 
+- **OpenFold3 prediction no longer transfers or retains its 32-channel MSA
+  one-hot on the host.** Portable feature archives and direct model callers keep
+  the released writable int32 ABI. After archive validation -- or directly from
+  trusted raw preprocessing, before expansion -- the managed prediction path
+  instead carries one uint8 category per MSA cell plus private provenance. The
+  first MSA consumer reconstructs the historical int32 one-hot inside JIT;
+  out-of-range category 32 preserves serving padding's all-zero vector. Dense
+  custom inputs take precedence over stale/partial private keys, and invalid
+  categorical arrays stay dense.
+
+  At the released 1,024 rows and 3,012 tokens this field is 394,788,864 bytes
+  dense and 3,084,292 bytes compact. In an isolated float32 CPU embedder compile
+  at 128 rows, 256 tokens and 64 output channels, total executable argument size
+  fell from 4,456,448 to 294,912 bytes and warm median from 2.53 to 1.07 ms.
+  Executable temporary memory stayed 8,388,608 bytes and StableHLO text grew
+  slightly from 183,051 to 183,961 bytes because the one-hot arithmetic still
+  exists; this is storage/transfer compaction, not its removal. FP32/BF16,
+  padding, non-finite weights, JIT-tree and forced four-CPU 1-D/2-D checks are
+  byte-identical. These are synthetic CPU stage measurements; released GPU peak
+  and latency remain unmeasured.
+
 - **The shared bfloat16 MSA projection no longer materializes its 32-way
   one-hot tensor.** Protenix and OpenDDE now gather the selected categorical
   weight row, accumulate the deletion indicator and value in float32, then

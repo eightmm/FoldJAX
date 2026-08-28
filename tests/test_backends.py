@@ -1545,6 +1545,8 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         "asym_id": np.asarray([[5, 20, 999]], dtype=np.int64),
         "is_atomized": np.asarray([[0, 0, 1]], dtype=np.int32),
         "_foldjax_zero_template_pair_features": np.zeros((), dtype=np.float32),
+        "_foldjax_compact_msa": np.zeros((), dtype=np.float32),
+        "_foldjax_msa_indices": np.asarray([[[0, 1, 2]]], dtype=np.uint8),
     }
     prediction = object()
     output_metadata = object()
@@ -1559,6 +1561,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             n_chain=n_chain,
             asym_id=np.asarray(batch["asym_id"]),
             compact_marker=batch.get("_foldjax_zero_template_pair_features"),
+            compact_msa_indices=batch.get("_foldjax_msa_indices"),
         )
         return prediction
 
@@ -1570,6 +1573,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
                 n_chain=n_chain,
                 asym_id=np.asarray(batch["asym_id"]),
                 compact_marker=batch.get("_foldjax_zero_template_pair_features"),
+                compact_msa_indices=batch.get("_foldjax_msa_indices"),
             )
             return prediction
 
@@ -1584,6 +1588,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         seen["compact_empty_template_pairs"] = kwargs.get(
             "compact_empty_template_pairs"
         )
+        seen["compact_msa"] = kwargs.get("compact_msa")
         return features, output_metadata
 
     def fake_released_config(**kwargs):
@@ -1612,13 +1617,27 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     modules = {
         "foldjax.models.openfold3.data": SimpleNamespace(
             MODEL_FEATURES=("token_mask", "atom_mask", "asym_id", "is_atomized"),
-            PRIVATE_MODEL_FEATURES=("_foldjax_zero_template_pair_features",),
+            PRIVATE_MODEL_FEATURES=(
+                "_foldjax_zero_template_pair_features",
+                "_foldjax_compact_msa",
+                "_foldjax_msa_indices",
+            ),
+            COMPACT_MSA_PRIVATE_FEATURES=(
+                "_foldjax_compact_msa",
+                "_foldjax_msa_indices",
+            ),
             featurize_query_with_metadata=fake_featurize,
             subsample_msa_rows=lambda batch, depth: batch,
             collapse_identical_templates=lambda batch: batch,
             compact_zero_template_pair_features=unexpected_compaction,
+            compact_msa_features=unexpected_compaction,
             has_compact_zero_template_pair_features=lambda batch: (
                 "_foldjax_zero_template_pair_features" in batch
+            ),
+            has_compact_msa_features=lambda batch: (
+                "_foldjax_compact_msa" in batch
+                and "_foldjax_msa_indices" in batch
+                and "msa" not in batch
             ),
             has_atomized_tokens=has_atomized_tokens,
             normalize_asym_ids=normalize_asym_ids,
@@ -1675,7 +1694,11 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     assert seen["has_atomized_tokens"] is False
     assert seen["preprocess_msa_depth"] == 1024
     assert seen["compact_empty_template_pairs"] is True
+    assert seen["compact_msa"] is True
     np.testing.assert_array_equal(seen["compact_marker"], np.zeros((), np.float32))
+    np.testing.assert_array_equal(
+        seen["compact_msa_indices"], np.asarray([[[0, 1, 2]]], dtype=np.uint8)
+    )
     if not eager:
         assert seen["compile_options"] == {
             "triangle_kernel": None,

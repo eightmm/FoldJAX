@@ -71,9 +71,21 @@ _ZERO_TEMPLATE_PAIR_FEATURES = (
     "template_backbone_frame_mask",
 )
 
+# Private runtime representation of the released 32-channel int32 MSA one-hot.
+# Production prediction stores one uint8 category per cell instead; category 32
+# is the out-of-range sentinel whose reconstructed one-hot is the historical
+# all-zero vector introduced by serving padding.  Keeping both keys private
+# preserves the portable archive and direct-model feature ABI.
+_COMPACT_MSA_MARKER = "_foldjax_compact_msa"
+_COMPACT_MSA_INDICES = "_foldjax_msa_indices"
+COMPACT_MSA_PRIVATE_FEATURES = (_COMPACT_MSA_MARKER, _COMPACT_MSA_INDICES)
+
 # Private runtime-only features are never part of portable archives, but must
 # survive the backend's model-ABI filter after trusted raw preprocessing.
-PRIVATE_MODEL_FEATURES = (_ZERO_TEMPLATE_PAIR_MARKER,)
+PRIVATE_MODEL_FEATURES = (
+    _ZERO_TEMPLATE_PAIR_MARKER,
+    *COMPACT_MSA_PRIVATE_FEATURES,
+)
 
 # Produced by the dataset for bookkeeping, not consumed by the model.
 _NON_FEATURES = frozenset(
@@ -159,6 +171,7 @@ def _featurize_query(
     max_atoms_per_token: int = 23,
     msa_depth: int | None = None,
     compact_empty_template_pairs: bool = False,
+    compact_msa: bool = False,
 ) -> tuple[dict[str, np.ndarray], OutputMetadata]:
     """Featurize one query from a specification.
 
@@ -172,12 +185,15 @@ def _featurize_query(
         max_atoms_per_token: the padded per-token atom slot count, 23 in the
             released config. Only used to build ``max_atom_per_token_mask``, which
             the dataset does not emit but the confidence heads need.
-        msa_depth: optional inference row cap applied before the 32-channel MSA
-            one-hot is built. ``None`` keeps the complete alignment for portable
-            feature archives.
+        msa_depth: optional inference row cap applied before categorical MSA
+            storage. ``None`` keeps the complete alignment for portable feature
+            archives.
         compact_empty_template_pairs: use the model's scalar zero-template
             representation for raw inference. Direct/archive callers leave this
             disabled and retain the complete writable feature ABI.
+        compact_msa: store the selected categorical MSA as private uint8 indices
+            for raw inference. Direct/archive callers retain the released dense
+            int32 one-hot ABI.
 
     Returns:
         Features with a leading batch axis of 1 and exact output metadata.
@@ -232,12 +248,17 @@ def _featurize_query(
             ccd_file_path=None if ccd_file_path is None else str(ccd_file_path),
             msa_depth=msa_depth,
             lazy_empty_template_pairs=compact_empty_template_pairs,
+            compact_msa=compact_msa,
         )
     except ImportError as error:  # pragma: no cover - environment-dependent
         raise ImportError(_MISSING) from error
 
     features = {
-        name: np.asarray(value)[None, ...]
+        name: (
+            np.asarray(value)
+            if name == _COMPACT_MSA_MARKER
+            else np.asarray(value)[None, ...]
+        )
         for name, value in raw.features.items()
         if name not in _NON_FEATURES
     }
@@ -245,7 +266,12 @@ def _featurize_query(
         features, max_atoms_per_token
     )
 
-    missing = [name for name in MODEL_FEATURES if name not in features]
+    compact_msa_present = has_compact_msa_features(features)
+    missing = [
+        name
+        for name in MODEL_FEATURES
+        if name not in features and not (name == "msa" and compact_msa_present)
+    ]
     if missing:
         raise RuntimeError(
             f"the OpenFold3 preprocessor did not produce {missing}; the model reads "
@@ -257,7 +283,7 @@ def _featurize_query(
     # well, before weights or JAX compilation make a malformed job expensive.
     from foldjax.models.openfold3.data.validation import validate_features
 
-    validate_features(features)
+    validate_features(features, _allow_compact_msa=compact_msa_present)
     if compact_empty_template_pairs:
         features = compact_zero_template_pair_features(features)
     metadata = output_metadata_from_atom_array(raw.atom_array, features)
@@ -273,7 +299,11 @@ def featurize_query(
     max_atoms_per_token: int = 23,
     msa_depth: int | None = None,
 ) -> dict[str, np.ndarray]:
-    """Featurize one query while preserving the established feature-only API."""
+    """Featurize one query with the established dense portable feature ABI.
+
+    In particular, ``msa`` remains int32 ``[1, rows, tokens, 32]``. Compact MSA
+    storage is a private prediction boundary and never changes this public API.
+    """
     features, _metadata = _featurize_query(
         spec,
         query_id=query_id,
@@ -294,8 +324,14 @@ def featurize_query_with_metadata(
     max_atoms_per_token: int = 23,
     msa_depth: int | None = None,
     compact_empty_template_pairs: bool = False,
+    compact_msa: bool = False,
 ) -> tuple[dict[str, np.ndarray], OutputMetadata]:
-    """Featurize one query and retain exact atoms and covalent connectivity."""
+    """Featurize one query and retain exact atoms and covalent connectivity.
+
+    The default retains the same dense portable feature ABI as
+    :func:`featurize_query`. ``compact_msa=True`` is reserved for the managed
+    prediction path and returns private runtime leaves instead of ``msa``.
+    """
     return _featurize_query(
         spec,
         query_id=query_id,
@@ -304,6 +340,7 @@ def featurize_query_with_metadata(
         max_atoms_per_token=max_atoms_per_token,
         msa_depth=msa_depth,
         compact_empty_template_pairs=compact_empty_template_pairs,
+        compact_msa=compact_msa,
     )
 
 
@@ -450,6 +487,7 @@ _TOKEN_AXES: dict[str, tuple[int, ...]] = {
     "mol_sym_id": (-1,),
     "mol_sym_token_index": (-1,),
     "msa": (-2,),
+    _COMPACT_MSA_INDICES: (-1,),
     "msa_mask": (-1,),
     "num_atoms_per_token": (-1,),
     "profile": (-2,),
@@ -480,6 +518,7 @@ _ATOM_AXES: dict[str, tuple[int, ...]] = {
 
 _MSA_AXES: dict[str, tuple[int, ...]] = {
     "msa": (-3,),
+    _COMPACT_MSA_INDICES: (-2,),
     "msa_mask": (-2,),
     "has_deletion": (-2,),
     "deletion_value": (-2,),
@@ -622,6 +661,15 @@ def pad_features(
     padded = {}
     for name, value in source.items():
         array = np.asarray(value)
+        if (
+            name in {_ZERO_TEMPLATE_PAIR_MARKER, _COMPACT_MSA_MARKER}
+            and array.ndim == 0
+        ):
+            # Private provenance markers carry no semantic axis. NumPy does not
+            # accept an empty ``pad_width`` for scalars, and their values/shapes
+            # must remain untouched across serving profiles anyway.
+            padded[name] = array
+            continue
         widths = _feature_padding(
             name,
             array,
@@ -634,7 +682,13 @@ def pad_features(
             n_msa=n_msa,
             n_templates=n_templates,
         )
-        padded[name] = np.pad(array, widths)
+        # Dense serving padding historically appended all-zero 32-channel MSA
+        # vectors.  Category 32 is intentionally out of range for the model's
+        # one-hot reconstruction and therefore represents that exact zero vector.
+        if name == _COMPACT_MSA_INDICES:
+            padded[name] = np.pad(array, widths, constant_values=32)
+        else:
+            padded[name] = np.pad(array, widths)
 
     # Rebuilt rather than padded: its length is n_token * max_atoms_per_token, so
     # padding the flat axis would interleave real and padding slots.
@@ -1010,8 +1064,10 @@ def load_features(path: str | Path) -> tuple[dict[str, np.ndarray], object]:
     return features, table
 
 
-#: The four features carrying one row per alignment. ``msa`` is
+#: The four public features carrying one row per alignment. ``msa`` is
 #: ``[batch, rows, tokens, 32]``; the other three are ``[batch, rows, tokens]``.
+#: Private prediction may replace ``msa`` with ``_COMPACT_MSA_INDICES`` of the
+#: latter shape; host operations below preserve either representation.
 MSA_ROW_FEATURES = ("msa", "msa_mask", "has_deletion", "deletion_value")
 
 
@@ -1058,7 +1114,7 @@ def subsample_msa_rows(
     order = np.argsort(~valid, kind="stable")[:no_subsampled]
 
     out = dict(features)
-    for name in MSA_ROW_FEATURES:
+    for name in (*MSA_ROW_FEATURES, _COMPACT_MSA_INDICES):
         array = out.get(name)
         if array is not None:
             out[name] = array[:, order]
@@ -1213,6 +1269,73 @@ def compact_zero_template_pair_features(
         del out[name]
     out[_ZERO_TEMPLATE_PAIR_MARKER] = np.zeros((), dtype=np.float32)
     return out
+
+
+def compact_msa_features(
+    features: Mapping[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Replace an exact released MSA one-hot with private categorical storage.
+
+    The public/archive ABI keeps ``msa`` as int32 ``[..., 32]``. Prediction calls
+    this only after boundary validation. Every categorical vector must contain
+    exactly one positive-one entry, or be the exact all-zero vector serving
+    padding historically appended. The latter becomes sentinel category 32;
+    :func:`jax.nn.one_hot` reconstructs it as the same all-zero vector.
+
+    Unknown/custom arrays retain their dense values. Caller-provided private keys
+    are always removed before inspection, so a stale or partial marker can never
+    override a public dense feature. Only this helper and the trusted raw
+    featurizer produce a complete private representation.
+    """
+
+    out = dict(features)
+    for name in COMPACT_MSA_PRIVATE_FEATURES:
+        out.pop(name, None)
+
+    value = out.get("msa")
+    if not isinstance(value, np.ndarray):
+        return out
+    msa = value
+    if (
+        msa.dtype != np.dtype(np.int32)
+        or msa.ndim != 4
+        or msa.shape[0] != 1
+        or msa.shape[-1] != 32
+        or msa.size == 0
+    ):
+        return out
+
+    # Validate with reductions over the 32-wide axis rather than allocating a
+    # second dense boolean tensor. Since the source is integer, min/max in [0, 1]
+    # proves every lane is binary; a sum no larger than one proves one-hot-or-zero.
+    if np.any(np.min(msa, axis=-1) < 0) or np.any(np.max(msa, axis=-1) > 1):
+        return out
+    counts = np.sum(msa, axis=-1, dtype=np.uint8)
+    if np.any(counts > 1):
+        return out
+    indices = np.argmax(msa, axis=-1).astype(np.uint8, copy=False)
+    indices[counts == 0] = 32
+
+    del out["msa"]
+    out[_COMPACT_MSA_INDICES] = indices
+    out[_COMPACT_MSA_MARKER] = np.zeros((), dtype=np.float32)
+    return out
+
+
+def has_compact_msa_features(features: Mapping[str, object]) -> bool:
+    """Whether a mapping has exactly the private compact-MSA key pattern.
+
+    Dense ``msa`` takes precedence even if stale private keys accompany it. Shape,
+    dtype, value and mask invariants are checked by the trusted preprocessing
+    boundary; this predicate is intentionally just the static representation test
+    used by backend filtering and padding.
+    """
+
+    return (
+        "msa" not in features
+        and _COMPACT_MSA_MARKER in features
+        and _COMPACT_MSA_INDICES in features
+    )
 
 
 def has_compact_zero_template_pair_features(

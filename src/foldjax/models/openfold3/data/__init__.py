@@ -12,6 +12,7 @@ from foldjax.models.openfold3.data.cache import (
     save_template_cache,
 )
 from foldjax.models.openfold3.data.featurize import (
+    COMPACT_MSA_PRIVATE_FEATURES,
     MODEL_FEATURES,
     MSA_ROW_FEATURES,
     OPTIONAL_MODEL_FEATURES,
@@ -19,10 +20,12 @@ from foldjax.models.openfold3.data.featurize import (
     PRIVATE_MODEL_FEATURES,
     OutputMetadata,
     collapse_identical_templates,
+    compact_msa_features,
     compact_zero_template_pair_features,
     featurize_query,
     featurize_query_with_metadata,
     has_atomized_tokens,
+    has_compact_msa_features,
     has_compact_zero_template_pair_features,
     load_feature_archive,
     load_features,
@@ -38,6 +41,7 @@ from foldjax.models.openfold3.data.featurize import (
 from foldjax.models.openfold3.data.msa import MAIN_STEM, PAIRED_STEM, attach_msas
 
 __all__ = [
+    "COMPACT_MSA_PRIVATE_FEATURES",
     "MAIN_STEM",
     "MODEL_FEATURES",
     "MSA_ROW_FEATURES",
@@ -48,10 +52,12 @@ __all__ = [
     "PRIVATE_MODEL_FEATURES",
     "attach_msas",
     "collapse_identical_templates",
+    "compact_msa_features",
     "compact_zero_template_pair_features",
     "featurize_query",
     "featurize_query_with_metadata",
     "has_compact_zero_template_pair_features",
+    "has_compact_msa_features",
     "has_atomized_tokens",
     "load_feature_archive",
     "load_features",

@@ -13,6 +13,7 @@ import pytest
 
 from foldjax.models.openfold3.data import (
     MODEL_FEATURES,
+    compact_msa_features,
     compact_zero_template_pair_features,
     featurize_query,
     featurize_query_with_metadata,
@@ -126,6 +127,26 @@ def test_raw_inference_compacts_empty_template_pairs_before_return() -> None:
     )
 
     assert set(compact) == set(historical)
+    for name in compact:
+        np.testing.assert_array_equal(compact[name], historical[name], err_msg=name)
+
+
+def test_raw_inference_emits_categorical_msa_without_dense_intermediate() -> None:
+    dense = featurize_query(_spec(), seed=17)
+    assert dense["msa"].dtype == np.int32
+    assert dense["msa"].shape[-1] == 32
+    assert "_foldjax_compact_msa" not in dense
+    assert "_foldjax_msa_indices" not in dense
+    historical = compact_msa_features(dense)
+    compact, _metadata = featurize_query_with_metadata(
+        _spec(),
+        seed=17,
+        compact_msa=True,
+    )
+
+    assert set(compact) == set(historical)
+    assert "msa" not in compact
+    assert compact["_foldjax_msa_indices"].dtype == np.uint8
     for name in compact:
         np.testing.assert_array_equal(compact[name], historical[name], err_msg=name)
 
