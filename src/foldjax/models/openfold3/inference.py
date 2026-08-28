@@ -40,6 +40,7 @@ from foldjax.models._cp import (
 )
 from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
 from foldjax.models.openfold3.models.confidence import (
+    bin_centers,
     compute_chain_pair_iptm,
     compute_plddt,
     compute_ptm,
@@ -301,6 +302,14 @@ def _per_sample_confidence(config: InferenceConfig) -> bool:
     )
 
 
+def _sink_pae_metrics(config: InferenceConfig) -> bool:
+    """Whether serial confidence may return PAE metrics instead of PAE logits."""
+    return (
+        _per_sample_confidence(config)
+        and "pae_logits" not in config.returned_pair_logits
+    )
+
+
 def _expand_samples(value: jnp.ndarray, num_samples: int) -> jnp.ndarray:
     """Give ``value`` a leading sample axis of ``num_samples``, without copying.
 
@@ -396,6 +405,156 @@ def _compute_global_iptm(
         bin_max=bin_max,
         no_bins=no_bins,
     )
+
+
+def _expected_tm_pair_scores(
+    probabilities: jnp.ndarray,
+    mask_i: jnp.ndarray,
+    *,
+    bin_min: float,
+    bin_max: float,
+    no_bins: int,
+) -> jnp.ndarray:
+    """Collapse PAE bins to the expected TM weight for each token pair."""
+    mask_i = mask_i.astype(bool)
+    considered = jnp.maximum(jnp.sum(mask_i), 1).astype(probabilities.dtype)
+    clipped = jnp.maximum(considered, 19.0)
+    d0 = 1.24 * jnp.maximum(clipped - 15.0, 0.0) ** (1.0 / 3.0) - 1.8
+    weight = 1.0 / (1.0 + (bin_centers(bin_min, bin_max, no_bins) / d0) ** 2)
+    return jnp.sum(probabilities * weight, axis=-1)
+
+
+def _reduce_tm_pair_scores(
+    pair_scores: jnp.ndarray,
+    has_frame: jnp.ndarray,
+    mask_i: jnp.ndarray,
+    *,
+    considered_dtype: jnp.dtype,
+    undefined_pairs: jnp.ndarray | None = None,
+    asym_id: jnp.ndarray | None = None,
+    interface: bool = False,
+    eps: float = 1e-8,
+) -> jnp.ndarray:
+    """Apply the pTM/ipTM row mask and reduction to expected pair scores."""
+    if interface and asym_id is None:
+        raise ValueError("asym_id is required when interface=True")
+    mask_i = mask_i.astype(bool)
+    # Historical ``compute_ptm`` casts this count to the PAE-logit dtype before
+    # dividing. In particular, bfloat16 rounds counts above 256; using the
+    # promoted expected-score dtype here would change that established result.
+    considered = jnp.maximum(jnp.sum(mask_i), 1).astype(considered_dtype)
+    keep_pair = mask_i[..., :, None] & mask_i[..., None, :]
+    if interface:
+        keep_pair = keep_pair & (
+            asym_id[..., :, None] != asym_id[..., None, :]
+        )
+        denominator = jnp.maximum(jnp.sum(keep_pair, axis=-1), eps)
+    else:
+        denominator = considered
+    tm_i = jnp.sum(pair_scores * keep_pair, axis=-1) / denominator
+    active_row = has_frame.astype(bool) & mask_i
+    tm_i = jnp.where(active_row, tm_i, 0.0)
+    result = jnp.max(tm_i, axis=-1)
+    if undefined_pairs is not None:
+        # Historical compute_ptm multiplies every pair by its mask. IEEE
+        # NaN * 0 therefore poisons an active row even when the exceptional
+        # pair's column is masked, while a masked row is cleared by the final
+        # row selection. Some GPU lowerings turn the compact mask multiply into
+        # a select and suppress that NaN; make the scalar contract explicit.
+        poison = jnp.any(
+            undefined_pairs & active_row[..., :, None], axis=(-2, -1)
+        )
+        result = jnp.where(poison, jnp.full_like(result, jnp.nan), result)
+    return result
+
+
+def _compact_confidence_metrics_from_pae(
+    pae_logits: jnp.ndarray,
+    has_frame: jnp.ndarray,
+    token_mask: jnp.ndarray,
+    asym_id: jnp.ndarray,
+    *,
+    n_chain: int | None,
+    bin_min: float,
+    bin_max: float,
+    no_bins: int,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray | None]:
+    """Reduce one confidence sample without returning its quadratic PAE logits.
+
+    This is used only across the serial-confidence map boundary. Softmax is shared
+    by global and chain-pair metrics, while each considered token set retains its
+    own ``d0`` and expected TM weights. Moving the reductions across that boundary
+    changes only floating-point fusion order; the caller enables it under the
+    confidence-only ``1e-3`` max-absolute-delta contract.
+    """
+    probabilities = jax.nn.softmax(pae_logits, axis=-1)
+    # ``jax.nn.softmax`` defines NaN, any +Inf, and an all--Inf row as an
+    # undefined distribution. Some GPU softmax lowerings do not preserve that
+    # non-finite class when the sample axis is sunk inside ``lax.map``. Track it
+    # independently of the pair mask and restore it at scalar reduction. A mixed
+    # finite/-Inf row remains well-defined.
+    # A non-NaN row has an infinite maximum exactly when it contains +Inf or
+    # consists entirely of -Inf. Reuse that reduction instead of materialising
+    # three bin-sized predicates; softmax already takes the same row maximum.
+    undefined_softmax = jnp.any(jnp.isnan(pae_logits), axis=-1) | jnp.isinf(
+        jnp.max(pae_logits, axis=-1)
+    )
+    kwargs = {
+        "bin_min": bin_min,
+        "bin_max": bin_max,
+        "no_bins": no_bins,
+    }
+    global_scores = _expected_tm_pair_scores(probabilities, token_mask, **kwargs)
+    ptm = _reduce_tm_pair_scores(
+        global_scores,
+        has_frame,
+        token_mask,
+        considered_dtype=probabilities.dtype,
+        undefined_pairs=undefined_softmax,
+    )
+    iptm = (
+        jnp.zeros_like(ptm)
+        if n_chain == 1
+        else _reduce_tm_pair_scores(
+            global_scores,
+            has_frame,
+            token_mask,
+            considered_dtype=probabilities.dtype,
+            undefined_pairs=undefined_softmax,
+            asym_id=asym_id,
+            interface=True,
+        )
+    )
+
+    chain_pair = None
+    if n_chain is not None and n_chain > 1:
+        valid = token_mask.astype(bool)
+        chain_masks = [valid & (asym_id == chain) for chain in range(n_chain)]
+        zero = jnp.zeros(pae_logits.shape[0], dtype=pae_logits.dtype)
+        matrix = [[zero for _ in range(n_chain)] for _ in range(n_chain)]
+        for i in range(n_chain):
+            for j in range(i + 1, n_chain):
+                pair_mask = chain_masks[i] | chain_masks[j]
+                both_present = jnp.any(chain_masks[i]) & jnp.any(chain_masks[j])
+                pair_scores = _expected_tm_pair_scores(
+                    probabilities, pair_mask, **kwargs
+                )
+                value = _reduce_tm_pair_scores(
+                    pair_scores,
+                    has_frame,
+                    pair_mask,
+                    considered_dtype=probabilities.dtype,
+                    undefined_pairs=undefined_softmax,
+                    asym_id=asym_id,
+                    interface=True,
+                )
+                value = jnp.where(both_present, value, 0.0)
+                matrix[i][j] = value
+                matrix[j][i] = value
+        chain_pair = jnp.stack(
+            [jnp.stack(row, axis=-1) for row in matrix], axis=-2
+        )
+    return ptm, iptm, chain_pair
 
 
 @openfold3_precision
@@ -596,6 +755,29 @@ def predict(
     # Zeroing happens after the distogram head, which reads the trunk embedding
     # regardless.
     z_conf_input = shard_pair_rows(z if use_trunk_pair_embedding else jnp.zeros_like(z))
+    returned = set(config.returned_pair_logits)
+    return_pae = "pae_logits" in returned
+    return_pde = "pde_logits" in returned
+
+    # pTM/ipTM exclude tokens whose *predicted* coordinates cannot form a valid
+    # local frame. For atomized ligands and modified residues this depends on
+    # their two closest same-chain atoms and their angle. A feature archive can
+    # contain a frame mask for its input/reference geometry, but reusing that
+    # mask for every diffusion sample changes the confidence score, so derive it
+    # unconditionally here.
+    _, has_frame = token_frame_atoms(
+        sampled_batch,
+        coordinates,
+        sampled_batch["atom_mask"],
+        has_atomized_tokens=config.has_atomized_tokens,
+    )
+    ptm_kwargs = {
+        "bin_min": 0.0,
+        "bin_max": config.pae_bin_max,
+        "no_bins": config.pae_bins,
+    }
+    token_mask = batch["token_mask"].reshape(-1)[: config.n_token]
+    asym_id = batch["asym_id"].reshape(-1)[: config.n_token]
 
     def confidence_pair(
         si_input: jnp.ndarray,
@@ -629,13 +811,15 @@ def predict(
             chunk_size=config.pair_chunk_size,
         )
         # The pair heads are evaluated here rather than outside so the re-embedded
-        # pair representation never has to exist at sample rank; only its two
-        # logit projections are kept.
-        return (
-            s_conf_one,
-            predicted_aligned_error_head(z_conf_one, params.pae_head),
-            predicted_distance_error_head(z_conf_one, params.pde_head),
+        # pair representation never has to exist at sample rank. PAE is either a
+        # requested output or immediately reduced by the serial caller below.
+        pae_one = predicted_aligned_error_head(z_conf_one, params.pae_head)
+        pde_one = (
+            predicted_distance_error_head(z_conf_one, params.pde_head)
+            if return_pde
+            else None
         )
+        return s_conf_one, pae_one, pde_one
 
     # Upstream's ``apply_per_sample``: over ``per_sample_token_cutoff`` tokens the
     # confidence re-embedding is run one sample at a time, because it is the only
@@ -643,7 +827,36 @@ def predict(
     # Nothing here mixes samples, so mapping and batching give the same values --
     # the difference is that the batched form holds N_sample pair representations
     # at once, which at 2000 tokens is what decides whether it runs at all.
-    if _per_sample_confidence(config):
+    per_sample_confidence = _per_sample_confidence(config)
+    sink_pae_metrics = _sink_pae_metrics(config)
+    if sink_pae_metrics:
+        def confidence_and_metrics(one):
+            s_one, pae_one, pde_one = confidence_pair(
+                s_input,
+                s_trunk,
+                z_conf_input,
+                one[0][None],
+                one[1][None],
+                pair_mask_1,
+            )
+            metrics_one = _compact_confidence_metrics_from_pae(
+                pae_one,
+                one[2][None],
+                token_mask,
+                asym_id,
+                n_chain=n_chain,
+                **ptm_kwargs,
+            )
+            return jax.tree.map(
+                lambda leaf: leaf[0], (s_one, metrics_one, pde_one)
+            )
+
+        s_conf, (ptm, iptm, chain_pair), pde_logits = jax.lax.map(
+            confidence_and_metrics,
+            (rep_x, rep_mask, has_frame),
+        )
+        pae_logits = None
+    elif per_sample_confidence:
         s_conf, pae_logits, pde_logits = jax.lax.map(
             lambda one: jax.tree.map(
                 lambda leaf: leaf[0],
@@ -669,6 +882,31 @@ def predict(
             _expand_samples(pair_mask_1, samples),
         )
 
+    if not sink_pae_metrics:
+        pae_for_ptm = jnp.broadcast_to(
+            pae_logits, (config.num_samples, *pae_logits.shape[-3:])
+        )
+        ptm = compute_ptm(pae_for_ptm, has_frame, token_mask, **ptm_kwargs)
+        iptm = _compute_global_iptm(
+            ptm,
+            pae_for_ptm,
+            has_frame,
+            token_mask,
+            asym_id,
+            n_chain=n_chain,
+            **ptm_kwargs,
+        )
+        chain_pair = None
+        if n_chain is not None and n_chain > 1:
+            chain_pair = compute_chain_pair_iptm(
+                pae_for_ptm,
+                has_frame,
+                token_mask,
+                asym_id,
+                n_chain=n_chain,
+                **ptm_kwargs,
+            )
+
     plddt_logits = atom_logit_head(
         s_conf,
         params.plddt_head,
@@ -688,62 +926,14 @@ def predict(
             n_atom=config.n_atom,
         )
 
-    # pTM/ipTM exclude tokens whose *predicted* coordinates cannot form a valid
-    # local frame. For atomized ligands and modified residues this depends on
-    # their two closest same-chain atoms and their angle. A feature archive can
-    # contain a frame mask for its input/reference geometry, but reusing that
-    # mask for every diffusion sample changes the confidence score, so derive it
-    # unconditionally here.
-    _, has_frame = token_frame_atoms(
-        sampled_batch,
-        coordinates,
-        sampled_batch["atom_mask"],
-        has_atomized_tokens=config.has_atomized_tokens,
-    )
-    pae_for_ptm = jnp.broadcast_to(
-        pae_logits, (config.num_samples, *pae_logits.shape[-3:])
-    )
-    ptm_kwargs = {
-        "bin_min": 0.0,
-        "bin_max": config.pae_bin_max,
-        "no_bins": config.pae_bins,
-    }
-    token_mask = batch["token_mask"].reshape(-1)[: config.n_token]
-    ptm = compute_ptm(pae_for_ptm, has_frame, token_mask, **ptm_kwargs)
-
-    # ipTM has well-defined zero semantics for a monomer (there are no
-    # inter-chain pairs), so it is a scalar output for every input. Only the
-    # chain-pair matrix is conditional on an actual multichain complex.
-    asym_id = batch["asym_id"].reshape(-1)[: config.n_token]
-    iptm = _compute_global_iptm(
-        ptm,
-        pae_for_ptm,
-        has_frame,
-        token_mask,
-        asym_id,
-        n_chain=n_chain,
-        **ptm_kwargs,
-    )
-    chain_pair = None
-    if n_chain is not None and n_chain > 1:
-        chain_pair = compute_chain_pair_iptm(
-            pae_for_ptm,
-            has_frame,
-            token_mask,
-            asym_id,
-            n_chain=n_chain,
-            **ptm_kwargs,
-        )
-
-    returned = set(config.returned_pair_logits)
     return Prediction(
         coordinates=coordinates,
         plddt=compute_plddt(plddt_logits),
         ptm=ptm,
         iptm=iptm,
         chain_pair_iptm=chain_pair,
-        pae_logits=pae_logits if "pae_logits" in returned else None,
-        pde_logits=pde_logits if "pde_logits" in returned else None,
+        pae_logits=pae_logits if return_pae else None,
+        pde_logits=pde_logits if return_pde else None,
         distogram_logits=disto_logits if "distogram_logits" in returned else None,
         experimentally_resolved_logits=experimentally_resolved_logits,
         single_inputs=(

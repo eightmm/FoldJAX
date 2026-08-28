@@ -12,6 +12,37 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 reduces unreturned PAE before it crosses the serial confidence
+  map.** Above the released 750-token cutoff, confidence already runs one sample
+  at a time. When the output budget excludes PAE, that map now turns each
+  one-sample PAE into pTM, ipTM and the chain-pair matrix before moving on;
+  when PDE is excluded its head is also omitted explicitly before lowering.
+  Requested logits and the batched-confidence route retain their established
+  program. At 3,012 tokens, five samples and 64 FP32 bins, the all-sample PAE
+  map output needed by the historical metric path is 10.815 GiB and is now
+  removed. One 2.163 GiB PAE sample remains transient in the loop body rather
+  than all five being live across the metric reductions. The unrequested PDE
+  output was already eligible for whole-graph dead-code elimination, so no
+  second 10.815 GiB reduction is claimed for that source-level omission.
+
+  The arithmetic is equivalent but crosses an XLA map boundary, so this is a
+  confidence-only numerical change under a `max_abs <= 1e-3` contract, not a
+  bitwise claim. Forty randomized FP32 CPU cases spanning unknown-chain,
+  monomer and 2--4-chain inputs observed maxima of `1.49e-8` pTM, `2.98e-8`
+  ipTM, `1.49e-8` chain-pair ipTM and `2.98e-8` ranking score; a BF16 case
+  peaked at `5.65e-5`. Empty masks, BF16 token-count rounding, and NaN/Inf
+  propagation are regression-gated. A queued CUDA focused run passed all 18
+  tests (one unavailable upstream-parity fixture skipped), including explicit
+  scalar restoration of the historical non-finite classes.
+
+  In an isolated five-sample, 128-token, two-chain FP32 CPU projection-plus-
+  metric probe, the all-sample PAE type disappeared from StableHLO and
+  executable temporary memory fell from 42,009,376 to 8,553,584 bytes;
+  arguments and the 144-byte output were unchanged. This is a synthetic
+  confidence-stage memory measurement, not a whole-run latency claim.
+  Released-weight GPU peak, latency and end-to-end numerical checks remain
+  deployment gates.
+
 - **Managed Protenix/OpenDDE relative-position storage carries four categorical
   pair grids instead of 139 one-hot channels.** The JSON featurizers now retain
   residue, token and chain bins plus the same-entity bit as `uint8`, behind a
