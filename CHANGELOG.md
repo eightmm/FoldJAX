@@ -12,6 +12,22 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The benchmark was re-measured after a day of memory work, and nothing
+  moved.** 2,096 and 3,012 tokens came back identical to a tenth of a GiB on
+  every model; 4,926 still fails on all six; wall clock moved -8 s to +22 s.
+  That is what those 35 commits claimed -- they bound caches, stream parses and
+  release host state, and say so; the benchmark's peak is an XLA arena, which
+  is deterministic for a fixed program and shape. A moved peak would have meant
+  one of them changed the compiled program. `docs/benchmark.md` records the
+  re-measurement beside the table.
+
+- **`bench/spec.py` said protenix-v2 has no 3,012-token row. It has one.**
+  The comment described upstream's refusal above 2,560 tokens as though it were
+  this implementation's limit. `runtime_policy.py` warns and runs past it,
+  `strict_token_limit` exists to restore upstream's behaviour for a caller who
+  wants it, and `docs/benchmark.md` has carried the row all along. Re-measured:
+  2,058 s, 78.2 GiB.
+
 - **Related Protenix, OpenDDE and OpenFold3 runs prepare one checkpoint per
   request, not once per seed.** A multi-seed or multi-input model group now
   keeps one request-scoped JAX parameter tree after native host loading,

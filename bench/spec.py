@@ -48,8 +48,13 @@ DATA = Path(
 #: `protenix-v2` is Protenix's other supported checkpoint rather than another
 #: port: 464M parameters against the release's 368M, same code path on both
 #: sides. It is listed separately because a benchmark row is a (weights,
-#: schedule) pair, and these are different weights. It caps at 2,560 tokens,
-#: so it has no 3,012-token row to compare.
+#: schedule) pair, and these are different weights.
+#:
+#: This used to say it "caps at 2,560 tokens, so it has no 3,012-token row to
+#: compare". That is upstream's refusal, not this one's: `runtime_policy.py`
+#: warns and runs past it, `strict_token_limit` exists to restore upstream's
+#: behaviour for a caller who wants it, and the 3,012-token row has been in
+#: `docs/benchmark.md` all along. Re-measured 2026-08-28: 2,058 s, 78.2 GiB.
 MODELS = (
     "alphafold3",
     "boltz2",

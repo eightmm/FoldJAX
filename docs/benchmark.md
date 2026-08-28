@@ -112,6 +112,17 @@ blocks at c_z=256 with `hidden_scale_up`, 464M parameters against the release's
 and both sides run the same schedule on the same job as everything else here.
 Its checkpoint was measured on 2026-08-25.
 
+**Re-measured 2026-08-28 at `4dbad2b`**, FoldJAX side only, after a day that
+added 35 commits bounding caches, streaming parses and releasing host state:
+2,096 and 3,012 tokens came back **identical to a tenth of a GiB on every
+model**, and 4,926 still fails on all six. Wall clock moved -8 s to +22 s,
+inside what this card's clock does between runs.
+
+That is the expected result rather than a null one. Those commits are
+loader-stage and host-side by their own description; the peak here is an XLA
+arena, which is deterministic for a fixed program and shape. A GPU peak that
+moved would have meant one of them changed the compiled program.
+
 **Its 3,012-token row is the one place the two implementations disagree about
 what is possible.** Upstream refuses protenix-v2 above 2,560 tokens by
 assertion, before allocating anything, and its own message gives the reason:
