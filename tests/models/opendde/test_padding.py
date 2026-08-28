@@ -269,7 +269,7 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
     monkeypatch.setattr(
         predict_impl,
         "_score",
-        lambda output, _features, *, num_recycles: output,
+        lambda output, _features, *, num_recycles, return_confidence_details: output,
     )
     output_path = tmp_path / "out" / "job.cif"
     monkeypatch.setattr(
@@ -368,7 +368,7 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
     monkeypatch.setattr(
         predict_impl,
         "_score",
-        lambda output, _features, *, num_recycles: output,
+        lambda output, _features, *, num_recycles, return_confidence_details: output,
     )
     output_path = tmp_path / "out" / "job.cif"
     monkeypatch.setattr(

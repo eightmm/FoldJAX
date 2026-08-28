@@ -110,6 +110,17 @@ class OpenDDEBackend(Backend):
     def validate_native_options(self, options: dict[str, object]) -> None:
         _strict_boolean(options.get("include_raw", False), name="include_raw")
 
+    def cache_profile(self, request: PredictionRequest) -> dict[str, object]:
+        """Include the normalized graph-output profile in cache identity."""
+
+        profile = super().cache_profile(request)
+        options = self.apply_sampling(request)
+        self.validate_native_options(options)
+        profile["return_confidence_details"] = _strict_boolean(
+            options.get("include_raw", False), name="include_raw"
+        )
+        return profile
+
     def capabilities(self) -> ModelCapabilities:
         native_requirement = InputRequirement(
             notes=(

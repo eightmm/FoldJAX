@@ -12,6 +12,17 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Protenix/OpenDDE structure writers no longer return confidence
+  pair-detail arrays they do not serialize.** Protenix `output_format=protenix`
+  and OpenDDE `include_raw=false` still compute expected PAE/PDE and contact
+  probabilities for the same scalar and chain summaries, but omit
+  `token_pair_pae`, `token_pair_pde`, and `contact_probs` from the compiled
+  program result. Raw output modes and direct library calls retain the
+  historical arrays. The explicit static output profile participates in both
+  the bounded in-process JIT identity and FoldJAX's persistent cache namespace;
+  coordinates, confidence summaries, ranking and OpenDDE shape-complementarity
+  fields are unchanged.
+
 - **Managed Boltz-2 full and affinity prediction carry representative-atom
   ownership as a compact private index.** The proven one-hot
   `int64[B, N, A]` input is converted before model padding to a scalar `uint8`

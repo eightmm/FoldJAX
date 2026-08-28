@@ -164,6 +164,7 @@ def _predict(
     # was asked for. `_score` passes precomputed summaries straight through.
     run_confidence_scores: bool = True,
     return_confidence_logits: bool = False,
+    return_confidence_details: bool = True,
     return_representations: bool = False,
     stop_after_trunk: bool = False,
     capture_names: tuple[str, ...] = (),
@@ -306,6 +307,7 @@ def _predict(
         trunk_dtype=trunk_dtype,
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
+        return_confidence_details=return_confidence_details,
         return_representations=return_representations,
         capture_names=capture_names,
         stop_after_trunk=stop_after_trunk,
@@ -324,6 +326,7 @@ def _score(
     features: Mapping[str, Any],
     *,
     num_recycles: int,
+    return_confidence_details: bool = True,
 ) -> dict[str, Any]:
     from foldjax.models.opendde.postprocess import opendde_confidence_scores
 
@@ -333,6 +336,7 @@ def _score(
             output,
             features,
             num_recycles=num_recycles,
+            return_confidence_details=return_confidence_details,
         ),
     }
 
@@ -786,6 +790,7 @@ def main(
                     return_confidence_logits=(
                         args.include_raw or "asym_id" not in model_features
                     ),
+                    return_confidence_details=args.include_raw,
                     capture_names=wanted_representations,
                     n_chain=n_chain,
                     cycle_msa_features=cycle_msa_features,
@@ -816,6 +821,7 @@ def main(
                     output,
                     output_features,
                     num_recycles=args.num_recycles,
+                    return_confidence_details=args.include_raw,
                 )
                 paths = _write(
                     args.out,

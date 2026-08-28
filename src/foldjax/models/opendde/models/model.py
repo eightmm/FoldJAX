@@ -555,6 +555,10 @@ def opendde_infer_static(
     #: logits unless a raw dump was asked for; False drops them from the
     #: program outputs.
     return_confidence_logits: bool = True,
+    #: Return quadratic expected PAE/PDE and contact maps. They are absent only
+    #: from the managed non-raw writer profile; direct/raw callers retain them.
+    #: Static because it changes the graph result PyTree and executable output.
+    return_confidence_details: bool = True,
     #: Chains in the job, resolved on the host: the per-chain score loops need
     #: a Python int, and reading it off `asym_id` inside jit is a tracer.
     #: Same contract as Protenix's `n_chain`.
@@ -957,6 +961,7 @@ def opendde_infer_static(
                     # numpy-based, untraceable; finished on the host by the
                     # postprocess passthrough.
                     include_shape_complementarity=False,
+                    return_confidence_details=return_confidence_details,
                 )
             )
         if not return_confidence_logits:
@@ -978,6 +983,7 @@ GRAPH_STATIC_ARGNAMES = (
     "run_confidence_scores",
     "n_chain",
     "return_confidence_logits",
+    "return_confidence_details",
     "diffusion_attention_backend",
     # Static: it sets how many rollout calls the graph contains, the same way
     # the query chunk sizes below set how many blocks each attention contains.

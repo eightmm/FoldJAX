@@ -179,6 +179,10 @@ def protenix_infer_static(
     stop_after_trunk: bool = False,
     capture_names: tuple[str, ...] = (),
     return_confidence_logits: bool = True,
+    #: Return the three quadratic expected-score/contact maps. Managed
+    #: CIF/JSON output does not serialize them; raw and direct calls keep the
+    #: historical default. Static because it changes the graph result PyTree.
+    return_confidence_details: bool = True,
     #: Score each sample's logits inside the per-sample confidence loop instead
     #: of stacking [num_samples, N, N, 64] first. Bit-identical outputs; the False
     #: path exists as the reference the equivalence test compares against.
@@ -447,6 +451,7 @@ def protenix_infer_static(
                         n_chain=n_chain,
                         token_mask=token_padding_mask,
                         atom_mask=atom_padding_mask,
+                        return_confidence_details=return_confidence_details,
                     )
                 )
             return piece
@@ -503,6 +508,7 @@ GRAPH_STATIC_ARGNAMES = (
     "stop_after_trunk",
     "capture_names",
     "return_confidence_logits",
+    "return_confidence_details",
     "sigma_data",
     "opm_chunk_size",
     "preserve_prefix_rng",

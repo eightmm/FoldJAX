@@ -273,6 +273,17 @@ class ProtenixBackend(Backend):
                 "output_format must be one of 'npz', 'protenix', or 'both'"
             )
 
+    def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
+        """Include the normalized graph-output profile in cache identity."""
+
+        profile = super().cache_profile(request)
+        options = self.apply_sampling(request)
+        self.validate_native_options(options)
+        profile["return_confidence_details"] = (
+            options.get("output_format", "protenix") != "protenix"
+        )
+        return profile
+
     def capabilities(self) -> ModelCapabilities:
         requirement = InputRequirement(
             notes=(

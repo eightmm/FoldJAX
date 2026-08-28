@@ -220,7 +220,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     monkeypatch.setattr(
         predict_impl,
         "_score",
-        lambda output, value, *, num_recycles: scored_output,
+        lambda output, value, *, num_recycles, return_confidence_details: scored_output,
     )
     expected_path = output_dir / "tiny" / "seed_101" / "predictions" / "tiny.cif"
     monkeypatch.setattr(
@@ -267,6 +267,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert calls[0][2]["num_samples"] == 1
     assert calls[0][2]["num_steps"] == 2
     assert calls[0][2]["num_recycles"] == 3
+    assert calls[0][2]["return_confidence_details"] is False
     assert featurize_calls[0][0] is job
     assert featurize_calls[0][1]["seed"] == 101
     assert os.environ["PROTENIX_CCD_COMPONENTS_FILE"] == str(components_path.resolve())
@@ -295,6 +296,14 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     )
     assert len(calls) == 1
     assert calls[0][1] is params
+
+    calls.clear()
+    predict_impl.main(
+        [*argv, "--include-raw"],
+        _prepared_params_loader=lambda _path, _dtype, _cacheable: params,
+    )
+    assert len(calls) == 1
+    assert calls[0][2]["return_confidence_details"] is True
 
     def poisoned_loader(_path, _dtype, _cacheable):
         raise PredictionError("prepared weight session is poisoned")

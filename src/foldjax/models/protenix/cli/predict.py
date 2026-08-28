@@ -936,6 +936,9 @@ def main(
                     or bool(wanted_representations)
                 ),
                 return_confidence_logits=wants_raw,
+                # The ranked CIF/JSON writer consumes summaries only. Raw NPZ
+                # modes retain the historical pair-detail arrays.
+                return_confidence_details=wants_raw,
                 triangle_mul_chunk_size=chunk_config.triangle_mul_chunk_size,
                 triangle_att_q_chunk_size=chunk_config.triangle_att_q_chunk_size,
                 single_att_q_chunk_size=chunk_config.single_att_q_chunk_size,

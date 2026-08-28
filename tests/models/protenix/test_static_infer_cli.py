@@ -262,6 +262,59 @@ def test_static_infer_prewarm_populates_graph_without_writing_output(
     assert "prewarmed:" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("output_format", "expected_details"),
+    [("protenix", False), ("npz", True), ("both", True)],
+)
+def test_output_format_selects_the_static_confidence_detail_profile(
+    tmp_path, monkeypatch, output_format, expected_details
+) -> None:
+    weights_path = tmp_path / "toy_weights.pkl"
+    features_path = tmp_path / "toy_features.npz"
+    save_native_weights(weights_path, _toy_params(), compress=False)
+    save_static_feature_npz(features_path, _toy_features())
+    captured = {}
+
+    def fake_predict(_params, features, **kwargs):
+        captured.update(kwargs)
+        return {
+            "coordinate": np.zeros(
+                (1, len(features["atom_to_token_idx"]), 3), dtype=np.float32
+            )
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    main(
+        [
+            "--model-name",
+            "unknown",
+            "--weights",
+            str(weights_path),
+            "--features",
+            str(features_path),
+            "--out",
+            str(tmp_path / f"{output_format}.out"),
+            "--output-format",
+            output_format,
+            "--n-sample",
+            "1",
+            "--n-step",
+            "1",
+            "--n-cycle",
+            "1",
+            "--trunk-dtype",
+            "fp32",
+            "--prewarm-only",
+            "--cpu-only",
+            "--no-compile-cache",
+        ]
+    )
+
+    assert captured["return_confidence_details"] is expected_details
+
+
 def test_static_infer_routes_compact_msa_storage_to_the_model(
     tmp_path, monkeypatch
 ) -> None:

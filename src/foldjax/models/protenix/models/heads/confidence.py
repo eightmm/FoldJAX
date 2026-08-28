@@ -955,8 +955,17 @@ def confidence_scores_from_logits(
     num_recycles: int | None = None,
     n_chain: int | None = None,
     include_chain_pair_pae: bool = True,
+    return_confidence_details: bool = True,
 ) -> dict[str, jnp.ndarray]:
-    """Compute the basic full-data confidence scores used in inference."""
+    """Compute the basic full-data confidence scores used in inference.
+
+    ``return_confidence_details=False`` keeps the pair arrays available to the
+    reductions below but omits them from the returned PyTree.  This is a
+    compile-time output profile in the model wrappers: managed CIF/JSON writers
+    consume the scalar/chain summaries but never serialize ``token_pair_pae``,
+    ``token_pair_pde`` or ``contact_probs``.  The default remains ``True`` for
+    direct callers and raw-output paths.
+    """
 
     atom_plddt = logits_to_score(
         plddt_logits,
@@ -1008,14 +1017,17 @@ def confidence_scores_from_logits(
     gpde_numer = jnp.sum(token_pair_pde * gpde_weights, axis=(-1, -2))
     gpde_denom = jnp.sum(gpde_weights, axis=(-1, -2))
     summary_gpde = jnp.where(gpde_denom > 0, gpde_numer / gpde_denom, 0.0)
-    scores = {
-        "atom_plddt": atom_plddt.astype(jnp.float32),
-        "token_pair_pde": token_pair_pde.astype(jnp.float32),
-        "token_pair_pae": token_pair_pae.astype(jnp.float32),
-        "contact_probs": contact_probs.astype(jnp.float32),
-        "summary_plddt": summary_plddt.astype(jnp.float32),
-        "summary_gpde": summary_gpde.astype(jnp.float32),
-    }
+    scores = {"atom_plddt": atom_plddt.astype(jnp.float32)}
+    if return_confidence_details:
+        scores.update(
+            token_pair_pde=token_pair_pde.astype(jnp.float32),
+            token_pair_pae=token_pair_pae.astype(jnp.float32),
+            contact_probs=contact_probs.astype(jnp.float32),
+        )
+    scores.update(
+        summary_plddt=summary_plddt.astype(jnp.float32),
+        summary_gpde=summary_gpde.astype(jnp.float32),
+    )
     if token_has_frame is not None and token_asym_id is not None:
         summary_ptm = calculate_ptm(
             pae_prob,

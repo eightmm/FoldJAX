@@ -52,6 +52,10 @@ _OPENDDE_SCORE_KEYS = frozenset(
     }
 ) | SHAPE_COMPLEMENTARITY_SCORE_KEYS
 
+CONFIDENCE_DETAIL_KEYS = frozenset(
+    {"token_pair_pae", "token_pair_pde", "contact_probs"}
+)
+
 
 def compute_contact_prob(
     distogram_logits: jnp.ndarray,
@@ -89,6 +93,7 @@ def opendde_confidence_scores(
     num_recycles: int,
     n_chain: int | None = None,
     include_shape_complementarity: bool = True,
+    return_confidence_details: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """Convert raw OpenDDE logits to released confidence summaries.
 
@@ -114,11 +119,15 @@ def opendde_confidence_scores(
                 n_token=int(jnp.asarray(features["asym_id"]).shape[0]),
             )
         )
-        return {
+        filtered = {
             key: value
             for key, value in scores.items()
             if key in _OPENDDE_SCORE_KEYS
         }
+        if not return_confidence_details:
+            for key in CONFIDENCE_DETAIL_KEYS:
+                filtered.pop(key, None)
+        return filtered
 
     required_output = {"coordinate", "plddt", "pae", "pde", "distogram_logits"}
     missing_output = sorted(required_output - output.keys())
@@ -221,7 +230,13 @@ def opendde_confidence_scores(
         scores.update(
             _shape_complementarity_scores(output, features, n_token=n_token)
         )
-    return {key: value for key, value in scores.items() if key in _OPENDDE_SCORE_KEYS}
+    filtered = {
+        key: value for key, value in scores.items() if key in _OPENDDE_SCORE_KEYS
+    }
+    if not return_confidence_details:
+        for key in CONFIDENCE_DETAIL_KEYS:
+            filtered.pop(key, None)
+    return filtered
 
 
 def _shape_complementarity_scores(
@@ -278,6 +293,7 @@ def _shape_complementarity_scores(
 
 
 __all__ = [
+    "CONFIDENCE_DETAIL_KEYS",
     "SHAPE_COMPLEMENTARITY_SCORE_KEYS",
     "compute_contact_prob",
     "opendde_confidence_scores",
