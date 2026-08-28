@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from foldjax.execution import DIFFUSION_CHUNK_SIZE
+
 ChunkPolicyName = Literal["auto", "manual", "off"]
 
 #: Protenix's own `infer_setting.chunk_size_thresholds`, transcribed from
@@ -24,7 +26,10 @@ PROTENIX_CHUNK_SIZE_THRESHOLDS: tuple[tuple[int, int | None], ...] = (
     (2560, 128),
 )
 PROTENIX_EXTREME_CHUNK_SIZE = 32
-PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE = 5
+#: Kept as a name because upstream's config uses it, but the value now comes
+#: from the one place every port reads it: a knob that means the same thing
+#: should not have two constants either.
+PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE = DIFFUSION_CHUNK_SIZE
 
 
 @dataclass(frozen=True)

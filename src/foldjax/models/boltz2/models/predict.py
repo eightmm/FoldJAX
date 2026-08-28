@@ -101,6 +101,13 @@ def boltz2_predict(
         affinity_params = params["affinity"]
     return_pair_chains_iptm = bool(sample_kwargs.pop("return_pair_chains_iptm", True))
     confidence_sequentially = bool(sample_kwargs.pop("confidence_sequentially", False))
+    #: Diffusion samples denoised at once. The neutral name every port in this
+    #: repository uses for this knob; `None` denoises all of them together.
+    diffusion_chunk_size = sample_kwargs.pop("diffusion_chunk_size", None)
+    if diffusion_chunk_size is not None:
+        diffusion_chunk_size = int(diffusion_chunk_size)
+        if diffusion_chunk_size < 1:
+            raise ValueError("diffusion_chunk_size must be at least 1")
     recompute_nonpolymer_frames = bool(
         sample_kwargs.pop("recompute_nonpolymer_frames", True)
     )
@@ -165,7 +172,7 @@ def boltz2_predict(
             if name in return_representations
         }
 
-    def sample(key):
+    def sample(key, sample_multiplicity=None):
         return boltz2_sample_forward(
             params,
             feats,
@@ -174,14 +181,44 @@ def boltz2_predict(
             num_sampling_steps=num_sampling_steps,
             augmentation=augmentation,
             steering_args=steering_args,
-            multiplicity=multiplicity,
+            multiplicity=multiplicity
+            if sample_multiplicity is None
+            else sample_multiplicity,
             eps=eps,
             trunk=trunk,
             **sample_kwargs,
         )
 
-    sample_out = sample(key)
-    sample_atom_coords = sample_out["sample_atom_coords"]
+    # The denoiser holds its activations for every sample it is handed, and
+    # this port's conditioning is `jnp.repeat`-ed rather than broadcast, so both
+    # grow with the sample count: at 1,003 tokens the peak went 6.7 GiB at one
+    # sample to 20.8 at thirty-two. Denoising a chunk at a time bounds both.
+    #
+    # Unlike a blocked matmul this is not the same arithmetic: each chunk draws
+    # its noise at its own width, so the structures are different draws from
+    # the same distribution rather than the same draws computed differently.
+    # That is what Protenix's `diffusion_chunk_size` already does, and why the
+    # rule below leaves the released five-sample run on the single unchunked
+    # call it has always taken.
+    if diffusion_chunk_size is not None and multiplicity > diffusion_chunk_size:
+        starts = range(0, multiplicity, diffusion_chunk_size)
+        chunk_keys = jax.random.split(key, len(list(starts)))
+        sample_atom_coords = jnp.concatenate(
+            [
+                sample(
+                    chunk_key,
+                    min(diffusion_chunk_size, multiplicity - start),
+                )["sample_atom_coords"]
+                for chunk_key, start in zip(
+                    chunk_keys,
+                    range(0, multiplicity, diffusion_chunk_size),
+                    strict=True,
+                )
+            ],
+            axis=0,
+        )
+    else:
+        sample_atom_coords = sample(key)["sample_atom_coords"]
 
     out: dict[str, object] = {"sample_atom_coords": sample_atom_coords}
     # The trunk's own outputs, for downstream work that wants what the

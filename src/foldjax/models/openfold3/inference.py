@@ -30,6 +30,7 @@ from foldjax._openfold3_compile import (
     resolve_triangle_kernel,
     triangle_backend,
 )
+from foldjax.execution import auto_diffusion_chunk_size
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -961,18 +962,6 @@ def predict(
     )
 
 
-#: Diffusion samples denoised at once once the rollout is chunked. Protenix
-#: resolves the same knob at the same width (`PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE`),
-#: and the released schedule asks for five, so the shipped run is unchanged and
-#: only a caller who raises the sample count pays for the loop.
-DIFFUSION_SAMPLE_CHUNK = 5
-
-
-def _auto_diffusion_sample_chunk(num_samples: int) -> int | None:
-    """Chunk the rollout only when there is more than one chunk to run."""
-    return DIFFUSION_SAMPLE_CHUNK if num_samples > DIFFUSION_SAMPLE_CHUNK else None
-
-
 def released_config(
     *,
     n_token: int,
@@ -1050,7 +1039,7 @@ def released_config(
         pair_chunk_size=resolved_chunk,
         per_sample_token_cutoff=per_sample_token_cutoff,
         diffusion_chunk_size=(
-            _auto_diffusion_sample_chunk(num_samples)
+            auto_diffusion_chunk_size(num_samples)
             if diffusion_chunk_size == "auto"
             else diffusion_chunk_size
         ),

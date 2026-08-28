@@ -28,6 +28,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.execution import auto_diffusion_chunk_size
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
@@ -426,6 +427,10 @@ def predict(
     num_steps: int = 200,
     num_recycles: int = 3,
     num_samples: int = 1,
+    #: Diffusion samples denoised at once. `None` resolves it from the sample
+    #: count, which is what every caller should want and what the CLI leaves
+    #: it at; pass an integer only to pin a width.
+    diffusion_chunk_size: int | None = None,
     affinity_num_steps: int = 200,
     affinity_num_samples: int = 5,
     affinity_mw_correction: bool = False,
@@ -743,6 +748,16 @@ def predict(
         ),
         "glu_backend": glu_backend,
         "confidence_sequentially": num_samples > 1,
+        # Resolved from the sample count, at the width every port in this
+        # repository resolves it at. The released five-sample run keeps the
+        # single unchunked rollout it has always taken; only a caller who
+        # raises the count pays for the loop, and that caller is the one whose
+        # peak would otherwise grow with it.
+        "diffusion_chunk_size": (
+            auto_diffusion_chunk_size(num_samples)
+            if diffusion_chunk_size is None
+            else int(diffusion_chunk_size)
+        ),
         "return_pair_chains_iptm": False,
         "recompute_nonpolymer_frames": bool(np.any(feats_np["mol_type"] == 3)),
         # The featurizer always emits template_* arrays, zero-filled when no

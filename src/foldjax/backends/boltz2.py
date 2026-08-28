@@ -216,6 +216,7 @@ class Boltz2Backend(Backend):
             "cp_atom_windows",
             "cp_devices",
             "cp_layout",
+            "diffusion_chunk_size",
             "feature_cache",
             "glu_backend",
             "mols",
@@ -474,6 +475,12 @@ class Boltz2Backend(Backend):
             _strict_integer(options["num_steps"], name="num_steps", minimum=2)
         if "cp_devices" in options:
             _strict_integer(options["cp_devices"], name="cp_devices", minimum=1)
+        if "diffusion_chunk_size" in options:
+            _strict_integer(
+                options["diffusion_chunk_size"],
+                name="diffusion_chunk_size",
+                minimum=1,
+            )
         if "cp_layout" in options and options["cp_layout"] not in {
             "auto",
             "1d",

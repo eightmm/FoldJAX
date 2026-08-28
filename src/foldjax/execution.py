@@ -73,6 +73,26 @@ ALIASES: dict[str, str] = {
 }
 
 
+#: Diffusion samples a rollout denoises at once, once it chunks at all.
+#:
+#: One constant, because the alternative is what this module exists to stop:
+#: Protenix resolved it as `PROTENIX_SAMPLE_DIFFUSION_CHUNK_SIZE`, and the
+#: ports that grew the same knob later would each have named their own. The
+#: knob itself is `diffusion_chunk_size` everywhere, spelled the same in the
+#: CLI, the Python API and each port's own signature.
+#:
+#: Five is the released sample count of every schedule here, so the shipped run
+#: takes the single unchunked rollout it always took and only a caller who
+#: raises the count meets the loop. That is the whole reason the rule is
+#: `> chunk` rather than `>= chunk`.
+DIFFUSION_CHUNK_SIZE = 5
+
+
+def auto_diffusion_chunk_size(num_samples: int) -> int | None:
+    """The chunk width for `num_samples`, or None to denoise them together."""
+    return DIFFUSION_CHUNK_SIZE if num_samples > DIFFUSION_CHUNK_SIZE else None
+
+
 class Alias(UserWarning):
     """An option was named the way it used to be named."""
 
