@@ -22,6 +22,11 @@ from foldjax.models.openfold3.data import (
     pad_features,
     save_features,
 )
+from foldjax.models.openfold3.data.compact_categories import (
+    COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
+    COMPACT_REF_ATOM_NAME_CHAR_IDS,
+    COMPACT_REF_ELEMENT_IDS,
+)
 from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
 )
@@ -234,6 +239,21 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         "atom_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
         "asym_id": np.asarray([[7, 42, 999]], dtype=np.int64),
         "is_atomized": np.asarray([[0, 0, 1]], dtype=np.int32),
+        "ref_element": np.pad(
+            np.eye(119, dtype=np.int32)[None, [5, 6]],
+            ((0, 0), (0, 1), (0, 0)),
+        ),
+        "ref_atom_name_chars": np.pad(
+            np.eye(64, dtype=np.int32)[
+                np.asarray(
+                    [
+                        [ord(character) - 32 for character in "N".ljust(4)],
+                        [ord(character) - 32 for character in "CA".ljust(4)],
+                    ]
+                )
+            ][None],
+            ((0, 0), (0, 1), (0, 0), (0, 0)),
+        ),
     }
     params = SimpleNamespace(
         trunk=SimpleNamespace(pairformer_stack=SimpleNamespace(blocks=())),
@@ -245,6 +265,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     coordinates[0, 2, 0] = np.nan
     prediction = SimpleNamespace(coordinates=coordinates)
     seen: dict[str, object] = {}
+    call_order: list[str] = []
     checkpoint_state = {"checkpoint": object()}
     checkpoint_events: list[object] = []
 
@@ -254,10 +275,27 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     monkeypatch.setattr(data, "subsample_msa_rows", lambda features, depth: features)
 
     def compact(features):
+        call_order.append("templates")
         seen["compact_asym_id"] = np.asarray(features["asym_id"])
         return features
 
     monkeypatch.setattr(data, "compact_zero_template_pair_features", compact)
+    monkeypatch.setattr(
+        data,
+        "compact_msa_features",
+        lambda features: (call_order.append("msa"), features)[1],
+    )
+    original_category_compactor = data.compact_ref_atom_category_storage
+
+    def compact_categories(features):
+        call_order.append("atom-categories")
+        assert "ref_element" in features
+        assert "ref_atom_name_chars" in features
+        return original_category_compactor(features)
+
+    monkeypatch.setattr(
+        data, "compact_ref_atom_category_storage", compact_categories
+    )
 
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
@@ -277,14 +315,22 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     )
 
     def fake_predict(key, features, params, config, table, *, n_chain=None):
-        seen.update(n_chain=n_chain, asym_id=np.asarray(features["asym_id"]))
+        seen.update(
+            n_chain=n_chain,
+            asym_id=np.asarray(features["asym_id"]),
+            model_features=features,
+        )
         return prediction
 
     def fake_compile(config, table, *, n_chain=None, **compile_options):
         seen["compile_options"] = compile_options
 
         def compiled(key, features, params):
-            seen.update(n_chain=n_chain, asym_id=np.asarray(features["asym_id"]))
+            seen.update(
+                n_chain=n_chain,
+                asym_id=np.asarray(features["asym_id"]),
+                model_features=features,
+            )
             return prediction
 
         return compiled
@@ -326,6 +372,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
 
     def fake_write_prediction_outputs(*args, **kwargs):
         seen["writer_array_budget"] = kwargs["max_array_bytes"]
+        seen["writer_features"] = args[1]
         return {
             "structures": (),
             "scores": tmp_path / "scores.json",
@@ -364,6 +411,18 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     assert seen["writer_array_budget"] == expected_budget
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
     np.testing.assert_array_equal(seen["compact_asym_id"], [[0, 1, 0]])
+    assert call_order == ["templates", "msa", "atom-categories"]
+    model_features = seen["model_features"]
+    writer_features = seen["writer_features"]
+    assert "ref_element" not in model_features
+    assert "ref_atom_name_chars" not in model_features
+    assert COMPACT_REF_ELEMENT_IDS in model_features
+    assert COMPACT_REF_ATOM_NAME_CHAR_IDS in model_features
+    assert "ref_element" in writer_features
+    assert "ref_atom_name_chars" in writer_features
+    assert not (
+        set(COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES) & writer_features.keys()
+    )
     assert checkpoint_events == [
         "load",
         ("resolve", checkpoint_state, None),

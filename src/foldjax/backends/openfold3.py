@@ -429,6 +429,16 @@ class OpenFold3Backend(Backend):
             features = getattr(data, "compact_msa_features", lambda batch: batch)(
                 features
             )
+        # The exact structure sidecar validates atom names against the dense
+        # public feature ABI, so keep that writer mapping intact. Only the
+        # generated, validated, normalized model copy crosses the private
+        # compact boundary before JIT/device transfer.
+        output_features = features
+        features = getattr(
+            data,
+            "compact_ref_atom_category_storage",
+            lambda batch: batch,
+        )(features)
 
         # The complete checkpoint remains visible to inspection and verification.
         # Only the inference path drops upstream's second registration of the
@@ -573,7 +583,7 @@ class OpenFold3Backend(Backend):
             )
         written = output.write_prediction_outputs(
             prediction,
-            features,
+            output_features,
             request.output_dir,
             name=name,
             output_metadata=output_metadata,

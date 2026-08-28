@@ -11,6 +11,9 @@ from foldjax.models.openfold3.data.cache import (
     save_preparsed_msas,
     save_template_cache,
 )
+from foldjax.models.openfold3.data.compact_categories import (
+    compact_ref_atom_category_storage,
+)
 from foldjax.models.openfold3.data.featurize import (
     COMPACT_MSA_PRIVATE_FEATURES,
     MODEL_FEATURES,
@@ -53,6 +56,7 @@ __all__ = [
     "attach_msas",
     "collapse_identical_templates",
     "compact_msa_features",
+    "compact_ref_atom_category_storage",
     "compact_zero_template_pair_features",
     "featurize_query",
     "featurize_query_with_metadata",

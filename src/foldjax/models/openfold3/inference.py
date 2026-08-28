@@ -39,6 +39,13 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models.openfold3.data.compact_categories import (
+    COMPACT_REF_ATOM_CATEGORIES_MARKER,
+    COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
+    COMPACT_REF_ATOM_NAME_CHAR_IDS,
+    COMPACT_REF_ELEMENT_IDS,
+    validate_compact_ref_atom_categories,
+)
 from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
 from foldjax.models.openfold3.models.confidence import (
     bin_centers,
@@ -395,6 +402,82 @@ def openfold3_precision(function):
     return wrapper
 
 
+def _restore_ref_atom_category_one_hot(
+    batch: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Restore private IDs to OpenFold3's historical dense ``int32`` inputs.
+
+    This executes inside the prediction graph immediately before the existing
+    atom-feature projections. Dense public features take precedence and remove
+    stale private provenance. Compiled callers validate private values on the
+    host before tracing; direct eager calls receive the same validation here.
+    """
+
+    has_element = "ref_element" in batch
+    has_chars = "ref_atom_name_chars" in batch
+    private_present = any(
+        name in batch for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+    )
+    if has_element or has_chars:
+        if not private_present:
+            return batch
+        out = dict(batch)
+        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
+            out.pop(name, None)
+        return out
+    if not private_present:
+        return batch
+
+    missing = [
+        name
+        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        if name not in batch
+    ]
+    if missing:
+        raise KeyError(
+            "OpenFold3 private compact ref atom categories are incomplete; "
+            "missing " + ", ".join(missing)
+        )
+    private_values = tuple(
+        batch[name] for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+    )
+    if not any(isinstance(value, jax.core.Tracer) for value in private_values):
+        validate_compact_ref_atom_categories(batch)
+
+    marker = jnp.asarray(batch[COMPACT_REF_ATOM_CATEGORIES_MARKER])
+    element_ids = jnp.asarray(batch[COMPACT_REF_ELEMENT_IDS])
+    char_ids = jnp.asarray(batch[COMPACT_REF_ATOM_NAME_CHAR_IDS])
+    if marker.shape != () or marker.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError(
+            "OpenFold3 compact ref atom category marker must be scalar uint8"
+        )
+    if element_ids.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("OpenFold3 compact ref element IDs must have dtype uint8")
+    if char_ids.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("OpenFold3 compact ref atom-name IDs must have dtype uint8")
+    if (
+        element_ids.ndim != 2
+        or element_ids.shape[0] != 1
+        or element_ids.shape[1] < 1
+        or char_ids.shape != (*element_ids.shape, 4)
+    ):
+        raise ValueError(
+            "OpenFold3 compact ref atom category IDs must have shapes (1, A) "
+            "and (1, A, 4)"
+        )
+
+    out = dict(batch)
+    out["ref_element"] = jax.nn.one_hot(
+        element_ids.astype(jnp.int32), 119, dtype=jnp.int32
+    )
+    out["ref_atom_name_chars"] = jax.nn.one_hot(
+        char_ids.astype(jnp.int32), 64, dtype=jnp.int32
+    )
+    for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
+        out.pop(name, None)
+    return out
+
+
 def _compute_global_iptm(
     ptm: jnp.ndarray,
     pae_logits: jnp.ndarray,
@@ -620,6 +703,7 @@ def predict(
             f"mesh has {_active_cp_shards()} shard(s); run through "
             "compile_predict or activate context_parallel() yourself"
         )
+    batch = _restore_ref_atom_category_one_hot(batch)
     s_input, s_trunk, z = trunk(
         batch,
         params.trunk,
@@ -1306,6 +1390,30 @@ def _require_same_topology(identity: _PredictGraphIdentity, mesh) -> None:
         )
 
 
+def _prepare_ref_atom_category_graph_input(
+    batch: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Validate compact host values and keep dense inputs authoritative.
+
+    This boundary has to run for both contextual JIT calls and already-lowered
+    public executables.  The latter accept new values with the lowered shapes,
+    so graph-side shape checks alone cannot reject a malformed marker, sentinel,
+    or padding mask.  Removing stale private leaves here also preserves the
+    dense executable's PyTree identity.
+    """
+
+    validate_compact_ref_atom_categories(batch)
+    if ("ref_element" in batch or "ref_atom_name_chars" in batch) and any(
+        name in batch for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+    ):
+        return {
+            name: value
+            for name, value in batch.items()
+            if name not in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        }
+    return batch
+
+
 def _persistent_cache_matches(scope: str | None) -> bool:
     """Whether JAX is currently configured to populate this exact scope."""
 
@@ -1350,6 +1458,7 @@ class _BoundCompiledPredict:
         noise_tape=None,
         noise_mask=None,
     ):
+        batch = _prepare_ref_atom_category_graph_input(batch)
         route = _rng_route(noise_tape, noise_mask)
         if route != self._identity.rng_route:
             raise ValueError(
@@ -1476,6 +1585,10 @@ def compile_predict(
         noise_tape=None,
         noise_mask=None,
     ):
+        # Reject malformed private provenance while values are still concrete,
+        # before tracing or consulting the compiled-executable cache.
+        batch = _prepare_ref_atom_category_graph_input(batch)
+
         # Tracing happens on the first call, so the mesh has to be active
         # here, not at factory time. A checkpoint committed to one device
         # fails the multi-device call's device-assignment check; everything

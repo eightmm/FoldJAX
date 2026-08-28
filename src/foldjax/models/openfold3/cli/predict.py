@@ -166,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from foldjax.models.openfold3.data import (
         collapse_identical_templates,
         compact_msa_features,
+        compact_ref_atom_category_storage,
         compact_zero_template_pair_features,
         has_atomized_tokens,
         load_feature_archive,
@@ -235,6 +236,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw, n_chain = normalize_asym_ids(raw)
     raw = compact_zero_template_pair_features(raw)
     raw = compact_msa_features(raw)
+    # Exact structure metadata validates its atom-name ordering against the
+    # dense public archive ABI. Keep that writer mapping while only the model
+    # copy replaces proven categorical one-hots before JIT/device transfer.
+    output_features = raw
+    model_features = compact_ref_atom_category_storage(raw)
     # `jax.jit` stages host arrays itself, once for the whole argument tree.
     # Placing them here instead compiles a `jit_stage` program per distinct
     # shape and dtype, and none of them survive `enable_compilation_cache`'s
@@ -243,9 +249,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # keep the placement: it dispatches operation by operation and would
     # otherwise re-transfer the same host array once per operation.
     features = (
-        {name: jnp.asarray(value) for name, value in raw.items()}
+        {name: jnp.asarray(value) for name, value in model_features.items()}
         if args.no_compile
-        else raw
+        else model_features
     )
     print(
         f"{n_token} tokens, {n_atom} atoms | {config.num_samples} samples x "
@@ -330,7 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     written = write_prediction_outputs(
         prediction,
-        features,
+        output_features,
         args.output,
         name=args.name or args.features.stem,
         max_array_bytes=array_budget_bytes,

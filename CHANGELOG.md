@@ -12,6 +12,30 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed OpenFold3 prediction now transfers exact atom element and atom-name
+  categories as private compact IDs.** After archive validation, MSA/template
+  selection, optional serving padding, and chain normalization, the model copy
+  replaces dense `int32[1, N_atom, 119]` / `int32[1, N_atom, 4, 64]` one-hot
+  arrays with a version-1 `uint8` marker plus `uint8[1, N_atom]` /
+  `uint8[1, N_atom, 4]` IDs; all-zero padded vectors use sentinels 119 and 64.
+  The graph reconstructs the historical `int32` arrays immediately before the
+  existing atom projections and frame-name selection. Public featurizer output,
+  portable archives, direct/custom calls, and the structure-writer mapping stay
+  dense, so exact output sidecar validation still reads the original atom names.
+  Dense values override stale private provenance; malformed or partial private
+  inputs fail before compiled tracing, while non-exact custom arrays stay dense.
+
+  In a synthetic 64-atom CPU graph running the existing element and atom-name
+  projections, compiled dynamic arguments fell from 108,000 to 12,320 bytes;
+  executable temporary storage stayed exactly 98,048 bytes and outputs were
+  byte-identical in FP32 and BF16, including non-finite and signed-zero gates.
+  At 3,000 atoms the two categorical leaves themselves occupy 4,500,000 dense
+  bytes versus 15,001 compact bytes. Tests also cover archive/raw routing,
+  writer sidecars, padding sentinels, frame selection, StableHLO entry shapes,
+  and forced four-CPU 1-D/2-D context parallelism. The complete OpenFold3 CPU
+  and preprocessing suite passes; released-weight GPU peak/latency and released
+  end-to-end prediction remain unverified.
+
 - **Common-backend CCD dictionaries now live only for the prediction session
   that can use them.** ESMFold2 acquires its Biohub cache only for the
   all-biomolecule feature route, while Protenix and OpenDDE share one lazy
