@@ -12,6 +12,25 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenDDE's explicit released defaults now reuse the omitted compilation-cache
+  namespace.** The released sample, step, recycle, MSA, query/key, bfloat16,
+  single-attention, automatic chunk-policy, and serial context-parallel values
+  are removed from the cache profile only when their value and exact type match
+  the native parser defaults. Explicit `cp_layout=auto` and `cp_layout=1d` also
+  share the existing omitted-layout namespace because the compiled OpenDDE
+  resolver maps both to `1d`. Non-default values, 2-D CP, manual/off chunking,
+  explicit chunk widths, raw confidence output, ambient triangle backends,
+  confidence-logit/detail routes, representations, trunk stopping, padded RNG,
+  and dynamic shapes retain distinct persistent or bounded-runner identities.
+
+  A CPU-only tiny integration followed the real adapter through
+  `resolve_cache_dir`, the native CLI parser and chunk/CP resolution, and a real
+  `BoundedJitPool`: an omitted call and a call spelling every released default
+  produced one parameter load, one trace, one retained owner, and one executable
+  cache entry. Parser/default and CP-resolution drift, exact-type guards, and
+  every preserved non-alias route are regression gated. No released-weight
+  full-model compile or GPU run was performed.
+
 - **Boltz2's explicit released defaults now reuse the omitted compilation-cache
   namespace.** The released sampling, affinity, dtype, kernel, bucket and atom
   context-parallel defaults are removed from the cache profile only when their

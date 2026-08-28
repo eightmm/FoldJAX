@@ -1125,6 +1125,22 @@ _compiled_opendde_infer = BoundedJitPool(
 )
 
 
+def _resolve_cp_layout(layout: str) -> str:
+    """Resolve OpenDDE's native context-parallel layout alias."""
+
+    if layout == "auto":
+        # "auto" stays on the 1-D layout for now. The 2-D grid is the better
+        # design and is verified on CPU meshes at 2x2 and 3x3, but every
+        # measurement published for this feature -- the size ladders, the
+        # per-device peaks -- was taken on the 1-D layout, and a default that
+        # silently changes the program would make those numbers describe a
+        # configuration nobody can reproduce. Ask for "2d" explicitly; this
+        # flips once the square grid has its own GPU parity and memory
+        # evidence.
+        return "1d"
+    return layout
+
+
 def opendde_infer_compiled(
     input_feature_dict: dict[str, Any],
     params: OpenDDEInferenceParams,
@@ -1182,17 +1198,7 @@ def opendde_infer_compiled(
     )
     param_arrays, treedef, flags = split_static_flags(params)
     cp = int(kwargs.pop("cp_shards", 1))
-    layout = str(kwargs.pop("cp_layout", "auto"))
-    if layout == "auto":
-        # "auto" stays on the 1-D layout for now. The 2-D grid is the better
-        # design and is verified on CPU meshes at 2x2 and 3x3, but every
-        # measurement published for this feature -- the size ladders, the
-        # per-device peaks -- was taken on the 1-D layout, and a default that
-        # silently changes the program would make those numbers describe a
-        # configuration nobody can reproduce. Ask for "2d" explicitly; this
-        # flips once the square grid has its own GPU parity and memory
-        # evidence.
-        layout = "1d"
+    layout = _resolve_cp_layout(str(kwargs.pop("cp_layout", "auto")))
     # The capture set has to be live while the program is *traced*, not
     # while it runs: a tap records a tracer of the graph being built. On a
     # cache hit nothing is traced and the compiled program already returns

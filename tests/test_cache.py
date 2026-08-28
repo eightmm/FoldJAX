@@ -1,11 +1,13 @@
 import dataclasses
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from foldjax.api import resolve_cache_dir
 from foldjax.backends.base import Backend
 from foldjax.backends.boltz2 import Boltz2Backend
+from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.cache import (
     CacheSnapshot,
@@ -248,6 +250,133 @@ def test_boltz2_nondefault_compile_options_keep_distinct_namespaces(
     changed = dataclasses.replace(omitted, options=options, **request_fields)
 
     assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
+
+
+def test_opendde_released_defaults_share_the_omitted_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    backend = OpenDDEBackend()
+    omitted = dataclasses.replace(_request(tmp_path), model="opendde")
+    native = dataclasses.replace(
+        omitted,
+        options={
+            "num_samples": 5,
+            "num_steps": 200,
+            "num_recycles": 10,
+            "max_msa_depth": 16384,
+            "n_queries": 32,
+            "n_keys": 128,
+            "diffusion_attention_backend": "xla_jit",
+            "trunk_single_attention_backend": "xla_jit",
+            "structural_single_attention_backend": "xla_jit",
+            "trunk_dtype": "bf16",
+            "chunk_policy": "auto",
+            "cp_devices": 1,
+            "cp_layout": "1d",
+        },
+    )
+    neutral = dataclasses.replace(
+        omitted,
+        num_samples=5,
+        num_steps=200,
+        num_recycles=10,
+        max_msa_depth=16384,
+        options={
+            "n_queries": 32,
+            "n_keys": 128,
+            "diffusion_attention_backend": "xla_jit",
+            "structural_single_attention_backend": "xla_jit",
+            "dtype": "bfloat16",
+            "attention_kernel": "auto",
+            "chunk_policy": "auto",
+            "cp_devices": 1,
+            "cp_layout": "auto",
+        },
+    )
+
+    assert backend.cache_profile(omitted) == {"return_confidence_details": False}
+    assert backend.cache_profile(native) == backend.cache_profile(omitted)
+    assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
+    assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
+    assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
+
+
+def test_opendde_cache_profile_normalizes_only_proven_cp_layout_aliases(
+    tmp_path: Path,
+) -> None:
+    backend = OpenDDEBackend()
+    request = dataclasses.replace(_request(tmp_path), model="opendde")
+    cp_omitted = dataclasses.replace(request, options={"cp_devices": 4})
+    cp_auto = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "auto"}
+    )
+    cp_rows = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "1d"})
+    cp_grid = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "2d"})
+
+    expected = {"cp_devices": 4, "return_confidence_details": False}
+    assert backend.cache_profile(cp_omitted) == expected
+    assert backend.cache_profile(cp_auto) == expected
+    assert backend.cache_profile(cp_rows) == expected
+    assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_rows, backend)
+    assert resolve_cache_dir(cp_grid, backend) != resolve_cache_dir(cp_rows, backend)
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "options"),
+    [
+        ({"num_samples": 6}, {}),
+        ({"num_steps": 201}, {}),
+        ({"num_recycles": 11}, {}),
+        ({"max_msa_depth": 16383}, {}),
+        ({}, {"n_queries": 31}),
+        ({}, {"n_keys": 127}),
+        ({}, {"diffusion_attention_backend": "xla"}),
+        ({}, {"trunk_single_attention_backend": "xla"}),
+        ({}, {"structural_single_attention_backend": "xla"}),
+        ({}, {"trunk_dtype": "fp32"}),
+        ({}, {"chunk_policy": "manual"}),
+        ({}, {"chunk_policy": "off"}),
+        ({}, {"triangle_mul_chunk_size": 128}),
+        ({}, {"triangle_att_q_chunk_size": 128}),
+        ({}, {"single_att_q_chunk_size": 128}),
+        ({}, {"token_q_chunk_size": 128}),
+        ({}, {"cp_devices": 2}),
+        ({}, {"cp_layout": "2d"}),
+        ({}, {"include_raw": True}),
+    ],
+)
+def test_opendde_nondefault_compile_options_keep_distinct_namespaces(
+    tmp_path: Path,
+    request_fields: dict[str, object],
+    options: dict[str, object],
+) -> None:
+    backend = OpenDDEBackend()
+    omitted = dataclasses.replace(_request(tmp_path), model="opendde")
+    changed = dataclasses.replace(omitted, options=options, **request_fields)
+
+    assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("num_samples", np.int64(5)),
+        ("num_steps", np.int64(200)),
+        ("cp_devices", np.int64(1)),
+    ],
+)
+def test_opendde_default_lookalikes_with_another_type_stay_distinct(
+    tmp_path: Path, name: str, value: object
+) -> None:
+    backend = OpenDDEBackend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="opendde", input_format="foldjax"
+    )
+    lookalike = dataclasses.replace(omitted, options={name: value})
+
+    backend.validate_request(lookalike)
+    assert backend.cache_profile(lookalike) != backend.cache_profile(omitted)
+    assert resolve_cache_dir(lookalike, backend) != resolve_cache_dir(omitted, backend)
 
 
 @pytest.mark.parametrize("model", available_models())

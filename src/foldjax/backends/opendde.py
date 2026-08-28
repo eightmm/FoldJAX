@@ -59,6 +59,28 @@ _CLI_OPTIONS = {
     "trunk_dtype",
     "trunk_single_attention_backend",
 }
+
+#: Compile-relevant defaults released by the native OpenDDE prediction CLI.
+#:
+#: Cache-directory planning must stay lightweight, so the adapter keeps these
+#: scalar copies instead of importing the model/JAX runtime. A drift test reads
+#: the parser defaults directly and pins every value and exact type to that
+#: native authority.
+_RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
+    "num_samples": 5,
+    "num_steps": 200,
+    "num_recycles": 10,
+    "max_msa_depth": 16384,
+    "n_queries": 32,
+    "n_keys": 128,
+    "diffusion_attention_backend": "xla_jit",
+    "trunk_single_attention_backend": "xla_jit",
+    "structural_single_attention_backend": "xla_jit",
+    "trunk_dtype": "bf16",
+    "chunk_policy": "auto",
+    "cp_devices": 1,
+    "cp_layout": "auto",
+}
 _CONFIDENCE_INFIX = "_summary_confidence_sample_"
 
 
@@ -150,11 +172,29 @@ class OpenDDEBackend(Backend):
         _strict_boolean(options.get("include_raw", False), name="include_raw")
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, object]:
-        """Include the normalized graph-output profile in cache identity."""
+        """Keep explicit released defaults in the omitted cache namespace.
+
+        The native parser supplies these exact values before chunk resolution
+        and whole-model inference. Its compiled wrapper also resolves both
+        ``cp_layout=auto`` and ``cp_layout=1d`` to the same 1-D mesh. Strip only
+        exact type-and-value matches; non-default, malformed, conditional, and
+        ambient graph choices retain their separate identities.
+        """
 
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
         self.validate_native_options(options)
+        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
+            if name not in profile:
+                continue
+            value = profile[name]
+            # ``bool`` is an ``int`` subclass. A merely equal lookalike must
+            # not inherit the released-default alias without parser proof.
+            if type(value) is type(default) and value == default:
+                profile.pop(name)
+        layout = profile.get("cp_layout")
+        if type(layout) is str and layout == "1d":
+            profile.pop("cp_layout")
         profile["return_confidence_details"] = _strict_boolean(
             options.get("include_raw", False), name="include_raw"
         )
