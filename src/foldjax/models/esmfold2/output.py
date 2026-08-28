@@ -25,6 +25,98 @@ from foldjax.models.esmfold2.data import pdb
 #: Scalars the confidence head returns once per sample.
 SAMPLE_SCORES = ("complex_plddt", "complex_iplddt", "ptm", "iptm")
 
+#: Exact union read by :func:`crop_prediction` and the two structure-writer
+#: branches.  Managed inference projects its generated feature dictionary to
+#: this shallow view after the final serving padding.  Direct writer callers
+#: keep their mapping unchanged.
+ESMFOLD2_GENERATED_OUTPUT_FEATURE_FIELDS = frozenset(
+    {
+        "token_attention_mask",
+        "atom_attention_mask",
+        "atom_to_token",
+        "residue_index",
+        "res_type",
+        "asym_id",
+        "ref_atom_name_chars",
+        "ref_element",
+        "mol_type",
+        "token_chain_id_chars",
+        "token_residue_name_chars",
+    }
+)
+
+_BASE_OUTPUT_FEATURE_FIELDS = ESMFOLD2_GENERATED_OUTPUT_FEATURE_FIELDS - {
+    "token_chain_id_chars",
+    "token_residue_name_chars",
+}
+_ALL_BIOMOLECULE_OUTPUT_FEATURE_FIELDS = frozenset(
+    {"token_chain_id_chars", "token_residue_name_chars"}
+)
+
+
+def project_generated_output_features(
+    features: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Return the bounded writer view of a generated managed feature tree.
+
+    This is deliberately a proof, not a best-effort filter.  FoldJAX's two
+    ESMFold2 featurizers produce one batched job, with explicit token and atom
+    axes.  If a wrapper supplies an incomplete or differently shaped mapping,
+    return that exact object so the historical writer branch and its errors
+    remain authoritative.
+    """
+
+    try:
+        if type(features) is not dict:
+            return features
+        if not _BASE_OUTPUT_FEATURE_FIELDS <= features.keys():
+            return features
+
+        def shape(name: str) -> tuple[int, ...]:
+            value_shape = getattr(features[name], "shape", None)
+            if value_shape is None:
+                raise AttributeError(name)
+            return tuple(value_shape)
+
+        token_shape = shape("token_attention_mask")
+        atom_shape = shape("atom_attention_mask")
+        if (
+            len(token_shape) != 2
+            or token_shape[0] != 1
+            or token_shape[1] < 1
+            or len(atom_shape) != 2
+            or atom_shape[0] != 1
+            or atom_shape[1] < 1
+        ):
+            return features
+        token_fields = ("residue_index", "res_type", "asym_id", "mol_type")
+        atom_fields = ("atom_to_token", "ref_element")
+        if any(
+            shape(name) != token_shape for name in token_fields
+        ) or any(shape(name) != atom_shape for name in atom_fields):
+            return features
+        if shape("ref_atom_name_chars") != (*atom_shape, 4):
+            return features
+
+        metadata = _ALL_BIOMOLECULE_OUTPUT_FEATURE_FIELDS & features.keys()
+        if metadata and metadata != _ALL_BIOMOLECULE_OUTPUT_FEATURE_FIELDS:
+            return features
+        if metadata and any(
+            len(shape(name)) != 3
+            or shape(name)[:2] != token_shape
+            or shape(name)[-1] < 1
+            for name in metadata
+        ):
+            return features
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return features
+
+    return {
+        name: features[name]
+        for name in ESMFOLD2_GENERATED_OUTPUT_FEATURE_FIELDS
+        if name in features
+    }
+
 
 def _numpy(value: object) -> np.ndarray:
     return np.asarray(value)
@@ -157,8 +249,10 @@ def write_prediction_outputs(
 
 
 __all__ = [
+    "ESMFOLD2_GENERATED_OUTPUT_FEATURE_FIELDS",
     "SAMPLE_SCORES",
     "crop_prediction",
+    "project_generated_output_features",
     "sample_scores",
     "write_prediction_outputs",
 ]

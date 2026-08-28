@@ -12,6 +12,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed ESMFold2 now releases input-only language-model and feature owners
+  as soon as structure inference has been dispatched.** The scalar
+  `predict_job` route, split model arguments, random keys, compact session
+  cache, requested representations, and compiled identities are unchanged.
+  After the existing call returns, caller-local references to raw ESMC states
+  and the complete model feature tree are detached without mutating either
+  object. The structure writer receives a shallow, shape-proven view of the
+  eleven generated fields read by cropping and legacy/all-biomolecule mmCIF
+  output; incomplete or custom mappings retain their historical identity, and
+  direct writer calls remain unchanged.
+
+  Released BF16 ESMC states use `81 * 2560 * 2 = 414,720` bytes per token, or
+  605.52 MiB at 1,531 tokens and 1,186.52 MiB at 3,000 tokens. A four-loop,
+  depth-1,024 normalized MSA feature tape uses another 83.73 and 164.06 MiB at
+  those lengths before other model-only leaves. These are earlier buffer-reuse
+  opportunities, not claims that an allocator returns memory to the operating
+  system. CPU tests cover legacy/all-biomolecule/padded poison writers with
+  byte-identical CIF/JSON, scalar and split routing, requested representations,
+  trunk-only, exceptions, multi-seed compact sessions, and asynchronous input
+  ownership on serial and forced four-device JAX. No released-weight GPU peak,
+  latency, or end-to-end result has been measured.
+
 - **Managed ESMFold2 prediction now retains only the compiled results consumed
   by its writer and requested representation export.** Its graph no longer
   returns native `atom_pad_mask`, `residue_index`, `entity_id`, `plddt_ca`, or

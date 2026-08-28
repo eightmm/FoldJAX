@@ -710,110 +710,146 @@ class ESMFold2Backend(Backend):
             and bool(getattr(inference, "COMPACT_LANGUAGE_MODEL_API", False))
             and hasattr(inference, "language_model_embedding")
         )
+        project_output_features = getattr(
+            output_module, "project_generated_output_features", None
+        )
+        if not callable(project_output_features):
+            project_output_features = None
         prebuilt_features = None
-        if all_atom_input:
-            weights_root = Path(request.weights)
-            if not weights_root.is_dir():
-                weights_root = weights_root.parent
-            with self._ccd_memory_scope():
-                prebuilt_features = inference.build_common_job_features(
-                    document,
-                    base_dir=document_base,
-                    ccd_path=weights_root / "ccd.pkl",
-                    seed=request.seed,
-                )
+        model_features = None
+        output_features = None
+        lm_input = None
+        try:
+            if all_atom_input:
+                weights_root = Path(request.weights)
+                if not weights_root.is_dir():
+                    weights_root = weights_root.parent
+                with self._ccd_memory_scope():
+                    prebuilt_features = inference.build_common_job_features(
+                        document,
+                        base_dir=document_base,
+                        ccd_path=weights_root / "ccd.pkl",
+                        seed=request.seed,
+                    )
 
-        if not all_atom_input and request.padding is None and (
-            not self._session_active or not split_lm_api
-        ):
-            # Preserve the original, public no-padding path exactly.  Besides
-            # avoiding an unnecessary API split for ordinary callers, wrappers
-            # that expose only ``predict_job`` keep working in a session; they
-            # reuse weights but deliberately forgo the derived-state cache.
-            with matmul_precision():
-                prediction, features = inference.predict_job(
-                    inference.seed_key(request.seed),
-                    chains,
-                    alignments,
-                    model,
-                    return_distogram_logits=False,
-                    **managed_output_kwargs,
-                    **overrides,
-                )
-        else:
-            features = (
-                prebuilt_features
-                if prebuilt_features is not None
-                else inference.build_job_features(chains, alignments)
-            )
-            prediction_key = inference.seed_key(request.seed)
-            lm_tokens = (
-                inference.language_model_length(features)
-                if model.has_language_model and request.padding is not None
-                else None
-            )
-            configured_msa_depth = overrides.get(
-                "max_msa_depth", model.settings.max_msa_depth
-            )
-            active_msa_depth = (
-                configured_msa_depth
-                if model.settings.msa_n_layers is not None
-                else None
-            )
-            if request.padding is not None:
-                padding_plan = _padding_plan(
-                    features,
-                    request.padding,
-                    max_msa_depth=active_msa_depth,
-                    language_model_tokens=lm_tokens,
-                )
-                features = inference.normalize_msa_features(
-                    prediction_key,
-                    features,
-                    n_msa=padding_plan.target["msa"],
-                    max_msa_depth=active_msa_depth,
-                    total_steps=max(
-                        1,
-                        overrides.get("num_recycles", model.settings.num_recycles) + 1,
-                    ),
-                )
-                features = inference.pad_features(
-                    features,
-                    n_token=padding_plan.target["tokens"],
-                    n_atom=padding_plan.target["atoms"],
-                    n_msa=padding_plan.target["msa"],
-                )
-                lm_target = padding_plan.target.get("language_model_tokens")
-            if self._session_active and compact_lm_api:
-                lm_input = {
-                    "precomputed_lm_embedding": self._language_model_embedding(
-                        inference,
-                        features,
+            if not all_atom_input and request.padding is None and (
+                not self._session_active or not split_lm_api
+            ):
+                # Preserve the original, public no-padding path exactly.
+                # Wrappers that expose only ``predict_job`` keep working in a
+                # session and deliberately forgo the derived-state cache.
+                with matmul_precision():
+                    prediction, model_features = inference.predict_job(
+                        inference.seed_key(request.seed),
+                        chains,
+                        alignments,
                         model,
-                        packed_length=lm_target,
+                        return_distogram_logits=False,
+                        **managed_output_kwargs,
+                        **overrides,
                     )
-                }
+                output_features = (
+                    model_features
+                    if project_output_features is None
+                    else project_output_features(model_features)
+                )
             else:
-                lm_input = {
-                    "precomputed_lm_states": self._language_model_states(
-                        inference,
-                        features,
-                        model,
-                        packed_length=lm_target,
-                    )
-                }
-            with matmul_precision():
-                prediction = inference.predict(
-                    prediction_key,
-                    features,
-                    model,
-                    language_model_tokens=lm_target,
-                    preserve_prefix_rng=request.padding is not None,
-                    return_distogram_logits=False,
-                    **managed_output_kwargs,
-                    **lm_input,
-                    **overrides,
+                model_features = (
+                    prebuilt_features
+                    if prebuilt_features is not None
+                    else inference.build_job_features(chains, alignments)
                 )
+                # ``model_features`` now owns this exact object.  Do not keep
+                # the all-atom builder's second alias through normalization,
+                # LM inference, and structure inference.
+                prebuilt_features = None
+                prediction_key = inference.seed_key(request.seed)
+                lm_tokens = (
+                    inference.language_model_length(model_features)
+                    if model.has_language_model and request.padding is not None
+                    else None
+                )
+                configured_msa_depth = overrides.get(
+                    "max_msa_depth", model.settings.max_msa_depth
+                )
+                active_msa_depth = (
+                    configured_msa_depth
+                    if model.settings.msa_n_layers is not None
+                    else None
+                )
+                if request.padding is not None:
+                    padding_plan = _padding_plan(
+                        model_features,
+                        request.padding,
+                        max_msa_depth=active_msa_depth,
+                        language_model_tokens=lm_tokens,
+                    )
+                    model_features = inference.normalize_msa_features(
+                        prediction_key,
+                        model_features,
+                        n_msa=padding_plan.target["msa"],
+                        max_msa_depth=active_msa_depth,
+                        total_steps=max(
+                            1,
+                            overrides.get(
+                                "num_recycles", model.settings.num_recycles
+                            )
+                            + 1,
+                        ),
+                    )
+                    model_features = inference.pad_features(
+                        model_features,
+                        n_token=padding_plan.target["tokens"],
+                        n_atom=padding_plan.target["atoms"],
+                        n_msa=padding_plan.target["msa"],
+                    )
+                    lm_target = padding_plan.target.get("language_model_tokens")
+                # Do not extend compact inference to scalar split calls here:
+                # that would move the compiled graph boundary.  This patch
+                # changes only Python ownership after the historical call.
+                if self._session_active and compact_lm_api:
+                    lm_input = {
+                        "precomputed_lm_embedding": self._language_model_embedding(
+                            inference,
+                            model_features,
+                            model,
+                            packed_length=lm_target,
+                        )
+                    }
+                else:
+                    lm_input = {
+                        "precomputed_lm_states": self._language_model_states(
+                            inference,
+                            model_features,
+                            model,
+                            packed_length=lm_target,
+                        )
+                    }
+                with matmul_precision():
+                    prediction = inference.predict(
+                        prediction_key,
+                        model_features,
+                        model,
+                        language_model_tokens=lm_target,
+                        preserve_prefix_rng=request.padding is not None,
+                        return_distogram_logits=False,
+                        **managed_output_kwargs,
+                        **lm_input,
+                        **overrides,
+                    )
+                output_features = (
+                    model_features
+                    if project_output_features is None
+                    else project_output_features(model_features)
+                )
+        finally:
+            # JAX owns dynamic argument buffers and execution dependencies once
+            # dispatch returns.  Rebinding only caller locals lets those
+            # buffers become reusable as soon as execution permits, without
+            # mutating a feature mapping or the kwargs object a wrapper saw.
+            lm_input = None
+            model_features = None
+            prebuilt_features = None
 
         name = Path(request.input).stem
         shape_profile = None
@@ -821,7 +857,7 @@ class ESMFold2Backend(Backend):
             shape_profile = {
                 **padding_plan.summary(),
                 "static": {
-                    "chains": int(np.asarray(features["asym_id"]).max()) + 1
+                    "chains": int(np.asarray(output_features["asym_id"]).max()) + 1
                 },
             }
         _representations.save(
@@ -851,7 +887,7 @@ class ESMFold2Backend(Backend):
                 ),
             )
         written = output_module.write_prediction_outputs(
-            prediction, features, request.output_dir, name=name
+            prediction, output_features, request.output_dir, name=name
         )
         scores = {entry["sample"]: entry for entry in written["summary"]}
         return PredictionResult(
