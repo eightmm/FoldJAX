@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models.boltz2.data.ownership import (
+    ATOM_TO_TOKEN_INDEX,
+    COMPACT_ATOM_TO_TOKEN,
     COMPACT_TOKEN_TO_REP_ATOM,
     TOKEN_TO_REP_ATOM_INDEX,
 )
@@ -100,6 +102,7 @@ _FEATURE_AXES: dict[str, tuple[tuple[int, str], ...]] = {
     "coords": ((2, _ATOM),),
     "atom_to_token": ((1, _ATOM), (2, _TOKEN)),
     "token_to_rep_atom": ((1, _TOKEN), (2, _ATOM)),
+    ATOM_TO_TOKEN_INDEX: ((1, _ATOM),),
     TOKEN_TO_REP_ATOM_INDEX: ((1, _TOKEN),),
     # The first r_set axis is not necessarily the token count.
     "r_set_to_rep_atom": ((2, _ATOM),),
@@ -160,6 +163,8 @@ _MODEL_FEATURES = frozenset(
         "asym_id",
         "atom_pad_mask",
         "atom_to_token",
+        COMPACT_ATOM_TO_TOKEN,
+        ATOM_TO_TOKEN_INDEX,
         "contact_conditioning",
         "contact_threshold",
         "cyclic_period",
@@ -463,7 +468,11 @@ def pad_feats(
                 new,
                 axis,
                 target,
-                constant_value=-1 if key == TOKEN_TO_REP_ATOM_INDEX else 0,
+                constant_value=(
+                    -1
+                    if key in {ATOM_TO_TOKEN_INDEX, TOKEN_TO_REP_ATOM_INDEX}
+                    else 0
+                ),
             )
             if before != new.shape[axis]:
                 actions.append(f"{kind}@{axis}:{before}->{new.shape[axis]}")

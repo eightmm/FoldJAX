@@ -19,6 +19,7 @@ from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models._cp_atom import replicate_atoms
 from foldjax.models.boltz2.models.diffusion.atom import (
     _repeat_index,
+    atom_to_token_index_from_feats,
     gather_rep_atoms_to_tokens,
     gather_tokens_to_atoms,
     token_to_rep_atom_index_from_feats,
@@ -427,9 +428,11 @@ def _compute_frame_pred_inference(
     """
 
     asym_id_token = feats["asym_id"]
+    atom_to_token_index = atom_to_token_index_from_feats(feats)
     asym_id_atom = gather_tokens_to_atoms(
-        feats["atom_to_token"].astype(jnp.float32),
+        None,
         asym_id_token[..., None].astype(jnp.float32),
+        index=atom_to_token_index,
     )[..., 0]
 
     b, n, _ = pred_atom_coords.shape

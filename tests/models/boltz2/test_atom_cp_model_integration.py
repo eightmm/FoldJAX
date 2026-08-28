@@ -165,12 +165,13 @@ def _native_params() -> dict[str, object]:
     }
 
 
-def _model_inputs() -> dict[str, object]:
+def _model_inputs(*, compact_atom_ownership: bool = False) -> dict[str, object]:
     """Use real featurizer output at CP-aligned atom/window boundaries."""
 
     import jax.numpy as jnp
 
     from foldjax.models.boltz2.bridge.native import load_features_npz
+    from foldjax.models.boltz2.data.ownership import compact_atom_to_token_storage
 
     fixture = load_features_npz(_FEATURES)
     atoms = 256
@@ -184,8 +185,11 @@ def _model_inputs() -> dict[str, object]:
         "ref_atom_name_chars",
         "atom_to_token",
     )
-    feats = {name: fixture[name][:, :atoms] for name in atom_features}
-    feats["token_pad_mask"] = fixture["token_pad_mask"]
+    feats = {name: np.asarray(fixture[name][:, :atoms]) for name in atom_features}
+    feats["token_pad_mask"] = np.asarray(fixture["token_pad_mask"])
+    if compact_atom_ownership:
+        feats = compact_atom_to_token_storage(feats)
+    feats = {name: jnp.asarray(value) for name, value in feats.items()}
 
     def values(shape: tuple[int, ...], start: float, stop: float):
         values_1d = jnp.linspace(
@@ -207,6 +211,62 @@ def _model_inputs() -> dict[str, object]:
     }
 
 
+def test_trunk_input_embedder_accepts_compact_atom_ownership_exactly() -> None:
+    """Execute the real trunk consumer so ownership cannot be dropped there."""
+
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models.boltz2.bridge.native import load_features_npz
+    from foldjax.models.boltz2.models.trunk_blocks.input_embedder import (
+        input_embedder_forward,
+    )
+
+    dense_inputs = _model_inputs()
+    compact_inputs = _model_inputs(compact_atom_ownership=True)
+    fixture = load_features_npz(_FEATURES)
+    for name in (
+        "res_type",
+        "profile",
+        "deletion_mean",
+        "method_feature",
+        "modified",
+        "cyclic_period",
+        "mol_type",
+    ):
+        value = jnp.asarray(fixture[name])
+        dense_inputs["feats"][name] = value
+        compact_inputs["feats"][name] = value
+
+    native = _native_params()
+    conditioning = native["diffusion_conditioning"]
+    score = native["score_model"]
+    channels = 8
+    params = {
+        "atom_encoder": conditioning["atom_encoder"],
+        "atom_enc_proj_z": conditioning["atom_enc_proj_z"][0],
+        "atom_attention_encoder": score["atom_attention_encoder"],
+        "res_type_encoding": {
+            "kernel": jnp.zeros((33, channels), dtype=jnp.float32)
+        },
+        "msa_profile_encoding": {
+            "kernel": jnp.zeros((34, channels), dtype=jnp.float32)
+        },
+        "method_conditioning_init": jnp.zeros((2, channels), dtype=jnp.float32),
+        "modified_conditioning_init": jnp.zeros((1, channels), dtype=jnp.float32),
+        "cyclic_conditioning_init": {
+            "kernel": jnp.zeros((1, channels), dtype=jnp.float32)
+        },
+        "mol_type_conditioning_init": jnp.zeros((1, channels), dtype=jnp.float32),
+    }
+    run = jax.jit(input_embedder_forward)
+
+    expected = run(params, dense_inputs["feats"])
+    actual = run(params, compact_inputs["feats"])
+
+    assert np.asarray(actual).tobytes() == np.asarray(expected).tobytes()
+
+
 _MODEL_PROBE = textwrap.dedent(
     r"""
     import jax
@@ -224,6 +284,10 @@ _MODEL_PROBE = textwrap.dedent(
     from foldjax.models.boltz2.models.diffusion.diffusion import (
         conditioned_diffusion_score_forward,
     )
+    from foldjax.models.boltz2.data.ownership import (
+        ATOM_TO_TOKEN_INDEX,
+        COMPACT_ATOM_TO_TOKEN,
+    )
     from tests.models.boltz2.test_atom_cp_model_integration import (
         _model_inputs,
         _native_params,
@@ -231,7 +295,12 @@ _MODEL_PROBE = textwrap.dedent(
 
     assert jax.device_count() == 4
     params = _native_params()
-    inputs = _model_inputs()
+    dense_inputs = _model_inputs()
+    inputs = _model_inputs(compact_atom_ownership=True)
+    assert "atom_to_token" in dense_inputs["feats"]
+    assert "atom_to_token" not in inputs["feats"]
+    assert COMPACT_ATOM_TO_TOKEN in inputs["feats"]
+    assert ATOM_TO_TOKEN_INDEX in inputs["feats"]
     assert "torch" not in sys.modules
 
     def model(p, x):
@@ -251,7 +320,9 @@ _MODEL_PROBE = textwrap.dedent(
             atom_context_parallel=True,
         )
 
+    dense_reference = jax.device_get(jax.jit(model)(params, dense_inputs))
     reference = jax.device_get(jax.jit(model)(params, inputs))
+    np.testing.assert_array_equal(dense_reference, reference)
     assert reference.shape == (1, 256, 3)
     assert np.isfinite(reference).all()
     assert float(np.std(reference)) > 1e-5
@@ -264,6 +335,14 @@ _MODEL_PROBE = textwrap.dedent(
             placed_inputs["feats"] = replicate_tree(
                 inputs["feats"], shard_atom_features=True
             )
+            owner_ids = placed_inputs["feats"][ATOM_TO_TOKEN_INDEX]
+            owner_marker = placed_inputs["feats"][COMPACT_ATOM_TO_TOKEN]
+            owner_shard_atoms = 64 if layout == "1d" else 128
+            assert owner_ids.sharding.shard_shape(owner_ids.shape) == (
+                1,
+                owner_shard_atoms,
+            )
+            assert owner_marker.sharding.shard_shape(owner_marker.shape) == ()
             placed_inputs["s_inputs"] = jax.device_put(
                 inputs["s_inputs"], NamedSharding(mesh, single_spec(3, token_axis=1))
             )

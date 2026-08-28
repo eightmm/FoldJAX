@@ -12,6 +12,29 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Boltz-2 full and affinity prediction carry atom-to-token ownership
+  as compact private IDs.** The publisher-native `int64[B, A, N]` one-hot map
+  is proven and converted before model padding to a scalar `uint8` version-1
+  marker plus an `int32[B, A]` token index with `-1` for padded atoms. Public
+  featurizer output, direct/custom calls, and eager steering remain dense and
+  authoritative; trunk-only prediction keeps the compact IDs because its input
+  embedder consumes atom ownership.
+  Serial conditioning, atom encoder/decoder, and confidence now use the same
+  indexed gather/scatter contract as the context-parallel path.
+
+  At 3,012 tokens and 23,776 atoms, host ownership storage falls from 546.4
+  MiB to 92.9 KiB; the canonical dense device argument would be 273.2 MiB. In
+  an isolated 256-token/2,048-atom/16-channel CPU routing graph covering token
+  gather, scatter mean, and pair-window gather, dynamic arguments fell from
+  6,438,912 to 4,349,952 bytes and executable temporary storage from 2,249,872
+  to 91,136 bytes. Forty warm iterations measured a 2.126 → 0.827 ms median and
+  all outputs were byte-identical, including separate padding/non-finite/
+  signed-zero and bfloat16 gates. Forced four-device CPU tests cover full
+  conditioning and score-model execution in both 1-D and 2-D atom-window
+  layouts without adding an all-gather. These are synthetic CPU measurements;
+  released-weight GPU peak memory, latency, and end-to-end prediction remain
+  unverified.
+
 - **The common Boltz-2 result no longer retains completed JAX output
   buffers.** After sample coordinates and confidence scores have been
   extracted, `PredictionResult.raw` is detached to NumPy while the native

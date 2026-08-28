@@ -20,11 +20,15 @@ import foldjax.models.boltz2.api as native_api
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.manifest import MANIFEST_NAME
 from foldjax.models.boltz2.data.ownership import (
+    ATOM_TO_TOKEN_INDEX,
+    COMPACT_ATOM_TO_TOKEN,
     COMPACT_TOKEN_TO_REP_ATOM,
     TOKEN_TO_REP_ATOM_INDEX,
 )
 from foldjax.models.boltz2.models.diffusion.atom import (
+    atom_to_token_index_from_feats,
     gather_rep_atoms_to_tokens,
+    gather_tokens_to_atoms,
     token_to_rep_atom_index_from_feats,
 )
 from foldjax.schema import PredictionError, PredictionRequest
@@ -258,6 +262,9 @@ def _features(*, affinity: bool = False) -> dict[str, np.ndarray]:
         "token_to_rep_atom": np.asarray(
             [[[1, 0, 0], [0, 1, 0]]], dtype=np.int64
         ),
+        "atom_to_token": np.asarray(
+            [[[1, 0], [0, 1], [0, 1]]], dtype=np.int64
+        ),
         "affinity_token_mask": np.asarray(
             [[0.0, 1.0 if affinity else 0.0]], dtype=np.float32
         ),
@@ -306,16 +313,24 @@ def _patch_primary_runtime(monkeypatch, tmp_path: Path, counts: dict[str, int]) 
         counts["traces"] += 1
         assert feats[COMPACT_TOKEN_TO_REP_ATOM].dtype == jnp.uint8
         assert feats[TOKEN_TO_REP_ATOM_INDEX].dtype == jnp.int32
+        assert feats[COMPACT_ATOM_TO_TOKEN].dtype == jnp.uint8
+        assert feats[ATOM_TO_TOKEN_INDEX].dtype == jnp.int32
         representative = gather_rep_atoms_to_tokens(
             None,
             jnp.arange(9, dtype=jnp.float32).reshape(1, 3, 3),
             index=token_to_rep_atom_index_from_feats(feats),
+        )
+        atom_owner = gather_tokens_to_atoms(
+            None,
+            jnp.arange(6, dtype=jnp.float32).reshape(1, 2, 3),
+            index=atom_to_token_index_from_feats(feats),
         )
         draw_key, _ = jax.random.split(key)
         value = (
             jax.random.uniform(draw_key, ())
             + params["trunk"]["weight"][0]
             + jnp.sum(representative) * 1e-6
+            + jnp.sum(atom_owner) * 1e-7
         )
         return {
             "sample_atom_coords": jnp.full((1, 3, 3), value),

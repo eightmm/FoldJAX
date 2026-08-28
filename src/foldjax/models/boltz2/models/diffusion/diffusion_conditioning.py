@@ -17,7 +17,7 @@ from foldjax.models._cp_atom import (
 )
 from foldjax.models.boltz2.models.diffusion.atom import (
     atom_to_token_index_from_feats,
-    gather_token_pairs_to_atom_windows,
+    gather_token_pairs_to_atom_windows_indexed,
     gather_tokens_to_atoms,
     get_indexing_matrix,
     single_to_keys,
@@ -222,8 +222,9 @@ def atom_encoder_forward(
             ).astype(c.dtype)
         else:
             c = c + gather_tokens_to_atoms(
-                feats["atom_to_token"].astype(jnp.float32),
+                None,
                 s_to_c_out,
+                index=atom_index,
             ).astype(c.dtype)
 
         z_to_p = params["z_to_p_trans"]
@@ -253,15 +254,17 @@ def atom_encoder_forward(
                 key_valid,
             ).astype(p.dtype)
         else:
-            atom_to_token_queries = jnp.reshape(
-                feats["atom_to_token"].astype(jnp.float32),
-                (batch, num_windows, w, feats["atom_to_token"].shape[-1]),
-            )
-            atom_to_token_keys = to_keys(feats["atom_to_token"].astype(jnp.float32))
-            p = p + gather_token_pairs_to_atom_windows(
+            query_indices = atom_index[0].reshape(batch, num_windows, w)
+            query_valid = atom_index[1].reshape(batch, num_windows, w)
+            key_indices = jnp.squeeze(to_keys(atom_index[0][..., None]), axis=-1)
+            key_valid = jnp.squeeze(
+                to_keys(atom_index[1][..., None].astype(jnp.float32)),
+                axis=-1,
+            ).astype(bool)
+            p = p + gather_token_pairs_to_atom_windows_indexed(
                 z_to_p_out,
-                atom_to_token_queries,
-                atom_to_token_keys,
+                (query_indices, query_valid),
+                (key_indices, key_valid),
             ).astype(p.dtype)
 
     p = p + _linear(

@@ -328,6 +328,7 @@ _PLACEMENT_PROBE = textwrap.dedent(
         context_parallel,
         replicate_tree,
     )
+    from foldjax.models.boltz2.data.ownership import ATOM_TO_TOKEN_INDEX
 
     N, A = 8, 16
     feats = {}
@@ -337,9 +338,13 @@ _PLACEMENT_PROBE = textwrap.dedent(
         else:
             feats[name] = np.arange(N * N * 3, dtype=np.float32).reshape(1, N, N, 3)
     for name, axis in sorted(ATOM_FEATURE_AXES.items()):
-        shape = [1, 1, A, 3] if axis == 2 else [1, A, 5]
-        feats[name] = np.arange(int(np.prod(shape)), dtype=np.float32).reshape(shape)
-    feats["atom_to_token_valid"] = np.ones((1, A, 5), dtype=bool)
+        if name == ATOM_TO_TOKEN_INDEX:
+            shape = [1, A]
+            dtype = np.int32
+        else:
+            shape = [1, 1, A, 3] if axis == 2 else [1, A, 5]
+            dtype = np.float32
+        feats[name] = np.arange(int(np.prod(shape)), dtype=dtype).reshape(shape)
     feats["msa"] = np.zeros((1, 12, N), dtype=np.int64)
     feats["atom_to_token"] = np.zeros((1, A, N), dtype=np.float32)
     # A pair feature whose token axis does not divide the mesh: must stay

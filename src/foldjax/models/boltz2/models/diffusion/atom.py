@@ -22,8 +22,11 @@ from foldjax.models._cp_atom import (
 )
 from foldjax.models._stacking import take_layers
 from foldjax.models.boltz2.data.ownership import (
+    ATOM_TO_TOKEN_INDEX,
+    COMPACT_ATOM_TO_TOKEN,
     COMPACT_TOKEN_TO_REP_ATOM,
     TOKEN_TO_REP_ATOM_INDEX,
+    _validate_atom_to_token_private_representation,
     _validate_private_representation,
 )
 from foldjax.models.boltz2.models.diffusion.diffusion_transformer import (
@@ -79,36 +82,50 @@ def single_to_keys(
 
 
 def gather_tokens_to_atoms(
-    atom_to_token: jnp.ndarray,
+    atom_to_token: jnp.ndarray | None,
     token_values: jnp.ndarray,
     index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
-    """Apply dense one-hot atom->token map as a batched gather.
+    """Apply a dense or precomputed atom->token map as a batched gather.
 
     ``index`` may carry precomputed ``(token_idx, valid)`` from
     :func:`atom_to_token_index` so the argmax over the dense map is not
     recomputed inside the per-step sampler loop. Bit-identical either way.
     """
 
-    token_idx, valid = _one_hot_index(atom_to_token) if index is None else index
+    if index is None:
+        if atom_to_token is None:
+            raise ValueError("atom_to_token is required when index is absent")
+        index = _one_hot_index(atom_to_token)
+    token_idx, valid = index
     gathered = jnp.take_along_axis(token_values, token_idx[..., None], axis=1)
     return gathered * valid[..., None].astype(gathered.dtype)
 
 
 def scatter_atoms_to_tokens_mean(
-    atom_to_token: jnp.ndarray,
+    atom_to_token: jnp.ndarray | None,
     atom_values: jnp.ndarray,
     eps: float = 1e-6,
     index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+    num_tokens: int | None = None,
 ) -> jnp.ndarray:
-    """Apply normalized dense one-hot atom->token map as scatter mean.
+    """Apply a dense or precomputed atom->token map as scatter mean.
 
     ``index`` may carry precomputed ``(token_idx, valid)``; see
     :func:`gather_tokens_to_atoms`. Bit-identical either way.
     """
 
-    batch, _, tokens = atom_to_token.shape
-    token_idx, valid = _one_hot_index(atom_to_token) if index is None else index
+    if atom_to_token is not None:
+        tokens = atom_to_token.shape[-1]
+    elif num_tokens is None:
+        raise ValueError("num_tokens is required when atom_to_token is absent")
+    else:
+        tokens = num_tokens
+    if index is None:
+        if atom_to_token is None:
+            raise ValueError("atom_to_token is required when index is absent")
+        index = _one_hot_index(atom_to_token)
+    token_idx, valid = index
 
     def one(batch_idx: jnp.ndarray, valid_b: jnp.ndarray, values_b: jnp.ndarray):
         values_b = values_b * valid_b[:, None].astype(values_b.dtype)
@@ -128,8 +145,22 @@ def gather_token_pairs_to_atom_windows(
 ) -> jnp.ndarray:
     """Apply two dense one-hot atom->token maps to token-pair values."""
 
-    q_idx, q_valid = _one_hot_index(atom_to_token_queries)
-    k_idx, k_valid = _one_hot_index(atom_to_token_keys)
+    return gather_token_pairs_to_atom_windows_indexed(
+        token_pair_values,
+        _one_hot_index(atom_to_token_queries),
+        _one_hot_index(atom_to_token_keys),
+    )
+
+
+def gather_token_pairs_to_atom_windows_indexed(
+    token_pair_values: jnp.ndarray,
+    query_index: tuple[jnp.ndarray, jnp.ndarray],
+    key_index: tuple[jnp.ndarray, jnp.ndarray],
+) -> jnp.ndarray:
+    """Gather token pairs with precomputed atom owner IDs and validity."""
+
+    q_idx, q_valid = query_index
+    k_idx, k_valid = key_index
     batch = token_pair_values.shape[0]
     batch_idx = jnp.arange(batch)[:, None, None, None]
     values = token_pair_values[
@@ -180,15 +211,54 @@ def atom_to_token_index(
 def atom_to_token_index_from_feats(
     feats: Mapping[str, jnp.ndarray],
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Read compact global token IDs, falling back to the legacy one-hot map."""
+    """Read atom owner IDs with dense direct-call precedence."""
 
-    if "atom_to_token_ids_global" in feats:
-        indices = feats["atom_to_token_ids_global"].astype(jnp.int32)
-        valid = feats.get("atom_to_token_valid")
-        if valid is None:
-            valid = indices >= 0
-        return jnp.maximum(indices, 0), valid.astype(bool)
-    return atom_to_token_index(feats["atom_to_token"])
+    if "atom_to_token" in feats:
+        return atom_to_token_index(feats["atom_to_token"])
+    has_marker = COMPACT_ATOM_TO_TOKEN in feats
+    has_index = ATOM_TO_TOKEN_INDEX in feats
+    if not has_marker and not has_index:
+        raise KeyError("atom_to_token")
+    if not has_marker or not has_index:
+        raise ValueError(
+            "compact atom ownership requires both its provenance marker "
+            "and index payload"
+        )
+    marker = feats[COMPACT_ATOM_TO_TOKEN]
+    if getattr(marker, "ndim", None) != 0 or getattr(
+        marker, "dtype", None
+    ) != jnp.uint8:
+        raise TypeError(f"{COMPACT_ATOM_TO_TOKEN} must be a scalar uint8")
+    indices = feats[ATOM_TO_TOKEN_INDEX]
+    if indices.ndim != 2 or indices.shape != feats["atom_pad_mask"].shape:
+        raise ValueError(f"{ATOM_TO_TOKEN_INDEX} must match atom_pad_mask shape")
+    token_pad_mask = feats["token_pad_mask"]
+    if (
+        token_pad_mask.ndim != 2
+        or token_pad_mask.shape[0] != indices.shape[0]
+        or token_pad_mask.shape[1] == 0
+    ):
+        raise ValueError(
+            f"{ATOM_TO_TOKEN_INDEX} requires a compatible non-empty token axis"
+        )
+    if indices.dtype != jnp.int32:
+        raise TypeError(f"{ATOM_TO_TOKEN_INDEX} must have dtype int32")
+    concrete_values = (
+        marker,
+        indices,
+        token_pad_mask,
+        feats["atom_pad_mask"],
+    )
+    if not any(isinstance(value, jax.core.Tracer) for value in concrete_values):
+        _validate_atom_to_token_private_representation(
+            {
+                COMPACT_ATOM_TO_TOKEN: np.asarray(marker),
+                ATOM_TO_TOKEN_INDEX: np.asarray(indices),
+                "token_pad_mask": np.asarray(token_pad_mask),
+                "atom_pad_mask": np.asarray(feats["atom_pad_mask"]),
+            }
+        )
+    return jnp.maximum(indices, 0), indices >= 0
 
 
 def token_to_rep_atom_index_from_feats(
@@ -620,13 +690,16 @@ def atom_attention_encoder_forward(
         ).astype(q.dtype)
         a = shard_single(a, token_axis=1)
     else:
-        atom_to_token = jnp.repeat(
-            feats["atom_to_token"].astype(jnp.float32), multiplicity, axis=0
+        num_tokens = (
+            feats["atom_to_token"].shape[-1]
+            if "atom_to_token" in feats
+            else feats["token_pad_mask"].shape[1]
         )
         a = scatter_atoms_to_tokens_mean(
-            atom_to_token,
+            None,
             q_to_a,
             index=idx,
+            num_tokens=num_tokens,
         ).astype(q.dtype)
     return a, q, c
 
@@ -662,11 +735,8 @@ def atom_attention_decoder_forward(
         c = shard_atoms(c, atom_axis=1)
         a_to_q = gather_tokens_to_atoms_cp(projected, idx[0], idx[1])
     else:
-        atom_to_token = jnp.repeat(
-            feats["atom_to_token"].astype(jnp.float32), multiplicity, axis=0
-        )
         a_to_q = gather_tokens_to_atoms(
-            atom_to_token,
+            None,
             projected,
             index=idx,
         )

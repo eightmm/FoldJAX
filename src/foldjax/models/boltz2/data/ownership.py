@@ -9,9 +9,17 @@ import numpy as np
 
 COMPACT_TOKEN_TO_REP_ATOM: Final = "_foldjax_compact_token_to_rep_atom"
 TOKEN_TO_REP_ATOM_INDEX: Final = "_foldjax_token_to_rep_atom_index"
+COMPACT_ATOM_TO_TOKEN: Final = "_foldjax_compact_atom_to_token"
+ATOM_TO_TOKEN_INDEX: Final = "_foldjax_atom_to_token_index"
 _COMPACT_VERSION: Final = 1
 _PRIVATE_FIELDS: Final = frozenset(
     {COMPACT_TOKEN_TO_REP_ATOM, TOKEN_TO_REP_ATOM_INDEX}
+)
+_ATOM_TO_TOKEN_PRIVATE_FIELDS: Final = frozenset(
+    {COMPACT_ATOM_TO_TOKEN, ATOM_TO_TOKEN_INDEX}
+)
+_LEGACY_ATOM_TO_TOKEN_PRIVATE_FIELDS: Final = frozenset(
+    {"atom_to_token_ids_global", "atom_to_token_valid"}
 )
 
 # Bound the largest temporary binary mask made while validating publisher
@@ -116,11 +124,87 @@ def _validate_private_representation(features: Mapping[str, Any]) -> None:
             )
 
 
+def _validate_atom_to_token_private_representation(
+    features: Mapping[str, Any],
+) -> None:
+    """Reject an incomplete or malformed compact atom-owner mapping."""
+
+    has_marker = COMPACT_ATOM_TO_TOKEN in features
+    has_index = ATOM_TO_TOKEN_INDEX in features
+    if not has_marker or not has_index:
+        raise ValueError(
+            "compact atom ownership requires both its provenance marker "
+            "and index payload"
+        )
+
+    marker = features[COMPACT_ATOM_TO_TOKEN]
+    if not isinstance(marker, np.ndarray):
+        raise TypeError(f"{COMPACT_ATOM_TO_TOKEN} must be a NumPy array")
+    if marker.shape != () or marker.dtype != np.dtype(np.uint8):
+        raise TypeError(f"{COMPACT_ATOM_TO_TOKEN} must be a scalar uint8")
+    if int(marker.item()) != _COMPACT_VERSION:
+        raise ValueError(
+            f"{COMPACT_ATOM_TO_TOKEN} must contain version {_COMPACT_VERSION}"
+        )
+
+    value = features[ATOM_TO_TOKEN_INDEX]
+    if not isinstance(value, np.ndarray):
+        raise TypeError(f"{ATOM_TO_TOKEN_INDEX} must be a NumPy array")
+    if value.dtype != np.dtype(np.int32):
+        raise TypeError(f"{ATOM_TO_TOKEN_INDEX} must have dtype int32")
+    token_shape = _feature_shape(features, "token_pad_mask", 2)
+    atom_shape = _feature_shape(features, "atom_pad_mask", 2)
+    if token_shape is None or atom_shape is None or token_shape[0] != atom_shape[0]:
+        raise ValueError("compact atom ownership requires batched token/atom masks")
+    if value.shape != atom_shape:
+        raise ValueError(
+            f"{ATOM_TO_TOKEN_INDEX} shape {value.shape} does not match "
+            f"atom_pad_mask {atom_shape}"
+        )
+    if atom_shape[1] <= 0:
+        raise ValueError("compact atom ownership requires a non-empty atom axis")
+    token_count = token_shape[1]
+    if token_count <= 0:
+        raise ValueError("compact atom ownership requires a non-empty token axis")
+    if value.size and (np.any(value < -1) or np.any(value >= token_count)):
+        raise ValueError(
+            f"{ATOM_TO_TOKEN_INDEX} entries must be -1 or in "
+            f"[0, {token_count})"
+        )
+    token_pad_mask = features["token_pad_mask"]
+    atom_pad_mask = features["atom_pad_mask"]
+    if not _exact_unsigned_binary(token_pad_mask) or not _exact_unsigned_binary(
+        atom_pad_mask
+    ):
+        raise ValueError("compact atom ownership requires exact binary masks")
+    atom_valid = atom_pad_mask.astype(bool)
+    if not np.array_equal(value == -1, ~atom_valid):
+        raise ValueError(f"{ATOM_TO_TOKEN_INDEX} must use -1 exactly for padded atoms")
+    valid = value >= 0
+    if np.any(valid):
+        batch_index = np.broadcast_to(
+            np.arange(value.shape[0], dtype=np.intp)[:, None], value.shape
+        )
+        if np.any(~token_pad_mask.astype(bool)[batch_index[valid], value[valid]]):
+            raise ValueError(f"{ATOM_TO_TOKEN_INDEX} must reference unpadded tokens")
+
+
 def _without_private_fields(features: Mapping[str, Any]) -> Mapping[str, Any]:
     if not any(name in features for name in _PRIVATE_FIELDS):
         return features
     clean = dict(features)
     for name in _PRIVATE_FIELDS:
+        clean.pop(name, None)
+    return clean
+
+
+def _without_fields(
+    features: Mapping[str, Any], names: frozenset[str]
+) -> Mapping[str, Any]:
+    if not any(name in features for name in names):
+        return features
+    clean = dict(features)
+    for name in names:
         clean.pop(name, None)
     return clean
 
@@ -231,9 +315,101 @@ def compact_token_to_rep_atom_storage(
     return compact
 
 
+def compact_atom_to_token_storage(
+    features: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Replace a native dense atom-owner map with private int32 token IDs.
+
+    Managed prediction calls this before padding and device placement. Native
+    publisher rows contain exactly one token owner for each real atom, while
+    padded atom rows are all zero and become the ``-1`` sentinel. Unfamiliar
+    dense/custom layouts retain the historical dense representation unchanged.
+
+    Dense input is authoritative. Any stale private or former CP-only fields
+    are removed before a fresh compact pair is generated or dense fallback is
+    returned. Without dense input, the private marker/payload pair is validated
+    exactly and incomplete pairs fail explicitly.
+    """
+
+    private_fields = frozenset(
+        {*_ATOM_TO_TOKEN_PRIVATE_FIELDS, *_LEGACY_ATOM_TO_TOKEN_PRIVATE_FIELDS}
+    )
+    if "atom_to_token" not in features:
+        if any(name in features for name in _ATOM_TO_TOKEN_PRIVATE_FIELDS):
+            _validate_atom_to_token_private_representation(features)
+            return _without_fields(features, _LEGACY_ATOM_TO_TOKEN_PRIVATE_FIELDS)
+        if any(name in features for name in _LEGACY_ATOM_TO_TOKEN_PRIVATE_FIELDS):
+            raise ValueError(
+                "legacy CP atom ownership fields require dense atom_to_token"
+            )
+        return features
+
+    dense = features["atom_to_token"]
+    if not isinstance(dense, np.ndarray) or dense.ndim != 3:
+        return _without_fields(features, private_fields)
+    if dense.dtype.hasobject or not (
+        np.issubdtype(dense.dtype, np.bool_)
+        or np.issubdtype(dense.dtype, np.integer)
+        or np.issubdtype(dense.dtype, np.floating)
+    ):
+        return _without_fields(features, private_fields)
+
+    batch, atoms, tokens = (int(size) for size in dense.shape)
+    token_shape = _feature_shape(features, "token_pad_mask", 2)
+    atom_shape = _feature_shape(features, "atom_pad_mask", 2)
+    if token_shape != (batch, tokens) or atom_shape != (batch, atoms):
+        return _without_fields(features, private_fields)
+    if atoms <= 0 or tokens <= 0 or tokens - 1 > np.iinfo(np.int32).max:
+        return _without_fields(features, private_fields)
+    token_pad_mask = features["token_pad_mask"]
+    atom_pad_mask = features["atom_pad_mask"]
+    if not _exact_unsigned_binary(token_pad_mask) or not _exact_unsigned_binary(
+        atom_pad_mask
+    ):
+        return _without_fields(features, private_fields)
+    token_valid = token_pad_mask.astype(bool)
+    atom_valid = atom_pad_mask.astype(bool)
+
+    indices = np.empty((batch, atoms), dtype=np.int32)
+    rows_per_chunk = max(1, _VALIDATION_CHUNK_ELEMENTS // tokens)
+    for batch_index in range(batch):
+        for start in range(0, atoms, rows_per_chunk):
+            stop = min(atoms, start + rows_per_chunk)
+            block = dense[batch_index, start:stop]
+            zeros = block == 0
+            if not np.all(zeros | (block == 1)):
+                return _without_fields(features, private_fields)
+            if np.issubdtype(block.dtype, np.floating) and np.any(
+                np.signbit(block) & zeros
+            ):
+                return _without_fields(features, private_fields)
+            counts = np.count_nonzero(block, axis=-1)
+            if np.any(counts > 1):
+                return _without_fields(features, private_fields)
+            expected_counts = atom_valid[batch_index, start:stop].astype(counts.dtype)
+            if not np.array_equal(counts, expected_counts):
+                return _without_fields(features, private_fields)
+            selected = np.argmax(block, axis=-1).astype(np.int32, copy=False)
+            present = counts == 1
+            if np.any(present) and np.any(
+                ~token_valid[batch_index, selected[present]]
+            ):
+                return _without_fields(features, private_fields)
+            indices[batch_index, start:stop] = np.where(present, selected, -1)
+
+    compact = dict(_without_fields(features, private_fields))
+    del compact["atom_to_token"]
+    compact[COMPACT_ATOM_TO_TOKEN] = np.asarray(_COMPACT_VERSION, dtype=np.uint8)
+    compact[ATOM_TO_TOKEN_INDEX] = indices
+    return compact
+
+
 __all__ = [
+    "ATOM_TO_TOKEN_INDEX",
+    "COMPACT_ATOM_TO_TOKEN",
     "COMPACT_TOKEN_TO_REP_ATOM",
     "TOKEN_TO_REP_ATOM_INDEX",
+    "compact_atom_to_token_storage",
     "compact_token_to_rep_atom_storage",
     "drop_token_to_rep_atom_storage",
 ]

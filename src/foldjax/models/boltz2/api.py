@@ -35,6 +35,7 @@ from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
 from foldjax.models.boltz2.data.ownership import (
+    compact_atom_to_token_storage,
     compact_token_to_rep_atom_storage,
     drop_token_to_rep_atom_storage,
 )
@@ -663,11 +664,12 @@ def predict(
             cp_cols=cp_cols,
         )
     if not steering_active:
-        feats_np = (
-            drop_token_to_rep_atom_storage(feats_np)
-            if stop_after == "trunk"
-            else compact_token_to_rep_atom_storage(feats_np)
-        )
+        if stop_after == "trunk":
+            feats_np = drop_token_to_rep_atom_storage(feats_np)
+            feats_np = compact_atom_to_token_storage(feats_np)
+        else:
+            feats_np = compact_token_to_rep_atom_storage(feats_np)
+            feats_np = compact_atom_to_token_storage(feats_np)
     if padding_plan is not None:
         from foldjax.models.boltz2.data.bucket import pad_feats
 
@@ -684,15 +686,6 @@ def predict(
     # representation in the graph-bound tree.  Conservative custom layouts
     # fall back by identity inside the helper.
     feats_np = compact_msa_storage(feats_np)
-
-    if cp_atom_active:
-        atom_to_token = np.asarray(feats_np["atom_to_token"])
-        atom_valid = np.any(atom_to_token > 0, axis=-1)
-        atom_ids = np.argmax(atom_to_token, axis=-1).astype(np.int32)
-        feats_np["atom_to_token_ids_global"] = np.where(
-            atom_valid, atom_ids, -1
-        ).astype(np.int32)
-        feats_np["atom_to_token_valid"] = atom_valid
 
     # Only the eager steering path and the context-parallel path need the
     # features placed; the compiled path lets `jax.jit` prune the ones the
@@ -848,7 +841,7 @@ def predict(
             # Place each semantic input at its production ownership boundary.
             # Parameters and RNG keys are replicated, pair inputs may use the
             # pair mesh, and safe Boltz atom features/noise tapes enter already
-            # sharded over CP rows. Dense coupled atom/token maps stay replicated.
+            # sharded over CP rows. Managed atom ownership enters as sparse IDs.
             placed_args = list(model_args)
             place_params = lambda tree: replicate_tree(  # noqa: E731
                 tree,
@@ -969,6 +962,7 @@ def predict(
                 affinity_feats_np, steering_active=False
             )
         affinity_feats_np = compact_token_to_rep_atom_storage(affinity_feats_np)
+        affinity_feats_np = compact_atom_to_token_storage(affinity_feats_np)
         if padding is not None or bucket:
             from foldjax.models.boltz2.data.bucket import (
                 pad_feats,

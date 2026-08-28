@@ -53,11 +53,10 @@ PAIR_FEATURE_NAMES = frozenset(
 #: matrices are deliberately absent: they need a model-specific sparse
 #: contract rather than independent axis sharding.
 ATOM_FEATURE_AXES: dict[str, int] = {
+    "_foldjax_atom_to_token_index": 1,
     "atom_backbone_feat": 1,
     "atom_pad_mask": 1,
     "atom_resolved_mask": 1,
-    "atom_to_token_ids_global": 1,
-    "atom_to_token_valid": 1,
     "bfactor": 1,
     "coords": 2,
     "plddt": 1,
