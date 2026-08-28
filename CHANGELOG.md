@@ -12,6 +12,17 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The common Boltz-2 result no longer retains completed JAX output
+  buffers.** After sample coordinates and confidence scores have been
+  extracted, `PredictionResult.raw` is detached to NumPy while the native
+  Python API keeps its historical device-array contract. Already-host
+  coordinates and pLDDT are reused, and affinity aliases still reference the
+  same nested host arrays. Trunk-only results leave archived representations
+  to the lazy `PredictionResult.representations` handle instead of also
+  retaining them in `raw`; non-representation metadata and unarchived raw
+  leaves remain available. Array dtypes, shapes, bits, non-finite classes, and
+  signed zero are unchanged.
+
 - **Boltz-2 diffusion chunking now preserves supplied tapes and resolves the
   affinity stage independently.** Fixed initialization noise, per-step noise,
   and augmentation transforms are sliced on their sample axis before each

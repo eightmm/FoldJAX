@@ -175,6 +175,69 @@ def _sample_scores(
     return scores
 
 
+def _detach_prediction_output(
+    output: Mapping[str, Any],
+    *,
+    coords: np.ndarray | None = None,
+    plddt: np.ndarray | None = None,
+    drop_representations: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Move a common-result tree to host memory without redundant copies.
+
+    The native API deliberately returns JAX arrays in ``raw`` for callers that
+    want to keep working on device.  The common API has already converted the
+    coordinates, pLDDT, and scalar scores before it constructs a
+    :class:`PredictionResult`; retaining the native tree there would keep every
+    compiled output buffer alive for as long as that result is reachable.
+
+    Top-level affinity fields alias leaves in the nested native output.  Leave
+    those aliases out of the transfer and reconnect them afterwards, both to
+    avoid a second host copy and to preserve their identity relationship.
+    Likewise, reuse coordinates and pLDDT that are already NumPy arrays.  A
+    trunk-only caller may name representation leaves already owned by the lazy
+    on-disk archive; remove those before transfer rather than duplicating a
+    potentially quadratic pair array in host memory.
+    """
+
+    import jax
+
+    transfer = dict(output)
+    if coords is not None:
+        transfer.pop("coords", None)
+    if plddt is not None:
+        transfer.pop("plddt", None)
+
+    nested = transfer.get("raw")
+    if isinstance(nested, Mapping):
+        nested = dict(nested)
+        for name in drop_representations:
+            nested.pop(name, None)
+        transfer["raw"] = nested
+
+    affinity_aliases = tuple(
+        key
+        for key in transfer
+        if key.startswith("affinity_") and isinstance(nested, Mapping) and key in nested
+    )
+    for key in affinity_aliases:
+        transfer.pop(key)
+
+    transferred = dict(jax.device_get(transfer))
+    transferred_nested = transferred.get("raw")
+    detached: dict[str, Any] = {}
+    for key in output:
+        if key == "coords" and coords is not None:
+            detached[key] = coords
+        elif key == "plddt" and plddt is not None:
+            detached[key] = plddt
+        elif key in affinity_aliases:
+            assert isinstance(transferred_nested, Mapping)
+            detached[key] = transferred_nested[key]
+        else:
+            detached[key] = transferred[key]
+    return detached
+
+
 def _default_mols(weights: Path) -> Path | None:
     """Find the CCD molecule directory that `foldjax weights fetch` unpacked.
 
@@ -574,14 +637,23 @@ class Boltz2Backend(Backend):
             output = native.predict(**native_options)
         if request.stop_after == "trunk":
             # Nothing was folded, so there are no samples to describe.
+            representations = _representations_result(
+                self.name, request.output_dir, wanted
+            )
+            archived = (
+                tuple(name for name in wanted if name in representations)
+                if representations is not None
+                else ()
+            )
+            output = _detach_prediction_output(
+                output, drop_representations=archived
+            )
             return PredictionResult(
                 model=self.name,
                 samples=(),
                 output_dir=request.output_dir,
                 raw=output,
-                representations=_representations_result(
-                    self.name, request.output_dir, wanted
-                ),
+                representations=representations,
             )
         coords = np.asarray(output["coords"])
         plddt = np.asarray(output.get("plddt", []))
@@ -599,6 +671,7 @@ class Boltz2Backend(Backend):
             for index in range(sample_count)
         )
         shape_profile = _padding_shape_profile(output.get("padding"))
+        output = _detach_prediction_output(output, coords=coords, plddt=plddt)
         return PredictionResult(
             model=self.name,
             samples=samples,

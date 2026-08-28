@@ -70,6 +70,12 @@ silently retaining only one archive. Run one seed per request when capturing
 trunk arrays. Empty selectors such as `representations=(",",)` are also
 rejected; name at least one array or use `"all"`.
 
+Captured arrays are read lazily through `result.representations["single"]`,
+`["pair"]`, and the other advertised representation names. That handle is the
+common API contract for them; backend-specific `result.raw` is supplementary
+output and need not duplicate representation arrays already stored in its
+archive.
+
 The CLI spells it the same way: `foldjax predict --model boltz2 protenix
 --input kinase.yaml complex.yaml`.
 
