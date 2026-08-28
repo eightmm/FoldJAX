@@ -189,13 +189,40 @@ nothing worth saving -- the draw is `[S, N_atom, 3]`, megabytes against the
 denoiser's gigabytes -- so its chunking agrees with the unchunked rollout to
 9.5e-06 absolute, which is float32 round-off rather than a different sample.
 
-**OpenDDE's growth is not the rollout, and the knob it now has does not move
-it.** 31.34 GiB before and 31.36 after, at thirty-two samples. Its peak at one
-sample is the quadratic trunk arena and the 12 GiB it adds by thirty-two is
-downstream of the sampler; Protenix and ESMFold2 both map their confidence head
-over the sample axis and OpenDDE does not, which is the next thing to measure.
-The wiring landed anyway, because a CLI that resolves a setting and drops it is
-a defect whether or not the setting would have helped.
+**OpenDDE's growth was not the rollout, and the chunk it got did not move it**
+-- 31.34 GiB before and 31.36 after. The wiring landed anyway, because a CLI
+that resolves a setting and drops it is a defect whether or not the setting
+would have helped, and XLA's own accounting then said where the growth really
+was: at 1,003 tokens the one consolidated graph's **temp arena** went 19,306
+MiB at one sample to 29,273 at thirty-two, with arguments flat at 2,069 and
+outputs at nothing. Not the rollout, not the outputs -- an intermediate.
+
+It was the confidence head's logits. The head already loops samples one at a
+time; the scoring ran *after* that loop, so every sample's
+`f32[N, N, 64]` PAE and PDE were stacked, reduced once, and then dropped --
+7,859 MiB per stack at this size, which is most of the 9,967 the arena grew.
+Protenix had already fixed exactly this and its `_confidence` docstring names
+it: "what kept three `f32[num_samples, N, N, 64]` stacks live at once was
+stacking every sample's logits and only then reducing them". OpenDDE now scores
+inside the loop, the same shape of fix, and against a control taken on the same
+commit:
+
+| samples | before | after |
+|---|---|---|
+| 1 | 20.96 GiB | 20.96 |
+| 5 | 20.96 | 20.96 |
+| 16 | 22.04 | **20.23** |
+| 32 | 31.10 | **20.23** |
+
+Flat, and identical where the released schedule sits. Best `ranking_score`
+moved 0.192628 → 0.192674, which is the map boundary rather than a different
+answer.
+
+**Three times in this campaign a "regression" was a stale baseline.** The
+per-sample route looked 1.9 GiB worse at five samples and again at one, both
+against numbers measured several commits earlier, and both vanished the moment
+a control was taken on the same commit as the change. On a repository this
+active the control is not optional and it is not reusable.
 
 **One name, one constant.** `diffusion_chunk_size` is what the CLI, the Python
 API, the backend option set and each port's own signature call it, and

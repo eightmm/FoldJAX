@@ -1005,8 +1005,24 @@ def opendde_infer_static(
         )
     output.update(_capture.collected())
     if run_confidence:
-        output.update(
-            confidence_head(
+        from foldjax.models.opendde.postprocess import opendde_confidence_scores
+
+        def _confidence(sample_coordinates):
+            """Head and summaries for one sample's coordinates.
+
+            The head already loops samples one at a time. What kept the
+            `f32[num_samples, N, N, 64]` stacks live was scoring *after* that
+            loop: every sample's logits were stacked, reduced once, and then
+            dropped. Measured at 1,003 tokens, that put the whole growth along
+            the sample axis in this model's temp arena -- 19,306 MiB at one
+            sample against 29,273 at thirty-two, with arguments flat at 2,069
+            and outputs at nothing.
+
+            Scoring inside the loop reduces each sample's logits while they are
+            `[1, N, N, 64]`. Same fix, same shape, as Protenix's
+            `_confidence` and OpenFold3's serial confidence map.
+            """
+            logits = confidence_head(
                 input_feature_dict,
                 head_s_inputs,
                 head_s_trunk,
@@ -1015,7 +1031,7 @@ def opendde_infer_static(
                 # trunk only. Confidence needs the padding mask to exclude
                 # dummy tokens, while retaining that default/custom-mask API.
                 residue_padding_pair_mask,
-                coordinates,
+                sample_coordinates,
                 params.confidence,
                 use_embedding=use_confidence_embedding,
                 compact_distance_bins=compact_confidence_distance_bins,
@@ -1025,27 +1041,57 @@ def opendde_infer_static(
                 single_att_q_chunk_size=single_att_q_chunk_size,
                 triangle_attention_backend=confidence_triangle_attention_backend,
             )
-        )
-        if run_confidence_scores:
-            from foldjax.models.opendde.postprocess import (
-                opendde_confidence_scores,
-            )
-
-            output.update(
-                opendde_confidence_scores(
-                    output,
-                    input_feature_dict,
-                    num_recycles=num_recycles,
-                    n_chain=n_chain,
-                    # numpy-based, untraceable; finished on the host by the
-                    # postprocess passthrough.
-                    include_shape_complementarity=False,
-                    return_confidence_details=return_confidence_details,
+            piece = dict(logits) if return_confidence_logits else {}
+            if run_confidence_scores:
+                piece.update(
+                    opendde_confidence_scores(
+                        {
+                            **logits,
+                            "coordinate": sample_coordinates,
+                            "distogram_logits": output["distogram_logits"],
+                        },
+                        input_feature_dict,
+                        num_recycles=num_recycles,
+                        n_chain=n_chain,
+                        # numpy-based, untraceable; finished on the host by the
+                        # postprocess passthrough.
+                        include_shape_complementarity=False,
+                        return_confidence_details=return_confidence_details,
+                    )
                 )
+            return piece
+
+        # Mapped whenever there is more than one sample, which is the
+        # condition Protenix's own copy of this uses. Measured at 1,003 tokens:
+        # 20.23 GiB at both sixteen and thirty-two samples against 22.05 and
+        # 31.34 before, and 20.96 at five either way -- the batched route and
+        # this one are indistinguishable where the released schedule sits, so
+        # there is no threshold to tune and none is spelled here.
+        n_conf_sample = int(coordinates.shape[-3])
+        if n_conf_sample > 1:
+            conf = jax.lax.map(
+                _confidence,
+                jnp.moveaxis(coordinates, -3, 0)[..., None, :, :],
             )
+            # Every leaf gains a leading map axis over its single-sample shape.
+            # A leaf whose next axis is the size-1 sample axis is collapsed back
+            # onto it; a sample-independent leaf keeps one copy, as the batched
+            # call produced. The same reduction Protenix applies to its own map.
+            conf = {
+                name: (
+                    jnp.squeeze(value, axis=1)
+                    if value.ndim > 1 and value.shape[1] == 1
+                    else value[0]
+                )
+                for name, value in conf.items()
+            }
+        else:
+            conf = _confidence(coordinates)
+        output.update(conf)
         if not return_confidence_logits:
-            for name in ("plddt", "pae", "pde", "distogram_logits"):
-                output.pop(name, None)
+            # `_confidence` never put the logits in unless they were asked for;
+            # the distogram is computed outside the head and still needs it.
+            output.pop("distogram_logits", None)
     return output
 
 
