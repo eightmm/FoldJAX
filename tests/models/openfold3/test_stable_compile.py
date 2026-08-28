@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import os
 import shutil
 import subprocess
@@ -22,6 +24,9 @@ from foldjax._openfold3_compile import (
     resolve_triangle_kernel,
     triangle_backend,
 )
+from foldjax.api import resolve_cache_dir
+from foldjax.backends import openfold3 as openfold3_backend
+from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.cache import compilation_cache_scope
 from foldjax.models import _capture
 from foldjax.models.openfold3 import inference
@@ -30,6 +35,7 @@ from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
     token_representative_atoms,
 )
+from foldjax.schema import PredictionRequest
 from tests.models.cp_probe_env import inherited_environment
 from tests.models.openfold3.feature_fixture import minimal_features
 
@@ -77,6 +83,112 @@ def _table(offset: float = 0.0) -> RepresentativeAtomTable:
         pyrimidine_dna=zeros,
         pyrimidine_rna=zeros,
     )
+
+
+def test_backend_cache_defaults_track_released_config_signature() -> None:
+    signature = inspect.signature(inference.released_config).parameters
+
+    assert openfold3_backend._RELEASED_COMPILE_DEFAULTS == {
+        "num_samples": signature["num_samples"].default,
+        "num_steps": signature["num_steps"].default,
+        "num_recycles": signature["num_recycles"].default,
+        "max_msa_depth": signature["msa_depth"].default,
+    }
+
+
+def test_released_default_aliases_share_one_backend_jit_owner(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "job.yaml"
+    input_path.write_text("version: 1\n", encoding="utf-8")
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    request = PredictionRequest(
+        model="openfold3",
+        input=input_path,
+        weights=weights,
+        cache_dir=tmp_path / "cache",
+    )
+    aliases = (
+        request,
+        dataclasses.replace(
+            request,
+            num_samples=5,
+            num_steps=200,
+            num_recycles=3,
+            max_msa_depth=1024,
+        ),
+        dataclasses.replace(
+            request,
+            options={
+                "num_samples": 5,
+                "num_steps": 200,
+                "num_recycles": 4,
+                "max_msa_depth": 1024,
+            },
+        ),
+        dataclasses.replace(request, max_msa_depth=4096),
+    )
+    backend = OpenFold3Backend()
+    scopes = tuple(str(resolve_cache_dir(alias, backend)) for alias in aliases)
+    assert len(set(scopes)) == 1
+
+    def config_for(alias: PredictionRequest) -> inference.InferenceConfig:
+        options = backend.apply_sampling(alias)
+        overrides = {
+            name: int(options[name])
+            for name in ("num_samples", "num_steps", "num_recycles")
+            if name in options
+        }
+        if "max_msa_depth" in options:
+            overrides["msa_depth"] = int(options["max_msa_depth"])
+        return inference.released_config(n_token=4, n_atom=4, **overrides)
+
+    configs = tuple(config_for(alias) for alias in aliases)
+    assert configs.count(configs[0]) == len(configs)
+
+    traces: list[tuple[int, int, int, int | None]] = []
+
+    def tiny_predict(
+        key,
+        batch,
+        params,
+        config,
+        representative_atoms,
+        **kwargs,
+    ):
+        del key, representative_atoms, kwargs
+        traces.append(
+            (
+                config.num_samples,
+                config.num_steps,
+                config.num_recycles,
+                config.msa_depth,
+            )
+        )
+        return batch["x"] + params
+
+    monkeypatch.setattr(inference, "predict", tiny_predict)
+    inference._compiled_predict.clear_cache()
+    args = (
+        jax.random.key(0),
+        {"x": jnp.arange(4, dtype=jnp.float32)},
+        jnp.asarray(2.0, dtype=jnp.float32),
+    )
+    try:
+        outputs = tuple(
+            inference.compile_predict(config, _table(), cache_scope=scope)(*args)
+            for config, scope in zip(configs, scopes, strict=True)
+        )
+        jax.block_until_ready(outputs)
+
+        assert traces == [(5, 200, 4, 1024)]
+        assert inference._compiled_predict._cache_size() == 1
+        for output in outputs[1:]:
+            np.testing.assert_array_equal(output, outputs[0])
+    finally:
+        inference._compiled_predict.clear_cache()
 
 
 def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(

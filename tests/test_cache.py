@@ -201,6 +201,72 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     assert resolve_cache_dir(padded, backend) != resolve_cache_dir(request, backend)
 
 
+def test_openfold3_released_sampling_aliases_share_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    backend = OpenFold3Backend()
+    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+    neutral_defaults = dataclasses.replace(
+        request,
+        num_samples=5,
+        num_steps=200,
+        # Neutral recycles count repeats; OpenFold3 executes one extra cycle.
+        num_recycles=3,
+        max_msa_depth=1024,
+    )
+    native_defaults = dataclasses.replace(
+        request,
+        options={
+            "num_samples": 5,
+            "num_steps": 200,
+            "num_recycles": 4,
+            "max_msa_depth": 1024,
+        },
+    )
+    capped_msa = dataclasses.replace(request, max_msa_depth=4096)
+
+    aliases = (request, neutral_defaults, native_defaults, capped_msa)
+    profiles = [backend.cache_profile(alias) for alias in aliases]
+    namespaces = [resolve_cache_dir(alias, backend) for alias in aliases]
+
+    assert profiles.count(profiles[0]) == len(profiles)
+    assert namespaces.count(namespaces[0]) == len(namespaces)
+    for name in ("num_samples", "num_steps", "num_recycles", "max_msa_depth"):
+        assert name not in profiles[0]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"num_samples": 6},
+        {"num_steps": 199},
+        {"num_recycles": 4},
+        {"max_msa_depth": 512},
+    ),
+)
+def test_openfold3_nondefault_sampling_keeps_distinct_cache_namespace(
+    tmp_path: Path,
+    changes: dict[str, int],
+) -> None:
+    backend = OpenFold3Backend()
+    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+    changed = dataclasses.replace(request, **changes)
+
+    assert resolve_cache_dir(changed, backend) != resolve_cache_dir(request, backend)
+
+
+@pytest.mark.parametrize("name", ("pair_chunk_size", "diffusion_chunk_size"))
+def test_openfold3_chunk_choices_keep_distinct_cache_namespace(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    backend = OpenFold3Backend()
+    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+    changed = dataclasses.replace(request, options={name: 1})
+
+    assert resolve_cache_dir(changed, backend) != resolve_cache_dir(request, backend)
+
+
 def test_compilation_cache_scope_disables_and_restores_host_config(
     tmp_path: Path, monkeypatch
 ) -> None:

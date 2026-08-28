@@ -61,6 +61,18 @@ _COMPILE_OPTIONS = (
 # ``max_msa_depth`` knob is a cap, so asking for more cannot widen the released
 # model's 1024-row input.
 _RELEASED_MSA_DEPTH = 1024
+#: ``released_config`` values whose explicit spellings are identical to leaving
+#: the public request unset.  Keep these lightweight copies beside the backend
+#: so resolving a cache directory does not import the model/JAX runtime; a test
+#: pins them to ``released_config``'s signature.
+_RELEASED_COMPILE_DEFAULTS = {
+    "num_samples": 5,
+    "num_steps": 200,
+    # The neutral request says three recycles; ``apply_sampling`` translates
+    # that to the four executed trunk cycles stored in ``InferenceConfig``.
+    "num_recycles": 4,
+    "max_msa_depth": _RELEASED_MSA_DEPTH,
+}
 
 
 def _real_prefix_size(mask: np.ndarray, *, axis: str) -> int:
@@ -186,10 +198,27 @@ class OpenFold3Backend(Backend):
             self._weights.validate(Path(request.weights), resumed=True)
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
-        """Name every static OpenFold3 program choice, including defaults."""
+        """Name static choices without splitting released-default aliases."""
 
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
+        # ``released_config`` supplies these exact values when the request
+        # omits them.  Keeping an explicitly repeated default in the namespace
+        # creates another cache scope; that scope is itself part of
+        # ``_PredictGraphIdentity``, so an otherwise identical model config
+        # receives a second in-process JIT owner as well as another persistent
+        # directory.  Strip only the proven released defaults, preserving the
+        # historical omitted-default namespace and every non-default graph.
+        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
+            if name not in options:
+                continue
+            resolved = int(options[name])
+            if resolved == default:
+                profile.pop(name, None)
+            else:
+                # Native options accept integer spellings; use the same value
+                # that ``predict`` passes into ``released_config``.
+                profile[name] = resolved
         cp_shards = int(options.get("cp_devices", 1))
         requested_layout = str(options.get("cp_layout", "auto"))
         profile["cp_devices"] = cp_shards

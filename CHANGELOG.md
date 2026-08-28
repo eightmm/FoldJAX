@@ -12,6 +12,23 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 reuses its existing released-default compilation namespace when
+  those defaults are written explicitly.** Omitting the sampling fields,
+  requesting the neutral released schedule (5 samples, 200 steps, 3 recycles),
+  using its native four executed recycle cycles, and setting the MSA cap to
+  1,024 or higher now resolve to one cache scope. Previously those spellings
+  built the same `InferenceConfig`, but distinct scopes were themselves part
+  of the bounded JIT identity and could retain as many as three whole-model
+  owners and traces. Non-default sampling and chunk choices,
+  context-parallel topology, representations, trunk stopping, and padded RNG
+  routing remain separate.
+
+  In a CPU-only probe using the real bounded OpenFold3 compilation pool and a
+  tiny traced body, the aliases produced byte-identical results and identical
+  StableHLO; after normalization they share one trace and owner. The released
+  model was not compiled or run, and no GPU latency, memory, or end-to-end
+  prediction claim is made.
+
 - **Managed ESMFold2 now releases input-only language-model and feature owners
   as soon as structure inference has been dispatched.** The scalar
   `predict_job` route, split model arguments, random keys, compact session
