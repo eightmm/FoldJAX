@@ -13,6 +13,18 @@ from foldjax.models.protenix.models.heads.confidence import (
     confidence_scores_from_logits,
 )
 
+SHAPE_COMPLEMENTARITY_SCORE_KEYS = frozenset(
+    {
+        "shape_comp_token_pred",
+        "shape_comp_token_mask",
+        "shape_comp_global_pred",
+        "shape_comp_pair_mean_pred",
+        "shape_comp_pair_topk_mean_pred",
+        "shape_comp_valid_pair_frac_pred",
+        "shape_comp_uses_structural_tokens",
+    }
+)
+
 _OPENDDE_SCORE_KEYS = frozenset(
     {
         "atom_plddt",
@@ -37,17 +49,8 @@ _OPENDDE_SCORE_KEYS = frozenset(
         "summary_ranking_score",
         "ranking_score",
         "final_score",
-        # Cross-chain shape complementarity. Reported, never ranked -- upstream
-        # builds `ranking_score` from iptm, ptm, disorder and clash alone.
-        "shape_comp_token_pred",
-        "shape_comp_token_mask",
-        "shape_comp_global_pred",
-        "shape_comp_pair_mean_pred",
-        "shape_comp_pair_topk_mean_pred",
-        "shape_comp_valid_pair_frac_pred",
-        "shape_comp_uses_structural_tokens",
     }
-)
+) | SHAPE_COMPLEMENTARITY_SCORE_KEYS
 
 
 def compute_contact_prob(
@@ -274,4 +277,8 @@ def _shape_complementarity_scores(
     return stacked
 
 
-__all__ = ["compute_contact_prob", "opendde_confidence_scores"]
+__all__ = [
+    "SHAPE_COMPLEMENTARITY_SCORE_KEYS",
+    "compute_contact_prob",
+    "opendde_confidence_scores",
+]

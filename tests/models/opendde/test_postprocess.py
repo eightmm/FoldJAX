@@ -1,13 +1,38 @@
 from __future__ import annotations
 
+import json
+
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
+from foldjax.models.opendde.cli.predict import _write
 from foldjax.models.opendde.postprocess import (
+    SHAPE_COMPLEMENTARITY_SCORE_KEYS,
     compute_contact_prob,
     opendde_confidence_scores,
 )
 from foldjax.models.protenix.data.output import _sample_summary
+
+
+def _writer_features() -> dict[str, np.ndarray]:
+    names = np.zeros((3, 4, 64), dtype=np.float32)
+    for atom_i, name in enumerate(("N", "CA", "C")):
+        for char_i, char in enumerate(name.ljust(4)):
+            names[atom_i, char_i, ord(char) - 32] = 1.0
+    elements = np.zeros((3, 128), dtype=np.float32)
+    elements[:, [6, 5, 5]] = 1.0
+    restype = np.zeros((2, 32), dtype=np.float32)
+    restype[:, 0] = 1.0
+    return {
+        "atom_to_token_idx": np.asarray([0, 1, 1], dtype=np.int64),
+        "ref_atom_name_chars": names,
+        "ref_element": elements,
+        "ref_mask": np.ones(3, dtype=np.float32),
+        "restype": restype,
+        "asym_id": np.asarray([0, 1], dtype=np.int64),
+        "residue_index": np.ones(2, dtype=np.int64),
+    }
 
 
 def test_contact_probability_uses_opendde_inclusive_bin_tops() -> None:
@@ -69,6 +94,64 @@ def test_opendde_confidence_scores_replace_contact_dependent_summaries() -> None
         "ranking_score",
         "num_recycles",
     }
+
+
+def test_opendde_writer_reports_shape_complementarity_without_raw_arrays(
+    tmp_path,
+) -> None:
+    output = {
+        "coordinate": np.zeros((2, 3, 3), dtype=np.float32),
+        "atom_plddt": np.full((2, 3), 0.75, dtype=np.float32),
+        # Rank zero is original sample one, so this also checks sample indexing.
+        "summary_ranking_score": np.asarray([0.1, 0.9], dtype=np.float32),
+        "shape_comp_token_pred": np.asarray(
+            [[0.1, 0.2], [0.7, 0.8]], dtype=np.float32
+        ),
+        "shape_comp_token_mask": np.asarray(
+            [[True, False], [False, True]], dtype=bool
+        ),
+        "shape_comp_global_pred": np.asarray([0.15, 0.75], dtype=np.float32),
+        "shape_comp_pair_mean_pred": np.asarray([0.25, 0.85], dtype=np.float32),
+        "shape_comp_pair_topk_mean_pred": np.asarray(
+            [0.35, 0.95], dtype=np.float32
+        ),
+        "shape_comp_valid_pair_frac_pred": np.asarray(
+            [0.5, 0.75], dtype=np.float32
+        ),
+        "shape_comp_uses_structural_tokens": np.asarray(True),
+        # A large internal confidence array must not hitch a ride into JSON.
+        "token_pair_pae": np.zeros((2, 2, 2), dtype=np.float32),
+    }
+
+    paths = _write(
+        tmp_path,
+        job_name="shape",
+        seed=3,
+        output=output,
+        features=_writer_features(),
+        include_raw=False,
+        include_trunk=False,
+    )
+
+    confidence_path = (
+        tmp_path
+        / "shape"
+        / "seed_3"
+        / "predictions"
+        / "shape_summary_confidence_sample_0.json"
+    )
+    assert confidence_path in paths
+    confidence = json.loads(confidence_path.read_text(encoding="utf-8"))
+    assert SHAPE_COMPLEMENTARITY_SCORE_KEYS <= confidence.keys()
+    np.testing.assert_allclose(confidence["shape_comp_token_pred"], [0.7, 0.8])
+    assert confidence["shape_comp_token_mask"] == [False, True]
+    assert confidence["shape_comp_global_pred"] == pytest.approx(0.75)
+    assert confidence["shape_comp_pair_mean_pred"] == pytest.approx(0.85)
+    assert confidence["shape_comp_pair_topk_mean_pred"] == pytest.approx(0.95)
+    assert confidence["shape_comp_valid_pair_frac_pred"] == pytest.approx(0.75)
+    assert confidence["shape_comp_uses_structural_tokens"] is True
+    assert "token_pair_pae" not in confidence
+    assert not confidence_path.with_name("raw_output.npz").exists()
 
 
 def test_opendde_confidence_excludes_ligands_from_af3_clash_and_vdw_summary() -> None:

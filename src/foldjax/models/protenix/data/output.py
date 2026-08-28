@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import warnings
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ def write_protenix_outputs(
     features: dict[str, Any],
     include_raw: bool = False,
     include_trunk: bool = False,
+    extra_summary_fields: Collection[str] = (),
 ) -> list[Path]:
     """Write ranked CIF and summary JSON files in the upstream directory layout.
 
@@ -118,7 +120,12 @@ def write_protenix_outputs(
         )
         confidence_path.write_text(
             json.dumps(
-                _sample_summary(output, sample_index, coordinates.shape[0]),
+                _sample_summary(
+                    output,
+                    sample_index,
+                    coordinates.shape[0],
+                    extra_fields=extra_summary_fields,
+                ),
                 indent=4,
                 allow_nan=False,
             )
@@ -162,21 +169,28 @@ def _sample_ranks(output: dict[str, Any], num_samples: int) -> np.ndarray:
 
 
 def _sample_summary(
-    output: dict[str, Any], sample_index: int, num_samples: int
+    output: dict[str, Any],
+    sample_index: int,
+    num_samples: int,
+    *,
+    extra_fields: Collection[str] = (),
 ) -> dict[str, Any]:
+    extra_fields = frozenset(extra_fields)
     summary: dict[str, Any] = {}
     for key, value in output.items():
+        is_extra = key in extra_fields
         if not (
             key.startswith("summary_")
             or key.startswith("chain_")
             or key.startswith("has_")
             or key.startswith("pb_")
             or key in {"disorder", "ranking_score", "num_recycles"}
+            or is_extra
         ):
             continue
         array = np.asarray(value)
         json_key = key.removeprefix("summary_")
-        if key == "num_recycles" and array.ndim == 0:
+        if array.ndim == 0 and (key == "num_recycles" or is_extra):
             summary[json_key] = _json_value(array)
             continue
         if array.ndim == 0 or array.shape[0] != num_samples:

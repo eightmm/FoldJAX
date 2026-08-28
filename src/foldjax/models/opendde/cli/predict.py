@@ -335,8 +335,16 @@ def _score(
 
 
 def _write(root: Path, **kwargs: Any) -> list[Path]:
+    from foldjax.models.opendde.postprocess import (
+        SHAPE_COMPLEMENTARITY_SCORE_KEYS,
+    )
     from foldjax.models.protenix.data.output import write_protenix_outputs
 
+    # The shared Protenix writer intentionally rejects unknown arrays from its
+    # confidence JSON. OpenDDE's seven shape-complementarity fields are native
+    # reported outputs, so opt them in explicitly without widening Protenix's
+    # allowlist or exposing unrelated pair arrays.
+    kwargs["extra_summary_fields"] = SHAPE_COMPLEMENTARITY_SCORE_KEYS
     return write_protenix_outputs(root, **kwargs)
 
 

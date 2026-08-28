@@ -109,6 +109,9 @@ def test_writer_serializes_complete_per_sample_confidence(tmp_path) -> None:
         "has_vdw_clash": np.array([True, False]),
         # Full-data tensors must remain out of the summary JSON.
         "token_pair_pae": np.zeros((2, 1, 1), dtype=np.float32),
+        # OpenDDE opts this field in explicitly; the shared default remains
+        # Protenix's own allowlist.
+        "shape_comp_global_pred": np.asarray([0.2, 0.3], dtype=np.float32),
     }
 
     write_protenix_outputs(
@@ -133,6 +136,7 @@ def test_writer_serializes_complete_per_sample_confidence(tmp_path) -> None:
     assert confidence["has_clash"] is False
     assert confidence["has_vdw_clash"] is True
     assert "token_pair_pae" not in confidence
+    assert "shape_comp_global_pred" not in confidence
 
 
 def test_writer_does_not_substitute_plddt_for_canonical_ranking(tmp_path) -> None:

@@ -12,6 +12,15 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenDDE now writes its shape-complementarity fields to each sample's
+  confidence JSON.** The scores were computed and retained, but the shared
+  Protenix writer's deliberate summary allowlist discarded all seven
+  `shape_comp_*` outputs immediately before serialization. OpenDDE now opts
+  those exact native fields into the summary, including the per-token values
+  and masks, without widening Protenix's JSON contract or exposing unrelated
+  raw confidence arrays. Coordinates, ranking, and model arithmetic are
+  unchanged.
+
 - **OpenFold3 reduces unreturned PAE before it crosses the serial confidence
   map.** Above the released 750-token cutoff, confidence already runs one sample
   at a time. When the output budget excludes PAE, that map now turns each
