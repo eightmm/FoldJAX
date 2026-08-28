@@ -80,10 +80,29 @@ def main() -> int:
         "seed so its rows are comparable; this exists to measure the spread "
         "that pinning hides -- how far two seeds move the same job.",
     )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="override the pinned diffusion sample count. The table is "
+        "measured at one schedule so its rows are comparable; this exists to "
+        "measure how a peak grows with the sample axis, which is a different "
+        "question and gets its own runs.",
+    )
     args = parser.parse_args()
 
     import foldjax
     from bench.spec import SCHEDULE, SEED, cases
+
+    # Resolved once, then both used and reported. The report used to record the
+    # pinned constants rather than these, so a `--seed` run wrote "seed": 101
+    # whatever it had actually run -- a label that certifies the control it did
+    # not check. Anything overridable has to be reported from the value that
+    # reached the request.
+    seed = SEED if args.seed is None else args.seed
+    schedule = dict(SCHEDULE)
+    if args.num_samples is not None:
+        schedule["num_samples"] = args.num_samples
     from foldjax.schema import PredictionRequest
 
     options = dict(entry.split("=", 1) for entry in args.option)
@@ -101,10 +120,10 @@ def main() -> int:
         model=model,
         input=case.job,
         output_dir=args.output_dir,
-        seed=SEED if args.seed is None else args.seed,
+        seed=seed,
         options=options,
         profile=profile,
-        **SCHEDULE,
+        **schedule,
     )
 
     import jax
@@ -136,8 +155,8 @@ def main() -> int:
         "options": options,
         "case": case.name,
         "length": case.length,
-        "schedule": dict(SCHEDULE),
-        "seed": SEED,
+        "schedule": schedule,
+        "seed": seed,
         "wall_s": round(elapsed, 2),
         "peak_mib": round(stats.get("peak_bytes_in_use", 0) / 2**20, 1),
         "samples": [
