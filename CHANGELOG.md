@@ -44,6 +44,34 @@ command predicts unless it says so here, in its own paragraph.
   were unchanged. This is argument-transfer/replication compaction, not yet the
   separate one-hot arithmetic optimization, and no GPU peak claim is made.
 
+- **The shared bfloat16 MSA projection no longer materializes its 32-way
+  one-hot tensor.** Protenix and OpenDDE now gather the selected categorical
+  weight row, accumulate the deletion indicator and value in float32, then
+  narrow once. Float32, mixed-dtype, biased and unsupported custom layouts keep
+  the historical dense dot. The compact path also preserves dense-dot
+  NaN/Inf and signed-zero behaviour; a CPU gate covers 117,649 IEEE edge
+  combinations byte for byte.
+
+  This rewrite is byte-identical on CPU but not literally bit-identical in the
+  released GPU bfloat16 program. On an RTX PRO 6000 Blackwell, the full-depth
+  Protenix stage differed in 18 of 1,051,721,728 outputs, with maximum absolute
+  delta 0.015625 and RMS `1.01e-6`; OpenDDE differed in 3 of 250,839,040
+  outputs, with maximum 0.00390625 and RMS `3.70e-7`. The same isolated runs
+  removed the 34-wide dot and reduced Protenix executable temp from
+  1,117,454,336 to 256 bytes and warm median from 4.89 to 1.87 ms; OpenDDE went
+  from 166,812,928 to 512 bytes and 0.755 to 0.473 ms. Those are
+  projection-stage figures.
+
+  The released 1,003-token Protenix program was also run end to end at five
+  samples, 200 diffusion steps and ten recycles. Dense-to-compact CA RMSD was
+  0.062 A median and 2.319 A maximum; a same-seed dense-to-dense control was
+  0.535 A median and 2.300 A maximum. pLDDT, pTM, gpde and ranking-score deltas
+  were on the same scale, with lower medians than the dense repeatability
+  control. Whole-program peak moved only 6,776.8 to 6,772.9 MiB because another
+  stage owns the high-water mark, and the two first-run walls had different
+  compile-cache states, so no whole-model memory or latency improvement is
+  claimed.
+
 - **Serial confidence samples trace one head body rather than one body per
   sample.** Protenix and the OpenDDE path that shares its confidence head now
   use `lax.map` when there is more than one sample on one device. The

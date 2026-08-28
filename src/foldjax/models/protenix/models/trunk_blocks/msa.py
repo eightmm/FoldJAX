@@ -478,25 +478,13 @@ def msa_module(
     if msa.ndim < 2:
         return z
 
-    # High-level prediction stores the categorical alignment as uint8.  The
-    # explicit index cast restores the historical JAX int32 operand without
-    # changing the public/direct feature contract.
-    msa_one_hot = jnp.eye(32, dtype=s_inputs.dtype)[
-        jnp.asarray(msa, dtype=jnp.int32)
-    ]
-    target_shape = msa_one_hot.shape[:-1]
-    has_deletion = input_feature_dict["has_deletion"]
-    if jnp.issubdtype(has_deletion.dtype, jnp.bool_):
-        has_deletion = has_deletion.astype(msa_one_hot.dtype)
-    msa_sample = jnp.concatenate(
-        [
-            msa_one_hot,
-            has_deletion.reshape(target_shape + (1,)),
-            input_feature_dict["deletion_value"].reshape(target_shape + (1,)),
-        ],
-        axis=-1,
+    m = _msa_input_projection(
+        msa,
+        input_feature_dict["has_deletion"],
+        input_feature_dict["deletion_value"],
+        params.linear_m,
+        activation_dtype=s_inputs.dtype,
     )
-    m = linear(msa_sample, params.linear_m)
     m = m + linear(s_inputs, params.linear_s)[..., None, :, :]
     msa_mask = input_feature_dict.get("msa_mask")
 
@@ -528,6 +516,116 @@ def msa_module(
     for block_params in remaining:
         m, z = msa_block(m, z, pair_mask, block_params, **settings)
     return z
+
+
+def _dense_msa_input_projection(
+    msa: jnp.ndarray,
+    has_deletion: jnp.ndarray,
+    deletion_value: jnp.ndarray,
+    params: LinearParams,
+    *,
+    activation_dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """Historical 32-way one-hot projection used for generic dtypes/layouts."""
+
+    # High-level prediction stores the categorical alignment as uint8.  The
+    # explicit index cast restores the historical JAX int32 operand without
+    # changing the public/direct feature contract.
+    msa_one_hot = jnp.eye(32, dtype=activation_dtype)[
+        jnp.asarray(msa, dtype=jnp.int32)
+    ]
+    target_shape = msa_one_hot.shape[:-1]
+    if jnp.issubdtype(has_deletion.dtype, jnp.bool_):
+        has_deletion = has_deletion.astype(msa_one_hot.dtype)
+    msa_sample = jnp.concatenate(
+        [
+            msa_one_hot,
+            has_deletion.reshape(target_shape + (1,)),
+            deletion_value.reshape(target_shape + (1,)),
+        ],
+        axis=-1,
+    )
+    return linear(msa_sample, params)
+
+
+def _compact_bfloat16_msa_input_projection(
+    msa: jnp.ndarray,
+    has_deletion: jnp.ndarray,
+    deletion_value: jnp.ndarray,
+    params: LinearParams,
+) -> jnp.ndarray:
+    """Project one selected MSA category without materialising 32 one-hot lanes."""
+
+    weight = params.weight
+    indices = jnp.asarray(msa, dtype=jnp.int32)
+    # Indexing the transposed table has the same negative-index normalization
+    # and out-of-range clipping as ``jnp.eye(32)[indices]`` in the dense path.
+    table = jnp.swapaxes(weight[:, :32], 0, 1)
+    selected = table[indices]
+
+    # BF16 dot products accumulate these three non-zero products in FP32 and
+    # narrow once. Keeping that boundary is byte-identical on CPU and confines
+    # the released GPU difference to rare final-BF16 rounding ties instead of
+    # rounding after every elementwise addition.
+    wide = selected.astype(jnp.float32)
+    wide = wide + has_deletion[..., None].astype(jnp.float32) * weight[
+        :, 32
+    ].astype(jnp.float32)
+    wide = wide + deletion_value[..., None].astype(jnp.float32) * weight[
+        :, 33
+    ].astype(jnp.float32)
+
+    # A dense dot multiplies every unselected zero by its weight.  Preserve its
+    # IEEE behaviour for custom NaN/Inf parameters instead of silently making
+    # those values finite merely because the one-hot tensor disappeared.
+    categorical_nonfinite = jnp.sum(
+        ~jnp.isfinite(table), axis=0, dtype=jnp.int32
+    )
+    selected_nonfinite = (~jnp.isfinite(selected)).astype(jnp.int32)
+    wide = jnp.where(
+        categorical_nonfinite > selected_nonfinite,
+        jnp.asarray(jnp.nan, dtype=jnp.float32),
+        wide,
+    )
+    # A multi-term dot canonicalises an exact zero to +0.  The explicit adds
+    # can otherwise retain the sign of a selected -0.
+    wide = jnp.where(wide == 0, jnp.zeros((), dtype=jnp.float32), wide)
+    return wide.astype(jnp.bfloat16)
+
+
+def _msa_input_projection(
+    msa: jnp.ndarray,
+    has_deletion: jnp.ndarray,
+    deletion_value: jnp.ndarray,
+    params: LinearParams,
+    *,
+    activation_dtype: jnp.dtype,
+) -> jnp.ndarray:
+    """Use the compact BF16 projection when its static contract matches."""
+
+    dtype = jnp.dtype(activation_dtype)
+    if jnp.issubdtype(has_deletion.dtype, jnp.bool_):
+        has_deletion = has_deletion.astype(dtype)
+    compact = (
+        dtype == jnp.dtype(jnp.bfloat16)
+        and jnp.dtype(has_deletion.dtype) == dtype
+        and jnp.dtype(deletion_value.dtype) == dtype
+        and params.weight.ndim == 2
+        and params.weight.shape[-1] == 34
+        and jnp.dtype(params.weight.dtype) == dtype
+        and params.bias is None
+    )
+    if compact:
+        return _compact_bfloat16_msa_input_projection(
+            msa, has_deletion, deletion_value, params
+        )
+    return _dense_msa_input_projection(
+        msa,
+        has_deletion,
+        deletion_value,
+        params,
+        activation_dtype=dtype,
+    )
 
 
 def _uniform_prefix(blocks: tuple[MSABlockParams, ...]) -> int:
