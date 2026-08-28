@@ -84,7 +84,8 @@ have it — the two Protenix-family ports:
 foldjax predict --model opendde --input job.yaml --option trunk_dtype=bf16
 ```
 
-Protenix already defaults to `bf16`; OpenDDE defaults to `fp32`, so it is
+Protenix already defaults to `bf16`; OpenDDE defaulted to `fp32` until
+2026-08-28 and now ships `bf16` as well, so it is
 OpenDDE the option is worth setting on.
 
 AlphaFold 3 runs its trunk in bfloat16 — weights *and* activations — and that

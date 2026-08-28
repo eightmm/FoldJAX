@@ -52,13 +52,29 @@ before using it.
 </picture>
 
 *Each port against the repository it came from — same job, same schedule, same
-measurement. Numbers, method and caveats: [docs/benchmark.md](docs/benchmark.md).*
+measurement, and the same precision on both sides. Numbers, method and caveats:
+[docs/benchmark.md](docs/benchmark.md).*
 
 Across the twelve rows where both sides complete, FoldJAX holds a **1.08x to
 2.30x** lower peak and runs at **0.94x to 4.85x** the speed. At 3,012 tokens
 five of the six models finish here where two finish upstream. The caveats that
 belong with those numbers — including the one row FoldJAX loses on time — are
 in [docs/benchmark.md](docs/benchmark.md).
+
+### One default is FoldJAX's own
+
+Every port runs the precision its upstream runs, with one deliberate exception.
+**OpenDDE defaults to a bfloat16 trunk where upstream ships float32**, measured
+at 1,003 tokens over two runs per arm: peak 42.96 → 19.18 GiB, wall 280.4 →
+174.4 s, identical best `ranking_score`, and a median CA RMSD of 0.0301 Å
+against the 0.0142 Å you get by running either arm twice. It moves the wall
+too — at 1,531 tokens float32 asks for 86.7 GiB and dies where bfloat16
+finishes at 44.2 GiB.
+
+`--option dtype=float32` puts it back, and the benchmark above pins exactly
+that, because a row that compared two precisions would not be a comparison.
+Everything else — AlphaFold 3, Boltz-2 and Protenix on bfloat16, OpenFold3 and
+ESMFold2 on float32 — matches upstream without a flag.
 
 ## Installation
 

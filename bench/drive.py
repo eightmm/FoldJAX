@@ -87,6 +87,21 @@ def native_input(model: str, case, destination: Path) -> Path:
     )
 
 
+def _comparison_options(model: str) -> list[str]:
+    """`--option` flags that keep a row comparable with its upstream column.
+
+    A model whose FoldJAX default has moved away from what upstream ships is
+    pinned back here. Without this the table would quietly compare two
+    precisions, which is not a comparison -- and it would do it silently,
+    because a default is exactly the thing nobody passes.
+    """
+    from bench.spec import COMPARISON_OPTIONS
+
+    pinned = COMPARISON_OPTIONS.get(model, {})
+    return [flag for name, value in pinned.items()
+            for flag in ("--option", f"{name}={value}")]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", nargs="+", required=True)
@@ -147,6 +162,7 @@ def main() -> int:
                             sys.executable, "-m", "bench.run_foldjax",
                             "--model", model, "--case", case_name,
                             "--output-dir", str(warm), "--warmup",
+                            *_comparison_options(model),
                         ],
                         cwd=REPO, capture_output=True, text=True,
                         env={**__import__("os").environ, "PYTHONPATH": str(REPO)},
@@ -170,6 +186,7 @@ def main() -> int:
                         sys.executable, "-m", "bench.run_foldjax",
                         "--model", model, "--case", case_name,
                         "--output-dir", str(work), "--json-out", str(row),
+                        *_comparison_options(model),
                     ]
                 else:
                     job = native_input(model, case, work / "input")

@@ -129,8 +129,8 @@ def test_opendde_runs_the_fused_kernels_upstream_ships(monkeypatch) -> None:
     490-token job and 34,408 on a 970-token one.
 
     The attention is fused everywhere, as upstream runs it. The *product* is
-    fused on float32, which is what OpenDDE ships and what upstream stores --
-    so the released configuration still runs upstream's kernels. On bfloat16 it
+    fused on float32, which is what upstream stores -- so asking for
+    `dtype=float32` still runs upstream's kernels. On bfloat16 it
     takes the blocked path, measured faster *and* smaller there: 166.27 ->
     143.97 s and 22.44 -> 19.85 GiB at 1,003 residues, 405.07 -> 373.23 s and
     52.10 -> 45.76 GiB at 1,531. That is a deliberate divergence from

@@ -11,6 +11,23 @@ from foldjax.models.opendde.cli import predict as predict_impl
 from foldjax.schema import PredictionError
 
 
+def _params_double():
+    """A weights stand-in shaped like the real parameter tree.
+
+    `object()` was enough while OpenDDE shipped float32, because that path
+    casts nothing and never touches the tree. The shipped trunk is bfloat16
+    since 2026-08-28, so `cast_trunk_params` runs on every default prediction
+    -- these flows had simply never exercised it. Empty subtrees keep the
+    double cheap: `jax.tree.map` over `{}` is a no-op, and `_replace` is what
+    the cast actually needs.
+    """
+    from foldjax.models.opendde.models.model import OpenDDEInferenceParams
+
+    return OpenDDEInferenceParams(
+        **{name: {} for name in OpenDDEInferenceParams._fields}
+    )
+
+
 def _predict_kwargs() -> dict[str, object]:
     return {
         "seed": 101,
@@ -74,7 +91,7 @@ def test_predict_drops_raw_msa_after_default_cycle_sampling(
 ) -> None:
     captured = _capture_predict_route(monkeypatch)
     features = _raw_msa_features(include_mask=include_mask)
-    params = object()
+    params = _params_double()
 
     predict_impl._predict(features, params, **_predict_kwargs())
 
@@ -118,7 +135,7 @@ def test_predict_preserves_direct_msa_fallback(monkeypatch, fallback: str) -> No
 
     predict_impl._predict(
         features,
-        object(),
+        _params_double(),
         graph_jit=False,
         cycle_msa_features=cycles,
         **_predict_kwargs(),
@@ -160,7 +177,7 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     features = {"restype": np.zeros((2, 32), dtype=np.float32)}
     raw_output = {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
     scored_output = {**raw_output, "atom_plddt": np.ones((1, 3))}
-    params = object()
+    params = _params_double()
     calls = []
     featurize_calls = []
 
@@ -219,7 +236,11 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     predict_impl.main(argv)
 
     assert calls[0][0] is features
-    assert calls[0][1] is params
+    # Equality, not identity: the shipped bfloat16 trunk casts the weights on
+    # the way in, so `cast_trunk_params` hands the model a rebuilt tree. What
+    # this pins is that the loaded parameters are what reach the model, which
+    # an identity check only expressed by accident while float32 shipped.
+    assert calls[0][1] == params
     assert calls[0][2]["seed"] == 101
     assert calls[0][2]["num_samples"] == 1
     assert calls[0][2]["num_steps"] == 2

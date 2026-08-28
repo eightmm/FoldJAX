@@ -82,10 +82,13 @@ structures agree: across the two precisions the median TM-score is 0.964,
 against 0.962 within each precision's own five samples, so they differ no more
 than this model's diffusion sampling already does.
 
-The table stays fp32 because upstream OpenDDE ships fp32 with TF32 on, and a
-comparison run at two different precisions is not a comparison. That is what
-this note is separate for: it is a setting a user has, not a result the
-FoldJAX-versus-upstream columns measured.
+**FoldJAX ships that lever on by default since 2026-08-28**; upstream still
+ships fp32. The table's OpenDDE row therefore pins `dtype=float32` on the
+FoldJAX side -- `bench/spec.py`'s `COMPARISON_OPTIONS` -- because a comparison
+run at two different precisions is not a comparison, and a default is exactly
+the thing nobody remembers to pass. So these columns keep measuring the same
+program upstream runs, and the numbers above are what a default `foldjax
+predict --model opendde` now does instead.
 
 **2,096 tokens is the last size most of these upstreams reach.** Upstream
 Boltz-2 and upstream Protenix v2 both complete here and neither survives 3,012

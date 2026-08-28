@@ -79,6 +79,18 @@ MODELS = (
 #: the FoldJAX side today.
 REIMPLEMENTED = ("boltz2", "opendde", "protenix", "protenix-v2")
 
+#: Options the FoldJAX side pins so a row stays a comparison.
+#:
+#: OpenDDE's shipped default became bfloat16 on 2026-08-28, measured smaller and
+#: faster and inside its own sampling spread. Upstream still ships fp32, so
+#: leaving the default here would make this table compare two precisions, which
+#: is not a comparison. The bfloat16 numbers live in `docs/benchmark.md` as
+#: their own note, which is what a setting a user has -- rather than a result
+#: these columns measured -- deserves.
+COMPARISON_OPTIONS: dict[str, dict[str, str]] = {
+    "opendde": {"dtype": "float32"},
+}
+
 
 @dataclass(frozen=True)
 class Case:

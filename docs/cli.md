@@ -190,8 +190,9 @@ Design notes: [docs/engineering-notes.md](engineering-notes.md).
 
 ### A bfloat16 trunk (`--option trunk_dtype=bf16`)
 
-Protenix defaults to `bf16` (its upstream ships bf16-mixed); OpenDDE defaults
-to `fp32` (so does its upstream) and takes the flag as an opt-in -- at 1,531
+Protenix defaults to `bf16` (its upstream ships bf16-mixed). OpenDDE shipped
+`fp32` with its upstream until 2026-08-28 and now defaults to `bf16` too;
+`--option dtype=float32` restores upstream's precision -- at 1,531
 tokens it is the difference between completing and OOM on both sides. Boltz-2's
 equivalent is `compute_dtype`, default `bfloat16`; OpenFold3 has no trunk
 dtype: upstream runs `32-true` and a bf16 trunk destroys its prediction.

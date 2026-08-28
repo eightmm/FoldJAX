@@ -170,6 +170,11 @@ def _with_cueq_triangle_defaults(function):
     commits, one run failed outright, and the arms overlapped with the card's
     mean SM clock drifting 1612 -> 1392 MHz across ~250 s runs. Memory alone
     does not move a shipped default away from the kernel upstream runs.
+
+    That rule is about *these* two kernels and still holds for them. The trunk
+    dtype default did move on 2026-08-28, and not on memory alone: 42.96 ->
+    19.18 GiB, 280.4 -> 174.4 s, and a CA RMSD of 0.0301 A against a 0.0142 A
+    rerun floor, all at 1,003 tokens. See `cli/predict.py`'s `--trunk-dtype`.
     """
 
     @wraps(function)
@@ -197,8 +202,10 @@ def _with_cueq_triangle_defaults(function):
             # accumulators at the trunk's width against fused's two `2c`
             # projections, so it is ~24% cheaper *once the destination stops
             # being float32*. In fp32 `out_dtype` is a no-op, the accumulators
-            # do not narrow, and none of the above was measured -- OpenDDE
-            # ships fp32, so the shipped default is deliberately unchanged.
+            # do not narrow, and none of the above was measured, so float32
+            # keeps the fused product. Since 2026-08-28 the shipped trunk is
+            # bfloat16, so a default run takes the blocked arm -- which is the
+            # arm those numbers were measured on.
             "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": "xla" if narrow else "cueq",
         }
         inserted = []

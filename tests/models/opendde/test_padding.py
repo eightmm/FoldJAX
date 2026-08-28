@@ -36,6 +36,23 @@ from foldjax.models.protenix.models.trunk_blocks.msa import (
 from foldjax.schema import PaddingConfig, PredictionRequest
 
 
+def _params_double():
+    """A weights stand-in shaped like the real parameter tree.
+
+    `object()` was enough while OpenDDE shipped float32, because that path
+    casts nothing and never touches the tree. The shipped trunk is bfloat16
+    since 2026-08-28, so `cast_trunk_params` runs on every default prediction
+    -- these flows had simply never exercised it. Empty subtrees keep the
+    double cheap: `jax.tree.map` over `{}` is a no-op, and `_replace` is what
+    the cast actually needs.
+    """
+    from foldjax.models.opendde.models.model import OpenDDEInferenceParams
+
+    return OpenDDEInferenceParams(
+        **{name: {} for name in OpenDDEInferenceParams._fields}
+    )
+
+
 def _msa_features(depth: int, tokens: int = 3) -> dict[str, np.ndarray]:
     msa = np.arange(depth * tokens, dtype=np.int64).reshape(depth, tokens) % 31
     return {
@@ -232,7 +249,9 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
         "_load_jobs",
         lambda _path: [{"name": "job"}],
     )
-    monkeypatch.setattr(predict_impl, "_load_weights", lambda _path: object())
+    monkeypatch.setattr(
+        predict_impl, "_load_weights", lambda _path: _params_double()
+    )
     monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
 
     def fake_predict(_features, _params, **kwargs):
@@ -316,7 +335,9 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(predict_impl, "_load_jobs", lambda _path: [{"name": "job"}])
-    monkeypatch.setattr(predict_impl, "_load_weights", lambda _path: object())
+    monkeypatch.setattr(
+        predict_impl, "_load_weights", lambda _path: _params_double()
+    )
     monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
     monkeypatch.setattr(predict_impl, "_prefix_rng_is_supported", lambda: False)
 

@@ -12,6 +12,36 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenDDE predicts on a bfloat16 trunk by default.** It was float32,
+  because upstream is, and this repository's rule was that memory alone does
+  not move a default away from what upstream runs. It is not memory alone.
+  Measured at 1,003 tokens, five samples, two runs per arm: peak 42.96 → 19.18
+  GiB, wall 280.4 → 174.4 s, best `ranking_score` unchanged at 0.1926, and a
+  median CA RMSD of 0.0301 A against the 0.0142 A floor from running either arm
+  twice -- about twice the noise, with one of the five samples moving 0.6140 A,
+  so it is a real difference rather than none. It moves the wall too: at 1,531
+  tokens float32 asks for 86.7 GiB and dies where bfloat16 finishes at 44.2
+  GiB. `--option dtype=float32` restores upstream's precision.
+
+  The bfloat16 trunk also selects the blocked triangle *product*, which is the
+  arm measured faster and smaller at that width -- the kernel keying already
+  handled this, and both branches stay asserted so that moving the trunk
+  default cannot silently move the kernel.
+
+- **The benchmark pins float32 for OpenDDE, so its row stays a comparison.**
+  `bench/drive.py` passes no options, so flipping the default would have made
+  the FoldJAX column bfloat16 against upstream's float32 -- silently, because a
+  default is the one thing nobody passes. `bench/spec.py` now carries
+  `COMPARISON_OPTIONS` and the driver applies it to the warm-up as well as the
+  measured run, so the compiled program and the measured program stay the same.
+
+- **Two OpenDDE flows had never exercised the shipped weight cast.** Their
+  weights double was `object()`, which works only while the float32 path casts
+  nothing; on bfloat16 `cast_trunk_params` runs and wants a real parameter
+  tree. The doubles are now shaped like `OpenDDEInferenceParams`, and one
+  assertion moved from identity to equality, because the cast hands the model a
+  rebuilt tree -- identity only held there by accident.
+
 - **The benchmark was re-measured after a day of memory work, and nothing
   moved.** 2,096 and 3,012 tokens came back identical to a tenth of a GiB on
   every model; 4,926 still fails on all six; wall clock moved -8 s to +22 s.
