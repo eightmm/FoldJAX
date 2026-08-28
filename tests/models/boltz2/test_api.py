@@ -122,6 +122,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
             for key in (
                 "steering_args",
                 "multiplicity",
+                "diffusion_chunk_size",
                 "attention_backend",
                 "triangle_backend",
                 "glu_backend",
@@ -130,15 +131,16 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         controls["noise_tape"] = "init_noise" in kwargs or "step_noises" in kwargs
         second_stage = "affinity" in params
         seen.append((second_stage, controls, frozenset(feats)))
+        samples = kwargs["multiplicity"]
         if second_stage:
             return {
-                "sample_atom_coords": jnp.zeros((5, 3, 3)),
-                "plddt": jnp.ones((5, 3)),
+                "sample_atom_coords": jnp.zeros((samples, 3, 3)),
+                "plddt": jnp.ones((samples, 3)),
                 "affinity_pred_value": jnp.asarray([2.0]),
             }
         return {
-            "sample_atom_coords": jnp.zeros((2, 3, 3)),
-            "plddt": jnp.ones((2, 3)),
+            "sample_atom_coords": jnp.zeros((samples, 3, 3)),
+            "plddt": jnp.ones((samples, 3)),
             "iptm": jnp.asarray([0.1, 0.9]),
         }
 
@@ -163,6 +165,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         out_dir=tmp_path,
         steering_args={"fk_steering": False},
         num_samples=2,
+        affinity_num_samples=6,
         attention_backend="xla",
         triangle_backend="xla",
         glu_backend="xla",
@@ -174,6 +177,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         {
             "steering_args": {"fk_steering": False},
             "multiplicity": 2,
+            "diffusion_chunk_size": None,
             "attention_backend": "xla",
             "triangle_backend": "xla",
             "glu_backend": "xla",
@@ -181,7 +185,8 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         },
     )
     assert seen[1][0] is True
-    assert seen[1][1]["multiplicity"] == 5
+    assert seen[1][1]["multiplicity"] == 6
+    assert seen[1][1]["diffusion_chunk_size"] == 5
     assert seen[1][1]["noise_tape"] is False
     assert "disto_target" not in seen[0][2]
     assert "disto_target" not in seen[1][2]
@@ -484,6 +489,55 @@ def test_active_steering_retains_variable_and_host_features(
     )
 
     assert seen == [frozenset(feats)]
+
+
+def test_fk_bucket_tape_expands_the_particle_axis(tmp_path, monkeypatch) -> None:
+    feats = _fake_features(affinity=False)
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+    monkeypatch.setattr(api, "_prefix_rng_is_supported", lambda: False)
+    tape_calls = []
+
+    def fake_tape(key, *, multiplicity, storage_atoms, target_atoms, steps):
+        del key
+        tape_calls.append((multiplicity, storage_atoms, target_atoms, steps))
+        return (
+            jnp.zeros((multiplicity, target_atoms, 3), dtype=jnp.float32),
+            jnp.zeros((steps, multiplicity, target_atoms, 3), dtype=jnp.float32),
+        )
+
+    monkeypatch.setattr(api, "_prefix_stable_noise_tape", fake_tape)
+    seen = []
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        del params, key
+        seen.append((kwargs["diffusion_chunk_size"], kwargs["init_noise"].shape))
+        return {
+            "sample_atom_coords": jnp.zeros(
+                (7, model_feats["atom_pad_mask"].shape[-1], 3)
+            ),
+            "plddt": jnp.ones((7, model_feats["token_pad_mask"].shape[-1])),
+            "iptm": jnp.ones((7,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+    api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        steering_args={"fk_steering": True, "num_particles": 3},
+        num_samples=7,
+        num_steps=2,
+        bucket=True,
+    )
+
+    assert tape_calls == [(21, 3, 256, 2)]
+    assert seen == [(5, (21, 256, 3))]
 
 
 def test_neutral_padding_crops_back_to_the_default_public_shapes(

@@ -47,6 +47,43 @@ Params = Mapping[str, object]
 _MSA_SUBSAMPLE_STREAM = 0xB012
 
 
+def _slice_diffusion_chunk_kwargs(
+    sample_kwargs: Mapping[str, object], start: int, size: int
+) -> dict[str, object]:
+    """Slice caller-supplied diffusion tapes to one sample chunk.
+
+    Generated noise needs no slicing because each chunk owns a new key.  Fixed
+    tapes are different: their sample axis represents the original full run,
+    so forwarding them unchanged would either mismatch ``multiplicity`` or
+    replay the first samples in every chunk.
+    """
+
+    chunk_kwargs = dict(sample_kwargs)
+    init_noise = chunk_kwargs.get("init_noise")
+    if init_noise is not None:
+        chunk_kwargs["init_noise"] = init_noise[start : start + size]
+
+    step_noises = chunk_kwargs.get("step_noises")
+    if step_noises is not None:
+        if hasattr(step_noises, "shape"):
+            chunk_kwargs["step_noises"] = step_noises[
+                :, start : start + size
+            ]
+        else:
+            chunk_kwargs["step_noises"] = tuple(
+                noise[start : start + size] for noise in step_noises
+            )
+
+    aug_transforms = chunk_kwargs.get("aug_transforms")
+    if aug_transforms is not None:
+        rotations, translations = aug_transforms
+        chunk_kwargs["aug_transforms"] = (
+            rotations[:, start : start + size],
+            translations[:, start : start + size],
+        )
+    return chunk_kwargs
+
+
 def boltz2_predict(
     params: Params,
     feats: Mapping[str, jnp.ndarray],
@@ -108,6 +145,11 @@ def boltz2_predict(
         diffusion_chunk_size = int(diffusion_chunk_size)
         if diffusion_chunk_size < 1:
             raise ValueError("diffusion_chunk_size must be at least 1")
+    particle_factor = (
+        int(steering_args["num_particles"])
+        if steering_args is not None and bool(steering_args.get("fk_steering", False))
+        else 1
+    )
     recompute_nonpolymer_frames = bool(
         sample_kwargs.pop("recompute_nonpolymer_frames", True)
     )
@@ -172,7 +214,16 @@ def boltz2_predict(
             if name in return_representations
         }
 
-    def sample(key, sample_multiplicity=None):
+    def sample(key, sample_multiplicity=None, *, sample_start=None):
+        call_kwargs = (
+            sample_kwargs
+            if sample_start is None
+            else _slice_diffusion_chunk_kwargs(
+                sample_kwargs,
+                sample_start * particle_factor,
+                sample_multiplicity * particle_factor,
+            )
+        )
         return boltz2_sample_forward(
             params,
             feats,
@@ -186,7 +237,7 @@ def boltz2_predict(
             else sample_multiplicity,
             eps=eps,
             trunk=trunk,
-            **sample_kwargs,
+            **call_kwargs,
         )
 
     # The denoiser holds its activations for every sample it is handed, and
@@ -208,6 +259,7 @@ def boltz2_predict(
                 sample(
                     chunk_key,
                     min(diffusion_chunk_size, multiplicity - start),
+                    sample_start=start,
                 )["sample_atom_coords"]
                 for chunk_key, start in zip(
                     chunk_keys,

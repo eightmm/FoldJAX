@@ -12,6 +12,16 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2 diffusion chunking now preserves supplied tapes and resolves the
+  affinity stage independently.** Fixed initialization noise, per-step noise,
+  and augmentation transforms are sliced on their sample axis before each
+  chunk, so padding/replay runs retain their original sample order instead of
+  forwarding a full-run tape to a smaller rollout. FK steering slices the
+  particle-expanded sample axis, preserving every particle belonging to each
+  outer sample. When the chunk width is automatic, affinity now derives it
+  from `affinity_num_samples` rather than inheriting the primary stage's sample
+  count. Generated-noise runs and the released five-sample path are unchanged.
+
 - **Managed Protenix/OpenDDE structure writers no longer return confidence
   pair-detail arrays they do not serialize.** Protenix `output_format=protenix`
   and OpenDDE `include_raw=false` still compute expected PAE/PDE and contact

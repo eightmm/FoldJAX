@@ -119,6 +119,136 @@ def test_predict_can_map_confidence_sequentially(monkeypatch) -> None:
     np.testing.assert_array_equal(np.asarray(out["plddt"]), np.asarray(coords[:, 0, 0]))
 
 
+def test_predict_slices_supplied_tapes_across_diffusion_chunks(monkeypatch) -> None:
+    trunk = {
+        "s_inputs": jnp.zeros((1, 1, 1)),
+        "s": jnp.zeros((1, 1, 1)),
+        "z": jnp.zeros((1, 1, 1, 1)),
+    }
+    init_noise = jnp.arange(21, dtype=jnp.float32).reshape(7, 1, 3)
+    step_noises = jnp.arange(42, dtype=jnp.float32).reshape(2, 7, 1, 3)
+    rotations = jnp.arange(126, dtype=jnp.float32).reshape(2, 7, 3, 3)
+    translations = jnp.arange(42, dtype=jnp.float32).reshape(2, 7, 1, 3)
+    seen = []
+
+    monkeypatch.setattr(
+        predict_module, "boltz2_trunk_forward", lambda *args, **kwargs: trunk
+    )
+
+    def fake_sample(
+        _params,
+        _feats,
+        key,
+        *,
+        multiplicity,
+        init_noise,
+        step_noises,
+        aug_transforms,
+        **_kwargs,
+    ):
+        seen.append((key, multiplicity, init_noise, step_noises, aug_transforms))
+        return {"sample_atom_coords": init_noise}
+
+    monkeypatch.setattr(predict_module, "boltz2_sample_forward", fake_sample)
+    key = jax.random.PRNGKey(23)
+    out = predict_module.boltz2_predict(
+        {"trunk": {}},
+        {},
+        key,
+        multiplicity=7,
+        diffusion_chunk_size=3,
+        init_noise=init_noise,
+        step_noises=step_noises,
+        aug_transforms=(rotations, translations),
+        run_confidence=False,
+        run_distogram=False,
+    )
+
+    np.testing.assert_array_equal(out["sample_atom_coords"], init_noise)
+    expected_keys = jax.random.split(key, 3)
+    assert [item[1] for item in seen] == [3, 3, 1]
+    for index, (chunk_key, size, init, steps, transforms) in enumerate(seen):
+        start = index * 3
+        np.testing.assert_array_equal(chunk_key, expected_keys[index])
+        np.testing.assert_array_equal(init, init_noise[start : start + size])
+        np.testing.assert_array_equal(
+            steps, step_noises[:, start : start + size]
+        )
+        np.testing.assert_array_equal(
+            transforms[0], rotations[:, start : start + size]
+        )
+        np.testing.assert_array_equal(
+            transforms[1], translations[:, start : start + size]
+        )
+
+
+def test_predict_slices_particle_expanded_fk_tapes(monkeypatch) -> None:
+    trunk = {
+        "s_inputs": jnp.zeros((1, 1, 1)),
+        "s": jnp.zeros((1, 1, 1)),
+        "z": jnp.zeros((1, 1, 1, 1)),
+    }
+    init_noise = jnp.arange(42, dtype=jnp.float32).reshape(14, 1, 3)
+    step_noises = jnp.arange(84, dtype=jnp.float32).reshape(2, 14, 1, 3)
+    rotations = jnp.arange(252, dtype=jnp.float32).reshape(2, 14, 3, 3)
+    translations = jnp.arange(84, dtype=jnp.float32).reshape(2, 14, 1, 3)
+    seen = []
+
+    monkeypatch.setattr(
+        predict_module, "boltz2_trunk_forward", lambda *args, **kwargs: trunk
+    )
+
+    def fake_sample(
+        _params,
+        _feats,
+        _key,
+        *,
+        multiplicity,
+        init_noise,
+        step_noises,
+        aug_transforms,
+        **_kwargs,
+    ):
+        seen.append((multiplicity, init_noise, step_noises, aug_transforms))
+        return {"sample_atom_coords": jnp.zeros((multiplicity, 1, 3))}
+
+    monkeypatch.setattr(predict_module, "boltz2_sample_forward", fake_sample)
+    out = predict_module.boltz2_predict(
+        {"trunk": {}},
+        {},
+        jax.random.PRNGKey(29),
+        multiplicity=7,
+        diffusion_chunk_size=3,
+        init_noise=init_noise,
+        step_noises=step_noises,
+        aug_transforms=(rotations, translations),
+        steering_args={"fk_steering": True, "num_particles": 2},
+        run_confidence=False,
+        run_distogram=False,
+    )
+
+    assert out["sample_atom_coords"].shape == (7, 1, 3)
+    assert [item[0] for item in seen] == [3, 3, 1]
+    for index, (outer_size, init, steps, transforms) in enumerate(seen):
+        particle_start = index * 3 * 2
+        particle_size = outer_size * 2
+        np.testing.assert_array_equal(
+            init, init_noise[particle_start : particle_start + particle_size]
+        )
+        np.testing.assert_array_equal(
+            steps,
+            step_noises[:, particle_start : particle_start + particle_size],
+        )
+        np.testing.assert_array_equal(
+            transforms[0],
+            rotations[:, particle_start : particle_start + particle_size],
+        )
+        np.testing.assert_array_equal(
+            transforms[1],
+            translations[:, particle_start : particle_start + particle_size],
+        )
+
+
 def test_predict_runs_affinity_when_params_are_supplied(monkeypatch) -> None:
     trunk = {
         "s_inputs": jnp.zeros((1, 2, 3)),

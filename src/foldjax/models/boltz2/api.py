@@ -715,7 +715,13 @@ def predict(
             padding_noise_mode = "tape"
             padding_noise_arg = _prefix_stable_noise_tape(
                 jax.random.PRNGKey(seed),
-                multiplicity=num_samples,
+                multiplicity=num_samples
+                * (
+                    int(steering_args["num_particles"])
+                    if steering_active
+                    and bool(steering_args.get("fk_steering", False))
+                    else 1
+                ),
                 storage_atoms=padding_plan.storage["atoms"],
                 target_atoms=padding_plan.target["atoms"],
                 steps=num_steps,
@@ -990,6 +996,11 @@ def predict(
             "num_sampling_steps": affinity_num_steps,
             "steering_args": None,
             "multiplicity": affinity_num_samples,
+            "diffusion_chunk_size": (
+                auto_diffusion_chunk_size(affinity_num_samples)
+                if diffusion_chunk_size is None
+                else int(diffusion_chunk_size)
+            ),
             "run_bfactor": "bfactor" in affinity_model_params,
             "confidence_sequentially": affinity_num_samples > 1,
             "recompute_nonpolymer_frames": True,
