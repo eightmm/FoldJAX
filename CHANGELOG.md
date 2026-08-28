@@ -12,6 +12,33 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Protenix generated-JSON prediction carries atom element and
+  atom-name categories as private compact IDs.** After final serving padding,
+  the consolidated graph replaces exact `float32[N_atom, 128]` and
+  `float32[N_atom, 4, 64]` one-hot-or-zero arrays with a scalar version-1
+  `uint8` marker plus `uint8[N_atom]` and `uint8[N_atom, 4]` IDs. Sentinels 128
+  and 64 preserve padded all-zero rows, and the graph reconstructs the
+  historical float32 arrays before the existing trunk, diffusion and
+  confidence consumers. Complete explicit `output_atom_*` metadata also lets
+  the writer snapshot release only these two dense arrays; missing or
+  shape-incomplete metadata retains the historical dense decoding fallback.
+  The public featurizer, static archives, direct/custom APIs, `--no-graph-jit`,
+  and enabled TFG remain dense. Dense values take precedence over stale private
+  provenance, while malformed private-only inputs fail before tracing.
+
+  At 23,776 atoms, one model-bound dense pair occupies 36,519,936 bytes (34.83
+  MiB), versus 118,881 bytes (116.09 KiB) for the marker and IDs. In an isolated
+  2,048-atom/32-channel CPU projection, compiled dynamic arguments fell from
+  3,145,728 to 10,240 bytes and byte-identical outputs retained the same
+  262,144-byte result. Reconstructing the dense inputs raised executable
+  temporary storage from 262,144 to 3,407,872 bytes and StableHLO text from
+  99,194 to 100,848 bytes, so this is a retained-host/input-transfer and
+  lifetime optimization, not a whole-run peak-memory or speed claim. Synthetic
+  CPU gates cover padding sentinels, non-finite and signed-zero fallback,
+  writer CIF/JSON byte identity, full toy prediction bytes, stable JIT PyTrees,
+  and forced four-device 1-D/2-D context-parallel placement. Released-weight
+  GPU peak, latency, and end-to-end prediction remain unverified.
+
 - **Managed OpenFold3 prediction now transfers exact atom element and atom-name
   categories as private compact IDs.** After archive validation, MSA/template
   selection, optional serving padding, and chain normalization, the model copy

@@ -13,6 +13,10 @@ from typing import Any
 
 from foldjax.models import _representations
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models.protenix.data.compact_categories import (
+    compact_ref_atom_category_storage,
+    drop_dense_categories_from_writer_snapshot,
+)
 
 # Private backend capability: defer request-scoped reuse until after this CLI
 # has parsed argv, selected its platform and materialised ESM conditioning.
@@ -407,6 +411,16 @@ def main(
             args.sampler_scan = False
             print("TFG enabled: using the non-scan diffusion sampler")
 
+    # Exact atom categories are a private managed-input optimization, not a new
+    # public feature ABI. Static archives can be custom, and the eager/TFG
+    # routes inspect the dense arrays outside the consolidated graph, so only a
+    # generated JSON job on that graph is eligible.
+    compact_generated_atom_categories = (
+        args.input_json is not None
+        and not args.no_graph_jit
+        and not bool(guidance_config and guidance_config.get("enable"))
+    )
+
     if args.cpu_only:
         os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
@@ -702,6 +716,11 @@ def main(
                         esm_features, job, provider=provider
                     )
                     features["residue_index"] = esm_features["residue_index"] + 1
+                    # ``dict(features)`` shares every dense atom-category array.
+                    # The loop's final temporary would otherwise retain them
+                    # through parameter loading and the whole prediction even
+                    # after the managed model/output copies release them.
+                    del esm_features
                 jobs.append(
                     {
                         "name": str(job.get("name") or fallback_name),
@@ -737,12 +756,21 @@ def main(
                         f"{job['name']}: MSA rows aligned: "
                         f"{original_msa_rows} -> {aligned_msa_rows}"
                     )
-            # Compact only the private prediction tree; the public featurizer
-            # remains publisher-compatible.  Taking this snapshot after the
+            # Compact only private prediction storage; the public featurizer
+            # remains publisher-compatible. Taking this snapshot after MSA
             # compaction also avoids retaining the wide native MSA arrays next
             # to their model-bound copies for the duration of the run.
             features = compact_msa_storage(features)
-            job["output_features"] = features
+            output_features = features
+            if compact_generated_atom_categories:
+                # Generated JSON carries complete explicit atom labels, so the
+                # writer does not need to decode the dense categories. The
+                # helper keeps both arrays if that metadata contract ever
+                # becomes incomplete or shape-drifted.
+                output_features = drop_dense_categories_from_writer_snapshot(
+                    output_features
+                )
+            job["output_features"] = output_features
             if padding_config is not None:
                 from foldjax.models.protenix.data.padding import (
                     pad_protenix_features,
@@ -799,9 +827,18 @@ def main(
             # multiplicity so the average is unchanged. After padding, because
             # `pad_protenix_features` requires the native depth of four.
             # `output_features` was snapshotted above and keeps its rows.
-            job["features"] = compact_msa_storage(
-                dedup_templates(job["features"])
-            )
+            model_features = compact_msa_storage(dedup_templates(job["features"]))
+            if compact_generated_atom_categories:
+                # This is intentionally after every shape-changing operation:
+                # padded all-zero rows become the v1 sentinels, and the graph
+                # rebuilds the exact historical float32 arrays at entry.
+                model_features = compact_ref_atom_category_storage(model_features)
+            job["features"] = model_features
+            # A Python loop variable outlives the loop. Point it at the compact
+            # mapping too, otherwise the final job's pre-compaction (and, with
+            # serving padding, separately allocated) dense arrays remain live
+            # beside the model until this CLI returns.
+            features = model_features
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 

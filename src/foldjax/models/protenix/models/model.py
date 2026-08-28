@@ -26,6 +26,13 @@ from foldjax.models._graph import (
     traceable_features,
 )
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models.protenix.data.compact_categories import (
+    COMPACT_REF_ATOM_CATEGORIES_MARKER,
+    COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
+    COMPACT_REF_ATOM_NAME_CHAR_IDS,
+    COMPACT_REF_ELEMENT_IDS,
+    validate_compact_ref_atom_categories,
+)
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
@@ -107,6 +114,80 @@ _PADDED_MODEL_FEATURES = frozenset(
         "v_lm",
     }
 ) | frozenset(COMPACT_RELP_FIELDS)
+_PADDED_MODEL_FEATURES = _PADDED_MODEL_FEATURES.union(
+    COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+)
+
+
+def _restore_ref_atom_category_one_hot(
+    features: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Restore private uint8 categories to the historical float32 pair.
+
+    Dense public arrays remain authoritative and strip any stale private
+    provenance.  Private values are host-validated by
+    :func:`protenix_infer_compiled`; the trace-safe shape and dtype checks here
+    also protect direct calls to the private graph entry.
+    """
+
+    has_element = "ref_element" in features
+    has_chars = "ref_atom_name_chars" in features
+    if has_element or has_chars:
+        if not any(
+            name in features for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        ):
+            return features
+        out = dict(features)
+        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
+            out.pop(name, None)
+        return out
+
+    missing = [
+        name
+        for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+        if name not in features
+    ]
+    if missing:
+        # Keep the ordinary dense-path failure at its historical consumer when
+        # no private provenance was supplied at all.
+        if len(missing) == len(COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES):
+            return features
+        raise KeyError(
+            "Protenix input has incomplete private compact ref atom categories; "
+            "missing " + ", ".join(missing)
+        )
+
+    private_values = tuple(
+        features[name] for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
+    )
+    if not any(isinstance(value, jax.core.Tracer) for value in private_values):
+        validate_compact_ref_atom_categories(features)
+    marker = jnp.asarray(features[COMPACT_REF_ATOM_CATEGORIES_MARKER])
+    element_ids = jnp.asarray(features[COMPACT_REF_ELEMENT_IDS])
+    char_ids = jnp.asarray(features[COMPACT_REF_ATOM_NAME_CHAR_IDS])
+    if marker.shape != () or marker.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError(
+            "Protenix compact ref atom category marker must be scalar uint8"
+        )
+    if element_ids.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("Protenix compact ref element IDs must have dtype uint8")
+    if char_ids.dtype != jnp.dtype(jnp.uint8):
+        raise ValueError("Protenix compact ref atom-name IDs must have dtype uint8")
+    if element_ids.ndim != 1 or char_ids.shape != (element_ids.shape[0], 4):
+        raise ValueError(
+            "Protenix compact ref atom category IDs must have shapes [A] and [A, 4]"
+        )
+
+    out = dict(features)
+    out["ref_element"] = jax.nn.one_hot(
+        element_ids.astype(jnp.int32), 128, dtype=jnp.float32
+    )
+    out["ref_atom_name_chars"] = jax.nn.one_hot(
+        char_ids.astype(jnp.int32), 64, dtype=jnp.float32
+    )
+    for name in COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES:
+        out.pop(name, None)
+    return out
 
 
 def cast_trunk_params(
@@ -542,7 +623,7 @@ def _protenix_infer_graph(
     **kwargs: Any,
 ) -> dict[str, jnp.ndarray]:
     return protenix_infer_static(
-        input_feature_dict,
+        _restore_ref_atom_category_one_hot(input_feature_dict),
         merge_static_flags(param_arrays, params_treedef, params_flags),
         noise_schedule,
         **kwargs,
@@ -577,6 +658,7 @@ def protenix_infer_compiled(
     on the eager path. :func:`protenix_infer_static` remains available and
     ``--no-graph-jit`` selects it.
     """
+    validate_compact_ref_atom_categories(input_feature_dict)
     restype = input_feature_dict.get("restype")
     relp_token_count = int(
         restype.shape[-2]
