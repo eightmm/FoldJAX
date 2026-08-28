@@ -414,7 +414,7 @@ def boltz2_sample_forward(
     # Steering state -------------------------------------------------------
     potentials = []
     num_particles = 1
-    energy_traj = None
+    previous_energy = None
     scaled_guidance_update = None
     if steering_on:
         from foldjax.models.boltz2.models.heads.potentials import get_potentials
@@ -423,7 +423,6 @@ def boltz2_sample_forward(
         if steering_args["fk_steering"]:
             num_particles = int(steering_args["num_particles"])
             multiplicity = multiplicity * num_particles
-            energy_traj = jnp.empty((multiplicity, 0), dtype=jnp.float32)
         if (
             steering_args["physical_guidance_update"]
             or steering_args["contact_guidance_update"]
@@ -668,11 +667,8 @@ def boltz2_sample_forward(
                             atom_coords_denoised, feats, parameters
                         )
                         energy = energy + parameters["resampling_weight"] * component
-                energy_traj = jnp.concatenate((energy_traj, energy[:, None]), axis=1)
-                if step_idx == 0:
-                    log_g = -energy
-                else:
-                    log_g = energy_traj[:, -2] - energy_traj[:, -1]
+                log_g = _fk_energy_increment(previous_energy, energy, step_idx)
+                previous_energy = energy
 
                 if (
                     steering_args["physical_guidance_update"]
@@ -734,7 +730,7 @@ def boltz2_sample_forward(
                 atom_coords_noisy = atom_coords_noisy[resample_indices]
                 atom_mask = atom_mask[resample_indices]
                 atom_coords_denoised = atom_coords_denoised[resample_indices]
-                energy_traj = energy_traj[resample_indices]
+                previous_energy = previous_energy[resample_indices]
                 if scaled_guidance_update is not None:
                     scaled_guidance_update = scaled_guidance_update[resample_indices]
 
@@ -752,6 +748,24 @@ def boltz2_sample_forward(
         )
 
     return {"sample_atom_coords": atom_coords}
+
+
+def _fk_energy_increment(
+    previous_energy: jnp.ndarray | None,
+    energy: jnp.ndarray,
+    step_idx: int,
+) -> jnp.ndarray:
+    """Incremental FK log weight without retaining the full energy history."""
+
+    if step_idx == 0:
+        return -energy
+    if previous_energy is None:
+        # The historical one-column trajectory indexed ``[:, -2]`` here.
+        # JAX clamps that out-of-bounds index to the sole current-energy
+        # column, so preserve its subtraction (including non-finite and signed
+        # zero behaviour) when the first actual resample occurs after step 0.
+        return energy - energy
+    return previous_energy - energy
 
 
 def _compute_random_augmentation(

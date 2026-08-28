@@ -12,6 +12,16 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2 FK steering retains only the energy vector used by the next
+  resampling step.** The optional particle-steering path previously appended
+  every resampling energy to a growing trajectory even though the next step
+  reads only its last column. It now carries that column directly and applies
+  the same resampling indices to it. Focused CPU tests cover skipped and late
+  first resampling, terminal draws, particle reindexing, signed zero and
+  non-finite energies byte for byte. Default inference does not enable FK
+  steering, and this is a state-storage optimization rather than a
+  model-arithmetic change.
+
 - **ESMFold2 no longer transfers its proven-zero token-bond matrix into the
   structure graph.** The public feature mapping remains publisher-native, and
   direct low-level calls keep the historical default. For managed predictions,
