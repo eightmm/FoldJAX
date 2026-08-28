@@ -19,6 +19,14 @@ import foldjax.backends.boltz2 as backend_module
 import foldjax.models.boltz2.api as native_api
 from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.manifest import MANIFEST_NAME
+from foldjax.models.boltz2.data.ownership import (
+    COMPACT_TOKEN_TO_REP_ATOM,
+    TOKEN_TO_REP_ATOM_INDEX,
+)
+from foldjax.models.boltz2.models.diffusion.atom import (
+    gather_rep_atoms_to_tokens,
+    token_to_rep_atom_index_from_feats,
+)
 from foldjax.schema import PredictionError, PredictionRequest
 from tests.models.cp_probe_env import inherited_environment
 
@@ -26,19 +34,100 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
     r"""
     from pathlib import Path
     from tempfile import TemporaryDirectory
+    import re
 
     import jax
     import jax.numpy as jnp
     import numpy as np
+    from jax.sharding import PartitionSpec
 
     import foldjax.models.boltz2.api as api
     import foldjax.models.boltz2.bridge.native as native
     import foldjax.models.boltz2.models.predict as predict_module
     from foldjax.backends.boltz2 import Boltz2Backend
     import foldjax.models._cp as cp_module
+    from foldjax.models.boltz2.data.ownership import (
+        COMPACT_TOKEN_TO_REP_ATOM,
+        TOKEN_TO_REP_ATOM_INDEX,
+        compact_token_to_rep_atom_storage,
+    )
+    from foldjax.models.boltz2.models.diffusion.atom import (
+        gather_rep_atoms_to_tokens,
+        token_to_rep_atom_index_from_feats,
+    )
     from foldjax.schema import PredictionRequest
 
     assert jax.device_count() == 4, jax.devices()
+
+    dense_cp = {
+        "atom_pad_mask": np.ones((1, 4), np.float32),
+        "token_pad_mask": np.ones((1, 4), np.float32),
+        "token_to_rep_atom": np.eye(4, dtype=np.int64)[None],
+    }
+    compact_cp = compact_token_to_rep_atom_storage(dense_cp)
+    permuted_cp = dict(compact_cp)
+    permuted_cp[TOKEN_TO_REP_ATOM_INDEX] = np.asarray(
+        [[3, 2, 1, 0]], dtype=np.int32
+    )
+    atom_values = jnp.arange(12, dtype=jnp.float32).reshape(1, 4, 3)
+
+    def representative_graph(feats, values):
+        index = token_to_rep_atom_index_from_feats(feats)
+        return gather_rep_atoms_to_tokens(
+            feats.get("token_to_rep_atom"), values, index=index
+        )
+
+    def collective_count(stablehlo):
+        return len(
+            re.findall(
+                r"all[_-]gather|all[_-]reduce|all[_-]to[_-]all|"
+                r"collective[_-]permute|reduce[_-]scatter",
+                stablehlo,
+            )
+        )
+
+    for layout in ("1d", "2d"):
+        with cp_module.context_parallel(4, layout=layout):
+            dense_placed = cp_module.replicate_tree(
+                {key: jnp.asarray(value) for key, value in dense_cp.items()}
+            )
+            compact_placed = cp_module.replicate_tree(
+                {key: jnp.asarray(value) for key, value in compact_cp.items()}
+            )
+            permuted_placed = cp_module.replicate_tree(
+                {key: jnp.asarray(value) for key, value in permuted_cp.items()}
+            )
+            values_placed = cp_module.replicate_tree(atom_values)
+            assert dense_placed["token_to_rep_atom"].sharding.spec == PartitionSpec()
+            assert (
+                compact_placed[COMPACT_TOKEN_TO_REP_ATOM].sharding.spec
+                == PartitionSpec()
+            )
+            assert (
+                compact_placed[TOKEN_TO_REP_ATOM_INDEX].sharding.spec
+                == PartitionSpec()
+            )
+            dense_lowered = jax.jit(representative_graph).lower(
+                dense_placed, values_placed
+            )
+            compact_lowered = jax.jit(representative_graph).lower(
+                compact_placed, values_placed
+            )
+            dense_hlo = str(dense_lowered.compiler_ir(dialect="stablehlo"))
+            compact_hlo = str(compact_lowered.compiler_ir(dialect="stablehlo"))
+            assert "tensor<1x4xi32>" in compact_hlo
+            assert collective_count(dense_hlo) == collective_count(compact_hlo)
+            dense_executable = dense_lowered.compile()
+            compact_executable = compact_lowered.compile()
+            np.testing.assert_array_equal(
+                np.asarray(dense_executable(dense_placed, values_placed)),
+                np.asarray(compact_executable(compact_placed, values_placed)),
+            )
+            np.testing.assert_array_equal(
+                np.asarray(compact_executable(permuted_placed, values_placed)),
+                np.asarray(atom_values[:, ::-1]),
+            )
+
     with TemporaryDirectory() as scratch:
         root = Path(scratch)
         weights = root / "model.npz"
@@ -52,6 +141,7 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
             "token_pad_mask": np.ones((1, 4), np.float32),
             "mol_type": np.zeros((1, 4), np.int32),
             "affinity_token_mask": np.zeros((1, 4), np.float32),
+            "token_to_rep_atom": np.eye(4, dtype=np.int64)[None],
         }
         api.featurize = lambda **kwargs: (features, "job", root)
         counts = {"loads": 0, "traces": 0}
@@ -62,9 +152,17 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
 
         def predict(params, feats, key, **kwargs):
             counts["traces"] += 1
+            assert "token_to_rep_atom" not in feats
+            assert feats[COMPACT_TOKEN_TO_REP_ATOM].dtype == jnp.uint8
+            assert feats[TOKEN_TO_REP_ATOM_INDEX].dtype == jnp.int32
+            representative = gather_rep_atoms_to_tokens(
+                None,
+                jnp.arange(12, dtype=jnp.float32).reshape(1, 4, 3),
+                index=token_to_rep_atom_index_from_feats(feats),
+            )
             value = jax.random.uniform(key, ())
             return {
-                "sample_atom_coords": jnp.full((1, 4, 3), value),
+                "sample_atom_coords": representative + value,
                 "plddt": jnp.ones((1, 4)),
                 "iptm": jnp.asarray([value]),
             }
@@ -72,12 +170,20 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
         native.load_params = load_params
         predict_module.boltz2_predict = predict
         original_replicate_tree = cp_module.replicate_tree
-        placements = {"params": 0}
+        placements = {"params": 0, "feature_specs": []}
 
         def counted_replicate_tree(tree, **kwargs):
             if isinstance(tree, dict) and "trunk" in tree:
                 placements["params"] += 1
-            return original_replicate_tree(tree, **kwargs)
+            placed = original_replicate_tree(tree, **kwargs)
+            if isinstance(placed, dict) and TOKEN_TO_REP_ATOM_INDEX in placed:
+                placements["feature_specs"].append(
+                    (
+                        placed[COMPACT_TOKEN_TO_REP_ATOM].sharding.spec,
+                        placed[TOKEN_TO_REP_ATOM_INDEX].sharding.spec,
+                    )
+                )
+            return placed
 
         cp_module.replicate_tree = counted_replicate_tree
         request = PredictionRequest(
@@ -110,7 +216,11 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                 )
                 values.append(float(output["coords"][0, 0]))
             assert counts == {"loads": 1, "traces": 1}, counts
-            assert placements == {"params": 1}, placements
+            assert placements["params"] == 1, placements
+            assert placements["feature_specs"] == [
+                (PartitionSpec(), PartitionSpec()),
+                (PartitionSpec(), PartitionSpec()),
+            ], placements
             output = api.predict(
                 seq=["AAAA"],
                 weights=weights,
@@ -127,7 +237,11 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                 glu_backend="xla",
             )
             assert counts == {"loads": 2, "traces": 2}, counts
-            assert placements == {"params": 2}, placements
+            assert placements["params"] == 2, placements
+            assert placements["feature_specs"][-1] == (
+                PartitionSpec(),
+                PartitionSpec(),
+            ), placements
             assert len(set(values + [float(output["coords"][0, 0])])) == 3
         assert not backend._params
         assert not backend._runners
@@ -141,6 +255,9 @@ def _features(*, affinity: bool = False) -> dict[str, np.ndarray]:
         "atom_pad_mask": np.ones((1, 3), dtype=np.float32),
         "token_pad_mask": np.ones((1, 2), dtype=np.float32),
         "mol_type": np.asarray([[0, 0]], dtype=np.int32),
+        "token_to_rep_atom": np.asarray(
+            [[[1, 0, 0], [0, 1, 0]]], dtype=np.int64
+        ),
         "affinity_token_mask": np.asarray(
             [[0.0, 1.0 if affinity else 0.0]], dtype=np.float32
         ),
@@ -187,8 +304,19 @@ def _patch_primary_runtime(monkeypatch, tmp_path: Path, counts: dict[str, int]) 
 
     def fake_predict(params, feats, key, **kwargs):
         counts["traces"] += 1
+        assert feats[COMPACT_TOKEN_TO_REP_ATOM].dtype == jnp.uint8
+        assert feats[TOKEN_TO_REP_ATOM_INDEX].dtype == jnp.int32
+        representative = gather_rep_atoms_to_tokens(
+            None,
+            jnp.arange(9, dtype=jnp.float32).reshape(1, 3, 3),
+            index=token_to_rep_atom_index_from_feats(feats),
+        )
         draw_key, _ = jax.random.split(key)
-        value = jax.random.uniform(draw_key, ()) + params["trunk"]["weight"][0]
+        value = (
+            jax.random.uniform(draw_key, ())
+            + params["trunk"]["weight"][0]
+            + jnp.sum(representative) * 1e-6
+        )
         return {
             "sample_atom_coords": jnp.full((1, 3, 3), value),
             "plddt": jnp.ones((1, 2)),
@@ -248,6 +376,63 @@ def test_native_session_reuses_primary_params_and_jit_across_seeds(
     )
     np.testing.assert_array_equal(second["coords"], scalar["coords"])
     np.testing.assert_array_equal(second["plddt"], scalar["plddt"])
+
+
+def test_session_splits_compact_and_custom_dense_fallback_graphs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    valid = _features()
+    custom = _features()
+    custom["token_to_rep_atom"] = custom["token_to_rep_atom"].copy()
+    custom["token_to_rep_atom"][0, 0, 1] = 1
+    calls = iter((valid, custom, valid))
+    monkeypatch.setattr(
+        native_api,
+        "featurize",
+        lambda **kwargs: (next(calls), "job", tmp_path),
+    )
+    counts = {"loads": 0, "traces": 0}
+
+    def fake_load_params(path: Path):
+        counts["loads"] += 1
+        return {"trunk": {"weight": jnp.asarray([1.0])}}
+
+    def fake_predict(params, feats, key, **kwargs):
+        counts["traces"] += 1
+        representative = gather_rep_atoms_to_tokens(
+            feats.get("token_to_rep_atom"),
+            jnp.arange(9, dtype=jnp.float32).reshape(1, 3, 3),
+            index=token_to_rep_atom_index_from_feats(feats),
+        )
+        value = jax.random.uniform(key, ()) + jnp.sum(representative) * 1e-6
+        return {
+            "sample_atom_coords": jnp.full((1, 3, 3), value),
+            "plddt": jnp.ones((1, 2)),
+            "iptm": jnp.asarray([value]),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", fake_load_params
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+    backend = Boltz2Backend()
+
+    with backend.session((request,)):
+        for seed in range(3):
+            native_api.predict(
+                seq=["AA"],
+                weights=request.weights,
+                mols=request.options["mols"],
+                out_dir=tmp_path,
+                seed=seed,
+                write_fmt=None,
+                _runtime=backend,
+            )
+
+    assert counts == {"loads": 1, "traces": 2}
 
 
 def test_public_batch_reuses_primary_params_and_jit_across_seeds(

@@ -8,6 +8,10 @@ import pytest
 
 import foldjax.models.boltz2.api as api
 from foldjax.backends.boltz2 import _padding_shape_profile
+from foldjax.models.boltz2.data.ownership import (
+    COMPACT_TOKEN_TO_REP_ATOM,
+    TOKEN_TO_REP_ATOM_INDEX,
+)
 from foldjax.schema import PaddingConfig
 
 
@@ -16,6 +20,9 @@ def _fake_features(*, affinity: bool) -> dict[str, np.ndarray]:
         "atom_pad_mask": np.ones((1, 3), dtype=np.float32),
         "token_pad_mask": np.ones((1, 2), dtype=np.float32),
         "mol_type": np.asarray([[0, 3]], dtype=np.int32),
+        "token_to_rep_atom": np.asarray(
+            [[[1, 0, 0], [0, 0, 1]]], dtype=np.int64
+        ),
         "affinity_token_mask": np.asarray(
             [[0.0, 1.0 if affinity else 0.0]], dtype=np.float32
         ),
@@ -178,6 +185,12 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     assert seen[1][1]["noise_tape"] is False
     assert "disto_target" not in seen[0][2]
     assert "disto_target" not in seen[1][2]
+    assert "token_to_rep_atom" not in seen[0][2]
+    assert "token_to_rep_atom" not in seen[1][2]
+    assert COMPACT_TOKEN_TO_REP_ATOM in seen[0][2]
+    assert COMPACT_TOKEN_TO_REP_ATOM in seen[1][2]
+    assert TOKEN_TO_REP_ATOM_INDEX in seen[0][2]
+    assert TOKEN_TO_REP_ATOM_INDEX in seen[1][2]
     np.testing.assert_array_equal(out["raw"]["affinity_pred_value"], [2.0])
     assert out["coords"].shape == (2, 3, 3)
     assert out["plddt"].shape == (2, 3)
@@ -353,6 +366,88 @@ def test_api_routes_compact_msa_storage_to_the_model(tmp_path, monkeypatch) -> N
         "msa_paired": np.dtype(np.bool_),
         "msa_mask": np.dtype(np.bool_),
     }
+
+
+def test_api_keeps_public_features_dense_while_model_input_is_compact(
+    tmp_path, monkeypatch
+) -> None:
+    public_features = _fake_features(affinity=False)
+    captured = {}
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: (public_features, "job", tmp_path),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+
+    def fake_predict(_params, model_features, _key, **_kwargs):
+        captured["keys"] = frozenset(model_features)
+        captured["marker_dtype"] = model_features[COMPACT_TOKEN_TO_REP_ATOM].dtype
+        captured["marker_shape"] = model_features[COMPACT_TOKEN_TO_REP_ATOM].shape
+        captured["dtype"] = model_features[TOKEN_TO_REP_ATOM_INDEX].dtype
+        captured["shape"] = model_features[TOKEN_TO_REP_ATOM_INDEX].shape
+        return {
+            "sample_atom_coords": jnp.zeros((1, 3, 3)),
+            "plddt": model_features[TOKEN_TO_REP_ATOM_INDEX].astype(jnp.float32),
+            "iptm": jnp.ones((1,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+
+    api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        num_steps=1,
+    )
+
+    assert "token_to_rep_atom" in public_features
+    assert COMPACT_TOKEN_TO_REP_ATOM not in public_features
+    assert TOKEN_TO_REP_ATOM_INDEX not in public_features
+    assert "token_to_rep_atom" not in captured["keys"]
+    assert COMPACT_TOKEN_TO_REP_ATOM in captured["keys"]
+    assert TOKEN_TO_REP_ATOM_INDEX in captured["keys"]
+    assert captured["marker_dtype"] == jnp.uint8
+    assert captured["marker_shape"] == ()
+    assert captured["dtype"] == jnp.int32
+    assert captured["shape"] == (1, 2)
+
+
+@pytest.mark.parametrize(
+    "private",
+    [
+        {COMPACT_TOKEN_TO_REP_ATOM: np.asarray(1, dtype=np.uint8)},
+        {TOKEN_TO_REP_ATOM_INDEX: np.asarray([[0, 2]], dtype=np.int32)},
+    ],
+)
+def test_managed_api_rejects_incomplete_private_representation(
+    tmp_path, monkeypatch, private
+) -> None:
+    features = _fake_features(affinity=False)
+    del features["token_to_rep_atom"]
+    features.update(private)
+    monkeypatch.setattr(
+        api,
+        "featurize",
+        lambda **kwargs: (features, "job", tmp_path),
+    )
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+
+    with pytest.raises(ValueError, match="requires both"):
+        api.predict(
+            seq=["AC"],
+            weights=tmp_path / "boltz2_conf",
+            mols=tmp_path,
+            out_dir=tmp_path,
+            num_steps=1,
+        )
 
 
 def test_active_steering_retains_variable_and_host_features(
@@ -744,6 +839,9 @@ def test_stop_after_trunk_crops_and_saves_representations(
 
     def fake_predict(params, model_feats, key, **kwargs):
         assert kwargs["stop_after_trunk"] is True
+        assert "token_to_rep_atom" not in model_feats
+        assert COMPACT_TOKEN_TO_REP_ATOM not in model_feats
+        assert TOKEN_TO_REP_ATOM_INDEX not in model_feats
         tokens = model_feats["token_pad_mask"].shape[-1]
         return {
             "single": jnp.ones((1, tokens, 4), dtype=jnp.float32),

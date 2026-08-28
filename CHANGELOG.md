@@ -12,6 +12,21 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Boltz-2 full and affinity prediction carry representative-atom
+  ownership as a compact private index.** The proven one-hot
+  `int64[B, N, A]` input is converted before model padding to a scalar `uint8`
+  version-1 marker plus an `int32[B, N]` index. Public featurizer output,
+  direct and custom calls, and steering remain dense; trunk-only prediction
+  drops the ownership feature because its graph does not consume it.
+
+  At 3,012 tokens and 23,776 atoms, host ownership storage falls from 546.4
+  MiB to 11.8 KiB. In an isolated CPU gather, dynamic arguments fell from
+  536,576 to 12,800 bytes and executable temporary storage from 135,696 bytes
+  to zero, with bit-exact output. Forced-CPU context-parallel tests cover both
+  1-D and 2-D layouts with dense/compact placement and collective-count
+  parity. Released-weight GPU peak memory, latency, and end-to-end prediction
+  remain unverified.
+
 - **OpenDDE now writes its shape-complementarity fields to each sample's
   confidence JSON.** The scores were computed and retained, but the shared
   Protenix writer's deliberate summary allowlist discarded all seven

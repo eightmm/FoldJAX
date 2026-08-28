@@ -7,6 +7,10 @@ from collections.abc import Mapping
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models.boltz2.data.ownership import (
+    COMPACT_TOKEN_TO_REP_ATOM,
+    TOKEN_TO_REP_ATOM_INDEX,
+)
 from foldjax.padding import (
     ATOM_BUCKETS as STANDARD_ATOM_BUCKETS,
 )
@@ -96,6 +100,7 @@ _FEATURE_AXES: dict[str, tuple[tuple[int, str], ...]] = {
     "coords": ((2, _ATOM),),
     "atom_to_token": ((1, _ATOM), (2, _TOKEN)),
     "token_to_rep_atom": ((1, _TOKEN), (2, _ATOM)),
+    TOKEN_TO_REP_ATOM_INDEX: ((1, _TOKEN),),
     # The first r_set axis is not necessarily the token count.
     "r_set_to_rep_atom": ((2, _ATOM),),
     "token_to_center_atom": ((1, _TOKEN), (2, _ATOM)),
@@ -192,19 +197,23 @@ _MODEL_FEATURES = frozenset(
         "token_index",
         "token_pad_mask",
         "token_to_rep_atom",
+        COMPACT_TOKEN_TO_REP_ATOM,
+        TOKEN_TO_REP_ATOM_INDEX,
         "type_bonds",
         "visibility_ids",
     }
 )
 
 
-def _pad_to(arr: np.ndarray, axis: int, target: int) -> np.ndarray:
+def _pad_to(
+    arr: np.ndarray, axis: int, target: int, *, constant_value: int | float = 0
+) -> np.ndarray:
     cur = arr.shape[axis]
     if cur >= target:
         return arr
     pad = [(0, 0)] * arr.ndim
     pad[axis] = (0, target - cur)
-    return np.pad(arr, pad, mode="constant", constant_values=0)
+    return np.pad(arr, pad, mode="constant", constant_values=constant_value)
 
 
 def _truncate_to(arr: np.ndarray, axis: int, target: int) -> np.ndarray:
@@ -450,7 +459,12 @@ def pad_feats(
             before = new.shape[axis]
             if kind == _MSA:
                 new = _truncate_to(new, axis, target)
-            new = _pad_to(new, axis, target)
+            new = _pad_to(
+                new,
+                axis,
+                target,
+                constant_value=-1 if key == TOKEN_TO_REP_ATOM_INDEX else 0,
+            )
             if before != new.shape[axis]:
                 actions.append(f"{kind}@{axis}:{before}->{new.shape[axis]}")
         out[key] = jnp.asarray(new.astype(arr.dtype, copy=False))

@@ -18,8 +18,10 @@ import jax.numpy as jnp
 from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models._cp_atom import replicate_atoms
 from foldjax.models.boltz2.models.diffusion.atom import (
+    _repeat_index,
     gather_rep_atoms_to_tokens,
     gather_tokens_to_atoms,
+    token_to_rep_atom_index_from_feats,
 )
 from foldjax.models.boltz2.models.trunk_blocks.pairformer import (
     pairformer_module_forward,
@@ -151,13 +153,16 @@ def confidence_module_forward(
     z = jnp.repeat(z, multiplicity, axis=0)
     s_inputs = jnp.repeat(s_inputs, multiplicity, axis=0)
 
-    token_to_rep_atom = jnp.repeat(
-        feats["token_to_rep_atom"].astype(jnp.float32), multiplicity, axis=0
+    rep_atom_index = token_to_rep_atom_index_from_feats(feats)
+    repeated_rep_atom_index = _repeat_index(
+        rep_atom_index, multiplicity
     )
     if x_pred.ndim == 4:
         b, mult, n, _ = x_pred.shape
         x_pred = x_pred.reshape(b * mult, n, -1)
-    x_pred_repr = gather_rep_atoms_to_tokens(token_to_rep_atom, x_pred)
+    x_pred_repr = gather_rep_atoms_to_tokens(
+        None, x_pred, index=repeated_rep_atom_index
+    )
     d = _cdist(x_pred_repr, x_pred_repr)
     boundaries = params["boundaries"]
     distogram = jnp.sum(d[..., None] > boundaries, axis=-1).astype(jnp.int32)
@@ -197,6 +202,7 @@ def confidence_module_forward(
         feats=feats,
         pred_distogram_logits=pred_distogram_logits,
         multiplicity=multiplicity,
+        rep_atom_index=rep_atom_index,
         return_pair_chains_iptm=return_pair_chains_iptm,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
     )
@@ -212,6 +218,7 @@ def _confidence_heads_forward(
     feats: Mapping[str, jnp.ndarray],
     pred_distogram_logits: jnp.ndarray,
     multiplicity: int,
+    rep_atom_index: tuple[jnp.ndarray, jnp.ndarray],
     return_pair_chains_iptm: bool,
     recompute_nonpolymer_frames: bool,
 ) -> dict[str, Any]:
@@ -323,6 +330,7 @@ def _confidence_heads_forward(
         x_pred,
         feats,
         multiplicity,
+        rep_atom_index=rep_atom_index,
         return_pair_chains_iptm=return_pair_chains_iptm,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
     )
@@ -349,11 +357,18 @@ def _nearest_nonpolymer_frames(
     pred_atom_coords: jnp.ndarray,
     asym_id_atom: jnp.ndarray,
     atom_pad_mask: jnp.ndarray,
-    token_to_rep_atom: jnp.ndarray,
+    token_to_rep_atom: jnp.ndarray | None,
+    *,
+    index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """Find each token representative's three nearest same-chain atoms."""
 
-    rep_atom_idx = jnp.argmax(token_to_rep_atom, axis=-1)
+    if index is None:
+        if token_to_rep_atom is None:
+            raise ValueError("token_to_rep_atom is required when index is absent")
+        rep_atom_idx = jnp.argmax(token_to_rep_atom, axis=-1)
+    else:
+        rep_atom_idx, _ = index
     rep_coord_idx = jnp.broadcast_to(
         rep_atom_idx[:, None, :, None],
         (
@@ -401,6 +416,7 @@ def _compute_frame_pred_inference(
     feats: Mapping[str, jnp.ndarray],
     multiplicity: int,
     recompute_nonpolymer_frames: bool = True,
+    token_to_rep_atom_index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """JAX port of compute_frame_pred (inference=True).
 
@@ -428,12 +444,26 @@ def _compute_frame_pred_inference(
     atom_pad_mask = feats["atom_pad_mask"]
 
     if recompute_nonpolymer_frames:
-        nonpolymer_frames = _nearest_nonpolymer_frames(
-            pred_atom_coords,
-            asym_id_atom,
-            atom_pad_mask,
-            feats["token_to_rep_atom"],
-        )
+        if "token_to_rep_atom" in feats:
+            # Preserve the direct/custom dense path's historical raw-dtype
+            # argmax.  The confidence distance gather above intentionally has
+            # a separate float32-cast contract.
+            nonpolymer_frames = _nearest_nonpolymer_frames(
+                pred_atom_coords,
+                asym_id_atom,
+                atom_pad_mask,
+                feats["token_to_rep_atom"],
+            )
+        else:
+            if token_to_rep_atom_index is None:
+                token_to_rep_atom_index = token_to_rep_atom_index_from_feats(feats)
+            nonpolymer_frames = _nearest_nonpolymer_frames(
+                pred_atom_coords,
+                asym_id_atom,
+                atom_pad_mask,
+                None,
+                index=token_to_rep_atom_index,
+            )
         chain_atom_count = jnp.sum(
             (asym_id_token[:, :, None] == asym_id_atom[:, None, :])
             * atom_pad_mask[:, None, :],
@@ -472,6 +502,7 @@ def _compute_ptms(
     feats: Mapping[str, jnp.ndarray],
     multiplicity: int,
     *,
+    rep_atom_index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     return_pair_chains_iptm: bool = True,
     recompute_nonpolymer_frames: bool = True,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
@@ -481,6 +512,7 @@ def _compute_ptms(
         feats,
         multiplicity,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
+        token_to_rep_atom_index=rep_atom_index,
     )
     mask_pad = jnp.repeat(
         feats["token_pad_mask"].astype(jnp.float32), multiplicity, axis=0

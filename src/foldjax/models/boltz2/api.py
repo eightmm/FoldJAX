@@ -33,6 +33,10 @@ from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
+from foldjax.models.boltz2.data.ownership import (
+    compact_token_to_rep_atom_storage,
+    drop_token_to_rep_atom_storage,
+)
 from foldjax.schema import PaddingConfig
 
 #: Trunk dtypes `predict` accepts, as names rather than `jnp` dtypes so that
@@ -653,6 +657,12 @@ def predict(
             cp_rows=cp_rows,
             cp_cols=cp_cols,
         )
+    if not steering_active:
+        feats_np = (
+            drop_token_to_rep_atom_storage(feats_np)
+            if stop_after == "trunk"
+            else compact_token_to_rep_atom_storage(feats_np)
+        )
     if padding_plan is not None:
         from foldjax.models.boltz2.data.bucket import pad_feats
 
@@ -929,18 +939,21 @@ def predict(
             from foldjax.models.boltz2.data.bucket import select_model_features
 
             affinity_feats_np = select_model_features(affinity_feats_np)
+        if padding is not None:
+            from foldjax.models.boltz2.data.bucket import (
+                select_model_features_for_padding,
+            )
+
+            affinity_feats_np = select_model_features_for_padding(
+                affinity_feats_np, steering_active=False
+            )
+        affinity_feats_np = compact_token_to_rep_atom_storage(affinity_feats_np)
         if padding is not None or bucket:
             from foldjax.models.boltz2.data.bucket import (
                 pad_feats,
                 resolve_legacy_padding_plan,
                 resolve_padding_plan,
-                select_model_features_for_padding,
             )
-
-            if padding is not None:
-                affinity_feats_np = select_model_features_for_padding(
-                    affinity_feats_np, steering_active=False
-                )
             affinity_padding_plan = (
                 resolve_padding_plan(affinity_feats_np, padding)
                 if padding is not None

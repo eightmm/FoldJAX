@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 import jax
 import jax.nn
 import jax.numpy as jnp
+import numpy as np
 from jax.sharding import PartitionSpec
 
 from foldjax.models._cp import cp_mesh, cp_row_shards, shard_single
@@ -20,6 +21,11 @@ from foldjax.models._cp_atom import (
     window_spec,
 )
 from foldjax.models._stacking import take_layers
+from foldjax.models.boltz2.data.ownership import (
+    COMPACT_TOKEN_TO_REP_ATOM,
+    TOKEN_TO_REP_ATOM_INDEX,
+    _validate_private_representation,
+)
 from foldjax.models.boltz2.models.diffusion.diffusion_transformer import (
     diffusion_transformer_layer_apply,
     layer_s_terms,
@@ -136,12 +142,17 @@ def gather_token_pairs_to_atom_windows(
 
 
 def gather_rep_atoms_to_tokens(
-    token_to_rep_atom: jnp.ndarray,
+    token_to_rep_atom: jnp.ndarray | None,
     atom_values: jnp.ndarray,
+    index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
-    """Apply dense one-hot token->representative-atom map as a gather."""
+    """Apply a dense or precomputed representative-atom map as a gather."""
 
-    atom_idx, valid = _one_hot_index(token_to_rep_atom)
+    if index is None:
+        if token_to_rep_atom is None:
+            raise ValueError("token_to_rep_atom is required when index is absent")
+        index = _one_hot_index(token_to_rep_atom)
+    atom_idx, valid = index
     gathered = jnp.take_along_axis(atom_values, atom_idx[..., None], axis=1)
     return gathered * valid[..., None].astype(gathered.dtype)
 
@@ -178,6 +189,68 @@ def atom_to_token_index_from_feats(
             valid = indices >= 0
         return jnp.maximum(indices, 0), valid.astype(bool)
     return atom_to_token_index(feats["atom_to_token"])
+
+
+def token_to_rep_atom_index_from_feats(
+    feats: Mapping[str, jnp.ndarray],
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Read representative atom IDs with dense direct-call precedence.
+
+    Dense callers retain the historical float32 cast used by confidence and
+    affinity gathers. The compact representation is model-private and must be
+    a complete provenance-marker/payload pair. Eager concrete calls validate
+    its value contract; managed JIT calls have already passed the same host
+    normalization. Positive IDs are never clipped to the atom range.
+    """
+
+    if "token_to_rep_atom" in feats:
+        return _one_hot_index(feats["token_to_rep_atom"].astype(jnp.float32))
+    has_marker = COMPACT_TOKEN_TO_REP_ATOM in feats
+    has_index = TOKEN_TO_REP_ATOM_INDEX in feats
+    if not has_marker and not has_index:
+        raise KeyError("token_to_rep_atom")
+    if not has_marker or not has_index:
+        raise ValueError(
+            "compact representative storage requires both its provenance "
+            "marker and index payload"
+        )
+    marker = feats[COMPACT_TOKEN_TO_REP_ATOM]
+    if getattr(marker, "ndim", None) != 0 or getattr(
+        marker, "dtype", None
+    ) != jnp.uint8:
+        raise TypeError(f"{COMPACT_TOKEN_TO_REP_ATOM} must be a scalar uint8")
+    indices = feats[TOKEN_TO_REP_ATOM_INDEX]
+    if indices.ndim != 2 or indices.shape != feats["token_pad_mask"].shape:
+        raise ValueError(
+            f"{TOKEN_TO_REP_ATOM_INDEX} must match token_pad_mask shape"
+        )
+    atom_pad_mask = feats["atom_pad_mask"]
+    if (
+        atom_pad_mask.ndim != 2
+        or atom_pad_mask.shape[0] != indices.shape[0]
+        or atom_pad_mask.shape[1] == 0
+    ):
+        raise ValueError(
+            f"{TOKEN_TO_REP_ATOM_INDEX} requires a compatible non-empty atom axis"
+        )
+    if indices.dtype != jnp.int32:
+        raise TypeError(f"{TOKEN_TO_REP_ATOM_INDEX} must have dtype int32")
+    concrete_values = (
+        marker,
+        indices,
+        feats["token_pad_mask"],
+        atom_pad_mask,
+    )
+    if not any(isinstance(value, jax.core.Tracer) for value in concrete_values):
+        _validate_private_representation(
+            {
+                COMPACT_TOKEN_TO_REP_ATOM: np.asarray(marker),
+                TOKEN_TO_REP_ATOM_INDEX: np.asarray(indices),
+                "token_pad_mask": np.asarray(feats["token_pad_mask"]),
+                "atom_pad_mask": np.asarray(atom_pad_mask),
+            }
+        )
+    return jnp.maximum(indices, 0), indices >= 0
 
 
 def _repeat_index(

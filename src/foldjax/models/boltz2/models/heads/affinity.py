@@ -8,7 +8,11 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from foldjax.models.boltz2.models.diffusion.atom import gather_rep_atoms_to_tokens
+from foldjax.models.boltz2.models.diffusion.atom import (
+    _repeat_index,
+    gather_rep_atoms_to_tokens,
+    token_to_rep_atom_index_from_feats,
+)
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.trunk_blocks.conditioning import (
@@ -45,15 +49,15 @@ def affinity_module_forward(
         + _linear(s_inputs, params["s_to_z_prod_in2"]["kernel"])[:, None, :, :]
     )
 
-    token_to_rep_atom = jnp.repeat(
-        feats["token_to_rep_atom"].astype(jnp.float32), multiplicity, axis=0
+    rep_atom_index = _repeat_index(
+        token_to_rep_atom_index_from_feats(feats), multiplicity
     )
     if x_pred.ndim == 4:
         b, mult, n, _ = x_pred.shape
         x_pred = x_pred.reshape(b * mult, n, -1)
     x_pred = x_pred.astype(jnp.float32)
 
-    x_pred_repr = gather_rep_atoms_to_tokens(token_to_rep_atom, x_pred)
+    x_pred_repr = gather_rep_atoms_to_tokens(None, x_pred, index=rep_atom_index)
     x2 = jnp.sum(x_pred_repr * x_pred_repr, axis=-1, keepdims=True)
     d2 = (
         x2
