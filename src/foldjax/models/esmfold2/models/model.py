@@ -213,13 +213,19 @@ class ModelSettings:
     #: inputs embedder and the parcae coda all run at the checkpoint's
     #: parameter dtype -- and the released `config.json` says `float32`.
     #:
-    #: bfloat16 is kept as the default because it is what the port has been
-    #: measured and validated at, and because the same width costs Boltz-2 and
-    #: OpenDDE less than their own seed does (`docs/engineering-notes.md`).
-    #: It has *not* been compared against a float32 ESMFold2 run, which is the
-    #: measurement that would settle whether to keep it. Note also that no
-    #: caller can change it: `settings_from_config` does not read this field
-    #: and `with_overrides` does not expose it.
+    #: bfloat16 is kept, and the A/B that settles it was run on 2026-08-28 at
+    #: 1,003 tokens on the released schedule: float32 costs 27.38 s and
+    #: 32.84 GiB against bfloat16's 16.78 s and 23.47 GiB, with pLDDT and pTM
+    #: identical to four decimals. The structures differ by 0.0992 A all-atom
+    #: paired by sample, against a 0.0230-0.0291 A rerun floor and a 0.9135 A
+    #: spread between this model's own diffusion samples -- resolvable, and
+    #: nine times smaller than the sampling it sits inside.
+    #:
+    #: Note that no caller can change it: `settings_from_config` does not read
+    #: this field and `with_overrides` does not expose it. Flipping it would
+    #: change every published ESMFold2 number, so `tests/
+    #: test_esmfold2_trunk_width.py` asserts the value rather than trusting
+    #: this comment to be read.
     trunk_dtype: str = "bfloat16"
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings

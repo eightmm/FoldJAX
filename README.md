@@ -61,20 +61,32 @@ five of the six models finish here where two finish upstream. The caveats that
 belong with those numbers — including the one row FoldJAX loses on time — are
 in [docs/benchmark.md](docs/benchmark.md).
 
-### One default is FoldJAX's own
+### Two defaults are FoldJAX's own
 
-Every port runs the precision its upstream runs, with one deliberate exception.
+Four ports run the precision their upstream runs — AlphaFold 3, Boltz-2 and
+Protenix on bfloat16, OpenFold3 on float32. Two do not, and both are measured.
+
 **OpenDDE defaults to a bfloat16 trunk where upstream ships float32**, measured
 at 1,003 tokens over two runs per arm: peak 42.96 → 19.18 GiB, wall 280.4 →
 174.4 s, identical best `ranking_score`, and a median CA RMSD of 0.0301 Å
 against the 0.0142 Å you get by running either arm twice. It moves the wall
 too — at 1,531 tokens float32 asks for 86.7 GiB and dies where bfloat16
-finishes at 44.2 GiB.
+finishes at 44.2 GiB. `--option dtype=float32` puts it back, and the benchmark
+above pins exactly that, because a row that compared two precisions would not
+be a comparison.
 
-`--option dtype=float32` puts it back, and the benchmark above pins exactly
-that, because a row that compared two precisions would not be a comparison.
-Everything else — AlphaFold 3, Boltz-2 and Protenix on bfloat16, OpenFold3 and
-ESMFold2 on float32 — matches upstream without a flag.
+**ESMFold2 runs a bfloat16 trunk where upstream's released checkpoint is
+float32.** Upstream's single autocast wraps its language model alone; the
+folding trunk is not covered by it. At 1,003 tokens on the released schedule
+the width costs 0.0992 Å all-atom against a 0.0230 Å rerun floor — resolvable,
+unlike on Boltz-2 — and buys 27.38 → 16.78 s and 32.84 → 23.47 GiB with pLDDT
+and pTM identical to four decimals. That is nine times inside the 0.9135 Å this
+model's own diffusion samples already disagree by. There is no flag: the width
+is not reachable from any knob, which is the honest description of a choice
+rather than an option.
+
+Both are recorded with their measurements in
+[docs/engineering-notes.md](docs/engineering-notes.md).
 
 ## Installation
 

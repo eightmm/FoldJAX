@@ -122,12 +122,12 @@ never reads it, so no checkpoint can set it, and `with_overrides` exposes only
 recycles, samples, steps and MSA depth. So the overlap with upstream is the
 language model; the trunk itself is bfloat16 here and float32 there.
 
-This is not yet a claim that either is wrong — ESMFold2's port was validated
-against deposited 1UBQ, not against torch, and the model is stochastic enough
-that a width difference could sit under its own sampling spread the way it does
-on Boltz-2. It is a claim that **the difference exists and was undocumented**,
-and that the harness which would have caught it asserted the opposite; see
+The difference is real, it was undocumented, and the harness that would have
+caught it asserted the opposite; see
 [What `bench/esmfold2_compare.py` was not controlling](#what-benchesmfold2_comparepy-was-not-controlling).
+**It is also small, and it was measured rather than assumed** — see
+[What ESMFold2's width costs](#what-esmfold2s-width-costs) below, which is why
+the default stays where it is.
 
 Only OpenDDE and Protenix expose the width as an option, and only OpenDDE has
 anywhere to go with it, because the other four are either already narrow or
@@ -187,6 +187,47 @@ the table itself stays pinned to one seed so its rows compare.
 
 `bench/spec.py` pins `dtype=float32` for OpenDDE's benchmark row, because a
 row that compared two precisions would not be a comparison.
+
+### What ESMFold2's width costs
+
+Measured 2026-08-28 at 1,003 tokens (`L1000_3og2`), ESMFold2's own released
+schedule (3 loops, 14 sampling steps) and four diffusion samples, one process
+per arm so no peak is another arm's high-water mark, and `trunk_dtype` replaced
+on the frozen settings because no knob reaches it.
+
+| arm | wall | peak | pLDDT | pTM |
+|---|---|---|---|---|
+| float32 trunk | 27.38 s | 32.84 GiB | 0.9492 | 0.9797 |
+| **bfloat16 trunk (shipped)** | **16.78 s** | **23.47 GiB** | 0.9492 | 0.9797 |
+
+1.63x the speed on 1.40x less memory, with both confidence figures identical to
+four decimals. The structures, as superposed **all-atom** RMSD paired by sample
+index — a different metric from the CA numbers above, so read the column
+against itself and not against Boltz-2's:
+
+| what varies | ESMFold2 |
+|---|---|
+| the diffusion sample, one seed | **0.9135 Å** (bf16), 0.9199 Å (fp32) |
+| **float32 → bfloat16** | **0.0992 Å** |
+| nothing — the same arm run twice, float32 | 0.0291 Å |
+| nothing — the same arm run twice, bfloat16 | 0.0230 Å |
+
+**This is the best-resolved width measurement in this document.** On Boltz-2 and
+Protenix the bfloat16 arm's own rerun floor swallowed the gap, so the width
+could only be bounded. Here the floor is 0.023–0.029 Å and the gap is 0.099 Å —
+three to four times the noise, so it is a value rather than a ceiling — while
+the model's own sampling moves the structure 0.91 Å, nine times further. The
+floor is not zero despite an explicit `jax.random.key`, which is XLA
+nondeterminism and the reason a rerun is always the control.
+
+So the divergence from upstream is genuine and it is worth keeping: it costs a
+tenth of an Angstrom on a model whose own samples disagree by nine tenths, and
+buys back a third of the wall clock and a quarter of the peak. What was wrong
+was never the choice, only that three files described it as upstream's.
+
+A seed row is absent because it was not measured here; ESMFold2 has three
+deliberate randomness sources at inference, so its seed spread is at least its
+sampling spread and the row would not change the reading.
 
 ### What `bench/esmfold2_compare.py` was not controlling
 

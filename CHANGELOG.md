@@ -918,6 +918,41 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **ESMFold2's bfloat16 trunk is FoldJAX's own choice, and three files said it
+  was upstream's.** Upstream ESMFold2 has exactly one autocast in the whole
+  model (`modeling_esmfold2.py:2021`): it wraps the ESM-C call alone and is
+  gated on ESM-C's parameters already being bfloat16. Everything outside that
+  call runs at the checkpoint's parameter dtype, and the released
+  `config.json` says `float32`. FoldJAX casts all ten `TRUNK_PREFIXES`
+  sub-trees to bfloat16, so the folding trunk is bfloat16 here and float32
+  there.
+
+  Nothing about what the model computes has changed. What changed is that the
+  divergence is written down, in `docs/engineering-notes.md` beside OpenDDE's,
+  and that it has been measured: at 1,003 tokens on the released schedule
+  float32 costs 27.38 s and 32.84 GiB against bfloat16's 16.78 s and
+  23.47 GiB, with pLDDT and pTM identical to four decimals and the structures
+  0.0992 A apart against a 0.0230-0.0291 A rerun floor and a 0.9135 A spread
+  between the model's own diffusion samples. Nine times inside its own
+  sampling, and better resolved than the same measurement on Boltz-2 or
+  Protenix, whose bfloat16 rerun floors swallow it.
+
+  `bench/esmfold2_compare.py` is the harness that would have caught this, and
+  it reported `"trunk_dtype": "bfloat16 (autocast)"` as a hardcoded string
+  rather than a reading of the model it had just loaded with no dtype
+  argument. It did not miss the difference, it certified its absence. The row
+  is now read off `named_parameters()`, and the docstring says which variables
+  the comparison does and does not control.
+- **A released-config test could only fail where a weight store exists.**
+  `test_the_defaults_are_the_released_config_not_what_fits_on_a_card` asserted
+  `document["num_recycles"]` against the release artifact, but the release
+  spells that key `num_loops` -- `num_recycles` is only this port's internal
+  name for it, and unifying internal names never renamed a checkpoint key. CI
+  has no weight store and returns before the assertion, so it passed there and
+  raised `KeyError` on every developer machine that had the weights.
+- **OpenDDE's out-of-memory advice no longer calls bfloat16 "opt-in".** It has
+  been the shipped default since the flip in `0bb7f6e`; reaching that message
+  now means the caller turned it off.
 - **OpenFold3 p1 is now a managed public download instead of being mislabeled
   as access-gated.** Upstream's own p1 release path publishes
   `of3_ft3_v1.pt` from an unsigned S3 bucket. The registry now pins that exact
