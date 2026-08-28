@@ -14,6 +14,11 @@ from typing import Any
 import numpy as np
 
 from foldjax.models.protenix.data.template_features import TEMPLATE_FIELDS
+from foldjax.models.protenix.relative_position import (
+    COMPACT_RELP_MARKER,
+    normalize_relative_position_storage,
+    pad_compact_relative_position_storage,
+)
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import PaddingConfig
 
@@ -104,7 +109,6 @@ def pad_protenix_features(
         "msa",
         "has_deletion",
         "deletion_value",
-        "relp",
         "token_bonds",
     }
     missing = sorted(required - features.keys())
@@ -139,6 +143,12 @@ def pad_protenix_features(
     _require_real_prefix(atom_mask, "atom_padding_mask")
     if actual_token < 1 or actual_atom < 1:
         raise ValueError("padding masks must retain at least one token and one atom")
+    features = normalize_relative_position_storage(
+        features,
+        n_token=storage_token,
+        token_padding_mask=token_mask,
+        require=True,
+    )
 
     source_msa_mask = features.get("msa_mask")
     if source_msa_mask is None:
@@ -195,17 +205,26 @@ def pad_protenix_features(
     _pad_named_axis(output, _TOKEN_FIELDS, storage_token, target_token, axis=0)
     _pad_named_axis(output, _ATOM_FIELDS, storage_atom, target_atom, axis=0)
 
-    relp = np.asarray(features["relp"])
     token_bonds = np.asarray(features["token_bonds"])
-    if relp.shape[:2] != (storage_token, storage_token):
-        raise ValueError("relp must start with [N_token, N_token]")
     if token_bonds.shape != (storage_token, storage_token):
         raise ValueError("token_bonds must have [N_token, N_token]")
     token_width = (0, target_token - storage_token)
-    output["relp"] = _pad_array(
-        relp,
-        (token_width, token_width) + ((0, 0),) * (relp.ndim - 2),
-    )
+    if "relp" in features:
+        relp = np.asarray(features["relp"])
+        if relp.shape[:2] != (storage_token, storage_token):
+            raise ValueError("relp must start with [N_token, N_token]")
+        output["relp"] = _pad_array(
+            relp,
+            (token_width, token_width) + ((0, 0),) * (relp.ndim - 2),
+        )
+    elif COMPACT_RELP_MARKER in features:
+        output = pad_compact_relative_position_storage(
+            output,
+            storage_token=storage_token,
+            target_token=target_token,
+        )
+    else:  # pragma: no cover - normalized ``require=True`` guards this.
+        raise AssertionError("relative-position storage normalization failed")
     output["token_bonds"] = _pad_array(
         token_bonds, ((0, target_token - storage_token),) * 2
     )

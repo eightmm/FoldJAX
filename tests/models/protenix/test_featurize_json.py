@@ -668,20 +668,25 @@ def test_featurize_ion_residue_index() -> None:
     assert features["ref_charge"][0] == 2.0
 
 
-def test_relative_position_features_are_exactly_zero_or_one_int8() -> None:
-    from foldjax.models.protenix.data.featurize_json import (
-        _relative_position_features,
+def test_compact_relative_position_storage_rebuilds_exact_int8_feature() -> None:
+    from foldjax.models.protenix.models.trunk_blocks.embedders import (
+        compact_relative_position_features,
+    )
+    from foldjax.models.protenix.relative_position import (
+        COMPACT_RELP_COMPONENTS,
+        compact_relative_position_storage,
     )
 
     rng = np.random.default_rng(0)
     n = 24
-    relp = _relative_position_features(
+    storage = compact_relative_position_storage(
         asym_id=rng.integers(0, 3, n),
         residue_index=rng.integers(0, 40, n),
         entity_id=rng.integers(0, 2, n),
         sym_id=rng.integers(0, 4, n),
         token_index=rng.integers(0, 40, n),
     )
+    relp = np.asarray(compact_relative_position_features(storage))
 
     assert relp.dtype == np.int8
     assert relp.shape == (n, n, 139)
@@ -691,3 +696,5 @@ def test_relative_position_features_are_exactly_zero_or_one_int8() -> None:
         relp[..., 66:132].sum(-1), np.ones((n, n), np.int8)
     )
     np.testing.assert_array_equal(relp[..., 133:].sum(-1), np.ones((n, n), np.int8))
+    assert all(storage[name].shape == (n, n) for name in COMPACT_RELP_COMPONENTS)
+    assert sum(storage[name].nbytes for name in COMPACT_RELP_COMPONENTS) == 4 * n * n

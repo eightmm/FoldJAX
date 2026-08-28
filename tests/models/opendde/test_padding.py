@@ -29,9 +29,16 @@ from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
 )
+from foldjax.models.protenix.models.trunk_blocks.embedders import (
+    compact_relative_position_features,
+)
 from foldjax.models.protenix.models.trunk_blocks.msa import (
     OuterProductMeanParams,
     outer_product_mean,
+)
+from foldjax.models.protenix.relative_position import (
+    COMPACT_RELP_FIELDS,
+    compact_relative_position_storage,
 )
 from foldjax.schema import PaddingConfig, PredictionRequest
 
@@ -452,6 +459,38 @@ def test_full_opendde_padding_masks_every_axis_and_crops_outputs() -> None:
     assert cropped["distogram_logits"].shape == (3, 3, 96)
     assert cropped["structural_s_trunk"].shape == (3, 8)
     assert cropped["structural_z_trunk"].shape == (3, 3, 8)
+
+
+def test_opendde_padding_and_model_filter_preserve_compact_relp() -> None:
+    features = _opendde_features(msa_depth=2)
+    del features["relp"]
+    features.update(
+        compact_relative_position_storage(
+            asym_id=features["asym_id"],
+            residue_index=features["residue_index"],
+            entity_id=features["entity_id"],
+            sym_id=features["sym_id"],
+            token_index=features["token_index"],
+        )
+    )
+    original = np.asarray(compact_relative_position_features(features))
+    sampled = sample_opendde_msa_cycle_features(features, num_recycles=1, seed=7)
+
+    padded, _cycles, _plan = pad_opendde_features(
+        features,
+        sampled,
+        PaddingConfig(tokens=4, atoms=5, msa=4, structural_tokens=6),
+        n_queries=2,
+        n_keys=4,
+    )
+    selected = select_opendde_model_features(padded)
+
+    assert "relp" not in selected
+    assert set(COMPACT_RELP_FIELDS) <= selected.keys()
+    np.testing.assert_array_equal(
+        np.asarray(compact_relative_position_features(selected)),
+        np.pad(original, ((0, 1), (0, 1), (0, 0))),
+    )
 
 
 def test_padded_random_tapes_preserve_the_unpadded_real_prefix() -> None:

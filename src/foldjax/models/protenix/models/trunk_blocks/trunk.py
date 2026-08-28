@@ -19,7 +19,7 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import (
     RelativePositionParams,
     constraint_embedder,
     relative_position_encoding,
-    relative_position_features,
+    resolve_relative_position_features,
 )
 from foldjax.models.protenix.models.trunk_blocks.msa import (
     MSACycleIndexTape,
@@ -160,9 +160,7 @@ def pairformer_output_from_s_inputs(
             params.constraint,
         )
 
-    relp = input_feature_dict.get("relp")
-    if relp is None:
-        relp = relative_position_features(input_feature_dict)
+    relp = resolve_relative_position_features(input_feature_dict)
     # [N, N, 139] and consumed by a linear projection into `z_init`; born
     # sharded, the projection is shard-local instead of transiently whole.
     relp = shard_pair_rows(relp)

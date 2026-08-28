@@ -54,6 +54,7 @@ def main() -> None:
     from foldjax.models.protenix.models.primitives.primitives import layer_norm, linear
     from foldjax.models.protenix.models.trunk_blocks.embedders import (
         input_feature_embedder,
+        resolve_relative_position_features,
     )
     from foldjax.models.protenix.models.trunk_blocks.trunk import (
         pairformer_output_from_s_inputs,
@@ -61,6 +62,7 @@ def main() -> None:
 
     features = load_static_feature_npz(args.features)
     params = load_native_weights(args.weights)
+    relp = resolve_relative_position_features(features)
     with np.load(args.denoise0) as data:
         x_noisy = jnp.asarray(data["x_noisy"].astype(np.float32))
         t_hat = jnp.asarray(data["t_hat"].astype(np.float32))
@@ -88,7 +90,7 @@ def main() -> None:
     )
     pair_z = ready(
         diffusion_conditioning_prepare_cache(
-            features["relp"], z_trunk, params.diffusion.conditioning
+            relp, z_trunk, params.diffusion.conditioning
         )
     )
     p_lm, c_l = ready(
@@ -111,7 +113,7 @@ def main() -> None:
     conditioning_out, conditioning_seconds = warm_measure(
         lambda: diffusion_conditioning(
             t_hat,
-            features["relp"],
+            relp,
             s_inputs,
             s_trunk,
             z_trunk,

@@ -14,6 +14,7 @@ from foldjax.models.protenix.data.padding import (
     crop_protenix_outputs,
     pad_protenix_features,
 )
+from foldjax.models.protenix.relative_position import COMPACT_RELP_FIELDS
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import PaddingConfig
 
@@ -99,7 +100,7 @@ _MODEL_FEATURES = {
     "token_index",
     "token_padding_mask",
     "v_lm",
-}
+} | set(COMPACT_RELP_FIELDS)
 
 
 def pad_opendde_features(

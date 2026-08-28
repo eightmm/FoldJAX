@@ -56,6 +56,7 @@ def main() -> None:
     from foldjax.models.protenix.models.heads.head import distogram_head
     from foldjax.models.protenix.models.trunk_blocks.embedders import (
         input_feature_embedder,
+        resolve_relative_position_features,
     )
     from foldjax.models.protenix.models.trunk_blocks.trunk import (
         pairformer_output_from_s_inputs,
@@ -63,6 +64,7 @@ def main() -> None:
 
     features = load_static_feature_npz(args.features)
     params = load_native_weights(args.weights)
+    relp = resolve_relative_position_features(features)
     n_token = int(features["restype"].shape[-2])
     chunks = resolve_chunk_config(
         n_token=n_token,
@@ -95,7 +97,7 @@ def main() -> None:
 
     def prepare_cache():
         pair_z = diffusion_conditioning_prepare_cache(
-            features["relp"], z_trunk, params.diffusion.conditioning
+            relp, z_trunk, params.diffusion.conditioning
         )
         p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
             features["atom_to_token_idx"],

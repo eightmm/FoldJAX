@@ -26,6 +26,9 @@ from foldjax.models.protenix.data.template_features import (
     assemble_template_features,
     chain_template_dense,
 )
+from foldjax.models.protenix.relative_position import (
+    compact_relative_position_storage,
+)
 
 RESTYPE_INDEX = {
     "A": 0,
@@ -395,7 +398,7 @@ def featurize_protein_json(
         n_queries=n_queries,
         n_keys=n_keys,
     )
-    relp = _relative_position_features(
+    compact_relp = compact_relative_position_storage(
         asym_id=asym_id,
         residue_index=residue_index,
         entity_id=entity_id,
@@ -437,7 +440,6 @@ def featurize_protein_json(
         "deletion_value": (
             np.arctan(deletion_matrix.astype(np.float32) / 3.0) * (2.0 / np.pi)
         ).astype(np.float32),
-        "relp": relp,
         "token_bonds": token_bonds,
         "residue_index": residue_index,
         "token_index": token_index,
@@ -485,6 +487,7 @@ def featurize_protein_json(
         "covalent_atom_indices": covalent_atom_indices,
         "covalent_token_indices": covalent_token_indices,
     }
+    out.update(compact_relp)
     if "constraint" in job:
         out["constraint_feature"] = constraint_feature
     if template_features is not None:
@@ -3001,49 +3004,6 @@ def _local_atom_geometry(
     d_lm = d_lm.astype(np.float32)
     v_lm = (q_uid[:, :, None] == k_uid[:, None, :])[..., None].astype(np.float32)
     return d_lm, v_lm, {"mask_trunked": mask}
-
-
-def _relative_position_features(
-    *,
-    asym_id: np.ndarray,
-    residue_index: np.ndarray,
-    entity_id: np.ndarray,
-    sym_id: np.ndarray,
-    token_index: np.ndarray,
-    r_max: int = 32,
-    s_max: int = 2,
-) -> np.ndarray:
-    same_chain = asym_id[:, None] == asym_id[None, :]
-    same_residue = residue_index[:, None] == residue_index[None, :]
-    same_entity = entity_id[:, None] == entity_id[None, :]
-
-    residue_delta = np.clip(
-        residue_index[:, None] - residue_index[None, :] + r_max,
-        0,
-        2 * r_max,
-    )
-    residue_bins = np.where(same_chain, residue_delta, 2 * r_max + 1)
-    token_delta = np.clip(
-        token_index[:, None] - token_index[None, :] + r_max,
-        0,
-        2 * r_max,
-    )
-    token_bins = np.where(same_chain & same_residue, token_delta, 2 * r_max + 1)
-    chain_delta = np.clip(sym_id[:, None] - sym_id[None, :] + s_max, 0, 2 * s_max)
-    chain_bins = np.where(same_entity, chain_delta, 2 * s_max + 1)
-
-    # This [N_token, N_token, 139] feature is three 0/1 one-hot blocks plus a
-    # 0/1 same-entity indicator. Keep those exact values compact while they
-    # cross the host/device boundary. Each projection promotes them through its
-    # weights: bfloat16 in the default trunk and float32 in diffusion, matching
-    # the dtypes that the former float32 host feature reached at those sites.
-    rel_pos = np.eye(2 * (r_max + 1), dtype=np.int8)[residue_bins]
-    rel_token = np.eye(2 * (r_max + 1), dtype=np.int8)[token_bins]
-    rel_chain = np.eye(2 * (s_max + 1), dtype=np.int8)[chain_bins]
-    return np.concatenate(
-        [rel_pos, rel_token, same_entity[..., None].astype(np.int8), rel_chain],
-        axis=-1,
-    )
 
 
 if __name__ == "__main__":

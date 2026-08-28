@@ -59,6 +59,9 @@ from foldjax.models.protenix.models.trunk_blocks.trunk import (
     PairformerOutputParams,
     pairformer_output_from_s_inputs,
 )
+from foldjax.models.protenix.relative_position import (
+    normalize_relative_position_storage,
+)
 
 
 class OpenDDEInferenceParams(NamedTuple):
@@ -992,6 +995,14 @@ def opendde_infer_compiled(
     collapses to one dispatch. This is the same computation: only how much of it
     XLA sees at once changes.
     """
+    restype = input_feature_dict.get("restype")
+    if restype is not None:
+        input_feature_dict = normalize_relative_position_storage(
+            input_feature_dict,
+            n_token=int(restype.shape[-2]),
+            token_padding_mask=input_feature_dict.get("token_padding_mask"),
+        )
+
     # Index-range checks read array *values*, which become tracers inside
     # `jit`. They run here on the concrete features, so the traced graph keeps
     # the same guarantees without a Python branch on a tracer.

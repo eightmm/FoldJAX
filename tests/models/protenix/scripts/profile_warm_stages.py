@@ -66,6 +66,7 @@ def main() -> None:
     )
     from foldjax.models.protenix.models.trunk_blocks.embedders import (
         input_feature_embedder,
+        resolve_relative_position_features,
     )
     from foldjax.models.protenix.models.trunk_blocks.msa import msa_module
     from foldjax.models.protenix.models.trunk_blocks.pairformer import pairformer_stack
@@ -78,6 +79,7 @@ def main() -> None:
 
     features = load_static_feature_npz(args.features)
     params = load_native_weights(args.weights)
+    relp = resolve_relative_position_features(features)
     with np.load(args.noise) as data:
         init_noise = jnp.asarray(data["init"].astype(np.float32))
         step_noises = tuple(
@@ -110,7 +112,7 @@ def main() -> None:
     _, s_trunk, z_trunk = trunk
     s_init, z_init = trunk_initial_embeddings(
         s_inputs,
-        features["relp"],
+        relp,
         features["token_bonds"],
         params.pairformer_output.trunk.initial,
     )
@@ -161,7 +163,7 @@ def main() -> None:
 
     def prepare_diffusion_cache():
         pair_z = diffusion_conditioning_prepare_cache(
-            features["relp"], z_trunk, params.diffusion.conditioning
+            relp, z_trunk, params.diffusion.conditioning
         )
         p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
             features["atom_to_token_idx"],

@@ -12,6 +12,29 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Protenix/OpenDDE relative-position storage carries four categorical
+  pair grids instead of 139 one-hot channels.** The JSON featurizers now retain
+  residue, token and chain bins plus the same-entity bit as `uint8`, behind a
+  private versioned marker. The compiled graph reconstructs the historical
+  `int8[N, N, 139]` feature immediately before the existing projections and CP
+  sharding boundary, so the bfloat16 trunk and float32 diffusion projections
+  keep their exact promotion and reduction order. Dense/custom `relp` remains
+  authoritative; marker-bearing incomplete or stale private forms fail before
+  tracing unless a dense value is present, in which case the private fragments
+  are discarded. Markerless fragments conservatively fall back on permissive
+  low-level routes.
+
+  At 3,012 tokens, host/model-input storage falls from 1,202.61 MiB to 34.61
+  MiB (34.75x). In an isolated 256-token CPU projection the dynamic feature
+  arguments fell from 9,109,504 to 262,145 bytes and float32/bfloat16 outputs
+  were byte-identical under strict dtype promotion. This is a storage and
+  transfer optimization, not a CPU compute claim: bfloat16 warm median was
+  13.07 -> 14.32 ms while StableHLO grew 36,259 -> 38,341 bytes because the
+  dense feature is now rebuilt in-graph. Four-device forced-CPU gates cover
+  both 1-D and 2-D context-parallel layouts. A CUDA test set covering the
+  compact reconstruction, padding, and both model families passed 53 tests;
+  no released end-to-end GPU peak or latency claim is made.
+
 - **OpenFold3's standalone `--all-arrays` now reaches the compiled graph as well
   as the writer.** On large targets the command previously removed PAE/PDE pair
   logits under the default 4 GiB output plan before inference, then disabled only

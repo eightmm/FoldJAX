@@ -29,9 +29,16 @@ from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
 )
+from foldjax.models.protenix.models.trunk_blocks.embedders import (
+    compact_relative_position_features,
+)
 from foldjax.models.protenix.models.trunk_blocks.msa import (
     MSAPairWeightedAveragingParams,
     msa_pair_weighted_averaging,
+)
+from foldjax.models.protenix.relative_position import (
+    COMPACT_RELP_FIELDS,
+    compact_relative_position_storage,
 )
 from foldjax.padding import PaddingPlan
 from foldjax.schema import PaddingConfig, PredictionRequest
@@ -82,6 +89,36 @@ def test_feature_padding_resolves_every_axis_and_crop_restores_public_shapes() -
     assert cropped["contact_probs"].shape == (2, 3, 3)
     assert cropped["s_trunk"].shape == (3, 4)
     assert cropped["z_trunk"].shape == (3, 3, 4)
+
+
+def test_feature_padding_keeps_compact_relp_and_zeroes_dummy_pairs() -> None:
+    features = _features()
+    del features["relp"]
+    features.update(
+        compact_relative_position_storage(
+            asym_id=features["asym_id"],
+            residue_index=features["residue_index"],
+            entity_id=features["entity_id"],
+            sym_id=features["sym_id"],
+            token_index=features["token_index"],
+        )
+    )
+    original_dense = np.asarray(compact_relative_position_features(features))
+
+    padded, _ = pad_protenix_features(
+        features,
+        PaddingConfig(tokens=8, atoms=8, msa=4, templates=4),
+        n_queries=2,
+        n_keys=4,
+    )
+
+    assert "relp" not in padded
+    assert set(COMPACT_RELP_FIELDS) <= padded.keys()
+    rebuilt = np.asarray(compact_relative_position_features(padded))
+    np.testing.assert_array_equal(
+        rebuilt,
+        np.pad(original_dense, ((0, 5), (0, 5), (0, 0))),
+    )
 
 
 def test_compiled_padding_allowlist_keeps_required_model_features(monkeypatch) -> None:

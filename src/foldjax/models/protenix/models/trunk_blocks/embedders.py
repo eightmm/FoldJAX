@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
 from foldjax.models.protenix.models.diffusion.atom import (
@@ -11,6 +12,15 @@ from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder,
 )
 from foldjax.models.protenix.models.primitives.primitives import LinearParams, linear
+from foldjax.models.protenix.relative_position import (
+    COMPACT_RELP_CHAIN_BIN,
+    COMPACT_RELP_COMPONENTS,
+    COMPACT_RELP_MARKER,
+    COMPACT_RELP_RESIDUE_BIN,
+    COMPACT_RELP_SAME_ENTITY,
+    COMPACT_RELP_TOKEN_BIN,
+    normalize_relative_position_storage,
+)
 
 
 class FourierParams(NamedTuple):
@@ -100,6 +110,76 @@ def relative_position_features(
         ],
         axis=-1,
     )
+
+
+def compact_relative_position_features(
+    input_feature_dict: dict[str, jnp.ndarray],
+) -> jnp.ndarray:
+    """Rebuild the historical int8 ``[N, N, 139]`` feature inside JIT."""
+
+    residue_bins = jnp.asarray(input_feature_dict[COMPACT_RELP_RESIDUE_BIN])
+    token_bins = jnp.asarray(input_feature_dict[COMPACT_RELP_TOKEN_BIN])
+    same_entity = jnp.asarray(input_feature_dict[COMPACT_RELP_SAME_ENTITY])
+    chain_bins = jnp.asarray(input_feature_dict[COMPACT_RELP_CHAIN_BIN])
+    return jnp.concatenate(
+        [
+            jax.nn.one_hot(residue_bins, 66, dtype=jnp.int8),
+            jax.nn.one_hot(token_bins, 66, dtype=jnp.int8),
+            same_entity[..., None].astype(jnp.int8),
+            jax.nn.one_hot(chain_bins, 6, dtype=jnp.int8),
+        ],
+        axis=-1,
+    )
+
+
+def resolve_relative_position_features(
+    input_feature_dict: dict[str, jnp.ndarray],
+) -> jnp.ndarray:
+    """Resolve dense/custom, private compact, or metadata-derived relp.
+
+    A dense ``relp`` is authoritative even if a stale private marker is also
+    present.  Compact storage is accepted only with the complete private v1
+    marker; concrete eager calls validate its values here, while the public
+    compiled wrappers validate before tracing.  Marker-less private fragments
+    are ignored and retain the historical metadata-derived fallback.
+    """
+
+    dense = input_feature_dict.get("relp")
+    if dense is not None:
+        return dense
+    if COMPACT_RELP_MARKER not in input_feature_dict:
+        return relative_position_features(input_feature_dict)
+
+    missing = [
+        name for name in COMPACT_RELP_COMPONENTS if name not in input_feature_dict
+    ]
+    if missing:
+        raise ValueError(
+            "compact relp marker is incomplete; missing: " + ", ".join(missing)
+        )
+
+    marker = jnp.asarray(input_feature_dict[COMPACT_RELP_MARKER])
+    if marker.shape != () or marker.dtype != jnp.uint8:
+        raise ValueError("compact relp marker must be scalar uint8 version 1")
+    n_token = int(jnp.asarray(input_feature_dict[COMPACT_RELP_RESIDUE_BIN]).shape[0])
+    for name in COMPACT_RELP_COMPONENTS:
+        value = jnp.asarray(input_feature_dict[name])
+        if value.shape != (n_token, n_token) or value.dtype != jnp.uint8:
+            raise ValueError(
+                f"{name} must have shape [{n_token}, {n_token}] and dtype uint8"
+            )
+
+    private_values = [
+        input_feature_dict[name]
+        for name in (COMPACT_RELP_MARKER, *COMPACT_RELP_COMPONENTS)
+    ]
+    if not any(isinstance(value, jax.core.Tracer) for value in private_values):
+        normalize_relative_position_storage(
+            input_feature_dict,
+            n_token=n_token,
+            token_padding_mask=input_feature_dict.get("token_padding_mask"),
+        )
+    return compact_relative_position_features(input_feature_dict)
 
 
 def relative_position_encoding(

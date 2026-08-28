@@ -44,11 +44,16 @@ from foldjax.models.protenix.models.heads.head import DistogramParams, distogram
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
+    resolve_relative_position_features,
 )
 from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
 from foldjax.models.protenix.models.trunk_blocks.trunk import (
     PairformerOutputParams,
     pairformer_output_from_s_inputs,
+)
+from foldjax.models.protenix.relative_position import (
+    COMPACT_RELP_FIELDS,
+    normalize_relative_position_storage,
 )
 
 
@@ -101,7 +106,7 @@ _PADDED_MODEL_FEATURES = frozenset(
         "token_padding_mask",
         "v_lm",
     }
-)
+) | frozenset(COMPACT_RELP_FIELDS)
 
 
 def cast_trunk_params(
@@ -290,10 +295,13 @@ def protenix_infer_static(
     diffusion_s_inputs = s_inputs.astype(jnp.float32)
     diffusion_s_trunk = s_trunk.astype(jnp.float32)
     diffusion_z_trunk = z_trunk.astype(jnp.float32)
-    # `relp` is a host-supplied [N, N, 139] pair feature here (the trunk
-    # shards its own copy); pinned so the conditioning projection is
-    # shard-local and `pair_z` is born sharded.
-    relp = shard_pair_rows(jnp.asarray(input_feature_dict["relp"]))
+    # Managed inputs keep four uint8 pair components instead of transferring a
+    # 139-channel tensor. Rebuild the exact historical int8 feature inside the
+    # graph, then preserve the existing shard-before-projection boundary. Dense
+    # custom ``relp`` remains authoritative through the resolver.
+    relp = shard_pair_rows(
+        jnp.asarray(resolve_relative_position_features(input_feature_dict))
+    )
     pair_z = shard_pair_rows(
         diffusion_conditioning_prepare_cache(
             relp,
@@ -316,10 +324,11 @@ def protenix_infer_static(
         n_queries=n_queries,
         n_keys=n_keys,
     )
+    diffusion_features = {**input_feature_dict, "relp": relp}
 
     def sample(key, init_noise, step_noises):
         return sample_diffusion_with_module(
-            input_feature_dict,
+            diffusion_features,
             diffusion_s_inputs,
             diffusion_s_trunk,
             diffusion_z_trunk,
@@ -562,6 +571,18 @@ def protenix_infer_compiled(
     on the eager path. :func:`protenix_infer_static` remains available and
     ``--no-graph-jit`` selects it.
     """
+    restype = input_feature_dict.get("restype")
+    relp_token_count = int(
+        restype.shape[-2]
+        if restype is not None
+        else input_feature_dict["asym_id"].shape[-1]
+    )
+    input_feature_dict = normalize_relative_position_storage(
+        input_feature_dict,
+        n_token=relp_token_count,
+        token_padding_mask=input_feature_dict.get("token_padding_mask"),
+    )
+
     # The confidence scores size their per-chain loops by the chain count,
     # which they read off `asym_id`. That is a value, so it is resolved here on
     # the concrete features and travels as a static argument.

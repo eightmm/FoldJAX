@@ -329,13 +329,13 @@ def trunk_stages(
 
     from foldjax.models.protenix.models.trunk_blocks.embedders import (
         input_feature_embedder,
+        resolve_relative_position_features,
     )
     from foldjax.models.protenix.models.trunk_blocks.msa import msa_module
     from foldjax.models.protenix.models.trunk_blocks.pairformer import pairformer_stack
     from foldjax.models.protenix.models.trunk_blocks.template import template_embedder
     from foldjax.models.protenix.models.trunk_blocks.trunk import (
         recycle_embeddings,
-        relative_position_features,
         trunk_initial_embeddings,
     )
 
@@ -348,9 +348,7 @@ def trunk_stages(
     )
     stages["s_inputs"] = np.asarray(s_inputs)
 
-    relp = features.get("relp")
-    if relp is None:
-        relp = relative_position_features(features)
+    relp = resolve_relative_position_features(features)
     s_init, z_init = trunk_initial_embeddings(
         s_inputs, relp, features["token_bonds"], trunk.trunk.initial
     )
