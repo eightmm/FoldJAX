@@ -12,6 +12,19 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 no longer transfers its proven-zero token-bond matrix into the
+  structure graph.** The public feature mapping remains publisher-native, and
+  direct low-level calls keep the historical default. For managed predictions,
+  the existing host proof establishes that every bond is positive zero, the
+  projection is unbiased, and its post-cast weights are finite; that static
+  choice now also removes the dead `[batch, token, token, 1]` leaf from the
+  private model-bound PyTree. The graph recreates the same per-channel
+  signed-zero projection from the weights, preserving both historical
+  left-associated additions byte for byte. At 1,003 tokens this avoids
+  transferring and replicating 4,024,036 bytes per batch item; at 3,012 tokens
+  it avoids 36,288,576 bytes. These are argument-storage figures, not
+  whole-model peak or GPU latency claims.
+
 - **ESMFold2 predicts in 21.08 GiB instead of 23.47, and 1.2 s faster, with
   the same arithmetic.** Three operations in its trunk carried shapes this
   repository had already fixed in every other port, because ESMFold2 was

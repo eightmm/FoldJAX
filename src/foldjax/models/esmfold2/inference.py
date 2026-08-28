@@ -337,6 +337,29 @@ def _has_compact_token_bond_encoding(
         return False
 
 
+def _model_bound_features(
+    features: Mapping[str, np.ndarray],
+    *,
+    compact_token_bond_encoding: bool,
+) -> Mapping[str, Any]:
+    """Return the private feature tree transferred into the structure graph.
+
+    The public feature mapping keeps its historical ``token_bonds`` array for
+    direct callers and output handling.  Once the host contract above has
+    proved that the projection has the exact compact signed-zero form, the
+    quadratic all-zero leaf is dead input data: the static graph choice carries
+    all information needed to reproduce its projection.  Drop it only from a
+    shallow model-bound copy, after the existing conservative MSA narrowing.
+    """
+
+    model_features = compact_msa_storage(features)
+    if not compact_token_bond_encoding or "token_bonds" not in model_features:
+        return model_features
+    compact = dict(model_features)
+    del compact["token_bonds"]
+    return compact
+
+
 def predict(
     key: jnp.ndarray,
     features: Mapping[str, np.ndarray],
@@ -374,7 +397,16 @@ def predict(
         num_steps=num_steps,
         max_msa_depth=max_msa_depth,
     )
-    model_features = compact_msa_storage(features)
+    compact_token_bond_encoding = _has_compact_token_bond_encoding(
+        features,
+        model.parameters,
+        pair_width=settings.d_pair,
+        compute_dtype=settings.trunk_dtype,
+    )
+    model_features = _model_bound_features(
+        features,
+        compact_token_bond_encoding=compact_token_bond_encoding,
+    )
     arrays = {
         name: jnp.asarray(value)
         for name, value in model_features.items()
@@ -400,13 +432,6 @@ def predict(
     contiguous_atom_groups = (
         False if stop_after_trunk else _has_contiguous_atom_groups(features)
     )
-    compact_token_bond_encoding = _has_compact_token_bond_encoding(
-        features,
-        model.parameters,
-        pair_width=settings.d_pair,
-        compute_dtype=settings.trunk_dtype,
-    )
-
     if cp_shards > 1 and not compile_it:
         raise ValueError(
             "context parallelism requires the compiled graph; drop "

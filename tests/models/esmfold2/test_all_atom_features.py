@@ -274,7 +274,12 @@ def test_writer_metadata_never_enters_the_jax_model_tree(fake_ccd, monkeypatch) 
 
     assert int(result["ok"]) == 1
     assert not (all_atom.OUTPUT_METADATA_FEATURES & seen.keys())
-    assert set(seen) == set(built) - all_atom.OUTPUT_METADATA_FEATURES
+    assert set(seen) == (
+        set(built) - all_atom.OUTPUT_METADATA_FEATURES - {"token_bonds"}
+    )
+    # Output/writer features retain their historical public schema; only the
+    # private model-bound tree drops the host-proven dead leaf.
+    assert "token_bonds" in built
 
 
 def test_ccd_pickle_is_rejected_before_deserialization_when_unverified(

@@ -246,6 +246,83 @@ def test_inference_routes_the_zero_contract_into_the_compile_identity(
     assert routed == [True, False, False, False, False, False, True, False]
 
 
+def test_verified_zero_bonds_are_removed_only_from_the_model_bound_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    features = build_features([("AG", "A", 0, 0)])
+    settings = structure_model.ModelSettings()
+    parameters = {
+        "token_bonds.weight": jnp.ones(
+            (settings.d_pair, 1), dtype=jnp.bfloat16
+        )
+    }
+    model = SimpleNamespace(
+        settings=settings,
+        parameters=parameters,
+        esmc_parameters=None,
+        esmc_settings=None,
+    )
+    transferred: list[dict[str, jax.Array]] = []
+
+    def fake_compiled_predict(*identity):
+        def run(*args):
+            transferred.append(args[1])
+            return {}
+
+        return run
+
+    monkeypatch.setattr(inference, "compiled_predict", fake_compiled_predict)
+
+    inference.predict(jax.random.key(0), features, model)
+    assert "token_bonds" not in transferred[-1]
+    assert "token_bonds" in features
+
+    nonzero = {name: value.copy() for name, value in features.items()}
+    nonzero["token_bonds"][0, 0, 0, 0] = 1.0
+    inference.predict(jax.random.key(1), nonzero, model)
+    assert "token_bonds" in transferred[-1]
+
+
+def test_model_bound_zero_bond_compaction_removes_quadratic_storage() -> None:
+    n_tokens = 1003
+    features, _ = _contract(n_tokens=n_tokens)
+
+    compact = inference._model_bound_features(
+        features, compact_token_bond_encoding=True
+    )
+    generic = inference._model_bound_features(
+        features, compact_token_bond_encoding=False
+    )
+
+    assert "token_bonds" not in compact
+    assert generic["token_bonds"] is features["token_bonds"]
+    assert features["token_bonds"].nbytes == 4 * n_tokens * n_tokens
+
+
+def test_compact_encoding_does_not_need_the_removed_dense_leaf() -> None:
+    weight = jnp.asarray([[1.0], [-1.0], [0.0], [-0.0]], dtype=jnp.bfloat16)
+    params = {"token_bonds.weight": weight}
+    bonds = jnp.zeros((1, 3, 3, 1), dtype=jnp.float32)
+
+    dense = structure_model._token_bonds_encoding(
+        bonds, params, jnp.dtype(jnp.bfloat16)
+    )
+    compact = structure_model._token_bonds_encoding(
+        None,
+        params,
+        jnp.dtype(jnp.bfloat16),
+        compact_token_bond_encoding=True,
+    )
+
+    assert np.asarray(dense).tobytes() == np.broadcast_to(
+        np.asarray(compact), np.asarray(dense).shape
+    ).tobytes()
+    with pytest.raises(KeyError, match="token_bonds"):
+        structure_model._token_bonds_encoding(
+            None, params, jnp.dtype(jnp.bfloat16)
+        )
+
+
 def test_zero_contract_is_part_of_the_compiled_factory_cache_key() -> None:
     settings = dataclasses.replace(
         structure_model.ModelSettings(), trunk_n_layers=0, coda_n_layers=0

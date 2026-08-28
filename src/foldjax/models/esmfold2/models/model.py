@@ -374,7 +374,7 @@ def _cast(params: Params, prefixes: tuple[str, ...], dtype) -> dict:
 
 
 def _token_bonds_encoding(
-    token_bonds: jnp.ndarray,
+    token_bonds: jnp.ndarray | None,
     params: Params,
     dtype: jnp.dtype,
     *,
@@ -385,6 +385,8 @@ def _token_bonds_encoding(
     if compact_token_bond_encoding:
         weight = params["token_bonds.weight"].astype(dtype)[:, 0]
         return jnp.copysign(jnp.zeros_like(weight), weight)
+    if token_bonds is None:
+        raise KeyError("token_bonds")
     values = (
         token_bonds.astype(dtype)[..., None]
         if token_bonds.ndim == 3
@@ -844,7 +846,7 @@ def predict(
         dtype=compute,
     )
     token_bonds_encoding = _token_bonds_encoding(
-        features["token_bonds"],
+        None if compact_token_bond_encoding else features["token_bonds"],
         trunk_params,
         compute,
         compact_token_bond_encoding=compact_token_bond_encoding,
