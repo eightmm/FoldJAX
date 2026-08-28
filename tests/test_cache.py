@@ -8,6 +8,7 @@ from foldjax.api import resolve_cache_dir
 from foldjax.backends.alphafold3 import AlphaFold3Backend
 from foldjax.backends.base import Backend
 from foldjax.backends.boltz2 import Boltz2Backend
+from foldjax.backends.esmfold2 import ESMFold2Backend
 from foldjax.backends.opendde import OpenDDEBackend
 from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.cache import (
@@ -139,6 +140,54 @@ def test_neutral_and_native_sampling_share_one_cache_namespace(
     )
 
     assert neutral == native
+
+
+def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    backend = ESMFold2Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="esmfold2", input_format="foldjax"
+    )
+    explicit = dataclasses.replace(
+        omitted,
+        options={
+            "cp_devices": 1,
+            "no_language_model": False,
+            "max_msa_depth": 1024,
+        },
+    )
+
+    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(explicit) == backend.cache_profile(omitted)
+    assert resolve_cache_dir(explicit, backend) == resolve_cache_dir(omitted, backend)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("cp_devices", 2),
+        ("no_language_model", True),
+        ("max_msa_depth", 1023),
+        ("num_samples", 32),
+        ("num_steps", 14),
+        ("num_recycles", 3),
+        ("cp_devices", np.int64(1)),
+        ("max_msa_depth", np.int64(1024)),
+        ("no_language_model", 0),
+    ],
+)
+def test_esmfold2_unproven_defaults_and_lookalikes_stay_distinct(
+    tmp_path: Path, name: str, value: object
+) -> None:
+    backend = ESMFold2Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="esmfold2", input_format="foldjax"
+    )
+    changed = dataclasses.replace(omitted, options={name: value})
+
+    assert backend.cache_profile(changed) != backend.cache_profile(omitted)
+    assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
 
 
 def test_alphafold3_released_defaults_share_the_omitted_cache_namespace(

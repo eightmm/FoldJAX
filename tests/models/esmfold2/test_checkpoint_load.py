@@ -132,6 +132,22 @@ def test_settings_keep_the_published_num_loops_checkpoint_key() -> None:
     assert settings.num_recycles == 3
 
 
+def test_checkpoint_sampling_does_not_override_the_fixed_msa_cap() -> None:
+    settings = jax_model.settings_from_config(
+        {
+            "num_loops": 7,
+            "num_diffusion_samples": 9,
+            "max_msa_depth": 17,
+            "structure_head": {"inference_num_steps": 11},
+        }
+    )
+
+    assert settings.num_recycles == 7
+    assert settings.num_samples == 9
+    assert settings.diffusion.num_steps == 11
+    assert settings.max_msa_depth == 1024
+
+
 @pytest.mark.slow
 def test_the_whole_model_runs_on_the_released_weights() -> None:
     directory = _weights()

@@ -304,6 +304,8 @@ def test_inference_routes_the_atom_contract_into_the_compile_identity(
 
     from foldjax.models.esmfold2.models import model as structure_model
 
+    monkeypatch.delenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.delenv("ESMFOLD2_ATOM_ROWS_PER_BLOCK", raising=False)
     features = build_features([("AG", "A", 0, 0)])
     loaded = SimpleNamespace(
         settings=structure_model.ModelSettings(),
@@ -314,14 +316,16 @@ def test_inference_routes_the_atom_contract_into_the_compile_identity(
     routed = []
 
     def fake_compiled_predict(*identity):
-        routed.append(identity[-4])
-        assert identity[-2] is True
-        assert identity[-1] is False
+        routed.append(identity[-5])
+        assert identity[-3] is True
+        assert identity[-2] is False
+        assert identity[-1] == 256
 
         def run(*args):
-            assert args[-4] is identity[-4]
-            assert args[-2] is True
-            assert args[-1] is False
+            assert args[-5] is identity[-5]
+            assert args[-3] is True
+            assert args[-2] is False
+            assert args[-1] == identity[-1]
             return {}
 
         return run

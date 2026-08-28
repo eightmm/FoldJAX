@@ -12,6 +12,24 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **ESMFold2 atom-attention environment changes now select the matching JIT
+  graph.** The resolved `ESMFOLD2_ATOM_ATTENTION_BACKEND` and
+  `ESMFOLD2_ATOM_ROWS_PER_BLOCK` choice is part of the bounded whole-model JIT
+  identity and is pinned while that graph traces. Changing from blocked to
+  dense, or changing a blocked row width, therefore retraces instead of reusing
+  the first process value; unset and explicit spellings that resolve to the
+  same path reuse one owner. The native output, language-model, sampling,
+  context-parallel, and RNG routes are unchanged.
+
+  ESMFold2's exact `cp_devices=1`, `no_language_model=false`, and
+  `max_msa_depth=1024` spellings also reuse the omitted persistent-cache
+  namespace. Checkpoint-controlled sample, step, and recycle values remain
+  distinct, as do non-default and type-lookalike values. CPU tiny/mock tests
+  reproduce the stale blocked graph before the fix and cover trace/owner reuse,
+  distinct StableHLO for dense and blocked widths, context pinning, checkpoint
+  default boundaries, and persistent namespace separation. No released-weight
+  model compile or GPU run was performed.
+
 - **Protenix's explicit released defaults now reuse the omitted compilation-cache
   namespace.** Fixed sample/MSA/dtype/XLA-attention/automatic-chunk defaults,
   model-aware base/v2 and mini/tiny step/recycle schedules, empty native CLI

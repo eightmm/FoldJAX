@@ -68,6 +68,15 @@ DEFAULTS = {
     "max_msa_depth": 1024,
 }
 
+# These are the only ESMFold2 compile defaults whose omitted resolution is
+# independent of checkpoint configuration. Sampling defaults intentionally do
+# not appear here even when the released checkpoint happens to match DEFAULTS.
+_FIXED_COMPILE_DEFAULTS = {
+    "cp_devices": 1,
+    "no_language_model": False,
+    "max_msa_depth": DEFAULTS["max_msa_depth"],
+}
+
 
 def _esmc_asset_paths(directory: Path) -> list[Path] | None:
     """Mirror the ESMC loader's index/single/glob checkpoint resolution."""
@@ -604,6 +613,26 @@ class ESMFold2Backend(Backend):
         self._lm_embedding = embedding
         self._lm_embedding_key = key
         return embedding
+
+    def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
+        """Keep only proven fixed defaults in the omitted cache namespace.
+
+        Sampling defaults are checkpoint configuration and deliberately remain
+        distinct when written explicitly. These three values resolve without
+        reading a checkpoint: serial context parallelism, the enabled language
+        model, and FoldJAX's fixed MSA storage cap. Exact types matter because
+        ``bool`` is an ``int`` subclass and malformed lookalikes have no alias
+        proof.
+        """
+
+        profile = super().cache_profile(request)
+        for name, default in _FIXED_COMPILE_DEFAULTS.items():
+            if name not in profile:
+                continue
+            value = profile[name]
+            if type(value) is type(default) and value == default:
+                profile.pop(name)
+        return profile
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         managed_asset_profile(options)

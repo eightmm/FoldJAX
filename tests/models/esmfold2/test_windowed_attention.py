@@ -345,6 +345,17 @@ def test_an_explicit_argument_beats_the_environment(monkeypatch) -> None:
     assert atom._resolve_rows_per_block(256) == 256
 
 
+def test_a_pinned_trace_choice_beats_and_then_releases_the_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", "dense")
+    with atom._atom_rows_per_block_scope(128):
+        assert atom._resolve_rows_per_block(None) == 128
+        # The leaf API's explicit choice keeps its historical precedence.
+        assert atom._resolve_rows_per_block(0) == 0
+    assert atom._resolve_rows_per_block(None) == 0
+
+
 def test_there_is_no_auto_mode(monkeypatch) -> None:
     """A probe-driven default puts two machines on two kernels under one name."""
     monkeypatch.setenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", "auto")

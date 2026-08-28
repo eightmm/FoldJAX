@@ -80,6 +80,8 @@ def test_compiled_embedding_boundary_preserves_the_language_model_pair(
 def test_inference_marks_the_compact_input_in_the_static_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.delenv("ESMFOLD2_ATOM_ROWS_PER_BLOCK", raising=False)
     settings = structure_model.ModelSettings()
     features = {
         "asym_id": np.zeros((1, 2), dtype=np.int32),
@@ -101,10 +103,12 @@ def test_inference_marks_the_compact_input_in_the_static_identity(
     identities: list[bool] = []
 
     def fake_compiled_predict(*identity):
-        identities.append(identity[-1])
+        identities.append(identity[-2])
+        assert identity[-1] == 256
 
         def run(*args):
-            assert args[-1] is identity[-1]
+            assert args[-2] is identity[-2]
+            assert args[-1] == identity[-1]
             arrays = args[1]
             assert arrays["msa"].dtype == jnp.uint8
             assert arrays["msa_attention_mask"].dtype == jnp.bool_

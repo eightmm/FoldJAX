@@ -22,7 +22,9 @@ subtly wrong, so each convention is stated where it is used:
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import jax
 import jax.numpy as jnp
@@ -55,6 +57,25 @@ FLOAT32_EPS = float(jnp.finfo(jnp.float32).eps)
 ATOM_ROWS_PER_BLOCK = 256
 
 ATOM_ATTENTION_BACKENDS = frozenset({"dense", "blocked"})
+
+# Whole-model compilation resolves the process environment before selecting a
+# bounded JIT owner, then pins that exact value while its graph is traced. A
+# ContextVar keeps concurrent callers isolated and lets an explicit leaf-level
+# argument retain its historical precedence over both the pin and environment.
+_PINNED_ATOM_ROWS_PER_BLOCK: ContextVar[int | None] = ContextVar(
+    "esmfold2_atom_rows_per_block", default=None
+)
+
+
+@contextmanager
+def _atom_rows_per_block_scope(rows_per_block: int) -> Iterator[None]:
+    """Pin one already-resolved attention path for a whole-model trace."""
+
+    token = _PINNED_ATOM_ROWS_PER_BLOCK.set(rows_per_block)
+    try:
+        yield
+    finally:
+        _PINNED_ATOM_ROWS_PER_BLOCK.reset(token)
 
 
 def _atom_attention_backend() -> str:
@@ -108,6 +129,9 @@ def _resolve_rows_per_block(rows_per_block: int | None) -> int:
     """
     if rows_per_block is not None:
         return rows_per_block
+    pinned = _PINNED_ATOM_ROWS_PER_BLOCK.get()
+    if pinned is not None:
+        return pinned
     if _atom_attention_backend() == "dense":
         return 0
     return int(os.environ.get("ESMFOLD2_ATOM_ROWS_PER_BLOCK", ATOM_ROWS_PER_BLOCK))

@@ -166,6 +166,8 @@ def test_finite_fp32_weight_that_casts_to_bf16_infinity_falls_back() -> None:
 def test_inference_routes_the_zero_contract_into_the_compile_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("ESMFOLD2_ATOM_ATTENTION_BACKEND", raising=False)
+    monkeypatch.delenv("ESMFOLD2_ATOM_ROWS_PER_BLOCK", raising=False)
     features = build_features([("AG", "A", 0, 0)])
     settings = structure_model.ModelSettings()
     parameters = {
@@ -176,14 +178,16 @@ def test_inference_routes_the_zero_contract_into_the_compile_identity(
     routed: list[bool] = []
 
     def fake_compiled_predict(*identity):
-        routed.append(identity[-3])
-        assert identity[-2] is True
-        assert identity[-1] is False
+        routed.append(identity[-4])
+        assert identity[-3] is True
+        assert identity[-2] is False
+        assert identity[-1] == 256
 
         def run(*args):
-            assert args[-3] is identity[-3]
-            assert args[-2] is True
-            assert args[-1] is False
+            assert args[-4] is identity[-4]
+            assert args[-3] is True
+            assert args[-2] is False
+            assert args[-1] == identity[-1]
             return {}
 
         return run

@@ -37,6 +37,7 @@ from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
 from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
 from foldjax.models.esmfold2.data import all_atom as all_atom_featurisation
 from foldjax.models.esmfold2.data import features as featurisation
+from foldjax.models.esmfold2.models import atom as atom_model
 from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
 from foldjax.models.esmfold2.models.segments import MAX_ATOMS_PER_TOKEN
@@ -403,6 +404,12 @@ def predict(
         num_steps=num_steps,
         max_msa_depth=max_msa_depth,
     )
+    # Resolve the process-wide escape hatch before choosing a bounded JIT
+    # owner. The same integer is passed into the graph and pins every atom
+    # attention call during tracing, so a later environment change cannot hit
+    # an executable traced for another backend or block width. Dense is the
+    # canonical zero; blocked is its positive resolved row width.
+    atom_rows_per_block = atom_model._resolve_rows_per_block(None)
     compact_token_bond_encoding = _has_compact_token_bond_encoding(
         features,
         model.parameters,
@@ -451,7 +458,7 @@ def predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
             compact_token_bond_encoding, return_distogram_logits,
-            compact_lm_input,
+            compact_lm_input, atom_rows_per_block,
             **auxiliary_output_kwargs,
         )
         if compile_it
@@ -485,6 +492,7 @@ def predict(
             compact_token_bond_encoding,
             return_distogram_logits,
             compact_lm_input,
+            atom_rows_per_block,
             **auxiliary_output_kwargs,
         )
 
@@ -504,6 +512,7 @@ def _run(
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
     compact_lm_input: bool = False,
+    atom_rows_per_block: int | None = None,
     *,
     return_auxiliary_outputs: bool = True,
 ) -> dict[str, jnp.ndarray]:
@@ -513,22 +522,24 @@ def _run(
             f"{_active_cp_shards()} shard(s); run through `predict`, which "
             "activates context_parallel() around this call"
         )
-    return structure_model.predict(
-        key,
-        features,
-        parameters,
-        settings=settings,
-        lm_hidden_states=None if compact_lm_input else lm_hidden_states,
-        lm_embedding=lm_hidden_states if compact_lm_input else None,
-        n_chains=n_chains,
-        preserve_prefix_rng=preserve_prefix_rng,
-        return_representations=return_representations,
-        stop_after_trunk=stop_after_trunk,
-        contiguous_atom_groups=contiguous_atom_groups,
-        compact_token_bond_encoding=compact_token_bond_encoding,
-        return_distogram_logits=return_distogram_logits,
-        return_auxiliary_outputs=return_auxiliary_outputs,
-    )
+    resolved_atom_rows = atom_model._resolve_rows_per_block(atom_rows_per_block)
+    with atom_model._atom_rows_per_block_scope(resolved_atom_rows):
+        return structure_model.predict(
+            key,
+            features,
+            parameters,
+            settings=settings,
+            lm_hidden_states=None if compact_lm_input else lm_hidden_states,
+            lm_embedding=lm_hidden_states if compact_lm_input else None,
+            n_chains=n_chains,
+            preserve_prefix_rng=preserve_prefix_rng,
+            return_representations=return_representations,
+            stop_after_trunk=stop_after_trunk,
+            contiguous_atom_groups=contiguous_atom_groups,
+            compact_token_bond_encoding=compact_token_bond_encoding,
+            return_distogram_logits=return_distogram_logits,
+            return_auxiliary_outputs=return_auxiliary_outputs,
+        )
 
 
 _COMPILED_PREDICT_STATIC_ARGNAMES = (
@@ -542,6 +553,7 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "compact_token_bond_encoding",
     "return_distogram_logits",
     "compact_lm_input",
+    "atom_rows_per_block",
     "return_auxiliary_outputs",
 )
 _compiled_predict_pool = BoundedJitPool(
@@ -579,6 +591,7 @@ def _compiled_predict_factory(
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
     compact_lm_input: bool = False,
+    atom_rows_per_block: int = atom_model.ATOM_ROWS_PER_BLOCK,
     *,
     return_auxiliary_outputs: bool = True,
 ) -> _CompiledPredictFacade:
@@ -593,6 +606,7 @@ def _compiled_predict_factory(
         compact_token_bond_encoding,
         return_distogram_logits,
         compact_lm_input,
+        atom_rows_per_block,
         return_auxiliary_outputs,
     )
     return _CompiledPredictFacade()
@@ -609,6 +623,7 @@ def compiled_predict(
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
     compact_lm_input: bool = False,
+    atom_rows_per_block: int | None = None,
     *,
     return_auxiliary_outputs: bool = True,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
@@ -624,10 +639,14 @@ def compiled_predict(
     native distogram retention, and whether the language-model input is the
     raw layer stack or its separately compiled compact embedding. Each choice
     contributes to a distinct executable identity in the shared eight-entry
-    owner pool; the final writer-only result projection does too. The
-    lightweight factory facades preserve the historical callable-identity API
-    without retaining an unbounded executable set.
+    owner pool; the resolved atom-attention backend/block width and final
+    writer-only result projection do too. The atom choice is pinned for the
+    duration of tracing, so it cannot drift from the value that selected the
+    owner if the process environment changes. The lightweight factory facades
+    preserve the historical callable-identity API without retaining an
+    unbounded executable set.
     """
+    atom_rows_per_block = atom_model._resolve_rows_per_block(atom_rows_per_block)
     identity = (
         settings,
         n_chains,
@@ -639,6 +658,7 @@ def compiled_predict(
         compact_token_bond_encoding,
         return_distogram_logits,
         compact_lm_input,
+        atom_rows_per_block,
     )
     if return_auxiliary_outputs:
         return _compiled_predict_factory(*identity)

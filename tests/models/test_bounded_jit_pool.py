@@ -359,9 +359,11 @@ def test_esmfold2_static_choices_create_distinct_bounded_owners(
         False,
         True,
         False,
+        256,
     )
     compact_bonds = (*base[:11], True, *base[12:])
     no_distogram = (*base[:12], False, *base[13:])
+    dense_atom_attention = (*base[:-1], 0)
 
     pool.clear_cache()
     monkeypatch.setattr(pool, "_new", new_owner)
@@ -369,11 +371,12 @@ def test_esmfold2_static_choices_create_distinct_bounded_owners(
         pool(*base)
         pool(*compact_bonds)
         pool(*no_distogram)
-        assert pool._entry_count() == 3
-        assert len(created) == 3
+        pool(*dense_atom_attention)
+        assert pool._entry_count() == 4
+        assert len(created) == 4
 
         pool(*base)
-        assert pool._entry_count() == 3
-        assert len(created) == 3
+        assert pool._entry_count() == 4
+        assert len(created) == 4
     finally:
         pool.clear_cache()
