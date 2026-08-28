@@ -13,6 +13,7 @@ from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
+from foldjax.models.protenix.runtime_policy import MODEL_INFERENCE_DEFAULTS
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -110,6 +111,24 @@ _ESM_STAGED_PROFILES = frozenset({"mini-esm-v0.5.0", "mini-ism-v0.5.0"})
 _MANAGED_ASSET_PROFILES = {
     model_name: profile
     for profile, model_name in _PROFILE_MODEL_NAMES.items()
+}
+
+#: Model-independent compile defaults supplied by the native prediction CLI.
+#:
+#: The sampler schedule is deliberately absent: the parser leaves its step and
+#: recycle counts unset, then :data:`MODEL_INFERENCE_DEFAULTS` resolves them
+#: from the explicit model name.  Keeping these lightweight scalar values here
+#: lets cache planning stay free of the JAX model runtime.  A drift test reads
+#: the parser defaults and pins every value and exact type.
+_RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
+    "num_samples": 5,
+    "max_msa_depth": 16384,
+    "trunk_dtype": "bf16",
+    "diffusion_attention_backend": "xla_jit",
+    "trunk_single_attention_backend": "xla_jit",
+    "chunk_policy": "auto",
+    "cp_devices": 1,
+    "cp_layout": "auto",
 }
 
 
@@ -222,6 +241,8 @@ class ProtenixBackend(Backend):
         ),
     }
     compile_options = (
+        "cp_devices",
+        "cp_layout",
         "num_samples",
         "num_steps",
         "num_recycles",
@@ -313,11 +334,48 @@ class ProtenixBackend(Backend):
             )
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
-        """Include the normalized graph-output profile in cache identity."""
+        """Keep proven released-default aliases in one cache namespace.
+
+        The native CLI resolves the fixed defaults below before featurization
+        or inference, and resolves step/recycle counts from an explicit known
+        model name.  Its compiled wrapper also maps both ``cp_layout=auto`` and
+        ``cp_layout=1d`` to the same 1-D mesh.  Strip only exact type-and-value
+        matches and an actually empty validated ``cli_args`` sequence; ambient,
+        conditional, malformed, and custom routes remain distinct.
+        """
 
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
         self.validate_native_options(options)
+        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
+            if name not in profile:
+                continue
+            value = profile[name]
+            # ``bool`` is an ``int`` subclass. A merely equal lookalike must
+            # not inherit a released-default alias without parser proof.
+            if type(value) is type(default) and value == default:
+                profile.pop(name)
+
+        model_name = options.get("model_name")
+        schedule = (
+            MODEL_INFERENCE_DEFAULTS.get(model_name)
+            if isinstance(model_name, str) and model_name not in {"auto", "unknown"}
+            else None
+        )
+        if schedule is not None:
+            for name in ("num_steps", "num_recycles"):
+                default = schedule[name]
+                if name not in profile:
+                    continue
+                value = profile[name]
+                if type(value) is type(default) and value == default:
+                    profile.pop(name)
+
+        if not _extra_cli_args(options.get("cli_args", ())):
+            profile.pop("cli_args", None)
+        layout = profile.get("cp_layout")
+        if type(layout) is str and layout == "1d":
+            profile.pop("cp_layout")
         profile["return_confidence_details"] = (
             options.get("output_format", "protenix") != "protenix"
         )

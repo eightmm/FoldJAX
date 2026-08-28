@@ -12,6 +12,26 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Protenix's explicit released defaults now reuse the omitted compilation-cache
+  namespace.** Fixed sample/MSA/dtype/XLA-attention/automatic-chunk defaults,
+  model-aware base/v2 and mini/tiny step/recycle schedules, empty native CLI
+  arguments, and equivalent serial or 1-D context-parallel spellings are
+  canonicalized only after their native resolution is proven identical.
+  Device counts and 2-D CP remain distinct. The existing compact Protenix
+  writer profile and raw-NPZ/`both` profile continue to select separate graphs.
+  Model-name inference, unknown checkpoints, ambient triangle kernels,
+  resolved/manual/off chunks, non-empty CLI arguments, padding RNG routes and
+  every non-default value remain deliberately unmerged.
+
+  A CPU-only tiny integration follows the real backend through
+  `resolve_cache_dir`, the native CLI parser, model-aware policy, chunk/CP
+  resolution and a real bounded whole-model JIT owner. Omitted and explicit
+  released defaults produce byte-identical output with one parameter load,
+  trace, retained owner and executable entry. Parser, policy and CP drift,
+  exact-type guards and preserved non-aliases are regression gated. No released
+  checkpoint was compiled or run, and no GPU latency, memory or parity claim is
+  made.
+
 - **AlphaFold 3's explicit released defaults now reuse the omitted compilation
   cache namespace.** Exact Python type-and-value matches for the released
   sampling schedule, Triton attention, disabled optional outputs, automatic
