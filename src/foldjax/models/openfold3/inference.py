@@ -68,6 +68,10 @@ from foldjax.models.openfold3.models.representative_atoms import (
 )
 from foldjax.models.openfold3.models.sampler import sample_diffusion
 from foldjax.models.openfold3.models.trunk import TrunkParams, trunk
+from foldjax.models.openfold3.output import (
+    DEFAULT_ARRAY_BUDGET_BYTES,
+    plan_returned_pair_logits,
+)
 
 
 class InferenceConfig(NamedTuple):
@@ -766,6 +770,7 @@ def released_config(
     returned_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
     has_atomized_tokens: bool = True,
+    max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
 
@@ -773,6 +778,11 @@ def released_config(
     ``projects/of3_all_atom/config/model_config.py``, which is the same file the
     released checkpoints were produced under. Only the sizes that depend on the
     input (token/atom counts) and the sampling knobs are arguments.
+
+    ``max_array_bytes`` mirrors the raw-array writer's explicit budget when
+    deciding which quadratic pair logits become static graph outputs. ``None``
+    returns all three distributions; callers must also give the writer the same
+    value if they intend to persist them.
 
     Verify against the checkpoint before trusting this: run
     ``openfold3-jax-inspect-checkpoint`` and check the block counts against
@@ -785,13 +795,13 @@ def released_config(
         if isinstance(pair_chunk_size, str)
         else pair_chunk_size
     )
-    from foldjax.models.openfold3.output import plan_returned_pair_logits
-
     return InferenceConfig(
         n_token=n_token,
         n_atom=n_atom,
         returned_pair_logits=plan_returned_pair_logits(
-            n_token=n_token, num_samples=num_samples
+            n_token=n_token,
+            num_samples=num_samples,
+            max_bytes=max_array_bytes,
         ),
         n_query=32,
         n_key=128,

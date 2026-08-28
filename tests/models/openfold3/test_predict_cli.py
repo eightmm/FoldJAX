@@ -26,9 +26,11 @@ from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
 )
 from foldjax.models.openfold3.output import (
+    DEFAULT_ARRAY_BUDGET_BYTES,
     _output_path,
     _safe_output_name,
     atom_metadata,
+    plan_returned_pair_logits,
 )
 
 from .feature_fixture import minimal_features
@@ -69,6 +71,13 @@ def test_defaults_match_the_released_settings() -> None:
     assert args.all_arrays is False
     assert args.cache_dir is None
     assert args.no_cache is False
+
+
+def test_all_arrays_help_keeps_the_quadratic_memory_warning() -> None:
+    help_text = " ".join(_parser().format_help().split())
+    assert "--all-arrays" in help_text
+    assert "over 10 GiB at 2000 tokens" in help_text
+    assert "explicit 4 GiB budget" in help_text
 
 
 def _table() -> RepresentativeAtomTable:
@@ -208,8 +217,11 @@ def test_openfold3_msa_depth_is_a_cap_on_the_released_default(
 
 
 @pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
+@pytest.mark.parametrize(
+    "all_arrays", [False, True], ids=["budgeted-arrays", "all-arrays"]
+)
 def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_padding(
-    tmp_path: Path, monkeypatch, eager: bool
+    tmp_path: Path, monkeypatch, eager: bool, all_arrays: bool
 ) -> None:
     import jax
     import jax.numpy as jnp
@@ -249,6 +261,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
 
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
+        seen["config_array_budget"] = kwargs["max_array_bytes"]
         return SimpleNamespace(
             msa_depth=1024,
             num_samples=5,
@@ -310,15 +323,18 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         "devices",
         lambda: [SimpleNamespace(memory_stats=lambda: None)],
     )
-    monkeypatch.setattr(
-        output,
-        "write_prediction_outputs",
-        lambda *args, **kwargs: {
+
+    def fake_write_prediction_outputs(*args, **kwargs):
+        seen["writer_array_budget"] = kwargs["max_array_bytes"]
+        return {
             "structures": (),
             "scores": tmp_path / "scores.json",
             "arrays": tmp_path / "raw.npz",
             "omitted_arrays": (),
-        },
+        }
+
+    monkeypatch.setattr(
+        output, "write_prediction_outputs", fake_write_prediction_outputs
     )
 
     features_path = tmp_path / "features.npz"
@@ -335,12 +351,17 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     ]
     if eager:
         argv.append("--no-compile")
+    if all_arrays:
+        argv.append("--all-arrays")
 
     assert main(argv) == 0
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
     if not eager:
         assert seen["compile_options"] == {"cache_scope": None}
+    expected_budget = None if all_arrays else DEFAULT_ARRAY_BUDGET_BYTES
+    assert seen["config_array_budget"] == expected_budget
+    assert seen["writer_array_budget"] == expected_budget
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
     np.testing.assert_array_equal(seen["compact_asym_id"], [[0, 1, 0]])
     assert checkpoint_events == [
@@ -349,6 +370,61 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         ("prune", checkpoint_state, "resolved"),
         ("map", checkpoint_state, "resolved"),
     ]
+
+
+def test_all_arrays_restores_every_pair_logit_above_the_default_budget() -> None:
+    """The writer cannot save an array the compiled graph never returned."""
+    from foldjax.models.openfold3.inference import released_config
+
+    n_token = 2076
+    budgeted = released_config(n_token=n_token, n_atom=1)
+    unrestricted = released_config(
+        n_token=n_token,
+        n_atom=1,
+        max_array_bytes=None,
+    )
+
+    assert budgeted.returned_pair_logits == plan_returned_pair_logits(
+        n_token=n_token,
+        num_samples=budgeted.num_samples,
+        max_bytes=DEFAULT_ARRAY_BUDGET_BYTES,
+    )
+    assert budgeted.returned_pair_logits == ("distogram_logits",)
+    assert unrestricted.returned_pair_logits == (
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+    )
+    assert budgeted.returned_representations == ()
+    assert unrestricted.returned_representations == ()
+
+
+def test_pair_logit_planner_keeps_the_exact_budget_boundary() -> None:
+    n_token = 3
+    num_samples = 2
+    bins = 1
+    pair = n_token * n_token
+    pae_bytes = num_samples * pair * bins * 4
+    pde_bytes = pae_bytes
+    distogram_bytes = pair * bins * 4
+    exact_budget = 64 * 2**20 + pae_bytes + pde_bytes + distogram_bytes
+    kwargs = {
+        "n_token": n_token,
+        "num_samples": num_samples,
+        "pae_bins": bins,
+        "pde_bins": bins,
+        "distogram_bins": bins,
+    }
+
+    assert plan_returned_pair_logits(max_bytes=exact_budget, **kwargs) == (
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+    )
+    assert plan_returned_pair_logits(max_bytes=exact_budget - 1, **kwargs) == (
+        "pde_logits",
+        "distogram_logits",
+    )
 
 
 def test_incomplete_features_are_refused(tmp_path: Path, capsys) -> None:

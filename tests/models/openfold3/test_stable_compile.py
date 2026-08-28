@@ -149,6 +149,51 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
         inference._compiled_predict.clear_cache()
 
 
+def test_pair_logit_selection_partitions_the_stable_jit(monkeypatch) -> None:
+    """Budgeted and all-array graphs cannot share a stale output signature."""
+    traces: list[tuple[str, ...]] = []
+
+    def tiny_predict(
+        key,
+        batch,
+        params,
+        config,
+        representative_atoms,
+        **kwargs,
+    ):
+        del key, params, representative_atoms, kwargs
+        traces.append(config.returned_pair_logits)
+        return batch["x"]
+
+    monkeypatch.setattr(inference, "predict", tiny_predict)
+    inference._compiled_predict.clear_cache()
+    args = (
+        jax.random.key(0),
+        {"x": jnp.ones((4,), dtype=jnp.float32)},
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    budgeted = inference.released_config(n_token=2076, n_atom=1)
+    unrestricted = inference.released_config(
+        n_token=2076,
+        n_atom=1,
+        max_array_bytes=None,
+    )
+
+    try:
+        first = inference.compile_predict(budgeted, _table())(*args)
+        repeated = inference.compile_predict(budgeted, _table())(*args)
+        all_arrays = inference.compile_predict(unrestricted, _table())(*args)
+        jax.block_until_ready((first, repeated, all_arrays))
+
+        assert traces == [
+            ("distogram_logits",),
+            ("pae_logits", "pde_logits", "distogram_logits"),
+        ]
+        assert inference._compiled_predict._cache_size() == 2
+    finally:
+        inference._compiled_predict.clear_cache()
+
+
 def test_compact_and_dense_batch_trees_have_distinct_bounded_cache_entries(
     monkeypatch,
 ) -> None:

@@ -505,7 +505,8 @@ def write_scores(
 
 #: Size above which :func:`write_arrays` leaves the per-bin pair logits out. They
 #: are quadratic in token count *and* carry a bin axis, so they dominate the file:
-#: PAE and PDE together are 51 GiB at 2076 tokens against 1 MB of coordinates.
+#: PAE and PDE together are 10.3 GiB at 2076 tokens and five samples, before the
+#: 1.0 GiB distogram, against about 1 MB of coordinates.
 DEFAULT_ARRAY_BUDGET_BYTES = 4 * 2**30
 
 #: Arrays that are per-bin distributions over token pairs. Everything else a
@@ -566,9 +567,10 @@ def plan_returned_pair_logits(
     the only divergence is inside that 64 MiB band, where an array narrowly
     inside the budget is not returned at all.
 
-    The point is where the decision lands: an excluded array is never an entry
-    output of the compiled program, instead of being hauled out -- 21.6 GiB at
-    3,012 tokens and five samples -- and then discarded unwritten.
+    The point is where the decision lands: an excluded array is not required as
+    an entry output of the compiled program. Inference can then sink metrics or
+    eliminate unused heads before those tensors cross the graph boundary, rather
+    than relying on the writer to discard them after materialization.
     """
     if max_bytes is None:
         return _PAIR_LOGIT_NAMES
@@ -597,8 +599,9 @@ def write_arrays(
 ) -> tuple[Path, tuple[str, ...]]:
     """Write a prediction's arrays to ``.npz``, and say what was left out.
 
-    The pair logits are `[num_samples, N_token, N_token, n_bin]`, so at 2076 tokens PAE
-    and PDE are 25.7 GiB each and the distogram another 5.1. Writing them
+    PAE and PDE are `[num_samples, N_token, N_token, n_bin]`, so at 2076 tokens
+    and five samples they are 5.1 GiB each and the sample-independent distogram
+    is another 1.0 GiB. Writing them
     unconditionally turns a prediction that takes eight minutes to compute into one
     that spends longer than that saving a file most callers will not read. Above
     ``max_bytes`` they are omitted; ``None`` writes everything.
@@ -942,7 +945,7 @@ def write_prediction_outputs(
     """Write every sample's structure plus the scores and raw arrays.
 
     ``max_array_bytes`` caps the ``.npz``; see :func:`write_arrays` for what it drops
-    and why. ``None`` writes everything, which at 2000 tokens is over 50 GiB.
+    and why. ``None`` writes everything, which at 2000 tokens is over 10 GiB.
 
     Returns a mapping of what was written, so a caller does not have to reconstruct
     the filenames. ``omitted_arrays`` names anything the cap left out.

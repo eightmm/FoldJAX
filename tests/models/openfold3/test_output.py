@@ -374,7 +374,7 @@ def test_write_arrays_keeps_everything_when_it_fits(tmp_path) -> None:
 def test_write_arrays_drops_pair_logits_over_the_budget(tmp_path) -> None:
     """The logits are quadratic in tokens with a bin axis on top.
 
-    At 2076 tokens PAE and PDE are 25.7 GiB each, so writing them turns a
+    At 2076 tokens PAE and PDE are 5.14 GiB each, so writing them turns a
     prediction into a file nobody asked for. What must never be dropped is anything
     the reported scores come from.
     """

@@ -12,6 +12,17 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3's standalone `--all-arrays` now reaches the compiled graph as well
+  as the writer.** On large targets the command previously removed PAE/PDE pair
+  logits under the default 4 GiB output plan before inference, then disabled only
+  the writer's limit; a writer cannot save arrays the graph returned as `None`.
+  The CLI now gives config planning and output writing one explicit budget, with
+  `None` selecting all PAE, PDE and distogram logits before compilation. The
+  ordinary standalone path, common backend, raw APIs, and 4 GiB default are
+  unchanged. The all-array graph has its own compilation-cache identity, and the
+  existing warning now reports the released five-sample payload accurately:
+  more than 10 GiB at 2,000 tokens before other outputs.
+
 - **OpenDDE evaluates all shape-complementarity samples through one bounded
   compiled body.** Token ownership, representative atoms and chain metadata
   are now resolved once on the host; the dynamic coordinates then cross one

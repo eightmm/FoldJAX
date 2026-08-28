@@ -95,9 +95,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--all-arrays",
         action="store_true",
-        help="write the per-bin PAE/PDE/distogram logits whatever their size. They "
-        "are [samples, tokens, tokens, bins], so at 2000 tokens they are over "
-        "50 GiB; by default they are omitted once the file would exceed 4 GiB",
+        help="keep and write the per-bin PAE/PDE/distogram logits whatever their "
+        "size. At the released five samples they total over 10 GiB at 2000 "
+        "tokens; by default they are omitted once the raw arrays would exceed "
+        "the explicit 4 GiB budget",
     )
     parser.add_argument(
         "--repeats",
@@ -216,6 +217,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     overrides["has_atomized_tokens"] = (
         args.stop_after != "trunk" and has_atomized_tokens(raw)
     )
+    array_budget_bytes = None if args.all_arrays else DEFAULT_ARRAY_BUDGET_BYTES
+    # The config decides which quadratic logits cross the JIT boundary, while
+    # the writer independently decides which arrays reach disk. Keep both on one
+    # explicit budget so --all-arrays cannot ask the writer for outputs the graph
+    # discarded before inference started.
+    overrides["max_array_bytes"] = array_budget_bytes
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
     # Keep a full alignment on the host only. At long sequences it can be
     # several GiB, so converting before this cut defeats the memory saving.
@@ -326,7 +333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         features,
         args.output,
         name=args.name or args.features.stem,
-        max_array_bytes=None if args.all_arrays else DEFAULT_ARRAY_BUDGET_BYTES,
+        max_array_bytes=array_budget_bytes,
         output_metadata=output_metadata,
     )
     for path in written["structures"]:

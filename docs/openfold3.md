@@ -223,6 +223,15 @@ The standalone `openfold3-jax-predict` command also enables the persistent
 cache by default. Use `--cache-dir` to choose its location or `--no-cache` for
 an intentionally ephemeral run.
 
+Its raw-array output has an explicit 4 GiB default budget. Before compilation,
+that same budget removes PAE, PDE, or distogram per-bin logits that the writer
+would discard, so large unused arrays do not cross the JIT boundary. Pass
+`--all-arrays` to disable both limits and retain all three distributions. This
+does not include trunk representations, which remain controlled separately by
+`--representations`. At the released five samples and 64 bins, the three pair
+distributions total more than 10 GiB at 2,000 tokens, so the override can raise
+device and host memory as well as output size substantially.
+
 The backend used to ignore that cache, which made it the one model least able to
 afford doing so. It no longer does.
 
