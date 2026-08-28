@@ -72,15 +72,6 @@ def msa_module_forward(
     matter how well the sampler is matched. ``None`` (default) is inert.
     """
 
-    # Equivalent to one_hot(msa, num_tokens) @ kernel[:num_tokens] but without
-    # materializing the [batch, num_seq, N, num_tokens] one-hot tensor.
-    # Concatenation order in the original code is: one-hot block (rows
-    # [0:num_tokens]), then has_deletion, deletion_value, msa_paired
-    # (rows [num_tokens:num_tokens+3]). Split the kernel at call time; the
-    # stored param pytree is left unchanged.
-    kernel = params["msa_proj"]["kernel"]
-    kernel_onehot = kernel[:num_tokens]  # [num_tokens, d]
-    kernel_extra = kernel[num_tokens:]  # [3, d]
     # Subsample MSA depth (axis 1) to num_subsampled_msa, matching Boltz CLI's
     # inference-time cap; take the first rows (deterministic, query-first order).
     msa_d = feats["msa"]
@@ -105,12 +96,15 @@ def msa_module_forward(
         del_val = jnp.take(del_val, rows, axis=1)
         msa_paired = jnp.take(msa_paired, rows, axis=1)
         msa_mask = jnp.take(msa_mask, rows, axis=1)
-    msa_idx = msa_d.astype(jnp.int32)
-    extra = jnp.stack((has_del, del_val, msa_paired), axis=-1).astype(
-        kernel_extra.dtype
+    m = _msa_input_embedding(
+        params,
+        emb,
+        msa_d,
+        has_del,
+        del_val,
+        msa_paired,
+        num_tokens=num_tokens,
     )
-    m = kernel_onehot[msa_idx] + _linear(extra, kernel_extra)
-    m = m + _linear(emb, params["s_proj"]["kernel"])[:, None]
 
     token_mask = feats["token_pad_mask"].astype(m.dtype)
     token_mask = token_mask[:, :, None] * token_mask[:, None, :]
@@ -161,6 +155,43 @@ def msa_module_forward(
 
     (z, m), _ = jax.lax.scan(body, (z, m), stacked)
     return z
+
+
+def _msa_input_embedding(
+    params: Params,
+    emb: jnp.ndarray,
+    msa: jnp.ndarray,
+    has_deletion: jnp.ndarray,
+    deletion_value: jnp.ndarray,
+    msa_paired: jnp.ndarray,
+    *,
+    num_tokens: int,
+) -> jnp.ndarray:
+    """Project one compact or publisher-native Boltz MSA feature block."""
+
+    # Equivalent to one_hot(msa, num_tokens) @ kernel[:num_tokens] but without
+    # materializing the [batch, num_seq, N, num_tokens] one-hot tensor.
+    # Concatenation order in the original code is: one-hot block (rows
+    # [0:num_tokens]), then has_deletion, deletion_value, msa_paired
+    # (rows [num_tokens:num_tokens+3]). Split the kernel at call time; the
+    # stored param pytree is left unchanged.
+    kernel = params["msa_proj"]["kernel"]
+    kernel_onehot = kernel[:num_tokens]  # [num_tokens, d]
+    kernel_extra = kernel[num_tokens:]  # [3, d]
+    msa_idx = msa.astype(jnp.int32)
+    # The high-level path stores exact binary MSA flags as bool.  Cast every
+    # lane to the historical projection dtype before stacking; this is also
+    # robust under JAX's strict dtype-promotion mode and leaves custom callers'
+    # numerical values unchanged.
+    extra = jnp.stack(
+        tuple(
+            jnp.asarray(value, dtype=kernel_extra.dtype)
+            for value in (has_deletion, deletion_value, msa_paired)
+        ),
+        axis=-1,
+    )
+    m = kernel_onehot[msa_idx] + _linear(extra, kernel_extra)
+    return m + _linear(emb, params["s_proj"]["kernel"])[:, None]
 
 
 def msa_layer_forward(

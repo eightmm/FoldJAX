@@ -496,6 +496,19 @@ def test_msa_module_builds_msa_embedding_and_discovers_blocks() -> None:
     s_inputs = rng.normal(size=(3, 5)).astype(np.float32)
 
     actual = msa_module(features, jnp.asarray(z), jnp.asarray(s_inputs), None, params)
+    compact_features = {
+        **features,
+        "msa": features["msa"].astype(jnp.uint8),
+        "has_deletion": features["has_deletion"].astype(bool),
+    }
+    with jax.numpy_dtype_promotion("strict"):
+        compact = msa_module(
+            compact_features,
+            jnp.asarray(z),
+            jnp.asarray(s_inputs),
+            None,
+            params,
+        )
     padded = msa_module(
         pad_msa_features_to_bucket(features, bucket_size=4),
         jnp.asarray(z),
@@ -515,6 +528,7 @@ def test_msa_module_builds_msa_embedding_and_discovers_blocks() -> None:
     assert len(params.blocks) == 2
     assert params.blocks[-1].msa_pair_weighted_averaging is None
     assert actual.shape == (3, 3, 4)
+    np.testing.assert_array_equal(np.asarray(compact), np.asarray(actual))
     np.testing.assert_allclose(
         np.asarray(padded), np.asarray(actual), rtol=1e-6, atol=2e-5
     )

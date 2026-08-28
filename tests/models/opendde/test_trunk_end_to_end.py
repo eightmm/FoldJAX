@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 from foldjax.api import predict
+from foldjax.models import _representations
 from foldjax.paths import weights_dir
 from foldjax.schema import PredictionRequest
 
@@ -66,10 +67,10 @@ def test_the_residue_trunk_runs_on_the_released_weights(tmp_path) -> None:
         "the trunk produced no representations; "
         f"{sorted(p.name for p in tmp_path.iterdir())}"
     )
-    with np.load(written) as arrays:
-        names = set(arrays.files)
-        assert {"single", "pair"} <= names, names
-        single, pair = np.asarray(arrays["single"]), np.asarray(arrays["pair"])
+    arrays = _representations.load(tmp_path)
+    names = set(arrays)
+    assert {"single", "pair"} <= names, names
+    single, pair = np.asarray(arrays["single"]), np.asarray(arrays["pair"])
 
     # Shape rather than value: the point is that the trunk ran, not what it
     # concluded. `single` is per token, `pair` is per token pair.

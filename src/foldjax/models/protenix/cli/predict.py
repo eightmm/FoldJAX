@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax.models import _representations
+from foldjax.models._feature_storage import compact_msa_storage
 
 # Private backend capability: defer request-scoped reuse until after this CLI
 # has parsed argv, selected its platform and materialised ESM conditioning.
@@ -736,6 +737,11 @@ def main(
                         f"{job['name']}: MSA rows aligned: "
                         f"{original_msa_rows} -> {aligned_msa_rows}"
                     )
+            # Compact only the private prediction tree; the public featurizer
+            # remains publisher-compatible.  Taking this snapshot after the
+            # compaction also avoids retaining the wide native MSA arrays next
+            # to their model-bound copies for the duration of the run.
+            features = compact_msa_storage(features)
             job["output_features"] = features
             if padding_config is not None:
                 from foldjax.models.protenix.data.padding import (
@@ -793,7 +799,9 @@ def main(
             # multiplicity so the average is unchanged. After padding, because
             # `pad_protenix_features` requires the native depth of four.
             # `output_features` was snapshotted above and keeps its rows.
-            job["features"] = dedup_templates(job["features"])
+            job["features"] = compact_msa_storage(
+                dedup_templates(job["features"])
+            )
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(str(exc)) from exc
 

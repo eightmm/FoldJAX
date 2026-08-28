@@ -31,6 +31,7 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
 from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
@@ -373,9 +374,10 @@ def predict(
         num_steps=num_steps,
         max_msa_depth=max_msa_depth,
     )
+    model_features = compact_msa_storage(features)
     arrays = {
         name: jnp.asarray(value)
-        for name, value in features.items()
+        for name, value in model_features.items()
         if name not in all_atom_featurisation.OUTPUT_METADATA_FEATURES
     }
     if precomputed_lm_states is not None and precomputed_lm_embedding is not None:

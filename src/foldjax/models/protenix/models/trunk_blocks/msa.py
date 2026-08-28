@@ -478,12 +478,20 @@ def msa_module(
     if msa.ndim < 2:
         return z
 
-    msa_one_hot = jnp.eye(32, dtype=s_inputs.dtype)[msa]
+    # High-level prediction stores the categorical alignment as uint8.  The
+    # explicit index cast restores the historical JAX int32 operand without
+    # changing the public/direct feature contract.
+    msa_one_hot = jnp.eye(32, dtype=s_inputs.dtype)[
+        jnp.asarray(msa, dtype=jnp.int32)
+    ]
     target_shape = msa_one_hot.shape[:-1]
+    has_deletion = input_feature_dict["has_deletion"]
+    if jnp.issubdtype(has_deletion.dtype, jnp.bool_):
+        has_deletion = has_deletion.astype(msa_one_hot.dtype)
     msa_sample = jnp.concatenate(
         [
             msa_one_hot,
-            input_feature_dict["has_deletion"].reshape(target_shape + (1,)),
+            has_deletion.reshape(target_shape + (1,)),
             input_feature_dict["deletion_value"].reshape(target_shape + (1,)),
         ],
         axis=-1,

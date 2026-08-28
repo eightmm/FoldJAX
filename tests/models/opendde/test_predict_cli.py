@@ -116,6 +116,28 @@ def test_predict_drops_raw_msa_after_default_cycle_sampling(
     assert all(cycle["msa"].shape == (5, 3) for cycle in sampled)
 
 
+def test_predict_compacts_complete_binary_msa_cycles(monkeypatch) -> None:
+    captured = _capture_predict_route(monkeypatch)
+    features = _raw_msa_features()
+    shape = np.shape(features["msa"])
+    features["has_deletion"] = (
+        np.arange(np.prod(shape)).reshape(shape) % 2
+    ).astype(np.float32)
+    features["deletion_value"] = np.linspace(
+        0.0, 1.0, np.prod(shape), dtype=np.float32
+    ).reshape(shape)
+
+    predict_impl._predict(features, _params_double(), **_predict_kwargs())
+
+    sampled = captured["kwargs"]["cycle_msa_features"]
+    assert len(sampled) == 2
+    for cycle in sampled:
+        assert cycle["msa"].dtype == np.uint8
+        assert cycle["has_deletion"].dtype == np.bool_
+        assert cycle["msa_mask"].dtype == np.bool_
+        assert cycle["deletion_value"].dtype == np.float32
+
+
 @pytest.mark.parametrize("fallback", ["none", "incomplete"])
 def test_predict_preserves_direct_msa_fallback(monkeypatch, fallback: str) -> None:
     captured = _capture_predict_route(monkeypatch)

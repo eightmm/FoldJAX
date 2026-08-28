@@ -85,6 +85,10 @@ def test_inference_marks_the_compact_input_in_the_static_identity(
         "asym_id": np.zeros((1, 2), dtype=np.int32),
         "token_attention_mask": np.ones((1, 2), dtype=bool),
         "token_bonds": np.ones((1, 2, 2, 1), dtype=np.float32),
+        "msa": np.asarray([[[0, 32], [1, 2]]], dtype=np.int64),
+        "msa_attention_mask": np.ones((1, 2, 2), dtype=np.float32),
+        "has_deletion": np.asarray([[[0.0, 1.0], [1.0, 0.0]]], dtype=np.float32),
+        "deletion_value": np.zeros((1, 2, 2), dtype=np.float32),
     }
     loaded = inference.LoadedModel(
         parameters={
@@ -101,6 +105,11 @@ def test_inference_marks_the_compact_input_in_the_static_identity(
 
         def run(*args):
             assert args[-1] is identity[-1]
+            arrays = args[1]
+            assert arrays["msa"].dtype == jnp.uint8
+            assert arrays["msa_attention_mask"].dtype == jnp.bool_
+            assert arrays["has_deletion"].dtype == jnp.bool_
+            assert arrays["deletion_value"].dtype == jnp.float32
             return {}
 
         return run

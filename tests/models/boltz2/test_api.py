@@ -297,6 +297,64 @@ def test_nonsteering_exact_and_bucket_routes_filter_dead_features(
     assert "writer_only" not in seen[0]
 
 
+def test_api_routes_compact_msa_storage_to_the_model(tmp_path, monkeypatch) -> None:
+    feats = _fake_features(affinity=False)
+    shape = (1, 3, 2)
+    feats.update(
+        msa=(np.arange(np.prod(shape), dtype=np.int64) % 32).reshape(shape),
+        has_deletion=(np.arange(np.prod(shape)).reshape(shape) % 2).astype(bool),
+        deletion_value=np.linspace(
+            0.0, 1.0, np.prod(shape), dtype=np.float32
+        ).reshape(shape),
+        msa_paired=np.ones(shape, dtype=np.float32),
+        msa_mask=np.ones(shape, dtype=np.int64),
+    )
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+    captured = {}
+
+    def fake_predict(_params, model_features, _key, **_kwargs):
+        captured.update(
+            {
+                name: model_features[name].dtype
+                for name in (
+                    "msa",
+                    "has_deletion",
+                    "deletion_value",
+                    "msa_paired",
+                    "msa_mask",
+                )
+            }
+        )
+        return {
+            "sample_atom_coords": jnp.zeros((1, 3, 3)),
+            "plddt": jnp.ones((1, 2)),
+            "iptm": jnp.ones((1,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+
+    api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        num_steps=1,
+    )
+
+    assert captured == {
+        "msa": np.dtype(np.uint8),
+        "has_deletion": np.dtype(np.bool_),
+        "deletion_value": np.dtype(np.float32),
+        "msa_paired": np.dtype(np.bool_),
+        "msa_mask": np.dtype(np.bool_),
+    }
+
+
 def test_active_steering_retains_variable_and_host_features(
     tmp_path, monkeypatch
 ) -> None:

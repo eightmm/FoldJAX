@@ -9,6 +9,7 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._cp import cp_shards as _active_cp_shards
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
@@ -1392,28 +1393,48 @@ def confidence_head(
     atom_to_token_idx = input_feature_dict["atom_to_token_idx"]
     atom_to_tokatom_idx = input_feature_dict["atom_to_tokatom_idx"]
 
-    outputs = []
-    for sample_index in range(num_samples):
-        outputs.append(
-            confidence_head_single_sample(
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                pair_mask,
-                jnp.take(x_pred_rep_coords, sample_index, axis=-3),
-                atom_to_token_idx,
-                atom_to_tokatom_idx,
-                params,
-                use_embedding=use_embedding,
-                compact_distance_bins=compact_distance_bins,
-                use_scan=use_scan,
-                triangle_mul_chunk_size=triangle_mul_chunk_size,
-                triangle_att_q_chunk_size=triangle_att_q_chunk_size,
-                single_att_q_chunk_size=single_att_q_chunk_size,
-                triangle_attention_backend=triangle_attention_backend,
-            )
+    def one_sample(coordinates):
+        return confidence_head_single_sample(
+            s_inputs,
+            s_trunk,
+            z_trunk,
+            pair_mask,
+            coordinates,
+            atom_to_token_idx,
+            atom_to_tokatom_idx,
+            params,
+            use_embedding=use_embedding,
+            compact_distance_bins=compact_distance_bins,
+            use_scan=use_scan,
+            triangle_mul_chunk_size=triangle_mul_chunk_size,
+            triangle_att_q_chunk_size=triangle_att_q_chunk_size,
+            single_att_q_chunk_size=single_att_q_chunk_size,
+            triangle_attention_backend=triangle_attention_backend,
         )
 
+    if _active_cp_shards() == 1 and num_samples > 1:
+        # The publisher evaluates samples sequentially to bound pair memory.
+        # A Python loop writes one complete confidence head per sample into the
+        # JIT module before stacking the results. ``lax.map`` keeps the same
+        # sample-local arithmetic and output axes but traces the body once.
+        mapped = jax.lax.map(
+            one_sample,
+            jnp.moveaxis(x_pred_rep_coords, -3, 0),
+        )
+        return {
+            "plddt": jnp.moveaxis(mapped["plddt"], 0, -3),
+            "pae": jnp.moveaxis(mapped["pae"], 0, -4),
+            "pde": jnp.moveaxis(mapped["pde"], 0, -4),
+            "resolved": jnp.moveaxis(mapped["resolved"], 0, -3),
+        }
+
+    # A scan/map carry can make SPMD gather a sharded pair tensor around the
+    # loop.  Preserve the historical unrolled CP program until a distributed
+    # sample loop has its own placement contract and GPU evidence.
+    outputs = [
+        one_sample(jnp.take(x_pred_rep_coords, sample_index, axis=-3))
+        for sample_index in range(num_samples)
+    ]
     return {
         "plddt": jnp.stack([out["plddt"] for out in outputs], axis=-3),
         "pae": jnp.stack([out["pae"] for out in outputs], axis=-4),

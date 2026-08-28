@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from foldjax.models import _capture, _representations
+from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
@@ -661,6 +662,13 @@ def predict(
             padding_plan.target["atoms"],
             target_msa=padding_plan.target["msa"],
         )
+
+    # The public featurizer keeps publisher-native int64/float masks.  The
+    # model immediately narrows the residue ids for indexing and casts binary
+    # fields at their first arithmetic use, so retain only the compact storage
+    # representation in the graph-bound tree.  Conservative custom layouts
+    # fall back by identity inside the helper.
+    feats_np = compact_msa_storage(feats_np)
 
     if cp_atom_active:
         atom_to_token = np.asarray(feats_np["atom_to_token"])

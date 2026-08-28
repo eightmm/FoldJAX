@@ -12,6 +12,30 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Model-bound MSA storage is compact without changing MSA arithmetic.**
+  Protenix, OpenDDE, Boltz-2 and ESMFold2 keep publisher-native feature dtypes
+  at their public featurizer boundary, then store categorical ids as `uint8`
+  and exact unsigned masks/flags as `bool` in the private graph input. The
+  first consuming operation explicitly restores the historical index or
+  compute dtype. Negative zero, fractional/non-finite masks, negative ids and
+  unsupported custom arrays retain the original mapping by identity. At
+  16,384 MSA rows and 1,003 tokens, an isolated bfloat16 CPU compile of the
+  shared 34-channel MSA projection reduced entry arguments from 164,335,872 to
+  82,170,112 bytes; output and the 6,441,795,584-byte one-hot projection temp
+  were unchanged. This is argument-transfer/replication compaction, not yet the
+  separate one-hot arithmetic optimization, and no GPU peak claim is made.
+
+- **Serial confidence samples trace one head body rather than one body per
+  sample.** Protenix and the OpenDDE path that shares its confidence head now
+  use `lax.map` when there is more than one sample on one device. The
+  single-sample and context-parallel programs retain their historical
+  unrolled route, because a loop carry needs its own distributed placement
+  evidence before it may replace that graph. In an isolated five-sample,
+  128-token CPU head probe, all four outputs were byte-identical while
+  StableHLO fell from 112,415 to 31,568 bytes, compile time from 91 to 58 ms,
+  and executable temp from 1,968,136 to 788,232 bytes. These are stage-only
+  compiler measurements, not whole-model or GPU latency claims.
+
 - **Both precision axes are now written down with measurements behind them.**
   `docs/engineering-notes.md` carries a per-model table of element width and
   matmul precision, each read off its upstream with a file:line, and says

@@ -23,6 +23,7 @@ from foldjax.models.protenix.models.heads.confidence import (
     compute_contact_prob,
     confidence_distance_embedding,
     confidence_head,
+    confidence_head_single_sample,
     confidence_one_hot,
     confidence_output_logits,
     confidence_scores_from_logits,
@@ -615,11 +616,133 @@ def test_confidence_head_stacks_sample_axis_like_protenix() -> None:
         x_pred_coords=coordinates,
         params=params,
     )
+    per_sample = [
+        confidence_head_single_sample(
+            jnp.zeros((2, 3), dtype=jnp.float32),
+            jnp.zeros((2, 2), dtype=jnp.float32),
+            jnp.zeros((2, 2, 2), dtype=jnp.float32),
+            None,
+            sample[:2],
+            jnp.asarray([0, 1, 1]),
+            jnp.asarray([0, 0, 1]),
+            params,
+        )
+        for sample in coordinates
+    ]
+    expected = jax.tree.map(lambda *values: jnp.stack(values), *per_sample)
 
     assert output["plddt"].shape == (2, 3, 2)
     assert output["pae"].shape == (2, 2, 2, 1)
     assert output["pde"].shape == (2, 2, 2, 1)
     assert output["resolved"].shape == (2, 3, 1)
+    for name in output:
+        np.testing.assert_array_equal(
+            np.asarray(output[name]), np.asarray(expected[name])
+        )
+
+
+def test_confidence_mapped_loop_preserves_leading_batch_axes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from foldjax.models.protenix.models.heads import confidence as confidence_impl
+
+    def fake_single_sample(*args, **kwargs):
+        del kwargs
+        coordinates = args[4]
+        atom = coordinates[..., :1]
+        pair = atom[..., :, None, :] + atom[..., None, :, :]
+        return {
+            "plddt": atom,
+            "pae": pair,
+            "pde": pair + 1,
+            "resolved": atom + 1,
+        }
+
+    monkeypatch.setattr(
+        confidence_impl,
+        "confidence_head_single_sample",
+        fake_single_sample,
+    )
+    features = {
+        "distogram_rep_atom_mask": jnp.asarray([1, 1, 0]),
+        "atom_to_token_idx": jnp.asarray([0, 1, 1]),
+        "atom_to_tokatom_idx": jnp.asarray([0, 0, 1]),
+    }
+    coordinates = jnp.arange(2 * 3 * 3 * 3, dtype=jnp.float32).reshape(
+        2, 3, 3, 3
+    )
+    output = confidence_impl.confidence_head(
+        features,
+        s_inputs=jnp.zeros((2, 3), dtype=jnp.float32),
+        s_trunk=jnp.zeros((2, 2), dtype=jnp.float32),
+        z_trunk=jnp.zeros((2, 2, 2), dtype=jnp.float32),
+        pair_mask=None,
+        x_pred_coords=coordinates,
+        params=_empty_confidence_params(c_s_inputs=3, c_s=2, c_z=2),
+    )
+    rep_coordinates = coordinates[..., :2, :]
+    expected_per_sample = [
+        fake_single_sample(None, None, None, None, rep_coordinates[:, sample])
+        for sample in range(3)
+    ]
+    expected = {
+        "plddt": jnp.stack(
+            [value["plddt"] for value in expected_per_sample], axis=-3
+        ),
+        "pae": jnp.stack(
+            [value["pae"] for value in expected_per_sample], axis=-4
+        ),
+        "pde": jnp.stack(
+            [value["pde"] for value in expected_per_sample], axis=-4
+        ),
+        "resolved": jnp.stack(
+            [value["resolved"] for value in expected_per_sample], axis=-3
+        ),
+    }
+
+    for name in output:
+        np.testing.assert_array_equal(
+            np.asarray(output[name]), np.asarray(expected[name])
+        )
+
+
+@pytest.mark.parametrize(
+    ("cp_shards", "samples", "mapped"),
+    [(1, 2, True), (1, 1, False), (2, 2, False)],
+)
+def test_confidence_sample_loop_is_mapped_only_for_serial_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+    cp_shards: int,
+    samples: int,
+    mapped: bool,
+) -> None:
+    from foldjax.models.protenix.models.heads import confidence as confidence_impl
+
+    monkeypatch.setattr(confidence_impl, "_active_cp_shards", lambda: cp_shards)
+    params = _empty_confidence_params(c_s_inputs=3, c_s=2, c_z=2)
+    features = {
+        "distogram_rep_atom_mask": jnp.asarray([1, 1, 0]),
+        "atom_to_token_idx": jnp.asarray([0, 1, 1]),
+        "atom_to_tokatom_idx": jnp.asarray([0, 0, 1]),
+    }
+    coordinates = jnp.arange(samples * 3 * 3, dtype=jnp.float32).reshape(
+        samples, 3, 3
+    )
+
+    lowered = jax.jit(
+        lambda value: confidence_head(
+            features,
+            s_inputs=jnp.zeros((2, 3), dtype=jnp.float32),
+            s_trunk=jnp.zeros((2, 2), dtype=jnp.float32),
+            z_trunk=jnp.zeros((2, 2, 2), dtype=jnp.float32),
+            pair_mask=None,
+            x_pred_coords=value,
+            params=params,
+        )
+    ).lower(coordinates)
+    stablehlo = str(lowered.compiler_ir())
+
+    assert ("stablehlo.while" in stablehlo) is mapped
 
 
 def _empty_confidence_params(

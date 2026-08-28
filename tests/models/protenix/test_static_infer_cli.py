@@ -262,6 +262,58 @@ def test_static_infer_prewarm_populates_graph_without_writing_output(
     assert "prewarmed:" in capsys.readouterr().out
 
 
+def test_static_infer_routes_compact_msa_storage_to_the_model(
+    tmp_path, monkeypatch
+) -> None:
+    weights_path = tmp_path / "toy_weights.pkl"
+    features_path = tmp_path / "toy_features.npz"
+    out_path = tmp_path / "must_not_exist.npz"
+    save_native_weights(weights_path, _toy_params(), compress=False)
+    features = dict(_toy_features())
+    features.update(
+        msa=np.asarray([[0, 1], [2, 31]], dtype=np.int64),
+        has_deletion=np.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32),
+        deletion_value=np.asarray([[0.0, 0.5], [0.25, 0.0]], dtype=np.float32),
+        msa_mask=np.ones((2, 2), dtype=np.float32),
+    )
+    save_static_feature_npz(features_path, features)
+    captured = {}
+
+    def fake_predict(_params, model_features, **_kwargs):
+        captured.update(model_features)
+        return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(
+        "foldjax.models.protenix.models.predict.protenix_predict_static", fake_predict
+    )
+    main(
+        [
+            "--model-name",
+            "unknown",
+            "--weights",
+            str(weights_path),
+            "--features",
+            str(features_path),
+            "--out",
+            str(out_path),
+            "--n-sample",
+            "1",
+            "--n-step",
+            "1",
+            "--n-cycle",
+            "1",
+            "--prewarm-only",
+            "--cpu-only",
+            "--no-compile-cache",
+        ]
+    )
+
+    assert captured["msa"].dtype == np.uint8
+    assert captured["has_deletion"].dtype == np.bool_
+    assert captured["msa_mask"].dtype == np.bool_
+    assert captured["deletion_value"].dtype == np.float32
+
+
 def test_static_infer_passes_compact_cycle_msa_indices_to_the_model(
     tmp_path, monkeypatch
 ) -> None:

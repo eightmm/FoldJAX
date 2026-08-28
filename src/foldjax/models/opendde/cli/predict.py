@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax.models import _representations
+from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.protenix.chunking import ChunkPolicyName
 from foldjax.models.protenix.data.template_features import dedup_templates
 from foldjax.schema import PaddingConfig, PredictionError
@@ -199,6 +200,12 @@ def _predict(
     # The compiled wrapper places the entire feature tree on a CP mesh before
     # JIT can dead-code-eliminate inputs superseded by these recycle samples.
     model_features = drop_sampled_msa_source_features(features, sampled)
+    if model_features is not features:
+        # Only a complete sampled replacement authorizes changing the cycle
+        # storage.  Incomplete/direct cycle tuples retain their object identity
+        # and historical dtype contract along with the raw-feature fallback.
+        sampled = tuple(compact_msa_storage(cycle) for cycle in sampled)
+        model_features = compact_msa_storage(model_features)
     if cp_shards > 1 and not graph_jit:
         raise ValueError(
             "context parallelism requires the compiled graph; "
@@ -656,6 +663,7 @@ def main(
                     max_msa_depth=args.max_msa_depth,
                     seed=seed,
                 )
+                features = compact_msa_storage(features)
                 output_features = features
                 model_features = features
                 cycle_msa_features = None
