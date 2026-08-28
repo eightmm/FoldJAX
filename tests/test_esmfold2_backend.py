@@ -823,7 +823,12 @@ def test_the_defaults_are_the_released_config_not_what_fits_on_a_card() -> None:
     document = json.loads(config.read_text(encoding="utf-8"))
     assert document["type"] == "release", document.get("type")
     assert document["num_diffusion_samples"] == DEFAULTS["num_diffusion_samples"]
-    assert document["num_recycles"] == DEFAULTS["num_recycles"]
+    # The release spells this `num_loops`; `num_recycles` is only this port's
+    # internal name for it. Unifying internal names never renamed a checkpoint
+    # key, and asserting the internal spelling against the release artifact is
+    # how this test read a KeyError as a missing default for three weeks --
+    # invisible in CI, which has no weight store and returns above.
+    assert document["num_loops"] == DEFAULTS["num_recycles"]
     assert (
         document["structure_head"]["inference_num_steps"]
         == DEFAULTS["num_sampling_steps"]

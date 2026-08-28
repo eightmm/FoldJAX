@@ -128,10 +128,10 @@ def _preflight_arena(features: Mapping[str, Any], trunk_dtype: Any) -> str | Non
     ]
     if name == "float32":
         lines.append(
-            "The lever is --trunk-dtype bf16, which roughly halves the arena. "
-            "Note it is an opt-in divergence from upstream, which stores "
-            "float32; the structures it produces are not the released "
-            "configuration's."
+            "The lever is --trunk-dtype bf16, which roughly halves the arena "
+            "and is this CLI's default -- reaching this message means it was "
+            "turned off. It diverges from upstream, which stores float32; the "
+            "structures it produces are not the released configuration's."
         )
     else:
         lines.append(

@@ -15,9 +15,15 @@ Three things make the comparison mean something:
   builder is checked tensor-for-tensor against upstream's own
   `prepare_protein_features` for the case upstream covers, so sharing it removes
   a variable rather than hiding one.
-* **the same precision.** Upstream runs its trunk under bfloat16 autocast on
-  CUDA and the port now does too, so this measures implementation rather than
-  dtype.
+* **a precision difference this does NOT control, and says so.** Upstream's
+  only autocast (`modeling_esmfold2.py:2021`) wraps the ESM-C call alone and is
+  gated on ESM-C's parameters already being bfloat16, so loading it at
+  `precision="bf16"` puts the language model in bfloat16 on both sides. Nothing
+  else is autocast: the torch trunk runs at the checkpoint's `float32` while
+  this port casts every `TRUNK_PREFIXES` sub-tree to bfloat16. Both rows report
+  the dtype they actually loaded, read off the parameters rather than asserted,
+  so the difference shows up in the output instead of hiding in a docstring.
+  This file used to claim the two sides matched here; they never did.
 * **one process per row.** Both peak figures are process-lifetime high-water
   marks, so two runs in one process report the larger and the second row's
   number is unknowable.
@@ -115,6 +121,19 @@ def run_foldjax(case: str, warmup: bool) -> dict:
     }
 
 
+def _torch_trunk_dtype(model) -> str:
+    """The realized dtype of the folding trunk's parameters, as a string.
+
+    The label this replaces was a literal. A comparison that reports an
+    expected value rather than a measured one certifies agreement it never
+    checked, which is worse than reporting nothing.
+    """
+    for name, parameter in model.named_parameters():
+        if "folding_trunk" in name:
+            return str(parameter.dtype).removeprefix("torch.")
+    return "unknown (no folding_trunk parameter)"
+
+
 def run_torch(case: str, warmup: bool) -> dict:
     import torch
     from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
@@ -128,6 +147,10 @@ def run_torch(case: str, warmup: bool) -> dict:
     model = ESMFold2Model.from_pretrained(str(weights), load_esmc=False)
     model.load_esmc(str(weights / "esmc"), precision="bf16")
     model = model.to("cuda").eval()
+    # Read, never assumed: `from_pretrained` takes no dtype here, so the trunk
+    # arrives at whatever `config.json` says -- float32 for the release. The
+    # row used to hardcode "bfloat16 (autocast)" and was wrong for every run.
+    trunk_dtype = _torch_trunk_dtype(model)
 
     built = build_features(chains, alignments)
     built = {name: value.to("cuda") for name, value in built.items()}
@@ -151,7 +174,7 @@ def run_torch(case: str, warmup: bool) -> dict:
         "impl": "upstream",
         "wall_s": round(elapsed, 2),
         "peak_mib": round(torch.cuda.max_memory_allocated() / 2**20, 1),
-        "trunk_dtype": "bfloat16 (autocast)",
+        "trunk_dtype": trunk_dtype,
         "coords": output["sample_atom_coords"].float().cpu().numpy(),
         "plddt": [float(v) for v in output["complex_plddt"]],
         "ptm": [float(v) for v in output["ptm"]],

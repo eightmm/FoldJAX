@@ -197,13 +197,29 @@ class ModelSettings:
     #: and flat in sample count, and `test_model_parity` reads it. Excluding it
     #: keeps 98% of the saving without touching a test that cannot run here.
     return_confidence_logits: bool = False
-    #: What upstream's `torch.amp.autocast` makes the trunk on CUDA. Four
-    #: regions run in bfloat16 there -- the whole trunk from the inputs
-    #: embedder to the parcae coda, the confidence head's folding trunk, the
-    #: diffusion conditioning's pair transitions, and the language model --
-    #: and everything else is float32. Running the trunk in float32 is not a
-    #: safer choice, it is a different model from the one that was trained
-    #: and the one every published number describes.
+    #: The width of every `TRUNK_PREFIXES` sub-tree. **This is FoldJAX's
+    #: choice, not upstream's** -- the comment here used to say otherwise and
+    #: was checked against the source on 2026-08-28.
+    #:
+    #: Upstream has exactly one autocast in the model
+    #: (`transformers/models/esmfold2/modeling_esmfold2.py:2021`):
+    #:
+    #:     use_amp = next(self.esmc.parameters()).dtype == torch.bfloat16
+    #:     with torch.autocast(..., dtype=torch.bfloat16, enabled=use_amp):
+    #:         esmc_out = self.esmc(...)
+    #:
+    #: It wraps the ESM-C call alone, and only when ESM-C's own parameters are
+    #: already bfloat16. Nothing else is autocast, so the folding trunk, the
+    #: inputs embedder and the parcae coda all run at the checkpoint's
+    #: parameter dtype -- and the released `config.json` says `float32`.
+    #:
+    #: bfloat16 is kept as the default because it is what the port has been
+    #: measured and validated at, and because the same width costs Boltz-2 and
+    #: OpenDDE less than their own seed does (`docs/engineering-notes.md`).
+    #: It has *not* been compared against a float32 ESMFold2 run, which is the
+    #: measurement that would settle whether to keep it. Note also that no
+    #: caller can change it: `settings_from_config` does not read this field
+    #: and `with_overrides` does not expose it.
     trunk_dtype: str = "bfloat16"
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings

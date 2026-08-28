@@ -89,16 +89,45 @@ executes the float32 matmuls that remain. A model can be bfloat16 and
 | Protenix / v2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
 | OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
 | OpenFold3 | float32 | `high` (TF32) | none |
-| ESMFold2 | float32 | — | none |
+| ESMFold2 | **bfloat16** trunk, float32 sampler | — | none |
 
-Read against upstream, every row matches what its publisher ships **except
-OpenDDE**, which upstream runs in float32 (`opendde/config/model_base.py:37`).
-The others: AlphaFold 3 `model_config.py:34`, Boltz-2 `main.py:1262`
-(`precision="bf16-mixed"`) with `main.py:1096` asking for `highest` matmuls,
-Protenix `configs_base.py:135`, OpenFold3 `import_utils.py:33` — its
-`bf16-mixed` YAMLs are training configs, not inference — and ESMFold2's
-released `config.json`, whose autocast fires only when the parameters are
-already bfloat16.
+Read against upstream, **two rows diverge from what their publisher ships**,
+and only one of them was a decision. The four that match: AlphaFold 3
+`model_config.py:34`, Boltz-2 `main.py:1262` (`precision="bf16-mixed"`) with
+`main.py:1096` asking for `highest` matmuls, Protenix `configs_base.py:135`,
+and OpenFold3 `import_utils.py:33` — its `bf16-mixed` YAMLs are training
+configs, not inference.
+
+**OpenDDE** is the declared one: upstream runs float32
+(`opendde/config/model_base.py:37`), FoldJAX ships bfloat16 since 2026-08-28,
+and the rest of this section is the measurement that justified it.
+
+**ESMFold2 is the undeclared one, found 2026-08-28.** Upstream has exactly one
+autocast in the whole model — `transformers/models/esmfold2/modeling_esmfold2.py:2021`:
+
+    use_amp = next(self.esmc.parameters()).dtype == torch.bfloat16
+    with torch.autocast(device_type=..., dtype=torch.bfloat16, enabled=use_amp):
+        esmc_out = self.esmc(...)
+
+It wraps **the ESM-C language model call and nothing else**, and it is gated on
+ESM-C's own parameters already being bfloat16. Everything outside that call —
+the inputs embedder, `z_init`, the relative-position and token-bond encoders,
+the MSA encoder, the folding trunk, the parcae coda — runs at the checkpoint's
+parameter dtype, and the released `config.json` says `dtype = float32`.
+
+FoldJAX casts all ten sub-trees in `TRUNK_PREFIXES`
+(`models/esmfold2/models/model.py:320`) to `trunk_dtype`, which is
+`"bfloat16"` and is **not reachable from any knob**: `settings_from_config`
+never reads it, so no checkpoint can set it, and `with_overrides` exposes only
+recycles, samples, steps and MSA depth. So the overlap with upstream is the
+language model; the trunk itself is bfloat16 here and float32 there.
+
+This is not yet a claim that either is wrong — ESMFold2's port was validated
+against deposited 1UBQ, not against torch, and the model is stochastic enough
+that a width difference could sit under its own sampling spread the way it does
+on Boltz-2. It is a claim that **the difference exists and was undocumented**,
+and that the harness which would have caught it asserted the opposite; see
+[What `bench/esmfold2_compare.py` was not controlling](#what-benchesmfold2_comparepy-was-not-controlling).
 
 Only OpenDDE and Protenix expose the width as an option, and only OpenDDE has
 anywhere to go with it, because the other four are either already narrow or
@@ -158,6 +187,39 @@ the table itself stays pinned to one seed so its rows compare.
 
 `bench/spec.py` pins `dtype=float32` for OpenDDE's benchmark row, because a
 row that compared two precisions would not be a comparison.
+
+### What `bench/esmfold2_compare.py` was not controlling
+
+The ESMFold2 width divergence above survived because the one harness that
+compares the port against torch **asserted the control it did not have**. Its
+docstring listed, as the second of three things that make the comparison mean
+something:
+
+> **the same precision.** Upstream runs its trunk under bfloat16 autocast on
+> CUDA and the port now does too, so this measures implementation rather than
+> dtype.
+
+The torch side is built by `_torch_row`, and it does two things that together
+make that false. It loads the model with
+`ESMFold2Model.from_pretrained(str(weights), load_esmc=False)` — **no dtype
+argument**, so every parameter outside ESM-C arrives at the config's
+`float32` — and it then calls the model inside nothing but `torch.no_grad()`.
+The only autocast in upstream is the one inside `self.esmc`, and
+`model.load_esmc(..., precision="bf16")` does make it fire, so the language
+model really is bfloat16 on both sides. The trunk is not: float32 there,
+bfloat16 here.
+
+The row it emitted then labelled itself `"trunk_dtype": "bfloat16 (autocast)"`
+— a **hardcoded string**, not a reading of the model it had just built. So the
+harness reported a controlled variable by writing down the value it expected
+rather than the one it had, which is the failure mode that makes a comparison
+worse than no comparison: it does not merely miss the difference, it certifies
+its absence.
+
+Both are now fixed to describe what the process does, and the label is derived
+from the loaded parameters instead of asserted. The lesson is the same one
+`tests/` keeps relearning — **assert the property, not a proxy for it**, and a
+string literal is the weakest proxy there is.
 
 ### The other axis, measured
 
