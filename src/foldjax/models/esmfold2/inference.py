@@ -58,6 +58,11 @@ LANGUAGE_MODEL_FEATURES = (
 # a similar name is not enough to authorize the new predict keyword.
 COMPACT_LANGUAGE_MODEL_API = True
 
+# Explicit capability marker for the common backend's writer-only graph
+# result. Wrappers without this marker keep receiving the historical keyword
+# set and the native output mapping.
+MANAGED_AUXILIARY_OUTPUT_API = True
+
 
 @dataclass(frozen=True)
 class LoadedModel:
@@ -382,6 +387,7 @@ def predict(
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
     return_distogram_logits: bool = True,
+    return_auxiliary_outputs: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -437,12 +443,16 @@ def predict(
             "context parallelism requires the compiled graph; drop "
             "compile_it=False or cp_shards"
         )
+    auxiliary_output_kwargs = (
+        {} if return_auxiliary_outputs else {"return_auxiliary_outputs": False}
+    )
     runner = (
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
             compact_token_bond_encoding, return_distogram_logits,
             compact_lm_input,
+            **auxiliary_output_kwargs,
         )
         if compile_it
         else _run
@@ -475,6 +485,7 @@ def predict(
             compact_token_bond_encoding,
             return_distogram_logits,
             compact_lm_input,
+            **auxiliary_output_kwargs,
         )
 
 
@@ -493,6 +504,8 @@ def _run(
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
     compact_lm_input: bool = False,
+    *,
+    return_auxiliary_outputs: bool = True,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -514,6 +527,7 @@ def _run(
         contiguous_atom_groups=contiguous_atom_groups,
         compact_token_bond_encoding=compact_token_bond_encoding,
         return_distogram_logits=return_distogram_logits,
+        return_auxiliary_outputs=return_auxiliary_outputs,
     )
 
 
@@ -528,6 +542,7 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "compact_token_bond_encoding",
     "return_distogram_logits",
     "compact_lm_input",
+    "return_auxiliary_outputs",
 )
 _compiled_predict_pool = BoundedJitPool(
     _run,
@@ -564,6 +579,8 @@ def _compiled_predict_factory(
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
     compact_lm_input: bool = False,
+    *,
+    return_auxiliary_outputs: bool = True,
 ) -> _CompiledPredictFacade:
     del (
         settings,
@@ -576,6 +593,7 @@ def _compiled_predict_factory(
         compact_token_bond_encoding,
         return_distogram_logits,
         compact_lm_input,
+        return_auxiliary_outputs,
     )
     return _CompiledPredictFacade()
 
@@ -591,6 +609,8 @@ def compiled_predict(
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
     compact_lm_input: bool = False,
+    *,
+    return_auxiliary_outputs: bool = True,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -604,10 +624,11 @@ def compiled_predict(
     native distogram retention, and whether the language-model input is the
     raw layer stack or its separately compiled compact embedding. Each choice
     contributes to a distinct executable identity in the shared eight-entry
-    owner pool; the lightweight factory facades preserve the historical
-    callable-identity API without retaining an unbounded executable set.
+    owner pool; the final writer-only result projection does too. The
+    lightweight factory facades preserve the historical callable-identity API
+    without retaining an unbounded executable set.
     """
-    return _compiled_predict_factory(
+    identity = (
         settings,
         n_chains,
         preserve_prefix_rng,
@@ -618,6 +639,12 @@ def compiled_predict(
         compact_token_bond_encoding,
         return_distogram_logits,
         compact_lm_input,
+    )
+    if return_auxiliary_outputs:
+        return _compiled_predict_factory(*identity)
+    return _compiled_predict_factory(
+        *identity,
+        return_auxiliary_outputs=False,
     )
 
 

@@ -644,6 +644,11 @@ class ESMFold2Backend(Backend):
         # import cost.
         inference = import_module("foldjax.models.esmfold2.inference")
         output_module = import_module("foldjax.models.esmfold2.output")
+        managed_output_kwargs = (
+            {"return_auxiliary_outputs": False}
+            if bool(getattr(inference, "MANAGED_AUXILIARY_OUTPUT_API", False))
+            else {}
+        )
 
         document, document_base = _job_document(request.input)
         chains, alignments = _chains_from_document(document, document_base)
@@ -732,6 +737,7 @@ class ESMFold2Backend(Backend):
                     alignments,
                     model,
                     return_distogram_logits=False,
+                    **managed_output_kwargs,
                     **overrides,
                 )
         else:
@@ -804,6 +810,7 @@ class ESMFold2Backend(Backend):
                     language_model_tokens=lm_target,
                     preserve_prefix_rng=request.padding is not None,
                     return_distogram_logits=False,
+                    **managed_output_kwargs,
                     **lm_input,
                     **overrides,
                 )

@@ -126,8 +126,10 @@ def test_direct_eager_default_retains_distogram_and_false_skips_it(
         return {
             "plddt": token,
             "plddt_per_atom": token,
+            "plddt_ca": token,
             "complex_plddt": jnp.reshape(signal, (1,)),
             "ptm": jnp.reshape(signal, (1,)),
+            "pair_chains_iptm": jnp.reshape(signal, (1, 1, 1)),
         }
 
     monkeypatch.setattr(structure_model, "confidence_head", fake_confidence)
@@ -153,6 +155,17 @@ def test_direct_eager_default_retains_distogram_and_false_skips_it(
         return_representations=("single", "pair"),
         return_distogram_logits=False,
     )
+    managed = structure_model.predict(
+        jax.random.key(0),
+        _cheap_features(),
+        params,
+        settings=settings,
+        initial_pair_state=initial,
+        n_chains=1,
+        return_representations=("single", "pair"),
+        return_distogram_logits=False,
+        return_auxiliary_outputs=False,
+    )
 
     assert "distogram_logits" in with_distogram
     assert "distogram_logits" not in without_distogram
@@ -161,6 +174,13 @@ def test_direct_eager_default_retains_distogram_and_false_skips_it(
     for name, value in without_distogram.items():
         assert np.asarray(value).tobytes() == np.asarray(
             with_distogram[name]
+        ).tobytes(), name
+    assert set(without_distogram) - set(managed) == (
+        structure_model.MANAGED_AUXILIARY_OUTPUTS
+    )
+    for name, value in managed.items():
+        assert np.asarray(value).tobytes() == np.asarray(
+            without_distogram[name]
         ).tobytes(), name
 
     def compiled_predict(*, emit: bool):

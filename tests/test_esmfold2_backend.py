@@ -26,7 +26,7 @@ from foldjax.backends.esmfold2 import (
     managed_asset_profile,
 )
 from foldjax.paths import weights_dir
-from foldjax.schema import PredictionError, PredictionRequest
+from foldjax.schema import PaddingConfig, PredictionError, PredictionRequest
 
 
 def _job(tmp_path, entities) -> str:
@@ -142,8 +142,9 @@ def test_external_esmc_keeps_the_released_language_model_branch(
     assert result.raw["language_model"] is True
 
 
-def test_scalar_backend_withholds_distogram_without_exposing_an_override(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("managed_auxiliary_api", [False, True])
+def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_override(
+    tmp_path, monkeypatch, managed_auxiliary_api
 ) -> None:
     job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
     weights = tmp_path / "weights"
@@ -156,12 +157,15 @@ def test_scalar_backend_withholds_distogram_without_exposing_an_override(
         seen.update(kwargs)
         return {}, {"asym_id": np.asarray([[0]])}
 
+    inference_attributes = {
+        "load": lambda *args, **kwargs: model,
+        "seed_key": lambda seed: seed,
+        "predict_job": predict_job,
+    }
+    if managed_auxiliary_api:
+        inference_attributes["MANAGED_AUXILIARY_OUTPUT_API"] = True
     modules = {
-        "foldjax.models.esmfold2.inference": SimpleNamespace(
-            load=lambda *args, **kwargs: model,
-            seed_key=lambda seed: seed,
-            predict_job=predict_job,
-        ),
+        "foldjax.models.esmfold2.inference": SimpleNamespace(**inference_attributes),
         "foldjax.models.esmfold2.output": SimpleNamespace(
             write_prediction_outputs=lambda *args, **kwargs: {
                 "structures": [tmp_path / "sample_0.cif"],
@@ -183,8 +187,12 @@ def test_scalar_backend_withholds_distogram_without_exposing_an_override(
         )
     )
 
-    assert seen == {"return_distogram_logits": False}
+    assert seen == {
+        "return_distogram_logits": False,
+        **({"return_auxiliary_outputs": False} if managed_auxiliary_api else {}),
+    }
     assert "return_distogram_logits" not in result.raw["overrides"]
+    assert "return_auxiliary_outputs" not in result.raw["overrides"]
 
 
 def test_all_released_biomolecule_types_are_advertised() -> None:
@@ -269,6 +277,7 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
 
     modules = {
         "foldjax.models.esmfold2.inference": SimpleNamespace(
+            MANAGED_AUXILIARY_OUTPUT_API=True,
             load=lambda *args, **kwargs: model,
             seed_key=lambda seed: seed,
             build_common_job_features=build_common,
@@ -315,11 +324,93 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
     assert "msa_depth" not in seen
     assert seen["features"] is features
     assert seen["predict"]["return_distogram_logits"] is False
+    assert seen["predict"]["return_auxiliary_outputs"] is False
     assert memory_events == [
         ("enter", "esmfold2_ccd"),
         "build",
         ("exit", "esmfold2_ccd"),
     ]
+
+
+def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> None:
+    from foldjax.models.esmfold2 import inference as real_inference
+
+    job = _job(
+        tmp_path / "job",
+        [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+    )
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    model = SimpleNamespace(
+        has_language_model=False,
+        settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
+    )
+    seen: dict[str, object] = {}
+
+    def predict(key, features, loaded, **kwargs):
+        del key
+        seen.update(
+            model=loaded,
+            token_shape=features["token_attention_mask"].shape,
+            atom_shape=features["atom_attention_mask"].shape,
+            msa_shape=features["msa_attention_mask"].shape,
+            kwargs=kwargs,
+        )
+        return {}
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            MANAGED_AUXILIARY_OUTPUT_API=True,
+            LANGUAGE_MODEL_FEATURES=real_inference.LANGUAGE_MODEL_FEATURES,
+            load=lambda *args, **kwargs: model,
+            seed_key=real_inference.seed_key,
+            build_job_features=real_inference.build_job_features,
+            language_model_states=lambda *args, **kwargs: pytest.fail(
+                "the disabled language model was evaluated"
+            ),
+            normalize_msa_features=real_inference.normalize_msa_features,
+            pad_features=real_inference.pad_features,
+            predict=predict,
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 0.75}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+
+    result = ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            padding=PaddingConfig(tokens=8, atoms=64, msa=4),
+            options={"no_language_model": True},
+        )
+    )
+
+    assert seen["model"] is model
+    assert seen["token_shape"] == (1, 8)
+    assert seen["atom_shape"] == (1, 64)
+    assert seen["msa_shape"] == (1, 4, 8)
+    assert seen["kwargs"] == {
+        "language_model_tokens": None,
+        "preserve_prefix_rng": True,
+        "return_distogram_logits": False,
+        "return_auxiliary_outputs": False,
+        "precomputed_lm_states": None,
+    }
+    assert result.shape_profile is not None
+    assert result.shape_profile["target"] == {
+        "tokens": 8,
+        "atoms": 64,
+        "msa": 4,
+    }
 
 
 def _all_atom_session_fixture(tmp_path, monkeypatch, *, build_error=None):
@@ -668,6 +759,7 @@ def _fake_session_modules(tmp_path, calls):
 
     inference = SimpleNamespace(
         COMPACT_LANGUAGE_MODEL_API=True,
+        MANAGED_AUXILIARY_OUTPUT_API=True,
         LANGUAGE_MODEL_FEATURES=(
             "input_ids",
             "asym_id",
@@ -753,6 +845,9 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
     assert len(calls["predict"]) == 6
     assert all(
         call[2]["return_distogram_logits"] is False for call in calls["predict"]
+    )
+    assert all(
+        call[2]["return_auxiliary_outputs"] is False for call in calls["predict"]
     )
     assert all(
         "precomputed_lm_embedding" in call[2]

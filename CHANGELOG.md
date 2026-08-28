@@ -12,6 +12,27 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed ESMFold2 prediction now retains only the compiled results consumed
+  by its writer and requested representation export.** Its graph no longer
+  returns native `atom_pad_mask`, `residue_index`, `entity_id`, `plddt_ca`, or
+  `pair_chains_iptm` leaves; the structure writer already reads atom/token
+  metadata from the unchanged feature mapping and its confidence JSON consumes
+  the per-atom/token pLDDT plus four scalar scores. Direct model and inference
+  calls keep all native leaves by default, legacy backend wrappers receive no
+  new keyword, and requested `single`/`pair` representations remain unchanged.
+
+  The removed resident output payload is
+  `B*A*sizeof(atom_mask) + B*L*(sizeof(residue_index)+sizeof(entity_id)) +
+  S*L*sizeof(plddt_ca) + S*C*C*4` bytes. In an isolated 2-sample, 32-token,
+  24-atom, 8-chain CPU projection, executable output storage fell from 2,272
+  to 1,112 bytes while every retained array and generated CIF/JSON byte stayed
+  identical; the per-chain output's three StableHLO dot operations were absent
+  from the managed graph. This is an output-residency result, not a whole-run
+  peak-memory or latency claim. Synthetic CPU gates cover the native default,
+  capability fallback, scalar and session routing, bounded static identities,
+  and forced four-device 1-D/2-D context parallelism. Released-weight GPU
+  output residency, latency, and end-to-end prediction remain unverified.
+
 - **Managed Protenix and OpenDDE predictions retain only the generated fields
   their structure-output readers use.** Complete, shape-matched
   `output_atom_*` metadata lets the Protenix CIF/JSON writer keep an eight-field

@@ -339,6 +339,38 @@ CONFIDENCE_LOGIT_OUTPUTS = (
     "pde",
 )
 
+#: Native results retained by direct callers but unused by the common backend.
+#: The writer reads metadata from the original feature mapping and consumes
+#: only the sample coordinates, per-atom/token pLDDT and scalar scores. Keeping
+#: this projection inside the traced function also lets XLA remove the
+#: per-chain matrix calculation instead of merely dropping its device result
+#: after dispatch.
+MANAGED_AUXILIARY_OUTPUTS = frozenset(
+    {
+        "atom_pad_mask",
+        "residue_index",
+        "entity_id",
+        "plddt_ca",
+        "pair_chains_iptm",
+    }
+)
+
+
+def _project_prediction_outputs(
+    output: Mapping[str, jnp.ndarray],
+    *,
+    return_auxiliary_outputs: bool = True,
+) -> dict[str, jnp.ndarray]:
+    """Select the managed writer result without changing the native default."""
+    if return_auxiliary_outputs:
+        return dict(output)
+    return {
+        name: value
+        for name, value in output.items()
+        if name not in MANAGED_AUXILIARY_OUTPUTS
+    }
+
+
 TRUNK_PREFIXES = (
     "inputs_embedder.",
     "z_init_1.",
@@ -717,6 +749,7 @@ def predict(
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
+    return_auxiliary_outputs: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """One full forward, returning upstream's output dictionary.
 
@@ -739,6 +772,12 @@ def predict(
     the direct parity/debugging API. The common FoldJAX backend turns it off:
     its writer, scores and representation export do not consume that quadratic
     native output.
+
+    `return_auxiliary_outputs` likewise defaults on for the native result
+    contract. The managed backend turns it off because its writer reads atom
+    and token metadata from `features`, does not consume per-CA pLDDT or the
+    chain-pair ipTM matrix, and exports representations through their named
+    capture keys.
     """
     token_mask = features["token_attention_mask"]
     atom_mask = features["atom_attention_mask"]
@@ -1125,7 +1164,10 @@ def predict(
         # would leave the buffers exactly where they are.
         for name in CONFIDENCE_LOGIT_OUTPUTS:
             output.pop(name, None)
-    return output
+    return _project_prediction_outputs(
+        output,
+        return_auxiliary_outputs=return_auxiliary_outputs,
+    )
 
 
 def with_overrides(
