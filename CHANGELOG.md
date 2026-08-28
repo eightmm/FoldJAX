@@ -12,6 +12,30 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz2 retained JIT runners now reuse no-op diffusion-chunk spellings.**
+  The runner key canonicalizes a valid resolved width only when the native
+  wrapper takes its unchanged unchunked branch (`width >= multiplicity`).
+  Primary and affinity multiplicities are evaluated independently. The
+  original model kwargs,
+  automatic width selection, diffusion arithmetic, RNG keys and output route
+  are untouched; an active width below the stage's multiplicity remains a
+  distinct runner. Padding-noise mode, sequential confidence, raw output,
+  representations, trunk-only execution, steering arguments and every other
+  static choice continue to participate in the identity. Even trunk-only
+  runners conservatively retain widths below the full-run boundary. FK particle
+  expansion does not widen the wrapper's outer chunk condition, and the eager
+  steering path still creates no retained JIT runner.
+
+  Tiny CPU compilations of the real Boltz2 wrapper found byte-identical output
+  and exact StableHLO for widths 1/2 at multiplicity 1 and widths 5/6 at
+  multiplicity 5, including FK steering. Before normalization those aliases
+  had two identities and JIT entries; a native primary-plus-affinity session
+  now keeps one trace and one executable entry per stage. Width 4 at affinity
+  multiplicity 5 retains different StableHLO and RNG output and retraces only
+  that affinity stage. Tape slicing, raw/representation/trunk/noise identities,
+  and automatic width boundaries are regression gated. No released-weight
+  full-model compile or GPU run was performed.
+
 - **OpenDDE's explicit released defaults now reuse the omitted compilation-cache
   namespace.** The released sample, step, recycle, MSA, query/key, bfloat16,
   single-attention, automatic chunk-policy, and serial context-parallel values
@@ -41,8 +65,8 @@ command predicts unless it says so here, in its own paragraph.
   sharding, raw-confidence output, representations, trunk-only execution,
   padding-noise routes, ambient kernels and PRNG configurations keep distinct
   persistent or retained-runner identities. Conditional cueq/XLA and inactive
-  atom-window aliases remain deliberately unmerged; distinct diffusion chunk
-  widths remain separated by retained-runner identity.
+  atom-window aliases remain deliberately unmerged; semantically active
+  diffusion chunk widths remain separated by retained-runner identity.
 
   A synthetic CPU end-to-end cache/runner probe followed the real adapter cache
   profile through `resolve_cache_dir` and the native runtime/runner owner: an

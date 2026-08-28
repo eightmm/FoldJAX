@@ -447,6 +447,7 @@ def test_runner_identity_keeps_raw_representations_and_trunk_routes_distinct(
         "return_confidence_logits": False,
         "return_representations": (),
         "stop_after_trunk": False,
+        "multiplicity": 3,
         "diffusion_chunk_size": 1,
     }
 
@@ -472,6 +473,75 @@ def test_runner_identity_keeps_raw_representations_and_trunk_routes_distinct(
         ),
     }
     assert len(identities) == 6
+
+
+def test_runner_identity_merges_only_noop_diffusion_chunk_widths() -> None:
+    runtime = (("runtime", "cpu"),)
+
+    def model(value):
+        return value
+
+    def identity(
+        multiplicity: int,
+        chunk_size: int | None,
+        *,
+        noise_mode: str = "none",
+        **changes,
+    ):
+        return native_api._runner_identity(
+            predict_function=model,
+            predict_kwargs={
+                "multiplicity": multiplicity,
+                "diffusion_chunk_size": chunk_size,
+                **changes,
+            },
+            noise_mode=noise_mode,
+            runtime=runtime,
+        )
+
+    for multiplicity in (1, 5, 7):
+        unchunked = identity(multiplicity, None)
+        assert identity(multiplicity, multiplicity) == unchunked
+        assert identity(multiplicity, multiplicity + 1) == unchunked
+        if multiplicity > 1:
+            assert identity(multiplicity, multiplicity - 1) != unchunked
+
+    # The auto width is unchunked through five samples, then resolves to a
+    # real width-five chunk and must stay separate from an explicit unchunked
+    # seven-sample call.
+    assert identity(5, native_api.auto_diffusion_chunk_size(5)) == identity(
+        5, None
+    )
+    assert identity(7, native_api.auto_diffusion_chunk_size(7)) != identity(
+        7, None
+    )
+    assert identity(5, 0) != identity(5, None)
+    assert identity(5, -1) != identity(5, None)
+
+    # Trunk-only remains an independent route and conservatively keeps widths
+    # below the full-run chunk boundary distinct.
+    trunk = identity(5, None, stop_after_trunk=True)
+    assert identity(5, 5, stop_after_trunk=True) == trunk
+    assert identity(5, 1, stop_after_trunk=True) != trunk
+    assert identity(5, None) != trunk
+    tape = identity(5, None, noise_mode="tape")
+    assert identity(5, 5, noise_mode="tape") == tape
+    assert tape != identity(5, None)
+
+    fk = {"fk_steering": True, "num_particles": 3}
+    assert identity(5, 5, steering_args=fk) == identity(
+        5, None, steering_args=fk
+    )
+    assert identity(5, None, steering_args=fk) != identity(5, None)
+
+    original = {"multiplicity": 5, "diffusion_chunk_size": 6}
+    native_api._runner_identity(
+        predict_function=model,
+        predict_kwargs=original,
+        noise_mode="none",
+        runtime=runtime,
+    )
+    assert original == {"multiplicity": 5, "diffusion_chunk_size": 6}
 
 
 def test_native_session_reuses_primary_params_and_jit_across_seeds(
@@ -596,7 +666,7 @@ def test_public_batch_reuses_primary_params_and_jit_across_seeds(
     )
 
 
-def test_native_session_reuses_primary_and_affinity_stages(
+def test_native_session_reuses_primary_and_affinity_noop_chunk_widths(
     tmp_path: Path, monkeypatch
 ) -> None:
     request = _request(tmp_path, affinity=True)
@@ -646,23 +716,63 @@ def test_native_session_reuses_primary_and_affinity_stages(
         "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
     )
     backend = Boltz2Backend()
+    alias_outputs = []
 
     with backend.session((request,)):
-        for seed in request.resolved_seeds:
-            native_api.predict(
-                seq=["AA"],
-                weights=request.weights,
-                affinity_weights=affinity_weights,
-                mols=request.options["mols"],
-                out_dir=tmp_path,
-                seed=seed,
-                write_fmt=None,
-                _runtime=backend,
+        for seed, chunk_size in zip(
+            request.resolved_seeds, (None, 6), strict=True
+        ):
+            alias_outputs.append(
+                native_api.predict(
+                    seq=["AA"],
+                    weights=request.weights,
+                    affinity_weights=affinity_weights,
+                    mols=request.options["mols"],
+                    out_dir=tmp_path,
+                    seed=seed,
+                    write_fmt=None,
+                    _runtime=backend,
+                    **(
+                        {}
+                        if chunk_size is None
+                        else {"diffusion_chunk_size": chunk_size}
+                    ),
+                )
             )
         assert loads == ["primary", "affinity"]
         assert traces == ["primary", "affinity"]
         assert set(backend._params) == {"primary", "affinity"}
         assert set(backend._runners) == {"primary", "affinity"}
+        assert all(
+            cached[1]._runner._cache_size() == 1
+            for cached in backend._runners.values()
+        )
+        np.testing.assert_array_equal(
+            alias_outputs[0]["coords"], alias_outputs[1]["coords"]
+        )
+        np.testing.assert_array_equal(
+            alias_outputs[0]["plddt"], alias_outputs[1]["plddt"]
+        )
+
+        # Four remains a no-op for the one-sample primary graph but is below
+        # the affinity graph's independent multiplicity of five.
+        native_api.predict(
+            seq=["AA"],
+            weights=request.weights,
+            affinity_weights=affinity_weights,
+            mols=request.options["mols"],
+            out_dir=tmp_path,
+            seed=2,
+            write_fmt=None,
+            _runtime=backend,
+            diffusion_chunk_size=4,
+        )
+        assert loads == ["primary", "affinity"]
+        assert traces == ["primary", "affinity", "affinity"]
+        assert all(
+            cached[1]._runner._cache_size() == 1
+            for cached in backend._runners.values()
+        )
 
 
 def test_continued_failure_reloads_and_retraces_the_next_seed(

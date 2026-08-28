@@ -119,6 +119,127 @@ def test_predict_can_map_confidence_sequentially(monkeypatch) -> None:
     np.testing.assert_array_equal(np.asarray(out["plddt"]), np.asarray(coords[:, 0, 0]))
 
 
+@pytest.mark.parametrize(
+    (
+        "multiplicity",
+        "first_width",
+        "second_width",
+        "steering_args",
+        "stop_after_trunk",
+    ),
+    [
+        (1, 1, 2, None, False),
+        (5, 5, 6, None, False),
+        (5, 5, 6, {"fk_steering": True, "num_particles": 3}, False),
+        (5, 5, 6, None, True),
+    ],
+)
+def test_noop_diffusion_chunk_widths_have_exact_hlo_and_output(
+    monkeypatch,
+    multiplicity: int,
+    first_width: int,
+    second_width: int,
+    steering_args,
+    stop_after_trunk: bool,
+) -> None:
+    trunk = {
+        "s_inputs": jnp.zeros((1, 1, 1)),
+        "s": jnp.zeros((1, 1, 1)),
+        "z": jnp.zeros((1, 1, 1, 1)),
+    }
+    monkeypatch.setattr(
+        predict_module, "boltz2_trunk_forward", lambda *args, **kwargs: trunk
+    )
+
+    def fake_sample(_params, _feats, key, *, multiplicity, **_kwargs):
+        return {
+            "sample_atom_coords": jax.random.normal(
+                key, (multiplicity, 1, 3), dtype=jnp.float32
+            )
+        }
+
+    monkeypatch.setattr(predict_module, "boltz2_sample_forward", fake_sample)
+    params = {"trunk": {}}
+    feats = {}
+    key = jax.random.PRNGKey(17)
+
+    def lower(width: int):
+        def run(model_params, model_feats, model_key):
+            return predict_module.boltz2_predict(
+                model_params,
+                model_feats,
+                model_key,
+                multiplicity=multiplicity,
+                diffusion_chunk_size=width,
+                steering_args=steering_args,
+                stop_after_trunk=stop_after_trunk,
+                return_representations=("single",) if stop_after_trunk else (),
+                run_confidence=False,
+                run_distogram=False,
+                run_bfactor=False,
+            )
+
+        runner = jax.jit(run)
+        lowered = runner.lower(params, feats, key)
+        stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+        output_name = "single" if stop_after_trunk else "sample_atom_coords"
+        return stablehlo, runner(params, feats, key)[output_name]
+
+    first_hlo, first = lower(first_width)
+    second_hlo, second = lower(second_width)
+
+    assert first_hlo == second_hlo
+    np.testing.assert_array_equal(np.asarray(first), np.asarray(second))
+
+
+def test_diffusion_chunk_boundary_has_distinct_hlo_and_rng_output(monkeypatch) -> None:
+    trunk = {
+        "s_inputs": jnp.zeros((1, 1, 1)),
+        "s": jnp.zeros((1, 1, 1)),
+        "z": jnp.zeros((1, 1, 1, 1)),
+    }
+    monkeypatch.setattr(
+        predict_module, "boltz2_trunk_forward", lambda *args, **kwargs: trunk
+    )
+    monkeypatch.setattr(
+        predict_module,
+        "boltz2_sample_forward",
+        lambda _params, _feats, key, *, multiplicity, **_kwargs: {
+            "sample_atom_coords": jax.random.normal(
+                key, (multiplicity, 1, 3), dtype=jnp.float32
+            )
+        },
+    )
+    params = {"trunk": {}}
+    feats = {}
+    key = jax.random.PRNGKey(19)
+
+    def lower(width: int):
+        runner = jax.jit(
+            lambda model_params, model_feats, model_key: (
+                predict_module.boltz2_predict(
+                    model_params,
+                    model_feats,
+                    model_key,
+                    multiplicity=5,
+                    diffusion_chunk_size=width,
+                    run_confidence=False,
+                    run_distogram=False,
+                    run_bfactor=False,
+                )
+            )
+        )
+        lowered = runner.lower(params, feats, key)
+        stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+        return stablehlo, runner(params, feats, key)["sample_atom_coords"]
+
+    chunked_hlo, chunked = lower(4)
+    unchunked_hlo, unchunked = lower(5)
+
+    assert chunked_hlo != unchunked_hlo
+    assert not np.array_equal(np.asarray(chunked), np.asarray(unchunked))
+
+
 def test_predict_slices_supplied_tapes_across_diffusion_chunks(monkeypatch) -> None:
     trunk = {
         "s_inputs": jnp.zeros((1, 1, 1)),

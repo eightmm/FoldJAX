@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 import math
+import operator
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -401,10 +402,36 @@ def _runner_identity(
 ) -> tuple[Any, ...]:
     """Everything captured by one retained ``jax.jit`` wrapper."""
 
+    identity_kwargs = predict_kwargs
+    chunk_value = predict_kwargs.get("diffusion_chunk_size")
+    multiplicity_value = predict_kwargs.get("multiplicity")
+    if chunk_value is not None and not isinstance(
+        chunk_value, bool
+    ) and not isinstance(multiplicity_value, bool):
+        try:
+            chunk_size = int(operator.index(chunk_value))
+            multiplicity = int(operator.index(multiplicity_value))
+        except TypeError:
+            pass
+        else:
+            # `boltz2_predict` chunks only when width < multiplicity. At or
+            # above that boundary it takes the exact `sample(key)` branch used
+            # by None. Keep the closure's original value untouched; only let
+            # the retained runner recognize these proven no-op spellings as
+            # one identity. Even trunk-only graphs retain the boundary rule so
+            # this key never aliases a width that would chunk on a full run.
+            if (
+                chunk_size >= 1
+                and multiplicity >= 1
+                and chunk_size >= multiplicity
+            ):
+                identity_kwargs = dict(predict_kwargs)
+                identity_kwargs["diffusion_chunk_size"] = None
+
     return (
         ("model_function", id(predict_function)),
         ("noise_mode", noise_mode),
-        ("kwargs", _static_runtime_identity(predict_kwargs)),
+        ("kwargs", _static_runtime_identity(identity_kwargs)),
         ("runtime", runtime),
     )
 
