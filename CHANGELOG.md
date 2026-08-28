@@ -12,6 +12,24 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Both precision axes are now written down with measurements behind them.**
+  `docs/engineering-notes.md` carries a per-model table of element width and
+  matmul precision, each read off its upstream with a file:line, and says
+  plainly that every row matches its publisher except OpenDDE. The width was
+  measured on all three ports that expose it, at 1,003 tokens, five samples,
+  two runs per arm, both arms named explicitly -- bfloat16 is faster *and*
+  smaller on every one, with confidence unchanged.
+
+  The measurement also found what the width costs, which is not accuracy.
+  Running the same arm twice already moves the structure, and bfloat16 moves it
+  about ten times further on Boltz-2 (0.0439 -> 0.4154 A) and Protenix (0.0118
+  -> 0.0995 A) -- far enough that their float32-versus-bfloat16 gap is smaller
+  than the noise of either arm and cannot be read at five samples. OpenDDE's
+  floor does not move (0.0142 -> 0.0135 A), which is the row its new default
+  rests on. The asymmetry follows where the cast lands: OpenDDE leaves the
+  diffusion sampler in float32 while Boltz-2's `compute_dtype` reaches it, and
+  the sampler is the stochastic part.
+
 - **OpenDDE predicts on a bfloat16 trunk by default.** It was float32,
   because upstream is, and this repository's rule was that memory alone does
   not move a default away from what upstream runs. It is not memory alone.

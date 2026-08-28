@@ -75,18 +75,92 @@ tensor in the trunk, for an add. Routing them through a compiled add that donate
 its update buffer is the same arithmetic and took that port from 8,637 to
 7,576 MiB with scores unchanged to five decimals.
 
-### A bfloat16 trunk (`--option trunk_dtype=bf16`)
+### Which precision each model runs
 
-This is a backend option, not a FoldJAX flag, and only Protenix and OpenDDE
-have it — the two Protenix-family ports:
+Two independent axes. **Element width** is what the trunk's weights and
+activations are stored and computed in; **matmul precision** is how XLA
+executes the float32 matmuls that remain. A model can be bfloat16 and
+`highest`, or float32 and TF32, and Boltz-2 upstream is the first of those.
 
-```bash
-foldjax predict --model opendde --input job.yaml --option trunk_dtype=bf16
-```
+| model | element width | matmul precision | knob |
+|---|---|---|---|
+| AlphaFold 3 | bfloat16 | — | none; upstream is `bfloat16: 'all'` |
+| Boltz-2 | bfloat16 | `highest` | `--option dtype=float32` |
+| Protenix / v2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
+| OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
+| OpenFold3 | float32 | `high` (TF32) | none |
+| ESMFold2 | float32 | — | none |
 
-Protenix already defaults to `bf16`; OpenDDE defaulted to `fp32` until
-2026-08-28 and now ships `bf16` as well, so it is
-OpenDDE the option is worth setting on.
+Read against upstream, every row matches what its publisher ships **except
+OpenDDE**, which upstream runs in float32 (`opendde/config/model_base.py:37`).
+The others: AlphaFold 3 `model_config.py:34`, Boltz-2 `main.py:1262`
+(`precision="bf16-mixed"`) with `main.py:1096` asking for `highest` matmuls,
+Protenix `configs_base.py:135`, OpenFold3 `import_utils.py:33` — its
+`bf16-mixed` YAMLs are training configs, not inference — and ESMFold2's
+released `config.json`, whose autocast fires only when the parameters are
+already bfloat16.
+
+Only OpenDDE and Protenix expose the width as an option, and only OpenDDE has
+anywhere to go with it, because the other four are either already narrow or
+have no knob at all.
+
+### What the width costs, measured
+
+All three ports with the knob, at 1,003 tokens (`L1000_3og2`), five samples,
+two runs per arm, both arms named explicitly — a default is not an arm:
+
+| model | float32 | bfloat16 | confidence |
+|---|---|---|---|
+| boltz2 | 164.8 s, 10.14 GiB | **94.6 s, 6.87 GiB** | `complex_plddt` 0.9486 → 0.9490 |
+| protenix | 88.7 s, 11.64 GiB | **66.5 s, 6.73 GiB** | `ranking_score` 0.1921 → 0.1921 |
+| opendde | 280.4 s, 42.96 GiB | **174.4 s, 19.18 GiB** | `ranking_score` 0.1926 → 0.1926 |
+
+Faster *and* smaller on every one, with the score unchanged. That is the whole
+case for the narrow default, and for OpenDDE it is why the default moved on
+2026-08-28. It also moves the wall: at 1,531 tokens OpenDDE float32 asks for
+86.7 GiB and dies where bfloat16 finishes at 44.2 GiB.
+
+**The cost is reproducibility, not accuracy, and it is not the same everywhere.**
+Running the *same* arm twice already moves the structure, and bfloat16 moves it
+further:
+
+| model | float32 rerun floor | bfloat16 rerun floor | float32 ↔ bfloat16 |
+|---|---|---|---|
+| boltz2 | 0.0439 Å | **0.4154 Å** | 0.3630 Å |
+| protenix | 0.0118 Å | **0.0995 Å** (max 1.85) | 0.6896 Å |
+| opendde | 0.0142 Å | 0.0135 Å | 0.0301 Å |
+
+Median CA RMSD, samples paired by index — diffusion samples are independent, so
+only the same index may be compared across arms.
+
+Boltz-2 and Protenix become roughly ten times less repeatable in bfloat16,
+which makes their float32↔bfloat16 gap unreadable: the difference is smaller
+than the noise of either arm. **OpenDDE does not**, and that is the row the
+default rests on — its floor is unchanged and the gap sits at about twice it,
+with one sample of five moving 0.6140 Å.
+
+The asymmetry follows where the cast lands. OpenDDE narrows the embedder and
+both trunks and leaves the diffusion sampler in float32; Boltz-2's
+`compute_dtype` reaches the sampler itself, which is the stochastic part. A
+width that touches sampling buys memory and spends repeatability.
+
+`bench/spec.py` pins `dtype=float32` for OpenDDE's benchmark row, because a
+row that compared two precisions would not be a comparison.
+
+### The other axis, measured
+
+Matmul precision is independent of width, and moves structures far less. Boltz-2
+at 499 tokens (`L250_3dha`), the `highest` it pins against the `high` its
+neighbours use:
+
+| | median CA RMSD |
+|---|---|
+| `highest` rerun floor | 0.0093 Å |
+| `highest` ↔ `high` | 0.0218 Å |
+
+About twice the floor, cleanly separated — every cross-setting pair exceeded
+every within-setting pair. For reference, OpenFold3 recorded the same shape
+from the other direction: 0.011 Å against a 0.005 Å floor, for −15% wall.
 
 AlphaFold 3 runs its trunk in bfloat16 — weights *and* activations — and that
 is most of why its peak sits where it does. Protenix ships the same default;
@@ -109,8 +183,10 @@ activations are quadratic and the weights are not:
 | 976 tokens | 32,714 MiB, 46.3 s | **18,091 MiB, 28.9 s** | pLDDT 79.235 → 78.859 |
 
 Nearly half the memory and a third off the wall clock at 976 tokens, for 0.5%
-of pLDDT. It stays off by default because that cost is real; turn it on when
-the job would not otherwise fit.
+of pLDDT. That 0.5% is why this stayed opt-in for as long as it did. It became
+the default on 2026-08-28, once the same comparison had a rerun floor beside it
+and the confidence score came back unchanged rather than 0.5% down — see
+"Why OpenDDE moved" above. `--option dtype=float32` is still one flag away.
 
 **Dead outputs cost twice.** OpenDDE returned six representation tensors that
 nothing reads; the structural pair representation alone was 1,311 MiB of a
