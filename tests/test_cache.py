@@ -5,6 +5,7 @@ import pytest
 
 from foldjax.api import resolve_cache_dir
 from foldjax.backends.base import Backend
+from foldjax.backends.boltz2 import Boltz2Backend
 from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.cache import (
     CacheSnapshot,
@@ -135,6 +136,118 @@ def test_neutral_and_native_sampling_share_one_cache_namespace(
     )
 
     assert neutral == native
+
+
+def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    backend = Boltz2Backend()
+    omitted = _request(tmp_path)
+    native = dataclasses.replace(
+        omitted,
+        options={
+            "num_steps": 200,
+            "num_recycles": 3,
+            "num_samples": 1,
+            "cp_atom_windows": True,
+            "cp_devices": 1,
+            "cp_layout": "1d",
+            "affinity_num_steps": 200,
+            "affinity_num_samples": 5,
+            "compute_dtype": "bfloat16",
+            "attention_backend": "xla",
+            "triangle_backend": "cueq",
+            "glu_backend": "xla",
+            "bucket": False,
+        },
+    )
+    neutral = dataclasses.replace(
+        omitted,
+        num_steps=200,
+        num_recycles=3,
+        num_samples=1,
+        options={
+            "cp_atom_windows": True,
+            "cp_devices": 1,
+            "cp_layout": "auto",
+            "affinity_num_steps": 200,
+            "affinity_num_samples": 5,
+            "dtype": "bfloat16",
+            "attention_kernel": "auto",
+            "triangle_kernel": "auto",
+            "glu_backend": "xla",
+            "bucket": False,
+        },
+    )
+
+    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(native) == backend.cache_profile(omitted)
+    assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
+    assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
+    assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
+
+
+def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
+    tmp_path: Path,
+) -> None:
+    backend = Boltz2Backend()
+    request = _request(tmp_path)
+    cp_omitted = dataclasses.replace(request, options={"cp_devices": 4})
+    cp_auto = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "auto"}
+    )
+    cp_rows = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "1d"}
+    )
+    cp_grid = dataclasses.replace(
+        request, options={"cp_devices": 4, "cp_layout": "2d"}
+    )
+    cp_xla = dataclasses.replace(
+        request,
+        options={
+            "cp_devices": 4,
+            "cp_layout": "1d",
+            "triangle_backend": "xla",
+        },
+    )
+
+    assert backend.cache_profile(cp_omitted) == {"cp_devices": 4}
+    assert backend.cache_profile(cp_auto) == backend.cache_profile(cp_omitted)
+    assert backend.cache_profile(cp_rows) == backend.cache_profile(cp_omitted)
+    assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_rows, backend)
+    assert resolve_cache_dir(cp_grid, backend) != resolve_cache_dir(cp_rows, backend)
+    # CP currently resolves the released cueq default to XLA internally. Keep
+    # an explicitly requested XLA route separate until that conditional alias
+    # has its own whole-control-flow proof.
+    assert resolve_cache_dir(cp_xla, backend) != resolve_cache_dir(cp_rows, backend)
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "options"),
+    [
+        ({"num_steps": 201}, {}),
+        ({"num_recycles": 4}, {}),
+        ({"num_samples": 2}, {}),
+        ({}, {"cp_atom_windows": False}),
+        ({}, {"affinity_num_steps": 201}),
+        ({}, {"affinity_num_samples": 6}),
+        ({}, {"compute_dtype": "float32"}),
+        ({}, {"attention_backend": "tokamax"}),
+        ({}, {"triangle_backend": "xla"}),
+        ({}, {"glu_backend": "tokamax"}),
+        ({}, {"bucket": True}),
+    ],
+)
+def test_boltz2_nondefault_compile_options_keep_distinct_namespaces(
+    tmp_path: Path,
+    request_fields: dict[str, object],
+    options: dict[str, object],
+) -> None:
+    backend = Boltz2Backend()
+    omitted = _request(tmp_path)
+    changed = dataclasses.replace(omitted, options=options, **request_fields)
+
+    assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
 
 
 @pytest.mark.parametrize("model", available_models())

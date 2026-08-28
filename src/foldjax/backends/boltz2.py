@@ -265,6 +265,28 @@ def _padding_shape_profile(metadata: object) -> dict[str, object] | None:
     return dict(primary)
 
 
+#: Compile-relevant defaults released by :func:`foldjax.models.boltz2.api.predict`.
+#:
+#: Keep this list beside the adapter rather than importing the native API while
+#: planning a request: cache-directory selection must stay free of the model
+#: runtime.  A signature drift test pins every value to the native authority.
+_RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
+    "num_steps": 200,
+    "num_recycles": 3,
+    "num_samples": 1,
+    "cp_atom_windows": True,
+    "cp_devices": 1,
+    "cp_layout": "auto",
+    "affinity_num_steps": 200,
+    "affinity_num_samples": 5,
+    "compute_dtype": "bfloat16",
+    "attention_backend": "xla",
+    "triangle_backend": "cueq",
+    "glu_backend": "xla",
+    "bucket": False,
+}
+
+
 class Boltz2Backend(Backend):
     name = "boltz2"
     session_reuse = True
@@ -366,6 +388,30 @@ class Boltz2Backend(Backend):
         self._params.clear()
         for role in tuple(self._runners):
             self._drop_runner(role)
+
+    def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
+        """Keep explicit released defaults in the omitted cache namespace.
+
+        The native API resolves omitted options to these exact values before it
+        builds either retained runner identity.  Naming them explicitly must
+        therefore not select another persistent cache directory.  Likewise,
+        its context-parallel resolver maps both ``auto`` and ``1d`` to ``1d``
+        for serial and multi-device runs.  Other conditional aliases remain
+        distinct here even where a current control-flow branch ignores them.
+        """
+
+        profile = super().cache_profile(request)
+        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
+            if name not in profile:
+                continue
+            value = profile[name]
+            # ``bool`` is an ``int`` subclass. Preserve malformed or future
+            # type variants rather than allowing True to alias integer 1.
+            if type(value) is type(default) and value == default:
+                profile.pop(name)
+        if profile.get("cp_layout") == "1d":
+            profile.pop("cp_layout")
+        return profile
 
     def _drop_runner(self, role: str) -> None:
         cached = self._runners.pop(role, None)

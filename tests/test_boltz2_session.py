@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import gc
+import inspect
 import subprocess
 import sys
 import textwrap
@@ -17,7 +18,9 @@ import pytest
 import foldjax
 import foldjax.backends.boltz2 as backend_module
 import foldjax.models.boltz2.api as native_api
+from foldjax.api import resolve_cache_dir
 from foldjax.backends.boltz2 import Boltz2Backend
+from foldjax.cache import compilation_cache_scope
 from foldjax.manifest import MANIFEST_NAME
 from foldjax.models.boltz2.data.ownership import (
     ATOM_TO_TOKEN_INDEX,
@@ -212,7 +215,7 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                     write_fmt=None,
                     _runtime=backend,
                     cp_devices=4,
-                    cp_layout="1d",
+                    cp_layout="auto" if seed == 0 else "1d",
                     cp_atom_windows=False,
                     attention_backend="xla",
                     triangle_backend="xla",
@@ -344,6 +347,131 @@ def _patch_primary_runtime(monkeypatch, tmp_path: Path, counts: dict[str, int]) 
     monkeypatch.setattr(
         "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
     )
+
+
+def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
+    signature = inspect.signature(native_api.predict)
+    actual = {
+        name: signature.parameters[name].default
+        for name in backend_module._RELEASED_COMPILE_DEFAULTS
+    }
+
+    for name, expected in backend_module._RELEASED_COMPILE_DEFAULTS.items():
+        assert type(actual[name]) is type(expected)
+    assert actual == backend_module._RELEASED_COMPILE_DEFAULTS
+    for cp_devices in (1, 2, 4, 9):
+        assert native_api._resolve_cp_layout("auto", cp_devices) == "1d"
+        assert native_api._resolve_cp_layout("1d", cp_devices) == "1d"
+
+
+def test_released_default_cache_aliases_reuse_one_native_runner(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    explicit = dataclasses.replace(
+        request,
+        num_steps=200,
+        num_recycles=3,
+        num_samples=1,
+        options={
+            **request.options,
+            "cp_atom_windows": True,
+            "cp_devices": 1,
+            "cp_layout": "1d",
+            "affinity_num_steps": 200,
+            "affinity_num_samples": 5,
+            "compute_dtype": "bfloat16",
+            "attention_backend": "xla",
+            "triangle_backend": "cueq",
+            "glu_backend": "xla",
+            "bucket": False,
+        },
+    )
+    backend = Boltz2Backend()
+    omitted_scope = resolve_cache_dir(request, backend)
+    explicit_scope = resolve_cache_dir(explicit, backend)
+    assert explicit_scope == omitted_scope
+    counts = {"loads": 0, "traces": 0}
+    _patch_primary_runtime(monkeypatch, tmp_path, counts)
+
+    common = {
+        "seq": ["AA"],
+        "weights": request.weights,
+        "mols": request.options["mols"],
+        "out_dir": tmp_path,
+        "seed": 0,
+        "write_fmt": None,
+        "compile_cache": omitted_scope,
+        "_runtime": backend,
+    }
+    with backend.session((request,)), compilation_cache_scope(omitted_scope):
+        omitted = native_api.predict(**common)
+        pinned = native_api.predict(
+            **common,
+            num_steps=200,
+            num_recycles=3,
+            num_samples=1,
+            cp_atom_windows=True,
+            cp_devices=1,
+            cp_layout="1d",
+            affinity_num_steps=200,
+            affinity_num_samples=5,
+            compute_dtype="bfloat16",
+            attention_backend="xla",
+            triangle_backend="cueq",
+            glu_backend="xla",
+            bucket=False,
+        )
+
+        assert counts == {"loads": 1, "traces": 1}
+        assert set(backend._runners) == {"primary"}
+        native_runner = backend._runners["primary"][1]._runner
+        assert native_runner._cache_size() == 1
+        np.testing.assert_array_equal(omitted["coords"], pinned["coords"])
+        np.testing.assert_array_equal(omitted["plddt"], pinned["plddt"])
+
+
+def test_runner_identity_keeps_raw_representations_and_trunk_routes_distinct(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq")
+    runtime = native_api._runtime_identity(
+        jax, cp_devices=1, cp_layout="1d", compile_cache=None
+    )
+
+    def model(value):
+        return value
+
+    kwargs = {
+        "run_distogram": False,
+        "return_confidence_logits": False,
+        "return_representations": (),
+        "stop_after_trunk": False,
+        "diffusion_chunk_size": 1,
+    }
+
+    def identity(**changes):
+        return native_api._runner_identity(
+            predict_function=model,
+            predict_kwargs={**kwargs, **changes},
+            noise_mode="none",
+            runtime=runtime,
+        )
+
+    identities = {
+        identity(),
+        identity(run_distogram=True, return_confidence_logits=True),
+        identity(return_representations=("single",)),
+        identity(stop_after_trunk=True),
+        identity(diffusion_chunk_size=2),
+        native_api._runner_identity(
+            predict_function=model,
+            predict_kwargs=kwargs,
+            noise_mode="storage_prefix",
+            runtime=runtime,
+        ),
+    }
+    assert len(identities) == 6
 
 
 def test_native_session_reuses_primary_params_and_jit_across_seeds(

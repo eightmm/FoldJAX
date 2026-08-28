@@ -12,6 +12,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz2's explicit released defaults now reuse the omitted compilation-cache
+  namespace.** The released sampling, affinity, dtype, kernel, bucket and atom
+  context-parallel defaults are removed from the cache profile only when their
+  value and exact type match the native `predict` signature. Explicit
+  `cp_layout=auto` and `cp_layout=1d` also share the existing omitted-layout
+  namespace at one or several CP devices because the native resolver maps both
+  to `1d`. Non-default options, 2-D CP, explicit CP XLA, disabled atom-window
+  sharding, raw-confidence output, representations, trunk-only execution,
+  padding-noise routes, ambient kernels and PRNG configurations keep distinct
+  persistent or retained-runner identities. Conditional cueq/XLA and inactive
+  atom-window aliases remain deliberately unmerged; distinct diffusion chunk
+  widths remain separated by retained-runner identity.
+
+  A synthetic CPU end-to-end cache/runner probe followed the real adapter cache
+  profile through `resolve_cache_dir` and the native runtime/runner owner: an
+  omitted call and a call spelling every released default produced identical
+  arrays with one parameter load, one JAX trace, one retained runner and one
+  executable-cache entry. Forced four-device CPU coverage also alternates
+  `auto` and `1d` within that one runner. Signature and CP-resolution drift,
+  non-default namespace separation and static-route identity are regression
+  gated. No released-weight GPU run or full-model compile was performed.
+
 - **OpenFold3 reuses its existing released-default compilation namespace when
   those defaults are written explicitly.** Omitting the sampling fields,
   requesting the neutral released schedule (5 samples, 200 steps, 3 recycles),
