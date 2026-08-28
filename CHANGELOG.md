@@ -12,6 +12,25 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The precision numbers now sit in the ladder they belong to, and
+  `bench/run_foldjax` takes `--seed`.** The bench pins one seed so its rows
+  compare, which also meant the spread that pinning hides could not be
+  measured. It can now, and it reframes the dtype work: changing the seed moves
+  Boltz-2 1.908 A and OpenDDE 2.431 A, where float32 → bfloat16 moves them
+  0.3630 A and 0.0301 A. The width is the smallest decision on the ladder --
+  a fifth of a seed change on Boltz-2, a hundredth on OpenDDE.
+
+  `docs/engineering-notes.md` carries the whole ladder rather than the two rows
+  that fit an argument. It also separates two claims that had been running
+  together: scientifically the width does not change results at these sizes,
+  while *as a measurement* Boltz-2's and Protenix's bfloat16 arms are ten times
+  less repeatable, so their own float32↔bfloat16 gap can only be bounded at
+  five samples, not resolved. OpenDDE's floor does not move, which is the row
+  its default rests on.
+
+  A side finding: OpenDDE's seeds buy almost nothing. Changing the seed moves
+  it 2.431 A where its five samples from one seed already sit 2.469 A apart.
+  Boltz-2's seeds add 43% on top of its sample spread.
 - **Model-bound MSA storage is compact without changing MSA arithmetic.**
   Protenix, OpenDDE, Boltz-2 and ESMFold2 keep publisher-native feature dtypes
   at their public featurizer boundary, then store categorical ids as `uint8`
@@ -35,7 +54,6 @@ command predicts unless it says so here, in its own paragraph.
   StableHLO fell from 112,415 to 31,568 bytes, compile time from 91 to 58 ms,
   and executable temp from 1,968,136 to 788,232 bytes. These are stage-only
   compiler measurements, not whole-model or GPU latency claims.
-
 - **Both precision axes are now written down with measurements behind them.**
   `docs/engineering-notes.md` carries a per-model table of element width and
   matmul precision, each read off its upstream with a file:line, and says

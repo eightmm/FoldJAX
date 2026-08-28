@@ -72,6 +72,14 @@ def main() -> int:
         "precision the upstream runs by default and FoldJAX does not",
     )
     parser.add_argument("--label", help="tag for this row, defaults to the model")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="override the pinned bench seed. The table is measured at one "
+        "seed so its rows are comparable; this exists to measure the spread "
+        "that pinning hides -- how far two seeds move the same job.",
+    )
     args = parser.parse_args()
 
     import foldjax
@@ -93,7 +101,7 @@ def main() -> int:
         model=model,
         input=case.job,
         output_dir=args.output_dir,
-        seed=SEED,
+        seed=SEED if args.seed is None else args.seed,
         options=options,
         profile=profile,
         **SCHEDULE,

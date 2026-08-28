@@ -120,29 +120,41 @@ case for the narrow default, and for OpenDDE it is why the default moved on
 2026-08-28. It also moves the wall: at 1,531 tokens OpenDDE float32 asks for
 86.7 GiB and dies where bfloat16 finishes at 44.2 GiB.
 
-**The cost is reproducibility, not accuracy, and it is not the same everywhere.**
-Running the *same* arm twice already moves the structure, and bfloat16 moves it
-further:
+**What the width costs is repeatability, not accuracy — and it is small.**
+Read any of these numbers without the ladder they sit in and they look like
+something. Here is the whole ladder, same job, same tool, median CA RMSD:
 
-| model | float32 rerun floor | bfloat16 rerun floor | float32 ↔ bfloat16 |
-|---|---|---|---|
-| boltz2 | 0.0439 Å | **0.4154 Å** | 0.3630 Å |
-| protenix | 0.0118 Å | **0.0995 Å** (max 1.85) | 0.6896 Å |
-| opendde | 0.0142 Å | 0.0135 Å | 0.0301 Å |
+| what varies | boltz2 | opendde |
+|---|---|---|
+| the seed | **1.908 Å** | **2.431 Å** |
+| the diffusion sample, one seed | 1.335 Å | 2.469 Å |
+| nothing — the same arm run twice, bfloat16 | 0.4154 Å | 0.0135 Å |
+| **float32 → bfloat16** | **0.3630 Å** | **0.0301 Å** |
+| nothing — the same arm run twice, float32 | 0.0439 Å | 0.0142 Å |
 
-Median CA RMSD, samples paired by index — diffusion samples are independent, so
-only the same index may be compared across arms.
+The width sits at the bottom of that ladder. On Boltz-2 it moves the structure
+about a fifth as far as changing the seed does; on OpenDDE, a hundredth.
+Choosing bfloat16 is a smaller decision than choosing which seed to run.
 
-Boltz-2 and Protenix become roughly ten times less repeatable in bfloat16,
-which makes their float32↔bfloat16 gap unreadable: the difference is smaller
-than the noise of either arm. **OpenDDE does not**, and that is the row the
-default rests on — its floor is unchanged and the gap sits at about twice it,
-with one sample of five moving 0.6140 Å.
+Two things follow, and they are different claims. **Scientifically** the width
+is not a result-changing knob at these sizes. **As a measurement**, Boltz-2 and
+Protenix become roughly ten times less repeatable in bfloat16 (0.0439 → 0.4154
+Å, 0.0118 → 0.0995 Å), which puts their float32↔bfloat16 gap below the noise of
+either arm: at five samples it cannot be resolved, only bounded. OpenDDE's
+floor does not move at all, which is the row its default rests on — the gap
+sits at about twice a floor that stayed put, with one sample of five moving
+0.6140 Å.
 
 The asymmetry follows where the cast lands. OpenDDE narrows the embedder and
 both trunks and leaves the diffusion sampler in float32; Boltz-2's
 `compute_dtype` reaches the sampler itself, which is the stochastic part. A
 width that touches sampling buys memory and spends repeatability.
+
+One more thing the ladder shows: OpenDDE's seeds are not worth much. Changing
+the seed moves it 2.431 Å where its own five samples already sit 2.469 Å apart
+— the sampling is doing all the exploring. Boltz-2's seeds add 43% on top of
+its sample spread. `--seed` on `bench/run_foldjax` is how these were measured;
+the table itself stays pinned to one seed so its rows compare.
 
 `bench/spec.py` pins `dtype=float32` for OpenDDE's benchmark row, because a
 row that compared two precisions would not be a comparison.
