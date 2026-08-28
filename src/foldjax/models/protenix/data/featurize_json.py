@@ -16,6 +16,7 @@ import tempfile
 from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import gemmi
@@ -120,6 +121,7 @@ _EXTERNAL_CCD_ATOM_CACHE_LIMIT = 256
 _EXTERNAL_CCD_ATOMS: OrderedDict[
     tuple[Path, tuple[int, int, int, int, int], str], dict[str, Any]
 ] = OrderedDict()
+_EXTERNAL_CCD_LOCK = RLock()
 _TRUSTED_CCD_RDKIT_SHA256 = frozenset(
     {"d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35"}
 )
@@ -1783,31 +1785,50 @@ def _managed_ccd_asset(name: str) -> Path:
     return assets_dir() / name
 
 
+def _external_ccd_molecule(code: str) -> Any:
+    """Return one source molecule without racing process-cache cleanup."""
+
+    global _EXTERNAL_CCD_MOLS
+    with _EXTERNAL_CCD_LOCK:
+        if _EXTERNAL_CCD_MOLS is None:
+            candidates = []
+            configured = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
+            if configured:
+                candidates.append(Path(configured))
+            candidates.append(_managed_ccd_asset("components.cif.rdkit_mol.pkl"))
+            cache_path = next((path for path in candidates if path.is_file()), None)
+            if cache_path is None:
+                raise ValueError(
+                    f"CCD code {code!r} is not vendored; set "
+                    "PROTENIX_CCD_RDKIT_MOL_FILE to components.cif.rdkit_mol.pkl"
+                )
+            try:
+                _EXTERNAL_CCD_MOLS = _load_verified_rdkit_cache(cache_path)
+            except (ImportError, ModuleNotFoundError) as exc:
+                raise RuntimeError(
+                    "RDKit is required to load arbitrary CCD components"
+                ) from exc
+        source_mol = _EXTERNAL_CCD_MOLS.get(code)
+    if source_mol is None:
+        raise ValueError(f"unknown CCD code: {code!r}")
+    return source_mol
+
+
+def _release_external_ccd_cache() -> bool:
+    """Drop shared Protenix/OpenDDE CCD globals after their last owner."""
+
+    global _EXTERNAL_CCD_MOLS
+    with _EXTERNAL_CCD_LOCK:
+        loaded = _EXTERNAL_CCD_MOLS is not None or bool(_EXTERNAL_CCD_ATOMS)
+        _EXTERNAL_CCD_MOLS = None
+        _EXTERNAL_CCD_ATOMS.clear()
+    return loaded
+
+
 def _external_ccd_component(code: str) -> dict[str, np.ndarray]:
     """Load an arbitrary CCD component from the official Protenix assets."""
 
-    global _EXTERNAL_CCD_MOLS
-    if _EXTERNAL_CCD_MOLS is None:
-        candidates = []
-        configured = os.environ.get("PROTENIX_CCD_RDKIT_MOL_FILE")
-        if configured:
-            candidates.append(Path(configured))
-        candidates.append(_managed_ccd_asset("components.cif.rdkit_mol.pkl"))
-        cache_path = next((path for path in candidates if path.is_file()), None)
-        if cache_path is None:
-            raise ValueError(
-                f"CCD code {code!r} is not vendored; set "
-                "PROTENIX_CCD_RDKIT_MOL_FILE to components.cif.rdkit_mol.pkl"
-            )
-        try:
-            _EXTERNAL_CCD_MOLS = _load_verified_rdkit_cache(cache_path)
-        except (ImportError, ModuleNotFoundError) as exc:
-            raise RuntimeError(
-                "RDKit is required to load arbitrary CCD components"
-            ) from exc
-    source_mol = _EXTERNAL_CCD_MOLS.get(code)
-    if source_mol is None:
-        raise ValueError(f"unknown CCD code: {code!r}")
+    source_mol = _external_ccd_molecule(code)
     try:
         from rdkit import Chem
     except ImportError as exc:
@@ -1962,17 +1983,18 @@ def _external_ccd_atom_metadata(code: str) -> dict[str, Any]:
         stat.st_ctime_ns,
     )
     cache_key = (resolved, identity, code)
-    cached = _EXTERNAL_CCD_ATOMS.get(cache_key)
-    if cached is not None:
+    with _EXTERNAL_CCD_LOCK:
+        cached = _EXTERNAL_CCD_ATOMS.get(cache_key)
+        if cached is not None:
+            _EXTERNAL_CCD_ATOMS.move_to_end(cache_key)
+            return cached
+        block = _read_ccd_block(resolved, code)
+        metadata = _parse_ccd_atom_metadata(block, code)
+        _EXTERNAL_CCD_ATOMS[cache_key] = metadata
         _EXTERNAL_CCD_ATOMS.move_to_end(cache_key)
-        return cached
-    block = _read_ccd_block(resolved, code)
-    metadata = _parse_ccd_atom_metadata(block, code)
-    _EXTERNAL_CCD_ATOMS[cache_key] = metadata
-    _EXTERNAL_CCD_ATOMS.move_to_end(cache_key)
-    while len(_EXTERNAL_CCD_ATOMS) > _EXTERNAL_CCD_ATOM_CACHE_LIMIT:
-        _EXTERNAL_CCD_ATOMS.popitem(last=False)
-    return metadata
+        while len(_EXTERNAL_CCD_ATOMS) > _EXTERNAL_CCD_ATOM_CACHE_LIMIT:
+            _EXTERNAL_CCD_ATOMS.popitem(last=False)
+        return metadata
 
 
 def _read_ccd_block(path: Path, code: str) -> str:

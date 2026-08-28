@@ -12,6 +12,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Common-backend CCD dictionaries now live only for the prediction session
+  that can use them.** ESMFold2 acquires its Biohub cache only for the
+  all-biomolecule feature route, while Protenix and OpenDDE share one lazy
+  process-wide lease for their external RDKit/components cache. The last owner
+  clears the native globals, collects Python objects, and on Linux/glibc makes
+  a best-effort `malloc_trim(0)` call; an unavailable allocator hook or any
+  cleanup failure is a no-op and cannot replace a prediction exception.
+  Fully resumed sessions and failures before the CCD-capable prediction scope
+  is entered do not acquire a lease, and multi-seed sessions retain one warm
+  dictionary until their final exit.
+
+  Fresh host-CPU probes measured the ESM cache at 2.897 GiB RSS after load,
+  2.879 GiB after cache clear plus collection, and 83 MiB after allocator trim
+  (0.11 s trim wall time). The shared Protenix/OpenDDE cache measured 1.701 GiB,
+  1.507 GiB, and 110 MiB at the same boundaries (0.41 s trim). These are
+  absolute process RSS values, not the previously reported incremental
+  2.79/1.62 GiB increases. ESM cold load/featurization measured 2.78 s versus
+  0.0005 s while cached, so a later one-shot all-biomolecule prediction pays
+  that reload cost in exchange for releasing idle RSS. These measurements are
+  host-specific CPU evidence; no GPU/XLA graph, model arithmetic, feature
+  value, or output changes.
+
 - **Managed OpenDDE prediction now carries exact atom element and atom-name
   categories as private compact IDs until the compiled graph consumes them.**
   Generated, validated (and when requested padded) model copies replace the

@@ -656,6 +656,101 @@ def test_native_cli_backends_reuse_prepared_params_within_a_session(
         assert seen_params == [loads[0][2], loads[0][2]]
 
 
+def test_protenix_and_opendde_share_one_ccd_lease_until_both_sessions_exit(
+    tmp_path, monkeypatch
+) -> None:
+    from foldjax.models import _managed_memory
+    from foldjax.models.protenix.data import featurize_json
+
+    protenix_root = tmp_path / "protenix"
+    opendde_root = tmp_path / "opendde"
+    protenix_root.mkdir()
+    opendde_root.mkdir()
+    protenix_request = _request(protenix_root, "protenix")
+    opendde_request = _request(opendde_root, "opendde")
+    releases = []
+    cleanup = []
+    original_release = featurize_json._release_external_ccd_cache
+
+    def release() -> bool:
+        releases.append("release")
+        return original_release()
+
+    def native_main(argv):
+        featurize_json._EXTERNAL_CCD_MOLS = {"loaded": object()}
+        return _write_protenix_outputs(Path(argv[argv.index("--out") + 1]))
+
+    native = SimpleNamespace(main=native_main)
+    monkeypatch.setattr(featurize_json, "_release_external_ccd_cache", release)
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module", lambda _name: native
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.opendde.import_module", lambda _name: native
+    )
+    monkeypatch.setattr(
+        _managed_memory.gc, "collect", lambda: cleanup.append("collect") or 0
+    )
+    monkeypatch.setattr(
+        _managed_memory, "_malloc_trim", lambda: cleanup.append("trim")
+    )
+    protenix = ProtenixBackend()
+    opendde = OpenDDEBackend()
+
+    with protenix.session(
+        (
+            protenix_request,
+            dataclasses.replace(protenix_request, seed=6),
+        )
+    ):
+        protenix.predict(protenix_request)
+        with opendde.session(
+            (
+                opendde_request,
+                dataclasses.replace(opendde_request, seed=6),
+            )
+        ):
+            opendde.predict(opendde_request)
+            assert releases == []
+        assert releases == []
+
+    assert releases == ["release"]
+    assert cleanup == ["collect", "trim"]
+    assert featurize_json._EXTERNAL_CCD_MOLS is None
+
+
+@pytest.mark.parametrize(
+    ("model", "backend_type", "error"),
+    [
+        ("protenix", ProtenixBackend, ValueError("bad input")),
+        ("opendde", OpenDDEBackend, KeyboardInterrupt()),
+    ],
+)
+def test_scalar_native_failure_always_releases_external_ccd(
+    tmp_path, monkeypatch, model, backend_type, error
+) -> None:
+    from foldjax.models import _managed_memory
+    from foldjax.models.protenix.data import featurize_json
+
+    request = _request(tmp_path, model)
+
+    def native_main(_argv):
+        featurize_json._EXTERNAL_CCD_MOLS = {"loaded": object()}
+        raise error
+
+    monkeypatch.setattr(
+        f"foldjax.backends.{model}.import_module",
+        lambda _name: SimpleNamespace(main=native_main),
+    )
+    monkeypatch.setattr(_managed_memory.gc, "collect", lambda: 0)
+    monkeypatch.setattr(_managed_memory, "_malloc_trim", lambda: None)
+
+    with pytest.raises(type(error)):
+        backend_type().predict(request)
+
+    assert featurize_json._EXTERNAL_CCD_MOLS is None
+
+
 def test_protenix_session_defers_loading_until_native_platform_setup(
     tmp_path, monkeypatch
 ) -> None:

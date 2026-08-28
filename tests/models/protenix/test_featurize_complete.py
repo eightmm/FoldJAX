@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pickle
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -109,6 +110,135 @@ TST HX H 0 N
     assert entry["elem"].tolist() == ["C", "O"]
     assert entry["charge"].tolist() == [0.0, -1.0]
     assert entry["leaving_atom_flag"].tolist() == [False, True]
+
+
+def test_external_ccd_release_preserves_exact_feature_arrays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def assert_exact(left, right, name: str) -> None:
+        if isinstance(left, dict):
+            assert isinstance(right, dict) and left.keys() == right.keys(), name
+            for child in left:
+                assert_exact(left[child], right[child], f"{name}.{child}")
+            return
+        left_array = np.asarray(left)
+        right_array = np.asarray(right)
+        assert left_array.dtype == right_array.dtype, name
+        assert left_array.shape == right_array.shape, name
+        np.testing.assert_array_equal(left_array, right_array, err_msg=name)
+
+    mol = Chem.AddHs(Chem.MolFromSmiles("C[O-]"))
+    assert AllChem.EmbedMolecule(mol, randomSeed=11) == 0
+    mol = Chem.RemoveHs(mol)
+    components = tmp_path / "components.cif"
+    components.write_text(
+        """data_TST
+#
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.charge
+_chem_comp_atom.pdbx_leaving_atom_flag
+TST CX C 0 N
+TST OX O -1 Y
+#
+""",
+        encoding="utf-8",
+    )
+    cache = tmp_path / "components.cif.rdkit_mol.pkl"
+    cache.touch()
+    monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(components))
+    monkeypatch.setenv("PROTENIX_CCD_RDKIT_MOL_FILE", str(cache))
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_MOLS", {"TST": mol})
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOMS", OrderedDict())
+    monkeypatch.setattr(
+        featurize_impl,
+        "_load_verified_rdkit_cache",
+        lambda _path: {"TST": mol},
+    )
+
+    before = featurize_protein_json(_job(_ligand("CCD_TST")))
+    assert featurize_impl._release_external_ccd_cache() is True
+    after = featurize_protein_json(_job(_ligand("CCD_TST")))
+
+    assert before.keys() == after.keys()
+    for name in before:
+        assert_exact(before[name], after[name], name)
+
+
+def test_external_ccd_clear_waits_for_a_direct_load_and_keeps_the_local_mol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mol = Chem.AddHs(Chem.MolFromSmiles("C[O-]"))
+    assert AllChem.EmbedMolecule(mol, randomSeed=13) == 0
+    mol = Chem.RemoveHs(mol)
+    components = tmp_path / "components.cif"
+    components.write_text(
+        """data_TST
+#
+loop_
+_chem_comp_atom.comp_id
+_chem_comp_atom.atom_id
+_chem_comp_atom.type_symbol
+_chem_comp_atom.charge
+_chem_comp_atom.pdbx_leaving_atom_flag
+TST CX C 0 N
+TST OX O -1 Y
+#
+""",
+        encoding="utf-8",
+    )
+    cache = tmp_path / "components.cif.rdkit_mol.pkl"
+    cache.touch()
+    monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(components))
+    monkeypatch.setenv("PROTENIX_CCD_RDKIT_MOL_FILE", str(cache))
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_MOLS", None)
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOMS", OrderedDict())
+    load_started = threading.Event()
+    finish_load = threading.Event()
+    clear_finished = threading.Event()
+    results = []
+    errors = []
+
+    def load(_path):
+        load_started.set()
+        if not finish_load.wait(5):
+            raise TimeoutError("CCD load was not resumed")
+        return {"TST": mol}
+
+    def read_component() -> None:
+        try:
+            results.append(featurize_impl._external_ccd_component("TST"))
+        except BaseException as error:
+            errors.append(error)
+
+    def clear_cache() -> None:
+        try:
+            results.append(featurize_impl._release_external_ccd_cache())
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            clear_finished.set()
+
+    monkeypatch.setattr(featurize_impl, "_load_verified_rdkit_cache", load)
+    reader = threading.Thread(target=read_component)
+    reader.start()
+    assert load_started.wait(5)
+    clearer = threading.Thread(target=clear_cache)
+    clearer.start()
+    assert not clear_finished.wait(0.05)
+    finish_load.set()
+    reader.join(5)
+    clearer.join(5)
+
+    assert not reader.is_alive() and not clearer.is_alive()
+    assert errors == []
+    component = next(value for value in results if isinstance(value, dict))
+    assert component["names"].tolist() == ["CX", "OX"]
+    assert True in results
+    assert featurize_impl._EXTERNAL_CCD_MOLS is None
+    featurize_impl._release_external_ccd_cache()
 
 
 def test_external_ccd_rejects_unverified_rdkit_pickle(

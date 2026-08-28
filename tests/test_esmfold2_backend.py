@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import numpy as np
@@ -250,12 +251,14 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
         "token_attention_mask": np.asarray([[True]]),
     }
     seen = {}
+    memory_events = []
     model = SimpleNamespace(
         has_language_model=False,
         settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
     )
 
     def build_common(value, **kwargs):
+        memory_events.append("build")
         seen["document"] = value
         seen.update(kwargs)
         return features
@@ -283,6 +286,19 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
         "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
     )
 
+    @contextmanager
+    def recording_lease(key, release):
+        del release
+        memory_events.append(("enter", key))
+        try:
+            yield
+        finally:
+            memory_events.append(("exit", key))
+
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease", recording_lease
+    )
+
     ESMFold2Backend().predict(
         PredictionRequest(
             model="esmfold2",
@@ -299,6 +315,271 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
     assert "msa_depth" not in seen
     assert seen["features"] is features
     assert seen["predict"]["return_distogram_logits"] is False
+    assert memory_events == [
+        ("enter", "esmfold2_ccd"),
+        "build",
+        ("exit", "esmfold2_ccd"),
+    ]
+
+
+def _all_atom_session_fixture(tmp_path, monkeypatch, *, build_error=None):
+    job = _job(tmp_path / "job", [{"type": "ligand", "id": "L", "ccd": "ATP"}])
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    (weights / "model.safetensors").write_bytes(b"structure")
+    (weights / "config.json").write_text("{}")
+    features = {
+        "input_ids": np.asarray([[4]]),
+        "asym_id": np.asarray([[0]]),
+        "residue_index": np.asarray([[0]]),
+        "mol_type": np.asarray([[3]]),
+        "token_attention_mask": np.asarray([[True]]),
+    }
+    calls = {"build": 0, "predict": 0}
+    model = SimpleNamespace(
+        has_language_model=False,
+        settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
+    )
+
+    def build_common(*args, **kwargs):
+        del args, kwargs
+        calls["build"] += 1
+        if build_error is not None:
+            raise build_error
+        return features
+
+    def predict(*args, **kwargs):
+        del args, kwargs
+        calls["predict"] += 1
+        return {}
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            load=lambda *args, **kwargs: model,
+            seed_key=lambda seed: seed,
+            build_common_job_features=build_common,
+            predict=predict,
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 0.75}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    request = PredictionRequest(
+        model="esmfold2",
+        input=job,
+        weights=weights,
+        output_dir=tmp_path / "out",
+        num_seeds=2,
+        options={"no_language_model": True},
+    )
+    return request, calls
+
+
+def test_all_atom_session_holds_one_ccd_lease_across_seeds(
+    tmp_path, monkeypatch
+) -> None:
+    request, calls = _all_atom_session_fixture(tmp_path, monkeypatch)
+    events = []
+
+    @contextmanager
+    def recording_lease(key, release):
+        del release
+        events.append(("enter", key))
+        try:
+            yield
+        finally:
+            events.append(("exit", key))
+
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease", recording_lease
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        for seed in request.resolved_seeds:
+            backend.predict(
+                dataclasses.replace(
+                    request,
+                    seed=seed,
+                    num_seeds=None,
+                    output_dir=tmp_path / f"out-{seed}",
+                )
+            )
+        assert events == [("enter", "esmfold2_ccd")]
+
+    assert calls == {"build": 2, "predict": 2}
+    assert events == [
+        ("enter", "esmfold2_ccd"),
+        ("exit", "esmfold2_ccd"),
+    ]
+
+
+@pytest.mark.parametrize("error", [ValueError("bad chemistry"), KeyboardInterrupt()])
+def test_scalar_all_atom_failure_releases_ccd_lease(
+    tmp_path, monkeypatch, error
+) -> None:
+    request, _calls = _all_atom_session_fixture(
+        tmp_path, monkeypatch, build_error=error
+    )
+    events = []
+
+    @contextmanager
+    def recording_lease(key, release):
+        del release
+        events.append(("enter", key))
+        try:
+            yield
+        finally:
+            events.append(("exit", key))
+
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease", recording_lease
+    )
+
+    with pytest.raises(type(error)):
+        ESMFold2Backend().predict(dataclasses.replace(request, num_seeds=None))
+
+    assert events == [
+        ("enter", "esmfold2_ccd"),
+        ("exit", "esmfold2_ccd"),
+    ]
+
+
+def test_session_keyboard_interrupt_releases_ccd_and_resets_state(
+    tmp_path, monkeypatch
+) -> None:
+    request, _calls = _all_atom_session_fixture(
+        tmp_path, monkeypatch, build_error=KeyboardInterrupt()
+    )
+    events = []
+
+    @contextmanager
+    def recording_lease(key, release):
+        del release
+        events.append(("enter", key))
+        try:
+            yield
+        finally:
+            events.append(("exit", key))
+
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease", recording_lease
+    )
+    backend = ESMFold2Backend()
+
+    with pytest.raises(KeyboardInterrupt), backend.session((request,)):
+        backend.predict(dataclasses.replace(request, num_seeds=None))
+
+    assert events == [
+        ("enter", "esmfold2_ccd"),
+        ("exit", "esmfold2_ccd"),
+    ]
+    assert backend._session_open is False
+    assert backend._managed_memory is None
+    assert backend._ccd_memory_leased is False
+
+
+def test_poison_after_all_atom_seed_still_releases_session_ccd(
+    tmp_path, monkeypatch
+) -> None:
+    request, _calls = _all_atom_session_fixture(tmp_path, monkeypatch)
+    events = []
+
+    @contextmanager
+    def recording_lease(key, release):
+        del release
+        events.append(("enter", key))
+        try:
+            yield
+        finally:
+            events.append(("exit", key))
+
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease", recording_lease
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        backend.predict(dataclasses.replace(request, num_seeds=None))
+        replacement = request.weights / "config.new"
+        replacement.write_text("{}")
+        os.replace(replacement, request.weights / "config.json")
+        with pytest.raises(PredictionError, match="weights changed"):
+            backend.predict(
+                dataclasses.replace(
+                    request,
+                    seed=1,
+                    num_seeds=None,
+                    output_dir=tmp_path / "out-1",
+                )
+            )
+
+    assert events == [
+        ("enter", "esmfold2_ccd"),
+        ("exit", "esmfold2_ccd"),
+    ]
+    assert backend._session_poisoned is None
+
+
+def test_all_atom_session_without_execution_never_acquires_ccd(
+    tmp_path, monkeypatch
+) -> None:
+    request, calls = _all_atom_session_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease",
+        lambda *_args, **_kwargs: pytest.fail("resumed session acquired CCD"),
+    )
+
+    with ESMFold2Backend().session((request,)):
+        pass
+
+    assert calls == {"build": 0, "predict": 0}
+
+
+def test_plain_protein_prediction_never_acquires_ccd(tmp_path, monkeypatch) -> None:
+    job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    model = SimpleNamespace(has_language_model=False)
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            load=lambda *args, **kwargs: model,
+            seed_key=lambda seed: seed,
+            predict_job=lambda *args, **kwargs: (
+                {},
+                {"asym_id": np.asarray([[0]])},
+            ),
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 0.75}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.managed_memory_lease",
+        lambda *_args, **_kwargs: pytest.fail("protein-only path acquired CCD"),
+    )
+
+    ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            options={"no_language_model": True},
+        )
+    )
 
 
 def test_chain_copies_become_separate_chains_of_one_entity(tmp_path) -> None:

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import hashlib
 import pickle
+import weakref
 from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import numpy as np
@@ -30,6 +32,8 @@ BIOHUB_CCD_SHA256 = (
 BIOHUB_CCD_SIZE = 417_306_584
 _HASH_CHUNK = 1 << 20
 _DERIVED_COMPONENT_CACHE_LIMIT = 256
+_CCD_CACHE_LOCK = RLock()
+_CACHED_STORE_REF: weakref.ReferenceType[Any] | None = None
 
 
 class CCDStore:
@@ -66,6 +70,10 @@ class CCDStore:
         return value
 
     def _load(self) -> dict[str, Any]:
+        with _CCD_CACHE_LOCK:
+            return self._load_locked()
+
+    def _load_locked(self) -> dict[str, Any]:
         if self._molecules is not None:
             return self._molecules
         if not self.path.is_file():
@@ -230,8 +238,28 @@ def _cached_store(
     path: str,
     identity: tuple[int, int, int, int, int],
 ) -> CCDStore:
+    global _CACHED_STORE_REF
     del identity
-    return CCDStore(path)
+    store = CCDStore(path)
+    _CACHED_STORE_REF = weakref.ref(store)
+    return store
+
+
+def _release_ccd_cache() -> bool:
+    """Release the cached store; report whether its large dictionary loaded."""
+
+    global _CACHED_STORE_REF
+    with _CCD_CACHE_LOCK:
+        store = (
+            _CACHED_STORE_REF()
+            if _CACHED_STORE_REF is not None
+            and _cached_store.cache_info().currsize
+            else None
+        )
+        loaded = store is not None and getattr(store, "_molecules", None) is not None
+        _cached_store.cache_clear()
+        _CACHED_STORE_REF = None
+    return loaded
 
 
 def get_ccd_store(path: str | Path) -> CCDStore:
@@ -250,7 +278,8 @@ def get_ccd_store(path: str | Path) -> CCDStore:
         stat.st_mtime_ns,
         stat.st_ctime_ns,
     )
-    return _cached_store(str(resolved), identity)
+    with _CCD_CACHE_LOCK:
+        return _cached_store(str(resolved), identity)
 
 
 __all__ = [

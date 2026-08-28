@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from importlib import import_module
 from pathlib import Path
 
@@ -12,6 +12,7 @@ from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
+from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -90,11 +91,49 @@ class OpenDDEBackend(Backend):
 
     def __init__(self) -> None:
         self._weights = PreparedWeightSession(self.name)
+        self._managed_memory: ExitStack | None = None
+        self._ccd_memory_leased = False
 
     @contextmanager
     def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
-        with self._weights.session(requests):
-            yield self
+        memory = ExitStack()
+        try:
+            with self._weights.session(requests):
+                self._managed_memory = memory
+                try:
+                    yield self
+                finally:
+                    self._managed_memory = None
+                    self._ccd_memory_leased = False
+        finally:
+            try:
+                memory.close()
+            except BaseException:
+                pass
+
+    @contextmanager
+    def _ccd_memory_scope(self) -> Iterator[None]:
+        """Lease shared Protenix/OpenDDE chemistry lazily."""
+
+        from foldjax.models.protenix.data.featurize_json import (
+            _release_external_ccd_cache,
+        )
+
+        memory = self._managed_memory
+        if memory is not None:
+            if not self._ccd_memory_leased:
+                memory.enter_context(
+                    managed_memory_lease(
+                        "protenix_external_ccd", _release_external_ccd_cache
+                    )
+                )
+                self._ccd_memory_leased = True
+            yield
+        else:
+            with managed_memory_lease(
+                "protenix_external_ccd", _release_external_ccd_cache
+            ):
+                yield
 
     def invalidate_session(self) -> None:
         self._weights.invalidate()
@@ -226,7 +265,7 @@ class OpenDDEBackend(Backend):
                 prepare_key=("trunk_dtype", trunk_dtype),
             )
 
-        with matmul_precision(), _restored_environment():
+        with matmul_precision(), _restored_environment(), self._ccd_memory_scope():
             if request.padding is None:
                 # Keep the historical one-argument native entry point exact for
                 # embedding applications and default-off predictions.

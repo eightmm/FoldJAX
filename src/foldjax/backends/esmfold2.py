@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -44,6 +44,7 @@ from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
+from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import (
     InputRequirement,
@@ -382,6 +383,8 @@ class ESMFold2Backend(Backend):
         ) = None
         self._lm_embedding: Any | None = None
         self._lm_embedding_key: str | None = None
+        self._managed_memory: ExitStack | None = None
+        self._ccd_memory_leased = False
 
     @contextmanager
     def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
@@ -394,6 +397,8 @@ class ESMFold2Backend(Backend):
         # A scalar run has nothing to reuse and keeps the historical direct
         # ``predict_job`` route, including compatibility with small wrappers.
         self._session_active = attempts > 1
+        memory = ExitStack()
+        self._managed_memory = memory
         try:
             yield self
         finally:
@@ -402,6 +407,32 @@ class ESMFold2Backend(Backend):
             self._session_poisoned = None
             self._session_active = False
             self._session_open = False
+            self._managed_memory = None
+            self._ccd_memory_leased = False
+            try:
+                memory.close()
+            except BaseException:
+                # Managed-memory cleanup is best effort and must not replace a
+                # prediction, poison, or KeyboardInterrupt already in flight.
+                pass
+
+    @contextmanager
+    def _ccd_memory_scope(self) -> Iterator[None]:
+        """Lease Biohub chemistry once per backend session, lazily."""
+
+        from foldjax.models.esmfold2.data.ccd import _release_ccd_cache
+
+        memory = self._managed_memory
+        if memory is not None:
+            if not self._ccd_memory_leased:
+                memory.enter_context(
+                    managed_memory_lease("esmfold2_ccd", _release_ccd_cache)
+                )
+                self._ccd_memory_leased = True
+            yield
+        else:
+            with managed_memory_lease("esmfold2_ccd", _release_ccd_cache):
+                yield
 
     def invalidate_session(self) -> None:
         self._lm_embedding = None
@@ -679,12 +710,13 @@ class ESMFold2Backend(Backend):
             weights_root = Path(request.weights)
             if not weights_root.is_dir():
                 weights_root = weights_root.parent
-            prebuilt_features = inference.build_common_job_features(
-                document,
-                base_dir=document_base,
-                ccd_path=weights_root / "ccd.pkl",
-                seed=request.seed,
-            )
+            with self._ccd_memory_scope():
+                prebuilt_features = inference.build_common_job_features(
+                    document,
+                    base_dir=document_base,
+                    ccd_path=weights_root / "ccd.pkl",
+                    seed=request.seed,
+                )
 
         if not all_atom_input and request.padding is None and (
             not self._session_active or not split_lm_api
