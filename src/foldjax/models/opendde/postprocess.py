@@ -242,7 +242,7 @@ def _shape_complementarity_scores(
     alone (`sample_confidence.py:163`).
     """
     from foldjax.models.opendde.models.shape_complementarity import (
-        compute_shape_complementarity,
+        compute_shape_complementarity_batched,
     )
 
     needed = {"token_index", "atom_to_token_idx", "asym_id"}
@@ -264,17 +264,9 @@ def _shape_complementarity_scores(
         else jnp.asarray(atom_mask).astype(bool).reshape(-1)
     )
 
-    samples = [coordinate] if coordinate.ndim == 2 else list(coordinate)
-    per_sample = [
-        compute_shape_complementarity(sample, features, atom_mask)
-        for sample in samples
-    ]
-    stacked = {
-        key: jnp.stack([entry[key] for entry in per_sample])
-        for key in per_sample[0]
-    }
-    if coordinate.ndim == 2:
-        stacked = {key: value[0] for key, value in stacked.items()}
+    stacked = compute_shape_complementarity_batched(
+        coordinate, features, atom_mask, n_token=n_token
+    )
     stacked["shape_comp_uses_structural_tokens"] = jnp.asarray(
         "subtoken_role_id" in features
         and jnp.asarray(features["subtoken_role_id"]).reshape(-1).shape[0] == n_token

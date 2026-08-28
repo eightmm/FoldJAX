@@ -34,6 +34,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.opendde.models.structural_tokens import STRUCTURAL_TOKEN_ROLES
 
 #: Upstream's `confidence.shape_comp` block (`opendde/config/model_base.py`).
@@ -67,6 +68,17 @@ class ShapeCompTokenFeatures(NamedTuple):
     token_role_id: np.ndarray
     is_structural: bool
     is_protein_token: np.ndarray
+
+
+class ShapeCompGraphFeatures(NamedTuple):
+    """Dynamic array leaves passed to the bounded postprocessing graph."""
+
+    atom_to_token_idx: jax.Array
+    rep_atom_indices: jax.Array
+    rep_atom_valid: jax.Array
+    token_asym_id: jax.Array
+    token_role_id: jax.Array
+    is_protein_token: jax.Array
 
 
 def _as_numpy(value: Any) -> np.ndarray:
@@ -300,28 +312,27 @@ def _token_centers_and_normals(
     return token_center, normal, strength, center_valid
 
 
-def compute_shape_complementarity(
+def _compute_shape_complementarity_resolved(
     coordinate: jnp.ndarray,
-    features: Mapping[str, Any],
     atom_mask: jnp.ndarray,
-    **overrides: Any,
+    graph_features: ShapeCompGraphFeatures,
+    *,
+    n_token: int,
+    is_structural: bool,
+    settings: tuple[tuple[str, float | int | bool], ...],
 ) -> dict[str, jnp.ndarray]:
-    """Return upstream's six reported shape-complementarity fields.
+    """One sample after the host-only token-space resolution is complete."""
 
-    `coordinate` is `[N_atom, 3]` for one sample; callers with a sample axis map
-    over it, because the pair map is quadratic in tokens and stacking samples
-    would multiply the largest array in postprocessing by the sample count.
-    """
-    settings = {**SHAPE_COMP_DEFAULTS, **overrides}
+    settings = dict(settings)
     eps = float(settings["eps"])
-    if coordinate.ndim != 2 or coordinate.shape[-1] != 3:
-        raise ValueError(
-            f"coordinate must be [N_atom, 3]; got {tuple(coordinate.shape)}"
-        )
-
-    n_token = int(np.asarray(features["token_index"]).reshape(-1).shape[0])
-    resolved = resolve_shape_comp_token_features(
-        features, np.asarray(atom_mask), n_token
+    resolved = ShapeCompTokenFeatures(
+        atom_to_token_idx=graph_features.atom_to_token_idx,
+        rep_atom_indices=graph_features.rep_atom_indices,
+        rep_atom_valid=graph_features.rep_atom_valid,
+        token_asym_id=graph_features.token_asym_id,
+        token_role_id=graph_features.token_role_id,
+        is_structural=is_structural,
+        is_protein_token=graph_features.is_protein_token,
     )
     coordinate = coordinate.astype(jnp.float32)
     atom_mask = atom_mask.astype(bool)
@@ -437,3 +448,123 @@ def compute_shape_complementarity(
         "shape_comp_pair_topk_mean_pred": topk_mean,
         "shape_comp_valid_pair_frac_pred": pair_count / total_pairs,
     }
+
+
+def _graph_features(resolved: ShapeCompTokenFeatures) -> ShapeCompGraphFeatures:
+    """Move only numerical leaves across the JIT boundary."""
+
+    return ShapeCompGraphFeatures(
+        atom_to_token_idx=jnp.asarray(resolved.atom_to_token_idx),
+        rep_atom_indices=jnp.asarray(resolved.rep_atom_indices),
+        rep_atom_valid=jnp.asarray(resolved.rep_atom_valid),
+        token_asym_id=jnp.asarray(resolved.token_asym_id),
+        token_role_id=jnp.asarray(resolved.token_role_id),
+        is_protein_token=jnp.asarray(resolved.is_protein_token),
+    )
+
+
+def _settings(
+    overrides: Mapping[str, Any],
+) -> tuple[tuple[str, float | int | bool], ...]:
+    # Unknown overrides were historically accepted and ignored by the eager
+    # implementation. Keep that contract without letting their order, value or
+    # hashability create otherwise identical compiled cache entries.
+    return tuple(
+        (name, overrides.get(name, default))
+        for name, default in SHAPE_COMP_DEFAULTS.items()
+    )
+
+
+def compute_shape_complementarity(
+    coordinate: jnp.ndarray,
+    features: Mapping[str, Any],
+    atom_mask: jnp.ndarray,
+    **overrides: Any,
+) -> dict[str, jnp.ndarray]:
+    """Return upstream's six reported fields for one coordinate sample."""
+
+    if coordinate.ndim != 2 or coordinate.shape[-1] != 3:
+        raise ValueError(
+            f"coordinate must be [N_atom, 3]; got {tuple(coordinate.shape)}"
+        )
+    n_token = int(np.asarray(features["token_index"]).reshape(-1).shape[0])
+    resolved = resolve_shape_comp_token_features(
+        features, np.asarray(atom_mask), n_token
+    )
+    return _compute_shape_complementarity_resolved(
+        coordinate,
+        atom_mask,
+        _graph_features(resolved),
+        n_token=n_token,
+        is_structural=resolved.is_structural,
+        settings=_settings(overrides),
+    )
+
+
+def _compute_shape_complementarity_samples(
+    coordinate: jnp.ndarray,
+    atom_mask: jnp.ndarray,
+    graph_features: ShapeCompGraphFeatures,
+    *,
+    n_token: int,
+    is_structural: bool,
+    settings: tuple[tuple[str, float | int | bool], ...],
+) -> dict[str, jnp.ndarray]:
+    def run_one(sample: jnp.ndarray) -> dict[str, jnp.ndarray]:
+        return _compute_shape_complementarity_resolved(
+            sample,
+            atom_mask,
+            graph_features,
+            n_token=n_token,
+            is_structural=is_structural,
+            settings=settings,
+        )
+
+    if coordinate.ndim == 2:
+        return run_one(coordinate)
+    return jax.lax.map(run_one, coordinate)
+
+
+_compiled_shape_complementarity = BoundedJitPool(
+    _compute_shape_complementarity_samples,
+    static_argnames=("n_token", "is_structural", "settings"),
+    limit=8,
+)
+
+
+def compute_shape_complementarity_batched(
+    coordinate: jnp.ndarray,
+    features: Mapping[str, Any],
+    atom_mask: jnp.ndarray,
+    *,
+    n_token: int | None = None,
+    **overrides: Any,
+) -> dict[str, jnp.ndarray]:
+    """Resolve features once and run all samples in one bounded JIT owner."""
+
+    if coordinate.ndim not in {2, 3} or coordinate.shape[-1] != 3:
+        raise ValueError(
+            "coordinate must be [N_atom, 3] or [N_sample, N_atom, 3]; "
+            f"got {tuple(coordinate.shape)}"
+        )
+    # Preserve the historical eager operation boundary for the direct
+    # single-sample shape. The compiled map is valuable only when it can
+    # amortize dispatch over multiple samples; compiling one sample can change
+    # a few float32 reduction low bits without reducing any repeated work.
+    if coordinate.ndim == 2:
+        return compute_shape_complementarity(
+            coordinate, features, atom_mask, **overrides
+        )
+    if n_token is None:
+        n_token = int(np.asarray(features["token_index"]).reshape(-1).shape[0])
+    resolved = resolve_shape_comp_token_features(
+        features, np.asarray(atom_mask), n_token
+    )
+    return _compiled_shape_complementarity(
+        coordinate,
+        atom_mask,
+        _graph_features(resolved),
+        n_token=n_token,
+        is_structural=resolved.is_structural,
+        settings=_settings(overrides),
+    )

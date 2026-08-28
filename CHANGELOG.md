@@ -12,6 +12,28 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenDDE evaluates all shape-complementarity samples through one bounded
+  compiled body.** Token ownership, representative atoms and chain metadata
+  are now resolved once on the host; the dynamic coordinates then cross one
+  JIT boundary and a `lax.map` reuses the same postprocessing body for every
+  sample. Direct single-sample calls keep the historical eager boundary. In a
+  three-sample, 128-token/512-atom synthetic CPU stage, warm postprocessing
+  fell from 8.60 to 2.50 ms. A matched compiled unrolled-vs-mapped probe
+  reduced StableHLO from 71,350 to 31,105 bytes and executable temporary
+  storage from 4,393,104 to 1,460,640 bytes.
+
+  On an RTX PRO 6000 Blackwell, the same stage at five samples reduced warm
+  median latency from 30.42 to 1.11 ms. Its matched compiled graph fell from
+  116,225 to 31,114 StableHLO bytes and from 1,086,544 to 200,816 temporary
+  bytes. These remain geometry-only synthetic stage figures, not a released
+  end-to-end prediction claim.
+
+  This is not bit-identical for every reported float: on the recorded
+  two-chain fixture, boolean masks and valid-pair fractions were exact while
+  the largest float32 difference was `2.98e-8` on CPU and `5.96e-8` on an RTX
+  PRO 6000 Blackwell. Shape complementarity is a reported field and does not
+  feed coordinates or `ranking_score`; no whole-model speed claim is made.
+
 - **Boltz-2 FK steering retains only the energy vector used by the next
   resampling step.** The optional particle-steering path previously appended
   every resampling energy to a growing trajectory even though the next step

@@ -22,6 +22,7 @@ import pytest
 from foldjax.models.opendde.models.shape_complementarity import (
     SHAPE_COMP_DEFAULTS,
     compute_shape_complementarity,
+    compute_shape_complementarity_batched,
 )
 
 FIXTURE = Path(__file__).parent / "data" / "shape_complementarity.npz"
@@ -156,6 +157,212 @@ def test_a_chunked_run_equals_an_unchunked_one(recorded, computed) -> None:
             atol=2e-6,
             err_msg=field,
         )
+
+
+def test_batched_compiled_stage_tightly_matches_independent_samples(
+    recorded,
+) -> None:
+    import jax.numpy as jnp
+
+    features = {
+        name[len("input_") :]: recorded[name]
+        for name in recorded.files
+        if name.startswith("input_")
+    }
+    coordinate = np.asarray(recorded["coordinate"])
+    perturbation = np.linspace(
+        -0.125, 0.125, coordinate.size, dtype=np.float32
+    ).reshape(coordinate.shape)
+    samples = jnp.asarray(
+        np.stack((coordinate, coordinate + perturbation, coordinate - perturbation))
+    )
+    atom_mask = jnp.asarray(recorded["atom_mask"])
+
+    historical = [
+        compute_shape_complementarity(sample, features, atom_mask)
+        for sample in samples
+    ]
+    compiled = compute_shape_complementarity_batched(
+        samples, features, atom_mask
+    )
+
+    for name, value in compiled.items():
+        expected = np.stack([np.asarray(entry[name]) for entry in historical])
+        actual = np.asarray(value)
+        if expected.dtype == bool:
+            np.testing.assert_array_equal(actual, expected, err_msg=name)
+        else:
+            np.testing.assert_allclose(
+                actual, expected, rtol=0.0, atol=1e-7, err_msg=name
+            )
+
+
+def test_batched_entry_keeps_the_single_sample_public_shape(recorded) -> None:
+    import jax.numpy as jnp
+
+    features = {
+        name[len("input_") :]: recorded[name]
+        for name in recorded.files
+        if name.startswith("input_")
+    }
+    coordinate = jnp.asarray(recorded["coordinate"])
+    atom_mask = jnp.asarray(recorded["atom_mask"])
+
+    direct = compute_shape_complementarity(coordinate, features, atom_mask)
+    compiled = compute_shape_complementarity_batched(
+        coordinate, features, atom_mask
+    )
+
+    assert compiled.keys() == direct.keys()
+    for name in direct:
+        assert np.asarray(compiled[name]).tobytes() == np.asarray(
+            direct[name]
+        ).tobytes(), name
+
+
+def test_ignored_overrides_share_the_compiled_cache_identity(recorded) -> None:
+    import jax.numpy as jnp
+
+    from foldjax.models.opendde.models import shape_complementarity as module
+
+    features = {
+        name[len("input_") :]: recorded[name]
+        for name in recorded.files
+        if name.startswith("input_")
+    }
+    coordinate = jnp.asarray(
+        np.stack((recorded["coordinate"], recorded["coordinate"]))
+    )
+    atom_mask = jnp.asarray(recorded["atom_mask"])
+    n_token = int(np.asarray(features["token_index"]).size)
+    resolved = module.resolve_shape_comp_token_features(
+        features, np.asarray(atom_mask), n_token
+    )
+    dynamic = (coordinate, atom_mask, module._graph_features(resolved))
+
+    def identity(overrides):
+        return module._compiled_shape_complementarity._identity(
+            dynamic,
+            {
+                "n_token": n_token,
+                "is_structural": resolved.is_structural,
+                "settings": module._settings(overrides),
+            },
+        )
+
+    baseline = identity({})
+    assert identity({"ignored_scalar": 1}) == baseline
+    assert identity({"ignored_first": 1, "ignored_second": 2}) == identity(
+        {"ignored_second": 2, "ignored_first": 1}
+    )
+    assert identity({"ignored_array": jnp.asarray([1, 2])}) == baseline
+
+
+def test_postprocess_resolves_the_token_space_once_for_all_samples(
+    recorded, monkeypatch
+) -> None:
+    import jax.numpy as jnp
+
+    from foldjax.models.opendde import postprocess
+    from foldjax.models.opendde.models import shape_complementarity
+
+    features = {
+        name[len("input_") :]: recorded[name]
+        for name in recorded.files
+        if name.startswith("input_")
+    }
+    coordinate = np.asarray(recorded["coordinate"])
+    samples = jnp.asarray(np.stack((coordinate, coordinate, coordinate)))
+    calls = 0
+    resolve = shape_complementarity.resolve_shape_comp_token_features
+
+    def tracked_resolve(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(
+        shape_complementarity,
+        "resolve_shape_comp_token_features",
+        tracked_resolve,
+    )
+    result = postprocess._shape_complementarity_scores(
+        {"coordinate": samples}, features, n_token=coordinate.shape[0] // 4
+    )
+
+    assert calls == 1
+    assert result["shape_comp_token_pred"].shape[0] == 3
+
+
+def test_sample_map_shares_one_body_and_reduces_cpu_temporary_memory(
+    recorded,
+) -> None:
+    import jax
+    import jax.numpy as jnp
+
+    if jax.default_backend() != "cpu":
+        pytest.skip("the executable-memory threshold is a CPU compiler gate")
+    from foldjax.models.opendde.models import shape_complementarity as module
+
+    features = {
+        name[len("input_") :]: recorded[name]
+        for name in recorded.files
+        if name.startswith("input_")
+    }
+    coordinate = jnp.asarray(
+        np.stack(
+            [
+                recorded["coordinate"],
+                recorded["coordinate"],
+                recorded["coordinate"],
+            ]
+        )
+    )
+    atom_mask = jnp.asarray(recorded["atom_mask"])
+    n_token = int(np.asarray(features["token_index"]).size)
+    resolved = module.resolve_shape_comp_token_features(
+        features, np.asarray(atom_mask), n_token
+    )
+    graph_features = module._graph_features(resolved)
+    settings = module._settings({})
+
+    def historical_unrolled(coordinates, mask, graph):
+        outputs = [
+            module._compute_shape_complementarity_resolved(
+                coordinates[index],
+                mask,
+                graph,
+                n_token=n_token,
+                is_structural=resolved.is_structural,
+                settings=settings,
+            )
+            for index in range(coordinates.shape[0])
+        ]
+        return jax.tree.map(lambda *values: jnp.stack(values), *outputs)
+
+    def mapped(coordinates, mask, graph):
+        return module._compute_shape_complementarity_samples(
+            coordinates,
+            mask,
+            graph,
+            n_token=n_token,
+            is_structural=resolved.is_structural,
+            settings=settings,
+        )
+
+    old = jax.jit(historical_unrolled).lower(
+        coordinate, atom_mask, graph_features
+    )
+    new = jax.jit(mapped).lower(coordinate, atom_mask, graph_features)
+    old_hlo = old.as_text()
+    new_hlo = new.as_text()
+    old_memory = old.compile().memory_analysis()
+    new_memory = new.compile().memory_analysis()
+
+    assert "stablehlo.while" not in old_hlo
+    assert new_hlo.count("stablehlo.while") == 1
+    assert len(new_hlo) < 0.6 * len(old_hlo)
+    assert new_memory.temp_size_in_bytes < old_memory.temp_size_in_bytes
 
 
 def test_density_mask_is_formed_per_chunk_instead_of_embedded_in_full() -> None:
