@@ -1627,6 +1627,7 @@ def test_openfold3_all_arrays_requires_a_real_boolean(value) -> None:
     ids=["scalar", "session", "invalidated-session"],
 )
 @pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
+@pytest.mark.parametrize("num_samples", [5, 10], ids=["released-s5", "raised-s10"])
 @pytest.mark.parametrize(
     ("all_arrays", "stop_after"),
     [
@@ -1641,6 +1642,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     tmp_path: Path,
     monkeypatch,
     eager: bool,
+    num_samples: int,
     all_arrays: bool,
     stop_after: str,
     session_runs: int,
@@ -1708,6 +1710,13 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         seen["config_array_budget"] = kwargs["max_array_bytes"]
+        seen["config_num_samples"] = kwargs.get("num_samples", 5)
+        seen["config_per_sample_token_cutoff"] = kwargs.get(
+            "per_sample_token_cutoff"
+        )
+        seen["config_per_sample_token_cutoff_present"] = (
+            "per_sample_token_cutoff" in kwargs
+        )
         return SimpleNamespace(msa_depth=1024)
 
     def unexpected_compaction(batch):
@@ -1789,7 +1798,10 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         native_options["no_compile"] = True
     if all_arrays:
         native_options["all_arrays"] = True
-    request_changes: dict[str, object] = {"stop_after": stop_after}
+    request_changes: dict[str, object] = {
+        "stop_after": stop_after,
+        "num_samples": num_samples,
+    }
     if stop_after == "trunk":
         request_changes["representations"] = ("single",)
     request = dataclasses.replace(
@@ -1815,6 +1827,9 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     assert seen["has_atomized_tokens"] is False
     expected_array_budget = None if all_arrays and stop_after == "full" else 0
     assert seen["config_array_budget"] == expected_array_budget
+    assert seen["config_num_samples"] == num_samples
+    assert seen["config_per_sample_token_cutoff"] is None
+    assert seen["config_per_sample_token_cutoff_present"] is False
     if stop_after == "full":
         assert seen["writer_array_budget"] == expected_array_budget
         assert seen["output_metadata"] is output_metadata

@@ -8,7 +8,8 @@ editing the layer they depend on:
 * pair conditioning is hoisted out of the sampler loop, which is valid exactly
   because it does not read the noise level;
 * the confidence re-embedding runs one diffusion sample at a time above a token
-  cutoff, which is valid exactly because nothing in it mixes samples.
+  cutoff or the released five-sample width, which is valid exactly because
+  nothing in it mixes samples.
 
 If a future change makes pair conditioning noise-dependent, or makes the
 confidence path mix samples, the optimizations become silently wrong -- the code
@@ -71,13 +72,18 @@ def test_expand_samples_leaves_other_leading_axes_alone() -> None:
         (750, 5, 750, False),
         (751, 5, 750, True),
         (2076, 5, 750, True),
+        # Raising the sample width also bounds short-target pair temporaries.
+        (76, 6, 750, True),
+        (76, 10, 750, True),
+        (76, 20, 750, True),
         # One sample has no per-sample loop to run.
         (2076, 1, 750, False),
-        # ``None`` disables it however long the target is.
+        # ``None`` disables it however long or wide the request is.
         (2076, 5, None, False),
+        (76, 20, None, False),
     ],
 )
-def test_per_sample_cutoff_matches_upstream_rule(
+def test_per_sample_schedule_keeps_the_released_boundaries(
     n_token: int, num_samples: int, cutoff: int | None, expected: bool
 ) -> None:
     config = released_config(

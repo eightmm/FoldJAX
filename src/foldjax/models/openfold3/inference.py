@@ -30,7 +30,7 @@ from foldjax._openfold3_compile import (
     resolve_triangle_kernel,
     triangle_backend,
 )
-from foldjax.execution import auto_diffusion_chunk_size
+from foldjax.execution import DIFFUSION_CHUNK_SIZE, auto_diffusion_chunk_size
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -128,7 +128,8 @@ class InferenceConfig(NamedTuple):
     pair_chunk_size: int | None = None
     # Token count above which the confidence re-embedding runs one diffusion sample
     # at a time. 750 is upstream's own default (``per_sample_token_cutoff`` in
-    # ``model_config.py``); ``None`` always batches the samples.
+    # ``model_config.py``). A request above the released five-sample width also
+    # maps one at a time; ``None`` explicitly always batches the samples.
     per_sample_token_cutoff: int | None = 750
     #: Diffusion samples the rollout denoises at once. The denoiser holds its
     #: activations for every sample handed to it, so this is the model's entire
@@ -302,8 +303,11 @@ def auto_pair_chunk_size(
 def _per_sample_confidence(config: InferenceConfig) -> bool:
     """Whether to run the confidence re-embedding one sample at a time.
 
-    Mirrors upstream's ``apply_per_sample``, including its default cutoff of 750
-    tokens.
+    Mirrors upstream's ``apply_per_sample`` token rule, including its default
+    cutoff of 750 tokens. FoldJAX additionally maps requests above the released
+    five-sample width: otherwise a short target can still hold tens of quadratic
+    pair representations at once. ``None`` remains the explicit always-batched
+    escape hatch for direct callers.
 
     Measured on a real 966-token target with the released weights, the per-sample
     branch is not a trade: it is **bitwise identical** on coordinates, pTM and the PAE
@@ -313,14 +317,17 @@ def _per_sample_confidence(config: InferenceConfig) -> bool:
     throughput setting as much as a memory one.
 
     Which raises a question this does not answer: 750 may be conservative, and the
-    crossover may sit well below it. The default stays at upstream's value because
-    matching the released configuration is worth more than an unmeasured gain; a
-    caller who wants to explore it can set ``per_sample_token_cutoff`` directly.
+    crossover may sit well below it. The released sample width and token rule stay
+    unchanged; only callers that raise the sample count beyond five select the
+    bounded schedule independent of length.
     """
     return (
         config.per_sample_token_cutoff is not None
         and config.num_samples > 1
-        and config.n_token > config.per_sample_token_cutoff
+        and (
+            config.n_token > config.per_sample_token_cutoff
+            or config.num_samples > DIFFUSION_CHUNK_SIZE
+        )
     )
 
 
@@ -923,12 +930,12 @@ def predict(
         )
         return s_conf_one, pae_one, pde_one
 
-    # Upstream's ``apply_per_sample``: over ``per_sample_token_cutoff`` tokens the
-    # confidence re-embedding is run one sample at a time, because it is the only
-    # stage where the samples genuinely differ *and* the tensors are pair-sized.
-    # Nothing here mixes samples, so mapping and batching give the same values --
-    # the difference is that the batched form holds N_sample pair representations
-    # at once, which at 2000 tokens is what decides whether it runs at all.
+    # Upstream's ``apply_per_sample`` maps confidence over the token cutoff.
+    # FoldJAX uses that same schedule above the released five-sample width too,
+    # because this is the only stage where samples genuinely differ *and* tensors
+    # are pair-sized. Nothing here mixes samples, so mapping and batching give the
+    # same values -- the difference is whether N_sample pair representations are
+    # live at once, which at 2000 tokens decides whether prediction runs at all.
     per_sample_confidence = _per_sample_confidence(config)
     sink_pae_metrics = _sink_pae_metrics(config)
     if sink_pae_metrics:

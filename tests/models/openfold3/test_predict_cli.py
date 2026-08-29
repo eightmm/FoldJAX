@@ -222,11 +222,16 @@ def test_openfold3_msa_depth_is_a_cap_on_the_released_default(
 
 
 @pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
+@pytest.mark.parametrize("num_samples", [5, 10], ids=["released-s5", "raised-s10"])
 @pytest.mark.parametrize(
     "all_arrays", [False, True], ids=["budgeted-arrays", "all-arrays"]
 )
 def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_padding(
-    tmp_path: Path, monkeypatch, eager: bool, all_arrays: bool
+    tmp_path: Path,
+    monkeypatch,
+    eager: bool,
+    num_samples: int,
+    all_arrays: bool,
 ) -> None:
     import jax
     import jax.numpy as jnp
@@ -300,9 +305,13 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
         seen["config_array_budget"] = kwargs["max_array_bytes"]
+        seen["config_num_samples"] = kwargs.get("num_samples", 5)
+        seen["config_per_sample_token_cutoff_present"] = (
+            "per_sample_token_cutoff" in kwargs
+        )
         return SimpleNamespace(
             msa_depth=1024,
-            num_samples=5,
+            num_samples=kwargs.get("num_samples", 5),
             num_steps=200,
             num_recycles=4,
             pair_chunk_size=None,
@@ -400,6 +409,8 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
         argv.append("--no-compile")
     if all_arrays:
         argv.append("--all-arrays")
+    if num_samples != 5:
+        argv.extend(("--samples", str(num_samples)))
 
     assert main(argv) == 0
     assert seen["n_chain"] == 2
@@ -409,6 +420,8 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     expected_budget = None if all_arrays else DEFAULT_ARRAY_BUDGET_BYTES
     assert seen["config_array_budget"] == expected_budget
     assert seen["writer_array_budget"] == expected_budget
+    assert seen["config_num_samples"] == num_samples
+    assert seen["config_per_sample_token_cutoff_present"] is False
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
     np.testing.assert_array_equal(seen["compact_asym_id"], [[0, 1, 0]])
     assert call_order == ["templates", "msa", "atom-categories"]

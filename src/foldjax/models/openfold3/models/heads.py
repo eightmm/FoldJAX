@@ -257,9 +257,9 @@ def pairformer_embedding(
     ``x_pred`` carries a sample axis and nothing here mixes samples, so this works
     either batched across samples or one sample at a time. Which one it gets is
     :func:`~foldjax.models.openfold3.inference.predict`'s decision, taken on
-    ``per_sample_token_cutoff``: batched is faster, per-sample is what fits, and
-    over ~750 tokens the pair representations are large enough that holding one per
-    sample decides whether the prediction runs.
+    ``per_sample_token_cutoff`` and the released five-sample width: batching can
+    be faster, per-sample is what fits, and either long targets or high sample
+    counts make holding one pair representation per sample the dominant cost.
 
     Returns:
         ``(si, zij)`` for the confidence heads.

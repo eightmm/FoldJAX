@@ -395,6 +395,23 @@ def test_sink_requires_serial_confidence_and_unreturned_pae(changes, expected) -
     assert inference._sink_pae_metrics(_config(**changes)) is expected
 
 
+def test_high_sample_schedule_sinks_only_unreturned_pae() -> None:
+    base = inference.released_config(
+        n_token=8,
+        n_atom=8,
+        num_samples=6,
+        num_steps=1,
+        per_sample_token_cutoff=750,
+    )
+
+    assert inference._per_sample_confidence(base)
+    assert not inference._sink_pae_metrics(base)
+    assert inference._sink_pae_metrics(base._replace(returned_pair_logits=()))
+    assert not inference._per_sample_confidence(
+        base._replace(per_sample_token_cutoff=None)
+    )
+
+
 def _project(pair, weight):
     return jnp.einsum("...c,bc->...b", pair, weight)
 
@@ -616,14 +633,16 @@ def _install_tiny_predict(monkeypatch) -> tuple[dict[str, jax.Array], object]:
     return batch, params
 
 
-@pytest.mark.parametrize(
-    "per_sample_token_cutoff", [3, None], ids=["serial-sink", "batched-control"]
-)
-def test_full_predict_drops_logits_and_keeps_shared_outputs(
-    monkeypatch, per_sample_token_cutoff
-) -> None:
-    batch, params = _install_tiny_predict(monkeypatch)
-    base = inference.InferenceConfig(
+def _tiny_inference_config(
+    *,
+    per_sample_token_cutoff: int | None,
+    returned_pair_logits: tuple[str, ...] = (
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+    ),
+) -> inference.InferenceConfig:
+    return inference.InferenceConfig(
         n_token=4,
         n_atom=4,
         n_query=1,
@@ -643,7 +662,20 @@ def test_full_predict_drops_logits_and_keeps_shared_outputs(
         pae_bin_max=32.0,
         num_steps=1,
         per_sample_token_cutoff=per_sample_token_cutoff,
+        returned_pair_logits=returned_pair_logits,
         has_atomized_tokens=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "per_sample_token_cutoff", [3, None], ids=["serial-sink", "batched-control"]
+)
+def test_full_predict_drops_logits_and_keeps_shared_outputs(
+    monkeypatch, per_sample_token_cutoff
+) -> None:
+    batch, params = _install_tiny_predict(monkeypatch)
+    base = _tiny_inference_config(
+        per_sample_token_cutoff=per_sample_token_cutoff,
     )
     kept = inference.predict(
         jax.random.key(0), batch, params, base, None, n_chain=3
@@ -709,6 +741,67 @@ def test_full_predict_drops_logits_and_keeps_shared_outputs(
                 assert np.sign(legacy_host[i] - legacy_host[j]) == np.sign(
                     compact_host[i] - compact_host[j]
                 )
+
+
+def test_serial_schedule_keeps_the_batched_output_contract(monkeypatch) -> None:
+    """Scheduling one confidence sample at a time changes no retained field."""
+    batch, params = _install_tiny_predict(monkeypatch)
+    batched_config = _tiny_inference_config(
+        per_sample_token_cutoff=None,
+        returned_pair_logits=(),
+    )
+    serial_config = batched_config._replace(per_sample_token_cutoff=0)
+
+    batched = inference.predict(
+        jax.random.key(17), batch, params, batched_config, None, n_chain=3
+    )
+    serial = inference.predict(
+        jax.random.key(17), batch, params, serial_config, None, n_chain=3
+    )
+
+    for name in (
+        "coordinates",
+        "plddt",
+        "experimentally_resolved_logits",
+    ):
+        np.testing.assert_array_equal(
+            np.asarray(getattr(serial, name)),
+            np.asarray(getattr(batched, name)),
+            err_msg=name,
+        )
+    for name in ("ptm", "iptm", "chain_pair_iptm"):
+        _assert_nonfinite_and_finite_delta(
+            getattr(serial, name), getattr(batched, name)
+        )
+    for name in ("pae_logits", "pde_logits", "distogram_logits"):
+        assert getattr(serial, name) is getattr(batched, name) is None
+
+
+def test_high_sample_trunk_stop_returns_before_confidence(monkeypatch) -> None:
+    batch, params = _install_tiny_predict(monkeypatch)
+    config = _tiny_inference_config(
+        per_sample_token_cutoff=750,
+        returned_pair_logits=(),
+    )._replace(num_samples=10, stop_after_trunk=True)
+
+    def unexpected_confidence(_config):
+        raise AssertionError("trunk-only prediction reached confidence scheduling")
+
+    monkeypatch.setattr(inference, "_per_sample_confidence", unexpected_confidence)
+    result = inference.predict(jax.random.key(23), batch, params, config, None)
+
+    for name in (
+        "coordinates",
+        "plddt",
+        "ptm",
+        "iptm",
+        "chain_pair_iptm",
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+        "experimentally_resolved_logits",
+    ):
+        assert getattr(result, name) is None
 
 
 @pytest.mark.torch_parity

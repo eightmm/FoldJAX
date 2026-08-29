@@ -66,22 +66,46 @@ command predicts unless it says so here, in its own paragraph.
   admission, not a latency claim. The candidate's preceding 38.559 s run
   populated its new graph cache and is excluded.
 
-- **Managed OpenFold3 predictions no longer retain unrequested pair-bin
-  distributions by default.** The common `foldjax.predict()` path omits
-  `pae_logits`, `pde_logits`, and `distogram_logits` from its `*_raw.npz`; the
-  structures, coordinates, pLDDT, and experimentally-resolved output are
-  unchanged. At the released five samples, lengths 751--1,225 newly use the
-  existing compact PAE-metric sink; pTM, ipTM, and chain-pair ipTM therefore
-  retain that route's tested `max_abs <= 1e-3` contract rather than bitwise
-  identity. At 750 tokens and below the sink is inactive, while at 1,226 and
-  above the previous 4 GiB plan already omitted PAE and used it. The output
-  choice is made before tracing, so XLA removes the unused PDE/distogram heads
-  and does not reserve their result buffers. `options={"all_arrays": True}` (or
-  common CLI `--option all_arrays=true`) restores all three native distributions
-  and owns a separate cache identity for full predictions; it is a no-op and
-  shares the default cache for `stop_after="trunk"`. The standalone OpenFold3
-  command's existing 4 GiB default/`--all-arrays` behavior and direct
-  `released_config()`/`predict()` defaults remain unchanged.
+- **OpenFold3 predictions above five samples bound confidence-head temporaries
+  to one sample; managed predictions also omit unrequested pair-bin
+  distributions.** Every OpenFold3 inference route with a non-`None`
+  `per_sample_token_cutoff` now runs the geometry-dependent confidence
+  Pairformer one diffusion sample at a time when `num_samples` exceeds the
+  released value of five. Its sample-expanded pair state and confidence
+  workspace therefore stop scaling with the requested sample count even on
+  short targets. One through five samples retain upstream's token-cutoff
+  schedule, and direct callers can still set the cutoff to `None` for an
+  explicitly always-batched graph. This reuses the
+  existing mapped confidence path rather than adding another sampler, chunk, or
+  public option; coordinates and sample order are unchanged, and retained
+  per-atom confidence stays within the existing inference tolerance.
+
+  The same managed path omits `pae_logits`, `pde_logits`, and
+  `distogram_logits` from its `*_raw.npz`. Above five samples it now uses the
+  compact PAE-metric sink at every positive token count; pTM, ipTM, and
+  chain-pair ipTM retain that route's tested `max_abs <= 1e-3` contract rather
+  than bitwise identity. The output choice is made before tracing, so XLA
+  removes the unused PDE/distogram heads and does not reserve their result
+  buffers. `options={"all_arrays": True}` (or common CLI
+  `--option all_arrays=true`) restores all three native distributions. The raw
+  CLI and direct API keep their existing output budgets; any pair arrays they
+  retain still scale with `num_samples` even though the confidence Pairformer's
+  transient is serial. Full all-array predictions own their
+  existing separate cache identity; `num_samples` and the cutoff already live
+  in the model config used by the bounded JIT. `stop_after="trunk"` remains
+  unchanged and returns before either optimization.
+
+  A fresh-process GPU A/B used the 490-token `t0488` target, seed 101, 200
+  diffusion steps, and 10 recycles. At five samples the old and new paths were
+  byte-identical and measured 9,045.3 MiB with 34.47/34.66 s wall time. At 10
+  samples the new schedule reduced allocator peak from 16,674.3 to 4,263.5 MiB
+  (-74.43%) and wall time from 49.17 to 48.74 s; at 20 it reduced peak from
+  31,930.0 to 4,263.7 MiB (-86.65%) and wall time from 76.30 to 75.67 s. All
+  sample coordinates were bitwise identical. Maximum public-output deltas were
+  `1.668e-4` for pLDDT and `5.812e-6` for pTM; the retained experimentally-
+  resolved logit's `1.147e-3` maximum difference was `2.79e-4` after its
+  sigmoid. The already-serial 970-token, 10-sample control remained
+  byte-identical with the same 8,999.8 MiB peak.
 
 - **Managed Protenix and OpenDDE mixed-precision checkpoints no longer build a
   complete FP32 device tree before narrowing the trunk to BF16.** Their shared

@@ -232,20 +232,41 @@ does not include trunk representations, which remain controlled separately by
 distributions total more than 10 GiB at 2,000 tokens, so the override can raise
 device and host memory as well as output size substantially.
 
-The common `foldjax.predict()` backend has a narrower managed default: its
-`*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM, and the
-experimentally-resolved logits, but omits `pae_logits`, `pde_logits`, and
-`distogram_logits`. Those quadratic native diagnostics are not fields of
+With the default non-`None` `per_sample_token_cutoff`, every inference route
+runs the geometry-dependent confidence Pairformer one diffusion sample at a
+time whenever `num_samples` exceeds the released value of five. This caps its
+sample-expanded pair state and confidence workspace at one sample even for
+targets below the 750-token cutoff. One through five samples retain upstream's
+token-cutoff schedule; direct callers can set `per_sample_token_cutoff=None` for
+an explicitly always-batched graph. The schedule changes no coordinates or
+sample ordering.
+
+The common `foldjax.predict()` backend additionally has a narrower managed
+default: its `*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM,
+and the experimentally-resolved logits, but omits `pae_logits`, `pde_logits`,
+and `distogram_logits`. Those quadratic native diagnostics are not fields of
 `PredictionResult`; excluding them before tracing lets XLA remove the unused
-PDE/distogram heads and avoids retaining their output buffers. They remain an
-explicit common-API opt-in with `options={"all_arrays": True}` (or
-`--option all_arrays=true` on the common CLI). For the released five-sample
-schedule, removing PAE newly activates the existing compact PAE-metric route at
-751--1,225 tokens; pTM, ipTM, and chain-pair ipTM keep its tested
-`max_abs <= 1e-3` contract. The full-prediction opt-in has its own compilation
-cache identity. It is irrelevant to `stop_after="trunk"`, where both spellings
-share one cache. The standalone command's 4 GiB default and `--all-arrays`, and
-the direct `released_config()`/`predict()` defaults, are unchanged.
+PDE/distogram heads and avoids retaining their output buffers. Above five
+samples, serial confidence activates the existing compact PAE-metric route;
+pTM, ipTM, and chain-pair ipTM keep its tested `max_abs <= 1e-3` contract.
+
+The native pair distributions remain an explicit common-API opt-in with
+`options={"all_arrays": True}` (or `--option all_arrays=true` on the common
+CLI). Their retained output payload necessarily scales with `num_samples`, as do
+any pair arrays retained under the standalone command's or direct API's existing
+budgets, even though the confidence Pairformer's transient is serial above five
+samples. The full-prediction opt-in has its own compilation-cache identity. Both
+output choices are irrelevant to `stop_after="trunk"`, which returns before
+confidence and shares the historical trunk cache.
+
+On the 490-token `t0488` GPU benchmark, the five-sample path remained
+byte-identical at 9,045.3 MiB. The bounded schedule reduced the 10-sample peak
+from 16,674.3 to 4,263.5 MiB and the 20-sample peak from 31,930.0 to 4,263.7
+MiB, while wall time changed from 49.17 to 48.74 s and from 76.30 to 75.67 s,
+respectively. Coordinates were bitwise identical per sample; pLDDT and pTM
+maximum absolute changes were `1.668e-4` and `5.812e-6`. These figures are XLA
+allocator live-byte peaks from separate warm and measured processes, not the
+driver's reserved-memory reading.
 
 The backend used to ignore that cache, which made it the one model least able to
 afford doing so. It no longer does.

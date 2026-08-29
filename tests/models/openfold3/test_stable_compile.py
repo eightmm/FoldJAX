@@ -306,6 +306,51 @@ def test_pair_logit_selection_partitions_the_stable_jit(monkeypatch) -> None:
         inference._compiled_predict.clear_cache()
 
 
+def test_high_sample_confidence_schedule_partitions_the_stable_jit(monkeypatch) -> None:
+    """The high-sample serial route cannot reuse a five-sample executable."""
+    traces: list[tuple[int, bool]] = []
+
+    def tiny_predict(
+        key,
+        batch,
+        params,
+        config,
+        representative_atoms,
+        **kwargs,
+    ):
+        del key, params, representative_atoms, kwargs
+        traces.append(
+            (config.num_samples, inference._per_sample_confidence(config))
+        )
+        return batch["x"]
+
+    monkeypatch.setattr(inference, "predict", tiny_predict)
+    inference._compiled_predict.clear_cache()
+    args = (
+        jax.random.key(0),
+        {"x": jnp.ones((4,), dtype=jnp.float32)},
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    released_width = inference.released_config(
+        n_token=128,
+        n_atom=1,
+        num_samples=5,
+    )
+    high_sample = released_width._replace(num_samples=6)
+
+    try:
+        released_value = inference.compile_predict(released_width, _table())(*args)
+        repeated = inference.compile_predict(released_width, _table())(*args)
+        high_sample_value = inference.compile_predict(high_sample, _table())(*args)
+        jax.block_until_ready((released_value, repeated, high_sample_value))
+
+        assert traces == [(5, False), (6, True)]
+        assert inference._compiled_predict._cache_size() == 2
+        np.testing.assert_array_equal(high_sample_value, released_value)
+    finally:
+        inference._compiled_predict.clear_cache()
+
+
 def test_compact_and_dense_batch_trees_have_distinct_bounded_cache_entries(
     monkeypatch,
 ) -> None:
