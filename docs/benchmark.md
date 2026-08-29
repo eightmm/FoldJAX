@@ -236,12 +236,48 @@ allocator's live-byte high-water mark.
 | openfold3 | 8.92 / 1,832.8 | 9.72 / 1,971.9 | 12.33 / 2,516.8 | 16.82 / 3,625.7 | 23.44 / 4,955.8 |
 | protenix | 11.47 / 1,648.0 | 12.07 / 1,533.3 | 15.21 / 1,537.0 | 21.37 / 1,535.1 | 30.28 / 1,537.1 |
 
+Two longer inputs were also measured 2026-08-29 at `1ed2b71`, using only 1,
+10, and 20 samples. `t0488` is 490 tokens with 7,943 input A3M records, and
+`t0976` is 970 tokens with 7,107. These are not the 499-token `L500_4rek` and
+1,003-token `L1000_3og2` jobs in the main scaling table.
+
+**`t0488` -- 490 tokens, 7,943 input A3M records**
+
+| model | 1 sample | 10 samples | 20 samples |
+|---|---:|---:|---:|
+| alphafold3 | 287.70 / 2,812.6 | 312.90 / 3,558.8 | 318.69 / 4,484.7 |
+| boltz2 | 23.32 / 4,479.3 | 45.37 / 4,479.9 | 71.00 / 4,478.2 |
+| esmfold2 | 28.11 / 12,702.6 | 32.17 / 12,702.6 | 36.73 / 12,702.6 |
+| opendde | 35.30 / 6,466.4 | 63.95 / 6,467.0 | 99.43 / 6,518.1 |
+| openfold3 | 25.32 / 4,141.4 | 49.09 / 16,674.3 | 77.46 / 31,930.0 |
+| protenix | 19.73 / 3,833.6 | 33.12 / 3,831.4 | 46.85 / 3,929.7 |
+
+**`t0976` -- 970 tokens, 7,107 input A3M records**
+
+| model | 1 sample | 10 samples | 20 samples |
+|---|---:|---:|---:|
+| alphafold3 | 345.29 / 6,428.4 | 423.04 / 7,574.0 | 432.85 / 9,516.6 |
+| boltz2 | 62.04 / 6,092.9 | 122.76 / 6,327.9 | 195.86 / 6,436.6 |
+| esmfold2 | 57.21 / 13,286.2 | 69.84 / 13,286.2 | 84.21 / 13,286.2 |
+| opendde | 130.14 / 21,078.4 | 216.75 / 20,407.7 | 332.60 / 20,407.8 |
+| openfold3 | 81.82 / 8,517.5 | 159.84 / 8,999.8 | 247.81 / 8,999.4 |
+| protenix | 49.15 / 5,938.0 | 82.33 / 5,868.4 | 125.68 / 5,869.7 |
+
 AlphaFold 3 incurred a Tokamax/Pallas autotuning miss in every measured
 process, so its wall times include cold autotuning and are not warm timings.
 ESMFold2 used explicit released weight files because the local managed-asset
-manifest lacked `ccd.pkl`. These are point measurements: small reversals in
-reported peak memory, such as OpenDDE and Protenix, are not evidence of a
-monotonic memory trend.
+manifest lacked `ccd.pkl`. OpenDDE used its shipped BF16 default, and Boltz-2
+used XLA attention rather than the experimental scoped Triton pilot. These are
+point measurements: small reversals in reported peak memory, such as OpenDDE
+and Protenix, are not evidence of a monotonic memory trend. During the longer
+runs, `nvidia-smi` showed JAX allocator reservations near 88 GiB while the
+traced live-byte peaks were much lower; the tables report the latter.
+
+OpenFold3 is the conspicuous route change. At 490 tokens its batched confidence
+path grows from 4,141.4 MiB at one sample to 31,930.0 MiB at 20. At 970 tokens,
+above the released 750-token per-sample cutoff, confidence is serialized and
+the 10- and 20-sample peaks stay near 9 GiB. The A3M counts above describe the
+inputs; each model may cap or subsample them before its trunk.
 
 ## How the cost grows
 
