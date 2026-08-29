@@ -16,7 +16,7 @@ dataclass says zero -- so the settings always come from the file.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 import jax
@@ -43,7 +43,11 @@ def load_settings(directory: str | Path) -> ModelSettings:
 
 
 def load_parameters(
-    directory: str | Path, *, dtype: str | None = None, to_device: bool = True
+    directory: str | Path,
+    *,
+    dtype: str | None = None,
+    to_device: bool = True,
+    names: Collection[str] | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Every tensor in the checkpoint, keyed the way the model asks for it.
 
@@ -51,12 +55,17 @@ def load_parameters(
     weights occupy -- and leaves the buffers alone, since `FourierEmbedding`'s
     frozen draws and the confidence head's distance boundaries are values
     rather than weights and rounding them changes the model's answer rather
-    than its footprint.
+    than its footprint. ``names`` is a managed staging primitive: omitted by
+    every native caller, it can select the tiny projection subtree needed
+    before the full structure checkpoint is resident.
     """
     buffers = {"boundaries", "w", "b"}
+    selected = None if names is None else frozenset(names)
     parameters: dict[str, jnp.ndarray] = {}
     with safe_open(Path(directory, WEIGHTS_NAME), framework="numpy") as handle:
         for name in handle.keys():  # noqa: SIM118 -- safetensors has no __iter__
+            if selected is not None and name not in selected:
+                continue
             array = handle.get_tensor(name)
             if dtype is not None and name.rsplit(".", 1)[-1] not in buffers:
                 array = array.astype(jnp.dtype(dtype))

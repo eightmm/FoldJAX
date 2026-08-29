@@ -219,6 +219,30 @@ give.
 virtualenv's provisioning, the kernels that cannot run on this card, and how to
 verify both.
 
+## `num_samples` sweep
+
+Measured 2026-08-29 on `t0128` (132 tokens), with seed 101, 200 diffusion
+steps, and 10 recycles. This is one common comparison schedule, not every
+model's native default. Each cell is `wall seconds / peak MiB` from a fresh
+measured process after a separate warm process; memory is the process
+allocator's live-byte high-water mark.
+
+| model | 1 sample | 5 samples | 10 samples | 20 samples | 32 samples |
+|---|---:|---:|---:|---:|---:|
+| alphafold3 | 250.94 / 1,439.1 | 247.90 / 1,502.4 | 258.49 / 1,668.3 | 265.47 / 1,908.4 | 266.00 / 2,482.6 |
+| boltz2 | 12.12 / 2,832.3 | 14.65 / 2,832.6 | 17.58 / 2,833.0 | 25.25 / 2,834.4 | 34.90 / 2,834.7 |
+| esmfold2 | 19.409 / 12,267.314 | 19.547 / 12,267.314 | 20.339 / 12,267.314 | 20.969 / 12,267.314 | 22.206 / 12,267.314 |
+| opendde | 10.08 / 2,227.9 | 11.45 / 2,239.7 | 15.72 / 2,243.5 | 23.64 / 2,304.0 | 35.63 / 2,252.5 |
+| openfold3 | 8.92 / 1,832.8 | 9.72 / 1,971.9 | 12.33 / 2,516.8 | 16.82 / 3,625.7 | 23.44 / 4,955.8 |
+| protenix | 11.47 / 1,648.0 | 12.07 / 1,533.3 | 15.21 / 1,537.0 | 21.37 / 1,535.1 | 30.28 / 1,537.1 |
+
+AlphaFold 3 incurred a Tokamax/Pallas autotuning miss in every measured
+process, so its wall times include cold autotuning and are not warm timings.
+ESMFold2 used explicit released weight files because the local managed-asset
+manifest lacked `ccd.pkl`. These are point measurements: small reversals in
+reported peak memory, such as OpenDDE and Protenix, are not evidence of a
+monotonic memory trend.
+
 ## How the cost grows
 
 The table is six sizes. The question that decides whether a sequence is

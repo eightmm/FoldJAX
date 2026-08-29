@@ -787,6 +787,103 @@ def _fake_session_modules(tmp_path, calls):
     }
 
 
+def _fake_staged_session_modules(tmp_path, events):
+    settings = SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3)
+    structure = SimpleNamespace(
+        has_language_model=False,
+        settings=settings,
+        kind="structure",
+    )
+    complete = SimpleNamespace(
+        has_language_model=True,
+        settings=settings,
+        kind="complete",
+        released=False,
+    )
+
+    def load(path, *, esmc, language_model):
+        del path, esmc
+        events.append(("load", language_model))
+        return complete if language_model else structure
+
+    def load_language_model_stage(path, *, esmc):
+        del path, esmc
+        events.append(("stage", None))
+        return SimpleNamespace(
+            has_language_model=True,
+            settings=settings,
+            kind="language-model-stage",
+            released=False,
+        )
+
+    def release_language_model_parameters(loaded, *, after):
+        assert loaded.kind == "language-model-stage"
+        assert not loaded.released
+        loaded.released = True
+        events.append(("release", np.asarray(after).copy()))
+
+    def build_job_features(chains, alignments):
+        del alignments
+        tokens = sum(len(sequence) for sequence, *_rest in chains)
+        row = np.arange(tokens, dtype=np.int64)[None]
+        return {
+            "input_ids": row + 4,
+            "asym_id": np.zeros_like(row),
+            "residue_index": row,
+            "mol_type": np.zeros_like(row),
+            "token_attention_mask": np.ones_like(row, dtype=bool),
+        }
+
+    def language_model_embedding(features, loaded, *, packed_length):
+        assert loaded.has_language_model
+        assert not loaded.released
+        assert packed_length is None
+        value = np.asarray(features["input_ids"], dtype=np.float32)[..., None]
+        events.append(("embedding", value.copy()))
+        return value
+
+    def predict(key, features, loaded, **kwargs):
+        del features
+        assert loaded.kind in {"structure", "complete"}
+        assert not getattr(loaded, "released", False)
+        events.append(("predict", key))
+        assert kwargs["precomputed_lm_embedding"] is not None
+        return {}
+
+    inference = SimpleNamespace(
+        COMPACT_LANGUAGE_MODEL_API=True,
+        MANAGED_ESMC_STAGE_API=True,
+        MANAGED_AUXILIARY_OUTPUT_API=True,
+        LANGUAGE_MODEL_FEATURES=(
+            "input_ids",
+            "asym_id",
+            "residue_index",
+            "mol_type",
+            "token_attention_mask",
+        ),
+        load=load,
+        load_language_model_stage=load_language_model_stage,
+        release_language_model_parameters=release_language_model_parameters,
+        seed_key=lambda seed: seed,
+        build_job_features=build_job_features,
+        language_model_states=lambda *args, **kwargs: pytest.fail(
+            "staged session used raw states"
+        ),
+        language_model_embedding=language_model_embedding,
+        predict=predict,
+    )
+    output = SimpleNamespace(
+        write_prediction_outputs=lambda *args, **kwargs: {
+            "structures": [tmp_path / "sample_0.cif"],
+            "summary": [{"sample": 0, "plddt": 91.0}],
+        }
+    )
+    return {
+        "foldjax.models.esmfold2.inference": inference,
+        "foldjax.models.esmfold2.output": output,
+    }
+
+
 def _fake_session_weights(tmp_path):
     weights = tmp_path / "weights"
     esmc = weights / "esmc"
@@ -796,6 +893,353 @@ def _fake_session_weights(tmp_path):
     (esmc / "config.json").write_text("{}")
     (esmc / "model.safetensors").write_bytes(b"language-model")
     return weights
+
+
+@pytest.mark.parametrize("num_seeds", [1, 2])
+def test_single_input_managed_session_stages_esmc_before_structure_weights(
+    tmp_path, monkeypatch, num_seeds: int
+) -> None:
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(
+            tmp_path / "input",
+            [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+        ),
+        weights=weights,
+        output_dir=tmp_path / "out",
+        num_seeds=num_seeds,
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        for seed in request.resolved_seeds:
+            backend.predict(
+                dataclasses.replace(
+                    request,
+                    seed=seed,
+                    num_seeds=None,
+                    output_dir=tmp_path / f"out-{seed}",
+                )
+            )
+
+    assert [name for name, _value in events] == [
+        "stage",
+        "embedding",
+        "release",
+        "load",
+        *("predict" for _ in range(num_seeds)),
+    ]
+    assert events[3] == ("load", False)
+    assert backend._loaded_model is None
+    assert backend._lm_embedding is None
+
+
+def test_scalar_session_retry_reuses_embedding_without_touching_released_stage(
+    tmp_path, monkeypatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(
+            tmp_path / "input",
+            [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+        ),
+        weights=weights,
+        output_dir=tmp_path / "out",
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        backend.predict(request)
+        backend.predict(dataclasses.replace(request, output_dir=tmp_path / "retry"))
+
+    assert [name for name, _value in events] == [
+        "stage",
+        "embedding",
+        "release",
+        "load",
+        "predict",
+        "predict",
+    ]
+
+
+@pytest.mark.parametrize("staged", [True, False])
+def test_managed_load_fails_closed_when_a_verified_snapshot_becomes_unverifiable(
+    tmp_path, monkeypatch, staged: bool
+) -> None:
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    snapshots = iter([(("verified", "identity"),), None])
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2._model_asset_snapshot",
+        lambda *args, **kwargs: next(snapshots),
+    )
+    weights = _fake_session_weights(tmp_path)
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(
+            tmp_path / "input",
+            [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+        ),
+        weights=weights,
+        output_dir=tmp_path / "out",
+    )
+    requests = (
+        (request,)
+        if staged
+        else (
+            request,
+            dataclasses.replace(
+                request,
+                input=_job(
+                    tmp_path / "second",
+                    [{"type": "protein", "id": ["A"], "sequence": "ACDE"}],
+                ),
+                output_dir=tmp_path / "out-second",
+            ),
+        )
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session(requests):
+        with pytest.raises(PredictionError, match="weights changed"):
+            backend.predict(request)
+        assert backend._loaded_model is None
+        assert backend._loaded_model_key is None
+        assert backend._loaded_model_staged is False
+        assert all(name not in {"embedding", "predict"} for name, _ in events)
+
+    assert events == [("stage" if staged else "load", None if staged else True)]
+
+
+@pytest.mark.parametrize("mutate_between_seeds", [False, True])
+def test_compact_language_model_observes_explicit_matmul_precision(
+    tmp_path, monkeypatch, mutate_between_seeds: bool
+) -> None:
+    from foldjax.execution import resolved_matmul_precision
+
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    inference = modules["foldjax.models.esmfold2.inference"]
+    original_embedding = inference.language_model_embedding
+    observed: list[str] = []
+
+    def language_model_embedding(features, loaded, *, packed_length):
+        observed.append(resolved_matmul_precision("port-default"))
+        return original_embedding(
+            features, loaded, packed_length=packed_length
+        )
+
+    inference.language_model_embedding = language_model_embedding
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+    input_path = _job(
+        tmp_path / "input",
+        [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+    )
+    request = PredictionRequest(
+        model="esmfold2",
+        input=input_path,
+        weights=weights,
+        output_dir=tmp_path / "out",
+        num_seeds=2,
+        options={"matmul_precision": "highest"},
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        backend.predict(
+            dataclasses.replace(request, seed=0, num_seeds=None)
+        )
+        if mutate_between_seeds:
+            input_path.write_text(
+                json.dumps(
+                    {
+                        "name": "t",
+                        "entities": [
+                            {
+                                "type": "protein",
+                                "id": ["A"],
+                                "sequence": "ACDE",
+                            }
+                        ],
+                    }
+                )
+            )
+        backend.predict(
+            dataclasses.replace(
+                request,
+                seed=1,
+                num_seeds=None,
+                output_dir=tmp_path / "out-1",
+            )
+        )
+
+    assert observed == ["highest"] * (2 if mutate_between_seeds else 1)
+    assert resolved_matmul_precision("port-default") == "port-default"
+
+
+def test_multi_input_session_keeps_complete_model_resident(
+    tmp_path, monkeypatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+    first = PredictionRequest(
+        model="esmfold2",
+        input=_job(
+            tmp_path / "first",
+            [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+        ),
+        weights=weights,
+        output_dir=tmp_path / "out-first",
+    )
+    second = dataclasses.replace(
+        first,
+        input=_job(
+            tmp_path / "second",
+            [{"type": "protein", "id": ["A"], "sequence": "ACDE"}],
+        ),
+        output_dir=tmp_path / "out-second",
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((first, second)):
+        backend.predict(first)
+        backend.predict(second)
+
+    assert [name for name, _value in events] == [
+        "load",
+        "embedding",
+        "predict",
+        "embedding",
+        "predict",
+    ]
+    assert events[0] == ("load", True)
+
+
+@pytest.mark.parametrize("failure_point", ["release", "structure_load"])
+def test_staged_transition_failure_clears_ownership_before_retry(
+    tmp_path, monkeypatch, failure_point: str
+) -> None:
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    inference = modules["foldjax.models.esmfold2.inference"]
+    failed = False
+    original_release = inference.release_language_model_parameters
+    original_load = inference.load
+
+    def release(loaded, *, after):
+        nonlocal failed
+        original_release(loaded, after=after)
+        if failure_point == "release" and not failed:
+            failed = True
+            raise RuntimeError("injected release failure")
+
+    def load(path, *, esmc, language_model):
+        nonlocal failed
+        loaded = original_load(path, esmc=esmc, language_model=language_model)
+        if failure_point == "structure_load" and not language_model and not failed:
+            failed = True
+            raise RuntimeError("injected structure load failure")
+        return loaded
+
+    inference.release_language_model_parameters = release
+    inference.load = load
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(
+            tmp_path / "input",
+            [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+        ),
+        weights=weights,
+        output_dir=tmp_path / "out",
+    )
+    backend = ESMFold2Backend()
+
+    with backend.session((request,)):
+        with pytest.raises(RuntimeError, match="injected"):
+            backend.predict(request)
+        assert backend._loaded_model is None
+        assert backend._loaded_model_key is None
+        assert backend._loaded_model_staged is False
+        assert backend._lm_embedding is None
+        assert backend._lm_embedding_key is None
+
+        backend.predict(dataclasses.replace(request, output_dir=tmp_path / "retry"))
+
+    names = [name for name, _value in events]
+    assert names.count("stage") == 2
+    assert names.count("embedding") == 2
+    assert names.count("predict") == 1
+    assert names[-1] == "predict"
+
+
+def test_direct_backend_call_keeps_complete_native_load_and_predict_job(
+    tmp_path, monkeypatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    modules = _fake_staged_session_modules(tmp_path, events)
+    inference = modules["foldjax.models.esmfold2.inference"]
+    complete = SimpleNamespace(
+        has_language_model=True,
+        settings=SimpleNamespace(max_msa_depth=16, msa_n_layers=1, num_recycles=3),
+    )
+
+    def load(path, *, esmc, language_model):
+        del path, esmc
+        events.append(("complete", language_model))
+        return complete
+
+    inference.load = load
+
+    def predict_job(*args, **kwargs):
+        del kwargs
+        events.append(("predict_job", None))
+        return {}, inference.build_job_features(args[1], args[2])
+
+    inference.predict_job = predict_job
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    weights = _fake_session_weights(tmp_path)
+
+    ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=_job(
+                tmp_path / "input",
+                [{"type": "protein", "id": ["A"], "sequence": "ACD"}],
+            ),
+            weights=weights,
+            output_dir=tmp_path / "out",
+        )
+    )
+
+    assert events == [("complete", True), ("predict_job", None)]
 
 
 def test_request_session_loads_once_and_runs_esmc_once_per_input(

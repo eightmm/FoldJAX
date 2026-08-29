@@ -281,6 +281,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "affinity_num_samples": 5,
     "compute_dtype": "bfloat16",
     "attention_backend": "xla",
+    "trunk_atom_attention_backend": None,
     "triangle_backend": "cueq",
     "glu_backend": "xla",
     "bucket": False,
@@ -313,6 +314,7 @@ class Boltz2Backend(Backend):
             "msa_server_username",
             "return_confidence_logits",
             "steering_args",
+            "trunk_atom_attention_backend",
             "use_msa_server",
             "write_fmt",
         }
@@ -349,6 +351,7 @@ class Boltz2Backend(Backend):
         "compute_dtype",
         "max_msa_depth",
         "attention_backend",
+        "trunk_atom_attention_backend",
         "triangle_backend",
         "glu_backend",
         "bucket",
@@ -401,6 +404,15 @@ class Boltz2Backend(Backend):
         """
 
         profile = super().cache_profile(request)
+        resolved_attention = profile.get(
+            "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
+        )
+        atom_attention = profile.get("trunk_atom_attention_backend")
+        if atom_attention is None or (
+            type(atom_attention) is type(resolved_attention)
+            and atom_attention == resolved_attention
+        ):
+            profile.pop("trunk_atom_attention_backend", None)
         for name, default in _RELEASED_COMPILE_DEFAULTS.items():
             if name not in profile:
                 continue
@@ -596,6 +608,43 @@ class Boltz2Backend(Backend):
             "2d",
         }:
             raise ValueError("cp_layout must be one of 'auto', '1d', or '2d'")
+        if "attention_backend" in options and options["attention_backend"] not in {
+            "flash",
+            "tokamax",
+            "xla",
+        }:
+            raise ValueError(
+                "attention_backend must be one of 'flash', 'tokamax', or 'xla'"
+            )
+        if (
+            "trunk_atom_attention_backend" in options
+            and options["trunk_atom_attention_backend"]
+            not in {None, "tokamax", "triton", "xla"}
+        ):
+            raise ValueError(
+                "trunk_atom_attention_backend must be one of 'tokamax', "
+                "'triton', 'xla', or null"
+            )
+        if (
+            options.get("trunk_atom_attention_backend") == "triton"
+            and options.get("compute_dtype", "bfloat16") != "bfloat16"
+        ):
+            raise ValueError(
+                "trunk_atom_attention_backend='triton' requires "
+                "compute_dtype='bfloat16'"
+            )
+        scoped_attention_backend = options.get("trunk_atom_attention_backend")
+        if scoped_attention_backend == options.get("attention_backend", "xla"):
+            scoped_attention_backend = None
+        if (
+            type(options.get("cp_devices", 1)) is int
+            and options.get("cp_devices", 1) > 1
+            and scoped_attention_backend not in (None, "xla")
+        ):
+            raise ValueError(
+                "context parallelism requires "
+                "trunk_atom_attention_backend='xla' or null"
+            )
         for name in (
             "affinity_mw_correction",
             "bucket",

@@ -47,12 +47,46 @@ from foldjax.schema import PaddingConfig
 #: sampler's `inf` constants saturate in half precision and a fully-masked
 #: softmax row then gives NaN.
 COMPUTE_DTYPES = ("bfloat16", "float32")
+ATTENTION_BACKENDS = ("flash", "tokamax", "xla")
+TRUNK_ATOM_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 
 #: Matmul precision this port runs under. Boltz-2 is the one model here whose
 #: upstream asks for true float32 -- `main.py:1096` is
 #: `torch.set_float32_matmul_precision("highest")`, where OpenFold3, Protenix and
 #: OpenDDE all select TF32 -- so "highest" is upstream parity, not caution.
 MATMUL_PRECISION = "highest"
+
+
+def _require_triton_attention_device(jax_module: Any) -> None:
+    """Fail before featurization when forced Triton cannot run."""
+
+    device = jax_module.devices()[0]
+    device_kind = str(getattr(device, "device_kind", ""))
+    if device.platform != "gpu" or "nvidia" not in device_kind.casefold():
+        raise RuntimeError(
+            "trunk_atom_attention_backend='triton' requires an NVIDIA GPU"
+        )
+    capability = getattr(device, "compute_capability", None)
+    if capability is None:
+        raise RuntimeError(
+            "trunk_atom_attention_backend='triton' could not verify the "
+            "NVIDIA GPU compute capability; version 8.0 or newer is required"
+        )
+    if isinstance(capability, tuple):
+        capability_value = float(f"{capability[0]}.{capability[1]}")
+    else:
+        try:
+            capability_value = float(capability)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "trunk_atom_attention_backend='triton' could not verify the "
+                "NVIDIA GPU compute capability; version 8.0 or newer is required"
+            ) from exc
+    if capability_value < 8.0:
+        raise RuntimeError(
+            "trunk_atom_attention_backend='triton' requires compute "
+            f"capability >= 8.0; found {capability}"
+        )
 
 
 def _prefix_stable_noise_tape(
@@ -481,6 +515,11 @@ def predict(
     # Pass True to get the raw logits and pdistogram back in `raw`.
     return_confidence_logits: bool = False,
     attention_backend: str = "xla",
+    #: Override only the BF16 trunk input embedder's atom-window attention.
+    #: None preserves the historical global ``attention_backend`` setting;
+    #: ``"triton"`` is a fail-loud pilot that leaves the FP32 Pairformer,
+    #: diffusion, confidence, and affinity re-embedding paths unchanged.
+    trunk_atom_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     #: Context parallelism: shard the pair representations across this many
@@ -537,6 +576,35 @@ def predict(
         raise ValueError("cp_devices must be positive")
     if not isinstance(cp_atom_windows, bool):
         raise ValueError("cp_atom_windows must be a boolean")
+    if attention_backend not in ATTENTION_BACKENDS:
+        raise ValueError(
+            "attention_backend must be one of "
+            f"{ATTENTION_BACKENDS}, got {attention_backend!r}"
+        )
+    if (
+        trunk_atom_attention_backend is not None
+        and trunk_atom_attention_backend not in TRUNK_ATOM_ATTENTION_BACKENDS
+    ):
+        raise ValueError(
+            "trunk_atom_attention_backend must be null or one of "
+            f"{TRUNK_ATOM_ATTENTION_BACKENDS}, got "
+            f"{trunk_atom_attention_backend!r}"
+        )
+    resolved_trunk_atom_attention_backend = (
+        None
+        if trunk_atom_attention_backend in (None, attention_backend)
+        else trunk_atom_attention_backend
+    )
+    if (
+        resolved_trunk_atom_attention_backend == "triton"
+        and compute_dtype != "bfloat16"
+    ):
+        raise ValueError(
+            "trunk_atom_attention_backend='triton' requires "
+            "compute_dtype='bfloat16'"
+        )
+    if resolved_trunk_atom_attention_backend == "triton":
+        _require_triton_attention_device(jax)
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_devices)
     cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after != "trunk"
     cp_rows = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else cp_devices
@@ -545,6 +613,14 @@ def predict(
         raise ValueError(
             "context parallelism requires glu_backend='xla'; a fused GLU "
             "cannot be partitioned"
+        )
+    if (
+        cp_devices > 1
+        and resolved_trunk_atom_attention_backend not in (None, "xla")
+    ):
+        raise ValueError(
+            "context parallelism requires trunk_atom_attention_backend='xla' "
+            "or null; fused atom attention is not partitioned"
         )
 
     feats_np, record_id, struct_dir = featurize(
@@ -767,6 +843,10 @@ def predict(
         "multiplicity": num_samples,
         "atom_context_parallel": cp_atom_active,
         "attention_backend": attention_backend,
+        # Canonicalize an explicit inherited value before it reaches the
+        # retained-runner identity.  The graph sees the same resolved backend
+        # either way, so these spellings must not cause a second full compile.
+        "trunk_atom_attention_backend": resolved_trunk_atom_attention_backend,
         "triangle_backend": (
             # The fused default cannot be partitioned; unset-equivalent
             # resolves to the blocked XLA path under context parallelism.

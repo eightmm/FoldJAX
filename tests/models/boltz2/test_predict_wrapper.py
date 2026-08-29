@@ -79,6 +79,79 @@ def test_predict_applies_compute_dtype_to_precomputed_trunk(monkeypatch) -> None
     }
 
 
+def test_predict_scopes_triton_to_trunk_atom_attention(monkeypatch) -> None:
+    seen = {}
+
+    def fake_trunk(params, feats, **kwargs):
+        seen["trunk"] = {
+            "global": kwargs["attention_backend"],
+            "atom": kwargs["atom_attention_backend"],
+        }
+        return {
+            "s_inputs": jnp.zeros((1, 1, 1), dtype=jnp.bfloat16),
+            "s": jnp.zeros((1, 1, 1), dtype=jnp.bfloat16),
+            "z": jnp.zeros((1, 1, 1, 1), dtype=jnp.bfloat16),
+        }
+
+    def fake_sample(params, feats, key, *, trunk, **kwargs):
+        seen["sample_global"] = kwargs["attention_backend"]
+        assert "trunk_atom_attention_backend" not in kwargs
+        return {"sample_atom_coords": jnp.zeros((1, 1, 3))}
+
+    monkeypatch.setattr(predict_module, "boltz2_trunk_forward", fake_trunk)
+    monkeypatch.setattr(predict_module, "boltz2_sample_forward", fake_sample)
+
+    predict_module.boltz2_predict(
+        {"trunk": {}},
+        {},
+        jax.random.PRNGKey(0),
+        run_confidence=False,
+        run_distogram=False,
+        compute_dtype=jnp.bfloat16,
+        attention_backend="xla",
+        trunk_atom_attention_backend="triton",
+    )
+
+    assert seen == {
+        "trunk": {"global": "xla", "atom": "triton"},
+        "sample_global": "xla",
+    }
+
+
+def test_predict_canonicalizes_explicit_inherited_backend_before_cp_guard(
+    monkeypatch,
+) -> None:
+    seen = {}
+
+    def fake_trunk(params, feats, **kwargs):
+        seen["atom"] = kwargs["atom_attention_backend"]
+        return {
+            "s_inputs": jnp.zeros((1, 1, 1), dtype=jnp.bfloat16),
+            "s": jnp.zeros((1, 1, 1), dtype=jnp.bfloat16),
+            "z": jnp.zeros((1, 1, 1, 1), dtype=jnp.bfloat16),
+        }
+
+    def fake_sample(params, feats, key, *, trunk, **kwargs):
+        return {"sample_atom_coords": jnp.zeros((1, 1, 3))}
+
+    monkeypatch.setattr(predict_module, "cp_mesh", lambda: object())
+    monkeypatch.setattr(predict_module, "boltz2_trunk_forward", fake_trunk)
+    monkeypatch.setattr(predict_module, "boltz2_sample_forward", fake_sample)
+
+    predict_module.boltz2_predict(
+        {"trunk": {}},
+        {},
+        jax.random.PRNGKey(0),
+        run_confidence=False,
+        run_distogram=False,
+        compute_dtype=jnp.bfloat16,
+        attention_backend="tokamax",
+        trunk_atom_attention_backend="tokamax",
+    )
+
+    assert seen == {"atom": None}
+
+
 def test_predict_can_map_confidence_sequentially(monkeypatch) -> None:
     trunk = {
         "s_inputs": jnp.zeros((1, 1, 1)),
@@ -444,6 +517,7 @@ def test_predict_runs_complete_affinity_ensemble_on_best_sample(monkeypatch) -> 
 
     def fake_input_embedder(params, feats, *, affinity, **kwargs):
         assert affinity is True
+        assert kwargs["attention_backend"] == "xla"
         return jnp.full((1, 3, 2), 7.0)
 
     monkeypatch.setattr(predict_module, "input_embedder_forward", fake_input_embedder)
@@ -466,6 +540,9 @@ def test_predict_runs_complete_affinity_ensemble_on_best_sample(monkeypatch) -> 
         run_confidence=True,
         run_distogram=False,
         multiplicity=2,
+        compute_dtype=jnp.bfloat16,
+        attention_backend="xla",
+        trunk_atom_attention_backend="triton",
         affinity_params={
             "ensemble": True,
             "mw_correction": False,

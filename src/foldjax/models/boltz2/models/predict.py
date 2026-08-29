@@ -126,6 +126,27 @@ def boltz2_predict(
     function directly with the same trunk/sample tensors.
     """
     multiplicity = int(sample_kwargs.pop("multiplicity", 1))
+    # The released BF16 graph has one low-precision generic-attention site:
+    # the trunk input embedder's atom-window transformer.  Keep its backend
+    # independently selectable so a fused-kernel pilot does not also rewrite
+    # the deliberate FP32 Pairformer, diffusion, confidence, or affinity
+    # re-embedding paths.  None preserves the historical global setting.
+    trunk_atom_attention_backend = sample_kwargs.pop(
+        "trunk_atom_attention_backend", None
+    )
+    attention_backend = str(sample_kwargs.get("attention_backend", "xla"))
+    if attention_backend not in {"flash", "tokamax", "xla"}:
+        raise ValueError(
+            "attention_backend must be 'flash', 'tokamax', or 'xla'; "
+            f"got {attention_backend!r}"
+        )
+    if trunk_atom_attention_backend == attention_backend:
+        trunk_atom_attention_backend = None
+    if trunk_atom_attention_backend not in (None, "tokamax", "triton", "xla"):
+        raise ValueError(
+            "trunk_atom_attention_backend must be 'tokamax', 'triton', "
+            f"'xla', or null; got {trunk_atom_attention_backend!r}"
+        )
     if cp_mesh() is not None and (
         str(sample_kwargs.get("triangle_backend", "cueq")) == "cueq"
     ):
@@ -160,6 +181,19 @@ def boltz2_predict(
         "trunk_use_scan", sample_kwargs.get("use_scan", True)
     )
     compute_dtype = jnp.dtype(sample_kwargs.get("compute_dtype", jnp.float32))
+    if (
+        trunk_atom_attention_backend == "triton"
+        and compute_dtype != jnp.bfloat16
+    ):
+        raise ValueError(
+            "trunk_atom_attention_backend='triton' requires bfloat16 "
+            "trunk compute"
+        )
+    if cp_mesh() is not None and trunk_atom_attention_backend not in (None, "xla"):
+        raise ValueError(
+            "context parallelism requires trunk_atom_attention_backend='xla' "
+            "or null"
+        )
     trunk_params = params["trunk"]
     trunk_feats = feats
     if compute_dtype != jnp.float32:
@@ -189,7 +223,12 @@ def boltz2_predict(
         triangle_attention_q_chunk=sample_kwargs.get("triangle_attention_q_chunk"),
         transition_hidden_chunk=sample_kwargs.get("transition_hidden_chunk"),
         matmul_precision=str(sample_kwargs.get("matmul_precision", "highest")),
-        attention_backend=str(sample_kwargs.get("attention_backend", "xla")),
+        attention_backend=attention_backend,
+        atom_attention_backend=(
+            None
+            if trunk_atom_attention_backend is None
+            else str(trunk_atom_attention_backend)
+        ),
         triangle_backend=str(sample_kwargs.get("triangle_backend", "cueq")),
         glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
         subsample_msa=subsample_msa,
@@ -305,7 +344,7 @@ def boltz2_predict(
             triangle_attention_q_chunk=sample_kwargs.get("triangle_attention_q_chunk"),
             transition_hidden_chunk=sample_kwargs.get("transition_hidden_chunk"),
             matmul_precision=str(sample_kwargs.get("matmul_precision", "highest")),
-            attention_backend=str(sample_kwargs.get("attention_backend", "xla")),
+            attention_backend=attention_backend,
             triangle_backend=str(sample_kwargs.get("triangle_backend", "cueq")),
             glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
             return_pair_chains_iptm=return_pair_chains_iptm,
@@ -370,7 +409,7 @@ def boltz2_predict(
             params["trunk"]["input_embedder"],
             feats,
             eps=eps,
-            attention_backend=str(sample_kwargs.get("attention_backend", "xla")),
+            attention_backend=attention_backend,
             affinity=True,
         )
         module_outputs = [

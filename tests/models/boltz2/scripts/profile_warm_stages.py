@@ -50,6 +50,16 @@ def main() -> None:
         choices=("xla", "pallas", "tokamax", "cueq"),
         default="cueq",
     )
+    parser.add_argument(
+        "--attention-backend",
+        choices=("xla", "tokamax"),
+        default="xla",
+    )
+    parser.add_argument(
+        "--trunk-atom-attention-backend",
+        choices=("xla", "tokamax", "triton"),
+        default=None,
+    )
     parser.add_argument("--glu-backend", choices=("xla", "tokamax"), default="xla")
     parser.add_argument("--iters", type=int, default=2)
     parser.add_argument(
@@ -65,6 +75,9 @@ def main() -> None:
 
     feats_np, record_id = _load_features(args.features)
     feats = {key: jnp.asarray(value) for key, value in feats_np.items()}
+    use_template = "template_mask" in feats_np and bool(
+        np.any(feats_np["template_mask"] != 0)
+    )
     params = load_params(args.weights)
     trunk_params = _cast_params(params["trunk"], jnp.bfloat16)
     trunk_feats = _cast_float_feats(feats, jnp.bfloat16)
@@ -77,8 +90,11 @@ def main() -> None:
             subsample_msa=True,
             num_subsampled_msa=1024,
             triangle_backend=args.triangle_backend,
+            attention_backend=args.attention_backend,
+            atom_attention_backend=args.trunk_atom_attention_backend,
             chunk_size=args.chunk_size,
             glu_backend=args.glu_backend,
+            use_template=use_template,
         )
     )
 
@@ -97,6 +113,8 @@ def main() -> None:
             compute_dtype=jnp.bfloat16,
             use_scan=True,
             triangle_backend=args.triangle_backend,
+            attention_backend=args.attention_backend,
+            trunk_atom_attention_backend=args.trunk_atom_attention_backend,
             glu_backend=args.glu_backend,
         )
     )
@@ -116,6 +134,8 @@ def main() -> None:
         "recycling": args.recycling,
         "multiplicity": args.multiplicity,
         "triangle_backend": args.triangle_backend,
+        "attention_backend": args.attention_backend,
+        "trunk_atom_attention_backend": args.trunk_atom_attention_backend,
         "chunk_size": args.chunk_size,
         "glu_backend": args.glu_backend,
         "n_tokens": int(feats_np["token_pad_mask"].shape[1]),

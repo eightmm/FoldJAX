@@ -57,6 +57,21 @@ def main() -> None:
         choices=("xla", "pallas", "tokamax", "cueq"),
         default="cueq",
     )
+    parser.add_argument(
+        "--attention-backend",
+        choices=("xla", "tokamax"),
+        default="xla",
+        help="global attention backend; keep xla for the scoped atom pilot",
+    )
+    parser.add_argument(
+        "--trunk-atom-attention-backend",
+        choices=("xla", "tokamax", "triton"),
+        default=None,
+        help=(
+            "override only trunk InputEmbedder atom-window attention; triton "
+            "is the fail-loud BF16 hybrid pilot"
+        ),
+    )
     parser.add_argument("--glu-backend", choices=("xla", "tokamax"), default="xla")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--iters", type=int, default=3)
@@ -67,6 +82,8 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.trunk_atom_attention_backend == "triton" and args.dtype != "bfloat16":
+        parser.error("--trunk-atom-attention-backend=triton requires --dtype=bfloat16")
 
     jax.config.update("jax_default_matmul_precision", "highest")
     args.compile_cache.mkdir(parents=True, exist_ok=True)
@@ -74,6 +91,9 @@ def main() -> None:
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
     feats_np, record_id = _load_features(args.features)
     feats = {key: jnp.asarray(value) for key, value in feats_np.items()}
+    use_template = "template_mask" in feats_np and bool(
+        np.any(feats_np["template_mask"] != 0)
+    )
     params = load_params(args.weights)
     compute_dtype = {
         "float32": jnp.float32,
@@ -94,9 +114,12 @@ def main() -> None:
             use_scan=True,
             return_pair_chains_iptm=False,
             triangle_backend=args.triangle_backend,
+            attention_backend=args.attention_backend,
+            trunk_atom_attention_backend=args.trunk_atom_attention_backend,
             glu_backend=args.glu_backend,
             confidence_sequentially=args.confidence_sequentially,
             recompute_nonpolymer_frames=bool(np.any(feats_np["mol_type"] == 3)),
+            use_template=use_template,
         )
     )
 
@@ -124,6 +147,8 @@ def main() -> None:
         "recycling": args.recycling,
         "multiplicity": args.multiplicity,
         "triangle_backend": args.triangle_backend,
+        "attention_backend": args.attention_backend,
+        "trunk_atom_attention_backend": args.trunk_atom_attention_backend,
         "glu_backend": args.glu_backend,
         "sampling_only": args.sampling_only,
         "confidence_sequentially": args.confidence_sequentially,

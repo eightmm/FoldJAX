@@ -42,6 +42,8 @@ def diffusion_score_model_forward(
     token_attention_chunk: int | None = None,
     token_layers: int | None = None,
     atom_context_parallel: bool = False,
+    atom_encoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
+    atom_decoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
 ) -> jnp.ndarray:
     """Run Boltz DiffusionModule.forward using precomputed conditioning."""
 
@@ -68,6 +70,7 @@ def diffusion_score_model_forward(
         attention_backend=attention_backend,
         atom_to_token_idx=atom_to_token_idx,
         atom_context_parallel=atom_context_parallel,
+        transformer_s_terms=atom_encoder_s_terms,
     )
 
     s_to_a = params["s_to_a_linear"]
@@ -115,6 +118,7 @@ def diffusion_score_model_forward(
         attention_backend=attention_backend,
         atom_to_token_idx=atom_to_token_idx,
         atom_context_parallel=atom_context_parallel,
+        transformer_s_terms=atom_decoder_s_terms,
     )
 
 

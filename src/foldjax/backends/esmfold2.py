@@ -377,6 +377,7 @@ class ESMFold2Backend(Backend):
     def __init__(self) -> None:
         self._session_open = False
         self._session_active = False
+        self._stage_single_input = False
         self._session_poisoned: str | None = None
         self._asset_anchors: dict[
             tuple[bool, str, str | None], tuple[tuple[str, str], ...] | None
@@ -390,6 +391,7 @@ class ESMFold2Backend(Backend):
             ]
             | None
         ) = None
+        self._loaded_model_staged = False
         self._lm_embedding: Any | None = None
         self._lm_embedding_key: str | None = None
         self._managed_memory: ExitStack | None = None
@@ -404,8 +406,11 @@ class ESMFold2Backend(Backend):
         self._session_open = True
         attempts = sum(len(request.resolved_seeds) for request in requests)
         # A scalar run has nothing to reuse and keeps the historical direct
-        # ``predict_job`` route, including compatibility with small wrappers.
+        # ``predict_job`` route for direct/wrapper calls. The first-party
+        # managed path may still stage its two checkpoint halves when this
+        # session contains exactly one semantic input.
         self._session_active = attempts > 1
+        self._stage_single_input = len(requests) == 1
         memory = ExitStack()
         self._managed_memory = memory
         try:
@@ -415,6 +420,7 @@ class ESMFold2Backend(Backend):
             self._asset_anchors.clear()
             self._session_poisoned = None
             self._session_active = False
+            self._stage_single_input = False
             self._session_open = False
             self._managed_memory = None
             self._ccd_memory_leased = False
@@ -448,6 +454,7 @@ class ESMFold2Backend(Backend):
         self._lm_embedding_key = None
         self._loaded_model = None
         self._loaded_model_key = None
+        self._loaded_model_staged = False
 
     def _poison(self, message: str) -> None:
         self.invalidate_session()
@@ -521,6 +528,18 @@ class ESMFold2Backend(Backend):
             weights, esmc=esmc, language_model=language_model
         )
 
+    def _can_stage_language_model(self, inference: Any) -> bool:
+        """Whether this exact managed session and inference ABI permit staging."""
+
+        return (
+            self._stage_single_input
+            and bool(getattr(inference, "MANAGED_ESMC_STAGE_API", False))
+            and callable(getattr(inference, "load_language_model_stage", None))
+            and callable(
+                getattr(inference, "release_language_model_parameters", None)
+            )
+        )
+
     def _load_model(
         self,
         inference: Any,
@@ -531,7 +550,8 @@ class ESMFold2Backend(Backend):
     ) -> Any:
         """Load lazily, and reuse only while the exact asset snapshot matches."""
 
-        if not self._session_active:
+        stage_candidate = language_model and self._can_stage_language_model(inference)
+        if not self._session_active and not stage_candidate:
             return inference.load(weights, esmc=esmc, language_model=language_model)
 
         source, snapshot = self._anchor_assets(
@@ -546,16 +566,92 @@ class ESMFold2Backend(Backend):
                 return self._loaded_model
             self.invalidate_session()
 
-        model = inference.load(weights, esmc=esmc, language_model=language_model)
+        # Staging needs a stable source because it deliberately loads the two
+        # checkpoint halves at different times. Unverifiable layouts retain the
+        # complete historical load even in a single-input managed session.
+        staged = stage_candidate and snapshot is not None
+        model = (
+            inference.load_language_model_stage(weights, esmc=esmc)
+            if staged
+            else inference.load(weights, esmc=esmc, language_model=language_model)
+        )
         after = _model_asset_snapshot(weights, esmc=esmc, language_model=language_model)
-        if snapshot is None or after is None:
+        if snapshot is None:
             # Unverifiable trees are still runnable, but not retained.
             return model
         if snapshot != after:
             self._poison("ESMFold2 weights changed while they were being loaded")
         self._loaded_model = model
         self._loaded_model_key = key
+        self._loaded_model_staged = staged
         return model
+
+    def _materialize_structure_model(
+        self,
+        inference: Any,
+        model: Any,
+        embedding: Any,
+        weights: Path,
+        *,
+        esmc: str | Path | None,
+    ) -> Any:
+        """Release an owned ESMC stage before loading the structure network."""
+
+        if not self._loaded_model_staged or self._loaded_model is not model:
+            return model
+        key = self._loaded_model_key
+        if key is None:
+            # `_load_model` never retains an unverifiable stage, but keep this
+            # guard fail-closed if a compatibility wrapper violates that rule.
+            self._poison("ESMFold2 cannot verify a staged language model")
+
+        # The compact result is the last consumer of every ESMC parameter.
+        # Synchronize it before deleting those buffers; only then may the
+        # structure checkpoint reuse their device allocation.
+        # Clear ownership *before* cleanup: if synchronization or one array
+        # deletion fails, no later request may observe a partially deleted
+        # model as reusable.  The local still keeps the object alive long
+        # enough for the release helper to finish its best effort.
+        self._loaded_model = None
+        self._loaded_model_key = None
+        self._loaded_model_staged = False
+        try:
+            inference.release_language_model_parameters(model, after=embedding)
+        except BaseException:
+            self._lm_embedding = None
+            self._lm_embedding_key = None
+            raise
+
+        source, snapshot = self._anchor_assets(
+            weights,
+            esmc=esmc,
+            language_model=True,
+            require_verifiable=True,
+        )
+        placement = _runtime_placement_key(inference)
+        expected_key = (source, placement, snapshot)
+        if expected_key != key:
+            self._poison(
+                "ESMFold2 weights changed between language-model and structure load"
+            )
+
+        try:
+            structure = inference.load(weights, esmc=esmc, language_model=False)
+        except BaseException:
+            # The compact value is valid, but keeping it after a failed stage
+            # transition makes retry ownership ambiguous.  A retry therefore
+            # starts from a complete, independently verifiable LM stage.
+            self._lm_embedding = None
+            self._lm_embedding_key = None
+            raise
+        after = _model_asset_snapshot(weights, esmc=esmc, language_model=True)
+        if after != snapshot:
+            self._poison(
+                "ESMFold2 weights changed while the structure model was loading"
+            )
+        self._loaded_model = structure
+        self._loaded_model_key = expected_key
+        return structure
 
     def _language_model_states(
         self,
@@ -586,22 +682,28 @@ class ESMFold2Backend(Backend):
     ) -> Any | None:
         """Return one compact ESMC embedding, retaining at most one input."""
 
-        if not model.has_language_model:
-            return None
         # Derived state is reusable only when this session owns the exact model
         # object that produced it. Unverifiable checkpoints are deliberately
         # loaded afresh and must never participate in an identity cache.
-        if not self._session_active or self._loaded_model is not model:
+        owned = self._loaded_model is model and (
+            self._session_active
+            or self._loaded_model_staged
+            or (self._stage_single_input and self._lm_embedding is not None)
+        )
+        if owned:
+            key = _language_model_feature_key(
+                features,
+                packed_length,
+                inference.LANGUAGE_MODEL_FEATURES,
+            )
+            if self._lm_embedding is not None and self._lm_embedding_key == key:
+                return self._lm_embedding
+        if not model.has_language_model:
+            return None
+        if not owned:
             return inference.language_model_embedding(
                 features, model, packed_length=packed_length
             )
-        key = _language_model_feature_key(
-            features,
-            packed_length,
-            inference.LANGUAGE_MODEL_FEATURES,
-        )
-        if self._lm_embedding is not None and self._lm_embedding_key == key:
-            return self._lm_embedding
         # Drop the prior compact result before ESMC and the projection allocate
         # the next input. The transient raw stack is owned only by the helper;
         # this session retains the roughly 810-times-smaller combined result.
@@ -739,6 +841,13 @@ class ESMFold2Backend(Backend):
             and bool(getattr(inference, "COMPACT_LANGUAGE_MODEL_API", False))
             and hasattr(inference, "language_model_embedding")
         )
+        staged_lm_api = compact_lm_api and self._can_stage_language_model(inference)
+        managed_compact_lm = (
+            self._session_active
+            or self._loaded_model_staged
+            or (self._stage_single_input and self._lm_embedding is not None)
+        )
+        language_model_enabled = not without_lm
         project_output_features = getattr(
             output_module, "project_generated_output_features", None
         )
@@ -762,7 +871,7 @@ class ESMFold2Backend(Backend):
                     )
 
             if not all_atom_input and request.padding is None and (
-                not self._session_active or not split_lm_api
+                not managed_compact_lm or not split_lm_api
             ):
                 # Preserve the original, public no-padding path exactly.
                 # Wrappers that expose only ``predict_job`` keep working in a
@@ -795,7 +904,7 @@ class ESMFold2Backend(Backend):
                 prediction_key = inference.seed_key(request.seed)
                 lm_tokens = (
                     inference.language_model_length(model_features)
-                    if model.has_language_model and request.padding is not None
+                    if language_model_enabled and request.padding is not None
                     else None
                 )
                 configured_msa_depth = overrides.get(
@@ -833,18 +942,51 @@ class ESMFold2Backend(Backend):
                         n_msa=padding_plan.target["msa"],
                     )
                     lm_target = padding_plan.target.get("language_model_tokens")
-                # Do not extend compact inference to scalar split calls here:
-                # that would move the compiled graph boundary.  This patch
-                # changes only Python ownership after the historical call.
-                if self._session_active and compact_lm_api:
-                    lm_input = {
-                        "precomputed_lm_embedding": self._language_model_embedding(
+                if managed_compact_lm and compact_lm_api:
+                    with matmul_precision():
+                        embedding = self._language_model_embedding(
                             inference,
                             model_features,
                             model,
                             packed_length=lm_target,
                         )
-                    }
+                    if (
+                        language_model_enabled
+                        and embedding is None
+                        and staged_lm_api
+                    ):
+                        # The input document changed between seeds after its
+                        # original stage had been released. Preserve correctness
+                        # by dropping the structure-only cache, restaging ESMC,
+                        # and rebuilding the compact value for the new content.
+                        self._loaded_model = None
+                        self._loaded_model_key = None
+                        self._loaded_model_staged = False
+                        self._lm_embedding = None
+                        self._lm_embedding_key = None
+                        model = None
+                        model = self._load_model(
+                            inference,
+                            request.weights,
+                            esmc=esmc,
+                            language_model=True,
+                        )
+                        with matmul_precision():
+                            embedding = self._language_model_embedding(
+                                inference,
+                                model_features,
+                                model,
+                                packed_length=lm_target,
+                            )
+                    if self._loaded_model_staged:
+                        model = self._materialize_structure_model(
+                            inference,
+                            model,
+                            embedding,
+                            request.weights,
+                            esmc=esmc,
+                        )
+                    lm_input = {"precomputed_lm_embedding": embedding}
                 else:
                     lm_input = {
                         "precomputed_lm_states": self._language_model_states(
@@ -897,7 +1039,7 @@ class ESMFold2Backend(Backend):
         )
         raw = {
             "overrides": overrides,
-            "language_model": model.has_language_model,
+            "language_model": language_model_enabled,
         }
         if shape_profile is not None:
             raw["padding"] = shape_profile

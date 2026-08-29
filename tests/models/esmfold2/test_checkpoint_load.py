@@ -114,6 +114,35 @@ def test_host_only_parameter_load_keeps_arrays_off_device(
     assert str(parameters["trunk.weight"].dtype) == "bfloat16"
 
 
+def test_parameter_subset_does_not_materialize_unselected_leaves(
+    tmp_path, monkeypatch: Any
+) -> None:
+    source = {
+        "language_model.base_z_combine": np.arange(5, dtype=np.float32),
+        "large.unused.weight": np.ones((32, 32), dtype=np.float32),
+    }
+    save_file(source, tmp_path / checkpoint.WEIGHTS_NAME)
+    transferred: list[np.ndarray] = []
+    original_device_put = checkpoint.jax.device_put
+
+    def spy_device_put(value: np.ndarray) -> jax.Array:
+        transferred.append(value)
+        return original_device_put(value)
+
+    monkeypatch.setattr(checkpoint.jax, "device_put", spy_device_put)
+    parameters = checkpoint.load_parameters(
+        tmp_path,
+        names=("language_model.base_z_combine",),
+    )
+
+    assert set(parameters) == {"language_model.base_z_combine"}
+    assert len(transferred) == 1
+    np.testing.assert_array_equal(
+        parameters["language_model.base_z_combine"],
+        source["language_model.base_z_combine"],
+    )
+
+
 def test_the_released_settings_are_read_from_the_file() -> None:
     """Not the dataclass defaults, which differ in almost every field."""
     settings = checkpoint.load_settings(_weights())

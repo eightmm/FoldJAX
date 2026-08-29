@@ -37,3 +37,19 @@ structure+ESMC release and never silently falls back to a different model.
 An explicit `esmc_weights=/path/to/esmc` also selects the 1.36 GB managed
 profile: the released language-model branch still runs, but its weights come
 from that path rather than a redundant managed ESMC copy.
+
+## Managed memory staging
+
+For one semantic input, including a multi-seed sweep of that input, FoldJAX's
+managed predictor does not need ESMC-6B and the structure network resident at
+the same time. It first loads ESMC with only the small structure-side projection
+that combines its hidden layers, synchronizes the resulting compact embedding,
+releases ESMC's device arrays, and then loads the structure network. This changes
+buffer ownership only; the input, seed, model values, and generated structures
+are unchanged.
+
+A batch containing different inputs deliberately keeps the complete model
+resident and reuses it. Staging such a batch would trade the memory saving for
+re-reading the 25.4 GB ESMC checkpoint for every input. Direct calls to
+`foldjax.models.esmfold2.inference.load` likewise still return the complete
+model; staging is confined to FoldJAX's managed request session.

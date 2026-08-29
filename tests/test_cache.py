@@ -313,6 +313,7 @@ def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
             "affinity_num_samples": 5,
             "compute_dtype": "bfloat16",
             "attention_backend": "xla",
+            "trunk_atom_attention_backend": "xla",
             "triangle_backend": "cueq",
             "glu_backend": "xla",
             "bucket": False,
@@ -342,6 +343,37 @@ def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
     assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
+
+
+def test_boltz2_inherited_atom_attention_backend_has_one_cache_identity(
+    tmp_path: Path,
+) -> None:
+    backend = Boltz2Backend()
+    omitted = _request(tmp_path)
+    explicit_none = dataclasses.replace(
+        omitted, options={"trunk_atom_attention_backend": None}
+    )
+    global_tokamax = dataclasses.replace(
+        omitted, options={"attention_backend": "tokamax"}
+    )
+    repeated_tokamax = dataclasses.replace(
+        omitted,
+        options={
+            "attention_backend": "tokamax",
+            "trunk_atom_attention_backend": "tokamax",
+        },
+    )
+
+    assert backend.cache_profile(explicit_none) == backend.cache_profile(omitted)
+    assert backend.cache_profile(repeated_tokamax) == backend.cache_profile(
+        global_tokamax
+    )
+    assert resolve_cache_dir(explicit_none, backend) == resolve_cache_dir(
+        omitted, backend
+    )
+    assert resolve_cache_dir(repeated_tokamax, backend) == resolve_cache_dir(
+        global_tokamax, backend
+    )
 
 
 def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
@@ -390,6 +422,7 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         ({}, {"affinity_num_samples": 6}),
         ({}, {"compute_dtype": "float32"}),
         ({}, {"attention_backend": "tokamax"}),
+        ({}, {"trunk_atom_attention_backend": "triton"}),
         ({}, {"triangle_backend": "xla"}),
         ({}, {"glu_backend": "tokamax"}),
         ({}, {"bucket": True}),
@@ -574,6 +607,7 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     assert serial["representations"] == ()
     assert serial["stop_after"] == "full"
     assert serial["rng_route"] == "native"
+    assert "all_arrays" not in serial
 
     automatic = dataclasses.replace(
         request, options={"cp_devices": 4, "cp_layout": "auto"}
@@ -591,11 +625,23 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     represented = dataclasses.replace(request, representations=("pair",))
     trunk = dataclasses.replace(represented, stop_after="trunk")
     padded = dataclasses.replace(request, padding=True)
+    explicit_default_arrays = dataclasses.replace(
+        request, options={"all_arrays": False}
+    )
+    all_arrays = dataclasses.replace(request, options={"all_arrays": True})
+    trunk_all_arrays = dataclasses.replace(trunk, options={"all_arrays": True})
     assert resolve_cache_dir(represented, backend) != resolve_cache_dir(
         request, backend
     )
     assert resolve_cache_dir(trunk, backend) != resolve_cache_dir(represented, backend)
     assert resolve_cache_dir(padded, backend) != resolve_cache_dir(request, backend)
+    assert resolve_cache_dir(explicit_default_arrays, backend) == resolve_cache_dir(
+        request, backend
+    )
+    assert resolve_cache_dir(all_arrays, backend) != resolve_cache_dir(request, backend)
+    assert resolve_cache_dir(trunk_all_arrays, backend) == resolve_cache_dir(
+        trunk, backend
+    )
 
 
 def test_openfold3_released_sampling_aliases_share_cache_namespace(

@@ -60,16 +60,30 @@ def tokamax_dot_product_attention(
     upcasting also breaks fp16 matmul on CPU. fp16 is preferred over bf16 on
     this model (smaller sampling drift).
 
-    ``implementation=None`` lets tokamax auto-select the best kernel for the
-    shape/hardware and fall back to plain XLA when a custom kernel does not help
-    (small head_dim, short sequence, large dense pair bias). The previous hard
-    ``("triton","cudnn","xla_chunked")`` tuple forced the slowest chunked path
-    when triton/cudnn were unavailable.
+    ``implementation=None`` follows tokamax's installed implementation order
+    (currently Mosaic GPU, Triton, then XLA) and advances only when a candidate
+    is unsupported.  It is not a shape-performance decision.  The explicit
+    ``backend="triton"`` spelling pins ``implementation="triton"`` and fails
+    loudly when that kernel cannot run; it never silently becomes XLA.
     """
 
-    if backend not in ("tokamax", "flash"):
+    if backend not in ("tokamax", "flash", "triton"):
         msg = f"Unsupported attention backend: {backend!r}"
         raise ValueError(msg)
+    if backend == "triton":
+        if implementation not in (None, "triton"):
+            msg = (
+                "backend='triton' cannot be combined with implementation="
+                f"{implementation!r}"
+            )
+            raise ValueError(msg)
+        if any(value.dtype != jnp.bfloat16 for value in (q, k, v, bias)):
+            msg = (
+                "backend='triton' is the scoped Boltz-2 BF16 pilot and "
+                "requires bfloat16 q, k, v, and bias inputs"
+            )
+            raise ValueError(msg)
+        implementation = "triton"
 
     import tokamax
     from absl import flags

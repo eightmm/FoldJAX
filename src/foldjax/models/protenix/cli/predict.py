@@ -26,16 +26,20 @@ PREPARED_PARAMS_LOADER_API = True
 def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
     """Load and apply the same trunk cast as the native CLI."""
 
-    from foldjax.models.protenix.bridge.weights_io import load_native_weights
+    from foldjax.models.protenix.bridge.weights_io import (
+        _load_native_weights_with_field_dtype,
+        load_native_weights,
+    )
 
-    params = load_native_weights(path)
     if trunk_dtype == "bf16":
         import jax.numpy as jnp
 
-        from foldjax.models.protenix.models.model import cast_trunk_params
-
-        params = cast_trunk_params(params, jnp.bfloat16)
-    return params
+        return _load_native_weights_with_field_dtype(
+            path,
+            jnp.bfloat16,
+            frozenset({"input_embedder", "pairformer_output"}),
+        )
+    return load_native_weights(path)
 
 
 def _collect_representations(output, wanted):

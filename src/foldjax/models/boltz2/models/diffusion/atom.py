@@ -351,6 +351,9 @@ def diffusion_transformer_forward(
     bias_params: list[Params] | None = None,
     bias_input: jnp.ndarray | None = None,
     bias_normed_input: jnp.ndarray | None = None,
+    precomputed_s_terms: tuple[jnp.ndarray, ...] | None = None,
+    precomputed_s_terms_multiplicity: int = 1,
+    precomputed_s_terms_num_windows: int | None = None,
 ) -> jnp.ndarray:
     """Run a Boltz DiffusionTransformer stack.
 
@@ -385,15 +388,35 @@ def diffusion_transformer_forward(
         stacked_bias_params = None
 
     # Hoist the layer-constant, s-derived AdaLN scale/bias and output gates out
-    # of the per-layer loop. ``s`` is identical for every layer (and every
-    # diffusion step), so all layers' s-terms are computed in one batched pass
-    # over the stacked layer params instead of L times inside the loop.
+    # of the per-layer loop. ``s`` is identical for every layer, so all layers'
+    # terms are computed in one batched pass over the stacked layer params.
+    # Only atom-transformer callers may additionally cache them across noise
+    # steps; token-transformer ``s`` includes the current noise time.
     stacked = stack_layer_params(layers)
-    s_terms_stacked = jax.vmap(lambda lp: layer_s_terms(lp, s, eps))(stacked)
+    s_terms_stacked = (
+        jax.vmap(lambda lp: layer_s_terms(lp, s, eps))(stacked)
+        if precomputed_s_terms is None
+        else precomputed_s_terms
+    )
+
+    def expand_s_terms(s_terms_i):
+        if precomputed_s_terms is None or precomputed_s_terms_multiplicity == 1:
+            return s_terms_i
+        if precomputed_s_terms_num_windows is None:
+            raise ValueError(
+                "precomputed_s_terms_num_windows is required when compact "
+                "s-terms are reused across multiplicity"
+            )
+        return _broadcast_window_s_terms(
+            s_terms_i,
+            multiplicity=precomputed_s_terms_multiplicity,
+            num_windows=precomputed_s_terms_num_windows,
+        )
 
     if not use_scan:
         for i, layer_params in enumerate(layers):
             s_terms_i = jax.tree.map(lambda x, i=i: x[i], s_terms_stacked)
+            s_terms_i = expand_s_terms(s_terms_i)
             layer_bias = (
                 _projection_layer_forward(
                     bias_params[i],
@@ -430,6 +453,7 @@ def diffusion_transformer_forward(
             )
         else:
             layer_params, layer_bias, layer_s_terms_i = layer
+        layer_s_terms_i = expand_s_terms(layer_s_terms_i)
         a_c = diffusion_transformer_layer_apply(
             layer_params,
             a_c,
@@ -451,6 +475,60 @@ def diffusion_transformer_forward(
     scan_bias = stacked_bias_params if bias_per_layer is None else bias_per_layer
     a, _ = jax.lax.scan(body, a, (stacked, scan_bias, s_terms_stacked))
     return a
+
+
+def diffusion_transformer_s_terms(
+    params: Params,
+    s: jnp.ndarray,
+    *,
+    eps: float = 1e-5,
+    layer_limit: int | None = None,
+) -> tuple[jnp.ndarray, ...]:
+    """Project conditioning into stacked, per-layer transformer terms."""
+
+    layers = take_layers(params["layers"], layer_limit)
+    stacked = stack_layer_params(layers)
+    return jax.vmap(lambda lp: layer_s_terms(lp, s, eps))(stacked)
+
+
+def _broadcast_window_s_terms(
+    s_terms: tuple[jnp.ndarray, ...],
+    *,
+    multiplicity: int,
+    num_windows: int,
+) -> tuple[jnp.ndarray, ...]:
+    """Broadcast compact ``[B*K,W,C]`` terms to ``[B*M*K,W,C]``.
+
+    The feature-batch-major/sample-major/window-major ordering matches
+    ``jnp.repeat(c, multiplicity, axis=0).reshape(B*M*K, W, C)``. Keeping the
+    broadcast next to each layer's elementwise consumers lets XLA fuse it
+    instead of retaining a multiplicity-sized cache across diffusion steps.
+    """
+
+    if multiplicity < 1:
+        raise ValueError("multiplicity must be positive")
+    if num_windows < 1:
+        raise ValueError("num_windows must be positive")
+    if multiplicity == 1:
+        return s_terms
+
+    def expand(value: jnp.ndarray) -> jnp.ndarray:
+        compact_windows = value.shape[0]
+        if compact_windows % num_windows:
+            raise ValueError(
+                "compact s-term batch is not divisible by num_windows: "
+                f"{compact_windows} vs {num_windows}"
+            )
+        feature_batch = compact_windows // num_windows
+        tail = value.shape[1:]
+        grouped = value.reshape(feature_batch, num_windows, *tail)
+        broadcast = jnp.broadcast_to(
+            grouped[:, None, ...],
+            (feature_batch, multiplicity, num_windows, *tail),
+        )
+        return broadcast.reshape(feature_batch * multiplicity * num_windows, *tail)
+
+    return jax.tree.map(expand, s_terms)
 
 
 def _projection_layer_forward(
@@ -489,10 +567,16 @@ def atom_transformer_forward(
     eps: float = 1e-5,
     attention_backend: str = "xla",
     atom_context_parallel: bool = False,
+    precomputed_s_terms: tuple[jnp.ndarray, ...] | None = None,
 ) -> jnp.ndarray:
     """Run Boltz AtomTransformer with serial or halo-sharded windows."""
 
     if atom_context_parallel and cp_mesh() is not None:
+        if precomputed_s_terms is not None:
+            raise ValueError(
+                "precomputed atom-transformer terms are not supported under "
+                "context parallelism"
+            )
         return _atom_transformer_forward_cp(
             params,
             q,
@@ -534,6 +618,9 @@ def atom_transformer_forward(
         multiplicity=1,
         eps=eps,
         attention_backend=attention_backend,
+        precomputed_s_terms=precomputed_s_terms,
+        precomputed_s_terms_multiplicity=multiplicity,
+        precomputed_s_terms_num_windows=num_windows,
     )
     return jnp.reshape(q, (batch, num_windows * w, dim))
 
@@ -639,6 +726,7 @@ def atom_attention_encoder_forward(
     attention_backend: str = "xla",
     atom_to_token_idx: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     atom_context_parallel: bool = False,
+    transformer_s_terms: tuple[jnp.ndarray, ...] | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run AtomAttentionEncoder with dense or CP-row atom ownership."""
 
@@ -672,6 +760,7 @@ def atom_attention_encoder_forward(
         eps=eps,
         attention_backend=attention_backend,
         atom_context_parallel=active,
+        precomputed_s_terms=transformer_s_terms,
     )
 
     q_to_a = jax.nn.relu(_linear(q, params["atom_to_token_trans"]["kernel"])).astype(
@@ -719,6 +808,7 @@ def atom_attention_decoder_forward(
     attention_backend: str = "xla",
     atom_to_token_idx: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     atom_context_parallel: bool = False,
+    transformer_s_terms: tuple[jnp.ndarray, ...] | None = None,
 ) -> jnp.ndarray:
     """Run AtomAttentionDecoder with explicit token-to-atom routing."""
 
@@ -758,6 +848,7 @@ def atom_attention_decoder_forward(
         eps=eps,
         attention_backend=attention_backend,
         atom_context_parallel=active,
+        precomputed_s_terms=transformer_s_terms,
     )
 
     update = params["atom_feat_to_atom_pos_update"]

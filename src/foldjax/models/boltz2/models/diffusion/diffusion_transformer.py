@@ -125,7 +125,9 @@ def layer_s_terms(
 
     Returns the attention AdaLN scale/bias, the attention output gate, the
     transition AdaLN scale/bias, and the transition output gate. All depend
-    only on ``s``, which is constant across layers and diffusion steps.
+    only on ``s``, which is constant across layers. Atom-transformer callers
+    may also reuse them across diffusion steps; token-transformer ``s`` is
+    noise-time-dependent and cannot be cached across steps.
     """
 
     attn_scale, attn_bias = adaln_s_terms(params["adaln"], s, eps)
@@ -235,7 +237,7 @@ def _attention_pair_bias_no_proj_z_forward(
             scale=float(head_dim) ** -0.5,
             inf=inf,
         )
-    elif attention_backend in ("tokamax", "flash"):
+    elif attention_backend in ("tokamax", "flash", "triton"):
         out = tokamax_dot_product_attention(
             q,
             k,

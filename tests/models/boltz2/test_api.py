@@ -129,6 +129,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
                 "multiplicity",
                 "diffusion_chunk_size",
                 "attention_backend",
+                "trunk_atom_attention_backend",
                 "triangle_backend",
                 "glu_backend",
             )
@@ -172,6 +173,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
         num_samples=2,
         affinity_num_samples=6,
         attention_backend="xla",
+        trunk_atom_attention_backend="tokamax",
         triangle_backend="xla",
         glu_backend="xla",
     )
@@ -184,6 +186,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
             "multiplicity": 2,
             "diffusion_chunk_size": None,
             "attention_backend": "xla",
+            "trunk_atom_attention_backend": "tokamax",
             "triangle_backend": "xla",
             "glu_backend": "xla",
             "noise_tape": False,
@@ -191,6 +194,7 @@ def test_api_passes_native_affinity_head_to_model(tmp_path, monkeypatch) -> None
     )
     assert seen[1][0] is True
     assert seen[1][1]["multiplicity"] == 6
+    assert seen[1][1]["trunk_atom_attention_backend"] == "tokamax"
     assert seen[1][1]["diffusion_chunk_size"] == 5
     assert seen[1][1]["noise_tape"] is False
     assert "disto_target" not in seen[0][2]

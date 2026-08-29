@@ -4,8 +4,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from safetensors.numpy import save_file
 
 from foldjax.models.esmfold2 import inference
+from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
+from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
 
 
@@ -40,14 +43,18 @@ def _parameters(seed: int = 0) -> dict[str, jnp.ndarray]:
 
 
 @pytest.mark.parametrize("compute_dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("output_bias", [True, False])
 def test_compiled_embedding_boundary_preserves_the_language_model_pair(
-    compute_dtype: str,
+    compute_dtype: str, output_bias: bool
 ) -> None:
     rng = np.random.default_rng(1)
     hidden = jnp.asarray(
         rng.normal(size=(1, 9, 5, 8)).astype(np.float32)
     )
     parameters = _parameters()
+    if not output_bias:
+        # The released ESMFold2 checkpoint uses this bias-free projection.
+        del parameters["language_model.base_z_linear.1.bias"]
     compute = jnp.dtype(compute_dtype)
 
     def cast(params):
@@ -167,3 +174,68 @@ def test_compiled_embedding_pool_is_bounded_by_input_signature() -> None:
         assert inference._compiled_language_model_embedding.cache_info().currsize == 8
     finally:
         inference._compiled_language_model_embedding.cache_clear()
+
+
+def test_language_model_stage_reads_only_the_bias_optional_projection(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parameters = _parameters()
+    del parameters["language_model.base_z_linear.1.bias"]
+    parameters["large.unrelated.weight"] = jnp.ones((64, 64), jnp.float32)
+    save_file(
+        {name: np.asarray(value) for name, value in parameters.items()},
+        tmp_path / structure_checkpoint.WEIGHTS_NAME,
+    )
+    (tmp_path / structure_checkpoint.CONFIG_NAME).write_text("{}")
+    esmc_path = tmp_path / "esmc"
+    esmc_path.mkdir()
+    sentinel = {"embed.weight": jnp.ones((2, 2), jnp.bfloat16)}
+    monkeypatch.setattr(
+        inference.esmc_checkpoint, "load_parameters", lambda *args, **kwargs: sentinel
+    )
+    monkeypatch.setattr(
+        inference.esmc_checkpoint,
+        "load_settings",
+        lambda *args, **kwargs: esmc_model_settings(),
+    )
+
+    staged = inference.load_language_model_stage(tmp_path)
+
+    assert staged.esmc_parameters is sentinel
+    assert set(staged.parameters) == {
+        "language_model.base_z_linear.0.weight",
+        "language_model.base_z_linear.0.bias",
+        "language_model.base_z_linear.1.weight",
+        "language_model.base_z_combine",
+    }
+
+
+def esmc_model_settings() -> esmc_model.ESMCSettings:
+    return esmc_model.ESMCSettings(d_model=2, n_heads=1, n_layers=1, vocab_size=2)
+
+
+def test_releasing_staged_language_model_waits_before_deleting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class Buffer:
+        def delete(self) -> None:
+            events.append("delete")
+
+    result = object()
+    monkeypatch.setattr(
+        inference.jax,
+        "block_until_ready",
+        lambda value: events.append("ready") if value is result else None,
+    )
+    loaded = inference.LoadedModel(
+        parameters={},
+        settings=structure_model.ModelSettings(),
+        esmc_parameters={"a": Buffer(), "b": Buffer()},
+        esmc_settings=esmc_model_settings(),
+    )
+
+    inference.release_language_model_parameters(loaded, after=result)
+
+    assert events == ["ready", "delete", "delete"]

@@ -1615,16 +1615,34 @@ def test_openfold3_no_compile_boolean_is_consumed() -> None:
     assert _compile_enabled(compiled) is True and compiled == {}
 
 
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, None])
+def test_openfold3_all_arrays_requires_a_real_boolean(value) -> None:
+    with pytest.raises(ValueError, match="all_arrays must be a boolean"):
+        OpenFold3Backend().validate_native_options({"all_arrays": value})
+
+
 @pytest.mark.parametrize(
     ("session_runs", "invalidate_between", "expected_loads"),
     [(1, False, 1), (2, False, 1), (2, True, 2)],
     ids=["scalar", "session", "invalidated-session"],
 )
 @pytest.mark.parametrize("eager", [False, True], ids=["compiled", "eager"])
+@pytest.mark.parametrize(
+    ("all_arrays", "stop_after"),
+    [
+        (False, "full"),
+        (True, "full"),
+        (False, "trunk"),
+        (True, "trunk"),
+    ],
+    ids=["managed-default", "all-arrays", "trunk-default", "trunk-all-arrays"],
+)
 def test_openfold3_backend_passes_normalized_static_chain_count(
     tmp_path: Path,
     monkeypatch,
     eager: bool,
+    all_arrays: bool,
+    stop_after: str,
     session_runs: int,
     invalidate_between: bool,
     expected_loads: int,
@@ -1643,7 +1661,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         "_foldjax_compact_msa": np.zeros((), dtype=np.float32),
         "_foldjax_msa_indices": np.asarray([[[0, 1, 2]]], dtype=np.uint8),
     }
-    prediction = object()
+    prediction = SimpleNamespace(single=np.zeros((3, 1), dtype=np.float32))
     output_metadata = object()
     seen: dict[str, object] = {}
     checkpoint_state = {"checkpoint": object()}
@@ -1676,6 +1694,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     def fake_write(*args, **kwargs):
         seen["output_metadata"] = kwargs.get("output_metadata")
+        seen["writer_array_budget"] = kwargs.get("max_array_bytes")
         return {"structures": (), "scores": scores}
 
     def fake_featurize(*args, **kwargs):
@@ -1688,6 +1707,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     def fake_released_config(**kwargs):
         seen["has_atomized_tokens"] = kwargs["has_atomized_tokens"]
+        seen["config_array_budget"] = kwargs["max_array_bytes"]
         return SimpleNamespace(msa_depth=1024)
 
     def unexpected_compaction(batch):
@@ -1764,10 +1784,16 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
     monkeypatch.setattr(
         "foldjax.backends.openfold3.import_module", lambda name: modules[name]
     )
-    request = _request(
-        tmp_path,
-        "openfold3",
-        **({"no_compile": True} if eager else {}),
+    native_options = {}
+    if eager:
+        native_options["no_compile"] = True
+    if all_arrays:
+        native_options["all_arrays"] = True
+    request_changes: dict[str, object] = {"stop_after": stop_after}
+    if stop_after == "trunk":
+        request_changes["representations"] = ("single",)
+    request = dataclasses.replace(
+        _request(tmp_path, "openfold3", **native_options), **request_changes
     )
 
     backend = OpenFold3Backend()
@@ -1787,6 +1813,13 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
 
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
+    expected_array_budget = None if all_arrays and stop_after == "full" else 0
+    assert seen["config_array_budget"] == expected_array_budget
+    if stop_after == "full":
+        assert seen["writer_array_budget"] == expected_array_budget
+        assert seen["output_metadata"] is output_metadata
+    else:
+        assert "writer_array_budget" not in seen
     assert seen["preprocess_msa_depth"] == 1024
     assert seen["compact_empty_template_pairs"] is True
     assert seen["compact_msa"] is True
@@ -1799,7 +1832,6 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             "triangle_kernel": None,
             "cache_scope": str(tmp_path / "cache"),
         }
-    assert seen["output_metadata"] is output_metadata
     generation_events = [
         "load",
         ("resolve", checkpoint_state, None),

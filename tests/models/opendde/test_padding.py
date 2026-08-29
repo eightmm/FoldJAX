@@ -262,7 +262,9 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
         lambda _path: [{"name": "job"}],
     )
     monkeypatch.setattr(
-        predict_impl, "_load_weights", lambda _path: _params_double()
+        predict_impl,
+        "_load_prepared_params",
+        lambda _path, _dtype: _params_double(),
     )
     monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
 
@@ -348,7 +350,9 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
 
     monkeypatch.setattr(predict_impl, "_load_jobs", lambda _path: [{"name": "job"}])
     monkeypatch.setattr(
-        predict_impl, "_load_weights", lambda _path: _params_double()
+        predict_impl,
+        "_load_prepared_params",
+        lambda _path, _dtype: _params_double(),
     )
     monkeypatch.setattr(predict_impl, "_featurize", lambda _job, **_kwargs: features)
     monkeypatch.setattr(predict_impl, "_prefix_rng_is_supported", lambda: False)

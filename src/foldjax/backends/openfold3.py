@@ -55,12 +55,22 @@ _COMPILE_OPTIONS = (
     "cp_devices",
     "cp_layout",
     "triangle_kernel",
+    "all_arrays",
 )
 
 # ``released_config``'s model-side MSA subsampling depth. The public
 # ``max_msa_depth`` knob is a cap, so asking for more cannot widen the released
 # model's 1024-row input.
 _RELEASED_MSA_DEPTH = 1024
+#: The common API defaults to structures and normalized confidence scores; retaining
+#: OpenFold3's quadratic per-bin pair distributions is an explicit ``all_arrays``
+#: native option. Keep the same opt-in on the raw ``openfold3-jax-predict`` entry
+#: point and do not make every managed prediction retain the arrays merely to write
+#: an otherwise-unreferenced archive. ``released_config`` interprets this as a
+#: pair-logit budget only; coordinates and scalar/per-atom confidence outputs are
+#: still written regardless of this value.
+_MANAGED_ARRAY_BUDGET_BYTES = 0
+
 #: ``released_config`` values whose explicit spellings are identical to leaving
 #: the public request unset.  Keep these lightweight copies beside the backend
 #: so resolving a cache directory does not import the model/JAX runtime; a test
@@ -144,6 +154,7 @@ class OpenFold3Backend(Backend):
             "no_compile",
             "pair_chunk_size",
             "diffusion_chunk_size",
+            "all_arrays",
             "prefix",
             "query_id",
         }
@@ -202,6 +213,16 @@ class OpenFold3Backend(Backend):
 
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
+        all_arrays = _strict_boolean(
+            options.get("all_arrays", False), name="all_arrays"
+        )
+        profile.pop("all_arrays", None)
+        # A trunk-only graph returns before every confidence/output head and the
+        # raw-array writer, so retaining native pair distributions cannot affect
+        # that graph. Do not create an otherwise-identical cache namespace for a
+        # no-op output option.
+        if all_arrays and request.stop_after != "trunk":
+            profile["all_arrays"] = True
         # ``released_config`` supplies these exact values when the request
         # omits them.  Keeping an explicitly repeated default in the namespace
         # creates another cache scope; that scope is itself part of
@@ -239,6 +260,8 @@ class OpenFold3Backend(Backend):
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _compile_enabled(dict(options))
+        if "all_arrays" in options:
+            _strict_boolean(options["all_arrays"], name="all_arrays")
         for name in ("num_samples", "num_steps", "num_recycles"):
             if name in options:
                 try:
@@ -328,6 +351,9 @@ class OpenFold3Backend(Backend):
 
         query_id = options.pop("query_id", None)
         ccd_file_path = options.pop("ccd_file_path", None)
+        all_arrays = _strict_boolean(
+            options.pop("all_arrays", False), name="all_arrays"
+        )
         requested_msa_depth = options.get("max_msa_depth")
         preprocess_msa_depth = (
             int(requested_msa_depth)
@@ -418,6 +444,16 @@ class OpenFold3Backend(Backend):
         overrides["has_atomized_tokens"] = (
             request.stop_after != "trunk" and data.has_atomized_tokens(features)
         )
+        # PredictionResult exposes structures and normalized scores, so native
+        # PAE/PDE/distogram bin distributions are opt-in. Decide this before
+        # tracing: XLA can then DCE the unused PDE/distogram heads and keep PAE only
+        # as long as pTM/ipTM need it. The raw CLI and direct inference API retain
+        # their historical DEFAULT_ARRAY_BUDGET_BYTES / all-arrays behaviour.
+        retain_pair_arrays = all_arrays and request.stop_after != "trunk"
+        array_budget_bytes = (
+            None if retain_pair_arrays else _MANAGED_ARRAY_BUDGET_BYTES
+        )
+        overrides["max_array_bytes"] = array_budget_bytes
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
         # Upstream subsamples inside `MSAModuleEmbedder.forward`; this port does it
         # on the host, before the alignment reaches the device. Unconditional, so
@@ -615,6 +651,7 @@ class OpenFold3Backend(Backend):
             output_features,
             request.output_dir,
             name=name,
+            max_array_bytes=array_budget_bytes,
             output_metadata=output_metadata,
         )
         scores = _scores(written["scores"])

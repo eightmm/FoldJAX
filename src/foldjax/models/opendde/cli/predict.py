@@ -52,14 +52,15 @@ def _prefix_rng_is_supported() -> bool:
 def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
     """Load and apply the same optional trunk cast as the native CLI."""
 
-    params = _load_weights(path)
     if trunk_dtype == "bf16":
         import jax.numpy as jnp
 
-        from foldjax.models.opendde.models.model import cast_trunk_params
+        from foldjax.models.opendde.bridge.weights_io import (
+            _load_prepared_native_weights,
+        )
 
-        params = cast_trunk_params(params, jnp.bfloat16)
-    return params
+        return _load_prepared_native_weights(path, jnp.bfloat16)
+    return _load_weights(path)
 
 
 #: Arena size per structural-token pair, in MiB, measured 2026-08-23 on a

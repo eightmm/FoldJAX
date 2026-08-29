@@ -12,6 +12,131 @@ command predicts unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz2 now projects step-invariant atom conditioning once per sampling
+  call.** The atom encoder and decoder reuse their per-layer AdaLN and output
+  gate terms across the diffusion loop. Those caches are stored once per
+  semantic atom window and broadcast at each layer, so sample and FK-particle
+  multiplicity do not duplicate them. Noise-time-dependent token conditioning
+  stays inside each step, and context-parallel atom execution keeps its
+  historical local path. RNG draw order, matched-noise inputs, steering,
+  chunking, and output shapes are unchanged.
+
+  On the released 1UBQ fixture at 200 steps, the sampler was 1.49% faster for
+  one sample and 3.12% faster for five samples. A reverse-order GPU comparison
+  of expanded and compact caches kept warm sampler time within +0.17% at five
+  samples and -0.72% at 32, while targeted process peak fell from 2,725.494 to
+  2,682.745 MiB (-42.749 MiB) and from 4,091.240 to 3,653.413 MiB
+  (-437.827 MiB), respectively. In a separate managed `t0128` sweep from one
+  through 32 samples, rounded whole-process peaks were unchanged and aggregate
+  wall time moved +0.32%; checkpoint residency hides this sampler-local saving
+  at that size. The invariant-projection CPU matched-tape output was
+  byte-identical; the final compact-cache score probe stayed within `1e-7`.
+  On GPU, the same arithmetic compiled with a small numerical schedule
+  difference: Kabsch all-atom RMSD was 0.0072 Å, representative-atom TM-score
+  was 0.999997, and the largest confidence-summary change was 0.000105. Custom
+  low-precision score weights retain the historical cast of atom conditioning
+  to the score compute dtype before projection.
+
+- **Managed single-input ESMFold2 runs no longer keep ESMC-6B resident while
+  the structure network runs.** A scalar request or one semantic input swept
+  across seeds now loads ESMC with only the 2,642,244-byte language-model
+  projection, computes and synchronizes the compact embedding, explicitly
+  releases the 802 ESMC device arrays, and then loads the 939,291,916 bytes of
+  structure tensors. True multi-input sessions retain the complete model
+  so they do not reload 25.4 GB of ESMC weights per input; direct backend and
+  native inference APIs also keep their historical complete-model route.
+
+  The released checkpoint omits `language_model.base_z_linear.1.bias`; the
+  compact projection now treats that leaf as optional instead of failing a
+  real managed multi-seed run with `KeyError`. Required projection leaves are
+  still checked before ESMC is loaded. A checkpoint that was verifiable before
+  either a staged or complete managed load but becomes unverifiable during it
+  now poisons the session instead of returning an unowned partial stage.
+  Explicit `matmul_precision` also scopes the compact ESMC forward and a
+  content-change restage, matching the complete scalar route. Failure, retry,
+  partially released ownership, scalar/multi-seed single-input, true
+  multi-input, direct API, both bias layouts, snapshot transitions, and
+  precision propagation are CPU regression gated.
+
+  A fresh-process GPU comparison used `t0128`, seed 101, 5 samples, 200
+  diffusion steps and 10 recycles against the same released weights. Allocator
+  peak fell from 13,788.375 to 12,267.314 MiB (-1,521.062 MiB, -11.03%); every
+  generated CIF and confidence/input JSON was byte-identical. One cache-warm
+  pair measured 19.711 s baseline and 20.203 s candidate, so this is a memory
+  admission, not a latency claim. The candidate's preceding 38.559 s run
+  populated its new graph cache and is excluded.
+
+- **Managed OpenFold3 predictions no longer retain unrequested pair-bin
+  distributions by default.** The common `foldjax.predict()` path omits
+  `pae_logits`, `pde_logits`, and `distogram_logits` from its `*_raw.npz`; the
+  structures, coordinates, pLDDT, and experimentally-resolved output are
+  unchanged. At the released five samples, lengths 751--1,225 newly use the
+  existing compact PAE-metric sink; pTM, ipTM, and chain-pair ipTM therefore
+  retain that route's tested `max_abs <= 1e-3` contract rather than bitwise
+  identity. At 750 tokens and below the sink is inactive, while at 1,226 and
+  above the previous 4 GiB plan already omitted PAE and used it. The output
+  choice is made before tracing, so XLA removes the unused PDE/distogram heads
+  and does not reserve their result buffers. `options={"all_arrays": True}` (or
+  common CLI `--option all_arrays=true`) restores all three native distributions
+  and owns a separate cache identity for full predictions; it is a no-op and
+  shares the default cache for `stop_after="trunk"`. The standalone OpenFold3
+  command's existing 4 GiB default/`--all-arrays` behavior and direct
+  `released_config()`/`predict()` defaults remain unchanged.
+
+- **Managed Protenix and OpenDDE mixed-precision checkpoints no longer build a
+  complete FP32 device tree before narrowing the trunk to BF16.** Their shared
+  native loader now consumes the host/pre-stacked tree in bounded batches.
+  Native-endian, contiguous, finite FP32 trunk leaves are rounded to BF16
+  before their first device transfer; unusual dtypes, layouts, or non-finite
+  leaves retain the historical JAX device-cast path, with its temporary wide
+  inputs released only after the narrowed outputs are ready. Protenix narrows
+  `input_embedder` and `pairformer_output`; OpenDDE additionally narrows
+  `structural_expander` and `structural_refiner`. FP32 output-head/diffusion
+  islands, the public `load_native_weights` API, parameter PyTrees, session
+  keys, graph avals, and direct callers are unchanged.
+
+  On the released checkpoints, every target leaf was a finite native FP32
+  array and the old/new full-tree value digests matched exactly. Fresh-process
+  GPU load-only peak fell from 1,726.8 to 1,198.2 MiB for Protenix and from
+  3,335.0 to 1,712.6 MiB for OpenDDE; load time fell from 2.53 to 1.52 seconds
+  and from 3.49 to 2.44 seconds, respectively. A warm-cache `t0128` full run
+  moved from 1,726.1 MiB/13.42 seconds to 1,533.3 MiB/12.69 seconds for
+  Protenix, and from 3,335.2 MiB/12.62 seconds to 2,239.7 MiB/11.51 seconds for
+  OpenDDE. Against the prior fixed-seed runs, maximum pLDDT drift was 0.026
+  points on its 0–100 scale and maximum aligned C-alpha RMSD was 0.19 Å; the
+  same unchanged GPU path also showed non-zero rerun variation. No larger-size
+  or multi-device performance claim is made.
+
+- **Boltz2 can pilot forced Triton on only its BF16 trunk atom attention.** A
+  new native `trunk_atom_attention_backend` option overrides the three
+  input-embedder atom-window attention layers without changing the global
+  backend used by the intentional FP32 Pairformer, diffusion, confidence, and
+  affinity re-embedding paths. `None` keeps the historical global inheritance;
+  `tokamax` follows Tokamax's installed implementation order, while `triton`
+  pins `implementation="triton"` and never silently falls back to XLA. The
+  released default remains XLA.
+
+  Forced Triton is admitted only for the released BF16 trunk on a single
+  NVIDIA GPU with compute capability 8.0 or newer. Context-parallel and FP32
+  requests fail before featurization instead of changing kernels implicitly.
+  Persistent-cache and retained-runner identities include the scoped choice,
+  while an omitted, explicit-null, or explicit inherited backend share one
+  identity. CPU tests cover routing, all-masked exact zeros, option validation,
+  primary/affinity propagation, and cache separation.
+
+  On one RTX PRO 6000 Blackwell Max-Q (compute capability 12.0), forced Triton
+  cut a representative 19-window BF16 attention primitive from 0.0738 to
+  0.0313 ms, but the complete input embedder improved only from 0.2928 to
+  0.2811 ms. A released 1UBQ run at 200 diffusion steps and three recycles was
+  slightly slower overall: the XLA/Tokamax/forced-Triton warm split totals were
+  1113.1/1122.0/1122.8 ms and peak device memory was 2772.5/2775.5/2775.5 MiB.
+  The resulting representative-atom structures remained very close to XLA
+  (TM-score 0.999992/0.999987 and aligned RMSD 0.009/0.011 Å for
+  Tokamax/forced Triton), and masked-NaN/all-empty-window probes stayed finite
+  with exact-zero empty rows. These single-device results justify the expert
+  opt-in but not a default change; XLA remains the released default, and other
+  GPU architectures remain unverified.
+
 - **ESMFold2 atom-attention environment changes now select the matching JIT
   graph.** The resolved `ESMFOLD2_ATOM_ATTENTION_BACKEND` and
   `ESMFOLD2_ATOM_ROWS_PER_BLOCK` choice is part of the bounded whole-model JIT

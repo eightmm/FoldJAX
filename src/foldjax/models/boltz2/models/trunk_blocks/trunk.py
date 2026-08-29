@@ -13,6 +13,9 @@ from foldjax.models._cp import cp_layout as _cp_layout
 from foldjax.models._cp import cp_mesh as _cp_mesh
 from foldjax.models._cp_atom import shard_atoms
 from foldjax.models._random import supports_masked_prefix_draw
+from foldjax.models.boltz2.models.diffusion.atom import (
+    diffusion_transformer_s_terms,
+)
 from foldjax.models.boltz2.models.diffusion.diffusion import (
     conditioned_diffusion_score_forward,
     diffusion_score_model_forward,
@@ -200,6 +203,7 @@ def boltz2_graph_score_forward(
     token_attention_chunk: int | None = None,
     matmul_precision: str = "highest",
     attention_backend: str = "xla",
+    trunk_atom_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     lazy_token_trans_bias: bool = True,
@@ -228,6 +232,7 @@ def boltz2_graph_score_forward(
         transition_hidden_chunk=transition_hidden_chunk,
         matmul_precision=matmul_precision,
         attention_backend=attention_backend,
+        atom_attention_backend=trunk_atom_attention_backend,
         triangle_backend=triangle_backend,
         glu_backend=glu_backend,
     )
@@ -288,6 +293,7 @@ def boltz2_sample_forward(
     token_attention_chunk: int | None = None,
     matmul_precision: str = "highest",
     attention_backend: str = "xla",
+    trunk_atom_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     compute_dtype: jnp.dtype = jnp.float32,
@@ -350,6 +356,14 @@ def boltz2_sample_forward(
     )
 
     compute_dtype = jnp.dtype(compute_dtype)
+    if (
+        trunk_atom_attention_backend == "triton"
+        and compute_dtype != jnp.bfloat16
+    ):
+        raise ValueError(
+            "trunk_atom_attention_backend='triton' requires bfloat16 "
+            "trunk compute"
+        )
     low_precision = compute_dtype != jnp.float32
     # Mirror Boltz's precision profile: the trunk/pairformer/MSA run in low
     # precision (bf16-mixed), but the diffusion structure module is an fp32
@@ -378,6 +392,7 @@ def boltz2_sample_forward(
             transition_hidden_chunk=transition_hidden_chunk,
             matmul_precision=matmul_precision,
             attention_backend=attention_backend,
+            atom_attention_backend=trunk_atom_attention_backend,
             triangle_backend=triangle_backend,
             glu_backend=glu_backend,
             mesh=mesh,
@@ -431,6 +446,47 @@ def boltz2_sample_forward(
                 (multiplicity, *feats["atom_pad_mask"].shape[1:], 3),
                 dtype=jnp.float32,
             )
+
+    # Atom-transformer conditioning depends on the trunk and weights, but not
+    # on sample/FK multiplicity, evolving coordinates, or current noise time.
+    # Project one compact [feature-batch * windows, window, channels] cache;
+    # atom layers broadcast it at use so the sampler does not retain M copies.
+    score_params = diffusion_params["score_model"]
+    atom_encoder_s_terms = None
+    atom_decoder_s_terms = None
+    if (
+        "atom_attention_encoder" in score_params
+        and "atom_attention_decoder" in score_params
+        and "c" in diffusion_conditioning
+        and not (atom_context_parallel and _cp_mesh() is not None)
+    ):
+        # Match the historical per-score path exactly: atom conditioning was
+        # cast to r_noisy's score-compute dtype before its AdaLN/gate
+        # projections. This is a no-op for the released fp32 diffusion island,
+        # but matters for custom bf16/fp16 score weights.
+        score_compute_dtype = score_params["s_to_a_linear"]["linear"][
+            "kernel"
+        ].dtype
+        atom_c = diffusion_conditioning["c"].astype(score_compute_dtype)
+        atom_c = atom_c.reshape(
+            atom_c.shape[0] * (atom_c.shape[1] // 32),
+            32,
+            atom_c.shape[-1],
+        )
+        atom_encoder_s_terms = diffusion_transformer_s_terms(
+            score_params["atom_attention_encoder"]["atom_encoder"][
+                "diffusion_transformer"
+            ],
+            atom_c,
+            eps=eps,
+        )
+        atom_decoder_s_terms = diffusion_transformer_s_terms(
+            score_params["atom_attention_decoder"]["atom_decoder"][
+                "diffusion_transformer"
+            ],
+            atom_c,
+            eps=eps,
+        )
 
     storage_atoms = None
     if noise_storage_atoms is not None:
@@ -548,6 +604,8 @@ def boltz2_sample_forward(
                 token_attention_chunk=chunks["token_attention_chunk"],
                 token_layers=token_layers,
                 atom_context_parallel=atom_context_parallel,
+                atom_encoder_s_terms=atom_encoder_s_terms,
+                atom_decoder_s_terms=atom_decoder_s_terms,
             )
             if alignment_reverse_diff:
                 atom_coords_noisy = _weighted_rigid_align(
@@ -645,6 +703,8 @@ def boltz2_sample_forward(
             token_attention_chunk=chunks["token_attention_chunk"],
             token_layers=token_layers,
             atom_context_parallel=atom_context_parallel,
+            atom_encoder_s_terms=atom_encoder_s_terms,
+            atom_decoder_s_terms=atom_decoder_s_terms,
         )
 
         if steering_on:
@@ -860,6 +920,7 @@ def boltz2_trunk_forward(
     transition_hidden_chunk: int | None = None,
     matmul_precision: str = "highest",
     attention_backend: str = "xla",
+    atom_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     subsample_msa: bool = False,
@@ -918,6 +979,17 @@ def boltz2_trunk_forward(
             # axis from `shard_pair_rows` inside the blocks themselves.
             mesh, shard_tokens = ambient, True
             token_axis = CP_ROW_AXIS if _cp_layout() == "2d" else CP_AXIS
+    if atom_attention_backend == attention_backend:
+        atom_attention_backend = None
+    if atom_attention_backend not in (None, "tokamax", "triton", "xla"):
+        raise ValueError(
+            "atom_attention_backend must be 'tokamax', 'triton', 'xla', "
+            f"or null; got {atom_attention_backend!r}"
+        )
+    if mesh is not None and atom_attention_backend not in (None, "xla"):
+        raise ValueError(
+            "a sharded trunk requires atom_attention_backend='xla' or null"
+        )
 
     chunks = resolve_long_sequence_chunks(
         feats["token_pad_mask"].shape[1],
@@ -934,7 +1006,11 @@ def boltz2_trunk_forward(
         params["input_embedder"],
         feats,
         eps=eps,
-        attention_backend=attention_backend,
+        attention_backend=(
+            attention_backend
+            if atom_attention_backend is None
+            else atom_attention_backend
+        ),
     )
     s_init = _linear(s_inputs, params["s_init"]["kernel"])
     z_init = (
@@ -1239,6 +1315,8 @@ def _preconditioned_score_forward(
     token_attention_chunk: int | None = None,
     token_layers: int | None = None,
     atom_context_parallel: bool = False,
+    atom_encoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
+    atom_decoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
 ) -> jnp.ndarray:
     padded_sigma = jnp.reshape(sigma, (1, 1, 1))
     scaled_input = r_noisy / jnp.sqrt(padded_sigma**2 + sigma_data**2)
@@ -1266,6 +1344,8 @@ def _preconditioned_score_forward(
         token_attention_chunk=token_attention_chunk,
         token_layers=token_layers,
         atom_context_parallel=atom_context_parallel,
+        atom_encoder_s_terms=atom_encoder_s_terms,
+        atom_decoder_s_terms=atom_decoder_s_terms,
     )
     r_update = r_update.astype(jnp.float32)
     c_skip = sigma_data**2 / (padded_sigma**2 + sigma_data**2)

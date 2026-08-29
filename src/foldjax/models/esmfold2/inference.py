@@ -59,6 +59,12 @@ LANGUAGE_MODEL_FEATURES = (
 # a similar name is not enough to authorize the new predict keyword.
 COMPACT_LANGUAGE_MODEL_API = True
 
+# Managed callers may stage ESMC with only the structure checkpoint leaves
+# needed to make the compact embedding, release it, and then load the structure
+# network. Direct ``load`` and native inference keep their historical complete
+# model object.
+MANAGED_ESMC_STAGE_API = True
+
 # Explicit capability marker for the common backend's writer-only graph
 # result. Wrappers without this marker keep receiving the historical keyword
 # set and the native output mapping.
@@ -153,13 +159,104 @@ def language_model_states(
     )
 
 
-_LANGUAGE_MODEL_EMBEDDING_PARAMETERS = (
+_LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS = (
     "language_model.base_z_linear.0.weight",
     "language_model.base_z_linear.0.bias",
     "language_model.base_z_linear.1.weight",
-    "language_model.base_z_linear.1.bias",
     "language_model.base_z_combine",
 )
+_LANGUAGE_MODEL_EMBEDDING_OPTIONAL_PARAMETERS = (
+    "language_model.base_z_linear.1.bias",
+)
+
+
+def _language_model_embedding_parameters(
+    parameters: Mapping[str, jnp.ndarray],
+) -> dict[str, jnp.ndarray]:
+    """Exact projection subtree, including only biases the checkpoint has."""
+
+    selected = {
+        name: parameters[name]
+        for name in _LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS
+    }
+    selected.update(
+        (name, parameters[name])
+        for name in _LANGUAGE_MODEL_EMBEDDING_OPTIONAL_PARAMETERS
+        if name in parameters
+    )
+    return selected
+
+
+def load_language_model_stage(
+    weights: str | Path,
+    *,
+    esmc: str | Path | None = None,
+    dtype: str | None = None,
+    esmc_dtype: str | None = "bfloat16",
+) -> LoadedModel:
+    """Load ESMC plus only the structure leaves that compact its output.
+
+    This is a managed-memory building block, not a different model. The public
+    :func:`load` result remains complete. A single-input backend session can
+    use this stage, finish the compact embedding, release its ESMC arrays, and
+    only then load the structure checkpoint so the two large trees do not
+    overlap on device.
+    """
+
+    weights = Path(weights)
+    if weights.is_file():
+        weights = weights.parent
+    names = (
+        *_LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS,
+        *_LANGUAGE_MODEL_EMBEDDING_OPTIONAL_PARAMETERS,
+    )
+    parameters = structure_checkpoint.load_parameters(
+        weights,
+        dtype=dtype,
+        names=names,
+    )
+    # Fail at the stage boundary, rather than after a 25.4 GB ESMC load.
+    missing = [
+        name
+        for name in _LANGUAGE_MODEL_EMBEDDING_REQUIRED_PARAMETERS
+        if name not in parameters
+    ]
+    if missing:
+        raise KeyError(
+            "ESMFold2 structure checkpoint is missing language-model "
+            f"projection parameters: {', '.join(missing)}"
+        )
+
+    directory = Path(esmc) if esmc is not None else esmc_directory(weights)
+    if not directory.exists():
+        raise FileNotFoundError(
+            f"ESMC-6B is not at {directory}. ESMFold2 folds the "
+            "representations of a 6B protein language model that upstream "
+            "distributes separately (25.4 GB); fetch it with "
+            "foldjax weights fetch --model esmfold2."
+        )
+    return LoadedModel(
+        parameters=parameters,
+        settings=structure_checkpoint.load_settings(weights),
+        esmc_parameters=esmc_checkpoint.load_parameters(directory, dtype=esmc_dtype),
+        esmc_settings=esmc_checkpoint.load_settings(directory),
+    )
+
+
+def release_language_model_parameters(
+    model: LoadedModel,
+    *,
+    after: object,
+) -> None:
+    """Synchronize a compact result, then delete a managed ESMC device tree."""
+
+    jax.block_until_ready(after)
+    if model.esmc_parameters is None:
+        return
+    for value in model.esmc_parameters.values():
+        delete = getattr(value, "delete", None)
+        if callable(delete):
+            delete()
 
 
 @lru_cache(maxsize=8)
@@ -191,10 +288,7 @@ def _language_model_embedding_from_states(
     model: LoadedModel,
 ) -> jnp.ndarray:
     """Project one stack through a bounded, signature-specific JIT owner."""
-    parameters = {
-        name: model.parameters[name]
-        for name in _LANGUAGE_MODEL_EMBEDDING_PARAMETERS
-    }
+    parameters = _language_model_embedding_parameters(model.parameters)
     signature = (
         tuple(hidden_states.shape),
         str(hidden_states.dtype),
@@ -828,10 +922,12 @@ __all__ = [
     "language_model_embedding",
     "language_model_states",
     "load",
+    "load_language_model_stage",
     "msa_loop_row_indices",
     "normalize_msa_features",
     "pad_features",
     "predict",
     "predict_job",
+    "release_language_model_parameters",
     "seed_key",
 ]

@@ -75,7 +75,14 @@ def parse_args() -> argparse.Namespace:
         default="xla",
     )
     parser.add_argument(
-        "--attention-backend", choices=("xla", "xla_sdpa", "cudnn"), default="xla"
+        "--attention-backend",
+        choices=("xla", "tokamax"),
+        default="xla",
+    )
+    parser.add_argument(
+        "--trunk-atom-attention-backend",
+        choices=("xla", "tokamax", "triton"),
+        default=None,
     )
     parser.add_argument(
         "--compute-dtype",
@@ -136,7 +143,16 @@ def parse_args() -> argparse.Namespace:
             "alone and trunk drift is excluded"
         ),
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if (
+        args.trunk_atom_attention_backend == "triton"
+        and args.compute_dtype != "bfloat16"
+    ):
+        parser.error(
+            "--trunk-atom-attention-backend=triton requires "
+            "--compute-dtype=bfloat16"
+        )
+    return args
 
 
 def rmsd(left: np.ndarray, right: np.ndarray) -> float:
@@ -287,6 +303,7 @@ def main() -> int:
             if msa_rows is None and subsample_msa
             else None
         ),
+        atom_attention_backend=args.trunk_atom_attention_backend,
         **shared,
     )
     jax.block_until_ready(trunk["s"])
@@ -361,6 +378,7 @@ def main() -> int:
         "trunk_source": args.trunk_source,
         "triangle_backend": args.triangle_backend,
         "attention_backend": args.attention_backend,
+        "trunk_atom_attention_backend": args.trunk_atom_attention_backend,
         "schedule_max_abs": schedule_max_abs,
         "trunk_seconds": trunk_seconds,
         "sample_seconds": sample_seconds,

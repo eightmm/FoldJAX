@@ -232,6 +232,21 @@ does not include trunk representations, which remain controlled separately by
 distributions total more than 10 GiB at 2,000 tokens, so the override can raise
 device and host memory as well as output size substantially.
 
+The common `foldjax.predict()` backend has a narrower managed default: its
+`*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM, and the
+experimentally-resolved logits, but omits `pae_logits`, `pde_logits`, and
+`distogram_logits`. Those quadratic native diagnostics are not fields of
+`PredictionResult`; excluding them before tracing lets XLA remove the unused
+PDE/distogram heads and avoids retaining their output buffers. They remain an
+explicit common-API opt-in with `options={"all_arrays": True}` (or
+`--option all_arrays=true` on the common CLI). For the released five-sample
+schedule, removing PAE newly activates the existing compact PAE-metric route at
+751--1,225 tokens; pTM, ipTM, and chain-pair ipTM keep its tested
+`max_abs <= 1e-3` contract. The full-prediction opt-in has its own compilation
+cache identity. It is irrelevant to `stop_after="trunk"`, where both spellings
+share one cache. The standalone command's 4 GiB default and `--all-arrays`, and
+the direct `released_config()`/`predict()` defaults, are unchanged.
+
 The backend used to ignore that cache, which made it the one model least able to
 afford doing so. It no longer does.
 

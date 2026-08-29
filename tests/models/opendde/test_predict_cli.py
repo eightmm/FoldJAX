@@ -216,7 +216,11 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         return features
 
     monkeypatch.setattr(predict_impl, "_featurize", fake_featurize)
-    monkeypatch.setattr(predict_impl, "_load_weights", lambda path: params)
+    monkeypatch.setattr(
+        predict_impl,
+        "_load_prepared_params",
+        lambda path, trunk_dtype: params,
+    )
 
     def fake_predict(value, model_params, **kwargs):
         calls.append((value, model_params, kwargs))
@@ -302,8 +306,10 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     calls.clear()
     monkeypatch.setattr(
         predict_impl,
-        "_load_weights",
-        lambda _path: pytest.fail("injected params must bypass checkpoint loading"),
+        "_load_prepared_params",
+        lambda _path, _dtype: pytest.fail(
+            "injected params must bypass checkpoint loading"
+        ),
     )
     predict_impl.main(
         argv,
