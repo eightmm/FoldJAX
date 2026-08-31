@@ -127,7 +127,7 @@ def generation_bytes(path: Path) -> int:
 
 
 def stale_generations(*, keep_days: float | None = 7.0) -> list[Path]:
-    """Prepared trees this interpreter and source will never select again.
+    """Older prepared trees not selected by this interpreter and source.
 
     A generation is keyed by the vendored source *and* the interpreter ABI, so
     editing one vendored file, or moving Python, leaves a complete tree that
@@ -138,9 +138,10 @@ def stale_generations(*, keep_days: float | None = 7.0) -> list[Path]:
     this store had reached twelve trees and 12 GB, of which one was reachable.
 
     Age is the guard, not a nicety. The store is shared between checkouts, and
-    a worktree at another commit has its own key and its own live tree; a tree
-    prepared recently is likely to be one of those. ``keep_days=None`` drops
-    that guard and is the caller's decision to make, not this function's.
+    a worktree at another commit has its own key and its own live tree. Age
+    cannot prove that another checkout stopped selecting a tree, so callers
+    must present these as candidates and require explicit deletion authority.
+    ``keep_days=None`` drops the age guard but does not make that proof.
     """
     current = runtime_key()
     stale = [path for path in generations() if path.name != current]
@@ -506,6 +507,48 @@ def compiled_module() -> Path | None:
     if _runtime_extensions_complete():
         return _extension(runtime_package())
     return None
+
+
+def runtime_artifact_paths() -> dict[str, Path]:
+    """Static payloads selected from the current managed runtime generation.
+
+    Python may create ``__pycache__`` feedback while inference is running, so
+    enumerate the copied source contract rather than walking the writable
+    runtime tree. The generated extension, chemistry tables, dictionaries and
+    readiness markers are added explicitly.
+    """
+
+    source = source_package()
+    package = runtime_package()
+    extension = compiled_module()
+    if extension is None:
+        raise RuntimeError("the AlphaFold 3 managed runtime is not ready")
+    selected = {
+        f"alphafold3.runtime.package.{path.relative_to(source).as_posix()}": (
+            package / path.relative_to(source)
+        )
+        for path in sorted(source.rglob("*"))
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and not path.name.endswith((".pyc", ".pickle", ".so"))
+    }
+    root = runtime_root()
+    selected.update(
+        {
+            "alphafold3.runtime.extension": extension,
+            "alphafold3.runtime.ccd": package
+            / "constants/converters/ccd.pickle",
+            "alphafold3.runtime.chemical_component_sets": package
+            / "constants/converters/chemical_component_sets.pickle",
+            "alphafold3.runtime.extension_marker": root / _EXTENSION_MARKER,
+            "alphafold3.runtime.ready_marker": root / _READY_MARKER,
+        }
+    )
+    for name in _LIBCIFPP_FILES:
+        selected[f"alphafold3.runtime.libcifpp.{name}"] = (
+            root / "share/libcifpp" / name
+        )
+    return selected
 
 
 def ensure_extensions() -> Path:

@@ -1,4 +1,4 @@
-![Protenix-JAX hero: a protein, DNA, and ligand emerging from a luminous JAX-inspired tensor field](docs/assets/protenix-jax-hero.png)
+![Protenix-JAX hero: a protein, DNA, and ligand emerging from a luminous JAX-inspired tensor field](assets/protenix-jax-hero.png)
 
 # Protenix-JAX
 
@@ -291,7 +291,7 @@ claims.
 Protenix-JAX is distributed under the Apache License 2.0. This repository
 contains an independent JAX port derived from the Apache-2.0-licensed
 [Protenix](https://github.com/bytedance/Protenix) implementation. See
-[LICENSE](LICENSE) and [NOTICE](NOTICE).
+[LICENSE](../../../LICENSE) and [NOTICE](../../../NOTICE).
 
 If you use the models or architecture in research, cite the corresponding
 Protenix publications listed by the upstream project.

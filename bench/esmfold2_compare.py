@@ -100,7 +100,7 @@ def run_foldjax(case: str, warmup: bool) -> dict:
             jax.random.key(SEED), built, model, num_samples=SAMPLES
         )
 
-    once()  # compile; the cold number is XLA, paid once per shape
+    once()  # populate eligible XLA cache entries before the measured call
     if warmup:
         return {}
     start = time.perf_counter()

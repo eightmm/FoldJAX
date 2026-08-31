@@ -72,3 +72,88 @@ def test_a_working_mesh_passes_the_check(layout: str) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
+
+
+def test_a_two_dimensional_mesh_checks_each_axis() -> None:
+    """A healthy row link must not hide a broken column link (or vice versa)."""
+    source = textwrap.dedent(
+        """
+        from foldjax.models import _cp
+
+        seen = []
+        original_device_put = _cp.jax.device_put
+
+        def observed_device_put(value, sharding):
+            seen.append(tuple(sharding.spec))
+            return original_device_put(value, sharding)
+
+        _cp.jax.device_put = observed_device_put
+        with _cp.context_parallel(4, layout="2d") as mesh:
+            assert mesh is not None
+
+        assert seen == [("cp_row", None), ("cp_col", None)], seen
+        print("ok")
+        """
+    )
+    environment = {
+        **os.environ,
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", source], env=environment, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
+def test_a_second_axis_failure_names_the_column_axis() -> None:
+    """A column-link failure must not be reported as a row-link failure."""
+    source = textwrap.dedent(
+        """
+        import numpy as np
+
+        from foldjax.models import _cp
+
+        checked = []
+        sharded = []
+        original_device_put = _cp.jax.device_put
+        original_exchange_failure = _cp.exchange_failure
+
+        def observed_device_put(value, sharding):
+            sharded.append(tuple(sharding.spec))
+            return original_device_put(value, sharding)
+
+        def fail_second_exchange(gathered, expected, *, devices):
+            checked.append(len(checked) + 1)
+            if len(checked) == 2:
+                gathered = np.array(gathered, copy=True)
+                gathered[-1, 0] += 1.0
+            return original_exchange_failure(gathered, expected, devices=devices)
+
+        _cp.jax.device_put = observed_device_put
+        _cp.exchange_failure = fail_second_exchange
+        try:
+            with _cp.context_parallel(4, layout="2d"):
+                pass
+        except RuntimeError as error:
+            message = str(error)
+        else:
+            raise RuntimeError("the injected second-axis failure was not detected")
+
+        assert checked == [1, 2], checked
+        assert sharded == [("cp_row", None), ("cp_col", None)], sharded
+        assert "Mesh axis: 'cp_col'" in message, message
+        print("ok")
+        """
+    )
+    environment = {
+        **os.environ,
+        "JAX_PLATFORMS": "cpu",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", source], env=environment, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout

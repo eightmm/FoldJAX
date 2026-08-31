@@ -113,13 +113,81 @@ def weight_identity(weights: Path) -> tuple[str, str]:
     return resolved.name, identity
 
 
+def _device_identity(device: Any) -> dict[str, Any]:
+    """Return stable, public device attributes without retaining a JAX object."""
+
+    def attribute(name: str, default: Any = None) -> Any:
+        try:
+            return getattr(device, name)
+        except (AttributeError, RuntimeError):
+            return default
+
+    identity: dict[str, Any] = {
+        "platform": str(attribute("platform", "unknown")),
+        "device_kind": str(attribute("device_kind", "unknown")),
+    }
+    for name in ("id", "process_index", "local_hardware_id", "slice_index"):
+        value = attribute(name)
+        if value is not None:
+            try:
+                identity[name] = int(value)
+            except (TypeError, ValueError, OverflowError):
+                identity[name] = str(value)
+    coordinates = attribute("coords")
+    if coordinates is not None:
+        try:
+            identity["coords"] = [int(value) for value in coordinates]
+        except (TypeError, ValueError, OverflowError):
+            identity["coords"] = str(coordinates)
+    return identity
+
+
+def _topology_identity(
+    devices: Any,
+    *,
+    process_count: int,
+    local_device_count: int,
+) -> dict[str, Any]:
+    """Normalize JAX's selected topology into deterministic JSON."""
+    identities = [_device_identity(device) for device in devices]
+    identities.sort(key=lambda item: json.dumps(item, sort_keys=True))
+    return {
+        "process_count": int(process_count),
+        "global_device_count": len(identities),
+        "local_device_count": int(local_device_count),
+        "devices": identities,
+    }
+
+
 def runtime_profile() -> dict[str, str]:
-    """Return the JAX runtime identity that compiled executables depend on."""
+    """Return the JAX runtime and topology identity compiled code depends on.
+
+    The original ``jax`` and ``platform`` fields remain stable API. ``jaxlib``
+    and the selected device topology prevent operational cache namespaces from
+    mixing executables produced by different compiler builds or accelerator
+    layouts, even when the high-level JAX version is unchanged.
+    """
     import jax
+    import jaxlib
+
+    devices = tuple(jax.devices())
+    topology = _topology_identity(
+        devices,
+        process_count=jax.process_count(),
+        local_device_count=jax.local_device_count(),
+    )
+    device_kinds = sorted(
+        {str(device["device_kind"]) for device in topology["devices"]}
+    )
 
     return {
         "jax": jax.__version__,
+        "jaxlib": jaxlib.__version__,
         "platform": jax.default_backend(),
+        "device_kind": ", ".join(device_kinds) if device_kinds else "unknown",
+        # Keep the existing ``dict[str, str]`` API while retaining the full
+        # identity in canonical JSON for cache hashing and diagnostics.
+        "topology": json.dumps(topology, sort_keys=True, separators=(",", ":")),
     }
 
 
@@ -154,9 +222,7 @@ def compilation_cache_scope(directory: Path | None):
             else:
                 Path(directory).mkdir(parents=True, exist_ok=True)
                 jax.config.update("jax_compilation_cache_dir", str(directory))
-                jax.config.update(
-                    "jax_persistent_cache_min_compile_time_secs", 1.0
-                )
+                jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
             yield
         finally:
             # Drop the request-scoped file-cache object before restoring the

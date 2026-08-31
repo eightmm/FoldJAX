@@ -48,8 +48,8 @@ def _pair_logits(
     symmetrize: bool,
     eps: float,
 ) -> jnp.ndarray:
-    hidden = z if params.layer_norm is None else layer_norm(
-        z, params.layer_norm, eps=eps
+    hidden = (
+        z if params.layer_norm is None else layer_norm(z, params.layer_norm, eps=eps)
     )
     logits = linear(hidden, params.linear)
     if symmetrize:
@@ -123,9 +123,7 @@ def atom_logit_head(
     """
     logits = linear(layer_norm(s, params.layer_norm, eps=eps), params.linear)
     n_token = s.shape[-2]
-    logits = logits.reshape(
-        (*s.shape[:-2], n_token * max_atoms_per_token, c_out)
-    )
+    logits = logits.reshape((*s.shape[:-2], n_token * max_atoms_per_token, c_out))
     return max_atom_per_token_masked_select(logits, mask, n_atom=n_atom)
 
 
@@ -182,9 +180,7 @@ def _project_distance_bins(
     if not monotonic_squared_bins or not indexed_layout:
         bins = jnp.linspace(min_bin, max_bin, no_bin, dtype=dtype)
         squared = bins**2
-        upper = jnp.concatenate(
-            [squared[1:], jnp.asarray([inf], dtype=dtype)]
-        )
+        upper = jnp.concatenate([squared[1:], jnp.asarray([inf], dtype=dtype)])
         one_hot = (
             (squared_distance[..., None] > squared)
             & (squared_distance[..., None] < upper)
@@ -257,9 +253,10 @@ def pairformer_embedding(
     ``x_pred`` carries a sample axis and nothing here mixes samples, so this works
     either batched across samples or one sample at a time. Which one it gets is
     :func:`~foldjax.models.openfold3.inference.predict`'s decision, taken on
-    ``per_sample_token_cutoff`` and the released five-sample width: batching can
-    be faster, per-sample is what fits, and either long targets or high sample
-    counts make holding one pair representation per sample the dominant cost.
+    ``per_sample_token_cutoff``: the zero default maps every multi-sample
+    confidence pass after a real n=5 A/B found no throughput benefit from holding
+    one pair representation per sample, while positive values remain token
+    thresholds and ``None`` keeps the batched path.
 
     Returns:
         ``(si, zij)`` for the confidence heads.

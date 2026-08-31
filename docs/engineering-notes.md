@@ -9,7 +9,7 @@ carries the day-by-day version with the measurements inline.
 
 For what these models cost against their own upstream repositories, under one
 schedule and one measurement, see
-[FoldJAX against upstream](#foldjax-against-upstream). This section is about
+[FoldJAX against upstream](benchmark.md). This section is about
 *why* the peaks landed where they did.
 
 OpenDDE is the example worth keeping: it would not run at all before this work,
@@ -67,7 +67,7 @@ Measured as they landed, those took Protenix from 12,264 to 6,043 MiB and
 OpenDDE from 32,185 to 9,761 MiB on a 488-token job, with confidence flat
 (75.08 → 75.07 and 87.49 → 87.49). Both have moved again since — the default
 triangle-attention backend changed and the block rule was re-derived — so read
-[FoldJAX against upstream](#foldjax-against-upstream) for what they cost now.
+[FoldJAX against upstream](benchmark.md) for what they cost now.
 These figures are the size of each step, not a current reading.
 
 **Eager arithmetic between compiled blocks is not free.** Measured on the Chai
@@ -247,6 +247,11 @@ executes the float32 matmuls that remain. A model can be bfloat16 and
 | OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
 | OpenFold3 | float32 | `high` (TF32) | none |
 | ESMFold2 | **bfloat16** trunk, float32 sampler | — | none |
+
+The matmul column names the model-level scope. A fused backend can own the
+precision of its internal contractions: OpenFold3's cuEquivariance triangle
+path explicitly pins `lax.Precision.DEFAULT`, which is why its shipped GPU
+route has a separate numerical envelope from the strict `highest`/XLA gate.
 
 Read against upstream, **two rows diverge from what their publisher ships**,
 and only one of them was a decision. The four that match: AlphaFold 3
@@ -662,7 +667,7 @@ an MSA-selection change would have read as a diffusion change.
 
 Both came from an upstream that was not running its own fast path, and both
 were corrected by fixing the environment rather than by reinterpreting the
-numbers. See [`bench/upstream-environments.md`](bench/upstream-environments.md).
+numbers. See [`bench/upstream-environments.md`](../bench/upstream-environments.md).
 
 - **"OpenDDE at 970 tokens runs in FoldJAX and cannot run upstream at all."**
   Not true. Upstream had no `cuequivariance`, so its `auto` triangle kernels

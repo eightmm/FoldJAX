@@ -395,7 +395,7 @@ def test_sink_requires_serial_confidence_and_unreturned_pae(changes, expected) -
     assert inference._sink_pae_metrics(_config(**changes)) is expected
 
 
-def test_high_sample_schedule_sinks_only_unreturned_pae() -> None:
+def test_high_sample_schedule_still_bounds_positive_cutoffs() -> None:
     base = inference.released_config(
         n_token=8,
         n_atom=8,
@@ -418,9 +418,7 @@ def _project(pair, weight):
 
 def _lowered_pair(n_token: int, *, n_chain: int = 2):
     channels = 16
-    pair = jax.ShapeDtypeStruct(
-        (SAMPLES, n_token, n_token, channels), jnp.float32
-    )
+    pair = jax.ShapeDtypeStruct((SAMPLES, n_token, n_token, channels), jnp.float32)
     frames = jax.ShapeDtypeStruct((SAMPLES, n_token), jnp.bool_)
     weight = jax.ShapeDtypeStruct((PAE_BINS, channels), jnp.float32)
     token_mask = jnp.ones(n_token, dtype=bool)
@@ -428,9 +426,7 @@ def _lowered_pair(n_token: int, *, n_chain: int = 2):
 
     def legacy(z, valid, projection):
         logits = jax.lax.map(lambda one: _project(one, projection), z)
-        return _legacy_metrics(
-            logits, valid, token_mask, asym_id, n_chain=n_chain
-        )
+        return _legacy_metrics(logits, valid, token_mask, asym_id, n_chain=n_chain)
 
     def compact(z, valid, projection):
         return jax.lax.map(
@@ -677,9 +673,7 @@ def test_full_predict_drops_logits_and_keeps_shared_outputs(
     base = _tiny_inference_config(
         per_sample_token_cutoff=per_sample_token_cutoff,
     )
-    kept = inference.predict(
-        jax.random.key(0), batch, params, base, None, n_chain=3
-    )
+    kept = inference.predict(jax.random.key(0), batch, params, base, None, n_chain=3)
     dropped = inference.predict(
         jax.random.key(0),
         batch,
@@ -825,9 +819,7 @@ def test_composed_inference_sink_matches_returned_logits_control(
     table = _representative_atoms()
     base = composed_config()
     base = base._replace(per_sample_token_cutoff=base.n_token - 1)
-    kept = inference.predict(
-        jax.random.key(11), batch, params, base, table, n_chain=2
-    )
+    kept = inference.predict(jax.random.key(11), batch, params, base, table, n_chain=2)
     compact = inference.predict(
         jax.random.key(11),
         batch,
@@ -848,9 +840,7 @@ def test_composed_inference_sink_matches_returned_logits_control(
             np.asarray(getattr(compact, name)), np.asarray(getattr(kept, name))
         )
     for name in ("ptm", "iptm", "chain_pair_iptm"):
-        _assert_nonfinite_and_finite_delta(
-            getattr(compact, name), getattr(kept, name)
-        )
+        _assert_nonfinite_and_finite_delta(getattr(compact, name), getattr(kept, name))
 
 
 def test_ranking_contract_identifies_unprotected_near_ties() -> None:

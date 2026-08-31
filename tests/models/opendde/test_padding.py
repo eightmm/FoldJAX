@@ -405,10 +405,13 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
     )
 
     assert seen["preserve_prefix_rng"] is False
-    assert tuple(
-        seen[name]
-        for name in ("init_noise", "step_noises", "rotations", "translations")
-    ) == sentinels
+    assert (
+        tuple(
+            seen[name]
+            for name in ("init_noise", "step_noises", "rotations", "translations")
+        )
+        == sentinels
+    )
     assert len(tape_calls) == 1
     np.testing.assert_array_equal(
         tape_calls[0].pop("key"),
@@ -616,9 +619,7 @@ def test_opendde_graph_routes_residue_structural_and_atom_masks(
     features = _opendde_features(msa_depth=1)
     features["token_padding_mask"] = np.asarray([1, 1, 0], dtype=np.float32)
     features["atom_padding_mask"] = np.asarray([1, 1, 0], dtype=np.float32)
-    features["structural_token_padding_mask"] = np.asarray(
-        [1, 1, 0], dtype=np.float32
-    )
+    features["structural_token_padding_mask"] = np.asarray([1, 1, 0], dtype=np.float32)
     seen: dict[str, np.ndarray] = {}
 
     def fake_pairformer(
@@ -664,9 +665,8 @@ def test_opendde_graph_routes_residue_structural_and_atom_masks(
     monkeypatch.setattr(
         model_impl,
         "prepare_structural_features",
-        lambda residue, _pair: {
+        lambda residue, _pair, **_kwargs: {
             **residue,
-            "relp": jnp.zeros((3, 3, 139)),
             "d_lm": jnp.zeros((1,)),
             "v_lm": jnp.zeros((1,)),
             "pad_info": {},
@@ -674,6 +674,11 @@ def test_opendde_graph_routes_residue_structural_and_atom_masks(
         },
     )
     monkeypatch.setattr(model_impl, "structural_refiner_stack", fake_refiner)
+    monkeypatch.setattr(
+        model_impl,
+        "relative_position_encoding_from_features",
+        lambda *_args, **_kwargs: jnp.zeros((3, 3, 2)),
+    )
     monkeypatch.setattr(
         model_impl,
         "diffusion_conditioning_prepare_cache",
@@ -697,7 +702,10 @@ def test_opendde_graph_routes_residue_structural_and_atom_masks(
         pairformer_output=object(),
         structural_expander=object(),
         structural_refiner=object(),
-        diffusion=SimpleNamespace(conditioning=object(), atom_encoder=object()),
+        diffusion=SimpleNamespace(
+            conditioning=SimpleNamespace(relpe=object()),
+            atom_encoder=object(),
+        ),
         distogram=object(),
         confidence=object(),
     )
@@ -729,9 +737,7 @@ def test_opendde_profile_aggregation_keeps_heterogeneous_runs_visible() -> None:
     legacy = {"target": {"msa": 64}}
 
     assert _shape_profile([first, first], padded=True) == first
-    assert _shape_profile([first, second], padded=True) == {
-        "per_run": [first, second]
-    }
+    assert _shape_profile([first, second], padded=True) == {"per_run": [first, second]}
     # Older callback/test doubles did not report static metadata. Keep accepting
     # that dictionary unchanged while real CLI runs now include chain identity.
     assert _shape_profile([legacy], padded=True) == legacy

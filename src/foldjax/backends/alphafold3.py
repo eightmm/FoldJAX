@@ -23,6 +23,11 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_store
+from foldjax.backends._tokamax_autotune import (
+    ensure_safe_autotuning_route as _ensure_safe_tokamax_route,
+)
+from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.padding import TOKEN_BUCKETS, PaddingPlan
@@ -673,6 +678,7 @@ class AlphaFold3Backend(Backend):
         ),
     }
     compile_options = (
+        "matmul_precision",
         "num_samples",
         "num_steps",
         "num_recycles",
@@ -681,7 +687,6 @@ class AlphaFold3Backend(Backend):
         "attention_backend",
         "return_embeddings",
         "return_distogram",
-        "kernel_autotuning",
     )
 
     def __init__(self) -> None:
@@ -912,6 +917,7 @@ class AlphaFold3Backend(Backend):
         options = self.apply_sampling(request)
         managed_route = not bool(options.get("source"))
         # Out before the leftover-option check: carried by the scope.
+        requested_matmul_precision = options.get("matmul_precision")
         matmul_precision = self.matmul_precision(options)
         buckets = _prediction_buckets(request, options)
         self._raise_if_poisoned()
@@ -929,6 +935,16 @@ class AlphaFold3Backend(Backend):
             runner = _load_runner(runner_path)
             import jax
             from alphafold3.common import folding_input
+
+            # Tokamax includes the active JAX matmul precision in every bound
+            # argument key.  An explicit request is applied by the scope below;
+            # an omitted request inherits the embedding process's current JAX
+            # setting.  Persist that effective value so neither form can load
+            # a result measured for another precision and then fail coverage
+            # under the cache-miss='error' overlay.
+            matmul_precision_identity = requested_matmul_precision
+            if matmul_precision_identity is None:
+                matmul_precision_identity = jax.config.jax_default_matmul_precision
 
             jobs = _validated_fold_jobs(
                 folding_input.load_fold_inputs_from_path(request.input),
@@ -1002,6 +1018,7 @@ class AlphaFold3Backend(Backend):
                         _RELEASED_COMPILE_DEFAULTS["max_msa_depth"]
                     )
             config_identity = (
+                ("matmul_precision", matmul_precision_identity),
                 ("attention_backend", attention_backend),
                 ("num_samples", num_samples),
                 ("num_recycles", num_recycles),
@@ -1009,6 +1026,22 @@ class AlphaFold3Backend(Backend):
                 ("return_distogram", return_distogram),
                 ("num_steps", identity_num_steps),
                 ("max_msa_depth", identity_max_msa_depth),
+            )
+            source_snapshot = None
+            if managed_route and request.cache_dir is not None:
+                if anchor is not None:
+                    source_snapshot = anchor[1]
+                elif request.weights is not None:
+                    source_snapshot = _managed_asset_snapshot(Path(request.weights))
+            tokamax_store = _create_tokamax_store(
+                managed=managed_route,
+                cache_dir=request.cache_dir,
+                device=device,
+                source_snapshot=source_snapshot,
+                config_identity=config_identity,
+                buckets=buckets,
+                padding=request.padding is not None,
+                strategy=kernel_fallback,
             )
             model_runner, model_runner_key = self._select_model_runner(
                 runner=runner,
@@ -1038,6 +1071,16 @@ class AlphaFold3Backend(Backend):
                     for fold_input, job_name, job_dir in jobs
                 )
             with _tokamax_kernel_fallback(kernel_fallback), _model_device(device):
+                tokamax_store_installed = False
+                if tokamax_store is not None:
+                    tokamax_store_installed = _install_tokamax_store(
+                        model_runner, tokamax_store
+                    )
+                _ensure_safe_tokamax_route(
+                    device=device,
+                    strategy=kernel_fallback,
+                    persistent_installed=tokamax_store_installed,
+                )
                 for (
                     fold_input,
                     job_name,

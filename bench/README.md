@@ -1,12 +1,19 @@
 # bench
 
-One comparison, run under one schedule, on both implementations of each model.
+A controlled comparison harness, plus explicitly labelled historical point
+measurements.
 
 ## What it measures
 
-For every (model, size) it runs the prediction twice — once through FoldJAX and
-once through that model's own upstream repository — and records wall time, peak
-device memory, and the confidence the run reported.
+For every model admitted by `bench.drive` that has an upstream runner, it
+executes the prediction twice — once through FoldJAX and once through that model's own
+upstream repository — and records wall time, peak device memory, and the
+confidence the run reported. AlphaFold 3 is an intentional current-harness
+FoldJAX-only row, for the reason described below. The checked-in benchmark table
+also retains two historical FoldJAX-only ESMFold2 point measurements; ESMFold2
+is not admitted by `bench.drive`, and
+[`esmfold2_compare.py`](esmfold2_compare.py) is its separate
+FoldJAX-vs-upstream harness.
 
 Two things make it a controlled comparison rather than two runs that happen to
 resemble each other:
@@ -23,12 +30,14 @@ resemble each other:
   injected on `PYTHONPATH`, so no upstream file is modified.
 
 - **The same starting state.** FoldJAX is measured warm: the case is run once
-  to fill the XLA compile cache and that run is discarded. A cold JAX run is
+  to populate eligible XLA compile-cache entries and that run is discarded. A
+  cold JAX run is
   dominated by compilation, which the torch side has no equivalent of, so
   timing one against the other measures the compiler rather than the model —
   at 132 tokens that was 174 s against 29 s, and almost all of the difference
-  was compilation. Compilation is paid once per shape and replayed from disk
-  afterwards, which is what a second prediction actually costs. Upstream needs
+  was compilation. The measured process reuses every readable entry and includes
+  any cache rejection or recompilation, which is what a second prediction
+  actually costs. Upstream needs
   no equivalent step: Protenix's fused layer-norm extension is the only thing
   it builds on first use, and it is already built in that checkout.
 
@@ -99,16 +108,26 @@ defaults to 3 recycles rather than 10, so this asks more of it than its own
 default does; it asks the same of its upstream, which is what makes the
 comparison mean anything. See `spec.py`.
 
+The historical upstream OpenFold3 cells in `docs/benchmark.md` predate a seed
+control fix: 0.3.1's `--num_model_seeds 1` replaced the YAML seed with one
+generated from 42. Those rows remain valid time/memory measurements but their
+confidence is explicitly marked not seed-matched. Current runs omit that flag
+and use the YAML's sole seed, 101. They also pass `--use_templates false`:
+these benchmark jobs have no template input, and letting 0.3.1's default remain
+true only initialized template/CCD preprocessing that could not add a template.
+
 MSA depth is deliberately not pinned: not every upstream exposes a depth
 argument, so fixing one would mean FoldJAX doing something its own reference
 cannot. Both sides read the same alignment and apply the same default.
 
-## Every upstream runs on its own fast path
+## Every upstream path is disclosed
 
 A comparison against an upstream that is missing its own accelerated paths is
-not a comparison, it is a handicap match. Two of the four arrived incomplete,
-and both differences were large enough to change conclusions rather than shade
-them:
+a handicap match unless the limitation is explicit. The benchmark uses the
+fastest path each reference can reach on this hardware and records exceptions
+rather than presenting them as like-for-like speed claims. Two environments
+arrived incomplete, and both differences were large enough to change
+conclusions rather than shade them:
 
 - OpenDDE had no `cuequivariance`, so its `auto` triangle kernels fell back to
   plain torch. Installing the cu13 build took its 490-token peak from 91,191
@@ -125,22 +144,80 @@ and, more importantly, how to verify each one actually took effect. A kernel
 built for the wrong architecture fails *asynchronously*, so the call returns
 normally and the error surfaces somewhere else entirely.
 
-Boltz-2 needed nothing: it already had cuEquivariance.
+Boltz-2 needed nothing: it already had cuEquivariance. OpenFold3 is a different
+case rather than an incomplete environment: its p1-compatible 0.3.1 kernels do
+not support this sm_120 route, so its plain-Torch timing is explicitly qualified
+in the OpenFold3 section below.
 
 ## Running it
 
 Data (alignments, jobs, sequences) lives outside the repository; point
-`FOLDJAX_BENCH_DATA` at it.
+`FOLDJAX_BENCH_DATA` at it. Upstream repositories default to siblings under the
+FoldJAX checkout's parent; set `FOLDJAX_BENCH_ROOT` when they live elsewhere.
 
 ```bash
-python -m bench.drive --models boltz2 opendde protenix \
+python -m bench.drive --models boltz2 opendde openfold3 protenix \
     --impls foldjax upstream --cases t0128 t0488 t0976 \
     --results results/ --work /tmp/bench --skip-existing
 python -m bench.report --results results/
 ```
 
 Rows are written as they finish, so an interrupted matrix keeps everything that
-completed, and `--skip-existing` resumes it.
+completed. `--skip-existing` reuses a row only when it has the current result
+schema, is successful, has the requested number of samples with finite scores
+and valid measurements, and its recorded benchmark identity still matches.
+Legacy, failed, malformed, or mismatched rows are run again; mere filename
+existence is not a resume proof. The identity and row are checked again before
+the driver skips, so an input change during that decision forces a rerun.
+
+An upstream checkout with tracked changes is rejected by default. If a required
+compatibility patch has been reviewed, hash the exact tracked diff and pin it on
+the command line:
+
+```bash
+PATCH_SHA=$(git -C "$FOLDJAX_BENCH_ROOT/protenix" \
+    diff --binary --no-ext-diff HEAD -- | sha256sum | cut -d' ' -f1)
+python -m bench.drive ... --upstream-patch "protenix=$PATCH_SHA"
+```
+
+Every current-schema result hashes the common job and every MSA/template file it
+references, the generated native document and its referenced companions when
+applicable, and the exact checkpoint and implicit assets selected by the
+runner. For AlphaFold 3 this includes the managed runtime's copied package,
+native extension, generated CCD tables, and libcifpp dictionaries; transient
+Python bytecode caches are excluded. It also binds the execution-affecting
+FoldJAX/harness source, Python and
+installed runtime versions, device model/compute capability/memory/driver, the
+measurement protocol, trace state, and relevant effective environment. Path
+values and device selectors are digested rather than written verbatim. These
+identities are computed before and after inference; a change invalidates the
+run. Upstream rows additionally bind the checkout commit, reviewed tracked-diff
+digest and status. Ordinary untracked files are rejected, while ignored
+in-tree source, config, executables, and native extensions are byte-hashed and
+checked again afterwards. A source edit, native rebuild, or artifact
+replacement therefore cannot silently become a reusable current result.
+
+The checked-in historical result JSON files predate this schema and byte-level
+artifact provenance. They remain dated measurement evidence used by the report,
+not exact source-and-artifact replay capsules, and `--skip-existing` deliberately
+does not treat them as resumable current rows.
+
+## Optimization A/B evidence
+
+[`experiments/final-tree-gpu-gate-2026-08-31.json`](experiments/final-tree-gpu-gate-2026-08-31.json)
+is the final exact-source confirmation for the three memory-bound route
+changes. Every arm starts with its own empty compilation/autotuning cache,
+warms that cache in one successful process, then records a fresh measured
+process. The file binds all six raw result hashes to one schema-2 source
+identity, records the output-structure digests and paired structure/score
+checks, and distinguishes whole-process peaks from OpenDDE's isolated
+projection temporary.
+
+[`experiments/gap-ablation-2026-08-31.json`](experiments/gap-ablation-2026-08-31.json)
+contains the broader and longer sweeps, including AlphaFold 3 at 970 tokens and
+20 samples. Those older rows retain the provenance limitation documented in
+that file; the final-tree gate is the current exact-source release
+confirmation.
 
 `alphafold3` has a FoldJAX column but no upstream one: FoldJAX drives the
 installation you provide rather than reimplementing the model, so both columns
@@ -156,39 +233,37 @@ structures"` -- its runner swallows the allocator error and exits zero, so the
 row exists only because the harness checks for structures rather than for an
 exit code.
 
-`opendde-foldjax-t1531-bf16.json` is the configuration that does complete:
-479.9 s at 58,747 MiB. It is stored under its own name rather than as the
-`t1531` row, because it is not the same measurement -- upstream has no bf16
-counterpart here, so that number belongs beside a stated dtype and not in a
-column that implies one.
+The checked-in historical `opendde-foldjax-t1531-bf16.json` row records a bf16
+configuration that completed: 479.9 s at 58,747 MiB. It predates the current
+default-bf16 measurement, 443 s at 44.2 GiB, reported in
+[`docs/benchmark.md`](../docs/benchmark.md). The historical row is stored under
+its own name rather than as the `t1531` row, because it is not the same
+measurement -- upstream has no bf16 counterpart here, so that number belongs
+beside a stated dtype and not in a column that implies one.
 
-## OpenFold3 has no upstream column, and what it would take
+## OpenFold3's upstream route
 
-`spec.py` lists `openfold3` in `MODELS` but not in `REIMPLEMENTED`. The FoldJAX
-side can be measured today; the column that would make it a *comparison* cannot,
-and the reason is worth writing down because it is not the obvious one.
+OpenFold3 is in both `MODELS` and `REIMPLEMENTED`. `run_upstream.py`
+drives the provisioned `openfold3-v031` environment rather than the current
+upstream checkout: the `of3_ft3_v1.pt` p1 checkpoint implemented by FoldJAX has
+`version_compatibility="<0.4"`, and current OpenFold3 rejects that architecture.
 
-Both ingredients are already on this machine: the upstream checkout at
-`../openfold3` and the released `of3_ft3_v1.pt`. What is missing:
+The command-line flag sets five diffusion samples. The other controlled
+settings live in `openfold3_runner.yml`: it selects the
+prediction and PAE presets, overrides the upstream default from 3 to 10
+recycles, supplies the sole model seed, 101, and disables confidence-head host
+offload; the latter changed the 3,012-token historical wall time by about one
+minute and raised peak by about 2.2 GiB while remaining within capacity. The
+harness deliberately does
+not pass 0.3.1's `--num_model_seeds`: that flag discards the YAML seed list and
+generates a new one from 42. The release already supplies 200 rollout steps.
+This is the current harness configuration. Historical upstream cells in
+`docs/benchmark.md` used the generated seed described above and retain their
+explicit dagger rather than being relabeled as current runs.
 
-1. **No virtualenv.** Upstream installs torch, lightning, awscli, wandb, lmdb,
-   pdbeccdutils, `rdkit<2026` and the rest, and it is built around `pixi`
-   (`pixi.toml`) rather than uv. Every other upstream here is driven through
-   `<repo>/.venv/bin/...`, so this one needs the same shape.
-2. **`run_upstream.command` has no branch for it.**
-3. **The schedule is not expressible on the command line.** This is the part
-   that makes it more than provisioning. `run_openfold` exposes
-   `--num-diffusion-samples` and `--num-model-seeds`, but recycles and rollout
-   steps are not flags: they live in the `--runner-yaml` under `model_update` /
-   `presets`, and `model_config.py:176` defaults `num_recycles` to 3 -- not the
-   10 this directory's schedule requires.
-
-So a run that *looks* configured would quietly compare 10 recycles against 3.
-That is exactly the failure this repository has already retracted two claims
-over, and the reason `REIMPLEMENTED` is a separate list from `MODELS` rather
-than a convenience.
-
-Whoever picks this up: get the `model_update` key path right first and prove it
-took effect -- read the resolved config back out of the run, do not infer it
-from the YAML you passed -- then provision, then measure. A row that cannot be
-trusted is worse than the blank one it replaces.
+Its timing needs one hardware caveat. OpenFold3 0.3.1's DS4Sci attention does
+not build for sm_120, and its experimental cuEquivariance path fails in the
+multi-sample confidence stack, so the recorded upstream runs use plain Torch
+attention. That makes the comparison real but not a claim about upstream's
+fastest path on supported older hardware. `upstream-environments.md` records
+the environment, failures, and verification commands.

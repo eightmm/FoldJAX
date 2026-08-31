@@ -1,0 +1,229 @@
+{
+  "schema": 1,
+  "date": "2026-08-31",
+  "measurement": {
+    "warmup": "one unmeasured run in a fresh process, followed by one measured fresh process",
+    "peak_memory": "JAX peak_bytes_in_use",
+    "seed": 101,
+    "num_steps": 200,
+    "num_recycles": 10
+  },
+  "hardware": {
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "platform": "cuda 13000"
+  },
+  "software": {
+    "python": "3.13.15",
+    "foldjax": "0.3.0",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "jax-cuda13-plugin": "0.11.1",
+    "jax-cuda13-pjrt": "0.11.1",
+    "tokamax": "0.0.13",
+    "triton": "3.7.1"
+  },
+  "source": {
+    "base_revision": "0b0d280b9dd9f2446ccf77f5b37f881c5debd8ff",
+    "primary_long_run_tracked_diff_sha256": "a7d924dd2d5aa3cef028bb82496a878c901a7e8e00d0158804f399d08770fe52",
+    "harness": "bench/run_gap_ablation.py",
+    "raw_ledger": "docs/EXPERIMENTS.jsonl",
+    "provenance_limit": "The 2026-08-31 OMS ledger hashed only tracked diffs and did not archive untracked harness/arm-script bytes. The historical performance rows are therefore measured evidence but not an exactly checkout-replayable source capsule. The harness and arm scripts are committed with this report so subsequent runs can use a clean commit.",
+    "note": "Earlier short controls retain their OMS tracked-diff hash prefix per row; the same-worktree t0976 controls and candidates use the full tracked-diff digest."
+  },
+  "inputs": {
+    "t0128": {
+      "length": 132,
+      "job_sha256": "3bdbe42b3a688861422c19328766c1d6a72f9bb07decea7a6b3126f2ac30738f",
+      "a3m_sha256": "725c443c53311552414dabf67766c9eeb9bc34d2c1d6525607699d1ed656f69c"
+    },
+    "t0488": {
+      "length": 490,
+      "job_sha256": "310f0f0722895dd5b1609009de8bb2991f12639b9f8a30c81a451c099b51d641",
+      "a3m_sha256": "891fc6b53b8708ed30860ac5bf8b7da71162dfe8dc4c0dbb7615a7cab4debc26"
+    },
+    "t0976": {
+      "length": 970,
+      "job_sha256": "c8d9c04c28eaf2796571848ef2876ec69e3f52ee2795d5038ef83d4fd17cc5de",
+      "a3m_sha256": "7914514645d9c82399df15c5fd121bd44d6fd1fd2fd7806ffcbe3e4cc6a8ebfd"
+    }
+  },
+  "runs": [
+    {
+      "optimization": "openfold3-confidence",
+      "arm": "batched",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 33.25,
+      "peak_mib": 9045.3,
+      "result_sha256": "7f53e6debc55080bd3c61fa31ced3e721ab7620f2e7ceea82b04c35a00dc9488",
+      "oms_dirty_hash_prefix": "bde631f8b159ff05"
+    },
+    {
+      "optimization": "openfold3-confidence",
+      "arm": "serial",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 33.39,
+      "peak_mib": 4263.5,
+      "result_sha256": "5c2792b49dfb584531c95753da0b4c3d754704a7bbd8ba5aedd2d89473d6407f",
+      "oms_dirty_hash_prefix": "c922f004e98d65cf"
+    },
+    {
+      "optimization": "opendde-relative-position-projection",
+      "arm": "dense",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 44.39,
+      "peak_mib": 6465.8,
+      "result_sha256": "817d8d03e5241c4177877b51e0ee46879fb1ef7b73d7accd970343dcbdcad9d9",
+      "oms_dirty_hash_prefix": "c922f004e98d65cf"
+    },
+    {
+      "optimization": "opendde-relative-position-projection",
+      "arm": "direct",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 44.73,
+      "peak_mib": 6466.7,
+      "result_sha256": "3600659639b9c4c8ee840103ffb09e0d37582f23e906a2e31c58c271e019295f",
+      "oms_dirty_hash_prefix": "c922f004e98d65cf"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "batched",
+      "case": "t0128",
+      "num_samples": 10,
+      "wall_s": 253.64,
+      "peak_mib": 1668.3,
+      "result_sha256": "b2df8595f2a966be5474e5736464d7967e0993b8ec3bc7bbab7074927186be08",
+      "oms_dirty_hash_prefix": "41d9901435f82412"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "sharded",
+      "case": "t0128",
+      "num_samples": 10,
+      "wall_s": 237.31,
+      "peak_mib": 1475.0,
+      "result_sha256": "677d1846ee86fade46e4d4efeca3acbf9717b207a69bea420f187185cbe93e79",
+      "oms_dirty_hash_prefix": "e6ef8429c702e965"
+    },
+    {
+      "optimization": "opendde-relative-position-projection",
+      "arm": "dense",
+      "case": "t0976",
+      "num_samples": 5,
+      "wall_s": 157.92,
+      "peak_mib": 21074.5,
+      "result_sha256": "77ea5a197dc95c3b72e49c48d60a23d08831dd9723dbb3c185326b590ae014a4",
+      "worktree_diff": "primary"
+    },
+    {
+      "optimization": "opendde-relative-position-projection",
+      "arm": "direct",
+      "case": "t0976",
+      "num_samples": 5,
+      "wall_s": 157.52,
+      "peak_mib": 21081.3,
+      "result_sha256": "cc22be1b383d7679cc31b54378f7feaced0d74a8a8c16211df2fd6dd435a18f2",
+      "worktree_diff": "primary"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "sharded",
+      "case": "t0488",
+      "num_samples": 10,
+      "wall_s": 316.22,
+      "peak_mib": 2940.6,
+      "result_sha256": "b5bfdb8515e9471a64909a9e64caa19b7045678038025556dad2d31937bc4cb4",
+      "worktree_diff": "primary"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "sharded",
+      "case": "t0488",
+      "num_samples": 20,
+      "wall_s": 325.84,
+      "peak_mib": 3058.2,
+      "result_sha256": "bd19e49e03e68e3092b1ade4548265eb14d464ab169b58618d905972e8f6a5be",
+      "worktree_diff": "primary"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "sharded",
+      "case": "t0976",
+      "num_samples": 10,
+      "wall_s": 411.49,
+      "peak_mib": 6592.9,
+      "result_sha256": "153958d3e743fe86ed04078d26924da515efc4477455952042b9635ad6a7e1a4",
+      "worktree_diff": "primary"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "batched",
+      "case": "t0976",
+      "num_samples": 20,
+      "wall_s": 422.25,
+      "peak_mib": 9515.8,
+      "result_sha256": "59388009d8f2be7542ccffc99a2310f419b20b9ff593035992b9230b0b40497d",
+      "worktree_diff": "primary"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "sharded",
+      "case": "t0976",
+      "num_samples": 20,
+      "wall_s": 401.48,
+      "peak_mib": 6748.9,
+      "result_sha256": "6050b9627109c1fbf2b5b640e6ccf02ca4016b05863ade3c4b50479af06f65c8",
+      "worktree_diff": "primary"
+    }
+  ],
+  "parity": {
+    "openfold3_t0488_n5_batched_vs_serial": {
+      "matched_samples": 5,
+      "tm": {"min": 1.0, "median": 1.0, "max": 1.0},
+      "ca_rmsd_angstrom": {"min": 8.413657303499486e-15, "median": 1.2205088090181343e-14, "max": 3.132346811755467e-14},
+      "max_abs_score_delta": {"mean_plddt": 0.00041771226774756087, "ptm": 3.3080577850341797e-06, "sample_ranking_score_no_disorder": 6.616115570054482e-07}
+    },
+    "opendde_t0488_n5_dense_vs_direct": {
+      "matched_samples": 5,
+      "tm": {"min": 0.9999242302736336, "median": 0.9999706876419359, "max": 0.9999862822231592},
+      "ca_rmsd_angstrom": {"min": 0.029168126856346538, "median": 0.042638830835188504, "max": 0.06856472750786408}
+    },
+    "opendde_t0976_n5_dense_vs_direct": {
+      "matched_samples": 5,
+      "tm": {"min": 0.9998478836314112, "median": 0.9999801924151018, "max": 0.9999921072233383},
+      "ca_rmsd_angstrom": {"min": 0.029249711558386078, "median": 0.04633960207634116, "max": 0.1284543489337694}
+    },
+    "alphafold3_t0128_n10_batched_vs_sharded": {
+      "matched_samples": 10,
+      "structure_set_digest_format": "sha256(concat(sorted(relative_path + NUL + sha256(file_bytes) + LF)))",
+      "structure_set_sha256": {
+        "batched": "bed4f16799fb4de6b10f62b1859640d5ddb47ef82527890b27be84fecb21f2e9",
+        "sharded": "fbc22348b35ec1398110673a41355334edf61e010eebc7183dab5ae43404bc93"
+      },
+      "tm": {"min": 0.9998099842225177, "median": 0.9999905863715434, "max": 0.9999986195563422},
+      "ca_rmsd_angstrom": {"min": 0.0050108363041333785, "median": 0.012878276730108065, "max": 0.05890394903407186},
+      "within_arm_ca_rmsd_angstrom": {
+        "batched": {"min": 5.38355724290099, "median": 12.21668873874055, "max": 22.192745206605238},
+        "sharded": {"min": 5.383936260297386, "median": 12.199681744357262, "max": 22.185376962535486}
+      },
+      "max_abs_score_delta": {"ranking_score": 0.003978104895022705}
+    },
+    "alphafold3_t0976_n20_batched_vs_sharded": {
+      "matched_samples": 20,
+      "tm": {"min": 0.9998207840652217, "median": 0.999996919318237, "max": 0.9999994057598045},
+      "ca_rmsd_angstrom": {"min": 0.00802564561390158, "median": 0.01808561392981329, "max": 0.13955675188537822},
+      "max_abs_score_delta": {"ranking_score": 0.000284087127935706}
+    }
+  },
+  "isolated_projection": {
+    "case": "1886 structural tokens",
+    "dense_temporary_bytes": 2011244544,
+    "direct_temporary_bytes": 10672144,
+    "output_bytes_both_arms": 1821181952,
+    "dense_compile_s": 2.698,
+    "direct_compile_s": 0.085
+  }
+}

@@ -107,7 +107,7 @@ external GPL-3+ preprocessing executable; it is version-gated and neither
 linked into nor redistributed by this Apache-2.0 project.
 Exact sizes, hashes, source URLs, the selected template records used in
 validation, and the fixed `2021-09-30` template cutoff are recorded in
-[`docs/OFFICIAL_ASSETS.json`](docs/OFFICIAL_ASSETS.json). These files are not
+[`OFFICIAL_ASSETS.json`](OFFICIAL_ASSETS.json). These files are not
 redistributed by this project.
 
 ## Prediction
@@ -138,8 +138,9 @@ For a job containing precomputed template-hit A3M files, add:
 ```
 
 The release defaults remain `n_sample=5`, `n_step=200`, and `n_cycle=10`.
-The full 200-step, 10-cycle schedule has been checked on GPU with
-`n_sample=1`; the default five-sample workload has not been benchmarked.
+The full 200-step, 10-cycle schedule has been checked on GPU both for the FP32
+one-sample publisher-parity run below and for five-sample BF16 performance runs
+at 490 and 970 tokens.
 
 The CLI accepts only native JAX weights; passing a `.pt`, `.pth`, or `.ckpt`
 file fails with a conversion instruction. `opendde_infer_static` remains the
@@ -246,6 +247,14 @@ old broadcast accidentally materialized `[475,475,384,384]` (about 124 GiB);
 the implementation now evaluates the same projection row-wise with bounded
 memory.
 
+The diffusion-side structural relative-position projection is bounded too. Its
+released 139-channel feature has four active values per token pair, so FoldJAX
+gathers those four weight rows directly instead of creating the dense one-hot.
+At 1,886 structural tokens this reduced XLA temporary bytes from 2,011,244,544
+to 10,672,144; the 128-channel output allocation remains 1,821,181,952 bytes.
+Full five-sample `t0488` and `t0976` runs stayed near 6,466 and 21,081 MiB
+because the surrounding model, not this leaf, sets their process peaks.
+
 Torch and JAX do not generate the same random draws from a shared numeric seed.
 The full-run score and fold agreement therefore validate scientific behavior
 and execution, but the `2.267 Å` value is a sample-to-sample comparison, **not**
@@ -264,9 +273,9 @@ This is a working inference port, but it is not a bundled data pipeline:
   parity against the single-device program is verified on a simulated
   four-device CPU mesh; real multi-GPU memory and speed are not yet measured
   on this hardware;
-- GPU validation currently covers one FP32 sample on one RTX PRO 6000
-  Blackwell Max-Q; other accelerators, multi-sample scaling, and the default
-  five-sample workload are not benchmarked.
+- GPU validation covers one FP32 publisher-parity sample and five-sample BF16
+  memory A/Bs on one RTX PRO 6000 Blackwell Max-Q. Other accelerators and
+  multi-GPU scaling are not yet measured.
 
 Missing assets and unsupported input contracts fail explicitly rather than
 silently changing chemistry.

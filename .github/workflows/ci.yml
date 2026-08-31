@@ -97,6 +97,27 @@ jobs:
       - name: Install without dev dependencies
         run: uv sync --frozen --no-default-groups
 
+      # `uv sync` exercises an editable checkout. Build and install the actual
+      # artifact as well, in a second environment whose working directory is
+      # outside the repository, so package-data or console-script mistakes
+      # cannot be hidden by the source tree. Populate that environment from the
+      # frozen lock without installing the checkout, then install the wheel
+      # itself without dependencies. The sync above has already filled uv's
+      # cache, so this is normally a set of local links rather than downloads.
+      - name: Fresh wheel install and CLI smoke
+        run: |
+          WHEEL_DIR="$RUNNER_TEMP/foldjax-wheel"
+          SMOKE_ENV="$RUNNER_TEMP/foldjax-wheel-smoke"
+          uv build --wheel --out-dir "$WHEEL_DIR"
+          uv venv --python 3.13 "$SMOKE_ENV"
+          UV_PROJECT_ENVIRONMENT="$SMOKE_ENV" \
+            uv sync --frozen --no-default-groups --no-install-project
+          uv pip install --no-deps --python "$SMOKE_ENV/bin/python" \
+            "$WHEEL_DIR"/foldjax-*.whl
+          cd "$RUNNER_TEMP"
+          "$SMOKE_ENV/bin/foldjax" --help
+          "$SMOKE_ENV/bin/foldjax" models --json
+
       # Importing the package is not the same as reaching each adapter: a
       # backend is resolved lazily, so a broken import in one of them stays
       # invisible until someone selects that model.

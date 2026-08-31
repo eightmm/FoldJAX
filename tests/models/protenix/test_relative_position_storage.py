@@ -18,6 +18,8 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import (
     RelativePositionParams,
     compact_relative_position_features,
     relative_position_encoding,
+    relative_position_encoding_from_features,
+    relative_position_features,
     resolve_relative_position_features,
 )
 from foldjax.models.protenix.relative_position import (
@@ -61,6 +63,148 @@ def test_compact_projection_is_byte_identical_under_strict_promotion(dtype) -> N
         historical = jax.jit(project)({"relp": jnp.asarray(dense)})
         actual = jax.jit(project)(jax.tree.map(jnp.asarray, compact))
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(historical))
+
+
+def test_metadata_projection_avoids_the_wide_float32_one_hot() -> None:
+    n_token = 8
+    features = {
+        "asym_id": jnp.asarray(np.repeat(np.arange(2), n_token // 2)),
+        "residue_index": jnp.arange(n_token),
+        "entity_id": jnp.asarray(np.tile(np.arange(2), n_token // 2)),
+        "sym_id": jnp.arange(n_token) % 3,
+        "token_index": jnp.arange(n_token),
+    }
+    rng = np.random.default_rng(20260831)
+    params = RelativePositionParams(
+        linear_no_bias=LinearParams(
+            weight=jnp.asarray(rng.normal(size=(19, 139)), dtype=jnp.float32),
+            bias=None,
+        )
+    )
+
+    # Compare the algebra rather than two GPU reduction schedules. Production
+    # intentionally uses ``high`` (TF32 on NVIDIA), whose dense GEMM rounds its
+    # operands differently from the gather-and-add path; that bounded shipped
+    # behaviour has its own accelerator gate below.
+    with jax.default_matmul_precision("highest"):
+        dense = jax.jit(
+            lambda values: relative_position_encoding(
+                relative_position_features(values), params
+            )
+        )(features)
+        direct = jax.jit(
+            lambda values: relative_position_encoding_from_features(values, params)
+        )(features)
+    np.testing.assert_allclose(direct, dense, rtol=2e-6, atol=2e-6)
+
+    direct_hlo = str(
+        jax.jit(lambda values: relative_position_encoding_from_features(values, params))
+        .lower(features)
+        .compiler_ir("stablehlo")
+    )
+    assert f"tensor<{n_token}x{n_token}x139xf32>" not in direct_hlo
+
+
+def _gpu_devices():
+    try:
+        return jax.devices("gpu")
+    except RuntimeError:
+        return []
+
+
+@pytest.mark.skipif(not _gpu_devices(), reason="requires a JAX GPU")
+def test_metadata_projection_stays_within_production_high_gpu_envelope() -> None:
+    """The shipped TF32 path may reorder the four-term sparse projection."""
+    n_token = 8
+    features = {
+        "asym_id": jnp.asarray(np.repeat(np.arange(2), n_token // 2)),
+        "residue_index": jnp.arange(n_token),
+        "entity_id": jnp.asarray(np.tile(np.arange(2), n_token // 2)),
+        "sym_id": jnp.arange(n_token) % 3,
+        "token_index": jnp.arange(n_token),
+    }
+    rng = np.random.default_rng(20260831)
+    params = RelativePositionParams(
+        linear_no_bias=LinearParams(
+            weight=jnp.asarray(rng.normal(size=(19, 139)), dtype=jnp.float32),
+            bias=None,
+        )
+    )
+
+    with (
+        jax.default_device(_gpu_devices()[0]),
+        jax.default_matmul_precision("high"),
+    ):
+        dense = jax.jit(
+            lambda values: relative_position_encoding(
+                relative_position_features(values), params
+            )
+        )(features)
+        direct = jax.jit(
+            lambda values: relative_position_encoding_from_features(values, params)
+        )(features)
+
+    dense_np = np.asarray(dense, dtype=np.float64)
+    direct_np = np.asarray(direct, dtype=np.float64)
+    max_absolute = float(np.max(np.abs(direct_np - dense_np)))
+    scale = max(float(np.max(np.abs(dense_np))), np.finfo(np.float32).tiny)
+    assert max_absolute / scale <= 5e-4
+
+
+def test_metadata_projection_preserves_nonfinite_and_signed_zero_semantics() -> None:
+    features = {
+        "asym_id": jnp.asarray([0, 1]),
+        "residue_index": jnp.asarray([0, 1]),
+        "entity_id": jnp.asarray([0, 0]),
+        "sym_id": jnp.asarray([0, 1]),
+        "token_index": jnp.asarray([0, 1]),
+    }
+    weight = np.zeros((4, 139), dtype=np.float32)
+    weight[0, :] = -0.0
+    weight[1, 0] = np.inf
+    weight[2, 32] = -np.inf
+    weight[3, 132] = np.nan
+    params = RelativePositionParams(
+        linear_no_bias=LinearParams(weight=jnp.asarray(weight), bias=None)
+    )
+    dense = np.asarray(
+        relative_position_encoding(relative_position_features(features), params)
+    )
+    direct = np.asarray(relative_position_encoding_from_features(features, params))
+
+    np.testing.assert_array_equal(np.isnan(direct), np.isnan(dense))
+    np.testing.assert_array_equal(np.isposinf(direct), np.isposinf(dense))
+    np.testing.assert_array_equal(np.isneginf(direct), np.isneginf(dense))
+    finite_zero = np.isfinite(dense) & (dense == 0)
+    assert np.all(~np.signbit(direct[finite_zero]))
+
+
+@pytest.mark.parametrize("name", ["residue_index", "sym_id", "token_index"])
+@pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
+def test_metadata_projection_rejects_float_indices(name: str, compiled: bool) -> None:
+    features = {
+        "asym_id": jnp.asarray([0, 0]),
+        "residue_index": jnp.asarray([0, 1]),
+        "entity_id": jnp.asarray([0, 0]),
+        "sym_id": jnp.asarray([0, 1]),
+        "token_index": jnp.asarray([0, 1]),
+    }
+    features[name] = features[name].astype(jnp.float32)
+    params = RelativePositionParams(
+        linear_no_bias=LinearParams(
+            weight=jnp.zeros((4, 139), dtype=jnp.float32),
+            bias=None,
+        )
+    )
+
+    def project(values):
+        return relative_position_encoding_from_features(values, params)
+
+    if compiled:
+        project = jax.jit(project)
+
+    with pytest.raises(TypeError, match=rf"{name} must have an integer dtype"):
+        project(features)
 
 
 def test_dense_relp_wins_over_malformed_private_marker() -> None:

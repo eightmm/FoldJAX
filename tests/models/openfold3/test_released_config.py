@@ -8,7 +8,10 @@ is 4 and this preset claimed 10.
 
 Reading the config object instead makes every field checkable, including derived
 ones, and makes a field added upstream fail loudly here rather than silently keep
-a stale default.
+a stale default. The one documented runtime-policy override is the confidence
+sample cutoff: FoldJAX adopts zero after its released n=5 memory A/B, while
+positive direct-call values keep upstream's numeric threshold within the
+released sample-width safety guard.
 """
 
 from __future__ import annotations
@@ -84,13 +87,10 @@ def _expected(config) -> dict:
         # The PAE bin edges live with the loss/metric config rather than the head,
         # since the head only emits logits.
         "pae_bin_max": architecture.loss_module.confidence.pae.bin_max,
-        # Token count above which upstream runs the confidence re-embedding one
-        # diffusion sample at a time (its ``apply_per_sample``). This is a memory
-        # strategy rather than an architecture dimension, but it is a *default* --
-        # 750 -- and a port that batched the samples unconditionally would be
-        # running a different configuration from the released one at any realistic
-        # target size, so it belongs in this comparison.
-        "per_sample_token_cutoff": heads.per_sample_token_cutoff,
+        # This is FoldJAX's one deliberate runtime-policy override. Upstream's
+        # numeric field remains supported for direct callers, while zero selects
+        # the measured bounded default for every positive token count.
+        "per_sample_token_cutoff": 0,
         # Alignment rows the trunk sees. Upstream draws this from
         # ``randint(min_subsampled_all_msa, max_subsampled_all_msa + 1)``, and the
         # released config sets both to 1024, so the count is fixed even though the
@@ -103,7 +103,7 @@ def _expected(config) -> dict:
     return expected
 
 
-def test_every_field_matches_upstream(upstream) -> None:
+def test_every_field_matches_upstream_or_documented_runtime_policy(upstream) -> None:
     config = released_config(n_token=N_TOKEN, n_atom=N_ATOM)
     mismatched = {}
     for name, want in _expected(upstream).items():
@@ -113,7 +113,10 @@ def test_every_field_matches_upstream(upstream) -> None:
                 mismatched[name] = (got, want)
         elif got != want:
             mismatched[name] = (got, want)
-    assert not mismatched, f"released_config disagrees with upstream: {mismatched}"
+    assert not mismatched, (
+        "released_config disagrees with upstream or its documented override: "
+        f"{mismatched}"
+    )
 
 
 def test_shapes_are_the_caller_s(upstream) -> None:

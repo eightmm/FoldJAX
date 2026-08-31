@@ -126,11 +126,13 @@ class InferenceConfig(NamedTuple):
     # ``released_config`` picks it from the token count by default -- see
     # ``auto_pair_chunk_size`` and models/row_chunking.py.
     pair_chunk_size: int | None = None
-    # Token count above which the confidence re-embedding runs one diffusion sample
-    # at a time. 750 is upstream's own default (``per_sample_token_cutoff`` in
-    # ``model_config.py``). A request above the released five-sample width also
-    # maps one at a time; ``None`` explicitly always batches the samples.
-    per_sample_token_cutoff: int | None = 750
+    # Token count above which confidence re-embedding runs one diffusion sample
+    # at a time. FoldJAX defaults this to zero after the released n=5 A/B showed
+    # the same wall time at less than half the peak, so every multi-sample default
+    # is serial. Positive values retain the numeric token threshold while the
+    # released sample-width guard still bounds large direct requests; ``None``
+    # explicitly keeps an always-batched graph for direct callers.
+    per_sample_token_cutoff: int | None = 0
     #: Diffusion samples the rollout denoises at once. The denoiser holds its
     #: activations for every sample handed to it, so this is the model's entire
     #: growth along the sample axis: measured at 1,003 tokens, the peak went
@@ -303,10 +305,12 @@ def auto_pair_chunk_size(
 def _per_sample_confidence(config: InferenceConfig) -> bool:
     """Whether to run the confidence re-embedding one sample at a time.
 
-    Mirrors upstream's ``apply_per_sample`` token rule, including its default
-    cutoff of 750 tokens. FoldJAX additionally maps requests above the released
-    five-sample width: otherwise a short target can still hold tens of quadratic
-    pair representations at once. ``None`` remains the explicit always-batched
+    The default cutoff of zero serializes every multi-sample request: a real
+    490-token, five-sample A/B measured 9,045.3 -> 4,263.5 MiB with unchanged
+    wall time (33.25 -> 33.39 s), so retaining the released short-target batch
+    no longer buys throughput and costs 4.7 GiB. Positive values remain token
+    thresholds, with the existing safety guard still serializing requests above
+    the released five-sample width. ``None`` remains the explicit always-batched
     escape hatch for direct callers.
 
     Measured on a real 966-token target with the released weights, the per-sample
@@ -316,18 +320,15 @@ def _per_sample_confidence(config: InferenceConfig) -> bool:
     traffic than it wins in parallelism at that size, so upstream's cutoff is a
     throughput setting as much as a memory one.
 
-    Which raises a question this does not answer: 750 may be conservative, and the
-    crossover may sit well below it. The released sample width and token rule stay
-    unchanged; only callers that raise the sample count beyond five select the
-    bounded schedule independent of length.
+    Keeping the comparison here, rather than treating every integer as a boolean
+    switch, preserves the public numeric cutoff contract for tuned direct calls
+    without reviving the unbounded high-sample confidence graph.
     """
+    cutoff = config.per_sample_token_cutoff
     return (
-        config.per_sample_token_cutoff is not None
+        cutoff is not None
         and config.num_samples > 1
-        and (
-            config.n_token > config.per_sample_token_cutoff
-            or config.num_samples > DIFFUSION_CHUNK_SIZE
-        )
+        and (config.n_token > cutoff or config.num_samples > DIFFUSION_CHUNK_SIZE)
     )
 
 
@@ -401,9 +402,7 @@ def openfold3_precision(function):
     def wrapper(*args, **kwargs):
         from foldjax.execution import resolved_matmul_precision
 
-        with jax.default_matmul_precision(
-            resolved_matmul_precision(_MATMUL_PRECISION)
-        ):
+        with jax.default_matmul_precision(resolved_matmul_precision(_MATMUL_PRECISION)):
             return function(*args, **kwargs)
 
     return wrapper
@@ -550,9 +549,7 @@ def _reduce_tm_pair_scores(
     considered = jnp.maximum(jnp.sum(mask_i), 1).astype(considered_dtype)
     keep_pair = mask_i[..., :, None] & mask_i[..., None, :]
     if interface:
-        keep_pair = keep_pair & (
-            asym_id[..., :, None] != asym_id[..., None, :]
-        )
+        keep_pair = keep_pair & (asym_id[..., :, None] != asym_id[..., None, :])
         denominator = jnp.maximum(jnp.sum(keep_pair, axis=-1), eps)
     else:
         denominator = considered
@@ -566,9 +563,7 @@ def _reduce_tm_pair_scores(
         # pair's column is masked, while a masked row is cleared by the final
         # row selection. Some GPU lowerings turn the compact mask multiply into
         # a select and suppress that NaN; make the scalar contract explicit.
-        poison = jnp.any(
-            undefined_pairs & active_row[..., :, None], axis=(-2, -1)
-        )
+        poison = jnp.any(undefined_pairs & active_row[..., :, None], axis=(-2, -1))
         result = jnp.where(poison, jnp.full_like(result, jnp.nan), result)
     return result
 
@@ -656,9 +651,7 @@ def _compact_confidence_metrics_from_pae(
                 value = jnp.where(both_present, value, 0.0)
                 matrix[i][j] = value
                 matrix[j][i] = value
-        chain_pair = jnp.stack(
-            [jnp.stack(row, axis=-1) for row in matrix], axis=-2
-        )
+        chain_pair = jnp.stack([jnp.stack(row, axis=-1) for row in matrix], axis=-2)
     return ptm, iptm, chain_pair
 
 
@@ -931,14 +924,16 @@ def predict(
         return s_conf_one, pae_one, pde_one
 
     # Upstream's ``apply_per_sample`` maps confidence over the token cutoff.
-    # FoldJAX uses that same schedule above the released five-sample width too,
-    # because this is the only stage where samples genuinely differ *and* tensors
-    # are pair-sized. Nothing here mixes samples, so mapping and batching give the
-    # same values -- the difference is whether N_sample pair representations are
-    # live at once, which at 2000 tokens decides whether prediction runs at all.
+    # FoldJAX defaults the cutoff to zero, so every multi-sample prediction takes
+    # the bounded schedule. A positive threshold may batch within the released
+    # width, while ``None`` is the explicit unbounded opt-out. Nothing here mixes
+    # samples, so mapping and batching give the same values -- the difference is
+    # whether N_sample pair representations are live at once, which can decide
+    # whether prediction fits.
     per_sample_confidence = _per_sample_confidence(config)
     sink_pae_metrics = _sink_pae_metrics(config)
     if sink_pae_metrics:
+
         def confidence_and_metrics(one):
             s_one, pae_one, pde_one = confidence_pair(
                 s_input,
@@ -956,9 +951,7 @@ def predict(
                 n_chain=n_chain,
                 **ptm_kwargs,
             )
-            return jax.tree.map(
-                lambda leaf: leaf[0], (s_one, metrics_one, pde_one)
-            )
+            return jax.tree.map(lambda leaf: leaf[0], (s_one, metrics_one, pde_one))
 
         s_conf, (ptm, iptm, chain_pair), pde_logits = jax.lax.map(
             confidence_and_metrics,
@@ -1062,7 +1055,7 @@ def released_config(
     num_samples: int = 5,
     num_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
-    per_sample_token_cutoff: int | None = 750,
+    per_sample_token_cutoff: int | None = 0,
     diffusion_chunk_size: int | None | str = "auto",
     msa_depth: int | None = RELEASED_MSA_DEPTH,
     cp_shards: int = 1,

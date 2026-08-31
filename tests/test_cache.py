@@ -1,4 +1,5 @@
 import dataclasses
+import json
 from pathlib import Path
 
 import numpy as np
@@ -108,10 +109,46 @@ def test_weight_identity_of_a_directory_omits_size(tmp_path: Path) -> None:
     assert identity == str(tmp_path.resolve())
 
 
-def test_runtime_profile_reports_the_active_jax_runtime() -> None:
+def test_runtime_profile_reports_a_stable_cpu_topology(monkeypatch) -> None:
+    import jax
+
+    class _CPUDevice:
+        platform = "cpu"
+        device_kind = "host-cpu"
+        id = 0
+        process_index = 0
+        local_hardware_id = 0
+        slice_index = 0
+        coords = (0, 0, 0)
+
+    monkeypatch.setattr(jax, "devices", lambda: [_CPUDevice()])
+    monkeypatch.setattr(jax, "default_backend", lambda: "cpu")
+    monkeypatch.setattr(jax, "process_count", lambda: 1)
+    monkeypatch.setattr(jax, "local_device_count", lambda: 1)
+
     profile = runtime_profile()
     assert profile["jax"]
-    assert profile["platform"]
+    assert profile["jaxlib"]
+    assert profile["platform"] == "cpu"
+    assert profile["device_kind"] == "host-cpu"
+    assert all(isinstance(value, str) for value in profile.values())
+    assert json.loads(profile["topology"]) == {
+        "process_count": 1,
+        "global_device_count": 1,
+        "local_device_count": 1,
+        "devices": [
+            {
+                "platform": "cpu",
+                "device_kind": "host-cpu",
+                "id": 0,
+                "process_index": 0,
+                "local_hardware_id": 0,
+                "slice_index": 0,
+                "coords": [0, 0, 0],
+            }
+        ],
+    }
+    assert runtime_profile() == profile
 
 
 def test_resolve_cache_dir_partitions_by_backend_and_compile_options(
@@ -276,8 +313,7 @@ def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
         {"attention_backend": "xla"},
         {"return_embeddings": True},
         {"return_distogram": True},
-        {"kernel_autotuning": "heuristics"},
-        {"kernel_autotuning": "error"},
+        {"matmul_precision": "high"},
         {"num_samples": np.int64(5)},
     ),
 )
@@ -293,6 +329,20 @@ def test_alphafold3_nondefault_and_type_routes_keep_distinct_cache_namespaces(
 
     assert backend.cache_profile(changed) != backend.cache_profile(omitted)
     assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
+
+
+@pytest.mark.parametrize("strategy", ("autotune", "heuristics", "error"))
+def test_alphafold3_autotuning_miss_policies_share_one_cache_namespace(
+    tmp_path: Path, strategy: str
+) -> None:
+    backend = AlphaFold3Backend()
+    omitted = dataclasses.replace(
+        _request(tmp_path), model="alphafold3", input_format="native"
+    )
+    selected = dataclasses.replace(omitted, options={"kernel_autotuning": strategy})
+
+    assert backend.cache_profile(selected) == backend.cache_profile(omitted)
+    assert resolve_cache_dir(selected, backend) == resolve_cache_dir(omitted, backend)
 
 
 def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
@@ -385,12 +435,8 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
     cp_auto = dataclasses.replace(
         request, options={"cp_devices": 4, "cp_layout": "auto"}
     )
-    cp_rows = dataclasses.replace(
-        request, options={"cp_devices": 4, "cp_layout": "1d"}
-    )
-    cp_grid = dataclasses.replace(
-        request, options={"cp_devices": 4, "cp_layout": "2d"}
-    )
+    cp_rows = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "1d"})
+    cp_grid = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "2d"})
     cp_xla = dataclasses.replace(
         request,
         options={
@@ -612,12 +658,8 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     automatic = dataclasses.replace(
         request, options={"cp_devices": 4, "cp_layout": "auto"}
     )
-    rows = dataclasses.replace(
-        request, options={"cp_devices": 4, "cp_layout": "1d"}
-    )
-    grid = dataclasses.replace(
-        request, options={"cp_devices": 4, "cp_layout": "2d"}
-    )
+    rows = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "1d"})
+    grid = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "2d"})
     assert backend.cache_profile(automatic) == backend.cache_profile(rows)
     assert backend.cache_profile(automatic)["triangle_kernel"] == "xla"
     assert resolve_cache_dir(automatic, backend) != resolve_cache_dir(grid, backend)

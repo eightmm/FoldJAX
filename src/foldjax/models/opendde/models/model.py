@@ -59,6 +59,7 @@ from foldjax.models.protenix.models.heads.head import DistogramParams, distogram
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
+    relative_position_encoding_from_features,
     relative_position_features,
 )
 from foldjax.models.protenix.models.trunk_blocks.pairformer import PairformerStackParams
@@ -319,11 +320,7 @@ def _validate_static_structural_features(
         "structural_token_padding_mask": (n_structural,),
     }
     expected_shapes.update(
-        {
-            name: shape
-            for name, shape in optional_shapes.items()
-            if name in features
-        }
+        {name: shape for name, shape in optional_shapes.items() if name in features}
     )
     for name, expected in expected_shapes.items():
         actual = tuple(jnp.asarray(features[name]).shape)
@@ -393,8 +390,7 @@ def _validate_static_structural_features(
             )
         ).astype(bool)
         representative_mask = (
-            jnp.asarray(features["distogram_rep_atom_mask"]).astype(bool)
-            & atom_mask
+            jnp.asarray(features["distogram_rep_atom_mask"]).astype(bool) & atom_mask
         )
         representative_counts = (
             jnp.zeros(
@@ -492,6 +488,8 @@ def _restore_ref_atom_category_one_hot(
 def prepare_structural_features(
     residue_features: Mapping[str, Any],
     structural_pair_features: Mapping[str, jnp.ndarray],
+    *,
+    include_relp: bool = True,
 ) -> dict[str, Any]:
     """Replace residue aliases with OpenDDE structural-token metadata."""
 
@@ -535,7 +533,8 @@ def prepare_structural_features(
             "structural_token_padding_mask"
         ]
     structural.update(structural_pair_features)
-    structural["relp"] = relative_position_features(structural)
+    if include_relp:
+        structural["relp"] = relative_position_features(structural)
 
     residue_only = {
         "msa",
@@ -675,8 +674,7 @@ def opendde_infer_static(
 
     if cp_layout != (_active_cp_layout() or "1d"):
         raise RuntimeError(
-            f"cp_layout={cp_layout!r} but the active mesh is "
-            f"{_active_cp_layout()!r}"
+            f"cp_layout={cp_layout!r} but the active mesh is {_active_cp_layout()!r}"
         )
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -711,9 +709,7 @@ def opendde_infer_static(
         )
     residue_token_mask = input_feature_dict.get("token_padding_mask")
     atom_mask = input_feature_dict.get("atom_padding_mask")
-    structural_token_mask = input_feature_dict.get(
-        "structural_token_padding_mask"
-    )
+    structural_token_mask = input_feature_dict.get("structural_token_padding_mask")
     residue_padding_pair_mask = None
     if residue_token_mask is not None:
         residue_token_mask = jnp.asarray(residue_token_mask).astype(bool)
@@ -790,17 +786,15 @@ def opendde_infer_static(
         params.structural_expander,
     )
     if structural_token_mask is not None:
-        s_inputs_structural = s_inputs_structural * structural_token_mask.astype(
-            s_inputs_structural.dtype
-        )[..., None]
+        s_inputs_structural = (
+            s_inputs_structural
+            * structural_token_mask.astype(s_inputs_structural.dtype)[..., None]
+        )
     structural_features = prepare_structural_features(
         trunk_features,
         structural_pair_features,
+        include_relp=False,
     )
-    # The structural relp is [N_s, N_s, 139] and feeds the diffusion
-    # conditioning's pair projection; born sharded, that projection stays
-    # shard-local.
-    structural_features["relp"] = shard_pair_rows(structural_features["relp"])
     structural_pair_bias = structural_features.get("structural_pair_attn_bias")
     expected_pair_shape = (n_structural_token, n_structural_token)
     if structural_pair_bias is None or tuple(structural_pair_bias.shape) != (
@@ -812,12 +806,6 @@ def opendde_infer_static(
         raise ValueError(
             "structural_pair_attn_bias expected shape "
             f"{expected_pair_shape}, got {actual}"
-        )
-    expected_relp_shape = (*expected_pair_shape, 139)
-    if tuple(structural_features["relp"].shape) != expected_relp_shape:
-        raise ValueError(
-            "structural relp expected shape "
-            f"{expected_relp_shape}, got {tuple(structural_features['relp'].shape)}"
         )
     s_structural, z_structural = structural_refiner_stack(
         s_structural,
@@ -855,10 +843,20 @@ def opendde_infer_static(
     diffusion_s_inputs = as_float32(s_inputs_structural)
     diffusion_s_trunk = as_float32(s_structural)
     diffusion_z_trunk = as_float32(z_structural)
+    # The released relp has four categorical values per structural-token pair.
+    # Project them directly so the float32 [N_s, N_s, 139] one-hot never exists;
+    # the resulting 128-channel value is born pair-row sharded under CP.
+    structural_relp_encoding = shard_pair_rows(
+        relative_position_encoding_from_features(
+            structural_features,
+            params.diffusion.conditioning.relpe,
+        )
+    )
     pair_z = diffusion_conditioning_prepare_cache(
-        structural_features["relp"],
+        None,
         diffusion_z_trunk,
         params.diffusion.conditioning,
+        relp_encoding=structural_relp_encoding,
     )
     if structural_pair_mask is not None:
         pair_z = pair_z * structural_pair_mask.astype(pair_z.dtype)[..., None]
@@ -895,7 +893,9 @@ def opendde_infer_static(
             structural_features["pad_info"],
             x_noisy=x_noisy,
             t_hat_noise_level=t_hat_noise_level,
-            relp_feature=structural_features["relp"],
+            # Pair conditioning is precomputed above, so this legacy argument is
+            # deliberately absent and is never read by the denoiser.
+            relp_feature=None,
             s_inputs=diffusion_s_inputs,
             s_trunk=diffusion_s_trunk,
             z_trunk=diffusion_z_trunk,
@@ -1147,6 +1147,7 @@ GRAPH_STATIC_ARGNAMES = (
     "validate_feature_values",
 )
 
+
 def _opendde_infer_graph(
     input_feature_dict: dict[str, Any],
     param_arrays: tuple,
@@ -1239,8 +1240,7 @@ def opendde_infer_compiled(
         getattr(params, "confidence", None), "distance_embedding", None
     )
     kwargs["compact_confidence_distance_bins"] = (
-        compact_requested
-        and can_compact_confidence_distance_embedding(distance_params)
+        compact_requested and can_compact_confidence_distance_embedding(distance_params)
     )
     param_arrays, treedef, flags = split_static_flags(params)
     cp = int(kwargs.pop("cp_shards", 1))

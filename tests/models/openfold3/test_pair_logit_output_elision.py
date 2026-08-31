@@ -100,8 +100,8 @@ def test_pair_logit_plan_removes_the_exact_compiled_output_payload() -> None:
     assert pair_bytes <= removed < pair_bytes + 128
 
 
-def test_n32_non_sink_output_retention_does_not_change_the_shared_metric() -> None:
-    """Below the 750-token sink cutoff, DCE alone preserves the shared metric."""
+def test_n32_output_retention_does_not_change_the_shared_metric() -> None:
+    """DCE alone preserves the shared metric independently of scheduling."""
 
     rng = np.random.default_rng(20260829)
     z_conf = rng.normal(size=(SAMPLES, TOKENS, TOKENS, CHANNELS)).astype(np.float32)
@@ -134,7 +134,7 @@ def test_direct_released_config_keeps_its_native_pair_outputs() -> None:
 @pytest.mark.parametrize(
     ("n_token", "default_pair_logits", "default_sink", "managed_sink"),
     [
-        (750, ("pae_logits", "pde_logits", "distogram_logits"), False, False),
+        (750, ("pae_logits", "pde_logits", "distogram_logits"), False, True),
         (751, ("pae_logits", "pde_logits", "distogram_logits"), False, True),
         (1225, ("pae_logits", "pde_logits", "distogram_logits"), False, True),
         (1226, ("pde_logits", "distogram_logits"), True, True),
@@ -146,7 +146,7 @@ def test_managed_budget_sink_boundaries(
     default_sink: bool,
     managed_sink: bool,
 ) -> None:
-    """The managed default only adds compact PAE metrics at 751--1,225 tokens."""
+    """The managed default sinks PAE metrics for every multi-sample size."""
 
     direct = released_config(n_token=n_token, n_atom=1)
     managed = released_config(n_token=n_token, n_atom=1, max_array_bytes=0)

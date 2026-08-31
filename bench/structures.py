@@ -5,8 +5,10 @@ its own prediction. This says how far apart the predictions themselves are --
 and, more importantly, how far apart they *should* be expected to be.
 
 That second part is the whole difficulty. The two sides do not share a random
-tape: torch and JAX draw different diffusion noise from the same seed, so even
-a bit-exact port would return different samples. A cross-implementation
+tape: torch and JAX draw different diffusion noise even from the same seed, so
+even a bit-exact port would return different samples. Historical OpenFold3
+upstream artifacts recorded before the 2026-08-31 harness fix additionally use
+a generated seed rather than the requested 101. A cross-implementation
 TM-score is therefore uninterpretable on its own. What makes it interpretable
 is the same number computed *within* each implementation, across its own
 samples. If FoldJAX's five samples agree with each other no better than they
@@ -39,13 +41,13 @@ import numpy as np
 def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
     """CA coordinates and their residue keys, from an mmCIF atom_site loop.
 
-    The keys matter. Chai omits residues it did not resolve, and omits
-    different ones per sample -- at 1,531 residues its five structures carry
-    1,425 to 1,531 CA atoms. Comparing by position would then align residue i
-    of one structure against residue j of another, and requiring equal counts
-    (which this did at first) silently drops the pair instead, so a run that
-    compared 1 of 25 pairs reported a median over that 1 as though it were the
-    answer.
+    The keys matter. Historical Chai benchmark artifacts omit residues they did
+    not resolve, and omit different ones per sample -- at 1,531 residues their
+    five structures carry 1,425 to 1,531 CA atoms. Comparing by position would
+    then align residue i of one structure against residue j of another, and
+    requiring equal counts (which this did at first) silently drops the pair
+    instead, so a run that compared 1 of 25 pairs reported a median over that 1
+    as though it were the answer.
 
     A key also has to survive a writer that fills a column with a placeholder
     rather than omitting it. OpenFold3 writes `label_seq_id` as `.` and names
@@ -314,10 +316,12 @@ def main() -> int:
     print(
         "\nTM-score, iterative search, median over all pairs (min-max in "
         "brackets). Read `cross` against the two `within` columns: torch and "
-        "JAX draw different diffusion noise from the same seed, so `within` -- "
-        "how well an implementation agrees with *itself* across samples -- is "
-        "the closest any correct port could come. `cross` at or above `within` "
-        "means the two are as close as this model's own sampling allows."
+        "JAX do not share a diffusion random tape even from the same seed; "
+        "historical OpenFold3 upstream artifacts also used a different "
+        "effective seed. Therefore `within` -- how well an implementation "
+        "agrees with *itself* across samples -- is the closest any correct port "
+        "could come. `cross` at or above `within` means the two are as close as "
+        "this model's own sampling allows."
     )
 
     if args.out is not None:

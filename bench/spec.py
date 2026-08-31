@@ -39,11 +39,14 @@ SEED = 101
 #: weights are gigabytes, and neither belongs in git.
 DATA = Path(
     __import__("os").environ.get(
-        "FOLDJAX_BENCH_DATA", "/home/jaemin/non-project/optimizing/foldjax-bench"
+        "FOLDJAX_BENCH_DATA",
+        str(Path(__file__).resolve().parents[2] / "foldjax-bench"),
     )
 )
 
-#: Every model FoldJAX can run.
+#: Models admitted by ``bench.drive``'s shared benchmark matrix. ESMFold2's
+#: historical point rows are outside this matrix; ``bench/esmfold2_compare.py``
+#: is its separate released-configuration comparison harness.
 #:
 #: `protenix-v2` is Protenix's other supported checkpoint rather than another
 #: port: 464M parameters against the release's 368M, same code path on both
@@ -71,13 +74,17 @@ MODELS = (
 #: installation rather than reimplementing it, so both columns would run the
 #: same code.
 #:
-#: `openfold3` is absent for a different reason, and a temporary one: it *is* a
-#: reimplementation, but `run_upstream.command` has no branch for it and no
-#: upstream OpenFold3 virtualenv has been provisioned on this host. Until both
-#: exist, an "upstream" number would have to be borrowed from somewhere else,
-#: which is exactly what this directory refuses to do. It can be measured on
-#: the FoldJAX side today.
-REIMPLEMENTED = ("boltz2", "opendde", "protenix", "protenix-v2")
+#: OpenFold3 is included through the upstream 0.3.1 environment and the p1
+#: checkpoint this port implements. ``openfold3_runner.yml`` pins the shared
+#: schedule; the recorded speed column remains hardware-qualified because the
+#: upstream accelerated attention paths do not run on this host's sm_120 GPU.
+REIMPLEMENTED = (
+    "boltz2",
+    "opendde",
+    "openfold3",
+    "protenix",
+    "protenix-v2",
+)
 
 #: Options the FoldJAX side pins so a row stays a comparison.
 #:

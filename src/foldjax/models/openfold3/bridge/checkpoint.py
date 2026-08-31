@@ -3,9 +3,8 @@
 Reads an OpenFold3 checkpoint into a flat ``{key: array}`` mapping that the
 mappers in ``torch_mapping`` consume. Loading is deliberately separated from
 mapping so a checkpoint can be *inspected* before any parameter layout is
-assumed — which is the open risk in this port: the released weights' top-level
-prefixes, real dimensions, and whether the triangular multiplication is stored
-fused or unfused are all unverified.
+assumed. The released p1 checkpoint uses unfused triangular multiplication;
+the composite mapper and synthetic gates also support upstream's fused layout.
 
 ``safetensors`` uses its native NumPy loader. ``.pt``/``.ckpt`` uses FoldJAX's
 restricted torch-archive reader, which reconstructs tensors as NumPy arrays and
@@ -122,8 +121,8 @@ def detect_fused_tri_mul(state: Mapping[str, np.ndarray]) -> bool | None:
 
     Returns ``True`` for the fused layout (``linear_ab_p``/``linear_ab_g``),
     ``False`` for the unfused one (``linear_a_p``/``linear_b_p``), and ``None`` if
-    neither appears. This is the port's single largest unverified assumption: the
-    mappers implement the unfused layout only.
+    neither appears. Mapping supports both layouts; this helper is an inspection
+    aid for checkpoint reports and diagnostics.
     """
     fused = any("linear_ab_p" in key or "linear_ab_g" in key for key in state)
     unfused = any("linear_a_p" in key or "linear_b_p" in key for key in state)

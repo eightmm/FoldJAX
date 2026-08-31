@@ -1,13 +1,17 @@
 # FoldJAX against upstream
 
-Every runtime here is JAX. Five models are reimplementations of published
+Every FoldJAX-side runtime here is JAX. Five models are reimplementations of published
 torch models; AlphaFold 3 is the official JAX distribution driven through the
 same FoldJAX interface. The useful comparison is against each model's own
-reference repository, on the same job, under the same schedule, measured the
+reference repository, on the same job, under the same nominal schedule, measured the
 same way.
 
-That is what [`bench/`](bench/) does, and it is reproducible: one command per
-row, one process per measurement, results written as they land.
+That is what [`bench/`](../bench/) does. The current harness reruns one row per
+process and records byte identities for its external inputs and checkpoints,
+plus upstream source/runtime identity where applicable. The checked-in table
+rows predate that result schema, so they are dated measurement evidence rather
+than exact source-and-artifact replay capsules. The additional historical
+dirty-worktree limitation for the optimization rows is recorded below.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmark-dark.png">
@@ -21,38 +25,57 @@ base model ships the same three. Boltz-2 defaults to 3 recycles rather than 10,
 so this asks more of it than its own default does; it asks the same of its
 upstream, which is what makes the comparison mean anything.
 
+All rows were measured on one NVIDIA RTX PRO 6000 Blackwell Max-Q workstation
+GPU (`sm_120`, 300 W cap). `nvidia-smi` reports 97,887 MiB (95.6 GiB) of total
+memory; PyTorch reports 94.97 GiB usable, so capacity statements below name the
+measurement they use rather than treating those values as interchangeable.
+
+One historical exception was discovered during the 2026-08-31 harness audit.
+The recorded upstream OpenFold3 rows passed 0.3.1's `--num_model_seeds 1`; that
+flag overrides the YAML list and generated its sole seed from 42
+(`2746317213`) instead of using 101. Their shapes, schedule, time, and memory
+remain valid, but their confidence values are not seed-matched to FoldJAX. The
+harness now omits that flag and takes `[101]` from `openfold3_runner.yml`; the
+upstream OpenFold3 confidence cells below carry a dagger until re-measured.
+Those historical upstream rows also left `--use_templates=true` despite having
+no template input, so their wall times include avoidable template/CCD
+initialization. Current runs pass `--use_templates false`; the old timings stay
+labelled historical rather than being rewritten. The retained 3,012-token cell
+also disables the preset's confidence-head host offload, a measured harness
+variant that changed 6,782 s/81.0 GiB to 6,722 s/83.2 GiB.
+
 | tokens | model | FoldJAX s | upstream s | FoldJAX GiB | upstream GiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 499 | alphafold3 | 302 | - | 3.0 | - | - | - | - | - | - |
 | 499 | boltz2 | 34 | 55 | 4.5 | 8.2 | 1.65x | 1.81x | complex_plddt | 0.9704 | 0.9700 |
 | 499 | esmfold2 | 31 | - | 16.1 | - | - | - | - | - | - |
 | 499 | opendde | 80 | 75 | 12.5 | 18.1 | 0.94x | 1.44x | ranking_score | 0.1946 | 0.1947 |
-| 499 | openfold3 | 35 | 97 | 9.9 | 18.7 | 2.76x | 1.88x | ptm | 0.9325 | 0.9274 |
+| 499 | openfold3 | 35 | 97 | 9.9 | 18.7 | 2.76x | 1.88x | ptm† | 0.9325 | 0.9274 |
 | 499 | protenix | 27 | 63 | 4.6 | 5.0 | 2.36x | 1.08x | ranking_score | 0.1937 | 0.1935 |
 | 499 | protenix-v2 | 38 | 72 | 6.5 | 7.0 | 1.89x | 1.08x | ranking_score | 0.1950 | 0.1947 |
 | 1003 | alphafold3 | 386 | - | 6.7 | - | - | - | - | - | - |
 | 1003 | boltz2 | 96 | 141 | 6.9 | 15.8 | 1.47x | 2.30x | complex_plddt | 0.9495 | 0.9482 |
 | 1003 | esmfold2 | 69 | - | 23.1 | - | - | - | - | - | - |
 | 1003 | opendde | 281 | 287 | 42.9 | 59.5 | 1.02x | 1.38x | ranking_score | 0.1926 | 0.1930 |
-| 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm | 0.9307 | 0.9300 |
+| 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm† | 0.9307 | 0.9300 |
 | 1003 | protenix | 67 | 99 | 6.7 | 12.7 | 1.49x | 1.89x | ranking_score | 0.1921 | 0.1922 |
 | 1003 | protenix-v2 | 110 | 138 | 10.1 | 13.3 | 1.26x | 1.32x | ranking_score | 0.1931 | 0.1927 |
 | 1354 | alphafold3 | 478 | - | 11.0 | - | - | - | - | - | - |
 | 1354 | boltz2 | 150 | 204 | 10.2 | 20.6 | 1.36x | 2.02x | complex_plddt | 0.8275 | 0.8305 |
 | 1354 | opendde | 529 | failed | 77.8 | failed | - | - | - | - | - |
-| 1354 | openfold3 | 230 | 652 | 15.4 | 42.7 | 2.83x | 2.78x | ptm | 0.8264 | 0.8360 |
+| 1354 | openfold3 | 230 | 652 | 15.4 | 42.7 | 2.83x | 2.78x | ptm† | 0.8264 | 0.8360 |
 | 1354 | protenix | 106 | 133 | 9.8 | 21.6 | 1.26x | 2.20x | ranking_score | 0.1800 | 0.1799 |
 | 1354 | protenix-v2 | 186 | 217 | 16.9 | 22.5 | 1.17x | 1.33x | ranking_score | 0.1810 | 0.1811 |
 | 2096 | alphafold3 | 571 | - | 20.5 | - | - | - | - | - | - |
 | 2096 | boltz2 | 347 | 543 | 21.9 | 46.6 | 1.56x | 2.13x | complex_plddt | 0.9799 | 0.9795 |
 | 2096 | opendde | failed | failed | failed | failed | - | - | - | - | - |
-| 2096 | openfold3 | 547 | 2,411 | 29.3 | 91.2 | 4.41x | 3.11x | ptm | 0.9058 | 0.9175 |
+| 2096 | openfold3 | 547 | 2,411 | 29.3 | 91.2 | 4.41x | 3.11x | ptm† | 0.9058 | 0.9175 |
 | 2096 | protenix | 240 | 323 | 23.2 | 40.8 | 1.35x | 1.76x | ranking_score | 0.9602 | 0.9604 |
 | 2096 | protenix-v2 | 434 | 569 | 39.0 | 47.5 | 1.31x | 1.22x | ranking_score | 0.9645 | 0.9652 |
 | 3012 | alphafold3 | 1,019 | - | 41.3 | - | - | - | - | - | - |
 | 3012 | boltz2 | 1,016 | failed | 43.0 | failed | - | - | - | - | - |
 | 3012 | opendde | failed | failed | failed | failed | - | - | - | - | - |
-| 3012 | openfold3 | 1,385 | 6,722 | 58.4 | 81.3 | 4.85x | 1.39x | ptm | 0.8711 | 0.8748 |
+| 3012 | openfold3 | 1,385 | 6,722 | 58.4 | 81.3 | 4.85x | 1.39x | ptm† | 0.8711 | 0.8748 |
 | 3012 | protenix | 723 | 797 | 43.7 | 56.0 | 1.10x | 1.28x | ranking_score | 0.9554 | 0.9502 |
 | 3012 | protenix-v2 | 2,054 | failed | 78.2 | failed | - | - | - | - | - |
 | 4926 | alphafold3 | failed | - | failed | - | - | - | - | - | - |
@@ -70,8 +93,9 @@ twelve-second run that beat everything else. The size was chosen rather than
 guessed: at 1,003 tokens upstream peaks at 59.5 GiB against FoldJAX's 42.9, and
 carrying both forward puts upstream's ceiling near 1,270 tokens and FoldJAX's
 near 1,520. The window is about 250 tokens wide, and 1,531 is already outside
-it on both sides. OpenFold3's margin is also at its widest here, 2.83x on time
-and 2.78x on memory.
+it on both sides. OpenFold3 is 2.83x faster and uses 2.78x less memory at this
+size; its time advantage later widens, while its memory ratio peaks at 3.11x at
+2,096 tokens and narrows at 3,012.
 
 **OpenDDE has a lever this table cannot use.** It is the first model to fail
 here, and its `dtype=bfloat16` option runs sizes its fp32 default cannot: at
@@ -94,9 +118,10 @@ predict --model opendde` now does instead.
 Boltz-2 and upstream Protenix v2 both complete here and neither survives 3,012
 -- one runs out of memory, the other refuses by assertion. OpenDDE is already
 gone on both sides, which puts its wall between 1,003 and 2,096 rather than
-anywhere near the top of the table. Upstream OpenFold3 is at its widest margin
-here, 4.41x on time and 3.11x on memory, and its 91.2 GiB is 93% of the card;
-that its peak then *falls* at 3,012 is the chunk-size search described under
+anywhere near the top of the table. OpenFold3's memory margin is widest here at
+3.11x while its time margin widens from 4.41x here to 4.85x at 3,012 tokens;
+the 91.2 GiB upstream peak is 95.4% of the 95.6 GiB `nvidia-smi` total. That its
+peak then *falls* at 3,012 is the chunk-size search described under
 [How the cost grows](#how-the-cost-grows), not a measurement error.
 
 **ESMFold2 has two rows and no upstream column.** No torch ESMFold2
@@ -138,13 +163,13 @@ and runs: 3,012 tokens completed five samples at 78.2 GiB. `strict_token_limit`
 restores upstream's refusal for a caller who wants it. Neither implementation
 validates the model at that length, which the warning says too.
 
-**4,926 tokens is past every model here, on both sides.** The row is entirely
-failures, and it is in the table because a size nothing reaches is a result --
-but they are not the same failure. Three FoldJAX runs ask for more than the
-95.0 GiB device holds, so no allocator setting reaches them. Protenix is the
-one that does not: it needed 90.5 GiB, inside the device, and still failed with
-the pool raised to 0.98, which makes its wall fragmentation rather than total
-size. Upstream Protenix v2 never allocates at all -- it refuses above 2,560
+**Every attempted 4,926-token cell failed.** The row is in the table because a
+size nothing reaches is a result, but the failures are not the same. Five
+FoldJAX routes ask for more than the 95.6 GiB `nvidia-smi` total holds, so no
+allocator setting reaches them. Base Protenix is the one that does not: it
+needed 90.5 GiB, inside the device, and still failed with the pool raised to
+0.98, which makes its wall fragmentation rather than total size. Upstream
+Protenix v2 never allocates at all -- it refuses above 2,560
 tokens by assertion, the same refusal as at 3,012. Upstream Boltz-2 reaches
 92.2 GiB, produces nothing, exits 0, and writes no reason anywhere; that row is
 `failed` on the absence of a structure, which is the only thing it is honest to
@@ -162,7 +187,8 @@ this one does not get there.** Upstream's `docs/performance.md` puts a
 5,120-token fold at 2,547 s on an A100 80 GB and 1,416 s on an H100 80 GB, with
 `XLA_PYTHON_CLIENT_PREALLOCATE=true` and `XLA_CLIENT_MEM_FRACTION=0.95`;
 unified memory is what it recommends *above* that size, not for it. Here the
-same model asks for 102.8 GiB at 4,888 tokens, past a 95.0 GiB device. What
+same model asks for 102.8 GiB at 4,888 tokens, past the 95.6 GiB
+`nvidia-smi` total. What
 could reasonably differ was checked and does not: the vendored
 `pair_transition_shard_spec` is upstream's 80 GB profile, flash attention is
 `triton` on both sides, the input is padded to the same 5,120-token bucket, and
@@ -182,22 +208,38 @@ few homologues. Both columns read the same file, so the comparison between them
 is unaffected; the growth curve is, and this size sits below the trend the
 other five set.
 
-**The FoldJAX columns were re-measured on 2026-08-24 at `0c2d70b`; the upstream
-columns are the runs already on record.** Nothing upstream changed between the
-two dates, and re-running it is not free — OpenFold3's 3,012-token row alone is
-6,722 s — so what changed is what was measured again. The re-measurement was
+**This table is a dated measurement ledger, not a live benchmark of HEAD.** The
+core 499-, 1,003-, 2,096-, and 3,012-token FoldJAX sweep was re-measured on
+2026-08-24 at `0c2d70b`; Protenix v2, ESMFold2, and the 1,354- and 4,926-token
+rows were added over the following two days. The 2,096-, 3,012-, and
+4,926-token FoldJAX rows were then checked again at `4dbad2b`, as recorded
+above. The upstream columns are the unchanged runs already on record.
+Re-running them is not free — OpenFold3's 3,012-token row alone is 6,722 s — so
+new FoldJAX measurements are compared with that pinned reference rather than
+silently relabelling every old cell as current. The 2026-08-24 measurement was
 taken in a private worktree with its own virtualenv, because the first attempt
 shared a checkout with other work and lost its CUDA jaxlib to a concurrent
 `uv sync` halfway through; JAX prints one line and continues on the CPU, so the
 runs after that point failed in ways that said nothing about the models.
+The committed Markdown table and rendered figures also predate the current
+result schema and its job/A3M/native-input/checkpoint byte fingerprints. The
+merged raw JSON archive used to render them remains in the measurement
+worktree, not this checkout; `bench/results/` contains only the earlier rows
+pooled into the upstream scaling figure. Their named revisions and disclosed
+environments bound the evidence available, but a clean clone cannot regenerate
+this historical table or its figures exactly. New harness rows carry the
+stronger provenance described above.
 
 Method: **same job** (the upstream input is generated by FoldJAX's own
 translator, both sides name the same alignment), **same measurement**
 (live-bytes high-water mark on both sides, never `nvidia-smi`'s reserved
-pool), **FoldJAX timed warm** (compilation is paid once per shape and replayed
-from disk; the discarded first run is what fills the cache), and **the same
-confidence field on both sides** — different samples, since the PRNG streams
-differ; same-seed parity is a separate, per-port exercise.
+pool), **FoldJAX timed warm** (the discarded first run populates eligible cache
+entries; the measured process includes any rejected entry and recompilation),
+and **the same confidence field on both sides** — different samples, since the
+PRNG streams
+differ. The historical OpenFold3 upstream rows also used the different
+effective seed disclosed above; their confidence cells are not seed-matched
+parity points. Matched-tape parity is a separate, per-port exercise.
 
 Two cautions about reading a column rather than a cell. `ranking_score` is
 `0.8*ipTM + 0.2*pTM`, and Protenix and OpenDDE report `ipTM = 0` for a single
@@ -221,11 +263,14 @@ verify both.
 
 ## `num_samples` sweep
 
-Measured 2026-08-29 on `t0128` (132 tokens), with seed 101, 200 diffusion
-steps, and 10 recycles. This is one common comparison schedule, not every
-model's native default. Each cell is `wall seconds / peak MiB` from a fresh
-measured process after a separate warm process; memory is the process
-allocator's live-byte high-water mark.
+Measured 2026-08-29 at `1ed2b71` on `t0128` (132 tokens), with seed 101, 200
+diffusion steps, and 10 recycles. This is one common comparison schedule, not
+every model's native default. Each cell is `wall seconds / peak MiB` from a
+fresh measured process after a separate warm process; memory is the process
+allocator's live-byte high-water mark. These are historical cells at the named
+revision. In particular, OpenFold3's multi-sample entries predate the current
+bounded-confidence route; current re-measurements are called out below rather
+than overwriting the old sweep.
 
 | model | 1 sample | 5 samples | 10 samples | 20 samples | 32 samples |
 |---|---:|---:|---:|---:|---:|
@@ -252,6 +297,22 @@ Two longer inputs were also measured 2026-08-29 at `1ed2b71`, using only 1,
 | openfold3 | 25.32 / 4,141.4 | 49.09 / 16,674.3 | 77.46 / 31,930.0 |
 | protenix | 19.73 / 3,833.6 | 33.12 / 3,831.4 | 46.85 / 3,929.7 |
 
+AlphaFold 3's 10- and 20-sample cells above are the historical unsharded
+baseline. In the earlier provenance-limited sweep, released-width sharding
+measured `316.22 s / 2,940.6 MiB` and `325.84 s / 3,058.2 MiB`, reducing peak
+by 17.4% and 31.8%. Every process paid Tokamax autotuning, so the wall figures
+are cold-run context rather than a warm-throughput comparison.
+
+OpenFold3's 10- and 20-sample cells above are the pre-bound baseline. At the
+earlier provenance-limited worktree, the same `t0488` serial arms were measured as
+`48.74 s / 4,263.5 MiB` and `75.67 s / 4,263.7 MiB`, respectively. A later n=5
+A/B in that sweep measured the batched and serial confidence routes as
+`33.25 s / 9,045.3 MiB` and `33.39 s / 4,263.5 MiB`. The exact-source final
+confirmation is reported below. The default now serializes every multi-sample
+confidence pass. The one-sample path is outside the `num_samples > 1` rule and
+stays the historical one-sample control rather than being presented as a new
+run.
+
 **`t0976` -- 970 tokens, 7,107 input A3M records**
 
 | model | 1 sample | 10 samples | 20 samples |
@@ -263,6 +324,20 @@ Two longer inputs were also measured 2026-08-29 at `1ed2b71`, using only 1,
 | openfold3 | 81.82 / 8,517.5 | 159.84 / 8,999.8 | 247.81 / 8,999.4 |
 | protenix | 49.15 / 5,938.0 | 82.33 / 5,868.4 | 125.68 / 5,869.7 |
 
+In that earlier provenance-limited worktree, AlphaFold 3 sample sharding measured
+`411.49 s / 6,592.9 MiB` at 10 samples. A same-worktree 20-sample control then
+measured `422.25 s / 9,515.8 MiB` batched and
+`401.48 s / 6,748.9 MiB` sharded: a 2,766.9 MiB (29.1%) peak reduction. The
+batched control independently reproduces the historical 9,516.6 MiB peak.
+
+OpenDDE's direct structural-relative-position projection is deliberately not
+used to replace the historical table either. At five samples, the dense and
+direct arms in that earlier sweep measured `157.92 s / 21,074.5 MiB` and
+`157.52 s / 21,081.3 MiB`; the whole-process peak is neutral because the pair
+trunk dominates. The isolated 1,886-token projection reduced XLA temporary
+bytes from 2,011,244,544 to 10,672,144 while retaining the same-size
+1,821,181,952-byte output allocation.
+
 AlphaFold 3 incurred a Tokamax/Pallas autotuning miss in every measured
 process, so its wall times include cold autotuning and are not warm timings.
 ESMFold2 used explicit released weight files because the local managed-asset
@@ -273,11 +348,40 @@ and Protenix, are not evidence of a monotonic memory trend. During the longer
 runs, `nvidia-smi` showed JAX allocator reservations near 88 GiB while the
 traced live-byte peaks were much lower; the tables report the latter.
 
-OpenFold3 is the conspicuous route change. At 490 tokens its batched confidence
-path grows from 4,141.4 MiB at one sample to 31,930.0 MiB at 20. At 970 tokens,
-above the released 750-token per-sample cutoff, confidence is serialized and
-the 10- and 20-sample peaks stay near 9 GiB. The A3M counts above describe the
-inputs; each model may cap or subsample them before its trunk.
+The curated
+[`gap-ablation-2026-08-31.json`](../bench/experiments/gap-ablation-2026-08-31.json)
+manifest records the input and result hashes available for these runs, together
+with an important historical limitation:
+the OMS ledger hashed tracked diffs but did not archive the then-untracked arm
+scripts. These rows are measured evidence, but not an exactly
+checkout-replayable source capsule.
+
+The follow-up
+[`final-tree-gpu-gate-2026-08-31.json`](../bench/experiments/final-tree-gpu-gate-2026-08-31.json)
+closes that gap on the final source tree. Its six warm measured processes all
+share source identity
+`e5d18dcfd2c9062d8fa2d0c0996e3541987b3cb3c146d32c8440c8d0d21a5518`
+and each passed postflight identity validation. At 490 tokens, OpenFold3's
+batched/serial arms measured `34.72 s / 9,045.3 MiB` and
+`35.14 s / 4,263.5 MiB`. At 132 tokens and 10 samples, AlphaFold 3's
+batched/sharded arms measured `39.15 s / 1,531.6 MiB` and
+`43.64 s / 1,351.0 MiB`; the longer 970-token, 20-sample result above remains
+the throughput-relevant scaling point. OpenDDE's dense/direct arms measured
+`43.59 s / 6,466.5 MiB` and `43.45 s / 6,466.7 MiB`, confirming that the
+projection saving does not move the trunk-dominated whole-process peak.
+Minimum paired TM-scores were 0.99986, 0.98740, and 0.99926, respectively;
+AlphaFold 3's maximum paired CA RMSD was 0.518 Å against a 12.2 Å median
+within-arm sample spread. Numerical reproduction remains conditional on the
+matching artifacts, source, runtime, and hardware recorded in the evidence.
+
+OpenFold3 is the conspicuous route change. At `1ed2b71`, the 490-token batched
+confidence path grew from 4,141.4 MiB at one sample to 31,930.0 MiB at 20. The
+current route serializes confidence whenever the sample count exceeds one,
+which is why the re-measured 5-, 10-, and 20-sample peaks above are all about
+4,264 MiB. At 970 tokens, the old code was already above the released 750-token
+per-sample cutoff, so its 10- and 20-sample peaks stayed near 9 GiB even in the
+historical sweep. The A3M counts above describe the inputs; each model may cap
+or subsample them before its trunk.
 
 ## How the cost grows
 
@@ -302,17 +406,20 @@ loading, XLA compilation -- is a constant added to a power law, and it flattens
 the average at the small end.
 
 - **Nothing here doubles cheaply, and everything gets worse as it grows.**
-  FoldJAX time multiplies 3.6-4.1x per doubling across 499-3,012 tokens, but
-  5.9-8.3x between 2,096 and 3,012. Extrapolating a small-size measurement to a
-  large sequence underestimates it, in every column.
-- **AlphaFold 3's 1.6x per doubling is the clearest case of that constant.**
+  For the three base port routes that reach 3,012 tokens, FoldJAX time
+  multiplies 3.4-4.1x per doubling across 499-3,012 tokens, but 5.9-8.3x
+  between 2,096 and 3,012. Protenix-v2 is steeper still, as noted below.
+  Extrapolating a small-size measurement to a large sequence underestimates it,
+  in every completed column.
+- **AlphaFold 3's 1.5x per doubling is the clearest case of that constant.**
   Its 302 s at 499 tokens is mostly fixed cost, which is why its average is the
   flattest here while its top end (3.0x) nearly doubles it. It is not scaling
   better than the ports; it is starting from a bigger floor.
 - **Memory grows slower than time -- about 2.0-2.7x per doubling -- and it is
   what runs out first anyway.** OpenDDE is the exception and fails earliest:
-  3.4x per doubling on two surviving points, 42.9 GiB already at 1,003 tokens.
-- **OpenFold3 upstream's memory falls from 93.4 GiB at 2,096 tokens to 83.2 at
+  3.5x per doubling across three surviving points, steepening to 3.9x at the
+  top end, and 77.8 GiB already at 1,354 tokens.
+- **OpenFold3 upstream's memory falls from 91.2 GiB at 2,096 tokens to 81.3 at
   3,012, and that is not a saving** -- see below. It is the one series here
   whose memory panel cannot be read without its time panel.
 
@@ -330,12 +437,12 @@ refusal by assertion, before it allocated anything. They are drawn rather than
 dropped, because omitting them would bend a curve into a claim that the model
 kept scaling.
 
-### The four upstreams against each other
+### The five reference implementations against each other
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="upstream-scaling-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="upstream-scaling-light.png">
-  <img alt="wall time and peak memory against token count for the four upstream implementations" src="upstream-scaling-dark.png">
+  <img alt="wall time and peak memory against token count for the five reference implementations" src="upstream-scaling-dark.png">
 </picture>
 
 The same measurements with the FoldJAX column dropped and every model's own
@@ -352,15 +459,17 @@ experimental cuEquivariance flag crashes above one diffusion sample -- so it
 runs plain torch attention chunked four rows at a time at every size. Its
 6,722 s at 3,012 tokens is that, not OpenFold3 as published. It stays in the
 figure because a size no implementation here reaches on this hardware is a
-result; the dashes stop it being read as a fair comparison. This figure pools the earlier 132-1,531 token sweep as well, which the
-faceted one does not: those runs measured the *same unmodified upstream
-repositories*, so their points belong on the same curve, while FoldJAX's own
-code changed between the two sweeps and its points would not.
+result; the dashes stop it being read as a fair comparison. This figure pools
+the earlier 132-1,531 token sweep as well, which the faceted one does not: the
+reference-side code and configuration were held fixed between those sweeps, so
+their points belong on the same curve, while FoldJAX's own code changed and its
+points would not. The historical provenance limit described above still
+applies.
 
 **Linear axes, deliberately.** A log-log plot is for reading an exponent off a
 slope; it renders every one of these as a tidy straight line, which is the
 opposite of what a growth plot is for. On linear axes OpenFold3's upstream
-visibly runs away from the other three, and that is the finding.
+visibly runs away from the other four, and that is the finding.
 
 Every point is one run of one sequence. Nothing here is measured more than
 once, so there are no error bars -- where the two sweeps both covered a size
@@ -379,9 +488,9 @@ statistic this benchmark never measured.
   time by the implementation itself, at a size it chose. Reading either panel
   alone gets this backwards, which is also why that point is drawn where it was
   measured rather than interpolated to somewhere more plausible.
-- **Protenix's upstream has the flattest curve (1.8x) and the highest floor** --
+- **Protenix's upstream has the flattest port curve (1.7x) and the highest floor** --
   52 s at 132 tokens, where OpenDDE's takes 17. Below ~500 tokens it is the
-  slowest of the four and above ~1,000 it is the fastest. That crossing is only
+  slowest of the five and above ~1,000 it is the fastest. That crossing is only
   visible because the small sizes are plotted; a sweep starting at 499 tokens
   would have said "Protenix is faster" without qualification.
 - **OpenDDE's upstream stops at 1,003 tokens.** Everything past it is in the
@@ -389,8 +498,11 @@ statistic this benchmark never measured.
 
 <!-- -->
 
+The following is the maintainer replay command for that external measurement
+archive, not a clean-checkout reproduction recipe:
+
     uv run --with matplotlib python docs/make_scaling_figure.py \
-        --results ../foldjax-bench/results-lengths \
+        --results ../foldjax-bench/results-merged-20260826 \
         --upstream-extra bench/results
 
 ## Where the memory goes during a run
@@ -463,9 +575,10 @@ part that re-measurement deliberately did not spend a card on.
 **It was repeated at 1,354 tokens, and cost nothing.** That matrix kept both
 sides' written structures, so `python -m bench.structures` ran on what was
 already on disk. Read `cross` against the two `within` columns: torch and JAX
-draw different diffusion noise from the same seed, so how well an
-implementation agrees with *itself* across its own samples is the closest a
-correct port can come.
+do not share a diffusion random tape even when given the same seed. The
+historical OpenFold3 upstream structures additionally used the generated seed
+disclosed above, so their cross score is not a seed-matched parity point; the
+within-run columns remain the control for each side's sampling spread.
 
 | model | cross TM | within FoldJAX | within upstream | cross RMSD A |
 |---|---|---|---|---|
@@ -505,18 +618,19 @@ table above is the first time that model has been in it.
 
 ## What the table says
 
-- **FoldJAX never uses more memory than the repository it reimplements.** The
-  closest row is Protenix at 499 tokens (1.08x); everywhere else the margin is
-  1.28x to 2.30x, and 3.11x at the 2,096-token size the scaling figure adds.
+- **Every completed paired row in this dated sweep used less memory under
+  FoldJAX than under the repository it reimplements.** The closest row is
+  Protenix at 499 tokens (1.08x); the other completed pairs span 1.22x to 3.11x.
   Re-measuring the ports widened it in every row but OpenDDE's: Protenix at
   1,003 tokens went from 1.54x to 1.89x and OpenFold3 at 3,012 from 1.26x to
   1.39x, on upstream numbers nobody touched, while OpenDDE gave a little back
   (1.47x to 1.44x at 499 tokens, 1.41x to 1.38x at 1,003).
-- **At 3,012 tokens, four FoldJAX implementations run; two upstreams do, and
+- **At 3,012 tokens, five FoldJAX implementations run; two upstreams do, and
   only one of those on its own released fast path.** Boltz-2's upstream reaches
-  96.2 GiB of the 97.9 GiB card even with `expandable_segments` and still
-  cannot allocate -- a capacity limit, not fragmentation -- at a size FoldJAX
-  completes in 43.0 GiB. OpenDDE fails on both sides, and its float32 trunk now
+  93.9 GiB of the 95.6 GiB `nvidia-smi` total even with
+  `expandable_segments` and still cannot allocate -- a capacity limit, not
+  fragmentation -- at a size FoldJAX completes in 43.0 GiB. OpenDDE fails on
+  both sides, and its float32 trunk now
   says so before it starts: at 3,012 tokens its preflight puts the temp arena at
   an estimated 356.5 GiB for 5,812 structural tokens against 76.9 GiB usable,
   and the job stops after 108 s rather than the 4,496 s the same failure used to
@@ -527,18 +641,20 @@ table above is the first time that model has been in it.
   predict preset chunks attention 4 rows at a time at every size, which is
   where the 6,722 s at 3,012 tokens lives. The other speed columns carry no
   such asterisk: Boltz-2 and Protenix upstreams run their released fast
-  paths and FoldJAX is 1.0x to 2.3x against them.
+  paths and FoldJAX is 1.10x to 2.36x against them.
 - **AlphaFold 3 has no upstream column by design** -- FoldJAX drives the
   official implementation rather than reimplementing it, so both columns
   would run the same code. Its rows are the reference the ports are converging
   toward: flattest memory curve in the figure, every practice the ports
   adopted (bf16 throughout, fused attention, per-sample confidence,
   summaries-only outputs) is one it already had.
-- **Confidence agrees on every complete row** -- ranking and complex pLDDT
-  within 0.0052, pTM within 0.0051, FoldJAX marginally higher as often as
-  lower. The 2,096-token size behind the scaling figure is the one place that
-  opens up, and only for OpenFold3, at 0.0117. Two of these agreements took
-  real fixes, both found the same way and both described below.
+- **Excluding the daggered historical OpenFold3 confidence cells, comparable
+  fields are numerically close on every complete row** -- ranking and complex
+  pLDDT within 0.0052, pTM within 0.0051, FoldJAX marginally higher as often as
+  lower. Historical OpenFold3 is descriptive, not parity evidence, because its
+  upstream cells used a different effective seed; its 2,096-token pTM gap is
+  0.0117. Two of the underlying confidence routes took real fixes, both found
+  the same way and both described below.
 - **OpenFold3's confidence output is not the one the earlier rows reported.**
   Replacing its featurization with the port's own moved pTM by up to 0.005
   against the previous measurement, added `ipTM` -- which the earlier rows did

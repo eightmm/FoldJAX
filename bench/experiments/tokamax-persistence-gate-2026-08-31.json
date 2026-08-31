@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "date": "2026-08-31",
+  "purpose": "Fresh-process verification of FoldJAX-managed Tokamax autotuning persistence for AlphaFold 3",
+  "measurement": {
+    "case": "t0128",
+    "length": 132,
+    "seed": 101,
+    "num_samples": 1,
+    "num_steps": 2,
+    "num_recycles": 1,
+    "peak_memory": "JAX peak_bytes_in_use",
+    "process_model": "each row is a separate queued process"
+  },
+  "hardware": {
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "compute_capability": "12.0",
+    "platform": "cuda 13000"
+  },
+  "software": {
+    "foldjax": "0.3.0",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "jax-cuda13-plugin": "0.11.1",
+    "jax-cuda13-pjrt": "0.11.1",
+    "tokamax": "0.0.13",
+    "triton": "3.7.1"
+  },
+  "source": {
+    "base_revision": "0b0d280b9dd9f2446ccf77f5b37f881c5debd8ff",
+    "managed_runtime_source_sha256": "0f82151b6dfe17f093401dedaebd966f7ea2434d64facd667c122350647dcf10",
+    "raw_ledger": "docs/EXPERIMENTS.jsonl",
+    "provenance_limit": "The OMS ledger predates the current byte-level benchmark result schema and does not archive untracked source bytes. These rows are measured evidence for the committed implementation, not an exact checkout replay capsule."
+  },
+  "inputs": {
+    "job_sha256": "3bdbe42b3a688861422c19328766c1d6a72f9bb07decea7a6b3126f2ac30738f",
+    "a3m_sha256": "725c443c53311552414dabf67766c9eeb9bc34d2c1d6525607699d1ed656f69c",
+    "checkpoint_tree_sha256": "23863a0c4ace9776c534ca4cf5347bc3d2799b27cd393748a83792de633444cb"
+  },
+  "manifest": {
+    "format": "foldjax-tokamax-autotuning",
+    "schema": 2,
+    "signature_sha256": "526ff4b0a304b9567fb74d586c68c6b34d87b4cf0d459a9abb3123692c44c7c5",
+    "call_sha256": "1ecefae6db8e8ce5285d2fcab9f74df2e276919d485a7db76824205147d91b6b",
+    "result_sha256": "5f4fb0c33935590b78b537ccce31f836814336761372bb6bf07b5544f0e4aa02",
+    "file_sha256": "55cae022d89607deabae4e70d73c20978c39fee4c57f2866aca0a6cd01c503a1",
+    "entries": 22,
+    "bound_arguments": 22,
+    "configs_per_entry": 1,
+    "directory_mode": "0700",
+    "manifest_mode": "0600",
+    "lockfile_mode": "0600"
+  },
+  "runs": [
+    {
+      "oms_job": 31,
+      "role": "writer",
+      "kernel_autotuning": "autotune",
+      "exit": 0,
+      "wall_s": 338.13,
+      "peak_mib": 1500.2,
+      "tokamax_miss_events": 148,
+      "unique_persisted_configs": 22,
+      "jax_cache_deserialize_warnings": 0
+    },
+    {
+      "oms_job": 32,
+      "role": "strict_reader",
+      "kernel_autotuning": "error",
+      "exit": 0,
+      "wall_s": 23.67,
+      "peak_mib": 1323.4,
+      "tokamax_miss_events": 0,
+      "jax_cache_deserialize_warnings": 1
+    },
+    {
+      "oms_job": 36,
+      "role": "stable_source_cold_compile",
+      "kernel_autotuning": "error",
+      "exit": 0,
+      "wall_s": 76.7,
+      "peak_mib": 1433.3,
+      "tokamax_miss_events": 0,
+      "jax_cache_deserialize_warnings": 0
+    },
+    {
+      "oms_job": 37,
+      "role": "stable_source_reader",
+      "kernel_autotuning": "error",
+      "exit": 0,
+      "wall_s": 21.68,
+      "peak_mib": 1323.6,
+      "tokamax_miss_events": 0,
+      "jax_cache_deserialize_warnings": 1
+    }
+  ],
+  "parity": {
+    "writer_vs_strict_reader": {
+      "tm_score": 1.0,
+      "ca_rmsd_angstrom": 6.504475981225231e-13,
+      "timestamp_normalized_cif_sha256": "9a8d85575913425b227513d0d8b48baa690d815c89b832ef2268ff6ed43cfad6",
+      "confidence_sha256": "a7a8415867733b5e0e00f5beea8fe6e2259960350d30e34d202853dd0e260849",
+      "summary_confidence_sha256": "dbbe16f08f59020affcccea292cf37b116b948300560a90d85c7ac9873c61de2",
+      "ranking_csv_sha256": "7aaa5f1cb48474739b3c9be100fc9f59950f528dbf265af5f0ec246d0f4de075"
+    },
+    "stable_cold_compile_vs_reader": {
+      "tm_score": 1.0,
+      "ca_rmsd_angstrom": 3.4012135676436164e-13,
+      "timestamp_normalized_cif_sha256": "ef73353847b116074962192296b46003eec20d2161505e2cbc54cf66ebd53696",
+      "confidence_sha256": "3fde282c779603cb7724f6abbfc3874075aeb04f5f339e534c2025e464787c96",
+      "summary_confidence_sha256": "dbbe16f08f59020affcccea292cf37b116b948300560a90d85c7ac9873c61de2",
+      "ranking_csv_sha256": "93b28ab3afe14a55403aca35816db25959d5739857fdcad65dd1583c866e7ea6"
+    },
+    "independent_cold_compiles": {
+      "tm_score": 0.9994452108990399,
+      "ca_rmsd_angstrom": 0.10050900624560263,
+      "interpretation": "The two independently compiled namespaces were not bitwise identical. Each reader exactly reproduced its own preceding writer or cold compile, so this is recorded as accelerator compile/scheduling variability rather than evidence about persistence correctness."
+    }
+  },
+  "known_issue": {
+    "component": "JAX persistent compilation cache",
+    "observation": "In each independently created cache namespace, JAX 0.11.1 rejected one auxiliary jit_apply_fn entry because the serialized XLA module referenced a metadata payload outside its payload table, then treated it as a cache miss and recompiled safely.",
+    "scope": "Tokamax configuration persistence remained complete: both strict readers had zero Tokamax misses and completed under kernel_autotuning=error.",
+    "operational_effect": "The affected auxiliary entry is not self-healed because the existing cache key is not overwritten, so a later process can repeat the warning and recompile. JAX_RAISE_PERSISTENT_CACHE_ERRORS=1 can turn this upstream cache issue into a hard failure.",
+    "correctness_effect": "none observed; each reader's structures and score artifacts matched its paired producer"
+  },
+  "development_failures": [
+    {
+      "oms_job": 28,
+      "result": "prediction succeeded with process-local autotuning only",
+      "cause": "the pre-existing cache namespace was group-writable (0775), so persistence failed closed"
+    },
+    {
+      "oms_job": 29,
+      "result": "cancelled",
+      "exit": -113
+    },
+    {
+      "oms_job": 30,
+      "result": "strict reader failed after a 20-entry schema-v1 manifest",
+      "cause": "the first design omitted two non-vmapped float32 GLU call identities; schema v2 reconstructs and validates those pre-vmap suffix calls before publication"
+    }
+  ]
+}

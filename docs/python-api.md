@@ -113,15 +113,20 @@ point of the ports. What `None` means per model:
 | `protenix` | 5 | 200 | 10 | 16,384 rows |
 
 ESMFold2's row is not a typo: its released `config.json` asks for 32 samples
-off a 14-step schedule, and the schedule is then clipped at `sigma = 256`, so
-it runs fewer denoiser calls than the number suggests. Its own source's
-dataclass defaults say 68 steps and 20 loops; the file wins.
+off a 14-step schedule. Clipping at `sigma = 256` leaves 11 schedule values,
+including the terminal zero, and therefore **10 denoiser calls**. Its source
+dataclass's different 68-step default would become 48 calls under the same
+rule, and its 20-loop default is also overridden; the released file wins.
 
 The benchmark pins the five AlphaFold-3-shaped models to one schedule
 (5 / 200 / 10) precisely because these defaults differ; set `num_recycles=10`
-on Boltz-2 and you are asking more of it than `boltz predict` does. ESMFold2 is
-not on that chart: it has no evolutionary trunk and no comparable schedule, so
-putting it on the same axes would compare two different questions.
+on Boltz-2 and you are asking more of it than `boltz predict` does. The main
+table retains two explicitly labelled ESMFold2 point measurements under that
+common schedule, but the shared scaling figure omits them: it has no
+evolutionary trunk or comparable native schedule, so drawing a two-point line
+on the same axes would compare a different question. `bench/esmfold2_compare.py`
+is the separate FoldJAX-vs-upstream harness that reads ESMFold2's own released
+configuration on both sides and explicitly cuts only the sample count to four.
 
 `foldjax.capabilities(model)` reports the runnable backend's scientific input
 and sampling surface. A dormant code path disabled by the shipped inference

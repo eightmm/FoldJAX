@@ -6,6 +6,7 @@ import argparse
 import dataclasses
 import errno
 import json
+import math
 import os
 import sys
 import time
@@ -200,12 +201,8 @@ def _add_predict_arguments(
     sampling.add_argument(
         "--num-samples", type=int, help="how many structures to generate"
     )
-    sampling.add_argument(
-        "--num-steps", type=int, help="diffusion steps per structure"
-    )
-    sampling.add_argument(
-        "--num-recycles", type=int, help="trunk recycling iterations"
-    )
+    sampling.add_argument("--num-steps", type=int, help="diffusion steps per structure")
+    sampling.add_argument("--num-recycles", type=int, help="trunk recycling iterations")
     sampling.add_argument(
         "--max-msa-depth",
         type=int,
@@ -299,9 +296,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     # The first line of every bug report, and it used to be reachable only
     # inside `foldjax doctor`.
-    parser.add_argument(
-        "--version", action="version", version=f"foldjax {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"foldjax {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
     models = commands.add_parser("models", help="list available model backends")
@@ -328,9 +323,7 @@ def _parser() -> argparse.ArgumentParser:
     runtime = commands.add_parser(
         "runtime", help="inspect or prepare model-specific native runtime artifacts"
     )
-    runtime_commands = runtime.add_subparsers(
-        dest="runtime_command", required=True
-    )
+    runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
     runtime_status = runtime_commands.add_parser(
         "status", help="report whether one model can start without preparation"
     )
@@ -340,7 +333,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     runtime_prepare.add_argument("--model", required=True)
     runtime_gc = runtime_commands.add_parser(
-        "gc", help="remove prepared runtime trees nothing selects any more"
+        "gc", help="inspect or remove older prepared runtime generations"
     )
     runtime_gc.add_argument("--model", required=True)
     runtime_gc.add_argument(
@@ -358,9 +351,16 @@ def _parser() -> argparse.ArgumentParser:
         help="ignore --keep-days and remove every tree but the current one",
     )
     runtime_gc.add_argument(
-        "--dry-run",
+        "--apply",
         action="store_true",
-        help="report what would be removed and remove nothing",
+        help="remove the reported generations; the default is a dry run because "
+        "another checkout may still select an older generation",
+    )
+    runtime_gc.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        help=argparse.SUPPRESS,
     )
 
     describe = commands.add_parser("capabilities", help="show what one backend accepts")
@@ -717,9 +717,7 @@ class _WeightReporter:
         self.finish_progress()
         item = f"  {event.item}" if event.item else ""
         elapsed = (
-            ""
-            if event.elapsed_seconds is None
-            else f"  {event.elapsed_seconds:.2f}s"
+            "" if event.elapsed_seconds is None else f"  {event.elapsed_seconds:.2f}s"
         )
         size = "" if event.bytes is None else f"  {_format_bytes(event.bytes)}"
         print(
@@ -857,13 +855,13 @@ def _run_runtime_gc(args: argparse.Namespace) -> int:
     # Counted before anything is removed. Asking again afterwards subtracts the
     # trees this run just deleted and reports the held-back count as far too
     # small -- it said one where six were held.
-    unreachable = len(build.stale_generations(keep_days=None))
+    older = len(build.stale_generations(keep_days=None))
     kept = [path for path in build.generations() if path not in stale]
     if not stale:
         print(f"nothing to remove; {len(kept)} generation(s) kept")
-        if unreachable and not args.gc_all:
+        if older and not args.gc_all:
             print(
-                f"{unreachable} unreachable generation(s) kept as recent; "
+                f"{older} older generation(s) kept as recent; "
                 "--all removes them too"
             )
         return 0
@@ -872,18 +870,20 @@ def _run_runtime_gc(args: argparse.Namespace) -> int:
     for path in stale:
         size = build.generation_bytes(path)
         total += size
-        verb = "would remove" if args.dry_run else "removed"
-        if not args.dry_run:
+        verb = "removed" if args.apply else "would remove"
+        if args.apply:
             build.remove_generation(path)
         print(f"{verb}  {path.name}  {size / 2**30:.1f} GiB")
     print(f"{total / 2**30:.1f} GiB total; {len(kept)} generation(s) kept")
     if not args.gc_all:
-        held = unreachable - len(stale)
+        held = older - len(stale)
         if held:
             print(
-                f"{held} unreachable generation(s) kept as recent; "
+                f"{held} older generation(s) kept as recent; "
                 "--all removes them too"
             )
+    if not args.apply:
+        print("dry run; pass --apply to remove the reported generations")
     return 0
 
 
@@ -1029,77 +1029,405 @@ def _parse_size(text: str) -> int:
         raise ValueError(
             f"--max-size must look like 20G or 500M; got {text!r}"
         ) from error
+    if not math.isfinite(size):
+        raise ValueError(f"--max-size must look like 20G or 500M; got {text!r}")
     if size <= 0:
         raise ValueError("--max-size must be positive")
     return int(size * factor)
 
 
+def _open_cache_root(root: Path) -> int | None:
+    """Pin a real cache directory so later path swaps cannot widen GC scope."""
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required) or not hasattr(os, "fwalk"):
+        raise RuntimeError(
+            "cache gc requires directory-descriptor and no-follow filesystem support"
+        )
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(root, flags)
+    except OSError as error:
+        if error.errno in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP}:
+            return None
+        raise
+
+
+_TOKAMAX_AUTOTUNE_DIRECTORIES = frozenset(
+    (".tokamax-autotuning-v1", ".tokamax-autotuning-v2")
+)
+_CacheGcEntry = tuple[Path, float, int, int, int, int, str | None]
+
+
+@dataclasses.dataclass(frozen=True)
+class _CacheGcScan:
+    entries: tuple[_CacheGcEntry, ...]
+    protected_files: int
+    protected_bytes: int
+
+    @property
+    def total_files(self) -> int:
+        return len(self.entries) + self.protected_files
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(item[2] for item in self.entries) + self.protected_bytes
+
+
+def _tokamax_temporary_lock_name(name: str) -> str | None:
+    """Return the exact lock name for a v2 atomic-write temporary."""
+    if not (name.startswith(".") and name.endswith(".tmp")):
+        return None
+    try:
+        result_name, process_id, timestamp = name[1:-4].rsplit(".", maxsplit=2)
+    except ValueError:
+        return None
+    if not result_name.endswith(".json"):
+        return None
+    signature = result_name.removesuffix(".json")
+    if (
+        len(signature) != 64
+        or any(character not in "0123456789abcdef" for character in signature)
+        or not process_id.isascii()
+        or not process_id.isdecimal()
+        or not timestamp.isascii()
+        or not timestamp.isdecimal()
+    ):
+        return None
+    return f"{signature}.lockfile"
+
+
+def _acquire_tokamax_gc_lock(directory_fd: int, lock_name: str) -> int | None:
+    """Non-blockingly pin an existing regular Tokamax lock for safe GC."""
+    import fcntl
+    import stat
+
+    flags = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        lock_fd = os.open(lock_name, flags, dir_fd=directory_fd)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            os.close(lock_fd)
+            return None
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, ValueError):
+        os.close(lock_fd)
+        return None
+    return lock_fd
+
+
+def _release_tokamax_gc_lock(lock_fd: int) -> None:
+    import fcntl
+
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _raise_cache_gc_walk_error(error: OSError) -> None:
+    """Never turn an incomplete filesystem scan into a successful budget report."""
+    raise error
+
+
+def _cache_gc_usage(root_fd: int) -> tuple[int, int]:
+    """Measure regular-file usage below an already pinned cache root."""
+    import stat
+
+    files = 0
+    size = 0
+    for _directory, _directories, names, directory_fd in os.fwalk(
+        ".",
+        topdown=True,
+        onerror=_raise_cache_gc_walk_error,
+        follow_symlinks=False,
+        dir_fd=root_fd,
+    ):
+        for name in names:
+            try:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                files += 1
+                size += info.st_size
+    return files, size
+
+
+def _cache_gc_entries(
+    root_fd: int,
+) -> _CacheGcScan:
+    """List stable regular-file identities under a pinned cache root.
+
+    Tokamax lock files and unrecognised temporaries remain protected but count
+    toward the real cache footprint. An exactly named v2 temporary is eligible
+    only when its existing per-signature lock can be acquired without waiting;
+    apply acquires that same lock again and holds it through unlink.
+    """
+    import stat
+
+    entries: list[_CacheGcEntry] = []
+    protected_files = 0
+    protected_bytes = 0
+    for directory, _directories, names, directory_fd in os.fwalk(
+        ".",
+        topdown=True,
+        onerror=_raise_cache_gc_walk_error,
+        follow_symlinks=False,
+        dir_fd=root_fd,
+    ):
+        parent = Path(directory)
+        for name in names:
+            try:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            lock_name = None
+            if not _TOKAMAX_AUTOTUNE_DIRECTORIES.isdisjoint(parent.parts):
+                if name.endswith(".lockfile"):
+                    protected_files += 1
+                    protected_bytes += info.st_size
+                    continue
+                if name.endswith(".tmp"):
+                    lock_name = (
+                        _tokamax_temporary_lock_name(name)
+                        if ".tokamax-autotuning-v2" in parent.parts
+                        else None
+                    )
+                    lock_fd = (
+                        None
+                        if lock_name is None
+                        else _acquire_tokamax_gc_lock(directory_fd, lock_name)
+                    )
+                    if lock_fd is None:
+                        protected_files += 1
+                        protected_bytes += info.st_size
+                        continue
+                    _release_tokamax_gc_lock(lock_fd)
+            entries.append(
+                (
+                    parent / name,
+                    info.st_mtime,
+                    info.st_size,
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_mtime_ns,
+                    lock_name,
+                )
+            )
+    return _CacheGcScan(
+        entries=tuple(entries),
+        protected_files=protected_files,
+        protected_bytes=protected_bytes,
+    )
+
+
+def _apply_cache_gc(
+    root: Path,
+    root_fd: int,
+    doomed: list[_CacheGcEntry],
+) -> tuple[int, int, int, int, int]:
+    """Delete selected files through pinned parent descriptors.
+
+    Returns ``(removed_files, removed_bytes, failed_files,
+    already_absent_files, changed_files)``. A concurrent collector removing the
+    same entry is success for the desired state, while a path replaced since
+    the report was planned is left for a later GC pass.
+    """
+    pending = {
+        relative: (size, device, inode, mtime_ns, lock_name)
+        for relative, _mtime, size, device, inode, mtime_ns, lock_name in doomed
+    }
+    removed_files = 0
+    removed_bytes = 0
+    failed_files = 0
+    already_absent_files = 0
+    changed_files = 0
+    for directory, directories, names, directory_fd in os.fwalk(
+        ".",
+        topdown=False,
+        onerror=_raise_cache_gc_walk_error,
+        follow_symlinks=False,
+        dir_fd=root_fd,
+    ):
+        parent = Path(directory)
+        for name in names:
+            relative = parent / name
+            if relative not in pending:
+                continue
+            size, device, inode, mtime_ns, lock_name = pending.pop(relative)
+            lock_fd = (
+                None
+                if lock_name is None
+                else _acquire_tokamax_gc_lock(directory_fd, lock_name)
+            )
+            if lock_name is not None and lock_fd is None:
+                changed_files += 1
+                continue
+            try:
+                try:
+                    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    already_absent_files += 1
+                    continue
+                except OSError as error:
+                    failed_files += 1
+                    print(
+                        f"[cache] could not inspect {root / relative}: {error}",
+                        file=sys.stderr,
+                    )
+                    continue
+                if (
+                    current.st_dev,
+                    current.st_ino,
+                    current.st_mtime_ns,
+                    current.st_size,
+                ) != (device, inode, mtime_ns, size):
+                    changed_files += 1
+                    continue
+                try:
+                    os.unlink(name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    already_absent_files += 1
+                except OSError as error:
+                    failed_files += 1
+                    print(
+                        f"[cache] could not remove {root / relative}: {error}",
+                        file=sys.stderr,
+                    )
+                else:
+                    removed_files += 1
+                    removed_bytes += size
+            finally:
+                if lock_fd is not None:
+                    _release_tokamax_gc_lock(lock_fd)
+
+        # Children have already been visited. ``rmdir`` is itself an atomic
+        # emptiness and no-follow check; a symlink or concurrent writer simply
+        # makes it fail without escaping this pinned parent descriptor.
+        for name in directories:
+            try:
+                os.rmdir(name, dir_fd=directory_fd)
+            except OSError:
+                continue
+
+    # Entries removed or renamed before the second descriptor walk no longer
+    # need collection and are not failures of this invocation.
+    already_absent_files += len(pending)
+    return (
+        removed_files,
+        removed_bytes,
+        failed_files,
+        already_absent_files,
+        changed_files,
+    )
+
+
 def _run_cache_gc(args: argparse.Namespace) -> int:
     """Reclaim compile-cache space, reporting first and deleting only on request.
 
-    The cache is pure derived data -- every entry is keyed by accelerator,
-    runtime, weight identity and shapes, so losing one costs a recompile and
-    can never change a result. It is still someone's disk, and a command that
-    deletes gigabytes because it was run to see what was there is not a good
-    trade, so the report is the default and `--apply` is the verb.
+    The cache is derived data keyed by accelerator, runtime, weight identity and
+    shapes. Removing entries preserves the model and shape semantics, but costs
+    a recompile or Tokamax retune; a retune may select a different valid
+    floating-point schedule and therefore change last bits. It is still
+    someone's disk, and a command that deletes gigabytes because it was run to
+    see what was there is not a good trade, so the report is the default and
+    `--apply` is the verb.
     """
     if args.older_than is None and args.max_size is None:
-        raise ValueError(
-            "cache gc needs --older-than DAYS, --max-size SIZE, or both"
-        )
+        raise ValueError("cache gc needs --older-than DAYS, --max-size SIZE, or both")
     # Parsed before the store is inspected, so a typo is reported the same way
     # whether or not a cache happens to exist yet.
     budget = None if args.max_size is None else _parse_size(args.max_size)
     if args.older_than is not None and args.older_than < 0:
         raise ValueError("--older-than must be a non-negative number of days")
     root = paths.compile_cache_dir()
-    if not root.is_dir():
+    root_fd = _open_cache_root(root)
+    if root_fd is None:
         print(f"[cache] nothing at {root}", file=sys.stderr)
-        print(json.dumps({"root": str(root), "removed_files": 0, "removed_bytes": 0}))
+        print(
+            json.dumps(
+                {
+                    "root": str(root),
+                    "applied": bool(args.apply),
+                    "total_files": 0,
+                    "total_bytes": 0,
+                    "protected_files": 0,
+                    "protected_bytes": 0,
+                    "planned_removed_files": 0,
+                    "planned_removed_bytes": 0,
+                    "removed_files": 0,
+                    "removed_bytes": 0,
+                    "failed_files": 0,
+                    "already_absent_files": 0,
+                    "changed_files": 0,
+                    "remaining_bytes": 0,
+                    "budget_satisfied": True if budget is not None else None,
+                }
+            )
+        )
         return 0
 
     import time
 
-    entries = []
-    for path in root.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        entries.append((path, stat.st_mtime, stat.st_size))
-    entries.sort(key=lambda item: item[1], reverse=True)
+    try:
+        scan = _cache_gc_entries(root_fd)
+        entries = list(scan.entries)
+        entries.sort(key=lambda item: item[1], reverse=True)
 
-    doomed: list[tuple[Path, float, int]] = []
-    if args.older_than is not None:
-        cutoff = time.time() - args.older_than * 86400
-        doomed = [item for item in entries if item[1] < cutoff]
-    if budget is not None:
-        kept = 0
-        over: list[tuple[Path, float, int]] = []
-        for item in entries:
-            if kept + item[2] <= budget:
-                kept += item[2]
-            else:
-                over.append(item)
-        chosen = {item[0] for item in doomed}
-        doomed.extend(item for item in over if item[0] not in chosen)
+        doomed: list[_CacheGcEntry] = []
+        if args.older_than is not None:
+            cutoff = time.time() - args.older_than * 86400
+            doomed = [item for item in entries if item[1] < cutoff]
+        if budget is not None:
+            kept = scan.protected_bytes
+            over: list[_CacheGcEntry] = []
+            for item in entries:
+                if kept + item[2] <= budget:
+                    kept += item[2]
+                else:
+                    over.append(item)
+            chosen = {item[0] for item in doomed}
+            doomed.extend(item for item in over if item[0] not in chosen)
 
-    removed_bytes = sum(item[2] for item in doomed)
-    if args.apply:
-        for path, _mtime, _size in doomed:
-            try:
-                path.unlink()
-            except OSError as error:
-                print(f"[cache] could not remove {path}: {error}", file=sys.stderr)
-        for directory in sorted(root.rglob("*"), reverse=True):
-            if directory.is_dir() and not any(directory.iterdir()):
-                directory.rmdir()
+        planned_removed_files = len(doomed)
+        planned_removed_bytes = sum(item[2] for item in doomed)
+        removed_files = planned_removed_files
+        removed_bytes = planned_removed_bytes
+        failed_files = 0
+        already_absent_files = 0
+        changed_files = 0
+        if args.apply:
+            (
+                removed_files,
+                removed_bytes,
+                failed_files,
+                already_absent_files,
+                changed_files,
+            ) = _apply_cache_gc(root, root_fd, doomed)
+            _remaining_files, remaining_bytes = _cache_gc_usage(root_fd)
+        else:
+            remaining_bytes = scan.total_bytes - planned_removed_bytes
+    finally:
+        os.close(root_fd)
+    action = "removed" if args.apply else "would remove"
+    outcome = f"{removed_files} file(s), {_format_bytes(removed_bytes)}"
+    if args.apply and failed_files:
+        outcome += (
+            f" (planned {planned_removed_files} file(s), "
+            f"{_format_bytes(planned_removed_bytes)}; {failed_files} failed)"
+        )
+    elif args.apply and already_absent_files:
+        outcome += f" ({already_absent_files} already absent)"
+    if args.apply and changed_files:
+        outcome += f" ({changed_files} changed since planning; kept)"
     print(
-        f"[cache] {'removed' if args.apply else 'would remove'} "
-        f"{len(doomed)} file(s), {_format_bytes(removed_bytes)} of "
-        f"{_format_bytes(sum(item[2] for item in entries))} under {root}"
+        f"[cache] {action} {outcome} of "
+        f"{_format_bytes(scan.total_bytes)} under {root}"
         + ("" if args.apply else "; pass --apply to do it"),
         file=sys.stderr,
     )
@@ -1108,16 +1436,212 @@ def _run_cache_gc(args: argparse.Namespace) -> int:
             {
                 "root": str(root),
                 "applied": bool(args.apply),
-                "total_files": len(entries),
-                "total_bytes": sum(item[2] for item in entries),
-                "removed_files": len(doomed),
+                "total_files": scan.total_files,
+                "total_bytes": scan.total_bytes,
+                "protected_files": scan.protected_files,
+                "protected_bytes": scan.protected_bytes,
+                "planned_removed_files": planned_removed_files,
+                "planned_removed_bytes": planned_removed_bytes,
+                "removed_files": removed_files,
                 "removed_bytes": removed_bytes,
+                "failed_files": failed_files,
+                "already_absent_files": already_absent_files,
+                "changed_files": changed_files,
+                "remaining_bytes": remaining_bytes,
+                "budget_satisfied": (
+                    None if budget is None else remaining_bytes <= budget
+                ),
             },
             indent=2,
             sort_keys=True,
         )
     )
     return 0
+
+
+_OPTIONAL_RUNTIME_DISTRIBUTIONS = (
+    "tokamax",
+    "cuequivariance",
+    "cuequivariance-jax",
+    "cuequivariance-ops-jax-cu12",
+    "cuequivariance-ops-jax-cu13",
+    "jax-cuda12-plugin",
+    "jax-cuda12-pjrt",
+    "jax-cuda13-plugin",
+    "jax-cuda13-pjrt",
+    "triton",
+)
+
+# Extras are installation contracts, so distribution metadata is both cheaper
+# and more faithful than importing their modules. In particular, probing these
+# must not initialize Triton, cuEq kernels, or either raw-input pipeline.
+_EXTRA_DISTRIBUTIONS = {
+    "alphafold3": (
+        ("absl-py", ">=2.3.1"),
+        ("dm-haiku", "==0.0.17"),
+        ("etils", ""),
+        ("zstandard", ""),
+    ),
+    "openfold3-preprocess": (
+        ("absl-py", ">=2.3.1"),
+        ("awscrt", ""),
+        ("biotite", ""),
+        ("boto3", ""),
+        ("click", ""),
+        ("func-timeout", ""),
+        ("ijson", ""),
+        ("kalign-python", ""),
+        ("lmdb", ""),
+        ("memory-profiler", ""),
+        ("ml-collections", ">=0.1.1"),
+        ("networkx", ""),
+        ("pdbeccdutils", ""),
+        ("pydantic", ""),
+    ),
+}
+
+
+def _distribution_version(name: str) -> str | None:
+    """Inspect package metadata without importing an optional runtime."""
+    from importlib import metadata
+
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _distribution_version_satisfies(version: str, specifier: str) -> bool | None:
+    """Check an extra's version contract, or return None if it cannot be checked."""
+    if not specifier:
+        return True
+    try:
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        # ``packaging`` is normally present through the scientific stack, but
+        # it is not an inference dependency of FoldJAX. Doctor must remain
+        # usable in a deliberately minimal environment and fail closed here.
+        return None
+    try:
+        return Version(version) in SpecifierSet(specifier)
+    except (InvalidSpecifier, InvalidVersion):
+        return None
+
+
+def _runtime_versions() -> dict[str, str]:
+    """Return installed core/optional runtime versions, with no module imports."""
+    versions = {}
+    for distribution in ("jax", "jaxlib", *_OPTIONAL_RUNTIME_DISTRIBUTIONS):
+        version = _distribution_version(distribution)
+        if version is not None:
+            versions[distribution] = version
+    return versions
+
+
+def _weight_profile_readiness(info: Any) -> list[dict[str, Any]]:
+    """Add an actionable reason and command to managed weight profile rows."""
+    profiles = []
+    for source in info.weight_profiles:
+        row = dict(source)
+        if row["ready"]:
+            row["reason"] = None
+            row["setup"] = None
+            profiles.append(row)
+            continue
+
+        downloaded = str(row.get("downloaded", ""))
+        try:
+            present_text, total_text = downloaded.split("/", maxsplit=1)
+            present, total = int(present_text), int(total_text)
+        except (TypeError, ValueError):
+            present = total = None
+
+        profile = str(row.get("profile", "released"))
+        if total == 0:
+            reason = "manual weight installation is required"
+            setup = info.setup if profile == "released" else row.get("notes")
+        elif present is not None and total is not None and present < total:
+            reason = f"managed downloads are incomplete ({present}/{total} present)"
+            setup = f"foldjax weights fetch --model {info.model}"
+        elif present is not None and total is not None:
+            reason = (
+                "all managed downloads are present, but conversion or staging "
+                "is not ready"
+            )
+            setup = f"foldjax weights fetch --model {info.model}"
+        else:
+            reason = "the managed weight readiness check did not pass"
+            setup = f"foldjax weights fetch --model {info.model}"
+        if profile != "released" and total != 0:
+            setup += f" --profile {profile}"
+        row["reason"] = reason
+        row["setup"] = setup
+        profiles.append(row)
+    return profiles
+
+
+def _input_readiness(info: Any) -> dict[str, dict[str, Any]]:
+    """Report whether each advertised input dialect can be preprocessed now."""
+    rows = {}
+    for input_format, requirement in info.capabilities.input_requirements.items():
+        missing = []
+        incompatible = []
+        unknown_extras = []
+        for extra in requirement.required_extras:
+            distributions = _EXTRA_DISTRIBUTIONS.get(extra)
+            if distributions is None:
+                unknown_extras.append(extra)
+                continue
+            for distribution, specifier in distributions:
+                version = _distribution_version(distribution)
+                if version is None:
+                    missing.append(distribution)
+                    continue
+                satisfies = _distribution_version_satisfies(version, specifier)
+                if satisfies is False:
+                    incompatible.append(
+                        f"{distribution} {version} (requires {specifier})"
+                    )
+                elif satisfies is None:
+                    incompatible.append(
+                        f"{distribution} {version} (could not validate {specifier})"
+                    )
+        runtime_blocked = (
+            requirement.preprocessing_runtime == "native" and not info.runtime.ready
+        )
+        ready = (
+            not missing
+            and not incompatible
+            and not unknown_extras
+            and not runtime_blocked
+        )
+        reasons = []
+        if missing:
+            reasons.append("missing distributions: " + ", ".join(missing))
+        if incompatible:
+            reasons.append("incompatible distributions: " + ", ".join(incompatible))
+        if unknown_extras:
+            reasons.append("unrecognized extras: " + ", ".join(unknown_extras))
+        if runtime_blocked:
+            reasons.append("the model's generated preprocessing runtime is not ready")
+        setup_commands = (
+            [f"uv sync --extra {extra}" for extra in requirement.required_extras]
+            if missing or incompatible or unknown_extras
+            else []
+        )
+        if runtime_blocked and info.runtime.setup:
+            setup_commands.append(info.runtime.setup)
+        rows[input_format] = {
+            "ready": ready,
+            "preprocessing_runtime": requirement.preprocessing_runtime,
+            "required_extras": list(requirement.required_extras),
+            "missing_distributions": missing,
+            "incompatible_distributions": incompatible,
+            "reason": "; ".join(reasons) or None,
+            "setup": setup_commands or None,
+        }
+    return rows
 
 
 def _run_doctor(args: argparse.Namespace) -> int:
@@ -1137,25 +1661,55 @@ def _run_doctor(args: argparse.Namespace) -> int:
         "home": str(paths.foldjax_home()),
     }
 
+    from foldjax.cache import cache_snapshot, runtime_profile
+
     devices: list[str] = []
     backend_name = None
+    runtime_identity: dict[str, str] | None = None
     try:
         import jax
 
-        backend_name = jax.default_backend()
+        runtime_identity = runtime_profile()
+        backend_name = runtime_identity["platform"]
         devices = [str(device) for device in jax.devices()]
     except Exception as error:  # noqa: BLE001 - a broken runtime is a finding
         report_payload["jax_error"] = str(error)
     report_payload["jax_backend"] = backend_name
     report_payload["devices"] = devices
+    report_payload["jax_version"] = (
+        None if runtime_identity is None else runtime_identity["jax"]
+    )
+    report_payload["jaxlib_version"] = (
+        None if runtime_identity is None else runtime_identity["jaxlib"]
+    )
+    report_payload["device_kind"] = (
+        None if runtime_identity is None else runtime_identity["device_kind"]
+    )
+    report_payload["device_topology"] = (
+        None if runtime_identity is None else json.loads(runtime_identity["topology"])
+    )
+    runtime_versions = _runtime_versions()
+    if runtime_identity is not None:
+        # Module versions are the runtime actually initialized; prefer them to
+        # metadata in case an embedding application has altered import paths.
+        runtime_versions["jax"] = runtime_identity["jax"]
+        runtime_versions["jaxlib"] = runtime_identity["jaxlib"]
+    report_payload["runtime_versions"] = runtime_versions
 
     store = paths.foldjax_home()
     usage = _shutil.disk_usage(store if store.exists() else Path.cwd())
     report_payload["disk_free_bytes"] = usage.free
+    compile_cache_path = paths.compile_cache_dir()
+    compile_cache = cache_snapshot(compile_cache_path).summary()
+    report_payload["compile_cache"] = {
+        "path": str(compile_cache_path),
+        **compile_cache,
+    }
 
     models_payload = []
     for name in available_models():
         info = model_info(name)
+        input_readiness = _input_readiness(info)
         models_payload.append(
             {
                 "model": name,
@@ -1163,9 +1717,17 @@ def _run_doctor(args: argparse.Namespace) -> int:
                 "setup": info.setup,
                 "runtime_ready": info.runtime.ready,
                 "runtime_setup": info.runtime.setup,
+                "weight_profiles": _weight_profile_readiness(info),
+                "input_readiness": input_readiness,
             }
         )
     report_payload["models"] = models_payload
+    report_payload["raw_preprocess"] = [
+        {"model": row["model"], "input_format": input_format, **status}
+        for row in models_payload
+        for input_format, status in row["input_readiness"].items()
+        if status["preprocessing_runtime"] not in {"base", "precomputed"}
+    ]
     report_payload["templates"] = _template_report()
     from foldjax.input import msa_search_backend
 
@@ -1179,10 +1741,33 @@ def _run_doctor(args: argparse.Namespace) -> int:
     if backend_name is None:
         print(f"jax       unavailable: {report_payload.get('jax_error')}")
     else:
+        # Preserve the original backend/device line for people grepping doctor
+        # output; the compiler identities are an additive detail below it.
         print(f"jax       {backend_name}  {', '.join(devices) or 'no devices'}")
+        print(
+            f"          jax {report_payload['jax_version']}, "
+            f"jaxlib {report_payload['jaxlib_version']}, "
+            f"device {report_payload['device_kind']}"
+        )
         if backend_name == "cpu":
             print("          every model runs on CPU, slowly; check the CUDA extra")
     print(f"store     {report_payload['home']}  ({_format_bytes(usage.free)} free)")
+    print(
+        f"cache     {_format_bytes(compile_cache['bytes'])} in "
+        f"{compile_cache['files']} file(s)  {compile_cache_path}"
+    )
+    optional_versions = {
+        name: version
+        for name, version in runtime_versions.items()
+        if name not in {"jax", "jaxlib"}
+    }
+    if optional_versions:
+        print(
+            "runtimes  "
+            + ", ".join(
+                f"{name} {version}" for name, version in optional_versions.items()
+            )
+        )
     print("\nmodels")
     for row in models_payload:
         state = "ready" if row["weights_ready"] else "missing"
@@ -1191,6 +1776,42 @@ def _run_doctor(args: argparse.Namespace) -> int:
             print(f"    {row['setup']}")
         if not row["runtime_ready"] and row["runtime_setup"]:
             print(f"    runtime: {row['runtime_setup']}")
+        for profile in row["weight_profiles"]:
+            profile_state = "ready" if profile["ready"] else "missing"
+            print(
+                f"    profile {profile['profile']}: {profile_state}, "
+                f"downloaded {profile['downloaded']}"
+            )
+            if profile["reason"]:
+                print(f"      {profile['reason']}")
+            if profile["setup"] and profile["setup"] != row["setup"]:
+                print(f"      {profile['setup']}")
+        input_groups: dict[tuple[Any, ...], list[str]] = {}
+        for input_format, status in row["input_readiness"].items():
+            if status["ready"] and status["preprocessing_runtime"] in {
+                "base",
+                "precomputed",
+            }:
+                continue
+            key = (
+                status["ready"],
+                status["preprocessing_runtime"],
+                tuple(status["required_extras"]),
+                status["reason"],
+                tuple(status["setup"] or ()),
+            )
+            input_groups.setdefault(key, []).append(input_format)
+        for key, input_formats in input_groups.items():
+            ready, preprocessing_runtime, extras, reason, setup = key
+            state = "ready" if ready else "missing"
+            detail = str(preprocessing_runtime)
+            if extras:
+                detail += "; extra " + ", ".join(extras)
+            print(f"    input {', '.join(input_formats)}: {state} ({detail})")
+            if reason:
+                print(f"      {reason}")
+            for command in setup:
+                print(f"      {command}")
     print("\nmsa")
     for kind, entry in report_payload["msa"].items():
         if entry["kind"] == "local":
@@ -1314,8 +1935,7 @@ def _run_predictions(request: PredictionRequest) -> BatchReport:
     for failure in report.failures:
         seed = "" if failure.seed is None else f" seed {failure.seed}"
         print(
-            f"foldjax: {failure.model} · {failure.input}{seed} failed: "
-            f"{failure.error}",
+            f"foldjax: {failure.model} · {failure.input}{seed} failed: {failure.error}",
             file=sys.stderr,
         )
     return report
@@ -1404,7 +2024,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = [_plan_summary(item) for item in resolved]
         print(
             json.dumps(
-                payload if requested.models is not None or requested.inputs is not None
+                payload
+                if requested.models is not None or requested.inputs is not None
                 else payload[0],
                 indent=2,
                 sort_keys=True,
@@ -1473,10 +2094,7 @@ def _with_hint(error: BaseException) -> str:
     if isinstance(error, ModuleNotFoundError) and error.name:
         extra = _EXTRA_FOR_MODULE.get(error.name.split(".")[0])
         if extra is not None:
-            return (
-                f"{message}\n"
-                f"  install it with: uv sync --extra {extra}"
-            )
+            return f"{message}\n  install it with: uv sync --extra {extra}"
         return message
     if isinstance(error, OSError) and error.errno == errno.ENOSPC:
         return (

@@ -115,14 +115,64 @@ kernel has compiled, so Tokamax's own per-implementation fallback never sees it.
 
 FoldJAX therefore runs AlphaFold 3 with Tokamax's autotuner enabled, which
 benchmarks the candidate configurations on whatever device is in front of it and
-keeps one that fits. This costs time on the first compile of each shape and is
-cached afterwards. Two knobs if you want something else:
+keeps one that fits. For the managed runtime on a GPU, FoldJAX writes a complete,
+hardware- and source-qualified Tokamax result beside the persistent JAX cache.
+It includes Tokamax's pre-vmap lookups as well as the operations retained in
+StableHLO, and is published only after the accumulated overlay can lower the
+exact call under the strict `error` policy. A fresh process can therefore select
+the same kernels before tracing. JAX executable-cache reuse is a separate,
+best-effort layer; the persisted Tokamax result does not claim that every XLA
+executable entry is readable. Two knobs control what happens when that persisted
+result is absent:
 
 | option | effect |
 |---|---|
-| `--option kernel_autotuning=heuristics` | upstream default; faster first run, may not fit your device |
-| `--option kernel_autotuning=error` | fail loudly on a cache miss instead of guessing |
+| `--option kernel_autotuning=heuristics` | use a persisted result first; otherwise use upstream's faster guess, which may not fit your device |
+| `--option kernel_autotuning=error` | use a persisted result first; fail loudly if any kernel remains uncovered |
 | `--option attention_backend=xla` | skip the Triton attention kernel entirely |
+
+Explicit external AlphaFold 3 sources, unverifiable managed assets, CPU runs,
+and `--no-cache` keep Tokamax 0.0.13's process-local behaviour on the
+process-default first local GPU. A new persistent measurement is made only on
+that device; an identical GPU selected by another ordinal may read an existing
+result. Regardless of whether persistence is eligible, an autotune miss on a
+non-default GPU fails instead of letting Tokamax's worker threads silently
+benchmark GPU 0 for a model bound to another device. Warm the exact profile
+once on the first local GPU, or explicitly accept the heuristic policy.
+
+A fresh-process `t0128` gate persisted 22 unique configurations, then completed
+under `kernel_autotuning=error` with zero Tokamax misses: the writer used
+1,500.2 MiB / 338.13 s and the strict reader used 1,323.4 MiB / 23.67 s. Their
+timestamp-normalized CIF and confidence artifacts were byte-identical. A second
+isolated-cache pair reproduced zero-miss strict reuse and exact paired output.
+Both readers did expose one upstream JAX 0.11.1 cache issue: an auxiliary
+`jit_apply_fn` executable contained an invalid XLA metadata-payload reference,
+so JAX warned, treated only that entry as a cache miss, and recompiled it safely.
+The existing key is not self-healed, and `JAX_RAISE_PERSISTENT_CACHE_ERRORS=1`
+can turn that upstream cache defect into a hard failure. It does not weaken the
+Tokamax coverage result. The complete manifest hashes, timings, parity digests,
+and failed schema-v1 attempt are recorded in
+[`bench/experiments/tokamax-persistence-gate-2026-08-31.json`](../bench/experiments/tokamax-persistence-gate-2026-08-31.json).
+
+The released five-sample denoiser graph remains unchanged. When
+`num_samples > 5`, FoldJAX maps the independent sample axis in groups of the
+released `eval_batch_dim_shard_size=5`, preserving the explicit per-sample RNG
+tape while bounding simultaneous denoiser activations. On the 132-token n=10
+A/B, the final exact-source warm measurements reduced the XLA live-byte peak
+from 1,531.6 to 1,351.0 MiB while wall time changed from 39.15 to 43.64
+seconds. Matched structures had minimum TM-score 0.98740 and median CA RMSD
+0.186 Å, against a 12.2 Å median spread among the model's own samples;
+ranking-score maximum absolute drift was 0.01554.
+
+In the earlier provenance-limited sweep, the absolute saving grew with sample
+count and sequence length. At 490 tokens,
+sharded runs used `2940.6 MiB / 316.22 s` for 10 samples and
+`3058.2 MiB / 325.84 s` for 20, versus historical batched peaks of 3558.8 and
+4484.7 MiB. At 970 tokens, a same-worktree 20-sample A/B measured
+`9515.8 MiB / 422.25 s` batched and `6748.9 MiB / 401.48 s` sharded, a 29.1%
+peak reduction. These are cold-Tokamax fresh-process times; use them to read
+memory admission, not as warm-throughput claims. The 970-token, 20-sample A/B's
+ranking-score maximum absolute drift was 0.000284.
 
 ## Options
 

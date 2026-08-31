@@ -1032,7 +1032,7 @@ def _make_generation(root: Path, name: str, *, age_days: float, size: int = 4096
     return root / name
 
 
-def test_runtime_gc_removes_abandoned_generations_and_spares_the_live_one(
+def test_runtime_gc_defaults_to_dry_run_and_spares_every_generation(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     """Every source edit mints a ~1 GB tree and abandons the old one in place.
@@ -1057,8 +1057,28 @@ def test_runtime_gc_removes_abandoned_generations_and_spares_the_live_one(
 
     assert live.is_dir(), "the generation this source selects must survive"
     assert recent.is_dir(), "a tree another checkout may be using must survive"
-    assert not old.exists(), "an abandoned tree past the age guard must go"
-    assert "1 unreachable generation(s) kept as recent" in out
+    assert old.is_dir(), "default gc must not remove another checkout's generation"
+    assert "1 older generation(s) kept as recent" in out
+    assert "dry run; pass --apply" in out
+
+
+def test_runtime_gc_apply_removes_an_old_candidate(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax.models.alphafold3 import build
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
+    base = tmp_path / "runtime" / "alphafold3"
+    base.mkdir(parents=True)
+    live = _make_generation(base, "live", age_days=0.1)
+    old = _make_generation(base, "old", age_days=30)
+    monkeypatch.setattr(build, "runtime_key", lambda: "live")
+
+    assert main(["runtime", "gc", "--model", "alphafold3", "--apply"]) == 0
+    capsys.readouterr()
+
+    assert live.is_dir()
+    assert not old.exists()
 
 
 def test_runtime_gc_all_takes_every_generation_but_the_live_one(
@@ -1073,7 +1093,12 @@ def test_runtime_gc_all_takes_every_generation_but_the_live_one(
     recent = _make_generation(base, "recent", age_days=0.5)
     monkeypatch.setattr(build, "runtime_key", lambda: "live")
 
-    assert main(["runtime", "gc", "--model", "alphafold3", "--all"]) == 0
+    assert (
+        main(
+            ["runtime", "gc", "--model", "alphafold3", "--all", "--apply"]
+        )
+        == 0
+    )
     capsys.readouterr()
 
     assert live.is_dir()

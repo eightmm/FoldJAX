@@ -2,8 +2,9 @@
 
 One horizontal pair of bars per model and size — FoldJAX against the repository
 it reimplements — wall time on the left, peak memory on the right. The figure is
-generated from the same JSON records `bench/report.py` reads, so it cannot drift
-from the table: re-run the bench, re-run this, and both tell the same story.
+generated from the same JSON record format and source that `bench/report.py`
+reads. The Markdown table is maintained separately, so regenerate or copy the
+report and figure together and review their values for drift.
 
 Two series, and only one of them is the subject, so this is the emphasis form:
 FoldJAX in the accent, upstream in the de-emphasis gray. The ratio rides each
@@ -22,7 +23,11 @@ reasons differ anyway — upstream Protenix refuses protenix-v2 above 2,560 toke
 before it allocates anything, which is not running out of memory.
 
     uv run --with matplotlib python docs/make_benchmark_figure.py \
-        --results ../foldjax-bench/results-merged-20260824
+        --results ../foldjax-bench/results-merged-20260826
+
+That directory is the maintainer's external historical measurement archive; it
+is not shipped in this repository, so this is not a clean-clone reproduction
+recipe.
 
 Writes docs/benchmark-light.png and docs/benchmark-dark.png, the pair the README
 picks between by colour scheme.
@@ -41,7 +46,9 @@ from figure_style import THEMES, apply_theme, did_not_run  # noqa: E402
 
 MODELS = ("boltz2", "protenix", "protenix-v2", "openfold3", "opendde", "alphafold3")
 SIZES = (499, 1003, 1354, 2096, 3012, 4926)
-CARD_GIB = 97.9
+# `nvidia-smi` reported 97,887 MiB. Keep the plotted unit binary, matching the
+# MiB-to-GiB conversion used for every result bar.
+CARD_GIB = 97_887 / 1024
 
 
 def load(results: Path) -> dict[tuple[str, str, int], dict]:
@@ -139,21 +146,34 @@ def render(records: dict, out: Path, theme) -> Path:
 
     right.axvline(CARD_GIB, color=theme.limit, linewidth=1.0, zorder=1)
     right.text(
-        CARD_GIB, len(rows) + 0.7, f"{CARD_GIB:.0f} GiB card ", color=theme.muted,
-        fontsize=7.5, va="top", ha="right",
+        CARD_GIB,
+        len(rows) + 0.7,
+        f"{CARD_GIB:.1f} GiB card ",
+        color=theme.muted,
+        fontsize=7.5,
+        va="top",
+        ha="right",
     )
 
     left.set_title(
         "wall time", color=theme.ink, fontsize=11, fontweight="bold", loc="left", pad=10
     )
     right.set_title(
-        "peak GPU memory", color=theme.ink, fontsize=11, fontweight="bold",
-        loc="left", pad=10,
+        "peak GPU memory",
+        color=theme.ink,
+        fontsize=11,
+        fontweight="bold",
+        loc="left",
+        pad=10,
     )
     figure.suptitle(
         "FoldJAX against the repository it reimplements   ·   5 samples · 200 "
-        "steps · 10 recycles · seed 101",
-        color=theme.ink_secondary, fontsize=9.5, x=0.008, ha="left", y=0.985,
+        "steps · 10 recycles · requested seed 101†",
+        color=theme.ink_secondary,
+        fontsize=9.5,
+        x=0.008,
+        ha="left",
+        y=0.985,
     )
 
     handles = [
@@ -161,17 +181,27 @@ def render(records: dict, out: Path, theme) -> Path:
         plt.Line2D([], [], color=theme.context, linewidth=7, solid_capstyle="round"),
     ]
     legend = figure.legend(
-        handles, ["FoldJAX", "upstream"], loc="upper right", ncol=2,
-        frameon=False, fontsize=9, bbox_to_anchor=(0.995, 1.0),
+        handles,
+        ["FoldJAX", "upstream"],
+        loc="upper right",
+        ncol=2,
+        frameon=False,
+        fontsize=9,
+        bbox_to_anchor=(0.995, 1.0),
     )
     for text in legend.get_texts():
         text.set_color(theme.ink_secondary)
 
     figure.text(
-        0.008, 0.012,
+        0.008,
+        0.012,
         "bold figure on each row is upstream \u00f7 FoldJAX \u2014 above 1.00x "
-        "means FoldJAX is faster, or uses less",
-        color=theme.muted, fontsize=8, ha="left",
+        "means FoldJAX is faster, or uses less\n"
+        "† historical OpenFold3 upstream rows used generated seed 2746317213; "
+        "time/memory remain valid, confidence is not seed-matched",
+        color=theme.muted,
+        fontsize=7.5,
+        ha="left",
     )
     figure.subplots_adjust(
         left=0.115, right=0.995, top=0.925, bottom=0.085, wspace=0.06
@@ -199,15 +229,27 @@ def render(records: dict, out: Path, theme) -> Path:
                         did_not_run(axis, y + sign * offset, label, theme)
                     continue
                 axis.barh(
-                    y + sign * offset, value - floor, left=floor,
-                    height=0.30, color=colour, edgecolor="none", zorder=3,
+                    y + sign * offset,
+                    value - floor,
+                    left=floor,
+                    height=0.30,
+                    color=colour,
+                    edgecolor="none",
+                    zorder=3,
                 )
             fj, up = pair
             if fj and up:
                 axis.text(
-                    0.995, y, f"{up / fj:.2f}x",
-                    transform=axis.get_yaxis_transform(), ha="right", va="center",
-                    fontsize=8, color=theme.ink_secondary, fontweight="bold", zorder=5,
+                    0.995,
+                    y,
+                    f"{up / fj:.2f}x",
+                    transform=axis.get_yaxis_transform(),
+                    ha="right",
+                    va="center",
+                    fontsize=8,
+                    color=theme.ink_secondary,
+                    fontweight="bold",
+                    zorder=5,
                 )
 
     figure.savefig(out, facecolor=theme.surface)

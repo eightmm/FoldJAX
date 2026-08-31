@@ -216,8 +216,8 @@ both, plus the two-chain collision and the suffix.
 Compiling this architecture is the dominant cost and grows with length — minutes
 at a few hundred tokens, where XLA prints its own slow-compile warning. FoldJAX's
 persistent cache is on by default and namespaced per model, weight identity and
-compile-relevant options, so it is paid once per shape rather than once per
-process.
+compile-relevant options. An eligible, readable entry can reuse that compilation
+in a later process; a missing or rejected entry recompiles it.
 
 The standalone `openfold3-jax-predict` command also enables the persistent
 cache by default. Use `--cache-dir` to choose its location or `--no-cache` for
@@ -232,21 +232,24 @@ does not include trunk representations, which remain controlled separately by
 distributions total more than 10 GiB at 2,000 tokens, so the override can raise
 device and host memory as well as output size substantially.
 
-With the default non-`None` `per_sample_token_cutoff`, every inference route
-runs the geometry-dependent confidence Pairformer one diffusion sample at a
-time whenever `num_samples` exceeds the released value of five. This caps its
-sample-expanded pair state and confidence workspace at one sample even for
-targets below the 750-token cutoff. One through five samples retain upstream's
-token-cutoff schedule; direct callers can set `per_sample_token_cutoff=None` for
-an explicitly always-batched graph. The schedule changes no coordinates or
-sample ordering.
+The default `per_sample_token_cutoff=0` runs the geometry-dependent confidence
+Pairformer one diffusion sample at a time whenever `num_samples > 1`. This caps
+sample-expanded pair state even for short targets. At 490 tokens and the
+released five samples, a direct A/B moved the peak from 9,045.3 to 4,263.5 MiB
+while wall time changed from 34.72 to 35.14 s. A positive numeric cutoff retains the
+token threshold within the released five-sample width; wider requests retain
+the existing memory guard. `None` selects an explicitly always-batched graph.
+The schedule does not change the sampler or sample order;
+the final exact-source A/B had minimum paired TM-score 0.99986 and maximum CA
+RMSD 0.0924 Å, while confidence remained within the existing inference
+tolerance.
 
 The common `foldjax.predict()` backend additionally has a narrower managed
 default: its `*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM,
 and the experimentally-resolved logits, but omits `pae_logits`, `pde_logits`,
 and `distogram_logits`. Those quadratic native diagnostics are not fields of
 `PredictionResult`; excluding them before tracing lets XLA remove the unused
-PDE/distogram heads and avoids retaining their output buffers. Above five
+PDE/distogram heads and avoids retaining their output buffers. With multiple
 samples, serial confidence activates the existing compact PAE-metric route;
 pTM, ipTM, and chain-pair ipTM keep its tested `max_abs <= 1e-3` contract.
 
@@ -254,19 +257,24 @@ The native pair distributions remain an explicit common-API opt-in with
 `options={"all_arrays": True}` (or `--option all_arrays=true` on the common
 CLI). Their retained output payload necessarily scales with `num_samples`, as do
 any pair arrays retained under the standalone command's or direct API's existing
-budgets, even though the confidence Pairformer's transient is serial above five
-samples. The full-prediction opt-in has its own compilation-cache identity. Both
+budgets, even though the confidence Pairformer's transient is serial across
+multiple samples. The full-prediction opt-in has its own compilation-cache
+identity. Both
 output choices are irrelevant to `stop_after="trunk"`, which returns before
 confidence and shares the historical trunk cache.
 
-On the 490-token `t0488` GPU benchmark, the five-sample path remained
-byte-identical at 9,045.3 MiB. The bounded schedule reduced the 10-sample peak
-from 16,674.3 to 4,263.5 MiB and the 20-sample peak from 31,930.0 to 4,263.7
-MiB, while wall time changed from 49.17 to 48.74 s and from 76.30 to 75.67 s,
-respectively. Coordinates were bitwise identical per sample; pLDDT and pTM
-maximum absolute changes were `1.668e-4` and `5.812e-6`. These figures are XLA
-allocator live-byte peaks from separate warm and measured processes, not the
-driver's reserved-memory reading.
+On the 490-token `t0488` GPU benchmark, serializing the released five-sample
+confidence path reduced its peak from 9,045.3 to 4,263.5 MiB while wall time
+changed from 34.72 to 35.14 s. Earlier provenance-limited measurements of the same bounded schedule
+reduced the 10-sample peak from 16,674.3 to 4,263.5 MiB and the 20-sample peak
+from 31,930.0 to 4,263.7 MiB, while wall time changed from 49.17 to 48.74 s and
+from 76.30 to 75.67 s, respectively. In the final exact-source five-sample A/B,
+matched structures had minimum TM-score 0.99986 and maximum CA RMSD 0.0924 Å;
+maximum score changes were `7.736e-3` for mean pLDDT, `1.102e-4` for pTM, and
+`2.203e-5` for ranking score. The earlier 10/20-sample A/Bs produced bitwise-identical
+coordinates and maximum pLDDT/pTM changes of `1.668e-4`/`5.812e-6`. These
+figures are XLA allocator live-byte peaks from separate warm and measured
+processes, not the driver's reserved-memory reading.
 
 The backend used to ignore that cache, which made it the one model least able to
 afford doing so. It no longer does.
@@ -276,32 +284,66 @@ afford doing so. It no longer does.
 The whole latent trunk — Pairformer stack (AF3 Alg. 17), MSA module stack
 (AF3 Alg. 8) and template pair stack (AF2 Alg. 16) — plus the diffusion sampler
 and confidence heads are ported and gated against the real upstream torch
-modules at `rtol=atol=1e-4`. Parity is checked at three levels: per layer,
+modules at `rtol=atol=1e-4` on the full-precision CPU/XLA reference route.
+Parity is checked at three levels: per layer,
 against upstream's own *composed* code (`run_trunk`, `DiffusionModule.forward`,
 `SampleDiffusion.forward`, `AuxiliaryHeadsAllAtom.forward`), and `predict()`
 against `OpenFold3.forward` as a single call. At the released settings the worst
-disagreement is 2.1e-5 on coordinates whose maximum is 35.0.
+reference-route disagreement is 2.1e-5 on coordinates whose maximum is 35.0.
+The shipped cuEquivariance GPU route has the separate production envelope
+described below.
 
 Every parameter of the released model is read by the inference path — 416 of 416
 unique tensors — measured by a test that fails if any group goes unread, which is
 how three unwired subsystems were originally found.
 
+Checkpoint mapping is not conditional on one triangular-multiplication layout.
+The released p1 config sets `fuse_projection_weights: false`, and a gate records
+that unfused layout. The same composite mapper is also tested against an
+upstream model with every stack fused: it splits each `2*c_hidden` projection
+into the two parameters consumed by the forward pass, and both layouts produce
+the same mapped shapes. `detect_fused_tri_mul` is therefore an inspection aid,
+not an unsupported-checkpoint gate.
+
+The benchmark also drives OpenFold3 0.3.1 as a complete upstream program with
+the same p1 checkpoint and 5 / 200 / 10 schedule. Its historical rows are real
+time/memory comparisons with a hardware qualification: 0.3.1's accelerated
+attention paths do not run on this host's sm_120 GPU, so the timing uses plain
+Torch attention. Those historical wall times also include avoidable
+template/CCD initialization, while the retained 3,012-token row explicitly
+disables confidence-head host offload (a measured +2.2 GiB/-60 s harness
+variant). Their confidence has a separate seed caveat: an audited CLI flag
+replaced the requested 101 with a seed generated from 42; the current harness
+is fixed and the old confidence cells are marked until re-measured.
+The exact runner and environment are documented in
+[`bench/README.md`](../bench/README.md) and
+[`bench/upstream-environments.md`](../bench/upstream-environments.md).
+
+Storage remains fp32 and prediction runs inside the shipped
+`openfold3_precision` scope at matmul precision `high` (TF32), matching
+upstream's `torch.set_float32_matmul_precision("high")` for ordinary matmuls.
+The fused cuEquivariance triangle contractions explicitly pin
+`lax.Precision.DEFAULT`, so the surrounding scope does not make every
+accelerator contraction identical to upstream Torch. Pairformer accelerator
+verification has two deliberately different gates on a small randomized
+two-block stack. The strict mapping/algebra gate compares Torch and JAX at
+`highest` through XLA triangle attention with normalized maximum error at most
+`1e-5`; a three-seed production gate compares upstream `high` against FoldJAX
+`high` with the shipped cuEquivariance route under a measured `5e-3` normalized
+envelope. A device gate applies the strict XLA budget across CPU and GPU. Its
+CPU-safe companion asserts that the production scope is exactly `high` and
+restores the caller's setting when it exits. This is real-kernel Pairformer
+coverage, not an end-to-end GPU parity claim.
+
 On real 1UBQ, from the query sequence alone with no alignment and no template,
 the five samples land 2.52–2.79 Å CA RMSD from the deposition. Real targets up
-to 2076 tokens run.
+to 3,012 tokens have completed on the benchmark card; the 4,926-token case does
+not fit, as recorded in the scaling table.
 
 ### What is not established
 
-- **No comparison against upstream OpenFold3 as a program.** `bench/spec.py`
-  lists `openfold3` in `MODELS` but not in `REIMPLEMENTED`, because
-  `run_upstream.command` has no branch for it and no upstream virtualenv has
-  been provisioned here. The FoldJAX side can be measured today; the column that
-  would make it a comparison cannot.
 - **Structural accuracy beyond 1UBQ** is unmeasured — no RMSD or clash gate
   across a target set.
-- **Precision** is fp32 storage with matmul precision pinned to `high` (TF32),
-  which is what upstream sets for itself. Upstream also runs `bf16-mixed` in
-  places, which is numerically different by design.
 - **Upstream's memory-optimization and kernel paths** (chunked forward,
   `forward_offload`, DeepSpeed/cuEq/Triton/LMA) are not ported. Upstream asserts
   they are numerically equivalent; that is upstream's claim, not a measurement

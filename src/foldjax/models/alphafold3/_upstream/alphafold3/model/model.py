@@ -253,6 +253,20 @@ def _compute_chain_pair_iptm(
   )
 
 
+def _diffusion_sample_shard_size(
+    config: diffusion_head.DiffusionHead.Config,
+    sample_config: diffusion_head.SampleConfig,
+) -> int | None:
+  """Resolve the denoiser sample width without changing released n=5 runs."""
+  eval_batch_size = int(config.eval_batch_size)
+  sample_shard_size = int(config.eval_batch_dim_shard_size)
+  if eval_batch_size < 1 or sample_shard_size < 1:
+    raise ValueError('diffusion eval batch sizes must be at least one')
+  if sample_config.num_samples <= eval_batch_size:
+    return None
+  return sample_shard_size
+
+
 class Model(hk.Module):
   """Full model. Takes in data batch and returns model outputs."""
 
@@ -293,12 +307,19 @@ class Model(hk.Module):
         use_conditioning=True,
     )
 
+    # Keep the released five-sample graph byte-for-byte on upstream's vmap;
+    # raised sample counts use the already-released eval shard width.
+    sample_shard_size = _diffusion_sample_shard_size(
+        self.config.heads.diffusion, sample_config
+    )
+
     sample = diffusion_head.sample(
         denoising_step=denoising_step,
         batch=batch,
         key=hk.next_rng_key(),
         config=sample_config,
         prefix_stable_noise=prefix_stable_noise,
+        sample_shard_size=sample_shard_size,
     )
     return sample
 

@@ -1057,8 +1057,11 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
         if entity_type in {"protein", "dna", "rna"}:
             seq = str(item[entity_type]["sequence"])
         elif entity_type == "ligand":
-            assert "smiles" in item[entity_type] or "ccd" in item[entity_type]
-            assert "smiles" not in item[entity_type] or "ccd" not in item[entity_type]
+            has_smiles = "smiles" in item[entity_type]
+            has_ccd = "ccd" in item[entity_type]
+            if has_smiles == has_ccd:
+                msg = "Ligand must contain exactly one of 'smiles' or 'ccd'."
+                raise AssertionError(msg)
             if "smiles" in item[entity_type]:
                 seq = str(item[entity_type]["smiles"])
             else:
@@ -1260,9 +1263,9 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                 affinity_mw=affinity_mw,
             )
 
-            assert not items[0][entity_type].get("cyclic", False), (
-                "Cyclic flag is not supported for ligands"
-            )
+            if items[0][entity_type].get("cyclic", False):
+                msg = "Cyclic flag is not supported for ligands"
+                raise AssertionError(msg)
 
         elif (entity_type == "ligand") and ("smiles" in items[0][entity_type]):
             seq = items[0][entity_type]["smiles"]
@@ -1321,9 +1324,9 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                 affinity_mw=affinity_mw,
             )
 
-            assert not items[0][entity_type].get("cyclic", False), (
-                "Cyclic flag is not supported for ligands"
-            )
+            if items[0][entity_type].get("cyclic", False):
+                msg = "Cyclic flag is not supported for ligands"
+                raise AssertionError(msg)
 
         else:
             msg = f"Invalid entity type: {entity_type}"

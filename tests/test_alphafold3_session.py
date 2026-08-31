@@ -60,8 +60,15 @@ class _MockRuntime:
         self.source_dir = tmp_path / "managed-source"
         self.source_dir.mkdir()
         (self.source_dir / "model.py").write_text("# immutable managed source\n")
+        self.runtime_asset = tmp_path / "managed-runtime.bin"
+        self.runtime_asset.write_bytes(b"immutable managed runtime")
         monkeypatch.setattr(af3_backend, "VENDORED_RUNNER", self.runner_file)
         monkeypatch.setattr(af3_build, "source_package", lambda: self.source_dir)
+        monkeypatch.setattr(
+            af3_build,
+            "runtime_artifact_paths",
+            lambda: {"alphafold3.runtime.mock": self.runtime_asset},
+        )
 
         runtime = self
 
@@ -310,7 +317,59 @@ def test_cache_defaults_track_vendored_model_config() -> None:
         assert type(af3_backend._RELEASED_COMPILE_DEFAULTS[name]) is type(default)
     assert af3_backend._RELEASED_COMPILE_DEFAULTS == expected
     assert diffusion_defaults["num_samples"] == expected["num_samples"]
-    assert set(expected) <= set(AlphaFold3Backend.compile_options)
+    assert set(expected) - {"kernel_autotuning"} <= set(
+        AlphaFold3Backend.compile_options
+    )
+    assert "kernel_autotuning" not in AlphaFold3Backend.compile_options
+
+
+def test_tokamax_identity_uses_effective_matmul_precision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_runtime: _MockRuntime,
+) -> None:
+    del mock_runtime
+    weights = _weights(tmp_path)
+    captured: list[dict[str, Any]] = []
+    store = object()
+    monkeypatch.setattr(
+        af3_backend,
+        "_create_tokamax_store",
+        lambda **kwargs: captured.append(kwargs) or store,
+    )
+    monkeypatch.setattr(
+        af3_backend,
+        "_install_tokamax_store",
+        lambda _runner, installed: installed is store,
+    )
+    backend = AlphaFold3Backend()
+
+    with jax.default_matmul_precision("default"):
+        backend.predict(
+            _request(
+                tmp_path,
+                weights=weights,
+                output="precision-ambient",
+                cache_dir=tmp_path / "cache",
+            )
+        )
+    for precision in ("high", "highest"):
+        backend.predict(
+            _request(
+                tmp_path,
+                weights=weights,
+                output=f"precision-{precision}",
+                cache_dir=tmp_path / "cache",
+                options={"matmul_precision": precision},
+            )
+        )
+
+    identities = [dict(call["config_identity"]) for call in captured]
+    assert [identity["matmul_precision"] for identity in identities] == [
+        "default",
+        "high",
+        "highest",
+    ]
 
 
 def test_released_default_aliases_reuse_one_managed_model_runner(
@@ -550,7 +609,7 @@ def test_all_resumed_seeds_do_not_load_the_runner_or_parameters(
     assert backend._model_runner is None
 
 
-@pytest.mark.parametrize("asset", ("runner", "source"))
+@pytest.mark.parametrize("asset", ("runner", "source", "runtime"))
 def test_partial_resume_rejects_a_different_managed_generation(
     tmp_path: Path, mock_runtime: _MockRuntime, asset: str
 ) -> None:
@@ -568,12 +627,66 @@ def test_partial_resume_rejects_a_different_managed_generation(
         0.75,
     ]
 
-    target = (
-        mock_runtime.runner_file
-        if asset == "runner"
-        else mock_runtime.source_dir / "model.py"
-    )
+    target = {
+        "runner": mock_runtime.runner_file,
+        "source": mock_runtime.source_dir / "model.py",
+        "runtime": mock_runtime.runtime_asset,
+    }[asset]
     target.write_text(f"# replacement managed {asset}\n")
+    mock_runtime.ranking_score = 0.25
+    (request.output_dir / "seed_1" / "foldjax_run.json").unlink()
+    mock_runtime.reset_counts()
+
+    with backend_override("alphafold3", AlphaFold3Backend):
+        report = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert report.skipped == ()
+    assert not report.failures
+    assert mock_runtime.counts["inferences"] == 2
+    assert [sample.scores["ranking_score"] for sample in report.results[0].samples] == [
+        0.25,
+        0.25,
+    ]
+
+
+def test_partial_resume_rejects_changed_external_libcifpp_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_runtime: _MockRuntime,
+) -> None:
+    managed = tmp_path / "managed-libcifpp"
+    external = tmp_path / "external-libcifpp"
+    managed.mkdir()
+    external.mkdir()
+    names = (
+        "components.cif",
+        "mmcif_ddl.dic",
+        "mmcif_ma.dic",
+        "mmcif_pdbx.dic",
+    )
+    for name in names:
+        (managed / name).write_bytes(f"managed-{name}".encode())
+        (external / name).write_bytes(f"external-{name}".encode())
+    monkeypatch.setenv("LIBCIFPP_DATA_DIR", str(external))
+    monkeypatch.setattr(
+        af3_build,
+        "runtime_artifact_paths",
+        lambda: {
+            "alphafold3.runtime.mock": mock_runtime.runtime_asset,
+            **{f"alphafold3.runtime.libcifpp.{name}": managed / name for name in names},
+        },
+    )
+    weights = _weights(tmp_path)
+    request = _request(
+        tmp_path,
+        weights=weights,
+        output="external-libcifpp-resume",
+        num_seeds=2,
+    )
+    with backend_override("alphafold3", AlphaFold3Backend):
+        foldjax.predict(request)
+
+    (external / "components.cif").write_bytes(b"changed external components")
     mock_runtime.ranking_score = 0.25
     (request.output_dir / "seed_1" / "foldjax_run.json").unlink()
     mock_runtime.reset_counts()

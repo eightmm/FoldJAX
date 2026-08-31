@@ -42,18 +42,24 @@ class DiffusionConditioningParams(NamedTuple):
 
 
 def diffusion_conditioning_prepare_cache(
-    relp_feature: jnp.ndarray,
+    relp_feature: jnp.ndarray | None,
     z_trunk: jnp.ndarray,
     params: DiffusionConditioningParams,
+    *,
+    relp_encoding: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Build OpenDDE's reusable 128-channel pair conditioning cache."""
 
+    if relp_encoding is None:
+        if relp_feature is None:
+            raise ValueError("relp_feature is required without a precomputed encoding")
+        relp_encoding = relative_position_encoding(relp_feature, params.relpe)
     z_trunk = linear(
         layer_norm(z_trunk, params.layernorm_z_trunk),
         params.linear_z_trunk,
     )
     pair_z = jnp.concatenate(
-        [z_trunk, relative_position_encoding(relp_feature, params.relpe)],
+        [z_trunk, relp_encoding],
         axis=-1,
     )
     pair_z = linear(layer_norm(pair_z, params.layernorm_z), params.linear_z)

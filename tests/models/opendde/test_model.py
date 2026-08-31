@@ -146,6 +146,9 @@ def test_prepare_structural_features_replaces_aliases_and_recomputes_relp() -> N
         pair["structural_pair_attn_bias"],
     )
 
+    compact = prepare_structural_features(features, pair, include_relp=False)
+    assert "relp" not in compact
+
 
 def test_full_inference_mapper_composes_open_dde_specific_modules(
     monkeypatch,
@@ -253,7 +256,10 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         pairformer_output=object(),
         structural_expander=object(),
         structural_refiner=object(),
-        diffusion=SimpleNamespace(conditioning=object(), atom_encoder=object()),
+        diffusion=SimpleNamespace(
+            conditioning=SimpleNamespace(relpe=object()),
+            atom_encoder=object(),
+        ),
         distogram=object(),
         confidence=object(),
     )
@@ -307,8 +313,20 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
 
     monkeypatch.setattr(model_impl, "structural_refiner_stack", fake_refiner)
 
-    def fake_pair_cache(relp, z, params):
-        assert relp is structural_features["relp"]
+    structural_relp_encoding = jnp.full((3, 3, 2), 7.0)
+    monkeypatch.setattr(
+        model_impl,
+        "relative_position_encoding_from_features",
+        lambda actual, _params: (
+            structural_relp_encoding
+            if actual is structural_features
+            else pytest.fail("unexpected structural features")
+        ),
+    )
+
+    def fake_pair_cache(relp, z, params, *, relp_encoding):
+        assert relp is None
+        assert relp_encoding is structural_relp_encoding
         assert z is refined_z
         return pair_cache
 

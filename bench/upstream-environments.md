@@ -1,13 +1,40 @@
 # Provisioning the upstream environments
 
-A comparison against an upstream that is missing its own accelerated paths is
-not a comparison, it is a handicap match. Each upstream repository here runs in
-its own virtualenv, and two of them arrived incomplete in ways that inflated
-their numbers. This is what it took to give each one its intended fast path,
-and how to check it.
+When a fast path supported by the reference and this hardware is merely
+unprovisioned, comparing that fallback is a handicap match. Each upstream
+repository here runs in its own virtualenv, and two arrived incomplete in ways
+that inflated their numbers. This is what it took to provision those paths and
+how to check them. Hardware-incompatible paths, such as OpenFold3 0.3.1's
+sm_120 limitation, remain explicitly qualified rather than described as a
+missing install.
 
 Nothing here touches the system: every install goes into that project's own
 `.venv`, and nothing is removed.
+
+## Source provenance gate
+
+Environment fixes and source patches are different controls. `run_upstream.py`
+requires a clean tracked checkout by default and records its commit, runtime
+versions, path-free device/execution identity, and tracked status in every
+current-schema result. It hashes the common job and every referenced
+MSA/template, the generated native input and its referenced companions, the
+selected checkpoint, and model-specific implicit assets before inference and
+verifies the same fingerprints afterwards. When a
+reviewed compatibility patch such as Protenix's sm_120 architecture entry is
+required, hash `git diff --binary --no-ext-diff HEAD --` and pass that exact
+digest through `bench.drive --upstream-patch MODEL=SHA256`. A later edit changes
+the digest and fails before GPU work starts. Ordinary untracked files are
+rejected because Python can import them. Git-ignored in-tree source, config,
+executables, and native extensions are runtime inputs: each is byte-hashed into
+the row, and a change during inference invalidates the measurement. Symlinks
+and special files fail closed. `--skip-existing` also requires the requested
+sample count, finite nonempty scores, valid measurements, and an exact identity
+match rechecked around the safe result read.
+
+The historical result files already checked into `bench/results*` predate this
+schema and artifact gate. They document dated measurements, not an exact
+source/runtime/checkpoint capsule, and are never accepted by current
+`--skip-existing` solely because the filename exists.
 
 ## OpenDDE — cuEquivariance kernels
 
@@ -103,13 +130,11 @@ Also delete `protenix/model/layer_norm/build.ninja` and the objects beside it
 when changing architectures: torch reuses that build directory and will happily
 keep a module compiled for the old list.
 
-## The two that were already complete
+## The accelerated path that was already complete
 
 - **Boltz-2** has cuEquivariance installed and runs `bf16-mixed` by default.
-- **Chai** does not use cuEquivariance at all; its components are traced
-  TorchScript modules.
 
-Neither needed anything.
+It needed no environment repair.
 
 ## What precision each upstream actually runs
 
@@ -150,6 +175,18 @@ weights the FoldJAX port runs -- is the legacy p1 checkpoint with
 `pae_enabled` preset must be on (the checkpoint carries the PAE head; 0.3.1
 builds it only under that preset).
 
+Seed audit (2026-08-31): the original recorded rows also passed
+`--num_model_seeds 1`. In 0.3.1 that replaces the runner YAML's `[101]` with a
+seed generated from the hard-coded start 42 (`2746317213`). Time and peak
+memory remain shape-valid, but confidence is not a seed-matched parity point.
+The harness now omits the flag so the YAML seed is authoritative.
+
+The original command also left `--use_templates` at 0.3.1's `true` default
+even though these native jobs supplied no template path. The model ultimately
+received zero-template features, so outputs and GPU inference are unaffected,
+but wall time included avoidable template/CCD initialization. Current runs
+pass `--use_templates false`; historical timing retains this disclosed caveat.
+
 Kernels: none. The default DS4Sci `evoformer_attn` fails its cutlass JIT on
 sm_120, and the experimental `use_cueq_triangle_kernels` path crashes in the
 confidence stack at `num_diffusion_samples > 1` (bias batched over samples
@@ -160,17 +197,21 @@ caveat -- unlike the other upstreams, which all reached their fast paths.
 ### The two 3,012-token questions, answered by measurement (2026-08-12)
 
 **Boltz-2's OOM is capacity, not fragmentation.** With
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` the run reached 96.2 GiB of
-the 97.9 GiB card -- 15 GiB beyond its earlier fragmented peak -- and still
-died. The setting stays (it is how near-capacity torch should run) but the
-verdict stands: this model does not fit this card at 3,012 tokens upstream.
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` the run reached 96,191.6 MiB
+(93.9 GiB) against the card's 97,887 MiB (95.6 GiB) `nvidia-smi` total --
+12.6 GiB beyond its earlier fragmented peak -- and still died. PyTorch reports
+94.97 GiB usable on this device. The setting stays (it is how near-capacity
+torch should run) but the verdict stands: this model does not fit this card at
+3,012 tokens upstream.
 
-**OpenFold3's 1.9-hour cell is its own shipped default, not our harness.**
+**OpenFold3's 1.9-hour cell is dominated by upstream's shipped chunking, not
+harness overhead.**
 Disabling the confidence-head host offload (predict preset, token_cutoff
 2,800) moved 6,782 s to 6,722 s -- sixty seconds. The time lives in
 `chunk_size: 4`, which the predict preset applies at every size; 0.3.1 ships
 no larger-card preset. The offload stays off (peak 81.0 -> 83.2 GiB, still
-fits), and the wall-clock column simply is what upstream does here.
+fits), so the row is an explicitly disclosed harness variant of the upstream
+prediction preset rather than an untouched-default claim.
 
 ## ESMFold2 — the `transformers` reference for the atom parity test
 

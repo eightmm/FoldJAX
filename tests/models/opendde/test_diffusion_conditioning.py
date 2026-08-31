@@ -101,6 +101,32 @@ def test_diffusion_conditioning_reuses_compressed_pair_cache() -> None:
     np.testing.assert_allclose(actual, cache, rtol=0.0, atol=0.0)
 
 
+def test_diffusion_conditioning_accepts_preprojected_relative_positions() -> None:
+    params = map_diffusion_conditioning_state_dict(_state(), "dc")
+    relp = jnp.ones((2, 2, 2), dtype=jnp.float32)
+    relp_encoding = relative_position_encoding(relp, params.relpe)
+    z_trunk = jnp.ones((2, 2, 4), dtype=jnp.float32)
+
+    historical = diffusion_conditioning_prepare_cache(relp, z_trunk, params)
+    compact = diffusion_conditioning_prepare_cache(
+        None,
+        z_trunk,
+        params,
+        relp_encoding=relp_encoding,
+    )
+    np.testing.assert_array_equal(compact, historical)
+
+
+def test_diffusion_conditioning_requires_one_relative_position_form() -> None:
+    params = map_diffusion_conditioning_state_dict(_state(), "dc")
+    with pytest.raises(ValueError, match="relp_feature"):
+        diffusion_conditioning_prepare_cache(
+            None,
+            jnp.ones((2, 2, 4), dtype=jnp.float32),
+            params,
+        )
+
+
 def test_diffusion_conditioning_mapper_exposes_384_to_128_contract() -> None:
     params = map_diffusion_conditioning_state_dict(_state(), "dc")
 

@@ -1,4 +1,4 @@
-![Boltz2-JAX hero: a protein-ligand complex in a luminous JAX-inspired energy field](docs/assets/boltz2-jax-hero.png)
+![Boltz2-JAX hero: a protein-ligand complex in a luminous JAX-inspired energy field](assets/boltz2-jax-hero.png)
 
 # Boltz2-JAX
 
@@ -180,7 +180,7 @@ The CUDA 13 install defaults both triangle kernels to Torch-compatible cuEq;
 |------|---------|-------|
 | `--compute-dtype` | `bfloat16` (default) / `float32` | bf16-mixed — trunk bf16, diffusion and confidence an fp32 island — is what upstream's predict path runs (`main.py:1262`). At 1,003 tokens over an 8,192-row alignment, five samples of the released schedule: 65.0 s against 87.3 s warm, 10,218 MiB against 13,035 MiB peak, TM to the deposited structure 0.9931 against 0.9932. Reported pLDDT is ~0.002 lower, four times fp32's own run-to-run scatter and not matched by anything in the structures. fp16 is range-unstable in the sampler |
 | `--diffusion-samples` | integer | generate multiple structures in one call; confidence runs sequentially when >1 to cap peak VRAM |
-| `--compile-cache` | dir (default on) | persistent XLA cache; reuses compiles across runs |
+| `--compile-cache` | dir (default on) | eligible readable XLA executables may be reused across processes; missing or rejected entries recompile |
 | `--feature-cache` | dir (default on) | memoize features by input digest; cache hit is bit-identical and skips featurization |
 | `--bucket` | flag (default off) | schema-aware token/atom/MSA bucketing for shared serving executables; MSA is capped at 1024 before JIT |
 | `--prewarm-only` | flag | execute one input/profile to populate the persistent cache, then skip prediction-file writing |
@@ -288,16 +288,17 @@ The suite covers both real checkpoints, all trunk/diffusion/confidence/affinity
 blocks, both affinity ensemble members, steering potentials, cuEq dispatch,
 templates, precomputed and live-compatible unpaired/paired MSA paths, MSA/cache
 determinism, and raw protein/DNA/RNA/CCD/SMILES inputs.
-See [the release gates](docs/RELEASE_GATES.md) for exact scope and GPU smokes.
+See [the release gates](RELEASE_GATES.md) for exact scope and GPU smokes.
 
 ## Attribution & license
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](../../../src/foldjax/models/boltz2/LICENSE).
 
 Derivative work of **Boltz** (© 2024 Jeremy Wohlwend, Gabriele Corso, Saro
 Passaro et al.), used under the MIT License. The preprocessing/featurization
 code under `src/boltz_jax/data/` is adapted from the Boltz repository; the
-original copyright and license are retained in [`NOTICE`](NOTICE). Model weights
+original copyright and license are retained in
+[`NOTICE`](../../../src/foldjax/models/boltz2/NOTICE). Model weights
 are distributed by the Boltz community under MIT.
 
 If you use this work, please cite the Boltz-2 technical report

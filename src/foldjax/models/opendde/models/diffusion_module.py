@@ -23,7 +23,7 @@ def diffusion_module_f_forward(
     pad_info: dict[str, jnp.ndarray],
     r_noisy: jnp.ndarray,
     t_hat_noise_level: jnp.ndarray,
-    relp_feature: jnp.ndarray,
+    relp_feature: jnp.ndarray | None,
     s_inputs: jnp.ndarray,
     s_trunk: jnp.ndarray,
     z_trunk: jnp.ndarray,
@@ -62,6 +62,11 @@ def diffusion_module_f_forward(
         sigma_data=sigma_data,
         use_conditioning=use_conditioning,
     )
+    # The shared Protenix implementation keeps this positional argument for its
+    # uncached path. OpenDDE always supplies both conditioned singles and pair_z,
+    # so it is not read; reuse pair_z as a shape-compatible placeholder rather
+    # than retaining the removed 139-channel structural feature.
+    shared_relp_feature = pair_z if relp_feature is None else relp_feature
     return _protenix_diffusion_module_f_forward(
         atom_to_token_idx,
         ref_pos,
@@ -74,7 +79,7 @@ def diffusion_module_f_forward(
         pad_info,
         r_noisy,
         t_hat_noise_level,
-        relp_feature,
+        shared_relp_feature,
         s_inputs,
         s_trunk,
         z_trunk,
@@ -114,7 +119,7 @@ def diffusion_module_forward(
     pad_info: dict[str, jnp.ndarray],
     x_noisy: jnp.ndarray,
     t_hat_noise_level: jnp.ndarray,
-    relp_feature: jnp.ndarray,
+    relp_feature: jnp.ndarray | None,
     s_inputs: jnp.ndarray,
     s_trunk: jnp.ndarray,
     z_trunk: jnp.ndarray,

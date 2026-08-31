@@ -4,9 +4,9 @@ What changed between releases, and why. Entries name the behaviour a user can
 observe; the reasoning lives beside the code.
 
 FoldJAX follows [semantic versioning](https://semver.org). Model weights,
-upstream defaults and scientific results are covered by the project contract in
-`PROJECT.md` rather than by this file: a release never changes what a recorded
-command predicts unless it says so here, in its own paragraph.
+upstream defaults and scientific results are documented beside their model and
+benchmark records: a release never changes what a recorded command predicts
+unless it says so here, in its own paragraph.
 
 ## Unreleased
 
@@ -66,23 +66,23 @@ command predicts unless it says so here, in its own paragraph.
   admission, not a latency claim. The candidate's preceding 38.559 s run
   populated its new graph cache and is excluded.
 
-- **OpenFold3 predictions above five samples bound confidence-head temporaries
-  to one sample; managed predictions also omit unrequested pair-bin
-  distributions.** Every OpenFold3 inference route with a non-`None`
-  `per_sample_token_cutoff` now runs the geometry-dependent confidence
-  Pairformer one diffusion sample at a time when `num_samples` exceeds the
-  released value of five. Its sample-expanded pair state and confidence
+- **OpenFold3 now bounds every multi-sample confidence-head temporary to one
+  sample; managed predictions also omit unrequested pair-bin distributions.**
+  The default `per_sample_token_cutoff` is now zero, so every OpenFold3 route
+  runs the geometry-dependent confidence Pairformer one diffusion sample at a
+  time whenever `num_samples > 1`. Its sample-expanded pair state and confidence
   workspace therefore stop scaling with the requested sample count even on
-  short targets. One through five samples retain upstream's token-cutoff
-  schedule, and direct callers can still set the cutoff to `None` for an
-  explicitly always-batched graph. This reuses the
-  existing mapped confidence path rather than adding another sampler, chunk, or
-  public option; coordinates and sample order are unchanged, and retained
-  per-atom confidence stays within the existing inference tolerance.
+  short targets. A positive numeric cutoff retains its token threshold within
+  the released five-sample width; wider requests keep the existing memory
+  guard. `None` remains the explicitly always-batched graph. This
+  reuses the existing mapped confidence path rather than adding another
+  sampler, chunk, or public option; sampling and sample order are unchanged,
+  paired structures remain numerically equivalent, and retained per-atom
+  confidence stays within the existing inference tolerance.
 
   The same managed path omits `pae_logits`, `pde_logits`, and
-  `distogram_logits` from its `*_raw.npz`. Above five samples it now uses the
-  compact PAE-metric sink at every positive token count; pTM, ipTM, and
+  `distogram_logits` from its `*_raw.npz`. The serial route now uses the compact
+  PAE-metric sink at every positive token count; pTM, ipTM, and
   chain-pair ipTM retain that route's tested `max_abs <= 1e-3` contract rather
   than bitwise identity. The output choice is made before tracing, so XLA
   removes the unused PDE/distogram heads and does not reserve their result
@@ -95,17 +95,88 @@ command predicts unless it says so here, in its own paragraph.
   in the model config used by the bounded JIT. `stop_after="trunk"` remains
   unchanged and returns before either optimization.
 
-  A fresh-process GPU A/B used the 490-token `t0488` target, seed 101, 200
-  diffusion steps, and 10 recycles. At five samples the old and new paths were
-  byte-identical and measured 9,045.3 MiB with 34.47/34.66 s wall time. At 10
-  samples the new schedule reduced allocator peak from 16,674.3 to 4,263.5 MiB
+  The final exact-source GPU A/B used the 490-token `t0488` target, seed 101,
+  200 diffusion steps, and 10 recycles. At five samples the new schedule
+  reduced allocator peak from 9,045.3 to 4,263.5 MiB while wall time changed
+  from 34.72 to 35.14 seconds. Matched structures had minimum TM-score 0.99986
+  and maximum CA RMSD 0.0924 Å; maximum score changes were `7.736e-3` for mean
+  pLDDT, `1.102e-4` for pTM, and `2.203e-5` for ranking score. In the earlier
+  provenance-limited sweep, the 10-sample A/B reduced peak from 16,674.3 to 4,263.5 MiB
   (-74.43%) and wall time from 49.17 to 48.74 s; at 20 it reduced peak from
-  31,930.0 to 4,263.7 MiB (-86.65%) and wall time from 76.30 to 75.67 s. All
-  sample coordinates were bitwise identical. Maximum public-output deltas were
-  `1.668e-4` for pLDDT and `5.812e-6` for pTM; the retained experimentally-
-  resolved logit's `1.147e-3` maximum difference was `2.79e-4` after its
-  sigmoid. The already-serial 970-token, 10-sample control remained
-  byte-identical with the same 8,999.8 MiB peak.
+  31,930.0 to 4,263.7 MiB (-86.65%) and wall time from 76.30 to 75.67 s. Those
+  historical 10/20-sample pairs produced bitwise-identical coordinates. Their maximum
+  public-output deltas were `1.668e-4` for pLDDT and `5.812e-6` for pTM; the
+  retained experimentally-resolved logit's `1.147e-3` maximum difference was
+  `2.79e-4` after its sigmoid. The already-serial 970-token, 10-sample control
+  in that sweep remained byte-identical with the same 8,999.8 MiB peak.
+
+- **Managed AlphaFold 3 GPU runs persist complete Tokamax autotuning results
+  across processes.** The result is keyed by the exact model-call avals,
+  managed source snapshot, model configuration, accelerator identity, and
+  pinned JAX/Tokamax/Triton runtime. It is published with a process lock and an
+  atomic replace only after every StableHLO operation and mechanically derived
+  pre-vmap lookup has one successful pruned configuration, and the accumulated
+  overlay lowers the exact call under the strict `error` policy. `heuristics`
+  and `error` remain cache-miss policies and now share the same compilation
+  namespace as `autotune`; the model-runner retention key still separates them.
+  External sources, unverifiable assets, CPU runs,
+  and disabled persistent caches keep the historical process-local behaviour
+  on the process-default first local GPU. A non-default GPU can consume a
+  compatible result, but any autotune miss fails—even when persistence is
+  ineligible—rather than letting Tokamax's worker threads silently benchmark
+  GPU 0.
+
+  A fresh-process GPU gate persisted 22 unique call identities and then ran a
+  strict `kernel_autotuning=error` reader with zero Tokamax misses; paired CIF
+  and confidence output was identical after normalizing the CIF timestamp. A
+  second isolated-cache pair independently reproduced zero-miss strict reuse and
+  exact output within that pair. JAX 0.11.1 did reject and safely recompile one
+  auxiliary `jit_apply_fn` executable in each reader because
+  its serialized XLA metadata payload table was invalid. That upstream
+  executable-cache warning is recorded separately from the successful Tokamax
+  configuration reuse; it can repeat because the poisoned key is not
+  overwritten, and strict JAX cache-error mode can promote it to a failure.
+
+- **AlphaFold 3 bounds raised diffusion-sample counts in released-width groups.**
+  The released five-sample graph remains on upstream's single `hk.vmap`. Above
+  five samples, FoldJAX maps the independent denoiser sample axis in groups of
+  `eval_batch_dim_shard_size=5`, preserving the explicit per-sample PRNG tape
+  and full output order while avoiding one activation set per requested sample.
+
+  On the final exact-source 132-token `t0128` target at 10 samples, peak fell
+  from 1,531.6 to 1,351.0 MiB (-11.8%) while warm measured wall time changed
+  from 39.15 to 43.64 seconds. Matched structures had minimum TM-score 0.98740
+  and median CA RMSD 0.186 Å, against a 12.2 Å median spread among the model's
+  own samples; ranking-score maximum absolute drift was 0.01554. In the broader
+  provenance-limited sweep, 490-token sharded 10- and 20-sample runs used
+  2,940.6 and 3,058.2 MiB, 17.4% and 31.8% below the historical batched cells.
+  Its same-worktree 970-token, 20-sample A/B reduced peak from 9,515.8 to
+  6,748.9 MiB (-29.1%) and wall time from 422.25 to 401.48 seconds. Every fresh
+  process in that broader sweep paid Tokamax autotuning; its wall-time
+  differences are secondary. The stable claim is bounded memory. The different
+  map schedule can change last-bit floating-point results, so this is a
+  numerically equivalent rather than bitwise-identical prediction change. At
+  970 tokens and 20 samples the ranking-score maximum absolute drift was
+  0.000284.
+
+- **OpenDDE projects structural relative positions without materialising the
+  139-channel one-hot.** The released feature has exactly four active columns
+  per structural-token pair; FoldJAX now gathers and sums those four projection
+  rows directly, then keeps only the 128-channel conditioning cache used by the
+  denoiser. Custom layouts, dtypes, bias, and non-finite weights retain the dense
+  compatibility path and its IEEE behaviour.
+
+  At 1,886 structural tokens the projection's XLA temporary allocation fell
+  from 2,011,244,544 to 10,672,144 bytes, while the same-size
+  1,821,181,952-byte output allocation remains unavoidable. Full `t0488` and
+  `t0976` five-sample predictions
+  stayed effectively flat at 6,466 and 21,081 MiB because weights and the
+  surrounding pair trunk dominate the process peak. In the final exact-source
+  `t0488` A/B, dense/direct measured 6,466.5/6,466.7 MiB and 43.59/43.45
+  seconds. Cross-arm matched CA RMSD was 0.108 Å median and 0.216 Å maximum,
+  with minimum TM-score 0.99926, far below the model's roughly 22 Å own-sample
+  spread; the changed reduction schedule is therefore recorded as numerically,
+  not bitwise, equivalent.
 
 - **Managed Protenix and OpenDDE mixed-precision checkpoints no longer build a
   complete FP32 device tree before narrowing the trunk to BF16.** Their shared
@@ -1601,11 +1672,12 @@ command predicts unless it says so here, in its own paragraph.
   gigabyte, of which only the compiled extension depends on the key: the rest
   is a ~490 MB `components.cif` and the ~510 MB `ccd.pickle` generated from it.
   The store this was found in held twelve trees and 12 GB, one of them
-  reachable. `gc` keeps the live tree always, and by default keeps anything
-  prepared in the last 7 days as well, because the store is shared between
-  checkouts and a worktree at another commit has its own live tree;
-  `--keep-days` moves that guard and `--all` drops it. `--dry-run` reports
-  without removing. Removing a tree costs a rebuild rather than data, with one
+  selected by the current source. `gc` is a dry run by default because the
+  store is shared between checkouts and age cannot prove another checkout has
+  stopped selecting its own tree. It also omits anything prepared in the last
+  7 days; `--keep-days` moves that guard and `--all` drops it. Only explicit
+  `--apply` removes the reported candidates. Removing a tree costs a rebuild,
+  with one
   caveat worth knowing: libcifpp fetches the current CCD at build time, so a
   rebuild months later is a different chemical dictionary, not the same one.
 

@@ -327,14 +327,14 @@ def _collect_option_paths(
     return True
 
 
-def _common_input_paths(
-    request: PredictionRequest,
-) -> tuple[list[Path], bool] | None:
-    """Referenced MSA/template files in one common-schema job."""
+def _common_job_dependencies(
+    input_path: Path,
+) -> tuple[dict[str, Path], bool] | None:
+    """Path-free roles and referenced files in one common-schema job."""
     try:
         from foldjax.input import read_job_document
 
-        document = read_job_document(request.input)
+        document = read_job_document(input_path)
     except (OSError, ValueError):
         return None
     if not isinstance(document, Mapping):
@@ -343,10 +343,10 @@ def _common_input_paths(
     if not isinstance(entities, list):
         return None
 
-    paths: list[Path] = []
+    paths: dict[str, Path] = {}
     missing_alignment = False
-    base = request.input.parent
-    for entity in entities:
+    base = input_path.parent
+    for entity_index, entity in enumerate(entities):
         if not isinstance(entity, Mapping):
             return None
         if entity.get("type") in {"protein", "rna"} and not entity.get("unpaired_msa"):
@@ -358,24 +358,45 @@ def _common_input_paths(
             if not isinstance(value, str) or not value.strip():
                 return None
             path = Path(value.strip())
-            paths.append(path if path.is_absolute() else base / path)
+            paths[f"entity-{entity_index:04d}.{field}"] = (
+                path if path.is_absolute() else base / path
+            )
         templates = entity.get("templates")
         if templates is None:
             continue
         if not isinstance(templates, list):
             return None
-        for template in templates:
+        for template_index, template in enumerate(templates):
             if not isinstance(template, Mapping):
                 return None
             value = template.get("mmcif")
             if not isinstance(value, str) or not value.strip():
                 return None
             path = Path(value.strip())
-            paths.append(path if path.is_absolute() else base / path)
+            paths[f"entity-{entity_index:04d}.template-{template_index:04d}.mmcif"] = (
+                path if path.is_absolute() else base / path
+            )
     return paths, missing_alignment
 
 
-def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
+def common_job_dependency_paths(input_path: Path) -> dict[str, Path] | None:
+    """Return stable roles for every MSA/template referenced by a common job."""
+
+    dependencies = _common_job_dependencies(Path(input_path))
+    return None if dependencies is None else dependencies[0]
+
+
+def _common_input_paths(
+    request: PredictionRequest,
+) -> tuple[list[Path], bool] | None:
+    dependencies = _common_job_dependencies(request.input)
+    if dependencies is None:
+        return None
+    paths, missing_alignment = dependencies
+    return list(paths.values()), missing_alignment
+
+
+def native_input_dependency_paths(input_path: Path) -> dict[str, Path] | None:
     """Best-effort complete local dependencies in a native JSON/YAML document.
 
     Plain FASTA, structure, feature-archive, and other single-file dialects are
@@ -384,29 +405,29 @@ def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
     require path-like fields to resolve rather than silently assuming they are
     inert.
     """
+    input_path = Path(input_path)
     try:
         from foldjax.input import read_job_document
 
-        document = read_job_document(request.input)
+        document = read_job_document(input_path)
     except (OSError, ValueError):
-        if request.input.suffix.lower() in {".json", ".yaml", ".yml"}:
+        if input_path.suffix.lower() in {".json", ".yaml", ".yml"}:
             return None
-        return (
-            []
-            if request.input.suffix.lower() in _SELF_CONTAINED_NATIVE_SUFFIXES
-            else None
-        )
+        if input_path.suffix.lower() in _SELF_CONTAINED_NATIVE_SUFFIXES:
+            return {}
+        return None
 
     paths: list[Path] = []
-    base = request.input.parent
+    base = input_path.parent
 
     def visit(value: Any, *, key: str = "", path_context: bool = False) -> bool:
         path_context = path_context or _path_option(key)
         if isinstance(value, Mapping):
+            if not all(isinstance(child_key, str) for child_key in value):
+                return False
             return all(
-                isinstance(child_key, str)
-                and visit(child, key=child_key, path_context=path_context)
-                for child_key, child in value.items()
+                visit(value[child_key], key=child_key, path_context=path_context)
+                for child_key in sorted(value)
             )
         if isinstance(value, (list, tuple)):
             return all(
@@ -437,11 +458,20 @@ def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
         # path naming convention, so an occasional extra dependency is safer
         # than reusing after a model-specific asset changed.
         if existing:
-            paths.extend(existing)
+            for resolved in existing:
+                if resolved not in paths:
+                    paths.append(resolved)
             return True
         return not path_context
 
-    return paths if visit(document) else None
+    if not visit(document):
+        return None
+    return {f"reference-{index:04d}": path for index, path in enumerate(paths)}
+
+
+def _native_input_paths(request: PredictionRequest) -> list[Path] | None:
+    dependencies = native_input_dependency_paths(request.input)
+    return None if dependencies is None else list(dependencies.values())
 
 
 def _uses_ccd_chemistry(request: PredictionRequest) -> bool:
@@ -482,8 +512,29 @@ def _uses_ccd_chemistry(request: PredictionRequest) -> bool:
     return visit(document)
 
 
-def _implicit_ccd_assets(request: PredictionRequest) -> list[Path]:
-    """Managed/environment CCD files Protenix-family featurization may read."""
+def _implicit_ccd_assets(request: PredictionRequest) -> list[Path] | None:
+    """Managed/environment CCD files model featurization may read."""
+    if request.model == "openfold3":
+        # Portable feature archives already embed their chemistry and never
+        # enter the Biotite-backed raw-input preprocessor.
+        if (
+            request.input_format == "openfold3-features"
+            or request.input.suffix.lower() == ".npz"
+        ):
+            return []
+        configured = request.options.get("ccd_file_path")
+        if configured is not None:
+            try:
+                return [Path(configured)]
+            except TypeError:
+                return None
+        try:
+            from biotite.structure.info import ccd as biotite_ccd
+
+            return [Path(biotite_ccd._CCD_FILE)]  # noqa: SLF001 - runtime input
+        except (AttributeError, ImportError, TypeError):
+            return None
+
     if request.model not in {"protenix", "opendde"} or not _uses_ccd_chemistry(request):
         return []
     from foldjax.paths import assets_dir
@@ -509,6 +560,66 @@ def _implicit_ccd_assets(request: PredictionRequest) -> list[Path]:
         if selected is not None:
             assets.append(selected)
     return assets
+
+
+def alphafold3_effective_libcifpp_directory(
+    environment: Mapping[str, str] | None = None,
+    *,
+    package: Path | None = None,
+) -> Path | None:
+    """Resolve the libcifpp directory the AF3 import shim will select.
+
+    ``package`` is the explicit checkout's ``src/alphafold3`` directory.  When
+    omitted, the managed runtime package is selected.  A source checkout with
+    no bundled dictionaries leaves an already-valid external setting alone,
+    exactly as the import shim does; without either source the selection is
+    unverifiable and ``None`` is returned.
+    """
+
+    from foldjax.models.alphafold3 import build
+
+    environment = os.environ if environment is None else environment
+    selected = (
+        build.runtime_root() / "share" / "libcifpp"
+        if package is None
+        else Path(package).parent / "share" / "libcifpp"
+    )
+    current = environment.get("LIBCIFPP_DATA_DIR")
+    current_path = Path(current) if current else None
+    current_valid = current_path is not None and current_path.is_dir()
+    if not selected.is_dir():
+        return current_path if current_valid else None
+    looks_managed = (
+        current_path is not None
+        and "runtime" in current_path.parts
+        and "alphafold3" in current_path.parts
+    )
+    if (
+        current is None
+        or not current_valid
+        or build.is_managed_origin(current_path / "placeholder")
+        or looks_managed
+    ):
+        return selected
+    assert current_path is not None
+    return current_path
+
+
+def alphafold3_runtime_dependency_paths(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, Path]:
+    """Managed AF3 runtime files, with libcifpp resolved as it is at import."""
+
+    from foldjax.models.alphafold3 import build
+
+    selected = dict(build.runtime_artifact_paths())
+    libcifpp = alphafold3_effective_libcifpp_directory(environment)
+    if libcifpp is None:
+        raise RuntimeError("AlphaFold 3 libcifpp data is unavailable")
+    for label, path in tuple(selected.items()):
+        if label.startswith("alphafold3.runtime.libcifpp."):
+            selected[label] = libcifpp / Path(path).name
+    return selected
 
 
 def document_uses_key(request: PredictionRequest, wanted: str) -> bool:
@@ -631,23 +742,25 @@ def _implicit_weight_assets(
                 return None
             paths.extend(bundle)
             missing.extend(bundle_missing)
-    elif request.model == "esmfold2" and request.weights.is_file():
-        root = request.weights.parent
+    elif request.model == "esmfold2":
+        from foldjax.backends.esmfold2 import _esmc_asset_paths
+
+        root = request.weights.parent if request.weights.is_file() else request.weights
         structure = root / "model.safetensors"
         config = root / "config.json"
         if not structure.is_file() or not config.is_file():
             return None
-        paths.append(config)
-        if structure.resolve() != request.weights.resolve():
-            paths.append(structure)
-        if (
-            request.options.get("no_language_model") is not True
-            and request.options.get("esmc_weights") is None
-        ):
-            esmc = root / "esmc"
-            if not esmc.is_dir():
+        paths.extend((structure, config))
+        if request.options.get("no_language_model") is not True:
+            configured = request.options.get("esmc_weights")
+            try:
+                esmc = Path(configured) if configured is not None else root / "esmc"
+            except TypeError:
                 return None
-            paths.append(esmc)
+            selected_esmc = _esmc_asset_paths(esmc)
+            if selected_esmc is None:
+                return None
+            paths.extend(selected_esmc)
     elif request.model == "protenix":
         model_name = request.options.get("model_name", "auto")
         if model_name == "auto":
@@ -754,15 +867,24 @@ def _input_dependencies(
         # silently combine two implementations in one result.  Keep imports
         # local so ordinary manifest use remains free of the AlphaFold runtime.
         from foldjax.backends.alphafold3 import VENDORED_RUNNER
+
+        try:
+            runtime_paths = alphafold3_runtime_dependency_paths()
+        except (OSError, RuntimeError, TypeError):
+            return {"verifiable": False, "artifacts": []}
         from foldjax.models.alphafold3 import build
 
         paths.extend((VENDORED_RUNNER, build.source_package()))
+        paths.extend(runtime_paths.values())
     weight_bundle = _implicit_weight_assets(request)
     if weight_bundle is None:
         return {"verifiable": False, "artifacts": []}
     weight_assets, missing_weight_assets = weight_bundle
     paths.extend(weight_assets)
-    paths.extend(_implicit_ccd_assets(request))
+    ccd_assets = _implicit_ccd_assets(request)
+    if ccd_assets is None:
+        return {"verifiable": False, "artifacts": []}
+    paths.extend(ccd_assets)
 
     artifacts: dict[str, dict[str, Any]] = {}
     for path in paths:

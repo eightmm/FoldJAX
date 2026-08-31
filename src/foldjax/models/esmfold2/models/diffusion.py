@@ -11,9 +11,9 @@ it resembles, and three of its details are load-bearing:
   onto `x_denoised`**. Nothing downstream reveals its absence: the structures
   stay plausible and stay wrong;
 * the churn term draws noise at an inflated `t_hat` and the network is queried
-  there, yet with the released `noise_scale = 0` the noise itself is zero. The
-  inflation is real, the noise is not, and dropping either one changes the
-  answer.
+  there. The bare dataclass's `noise_scale = 0` makes that draw a no-op, but the
+  released config overrides it with `noise_scale = 1.003`, so released
+  inference applies both the inflation and the churn noise.
 
 Sampling is a `lax.scan` over the schedule rather than an unrolled loop --
 forty-eight copies of a twelve-block transformer is a compile nobody wants --
@@ -700,7 +700,8 @@ def _step(
 
     t_hat = sigma_from * (1.0 + gamma)
     # sigma * sqrt(g^2 + 2g) == sqrt(t_hat^2 - sigma^2) without the
-    # cancellation; zero throughout with the released noise_scale of 0.
+    # cancellation. This is zero only under the bare dataclass default; the
+    # released config sets noise_scale to 1.003.
     churn = settings.noise_scale * sigma_from * jnp.sqrt(gamma * gamma + 2.0 * gamma)
     x_noisy = x + churn * _atom_normal(
         churn_key,

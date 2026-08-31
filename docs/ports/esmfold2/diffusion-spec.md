@@ -9,12 +9,18 @@ parts where a plausible implementation is a wrong one.
 
 * schedule is Karras with `p=8`, `sigma_data * base^p`, then a terminal 0 --
   **and then clipped**: rows above `max_inference_sigma=256` are dropped and
-  256 is prepended. 68 nominal steps become **48 denoiser calls**.
+  256 is prepended. The source dataclass's 68 nominal steps become **48
+  denoiser calls**. The released `config.json` overrides that default with
+  `structure_head.inference_num_steps=14`, which becomes **10 calls** after the
+  same clipping. Runtime `num_steps` overrides the nominal count, before this
+  clipping is applied.
 * solver is **first-order Euler**, one denoiser call per step, no Heun
   correction.
 * `t_hat = sigma * (1 + gamma)` with `gamma = 0.605` above `sigma > 1.107`.
-  With `noise_scale = 0` the churn adds no noise, yet the network is still
-  queried at the inflated sigma and the step is taken from it.
+  The dataclass default `noise_scale=0` adds no churn noise even though the
+  network is queried at the inflated sigma. The released config overrides it
+  with `noise_scale=1.003`, so released inference does add that noise; the two
+  settings must not be described as one schedule.
 * between the denoiser call and the step, `x_noisy` is **Kabsch-aligned onto
   `x_denoised`** (`_weighted_rigid_align`, fp32, gesvd). Easy to miss, and
   nothing downstream reveals its absence.
@@ -23,7 +29,8 @@ parts where a plausible implementation is a wrong one.
 
 RNG order per step, for anyone chasing step-for-step parity: rotation
 `randn(B*S,4)`, translation `randn(B*S,1,3)`, churn `randn_like(x)` -- the
-last is drawn even though it is multiplied by zero.
+last draw is still consumed under the zero-noise dataclass default. Under the
+released `noise_scale=1.003` configuration it contributes to the state instead.
 
 ## Sample batching has no sample axis
 

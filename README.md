@@ -51,15 +51,46 @@ before using it.
   <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012 and 4,926 tokens" src="docs/benchmark-dark.png">
 </picture>
 
-*Each port against the repository it came from — same job, same schedule, same
-measurement, and the same precision on both sides. Numbers, method and caveats:
+*Each port against the repository it came from — same job, nominal schedule,
+measurement, and precision on both sides. The daggered historical OpenFold3
+rows used a different effective seed; numbers, method and caveats are in
 [docs/benchmark.md](docs/benchmark.md).*
 
-Across the twelve rows where both sides complete, FoldJAX holds a **1.08x to
-2.30x** lower peak and runs at **0.94x to 4.85x** the speed. At 3,012 tokens
-five of the six models finish here where two finish upstream. The caveats that
-belong with those numbers — including the one row FoldJAX loses on time — are
-in [docs/benchmark.md](docs/benchmark.md).
+Across the 20 implementation/checkpoint pairs where both sides complete,
+FoldJAX holds a **1.08x to 3.11x** lower peak and runs at **0.94x to 4.85x** the
+speed. At 3,012 tokens, five FoldJAX rows finish (four model families plus the
+Protenix-v2 checkpoint), versus two upstream rows. The caveats that belong with
+those numbers — including the one row FoldJAX loses on time — are in
+[docs/benchmark.md](docs/benchmark.md).
+
+### Current memory-bound route changes
+
+The default inference routes now bound sample-expanded or quadratic
+intermediates where measurements justify it:
+
+- AlphaFold 3 evaluates more than five diffusion samples in released-width
+  groups of five. On the 970-token, 20-sample A/B this reduced peak live bytes
+  from 9,515.8 to 6,748.9 MiB; matched structures had minimum TM-score 0.99982.
+- OpenFold3 runs confidence one sample at a time whenever there is more than
+  one. At 490 tokens its 5-, 10-, and 20-sample peaks are all about 4,264 MiB;
+  the previous batched 20-sample route reached 31,930 MiB.
+- OpenDDE projects structural relative positions directly from their four
+  categorical indices. At 1,886 structural tokens this cuts that projection's
+  XLA temporary allocation from 2,011,244,544 to 10,672,144 bytes while keeping
+  the same output allocation. The five-sample whole-process peak stayed flat
+  because the pair trunk, not this isolated projection, dominates that run.
+- Managed AlphaFold 3 GPU runs persist a source-, hardware-, and call-qualified
+  Tokamax configuration only after strict coverage succeeds, so a fresh process
+  can select the verified Triton kernels before tracing.
+
+These are targeted graph changes, not a global attention-backend switch;
+one-sample controls and OpenFold3's publisher-native path remain covered by
+their existing parity gates. The exact schedules, timings, numerical checks,
+source-bound final GPU gate, and cold-autotuning caveats are in
+[docs/benchmark.md](docs/benchmark.md),
+[the final-tree evidence](bench/experiments/final-tree-gpu-gate-2026-08-31.json),
+[docs/alphafold3.md](docs/alphafold3.md), and
+[docs/openfold3.md](docs/openfold3.md).
 
 ### Two defaults are FoldJAX's own
 

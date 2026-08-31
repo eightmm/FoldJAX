@@ -205,31 +205,33 @@ def verify_mesh_exchange(mesh: Mesh) -> None:
     single-device run. The cost of learning that here is a few milliseconds;
     the cost of learning it later is every result the node ever produced.
 
-    Shards an array whose value encodes its own row index, asks for it back
-    replicated, and checks that the rows another device owned came home.
+    For every mesh axis, shards an array whose value encodes its own row index,
+    asks for it back replicated, and checks that the rows another device owned
+    came home.
     """
 
     rows = max(int(np.prod(mesh.devices.shape)), 1) * 64
     cols = max(_EXCHANGE_PROBE_BYTES // (rows * 4), 1)
-    axis = mesh.axis_names[0]
     expected = jnp.arange(rows, dtype=jnp.float32)[:, None] * jnp.ones(
         (rows, cols), dtype=jnp.float32
     )
-    sharded = jax.device_put(
-        expected, NamedSharding(mesh, PartitionSpec(axis, None))
-    )
-    gathered = jax.jit(
-        lambda value: jax.lax.with_sharding_constraint(
-            value, NamedSharding(mesh, PartitionSpec())
+    for axis in mesh.axis_names:
+        sharded = jax.device_put(
+            expected, NamedSharding(mesh, PartitionSpec(axis, None))
         )
-    )(sharded)
-    failure = exchange_failure(
-        np.asarray(gathered), np.asarray(expected), devices=mesh.devices.size
-    )
-    if failure is not None:
-        raise RuntimeError(
-            f"{failure} Devices: {[str(d) for d in mesh.devices.flat]}."
+        gathered = jax.jit(
+            lambda value: jax.lax.with_sharding_constraint(
+                value, NamedSharding(mesh, PartitionSpec())
+            )
+        )(sharded)
+        failure = exchange_failure(
+            np.asarray(gathered), np.asarray(expected), devices=mesh.devices.size
         )
+        if failure is not None:
+            raise RuntimeError(
+                f"{failure} Mesh axis: {axis!r}. "
+                f"Devices: {[str(d) for d in mesh.devices.flat]}."
+            )
 
 
 def exchange_failure(

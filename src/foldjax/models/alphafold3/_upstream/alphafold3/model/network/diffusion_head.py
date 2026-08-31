@@ -27,7 +27,7 @@ import jax.numpy as jnp
 from alphafold3.common import base_config
 from alphafold3.model import feat_batch, model_config
 from alphafold3.model.components import haiku_modules as hm
-from alphafold3.model.components import utils
+from alphafold3.model.components import mapping, utils
 from alphafold3.model.network import (
   atom_cross_attention,
   diffusion_transformer,
@@ -326,6 +326,7 @@ def sample(
     key: jnp.ndarray,
     config: SampleConfig,
     prefix_stable_noise: bool = False,
+    sample_shard_size: int | None = None,
 ) -> dict[str, jnp.ndarray]:
   """Sample using denoiser on batch.
 
@@ -335,6 +336,8 @@ def sample(
     key: random key
     config: config for the sampling process (e.g. number of denoising steps,
       etc.)
+    sample_shard_size: Maximum samples sent through the denoiser together.
+      ``None`` preserves upstream's single vmap.
 
   Returns:
     a dict
@@ -383,6 +386,11 @@ def sample(
     return (key, positions_out, noise_level), positions_out
 
   num_samples = config.num_samples
+  if sample_shard_size is not None:
+    if sample_shard_size < 1:
+      raise ValueError('sample_shard_size must be at least one')
+    if num_samples <= sample_shard_size:
+      sample_shard_size = None
 
   noise_levels = noise_schedule(jnp.linspace(0, 1, config.steps + 1))
 
@@ -408,9 +416,22 @@ def sample(
       jnp.tile(noise_levels[None, 0], (num_samples,)),
   )
 
-  apply_denoising_step = hk.vmap(
-      apply_denoising_step, in_axes=(0, None), split_rng=(not hk.running_init())
-  )
+  if sample_shard_size is None:
+    apply_denoising_step = hk.vmap(
+        apply_denoising_step,
+        in_axes=(0, None),
+        split_rng=(not hk.running_init()),
+    )
+  else:
+    # The sample axis is independent: every carry owns its explicit PRNG key,
+    # and the denoiser has no cross-sample reduction. Sharding this map bounds
+    # the denoiser's batch width while preserving the full output and RNG tape.
+    apply_denoising_step = mapping.sharded_map(
+        apply_denoising_step,
+        shard_size=sample_shard_size,
+        in_axes=(0, None),
+        out_axes=0,
+    )
   result, _ = hk.scan(apply_denoising_step, init, noise_levels[1:], unroll=4)
   _, positions_out, _ = result
 

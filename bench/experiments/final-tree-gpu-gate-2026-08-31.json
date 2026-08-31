@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "date": "2026-08-31",
+  "purpose": "Exact-source final GPU A/B gate after benchmark-provenance and arm-cache isolation hardening",
+  "measurement": {
+    "warmup": "Each arm used its own initially empty compilation/autotuning cache. One successful warm process populated that cache; one fresh measured process then reused it.",
+    "timing_state": "warm-after-successful-prefill",
+    "wall_time": "Measured prediction process only",
+    "peak_memory": "JAX peak_bytes_in_use from the measured process",
+    "seed": 101,
+    "num_steps": 200,
+    "num_recycles": 10,
+    "queue_exit_codes": {
+      "isolated_projection": 0,
+      "openfold3_batched": 0,
+      "openfold3_serial": 0,
+      "alphafold3_batched": 0,
+      "alphafold3_sharded": 0,
+      "opendde_dense": 0,
+      "opendde_direct": 0
+    }
+  },
+  "hardware": {
+    "device_kind": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "compute_capability": "12.0",
+    "platform": "cuda",
+    "total_memory_mib": 97887,
+    "driver_version": "580.173.02"
+  },
+  "software": {
+    "python": "3.13.15",
+    "foldjax": "0.3.0",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "jax-cuda13-plugin": "0.11.1",
+    "jax-cuda13-pjrt": "0.11.1",
+    "tokamax": "0.0.13",
+    "triton": "3.7.1"
+  },
+  "source": {
+    "base_revision": "0b0d280b9dd9f2446ccf77f5b37f881c5debd8ff",
+    "foldjax_directory_sha256": "e0d63e9bbfc1054e57b78f1ba8099826fb08d6d3c87984fce8dc1d04f12567c0",
+    "run_gap_ablation_sha256": "872e6a24db94a0ff372397f95b7d6d78ea7744b47315687aa5f909039b4ca06c",
+    "source_identity_sha256": "e5d18dcfd2c9062d8fa2d0c0996e3541987b3cb3c146d32c8440c8d0d21a5518",
+    "source_identity_format": "sha256(canonical compact JSON of each schema-2 result's source object)",
+    "postflight": "Every result recomputed the complete source, artifact, runtime, device, environment, and schedule identity after prediction and matched its preflight identity."
+  },
+  "inputs": {
+    "t0128": {
+      "length": 132,
+      "job_sha256": "3bdbe42b3a688861422c19328766c1d6a72f9bb07decea7a6b3126f2ac30738f",
+      "a3m_sha256": "725c443c53311552414dabf67766c9eeb9bc34d2c1d6525607699d1ed656f69c"
+    },
+    "t0488": {
+      "length": 490,
+      "job_sha256": "310f0f0722895dd5b1609009de8bb2991f12639b9f8a30c81a451c099b51d641",
+      "a3m_sha256": "891fc6b53b8708ed30860ac5bf8b7da71162dfe8dc4c0dbb7615a7cab4debc26"
+    }
+  },
+  "structure_set_digest_format": "sha256(concat(sorted(relative_path + NUL + sha256(file_bytes) + LF))) over measured sample CIF files",
+  "runs": [
+    {
+      "optimization": "openfold3-confidence",
+      "arm": "batched",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 34.72,
+      "peak_mib": 9045.3,
+      "identity_sha256": "a2ef80a1e27eb1b5b7bdbe6b37e1312399952f34577b7a77089370e6e34e24a2",
+      "result_sha256": "d6ee6347f012e206a80ec2d0ae0edef050ef454e0ce56db1a976e1a673ca9572",
+      "structure_set_sha256": "fdcf91a44564cedb184aec5804209dff47281c3920858ccbda741f122a9cc09e"
+    },
+    {
+      "optimization": "openfold3-confidence",
+      "arm": "serial",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 35.14,
+      "peak_mib": 4263.5,
+      "identity_sha256": "a2ef80a1e27eb1b5b7bdbe6b37e1312399952f34577b7a77089370e6e34e24a2",
+      "result_sha256": "88498a4ba9a09937177abb839d48f4a5267908712f033fe2b8399f4753c182e6",
+      "structure_set_sha256": "9ed82f0e308888d9a3499a132d1db64c8f3abf5a92a9b7e26e62ecc64bf9a84a"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "batched",
+      "case": "t0128",
+      "num_samples": 10,
+      "wall_s": 39.15,
+      "peak_mib": 1531.6,
+      "identity_sha256": "7c45062afe78f3a1bd4aa4dc3e061feb9e717e8a12a63b3bc4fa7b216d442662",
+      "result_sha256": "9cdacd732f5395584d030378e5a72516c6b11f94fa9236121aeec71d6bf030bb",
+      "structure_set_sha256": "8190a69ae7816a15eae6b4bba676ac5235c3becaa9b92f2dcadabcc2878647ae"
+    },
+    {
+      "optimization": "alphafold3-sample-sharding",
+      "arm": "sharded",
+      "case": "t0128",
+      "num_samples": 10,
+      "wall_s": 43.64,
+      "peak_mib": 1351.0,
+      "identity_sha256": "7c45062afe78f3a1bd4aa4dc3e061feb9e717e8a12a63b3bc4fa7b216d442662",
+      "result_sha256": "02a3d34830c7ea5637138f90b1203a722dd99c57f735e913fcdd3de4d2c1ca64",
+      "structure_set_sha256": "25d95177d3329175fb73f3c3ae3aa10bff6100ea9b59b723fb010cadb2324aff"
+    },
+    {
+      "optimization": "opendde-relative-position-projection",
+      "arm": "dense",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 43.59,
+      "peak_mib": 6466.5,
+      "identity_sha256": "c68b421e94320d7206c79a053fa5c21290596b7a48536ca6204132285b10862a",
+      "result_sha256": "e3a0191e8ae7c218549ba69f292940d89b8ffd0e704af797e42a246a357791f4",
+      "structure_set_sha256": "546830532113b09821c7eb493e44a7b89052de3a26c281410773a784462a9378"
+    },
+    {
+      "optimization": "opendde-relative-position-projection",
+      "arm": "direct",
+      "case": "t0488",
+      "num_samples": 5,
+      "wall_s": 43.45,
+      "peak_mib": 6466.7,
+      "identity_sha256": "c68b421e94320d7206c79a053fa5c21290596b7a48536ca6204132285b10862a",
+      "result_sha256": "1223b1c7d9b6174062985fdefa91b155f976232f7f126302d2054af44ec01bec",
+      "structure_set_sha256": "73e6268f56f9e3196dc6b4c16d537fb7038da2009360a9a9878c009aa21e4c88"
+    }
+  ],
+  "derived": {
+    "openfold3_serial_vs_batched": {
+      "wall_delta_s": 0.42,
+      "wall_delta_percent": 1.21,
+      "peak_delta_mib": -4781.8,
+      "peak_delta_percent": -52.87
+    },
+    "alphafold3_sharded_vs_batched": {
+      "wall_delta_s": 4.49,
+      "wall_delta_percent": 11.47,
+      "peak_delta_mib": -180.6,
+      "peak_delta_percent": -11.79
+    },
+    "opendde_direct_vs_dense": {
+      "wall_delta_s": -0.14,
+      "wall_delta_percent": -0.32,
+      "peak_delta_mib": 0.2,
+      "peak_delta_percent": 0.003
+    }
+  },
+  "parity": {
+    "openfold3_t0488_n5_batched_vs_serial": {
+      "matched_samples": 5,
+      "tm": {"min": 0.9998628124157221, "median": 0.9999783828199335, "max": 0.9999851028168344},
+      "ca_rmsd_angstrom": {"min": 0.030395855119741137, "median": 0.036615951972966715, "max": 0.09237810221272119},
+      "max_abs_score_delta": {"mean_plddt": 0.00773597804327153, "ptm": 0.00011014938354492188, "sample_ranking_score_no_disorder": 0.000022029876708982987}
+    },
+    "alphafold3_t0128_n10_batched_vs_sharded": {
+      "matched_samples": 10,
+      "tm": {"min": 0.9873996072305589, "median": 0.9980621314780656, "max": 0.9999285447912871},
+      "ca_rmsd_angstrom": {"min": 0.036053463395359205, "median": 0.18635259980280394, "max": 0.5180085430350082},
+      "within_arm_ca_rmsd_angstrom": {
+        "batched": {"min": 5.378822796248577, "median": 12.276368069473357, "max": 21.907368810765696},
+        "sharded": {"min": 5.381491448445239, "median": 12.215276369368176, "max": 22.19462976807633}
+      },
+      "max_abs_score_delta": {"fraction_disordered": 0.030000000000000027, "ptm": 0.010000000000000009, "ranking_score": 0.015538979505131056}
+    },
+    "opendde_t0488_n5_dense_vs_direct": {
+      "matched_samples": 5,
+      "tm": {"min": 0.9992554979938518, "median": 0.999810447819777, "max": 0.99992107712032},
+      "ca_rmsd_angstrom": {"min": 0.0699698238019528, "median": 0.10846197857677235, "max": 0.21549915889315227},
+      "max_abs_score_delta": {"gpde": 0.00030481815338134766, "plddt": 0.01683807373046875, "ptm": 0.0003655850887298584, "ranking_score": 0.00007311999797821045}
+    }
+  },
+  "isolated_projection": {
+    "case": "1,886 structural tokens, 128 channels",
+    "raw_result_sha256": "f41fb056787333666c8a1c16600c1a5e66690eb1b236f2a5bd424bb24f0b8e24",
+    "dense_temporary_bytes": 2011244544,
+    "direct_temporary_bytes": 10672144,
+    "temporary_reduction_percent": 99.469376111829,
+    "dense_over_direct_ratio": 188.45740312349608,
+    "output_bytes_both_arms": 1821181952,
+    "dense_compile_s": 2.6401764229995024,
+    "direct_compile_s": 0.08071477400153526,
+    "parity_max_abs_error": 0.00011148862540721893
+  }
+}

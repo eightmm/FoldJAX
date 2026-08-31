@@ -5,20 +5,37 @@ process-lifetime high-water mark, so two runs in one process report the larger
 of the two and the second one's number is unknowable. Every row in the report
 is therefore its own `python -m bench.run_foldjax`.
 
-Wall time is measured warm: the caller runs the same case once to fill the
-compile cache and discards it, then measures. A cold number is dominated by XLA
-compilation, which is real but is paid once per shape, and reporting it as the
-cost of a prediction would be wrong in both directions -- too slow for a served
-model, too fast for a one-off.
+Matrix wall time is measured after a successful prefill. An eligible readable
+persistent-cache entry can avoid compilation, but cache rejection or
+deserialization failure can still recompile. Direct invocations are explicitly
+recorded as cold-or-unspecified.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+from bench.provenance import (
+    CURRENT_RESULT_SCHEMA,
+    ArtifactFingerprintError,
+    artifact_identity,
+    benchmark_identity,
+    device_identity,
+    execution_identity,
+    foldjax_checkpoint_paths,
+    foldjax_effective_environment,
+    foldjax_implicit_asset_paths,
+    portable_options,
+    require_unchanged,
+    reusable_result,
+    runtime_identity,
+    source_identity,
+)
 
 # Preallocation is left at JAX's default -- on -- because that is what `foldjax
 # predict` runs, and a benchmark that turns it off is not measuring the product.
@@ -89,6 +106,31 @@ def main() -> int:
         "measure how a peak grows with the sample axis, which is a different "
         "question and gets its own runs.",
     )
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help="override diffusion steps for a targeted gate; ordinary benchmark "
+        "rows keep the pinned schedule",
+    )
+    parser.add_argument(
+        "--num-recycles",
+        type=int,
+        default=None,
+        help="override recycles for a targeted gate; ordinary benchmark rows "
+        "keep the pinned schedule",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="use an isolated persistent-cache root for a cache-behaviour gate",
+    )
+    parser.add_argument(
+        "--timing-state",
+        choices=("cold-or-unspecified", "warm-after-successful-prefill"),
+        default="cold-or-unspecified",
+    )
+    parser.add_argument("--traced", action="store_true")
     args = parser.parse_args()
 
     import foldjax
@@ -103,6 +145,10 @@ def main() -> int:
     schedule = dict(SCHEDULE)
     if args.num_samples is not None:
         schedule["num_samples"] = args.num_samples
+    if args.num_steps is not None:
+        schedule["num_steps"] = args.num_steps
+    if args.num_recycles is not None:
+        schedule["num_recycles"] = args.num_recycles
     from foldjax.schema import PredictionRequest
 
     options = dict(entry.split("=", 1) for entry in args.option)
@@ -116,14 +162,60 @@ def main() -> int:
     if model == "protenix-v2":
         model, profile = "protenix", "v2"
 
-    request = PredictionRequest(
-        model=model,
-        input=case.job,
-        output_dir=args.output_dir,
+    request = foldjax.resolve_request(
+        PredictionRequest(
+            model=model,
+            input=case.job,
+            output_dir=args.output_dir,
+            seed=seed,
+            options=options,
+            profile=profile,
+            cache_dir=args.cache_dir,
+            **schedule,
+        )
+    )
+    assert request.weights is not None
+    try:
+        checkpoint_paths = foldjax_checkpoint_paths(model, Path(request.weights))
+        implicit_asset_paths = foldjax_implicit_asset_paths(
+            model,
+            Path(request.weights),
+            options=request.options,
+        )
+        artifacts = artifact_identity(
+            job=Path(request.input),
+            checkpoints=checkpoint_paths,
+            implicit_assets=implicit_asset_paths,
+        )
+        source = source_identity(Path(__file__).resolve().parent.parent)
+        runtime = runtime_identity()
+        environment = foldjax_effective_environment(
+            dict(os.environ),
+            model=model,
+            options=request.options,
+        )
+        device_identity_record = device_identity(environment)
+        execution = execution_identity(
+            environment,
+            timing_state=args.timing_state,
+            traced=args.traced,
+        )
+    except ArtifactFingerprintError as error:
+        parser.error(str(error))
+    portable = portable_options(options)
+    identity = benchmark_identity(
+        impl="foldjax",
+        model=args.model,
+        case=case.name,
+        length=case.length,
+        schedule=schedule,
         seed=seed,
-        options=options,
-        profile=profile,
-        **schedule,
+        options=portable,
+        artifacts=artifacts,
+        source=source,
+        runtime=runtime,
+        device=device_identity_record,
+        execution=execution,
     )
 
     import jax
@@ -146,13 +238,54 @@ def main() -> int:
     start = time.perf_counter()
     result = foldjax.predict(request)
     elapsed = time.perf_counter() - start
+    postflight_environment = foldjax_effective_environment(
+        dict(os.environ),
+        model=model,
+        options=request.options,
+    )
+    require_unchanged(
+        artifacts,
+        artifact_identity(
+            job=Path(request.input),
+            checkpoints=checkpoint_paths,
+            implicit_assets=foldjax_implicit_asset_paths(
+                model,
+                Path(request.weights),
+                options=request.options,
+            ),
+        ),
+    )
+    require_unchanged(
+        source,
+        source_identity(Path(__file__).resolve().parent.parent),
+    )
+    require_unchanged(runtime, runtime_identity())
+    require_unchanged(
+        device_identity_record,
+        device_identity(postflight_environment),
+    )
+    require_unchanged(
+        execution,
+        execution_identity(
+            postflight_environment,
+            timing_state=args.timing_state,
+            traced=args.traced,
+        ),
+    )
 
     stats = device.memory_stats() or {}
     record = {
+        "schema": CURRENT_RESULT_SCHEMA,
+        "identity": identity,
         "impl": "foldjax",
         "model": args.model,
         "label": args.label or args.model,
-        "options": options,
+        "options": portable,
+        "artifacts": artifacts,
+        "source": source,
+        "runtime": runtime,
+        "device": device_identity_record,
+        "execution": execution,
         "case": case.name,
         "length": case.length,
         "schedule": schedule,
@@ -163,6 +296,12 @@ def main() -> int:
             {"seed": sample.seed, "scores": sample.scores} for sample in result.samples
         ],
     }
+    if not reusable_result(record, expected_identity=identity):
+        record["failed"] = True
+        record["reason"] = (
+            "measurement record has missing or non-finite timing, peak, or "
+            "sample scores"
+        )
     if args.warmup:
         return 0
     text = json.dumps(record, sort_keys=True)
@@ -170,7 +309,7 @@ def main() -> int:
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(text + "\n")
-    return 0
+    return 1 if record.get("failed") else 0
 
 
 if __name__ == "__main__":

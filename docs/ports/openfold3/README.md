@@ -14,7 +14,8 @@ A JAX inference port of [OpenFold3](https://github.com/aqlaboratory/openfold-3).
 stack (AF2 Alg. 16) — plus the diffusion sampler and confidence heads are ported and
 gated against the real upstream torch modules. The released `of3_ft3_v1` checkpoint
 loads and predicts: real 1UBQ folds to 2.5 Å CA RMSD from its deposition using the
-query sequence alone, and real targets up to 2076 tokens run. Raw-job
+query sequence alone, and benchmark targets up to 3,012 tokens run on the
+documented card. Raw-job
 featurization and inference use FoldJAX's NumPy/JAX path and import neither
 torch nor the publisher runtime.
 
@@ -49,7 +50,12 @@ around this model's `predict` call rather than changing JAX globally:
   was paying for the stricter one. Re-measured end to end at 1,003 tokens: -15%
   warm, no memory change, CA RMSD 0.011 A against a 0.005 A run-twice floor, and
   TM 0.9937 against the deposited structure either way. Re-running that torch
-  comparison needs the reference captured under `"high"` on both sides.
+  comparison under `"high"` on both sides is now the production Pairformer GPU
+  gate: a small randomized two-block stack across three seeds must remain within
+  normalized max error `5e-3`. A separate `highest`/XLA Pairformer gate keeps the
+  strict mapping/algebra budget at `1e-5`, because the fused cuEquivariance
+  contractions own their reduction precision and are not a bitwise surrogate
+  for the XLA reference.
 - `MEM_FRACTION=0.90` via `setdefault`, so an operator's explicit choice
   survives. Preallocation is deliberately *not* set. The import used to force
   `XLA_PYTHON_CLIENT_PREALLOCATE=false` to keep a large token bucket from
@@ -87,10 +93,12 @@ external environment; it is not an installation profile of FoldJAX.
 
 ## The parity gate
 
-Every ported module is checked numerically against the real OpenFold3 torch
-module at `rtol=atol=1e-4`. `protenix_jax` shipped a genuine model bug that this
-kind of test would have caught, so the gate exists from the first module rather
-than being retrofitted.
+Every ported full-precision CPU/XLA reference module is checked numerically
+against the real OpenFold3 torch module at `rtol=atol=1e-4`. The production
+Pairformer `high`/cuEquivariance route has the separate three-seed `5e-3`
+envelope above; it is not an end-to-end GPU parity gate.
+`protenix_jax` shipped a genuine model bug that this kind of test would have
+caught, so the gate exists from the first module rather than being retrofitted.
 
 Parameters are **randomized** before every comparison. This matters more than it
 sounds: OpenFold3 zero-initializes output and gate projections
@@ -435,18 +443,20 @@ Run time and memory scale gently; compile time does not -- at 384 tokens XLA pri
 its own slow-compile warning. Parity was also checked at 128 tokens and released
 depths: coordinates 2.9e-5 against a 6.45 maximum.
 
-Parity at the released settings is gated end to end: 48/4/24/2/4 blocks, 4
-recycling cycles, 368M parameters, 5 samples x 200 steps, worst disagreement 2.1e-5
-on coordinates whose maximum is 35.0.
+Historical full-precision CPU/XLA reference-route parity at the released
+settings was gated end to end: 48/4/24/2/4 blocks, 4 recycling cycles, 368M
+parameters, 5 samples x 200 steps, worst disagreement 2.1e-5 on coordinates
+whose maximum is 35.0.
 
-**Measured on real depositions.** Parity against upstream runs on real RCSB entries
+**Historical port-stage measurement on real depositions.** Parity against upstream runs on real RCSB entries
 (DNA duplex, protein, tRNA with metals, protein+ligand), not hand-built batches --
 which is how a one-off residue-numbering bug in the output layer was found. At 574
 tokens (4HHB) a prediction takes 11.8 s after a 234 s compile; 849 tokens does not
-yet fit on a 96 GiB card.
+yet fit on a 96 GiB card at that revision. Current FoldJAX benchmark rows reach
+3,012 tokens; see the current guide linked at the top.
 
-See `PROJECT.md` for what the gates still do not cover (released depths, bf16,
-upstream's memory-optimization and kernel paths, real weights).
+See the current guide for present coverage. `PROJECT.md` retains the historical
+gap list that applied when this measurement was written.
 
 Once weights are available, a second command runs every check that needs them, in
 the order that fails cheapest first — block counts against the released

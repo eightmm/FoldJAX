@@ -322,18 +322,22 @@ fetched implicitly during prediction.
 keyed by the vendored source and the interpreter ABI, so editing a vendored
 file or moving Python mints a new one — about a gigabyte each, nearly all of it
 the chemical component dictionary rather than code. `foldjax runtime gc --model
-alphafold3` removes the ones nothing can select any more; it always keeps the
-live tree, and by default keeps anything prepared in the last week too, since
-this store is shared between checkouts and another commit's tree may be live
-for someone else. `--dry-run` shows what would go.
+alphafold3` reports old candidates while always keeping the tree selected by
+the current source. It is a dry run by default: the store is shared between
+checkouts, and age cannot prove that another checkout has stopped selecting its
+own generation. Review the list and add `--apply` to remove it; by default,
+anything prepared in the last week is not even listed. `--all` includes those
+recent candidates but still requires `--apply` to delete them.
 
 ### GPU and the compile cache
 
-These graphs take minutes to compile and seconds to replay, so the persistent
-XLA cache is on by default and namespaced per model, weight identity, runtime
-profile, and the options that actually change the compiled program. Different
-models and weight sets never share a cache entry, and options that only affect
-output formatting never fragment one.
+These graphs can take minutes to compile and seconds to execute after a cache
+hit, so the persistent XLA cache is on by default and namespaced per model,
+weight identity, runtime profile, and the options that actually change the
+compiled program. Different models and weight sets never share a FoldJAX cache
+namespace, and options that only affect output formatting never fragment one.
+An eligible, readable entry may be reused across processes; a missing, invalid,
+or runtime-rejected entry recompiles normally.
 
 Warm the exact request before a production run on its deployment GPU:
 

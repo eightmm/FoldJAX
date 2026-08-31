@@ -7,9 +7,9 @@ editing the layer they depend on:
 
 * pair conditioning is hoisted out of the sampler loop, which is valid exactly
   because it does not read the noise level;
-* the confidence re-embedding runs one diffusion sample at a time above a token
-  cutoff or the released five-sample width, which is valid exactly because
-  nothing in it mixes samples.
+* the confidence re-embedding runs one diffusion sample at a time above its
+  numeric token cutoff (zero by default) or the released sample width, which is
+  valid exactly because nothing in it mixes samples.
 
 If a future change makes pair conditioning noise-dependent, or makes the
 confidence path mix samples, the optimizations become silently wrong -- the code
@@ -67,23 +67,26 @@ def test_expand_samples_leaves_other_leading_axes_alone() -> None:
 @pytest.mark.parametrize(
     ("n_token", "num_samples", "cutoff", "expected"),
     [
-        # Upstream's default cutoff is 750; below it the samples are batched.
+        # The default serializes every multi-sample confidence pass.
+        (76, 5, 0, True),
+        (750, 5, 0, True),
+        # Positive values retain their token boundary within the released width.
         (76, 5, 750, False),
         (750, 5, 750, False),
         (751, 5, 750, True),
         (2076, 5, 750, True),
-        # Raising the sample width also bounds short-target pair temporaries.
+        # Wider requests retain the existing high-sample memory guard.
         (76, 6, 750, True),
         (76, 10, 750, True),
         (76, 20, 750, True),
         # One sample has no per-sample loop to run.
-        (2076, 1, 750, False),
+        (2076, 1, 0, False),
         # ``None`` disables it however long or wide the request is.
         (2076, 5, None, False),
         (76, 20, None, False),
     ],
 )
-def test_per_sample_schedule_keeps_the_released_boundaries(
+def test_per_sample_schedule_keeps_cutoff_width_guard_and_opt_out(
     n_token: int, num_samples: int, cutoff: int | None, expected: bool
 ) -> None:
     config = released_config(
@@ -95,10 +98,11 @@ def test_per_sample_schedule_keeps_the_released_boundaries(
     assert _per_sample_confidence(config) is expected
 
 
-def test_released_default_cutoff_is_upstreams() -> None:
-    """750 is not a tuning choice here; it is what upstream's config ships."""
+def test_released_default_serializes_every_multi_sample_prediction() -> None:
+    """The measured bounded default is represented by the numeric cutoff zero."""
     config = released_config(n_token=100, n_atom=800)
-    assert config.per_sample_token_cutoff == 750
+    assert config.per_sample_token_cutoff == 0
+    assert _per_sample_confidence(config)
 
 
 def _with_two_confidence_blocks(params):
@@ -147,9 +151,7 @@ def test_both_confidence_branches_trace_with_a_scanned_stack(
     for cutoff, label in ((None, "batched"), (base.n_token - 1, "per_sample")):
         config = base._replace(per_sample_token_cutoff=cutoff)
         out = jax.eval_shape(
-            functools.partial(
-                predict, config=config, representative_atoms=table
-            ),
+            functools.partial(predict, config=config, representative_atoms=table),
             jax.ShapeDtypeStruct((2,), jnp.uint32),
             jax.tree.map(
                 lambda x: jax.ShapeDtypeStruct(jnp.shape(x), jnp.result_type(x)), batch

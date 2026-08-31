@@ -1,9 +1,8 @@
 """Checkpoint loading and inspection.
 
-These run without any real weights: a synthetic checkpoint exercises the wrapper
-stripping, the nesting search, and the fused/unfused detector. The detector
-exists because which layout the released weights use is this port's largest
-unverified assumption.
+These run without any real weights: a synthetic checkpoint exercises wrapper
+stripping, nesting search, and fused/unfused layout inspection. Separate mapper
+gates cover both triangular-multiplication layouts.
 """
 
 from __future__ import annotations
@@ -127,9 +126,7 @@ def test_load_refuses_keys_that_collide_after_prefix_stripping(
     save_file(
         {
             "trunk.linear.weight": np.zeros((2, 3), dtype=np.float32),
-            "model.module.trunk.linear.weight": np.ones(
-                (2, 3), dtype=np.float32
-            ),
+            "model.module.trunk.linear.weight": np.ones((2, 3), dtype=np.float32),
         },
         path,
     )
@@ -141,9 +138,7 @@ def test_load_refuses_keys_that_collide_after_prefix_stripping(
 def test_load_torch_checkpoint_round_trip(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     path = tmp_path / "weights.pt"
-    torch.save(
-        {"state_dict": {"module.a.weight": torch.ones(2, 2), "epoch": 1}}, path
-    )
+    torch.save({"state_dict": {"module.a.weight": torch.ones(2, 2), "epoch": 1}}, path)
     loaded = load_checkpoint(path)
     assert "a.weight" in loaded
     np.testing.assert_allclose(loaded["a.weight"], np.ones((2, 2)))

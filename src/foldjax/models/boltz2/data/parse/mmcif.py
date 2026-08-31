@@ -1068,10 +1068,13 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
 
         # Get same chain across models in ensemble
         ensemble_chains = [ensemble[asym_id] for ensemble in all_ensembles]
-        assert len(ensemble_chains) == len(all_ensembles)
+        if len(ensemble_chains) != len(all_ensembles):
+            raise AssertionError("ensemble chain count does not match model count")
         for ensemble_chain in ensemble_chains:
-            assert len(ensemble_chain.residues) == res_num
-            assert sum(len(res.atoms) for res in ensemble_chain.residues) == atom_num
+            if len(ensemble_chain.residues) != res_num:
+                raise AssertionError("ensemble residue count does not match reference")
+            if sum(len(res.atoms) for res in ensemble_chain.residues) != atom_num:
+                raise AssertionError("ensemble atom count does not match reference")
 
         # Find all copies of this chain in the assembly
         entity_id = entity_ids[chain.name]
@@ -1101,9 +1104,15 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             ensemble_residues = [
                 ensemble_chain.residues[i] for ensemble_chain in ensemble_chains
             ]
-            assert len(ensemble_residues) == len(all_ensembles)
+            if len(ensemble_residues) != len(all_ensembles):
+                raise AssertionError(
+                    "ensemble residue count does not match model count"
+                )
             for ensemble_res in ensemble_residues:
-                assert ensemble_res.name == res.name
+                if ensemble_res.name != res.name:
+                    raise AssertionError(
+                        "ensemble residue name does not match reference"
+                    )
 
             atom_center = atom_idx + res.atom_center
             atom_disto = atom_idx + res.atom_disto
@@ -1146,10 +1155,19 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                 ensemble_atoms = [
                     ensemble_res.atoms[a_idx] for ensemble_res in ensemble_residues
                 ]
-                assert len(ensemble_atoms) == len(all_ensembles)
+                if len(ensemble_atoms) != len(all_ensembles):
+                    raise AssertionError(
+                        "ensemble atom count does not match model count"
+                    )
                 for e_idx, ensemble_atom in enumerate(ensemble_atoms):
-                    assert ensemble_atom.name == atom.name
-                    assert atom.is_present == ensemble_atom.is_present
+                    if ensemble_atom.name != atom.name:
+                        raise AssertionError(
+                            "ensemble atom name does not match reference"
+                        )
+                    if atom.is_present != ensemble_atom.is_present:
+                        raise AssertionError(
+                            "ensemble atom presence does not match reference"
+                        )
 
                     coords_data[e_idx].append(ensemble_atom.coords)
 

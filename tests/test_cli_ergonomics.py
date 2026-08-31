@@ -148,9 +148,7 @@ def test_a_fasta_input_becomes_one_chain_per_record(tmp_path: Path, capsys) -> N
     assert document["entities"][0]["sequence"] == SEQUENCE
 
 
-def test_a_directory_of_jobs_is_a_batch_in_sorted_order(
-    tmp_path: Path, capsys
-) -> None:
+def test_a_directory_of_jobs_is_a_batch_in_sorted_order(tmp_path: Path, capsys) -> None:
     jobs = tmp_path / "jobs"
     jobs.mkdir()
     _job(jobs, "second")
@@ -211,10 +209,27 @@ def test_models_for_reports_which_backends_can_run_a_job(
 
 
 def test_doctor_reports_the_runtime_and_what_is_missing(capsys) -> None:
+    from foldjax import paths
+
+    cache = paths.compile_cache_dir()
+    cache.mkdir(parents=True)
+    (cache / "entry").write_bytes(b"1234567")
+
     assert main(["doctor", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["foldjax"]
+    assert payload["jax_version"]
+    assert payload["jaxlib_version"]
+    assert payload["device_kind"]
+    assert payload["device_topology"]["devices"]
+    assert payload["runtime_versions"]["jax"] == payload["jax_version"]
+    assert payload["runtime_versions"]["jaxlib"] == payload["jaxlib_version"]
+    assert payload["compile_cache"] == {
+        "path": str(cache),
+        "files": 1,
+        "bytes": 7,
+    }
     assert {row["model"] for row in payload["models"]} == {
         "alphafold3",
         "boltz2",
@@ -224,7 +239,62 @@ def test_doctor_reports_the_runtime_and_what_is_missing(capsys) -> None:
         "protenix",
     }
     assert all(row["weights_ready"] is False for row in payload["models"])
+    models = {row["model"]: row for row in payload["models"]}
+    assert models["alphafold3"]["weight_profiles"][0]["reason"]
+    openfold_input = models["openfold3"]["input_readiness"]["foldjax"]
+    assert openfold_input["required_extras"] == ["openfold3-preprocess"]
+    assert isinstance(openfold_input["ready"], bool)
+    assert any(
+        row["model"] == "openfold3" and row["input_format"] == "foldjax"
+        for row in payload["raw_preprocess"]
+    )
     assert payload["templates"]
+
+
+def test_doctor_reports_a_missing_raw_preprocess_distribution(
+    monkeypatch, capsys
+) -> None:
+    from foldjax import cli
+
+    installed_version = cli._distribution_version
+    monkeypatch.setattr(
+        cli,
+        "_distribution_version",
+        lambda name: None if name == "biotite" else installed_version(name),
+    )
+
+    assert main(["doctor", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    models = {row["model"]: row for row in payload["models"]}
+    readiness = models["openfold3"]["input_readiness"]["foldjax"]
+
+    assert readiness["ready"] is False
+    assert readiness["missing_distributions"] == ["biotite"]
+    assert "biotite" in readiness["reason"]
+    assert readiness["setup"] == ["uv sync --extra openfold3-preprocess"]
+
+
+def test_doctor_reports_incompatible_extra_versions(monkeypatch, capsys) -> None:
+    from foldjax import cli
+
+    monkeypatch.setattr(cli, "_distribution_version", lambda _name: "0.0.0")
+
+    assert main(["doctor", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    models = {row["model"]: row for row in payload["models"]}
+    openfold = models["openfold3"]["input_readiness"]["foldjax"]
+    alphafold = models["alphafold3"]["input_readiness"]["foldjax"]
+
+    assert openfold["ready"] is False
+    assert "absl-py 0.0.0 (requires >=2.3.1)" in openfold["incompatible_distributions"]
+    assert (
+        "ml-collections 0.0.0 (requires >=0.1.1)"
+        in openfold["incompatible_distributions"]
+    )
+    assert (
+        "dm-haiku 0.0.0 (requires ==0.0.17)" in alphafold["incompatible_distributions"]
+    )
+    assert openfold["setup"] == ["uv sync --extra openfold3-preprocess"]
 
 
 def test_cache_gc_reports_before_it_removes(tmp_path: Path, capsys) -> None:
@@ -238,13 +308,302 @@ def test_cache_gc_reports_before_it_removes(tmp_path: Path, capsys) -> None:
     assert main(["cache", "gc", "--max-size", "1K"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["removed_files"] == 1
+    assert payload["planned_removed_files"] == 1
+    assert payload["planned_removed_bytes"] == 4096
     assert payload["applied"] is False
     assert entry.is_file(), "a report must not delete anything"
 
     assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["applied"] is True
+    assert payload["planned_removed_files"] == 1
+    assert payload["removed_files"] == 1
+    assert payload["failed_files"] == 0
     assert not entry.exists()
+
+
+def test_cache_gc_apply_ignores_directory_symlinks(tmp_path: Path, capsys) -> None:
+    from foldjax import paths
+
+    root = paths.compile_cache_dir()
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = root / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+
+    assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["removed_files"] == 0
+    assert linked.is_symlink()
+    assert outside.is_dir()
+
+
+def test_cache_gc_apply_tolerates_a_directory_cleanup_race(monkeypatch, capsys) -> None:
+    from foldjax import cli, paths
+
+    empty = paths.compile_cache_dir() / "model" / "empty"
+    empty.mkdir(parents=True)
+    original_rmdir = cli.os.rmdir
+
+    def race(path, *, dir_fd=None) -> None:
+        if path == "empty":
+            raise FileNotFoundError("removed by another cache writer")
+        original_rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(cli.os, "rmdir", race)
+
+    assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["removed_files"] == 0
+
+
+def test_cache_gc_apply_reports_actual_unlink_failures(monkeypatch, capsys) -> None:
+    from foldjax import cli, paths
+
+    root = paths.compile_cache_dir()
+    root.mkdir(parents=True)
+    entry = root / "entry.bin"
+    entry.write_bytes(b"x" * 4096)
+    original_unlink = cli.os.unlink
+
+    def fail_entry(path, *, dir_fd=None) -> None:
+        if path == "entry.bin":
+            raise PermissionError("kept for regression test")
+        original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(cli.os, "unlink", fail_entry)
+
+    assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert payload["planned_removed_files"] == 1
+    assert payload["planned_removed_bytes"] == 4096
+    assert payload["removed_files"] == 0
+    assert payload["removed_bytes"] == 0
+    assert payload["failed_files"] == 1
+    assert entry.is_file()
+    assert "could not remove" in captured.err
+
+
+def test_cache_gc_apply_treats_concurrent_unlink_as_already_absent(
+    monkeypatch, capsys
+) -> None:
+    from foldjax import cli, paths
+
+    root = paths.compile_cache_dir()
+    root.mkdir(parents=True)
+    entry = root / "entry.bin"
+    entry.write_bytes(b"x" * 4096)
+    original_unlink = cli.os.unlink
+
+    def concurrent_unlink(path, *, dir_fd=None) -> None:
+        original_unlink(path, dir_fd=dir_fd)
+        raise FileNotFoundError("removed by another cache collector")
+
+    monkeypatch.setattr(cli.os, "unlink", concurrent_unlink)
+
+    assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["removed_files"] == 0
+    assert payload["failed_files"] == 0
+    assert payload["already_absent_files"] == 1
+    assert not entry.exists()
+
+
+@pytest.mark.parametrize(
+    "directory_name", (".tokamax-autotuning-v1", ".tokamax-autotuning-v2")
+)
+def test_cache_gc_keeps_tokamax_coordination_files(capsys, directory_name) -> None:
+    from foldjax import paths
+
+    directory = paths.compile_cache_dir() / directory_name
+    directory.mkdir(parents=True)
+    result = directory / "signature.json"
+    lock = directory / "signature.lockfile"
+    temporary = directory / ".signature.123.tmp"
+    result.write_bytes(b"result")
+    lock.write_bytes(b"lock")
+    temporary.write_bytes(b"partial")
+
+    assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["planned_removed_files"] == 1
+    assert payload["removed_files"] == 1
+    assert payload["protected_files"] == 2
+    assert payload["protected_bytes"] == len(b"lockpartial")
+    assert not result.exists()
+    assert lock.read_bytes() == b"lock"
+    assert temporary.read_bytes() == b"partial"
+
+
+def test_cache_gc_removes_exact_abandoned_tokamax_temporary(capsys) -> None:
+    from foldjax import paths
+
+    signature = "a" * 64
+    directory = paths.compile_cache_dir() / ".tokamax-autotuning-v2"
+    directory.mkdir(parents=True)
+    lock = directory / f"{signature}.lockfile"
+    temporary = directory / f".{signature}.json.123.456.tmp"
+    lock.write_bytes(b"lock")
+    temporary.write_bytes(b"abandoned")
+
+    assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["planned_removed_files"] == 1
+    assert payload["removed_files"] == 1
+    assert payload["protected_files"] == 1
+    assert not temporary.exists()
+    assert lock.read_bytes() == b"lock"
+
+
+def test_cache_gc_keeps_v1_exact_shaped_temporary(capsys) -> None:
+    from foldjax import paths
+
+    signature = "c" * 64
+    directory = paths.compile_cache_dir() / ".tokamax-autotuning-v1"
+    directory.mkdir(parents=True)
+    lock = directory / f"{signature}.lockfile"
+    temporary = directory / f".{signature}.json.123.456.tmp"
+    lock.write_bytes(b"lock")
+    temporary.write_bytes(b"legacy")
+
+    assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["planned_removed_files"] == 0
+    assert payload["protected_files"] == 2
+    assert temporary.read_bytes() == b"legacy"
+
+
+def test_cache_gc_keeps_locked_tokamax_temporary(capsys) -> None:
+    import fcntl
+    import os
+
+    from foldjax import paths
+
+    signature = "b" * 64
+    directory = paths.compile_cache_dir() / ".tokamax-autotuning-v2"
+    directory.mkdir(parents=True)
+    lock = directory / f"{signature}.lockfile"
+    temporary = directory / f".{signature}.json.123.456.tmp"
+    lock.write_bytes(b"lock")
+    temporary.write_bytes(b"active")
+    lock_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["planned_removed_files"] == 0
+    assert payload["protected_files"] == 2
+    assert payload["protected_bytes"] == len(b"lockactive")
+    assert temporary.read_bytes() == b"active"
+
+
+def test_cache_gc_budget_includes_protected_tokamax_bytes(capsys) -> None:
+    from foldjax import paths
+
+    directory = paths.compile_cache_dir() / ".tokamax-autotuning-v2"
+    directory.mkdir(parents=True)
+    (directory / ".unrecognised.tmp").write_bytes(b"p" * 900)
+    (directory / "one.json").write_bytes(b"1" * 500)
+    (directory / "two.json").write_bytes(b"2" * 500)
+
+    assert main(["cache", "gc", "--max-size", "1K"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["total_bytes"] == 1900
+    assert payload["protected_bytes"] == 900
+    assert payload["planned_removed_files"] == 2
+    assert payload["planned_removed_bytes"] == 1000
+    assert payload["remaining_bytes"] == 900
+    assert payload["budget_satisfied"] is True
+
+
+def test_cache_gc_fails_closed_when_usage_scan_is_incomplete(monkeypatch) -> None:
+    from foldjax import cli, paths
+
+    root = paths.compile_cache_dir()
+    root.mkdir(parents=True)
+    (root / "unreadable.bin").write_bytes(b"hidden")
+    original_stat = cli.os.stat
+
+    def deny_entry(path, *, dir_fd=None, follow_symlinks=True):
+        if path == "unreadable.bin" and dir_fd is not None:
+            raise PermissionError("cannot account for this cache entry")
+        return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(cli.os, "stat", deny_entry)
+
+    with pytest.raises(PermissionError, match="cannot account"):
+        main(["cache", "gc", "--max-size", "1K"])
+
+
+def test_cache_gc_keeps_a_path_replaced_after_planning(monkeypatch, capsys) -> None:
+    from foldjax import cli, paths
+
+    root = paths.compile_cache_dir()
+    root.mkdir(parents=True)
+    entry = root / "entry.bin"
+    entry.write_bytes(b"old")
+    real_entries = cli._cache_gc_entries
+
+    def replace_after_listing(root_fd):
+        entries = real_entries(root_fd)
+        entry.unlink()
+        entry.write_bytes(b"new")
+        return entries
+
+    monkeypatch.setattr(cli, "_cache_gc_entries", replace_after_listing)
+
+    assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["planned_removed_files"] == 1
+    assert payload["removed_files"] == 0
+    assert payload["changed_files"] == 1
+    assert entry.read_bytes() == b"new"
+
+
+def test_cache_gc_root_swap_cannot_escape_the_pinned_directory(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from foldjax import cli, paths
+
+    root = paths.compile_cache_dir()
+    root.mkdir(parents=True)
+    original_entry = root / "entry.bin"
+    original_entry.write_bytes(b"x" * 4096)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "entry.bin"
+    victim.write_bytes(b"must survive")
+    moved_root = tmp_path / "pinned-cache"
+    real_entries = cli._cache_gc_entries
+
+    def swap_after_listing(root_fd):
+        entries = real_entries(root_fd)
+        root.rename(moved_root)
+        root.symlink_to(outside, target_is_directory=True)
+        return entries
+
+    monkeypatch.setattr(cli, "_cache_gc_entries", swap_after_listing)
+
+    assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["removed_files"] == 1
+    assert not (moved_root / "entry.bin").exists()
+    assert victim.read_bytes() == b"must survive"
 
 
 def test_cache_gc_needs_to_be_told_what_to_reclaim() -> None:
@@ -252,9 +611,10 @@ def test_cache_gc_needs_to_be_told_what_to_reclaim() -> None:
         main(["cache", "gc"])
 
 
-def test_cache_gc_rejects_an_unreadable_size() -> None:
+@pytest.mark.parametrize("value", ("plenty", "inf", "nan", "1e999"))
+def test_cache_gc_rejects_an_unreadable_or_nonfinite_size(value: str) -> None:
     with pytest.raises(ValueError, match="20G or 500M"):
-        main(["cache", "gc", "--max-size", "plenty"])
+        main(["cache", "gc", "--max-size", value])
 
 
 class _CountingBackend(Backend):
@@ -328,9 +688,7 @@ def test_predict_prints_a_table_on_a_terminal_and_json_otherwise(
         assert payload["model"] == "boltz2"
 
 
-def test_resume_skips_a_pair_that_already_finished(
-    tmp_path: Path, capsys
-) -> None:
+def test_resume_skips_a_pair_that_already_finished(tmp_path: Path, capsys) -> None:
     job = _job(tmp_path)
     out = tmp_path / "out"
     backend = _CountingBackend()

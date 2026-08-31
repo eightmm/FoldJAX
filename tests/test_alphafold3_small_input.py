@@ -149,9 +149,7 @@ def test_pde_single_streams_standard_sample_products(monkeypatch) -> None:
                 assert first_pair_mask() is None
         return real_samplewise(mask, value, axis)
 
-    monkeypatch.setattr(
-        confidences, "_samplewise_weighted_mean", tracked_samplewise
-    )
+    monkeypatch.setattr(confidences, "_samplewise_weighted_mean", tracked_samplewise)
     with np.errstate(invalid="ignore"):
         actual = confidences.pde_single(
             9,
@@ -276,9 +274,7 @@ def test_multimer_chain_pair_pde_bounds_selection_scratch(monkeypatch) -> None:
         previous = weakref.ref(selected)
         return selected
 
-    monkeypatch.setattr(
-        confidences, "_chain_pair_submatrix", tracked_submatrix
-    )
+    monkeypatch.setattr(confidences, "_chain_pair_submatrix", tracked_submatrix)
     with np.errstate(invalid="ignore"):
         actual = confidences.chain_pair_pde(13, asym_ids, full_pde)
     for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
@@ -455,9 +451,7 @@ def test_multimer_chain_pair_pae_keeps_the_generic_path(monkeypatch) -> None:
         previous_group.append(weakref.ref(selected))
         return selected
 
-    monkeypatch.setattr(
-        confidences, "_chain_pair_submatrix", tracked_submatrix
-    )
+    monkeypatch.setattr(confidences, "_chain_pair_submatrix", tracked_submatrix)
     actual = confidences.chain_pair_pae(
         num_tokens=8,
         asym_ids=asym_ids,
@@ -521,9 +515,9 @@ def test_rank_metric_keeps_single_sample_and_jax_semantics(monkeypatch) -> None:
 
     jax_full_pde = jnp.asarray(np.repeat(full_pde, 3, axis=0))
     jax_contacts = jnp.asarray(contact_probs)
-    jax_expected = -jnp.sum(
-        jax_full_pde * jax_contacts[None], axis=(-2, -1)
-    ) / (jnp.sum(jax_contacts) + 1e-6)
+    jax_expected = -jnp.sum(jax_full_pde * jax_contacts[None], axis=(-2, -1)) / (
+        jnp.sum(jax_contacts) + 1e-6
+    )
     np.testing.assert_array_equal(
         np.asarray(confidences.rank_metric(jax_full_pde, jax_contacts)),
         np.asarray(jax_expected),
@@ -825,6 +819,97 @@ def test_diffusion_padding_preserves_multisample_noise_across_every_step(
     assert not np.any(np.asarray(padded[:, 3:]))
 
 
+def test_diffusion_sample_sharding_preserves_the_explicit_rng_tape(monkeypatch) -> None:
+    """Raised sample counts bound denoiser width without changing samples."""
+    import haiku as hk
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model.network import diffusion_head
+
+    monkeypatch.setattr(
+        diffusion_head,
+        "random_augmentation",
+        lambda rng_key, positions, mask: positions * mask[..., None],
+    )
+    config = diffusion_head.SampleConfig(
+        steps=3,
+        gamma_0=0.8,
+        gamma_min=1.0,
+        noise_scale=1.003,
+        step_scale=1.5,
+        num_samples=7,
+    )
+
+    def forward(atom_mask, token_mask, sample_key, shard_size):
+        batch = type("Batch", (), {})()
+        batch.predicted_structure_info = type("Pred", (), {"atom_mask": atom_mask})()
+        batch.token_features = type("Tokens", (), {"mask": token_mask})()
+        return diffusion_head.sample(
+            denoising_step=lambda positions, noise_level: (
+                positions / (1.0 + noise_level**2)
+            ),
+            batch=batch,
+            key=sample_key,
+            config=config,
+            sample_shard_size=shard_size,
+        )
+
+    transformed = hk.transform(forward)
+    key = jax.random.PRNGKey(20260831)
+    atom_mask = jnp.ones((4, 3), dtype=jnp.float32)
+    token_mask = jnp.ones((4,), dtype=jnp.float32)
+    params = transformed.init(key, atom_mask, token_mask, key, None)
+    unsharded = transformed.apply(params, key, atom_mask, token_mask, key, None)[
+        "atom_positions"
+    ]
+    sharded = transformed.apply(params, key, atom_mask, token_mask, key, 5)[
+        "atom_positions"
+    ]
+
+    assert sharded.shape == (7, 4, 3, 3)
+    # The keys and random draws are identical. A different mapped batch width
+    # can select a different fused float32 schedule, so retain the same tight
+    # numerical contract used by the padding sampler gate above.
+    np.testing.assert_allclose(
+        np.asarray(sharded),
+        np.asarray(unsharded),
+        rtol=4e-6,
+        atol=2e-4,
+    )
+
+
+def test_af3_only_shards_sample_counts_above_the_released_batch() -> None:
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+
+    from alphafold3.model import model as af3_model
+
+    diffusion_config = SimpleNamespace(
+        eval_batch_size=5,
+        eval_batch_dim_shard_size=5,
+    )
+    assert (
+        af3_model._diffusion_sample_shard_size(
+            diffusion_config,
+            SimpleNamespace(num_samples=5),
+        )
+        is None
+    )
+    assert (
+        af3_model._diffusion_sample_shard_size(
+            diffusion_config,
+            SimpleNamespace(num_samples=6),
+        )
+        == 5
+    )
+
+
 def test_inference_result_reuses_pae_metric_chain_aggregates(monkeypatch) -> None:
     """Host postprocessing does not recompute aggregates from ``pae_metrics``."""
     from foldjax.models.alphafold3 import build
@@ -920,9 +1005,7 @@ def test_inference_result_reuses_pae_metric_chain_aggregates(monkeypatch) -> Non
         "distogram": {"contact_probs": np.ones((2, 2), dtype=np.float32)},
         "full_pae": np.zeros((1, 2, 2), dtype=np.float32),
         "full_pde": np.zeros((1, 2, 2), dtype=np.float32),
-        "tmscore_adjusted_pae_interface": np.zeros(
-            (1, 2, 2), dtype=np.float32
-        ),
+        "tmscore_adjusted_pae_interface": np.zeros((1, 2, 2), dtype=np.float32),
         "average_pde": np.asarray([0.25], dtype=np.float32),
         "__identifier__": b"test-model",
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import NamedTuple
 
 import jax
@@ -196,6 +197,117 @@ def relative_position_encoding(
     if jnp.issubdtype(relp_feature.dtype, jnp.integer):
         relp_feature = relp_feature.astype(params.linear_no_bias.weight.dtype)
     return linear(relp_feature, params.linear_no_bias)
+
+
+def relative_position_encoding_from_features(
+    input_feature_dict: Mapping[str, jnp.ndarray],
+    params: RelativePositionParams,
+    *,
+    r_max: int = 32,
+    s_max: int = 2,
+) -> jnp.ndarray:
+    """Project released relative-position metadata without a wide one-hot.
+
+    The released 139-channel layout has exactly four non-zero terms per token
+    pair: residue and token offsets, the same-entity bit, and the chain offset.
+    Selecting those four weight columns avoids materialising the historical
+    float32 ``[N, N, 139]`` tensor.  Non-finite custom weights retain dense-dot
+    IEEE behaviour, including ``0 * inf -> nan``; unsupported layouts take the
+    historical dense path.
+    """
+
+    asym_id = input_feature_dict["asym_id"]
+    residue_index = input_feature_dict["residue_index"]
+    entity_id = input_feature_dict["entity_id"]
+    sym_id = input_feature_dict["sym_id"]
+    token_index = input_feature_dict["token_index"]
+    for name, value in (
+        ("residue_index", residue_index),
+        ("sym_id", sym_id),
+        ("token_index", token_index),
+    ):
+        if not jnp.issubdtype(value.dtype, jnp.integer):
+            raise TypeError(f"{name} must have an integer dtype; got {value.dtype}")
+
+    weight = params.linear_no_bias.weight
+    if (
+        weight.ndim != 2
+        or weight.shape[-1] != 139
+        or weight.dtype != jnp.float32
+        or params.linear_no_bias.bias is not None
+        or r_max != 32
+        or s_max != 2
+    ):
+        return relative_position_encoding(
+            relative_position_features(
+                input_feature_dict,
+                r_max=r_max,
+                s_max=s_max,
+            ),
+            params,
+        )
+
+    same_chain = asym_id[..., :, None] == asym_id[..., None, :]
+    same_residue = residue_index[..., :, None] == residue_index[..., None, :]
+    same_entity = entity_id[..., :, None] == entity_id[..., None, :]
+    residue_bins = jnp.where(
+        same_chain,
+        jnp.clip(
+            residue_index[..., :, None] - residue_index[..., None, :] + r_max,
+            0,
+            2 * r_max,
+        ),
+        2 * r_max + 1,
+    ).astype(jnp.int32)
+    token_bins = jnp.where(
+        same_chain & same_residue,
+        jnp.clip(
+            token_index[..., :, None] - token_index[..., None, :] + r_max,
+            0,
+            2 * r_max,
+        ),
+        2 * r_max + 1,
+    ).astype(jnp.int32)
+    chain_bins = jnp.where(
+        same_entity,
+        jnp.clip(
+            sym_id[..., :, None] - sym_id[..., None, :] + s_max,
+            0,
+            2 * s_max,
+        ),
+        2 * s_max + 1,
+    ).astype(jnp.int32)
+
+    table = jnp.swapaxes(weight, -1, -2)
+    residue_selected = table[residue_bins]
+    token_selected = table[66 + token_bins]
+    chain_selected = table[133 + chain_bins]
+    same_entity_selected = same_entity[..., None].astype(weight.dtype) * weight[:, 132]
+    projected = residue_selected + token_selected
+    projected = projected + same_entity_selected
+    projected = projected + chain_selected
+
+    # Dense matmul touches every zero lane. Preserve its NaN/Inf behaviour for
+    # custom parameters without retaining the wide activation solely for that
+    # exceptional case.
+    nonfinite_total = jnp.sum(~jnp.isfinite(table), axis=0, dtype=jnp.int32)
+    nonfinite_selected = (~jnp.isfinite(residue_selected)).astype(jnp.int32)
+    nonfinite_selected += (~jnp.isfinite(token_selected)).astype(jnp.int32)
+    nonfinite_selected += (~jnp.isfinite(chain_selected)).astype(jnp.int32)
+    nonfinite_selected += same_entity[..., None].astype(jnp.int32) * (
+        ~jnp.isfinite(weight[:, 132])
+    ).astype(jnp.int32)
+    projected = jnp.where(
+        nonfinite_total > nonfinite_selected,
+        jnp.asarray(jnp.nan, dtype=projected.dtype),
+        projected,
+    )
+    # A multi-term dot canonicalises an exact signed zero to positive zero.
+    return jnp.where(
+        projected == 0,
+        jnp.zeros((), dtype=projected.dtype),
+        projected,
+    )
 
 
 def input_feature_embedder(

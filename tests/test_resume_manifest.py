@@ -172,11 +172,13 @@ def _backends(
     boltz = _ResumeBackend("boltz2", calls, fail_stem=fail_stem)
     opendde = _ResumeBackend("opendde", calls, fail_stem=fail_stem)
     esmfold = _ResumeBackend("esmfold2", calls, fail_stem=fail_stem)
+    openfold = _ResumeBackend("openfold3", calls, fail_stem=fail_stem)
     protenix = _ResumeBackend("protenix", calls, fail_stem=fail_stem)
     with (
         backend_override("boltz2", lambda: boltz),
         backend_override("opendde", lambda: opendde),
         backend_override("esmfold2", lambda: esmfold),
+        backend_override("openfold3", lambda: openfold),
         backend_override("protenix", lambda: protenix),
     ):
         yield
@@ -752,6 +754,61 @@ def test_esmfold2_companion_weight_mutation_forces_a_rerun(
             config.write_bytes(b'{"model": "b"}')
         else:
             shard.write_bytes(b"language-b")
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+
+
+def test_esmfold2_indexed_external_shard_mutation_forces_a_rerun(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "esmfold2"
+    root.mkdir()
+    weights = _file(root / "model.safetensors", b"structure")
+    _file(root / "config.json", b'{"model": "a"}')
+    esmc = root / "esmc"
+    esmc.mkdir()
+    _file(esmc / "config.json", b'{"hidden_size": 16}')
+    external = _file(root / "external.safetensors", b"language-a")
+    (esmc / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"esmc.embed.weight": "../external.safetensors"}}),
+        encoding="utf-8",
+    )
+    request = _request(tmp_path, model="esmfold2", weights=weights)
+    calls: list[tuple[str, str, int]] = []
+    with _backends(calls):
+        foldjax.predict(request)
+        external.write_bytes(b"language-b")
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_openfold3_ccd_mutation_forces_a_rerun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    custom: bool,
+) -> None:
+    from biotite.structure.info import ccd as biotite_ccd
+
+    ccd = _file(tmp_path / "components.bcif", b"ccd-a")
+    options = {"mode": "baseline"}
+    if custom:
+        options["ccd_file_path"] = str(ccd)
+    else:
+        monkeypatch.setattr(biotite_ccd, "_CCD_FILE", ccd)
+    request = _request(
+        tmp_path,
+        model="openfold3",
+        options=options,
+    )
+    calls: list[tuple[str, str, int]] = []
+    with _backends(calls):
+        foldjax.predict(request)
+        ccd.write_bytes(b"ccd-b")
         resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
 
     assert len(calls) == 2
