@@ -495,6 +495,79 @@ Confidence moves with it and not monotonically, because which rows get sampled
 changes; that spread is the alignment's own variance, not evidence that a
 shallower MSA predicts better. The default keeps each port's own depth.
 
+### Where this card's ceiling actually is, and what does not move it
+
+Measured 2026-09-01 on current main, at 4,100 tokens (`L4000_1gte`, 1GTE,
+4 x 1025 at 1.65 A, a 23,037-row alignment), released schedule, seed 101:
+
+| model | result | peak | of the 85.5 GiB pool |
+|---|---|---:|---:|
+| alphafold3 | 1,232.8 s | 52.1 GiB | 61% |
+| protenix | 2,329.4 s | 75.3 GiB | 88% |
+| boltz2 | 3,194.5 s | 76.4 GiB | 89% |
+| openfold3 | failed, asked for 107.85 GiB in one block | -- | past the 95.0 GiB card |
+| opendde | failed, asked for 88.75 GiB in one block | -- | past the pool, inside the card |
+
+At 4,926 tokens all six fail, five of them asking for a single block larger
+than the card (105.65 to 170.01 GiB). So the ceiling on this hardware sits
+between those two sizes, and the surviving models' own memory exponents place
+it: peak grows as `N^1.77` (Protenix) to `N^1.86` (Boltz-2), which reaches the
+pool at **about 4,350-4,400 tokens**.
+
+**Time stops tracking the model once the arena approaches the pool.** The
+memory exponents stay near-quadratic all the way up, but the time exponent
+jumps, and it jumps at the same occupancy in every model that reaches it:
+
+| model, segment | occupancy at the top | time exponent |
+|---|---:|---:|
+| boltz2 2,096 -> 3,012 | 51% | 2.96 |
+| protenix 2,096 -> 3,012 | 51% | 3.04 |
+| protenix-v2 2,096 -> 3,012 | 91% | 4.29 |
+| boltz2 3,012 -> 4,100 | 89% | 3.71 |
+| protenix 3,012 -> 4,100 | 88% | 3.79 |
+
+Around half the pool the exponent is ~3.0; near 90% it is 3.7-4.3. That is
+XLA rematerialising -- recomputing values rather than storing them -- to fit a
+program the pool can no longer hold outright, and paying for it in arithmetic.
+It is not the model becoming more expensive. Protenix-v2's 4.29, which reads as
+an alarming architecture, is this: its checkpoint is the same 4,174 arrays as
+the base model with one width doubled (`c_z` 128 -> 256, visible as the
+dominant trailing dimension in each file), so it reaches any given occupancy a
+size earlier. Where both have room -- 1,354 -> 2,096, at 46% -- their exponents
+are 1.87 and 1.94.
+
+**Two levers were measured against this, and neither is one.**
+
+*The pool fraction is real but does not rescue these runs.* `bytes_limit`
+tracks `XLA_CLIENT_MEM_FRACTION` exactly -- 85.47 GiB at 0.90 and 90.22 GiB at
+0.95, read off the device rather than computed. Both failures were retried at
+0.95 and both still failed: Protenix at 4,926 needs one contiguous 87.93 GiB
+block, and OpenDDE at 4,100 has a program XLA cannot rematerialise below
+88.77 GiB against a 90.22 GiB pool. A pool with 1.45 GiB of slack cannot lay
+out that program's co-live set whatever its total says.
+
+*Capping the MSA depth moves almost nothing, at this size too.* The arithmetic
+argues loudly that it should: one `[depth, tokens, 64]` copy at 4,100 tokens is
+0.5 GiB at AlphaFold 3's 1,024 rows and 8.0 GiB at Protenix's 16,384, while
+their pair terms are identical. Measured at `--max-msa-depth 1024`:
+
+| model | shipped default | capped to 1,024 | change |
+|---|---:|---:|---:|
+| protenix | 77,158.2 MiB | 76,793.6 MiB | -0.5% |
+| boltz2 | 78,282.5 MiB | 78,058.2 MiB | -0.3% |
+| opendde | fails | still fails | -- |
+
+Half a percent, against an arithmetic prediction of several gigabytes. The
+alignment tensor is simply not co-live with the peak: the peak is the pair
+stack, and the MSA representation is gone by the time it forms. This is the
+same result [`--max-msa-depth`](#--max-msa-depth) recorded at 488 tokens
+(0.9%), and the reason to record it again is that the earlier note left room
+for the cap to matter more at a size where the MSA term is large and the pool
+is nearly full. It does not. **Treat the cap as an accuracy knob at every
+size**, and note that this also disposes of the tempting explanation for why
+AlphaFold 3 completes the same 4,100-token job at 61% of the pool while
+Protenix needs 88%: it is not the 16x deeper alignment.
+
 ### Protenix's peak moves with the seed, through the alignment
 
 The depth cap is not the depth the trunk reads. Protenix draws a fresh row

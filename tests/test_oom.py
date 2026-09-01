@@ -203,7 +203,12 @@ def test_importing_a_model_keeps_a_chosen_pool_fraction_alone() -> None:
     [
         (2.0, 120.0, "past the device itself"),
         (2.0, 88.0, "past the pool"),
-        (2.0, 60.0, "fragmentation and a larger fraction will not help"),
+        # Fits both, so the answer is placement rather than capacity. Asserted
+        # on what the reader is told to do -- that a bigger fraction is not the
+        # lever -- rather than on the sentence that says it, which has been
+        # reworded once already for being read as classic fragmentation when
+        # the pool was nearly empty.
+        (2.0, 60.0, "a larger fraction will not help"),
     ],
 )
 def test_the_explainer_separates_a_pool_limit_from_fragmentation(

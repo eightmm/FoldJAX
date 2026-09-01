@@ -189,14 +189,20 @@ def diagnose(error: BaseException) -> str | None:
                 f"It already held {used / gib:.1f} GiB, so it needed "
                 f"{need / gib:.1f} GiB at that moment -- inside both the "
                 f"{pool / gib:.1f} GiB pool and the {card / gib:.1f} GiB "
-                "device. The total fits and one contiguous block of it does "
-                "not, so this is fragmentation and a larger fraction will not "
-                "help."
+                "device, so a larger fraction will not help: the allocator "
+                "could not place this block, not find the bytes. The live "
+                "figure above does not say why -- a nearly empty pool can fail "
+                "a half-pool request because the program\'s own co-live set "
+                "leaves no room to lay one out. XLA\'s rematerialization lines "
+                "in this log report the total it could not get the program "
+                "under; compare that with the pool."
             )
     lines.append(
         f"Raise it with {configured_fraction_env() or CURRENT_FRACTION_ENV}"
-        "=0.95 if the total is past the pool, or lower the job's cost "
-        "(--num-samples, --max-msa-depth). If the run needs more than the device "
-        "has, the fraction will not help."
+        "=0.95 if the total is past the pool, or lower the job's cost with "
+        "--num-samples. If the run needs more than the device has, the fraction "
+        "will not help. --max-msa-depth is not a memory lever here: measured at "
+        "488 and at 4,100 tokens it moved the peak by under 1%, because the "
+        "alignment tensor is not co-live with the pair stack that sets it."
     )
     return " ".join(lines)

@@ -146,6 +146,16 @@ added 35 commits bounding caches, streaming parses and releasing host state:
 model**, and 4,926 still fails on all six. Wall clock moved -8 s to +22 s,
 inside what this card's clock does between runs.
 
+**The gap between 3,012 and 4,926 has since been filled, and the ceiling is in
+it.** A 4,100-token point (`L4000_1gte`) was measured on 2026-09-01: AlphaFold 3
+completes it at 52.1 GiB, Protenix at 75.3 and Boltz-2 at 76.4, while OpenFold3
+asks for a single 107.85 GiB block and OpenDDE for 88.75. The two survivors sit
+at 88-89% of the pool, and their own memory exponents put the wall at roughly
+4,350-4,400 tokens -- so 4,926 failing on all six is a size past the hardware
+rather than a property of the ports. What that costs in time, why the exponent
+jumps there, and the two levers that turn out not to move it are in
+[Where this card's ceiling actually is](engineering-notes.md#where-this-cards-ceiling-actually-is-and-what-does-not-move-it).
+
 That is the expected result rather than a null one. Those commits are
 loader-stage and host-side by their own description; the peak here is an XLA
 arena, which is deterministic for a fixed program and shape. A GPU peak that
