@@ -1,5 +1,3 @@
-![Boltz2-JAX hero: a protein-ligand complex in a luminous JAX-inspired energy field](assets/boltz2-jax-hero.png)
-
 # Boltz2-JAX
 
 > **Archived port record.** Boltz2-JAX now ships as

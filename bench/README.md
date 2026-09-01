@@ -223,6 +223,25 @@ confirmation.
 installation you provide rather than reimplementing the model, so both columns
 would be the same code.
 
+## The ablation tools
+
+Three scripts here answer questions the main table cannot, and none of them is
+reachable from a row in it -- which is why they read as dead code until you go
+looking. They are not; each was written for a question that recurs.
+
+- [`schedule_ablation.py`](schedule_ablation.py) splits a run's wall time across
+  trunk, diffusion and confidence. Protenix and OpenDDE trace a whole prediction
+  as one XLA program, so wrapping Python functions measures nothing; varying
+  recycles, steps and samples one at a time and reading the slopes gives the
+  split without a profiler. This is the only stage-level time attribution in the
+  repository -- the manifest's `cost.phases` stops at prepare/predict/write.
+- [`triangle_block_sweep.py`](triangle_block_sweep.py) times and sizes one
+  triangle multiplication against its row-block size. Block budgets are not
+  monotonic in the peak, so the answer has to be swept rather than reasoned to.
+- [`run_gap_ablation.py`](run_gap_ablation.py) drives one named arm of a route
+  A/B in its own process, which is what the `experiments/` records above are
+  built from.
+
 ## A failed row is a result, not a gap
 
 `opendde` at 1,531 tokens does not run in fp32 on this card -- on either side.

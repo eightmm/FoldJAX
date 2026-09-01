@@ -1,5 +1,3 @@
-![Protenix-JAX hero: a protein, DNA, and ligand emerging from a luminous JAX-inspired tensor field](assets/protenix-jax-hero.png)
-
 # Protenix-JAX
 
 > **Archived port record.** Protenix-JAX now ships as
@@ -254,11 +252,9 @@ same 245-token/2529-atom protein-DNA input.
 | Upstream Protenix Torch, BF16 | 4.908 s | 4.037 GB |
 
 Under that production-default comparison, JAX is 1.18x faster and uses 32.5%
-less peak GPU memory. See the controlled methodology and parity details:
-
-- [Torch/JAX parity benchmark](PARITY_BENCHMARK_2026-07-13.md)
-- [Warm performance profile](PERFORMANCE_PROFILE_2026-07-13.md)
-- [Production inference benchmark](PRODUCTION_INFERENCE_BENCHMARK_2026-07-13.md)
+less peak GPU memory. Those 2026-07-13 methodology write-ups have been removed;
+[`docs/benchmark.md`](../../benchmark.md) carries the current controlled
+comparison, measured under one schedule against unchanged upstreams.
 
 Matched-noise multimodal checks reached all-atom Kabsch errors of
 `2.54e-5 Å` for protein-DNA and `1.85e-4 Å` for protein-ATP. TFG potential

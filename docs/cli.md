@@ -186,7 +186,25 @@ work; nothing below needs to be set to reach them.
   PAE/PDE logits (`[samples, N, N, 64]` -- tens of GiB at long sequences) are
   returned only on request.
 
+`--mem-fraction` is the one memory flag that is not about the model. It sets
+how much of the device JAX preallocates, and FoldJAX defaults it to 0.9 rather
+than JAX's own 0.75: one prediction owns the process, and a quarter of the card
+held in reserve is what stops jobs that would otherwise fit. Lower it to share
+the device with another process.
+
 Design notes: [docs/engineering-notes.md](engineering-notes.md).
+
+### Trunk arrays without a structure
+
+`--representations` hands back the trunk's own arrays alongside the prediction:
+a comma-separated list, or `all`. `foldjax capabilities --model MODEL` lists
+what each model produces. They are the largest arrays a run makes -- a pair
+representation is quadratic in token count -- so nothing is written unless you
+ask.
+
+`--stop-after trunk` stops once those representations exist, skipping the
+diffusion sampler and the confidence heads. It writes no structure, so it only
+makes sense together with `--representations`; the default is `full`.
 
 ### A bfloat16 trunk (`--option trunk_dtype=bf16`)
 
@@ -224,6 +242,12 @@ uv run foldjax weights path --model opendde     # where it landed
 uv run foldjax home                             # every location FoldJAX uses
 uv run foldjax home --path runtime              # one script-friendly location
 ```
+
+`--download-only` fetches the released files and skips the JAX conversions, on
+both `setup` and `weights fetch`: useful on a machine that has the bandwidth
+but not the accelerator to convert on. `--weights PATH` on `predict` and `plan`
+points at a model-native checkpoint or asset directory directly, bypassing the
+store; omit it and the store resolves the file.
 
 Weight preparation keeps its lifecycle and progress on stderr. `weights fetch`
 retains a human-readable summary on stdout; use `weights path` when a script
@@ -326,8 +350,9 @@ alphafold3` reports old candidates while always keeping the tree selected by
 the current source. It is a dry run by default: the store is shared between
 checkouts, and age cannot prove that another checkout has stopped selecting its
 own generation. Review the list and add `--apply` to remove it; by default,
-anything prepared in the last week is not even listed. `--all` includes those
-recent candidates but still requires `--apply` to delete them.
+anything prepared in the last week is not even listed -- `--keep-days N` moves
+that window. `--all` includes those recent candidates but still requires
+`--apply` to delete them.
 
 ### GPU and the compile cache
 

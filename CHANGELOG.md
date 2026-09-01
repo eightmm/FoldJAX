@@ -10,7 +10,69 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Removed
+
+- **Decorative images and superseded measurement write-ups.** The repository
+  banner, the two port hero images, and seven unreferenced wordmark/logo drafts
+  are gone, with `docs/make_banner.py` and the three README blocks that
+  displayed them. Tracked PNGs fall from 19 files and 11 MB to 8 and 2.4 MB in a
+  22 MB pack; the benchmark, scaling and memory-trace figures stay, because they
+  carry measured data the surrounding text reads from.
+
+  Also removed: Protenix's `PARITY_BENCHMARK_2026-07-13.md`,
+  `PERFORMANCE_PROFILE_2026-07-13.md`,
+  `PRODUCTION_INFERENCE_BENCHMARK_2026-07-13.md` and `PORTING_PLAN.md`,
+  `docs/ux-optimization-plan.md`, `bench/results-before/`,
+  `bench/results-underprovisioned/`, and the `tests/models/chai/` remnant of a
+  port that no longer exists. The dated write-ups measured July 2026 revisions
+  and were being read as current numbers; `docs/benchmark.md` is the one
+  measured comparison and states the revision behind each row. Every reference
+  to a removed file was rewritten rather than left dangling.
+
+- **Two dead scripts.** `tests/models/boltz2/scripts/featurize.py` said in its
+  own docstring that `scripts/predict.py` used it; `predict.py` imports
+  `featurize_yaml` from `foldjax.models.boltz2.data.featurize` directly and
+  nothing imported the wrapper. `tests/models/opendde/scripts/benchmark_predict.py`
+  measured what `bench/run_foldjax.py` measures. The rest of
+  `tests/models/*/scripts/` is kept: those scripts regenerate committed fixtures
+  or capture upstream reference data, and deleting them would break
+  reproduction rather than remove clutter.
+
 ### Changed
+
+- **The documented CLI and Python surfaces now match the real ones.** Checked by
+  walking the argparse tree and `PredictionRequest`'s fields rather than by
+  reading: `docs/cli.md` called itself the complete `foldjax` surface while
+  `--mem-fraction`, `--representations`, `--stop-after`, `--weights`,
+  `--download-only` and `--keep-days` appeared nowhere, and `docs/input.md`
+  documented the `--sequence` family without `--name` or `--affinity-binder`.
+  `docs/python-api.md` gained the seven request fields that set execution policy
+  rather than science -- `input_format`, `num_seeds`, `stop_after`, `resume`,
+  `on_error`, `use_compile_cache`, `cache_dir` -- and a pointer to
+  `predict_batch`.
+
+- **`docs/benchmark.md` says what has changed since it was measured.** The table
+  already declared itself a dated ledger; it now also names the route changes
+  that landed after the last re-check, and its AlphaFold 3 cold-autotuning
+  caveat now says it describes those runs rather than the current default, which
+  persists a verified Tokamax configuration across processes.
+
+- **The four committed figures were checked against their sources, and the
+  memory-trace recipe was wrong.** Each figure set regenerates byte-for-byte
+  from its recorded input, so none was stale. But `docs/benchmark.md` told the
+  reader to plot `traces-1003/*.jsonl`, the 2026-08-13 sweep, while the
+  committed figure comes from `traces-merged-20260824/` -- the same nine file
+  names, the four upstream traces identical, and all five FoldJAX traces
+  re-measured. Following the documented command would have silently redrawn the
+  superseded FoldJAX column. The recipe now names the merged set and says why.
+
+- **`bench/README.md` documents its three ablation tools.**
+  `schedule_ablation.py`, `triangle_block_sweep.py` and `run_gap_ablation.py`
+  were reachable from no row in the table and read as dead code.
+  `schedule_ablation.py` in particular is the only stage-level time attribution
+  in the repository -- the manifest's `cost.phases` stops at
+  prepare/predict/write.
+
 
 - **Boltz2 now projects step-invariant atom conditioning once per sampling
   call.** The atom encoder and decoder reuse their per-layer AdaLN and output

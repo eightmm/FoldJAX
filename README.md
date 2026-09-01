@@ -1,9 +1,3 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/banner-light.png">
-  <img alt="FoldJAX — biomolecular structure prediction, compiled" src="docs/banner-dark.png">
-</picture>
-
 # FoldJAX
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/eightmm/FoldJAX/blob/main/notebooks/FoldJAX_Colab.ipynb)
@@ -219,7 +213,7 @@ data intake through model output. Each keeps its upstream module layout,
 from; the top-level `NOTICE` lists every upstream, its licence, and where its
 port lives.
 
-Each port's original experiment log, porting plan and gates live in
+Each port's original experiment log and gates live in
 [docs/ports/](docs/ports/) — history rather than instructions, but the only
 record of why each default was chosen. Model weights are covered by their own
 licences and never redistributed here; AlphaFold 3's must be requested from

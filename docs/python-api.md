@@ -84,6 +84,23 @@ checkpoint. One explicit `weights` path is accepted only when every run uses
 the same canonical model; this prevents handing one model another model's
 checkpoint by accident.
 
+**The fields that are policy rather than science.** Seven request fields
+change how a batch is executed, not what it predicts, and none of them has a
+CLI-only spelling either:
+
+| field | default | what it does |
+|---|---|---|
+| `input_format` | `"auto"` | `"foldjax"`, `"native"`, or a model's own dialect, when the suffix is ambiguous |
+| `num_seeds` | `None` | run seeds `0..N-1`; the explicit `seeds` tuple is the other spelling |
+| `stop_after` | `"full"` | `"trunk"` stops before the diffusion sampler and confidence heads, so it only makes sense with `representations` |
+| `resume` | `False` | skip any run whose output directory already holds a `foldjax_run.json`, which is the manifest's definition of finished |
+| `on_error` | `"stop"` | `"continue"` puts a `PredictionFailure` in the result slot instead of raising, so one OOM does not lose the other nineteen jobs |
+| `use_compile_cache` | `True` | off runs without the persistent XLA cache |
+| `cache_dir` | `None` | where that cache lives; the FoldJAX compile-cache directory when unset |
+
+`predict_batch(request)` is the entry point that returns results, skips and
+failures together; `predict` keeps its return type and raises.
+
 `resolve_request(request)` resolves one scalar model/input pair.
 `resolve_requests(request)` handles either spelling and returns the complete
 tuple of scalar requests, including the plural cross product and final output

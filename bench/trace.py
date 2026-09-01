@@ -35,7 +35,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HOOK = HERE / "peakhook"
 
-#: The JAX-tile blue from the banner for FoldJAX, and a neutral grey for the
+#: The JAX-tile blue FoldJAX uses for itself, and a neutral grey for the
 #: repository it reimplements -- upstream is the baseline being measured
 #: against, not a peer category, which is why it is deliberately unsaturated.
 #: Both greys are stepped per theme so each clears 3:1 on its own surface;

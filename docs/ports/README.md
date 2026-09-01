@@ -1,11 +1,15 @@
 # Porting records
 
 Each model here began as its own repository, and each of those carried notes
-that the vendoring did not: an experiment log, a porting plan, the gates a port
-had to pass before it was called done, and the benchmark reports those gates
-were argued from. The code moved into `src/foldjax/models/<name>/` and the test
-suites into `tests/models/<name>/`; this directory is where the *reasoning*
-moved, so the sibling checkouts can be deleted without losing it.
+that the vendoring did not: an experiment log, and the gates a port had to pass
+before it was called done. The code moved into `src/foldjax/models/<name>/` and
+the test suites into `tests/models/<name>/`; this directory is where the
+*reasoning* moved, so the sibling checkouts can be deleted without losing it.
+
+The dated benchmark write-ups those gates were once argued from have been
+removed: they measured revisions from July 2026 and were being read as current
+numbers. [`docs/benchmark.md`](../benchmark.md) is the one measured comparison,
+and it says which revision each of its rows was taken at.
 
 | port | what is here |
 |---|---|
@@ -13,7 +17,7 @@ moved, so the sibling checkouts can be deleted without losing it.
 | [`esmfold2/`](esmfold2/) | diffusion specification and implementation notes |
 | [`opendde/`](opendde/) | `EXPERIMENTS.jsonl` (17 KB), `OFFICIAL_ASSETS.json`, README and PROJECT notes |
 | [`openfold3/`](openfold3/) | README and PROJECT notes |
-| [`protenix/`](protenix/) | `PORTING_PLAN.md` (29 KB), `EXPERIMENTS.jsonl` (66 KB), a parity benchmark, a performance profile, a production inference benchmark, the original README |
+| [`protenix/`](protenix/) | `EXPERIMENTS.jsonl` (66 KB), `PERFORMANCE_POLICY.md`, the original README |
 
 ## Read these as history, not as instructions
 

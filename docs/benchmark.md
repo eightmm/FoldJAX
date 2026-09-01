@@ -213,7 +213,12 @@ core 499-, 1,003-, 2,096-, and 3,012-token FoldJAX sweep was re-measured on
 2026-08-24 at `0c2d70b`; Protenix v2, ESMFold2, and the 1,354- and 4,926-token
 rows were added over the following two days. The 2,096-, 3,012-, and
 4,926-token FoldJAX rows were then checked again at `4dbad2b`, as recorded
-above. The upstream columns are the unchanged runs already on record.
+above. Route changes have landed since: OpenDDE's bfloat16 trunk default, its
+in-loop confidence scoring, OpenFold3's bounded confidence pass, AlphaFold 3's
+released-width sample sharding, and the Tokamax persistence above. Each was
+measured as its own A/B rather than by re-running this table, and those records
+are linked from the sections below and from the README. The upstream columns
+are the unchanged runs already on record.
 Re-running them is not free — OpenFold3's 3,012-token row alone is 6,722 s — so
 new FoldJAX measurements are compared with that pinned reference rather than
 silently relabelling every old cell as current. The 2026-08-24 measurement was
@@ -340,6 +345,13 @@ bytes from 2,011,244,544 to 10,672,144 while retaining the same-size
 
 AlphaFold 3 incurred a Tokamax/Pallas autotuning miss in every measured
 process, so its wall times include cold autotuning and are not warm timings.
+That is a property of the runs above, not of the current default: managed
+AlphaFold 3 GPU runs now persist a source-, hardware- and call-qualified
+Tokamax configuration, so a fresh process can select the verified Triton
+kernels before tracing. See [docs/alphafold3.md](alphafold3.md) and
+[`bench/experiments/tokamax-persistence-gate-2026-08-31.json`](../bench/experiments/tokamax-persistence-gate-2026-08-31.json).
+Every AlphaFold 3 wall time in this file predates that and still carries the
+cold-autotuning cost.
 ESMFold2 used explicit released weight files because the local managed-asset
 manifest lacked `ccd.pkl`. OpenDDE used its shipped BF16 default, and Boltz-2
 used XLA attention rather than the experimental scoped Triton pilot. These are
@@ -614,7 +626,14 @@ table above is the first time that model has been in it.
         --impls foldjax upstream --cases L1000_3og2 \
         --results results-trace/ --work /tmp/bench-trace --traces traces-1003/
     python -m bench.trace plot --out docs/memory-trace.png \
-        --case "1,003 tokens (L1000_3og2)" traces-1003/*.jsonl
+        --case "1,003 tokens (L1000_3og2)" traces-merged-20260824/*.jsonl
+
+The plot reads `traces-merged-20260824/`, not the `traces-1003/` the drive line
+writes: the FoldJAX column was re-measured on 2026-08-24 and merged over the
+2026-08-13 curves, keeping the four upstream traces, which nobody re-ran. Both
+directories hold the same nine file names and the five FoldJAX files differ, so
+plotting the wrong one silently draws the superseded column. The committed
+figure regenerates byte-for-byte from the merged set.
 
 ## What the table says
 

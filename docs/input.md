@@ -76,7 +76,9 @@ generated file and the manifest hashes it. FASTA records become protein chains
 unless `Job.from_fasta(path, kind="rna")` says otherwise: `ACGT` is a valid
 protein as well as valid DNA, and guessing would fold the wrong polymer
 silently. `--ligand` takes CCD codes and `--ligand-smiles` takes SMILES,
-separately, because `CCO` is both a plausible CCD code and ethanol.
+separately, because `CCO` is both a plausible CCD code and ethanol. `--name`
+sets what that generated job is called in output file names; it defaults to
+`job`.
 
 ### Alignments
 
@@ -149,3 +151,8 @@ builds template features from its own pipeline and has no per-job field, so a
 template addressed to it is refused. `foldjax capabilities --model MODEL`
 reports both `common_schema_features` and `native_only_features` for exactly
 this reason.
+
+From a bare sequence the same affinity request is `--affinity-binder CHAIN`,
+naming which chain of the generated job to score. It reaches Boltz-2 alone, for
+the same reason the `properties` block does: the others have no such head and
+refuse it rather than dropping it.
