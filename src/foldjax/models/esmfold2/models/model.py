@@ -88,8 +88,10 @@ class ModelSettings:
     num_recycles: int = 20
     num_samples: int = 8
     #: Run the confidence head one structure at a time instead of batching
-    #: every sample through it. Off by default, so nothing a recorded command
-    #: predicts moves unless it is asked for.
+    #: every sample through it. On by default: the released 32-sample
+    #: configuration cannot run without it, because at `False` this head builds
+    #: `bf16[32, L^2, 2048]` -- 122.8 GiB against a 95.6 GiB device. This note
+    #: used to say "off by default", and was correct until that flip.
     #:
     #: Worth asking for near a memory limit: this model's peak is one temp
     #: arena sized `num_samples * L^2 * 4*c_z`, and this head is where the

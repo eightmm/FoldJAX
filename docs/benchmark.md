@@ -208,6 +208,14 @@ few homologues. Both columns read the same file, so the comparison between them
 is unaffected; the growth curve is, and this size sits below the trend the
 other five set.
 
+**Protenix's rows are one seed's draw of the alignment.** Its trunk samples a
+random number of MSA rows per recycle, so the compiled program's MSA tensor is
+sized by the largest draw across the ten -- 94.5% of the cap at seed 101, and
+anywhere from 51.6% to 100% across seeds. That is upstream's own sampler, not a
+port choice, but it means a Protenix peak re-measured at another seed moves for
+a reason unrelated to the code. See
+[Protenix's peak moves with the seed](engineering-notes.md#protenixs-peak-moves-with-the-seed-through-the-alignment).
+
 **This table is a dated measurement ledger, not a live benchmark of HEAD.** The
 core 499-, 1,003-, 2,096-, and 3,012-token FoldJAX sweep was re-measured on
 2026-08-24 at `0c2d70b`; Protenix v2, ESMFold2, and the 1,354- and 4,926-token

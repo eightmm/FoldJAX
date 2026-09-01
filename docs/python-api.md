@@ -123,11 +123,47 @@ point of the ports. What `None` means per model:
 | model | samples | steps | recycles | MSA depth |
 |---|---|---|---|---|
 | `alphafold3` | 5 | 200 | 10 | 1,024 rows (`evoformer.num_msa`) |
-| `boltz2` | **1** | 200 | **3** | uncapped -- the whole alignment |
+| `boltz2` | **1** | 200 | **3** | 8,192 rows at the a3m parse, then 16,384 paired+unpaired |
 | `esmfold2` | **32** | **14** | **3** | 1,024 rows, resubsampled per loop |
 | `opendde` | 5 | 200 | 10 | 16,384 rows |
 | `openfold3` | 5 | 200 | **3** | 1,024 rows, subsampled |
 | `protenix` | 5 | 200 | 10 | 16,384 rows |
+
+Every cell above was read out of the code, not out of an older version of
+this table: the four schedule columns from each backend's released defaults
+(`backends/<model>.py`) or the port's own CLI, and the depth column from the
+line that actually truncates. Boltz-2's used to say "uncapped -- the whole
+alignment", which was wrong in three places at once:
+`data/preprocess.py` parses an a3m with `max_seqs=8192`, then keeps
+`const.max_paired_seqs = 8192` paired rows and tops up to
+`const.max_msa_seqs = 16384`. Upstream Boltz-2 caps at the same 8,192
+(`main.py`'s `max_msa_seqs: int = 8192`), so this is a documentation defect
+and not a parity one -- but a 23,000-row alignment reaches none of these
+models whole, which is the opposite of what the cell claimed.
+
+**Every depth cap was then checked against the implementation it came from**,
+because a cap FoldJAX invented would be a silent divergence rather than a
+default:
+
+| model | FoldJAX | upstream | where upstream sets it |
+|---|---|---|---|
+| `alphafold3` | 1,024 | 1,024 | `evoformer.py` `num_msa: int = 1024` -- the vendored source itself |
+| `boltz2` | 8,192 / 16,384 | 8,192 / 16,384 | `main.py` `max_msa_seqs: int = 8192`, `data/const.py` |
+| `opendde` | 16,384 | 16,384 | `data/msa/msa_featurizer.py` `max_msa_size: int = 16384` |
+| `openfold3` | 1,024 | 1,024 | `of3_all_atom/config/model_config.py` `min/max_subsampled_all_msa` |
+| `protenix` | 16,384 | 16,384 | `data/msa/msa_featurizer.py` `max_msa_size: int = 16384` |
+| `esmfold2` | 1,024 | -- | see below |
+
+Five of six match their upstream exactly. ESMFold2 is the one with nothing to
+point at: its released `config.json` carries no depth field, and HuggingFace's
+`modeling_esmfold2` takes the MSA as a tensor and caps nothing, so the depth is
+whatever the caller built. The port's 1,024 is its own reading of the released
+per-loop draw (`_subsample_msa`), not a value copied from a config.
+
+OpenFold3's three recycles are the neutral spelling. `apply_sampling`
+translates that to the four executed trunk cycles its `InferenceConfig`
+stores, so the backend's `_RELEASED_COMPILE_DEFAULTS` reads `4` for the same
+released schedule.
 
 ESMFold2's row is not a typo: its released `config.json` asks for 32 samples
 off a 14-step schedule. Clipping at `sigma = 256` leaves 11 schedule values,

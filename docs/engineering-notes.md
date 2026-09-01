@@ -495,6 +495,45 @@ Confidence moves with it and not monotonically, because which rows get sampled
 changes; that spread is the alignment's own variance, not evidence that a
 shallower MSA predicts better. The default keeps each port's own depth.
 
+### Protenix's peak moves with the seed, through the alignment
+
+The depth cap is not the depth the trunk reads. Protenix draws a fresh row
+sample every recycle, and the size of that sample is itself random --
+`sample_msa_cycle_index_tape` (`trunk_blocks/msa.py`) does
+`rng.integers(1, n_msa + 1)` per cycle, which is upstream's own choice, then
+takes that many rows out of a permutation. The compiled program has to hold the
+largest of those draws, rounded up to a 64-row bucket, so one number decides the
+MSA tensor for the whole run: the maximum over `num_recycles` uniform draws.
+
+With the released 16,384-row cap and ten recycles that maximum is usually close
+to the cap but not reliably so:
+
+| seed | rows the program is sized for | of the cap |
+|---|---:|---:|
+| 101 (the benchmark's) | 15,488 | 94.5% |
+| 0 | 13,952 | 85.2% |
+| 2 | 13,760 | 84.0% |
+| over 2,000 seeds | 8,448 min / 15,296 median / 16,384 max | 51.6% - 100% |
+
+So two seeds of the same job can differ by nearly a factor of two in the MSA
+tensor alone. Three consequences worth keeping:
+
+- **A benchmark row is one draw.** The table's Protenix numbers are seed 101's
+  94.5%, not an average, and re-running at another seed moves the peak for a
+  reason that has nothing to do with the code.
+- **Near a memory limit, the seed decides whether a job runs.** An OOM that
+  disappears when the seed changes is this, not flakiness.
+- **`--max-msa-depth` scales the whole distribution**, because it lowers
+  `n_msa` and every draw is uniform on `[1, n_msa]`. That is why capping
+  Protenix is close to free on accuracy: it does not remove rows the model was
+  relying on, it narrows a range upstream was already sampling from.
+
+The other five do not have this. AlphaFold 3 and OpenFold3 take a fixed 1,024,
+ESMFold2 redraws a fixed 1,024 per loop, OpenDDE samples per cycle but sizes to
+its cap, and Boltz-2 subsamples only behind a flag that is off by default in
+both implementations -- so Boltz-2 carries all 8,192 parsed rows into every
+pass, the only one of the six that does.
+
 **Where the cap has to act is model-specific, and getting it wrong moves
 nothing.** The now-removed Chai port embedded the selected rows once into a
 `[1, depth, tokens, 64]` tensor and the trunk read *that*, so capping the
