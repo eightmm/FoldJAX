@@ -464,6 +464,15 @@ is not a substitution: FoldJAX drives the official installation rather than
 reimplementing it, so those rows *are* upstream AlphaFold 3 running its own
 code. It is the same fact that leaves its upstream column blank in the table.
 
+**AlphaFold 3's curve here is the flattest of the five, and that is an
+artifact.** Every one of its points carries the same ~250 s of Tokamax
+autotuning, because until 2026-08-31 nothing persisted that result across
+processes and this card's device kind ships no autotuning cache with Tokamax
+0.0.13. A large fixed cost added to every point flattens a growth curve by
+construction, which is what the `1.3x / 2x tokens` label is measuring. The
+shipped default now persists a verified configuration, so a warm store does not
+pay it; the figure predates that and has not been re-measured.
+
 **OpenFold3 is drawn dashed because it is not a like-for-like run.** It is the
 one series that could not reach its own released fast path on this card --
 DS4Sci's evoformer attention refuses to build for sm_120 and 0.3.1's

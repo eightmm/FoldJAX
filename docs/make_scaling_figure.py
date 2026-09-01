@@ -538,20 +538,29 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
                 va="top",
                 ha="left",
             )
-        # Upper left, tucked under the failure band: on linear axes every
-        # curve leaves that corner empty, and the lower right -- free when
-        # these were log-log -- is now where four of the five lines run.
+        # The two panels have different empty corners, and placing both legends
+        # by the time panel's is what put the memory legend on top of its own
+        # data: OpenFold3 and OpenDDE climb through the upper left there, and
+        # the `95.6 GiB card` label lands on the first legend row. On time,
+        # upper left is genuinely free -- every curve starts at the origin and
+        # the steep one only arrives past 2,000 tokens. On memory the free
+        # corner is the lower right: the last completed point is Protenix at
+        # 3,012 tokens, so nothing is drawn right of it below the failure band.
+        if metric == "peak_mib":
+            location, anchor = "lower right", (0.985, 0.03)
+        else:
+            location, anchor = "upper left", (0.015, 0.83)
         legend = axis.legend(
             handles,
             labels,
-            loc="upper left",
+            loc=location,
             frameon=False,
             fontsize=9.5,
             labelcolor="linecolor",
             handlelength=1.6,
             borderpad=0.2,
             labelspacing=0.35,
-            bbox_to_anchor=(0.015, 0.83),
+            bbox_to_anchor=anchor,
         )
         for text in legend.get_texts():
             text.set_fontweight("bold")
