@@ -407,8 +407,18 @@ def render(grouped: dict, out: Path, *, theme: str) -> Path:
 def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
     """The five reference implementations against each other, on one axes.
 
-    No prose on the canvas: the figure is meant to be read beside the text that
-    explains it, not to carry that text. Names go in a legend, each with what
+    Each series is the model's own reference implementation -- ``upstream`` for
+    four of them, and for AlphaFold 3 the ``foldjax`` rows, because FoldJAX
+    drives the official installation rather than reimplementing it.
+
+    That is not obvious from a curve, and the panel used to carry no prose at
+    all on the grounds that it would be read beside the text explaining it. It
+    is not: the image travels on its own, the legend says ``opendde`` in the
+    same words the FoldJAX-vs-upstream table uses, and OpenDDE's series ending
+    at 1,003 tokens then reads as a FoldJAX limit. It is upstream OpenDDE's --
+    FoldJAX reaches 1,354, which is in the table and in the faceted figure. So
+    the header names the column. That is labelling, not the explaining text,
+    which still lives beside it. Names go in a legend, each with what
     doubling the token count multiplies that panel's cost by.
 
     OpenFold3's memory falling from 2,096 to 3,012 tokens is not a bad point.
@@ -565,7 +575,21 @@ def render_upstream(grouped: dict, out: Path, *, theme: str) -> Path:
         for text in legend.get_texts():
             text.set_fontweight("bold")
 
-    figure.tight_layout()
+    figure.suptitle(
+        "each model's own reference implementation, not the FoldJAX column · "
+        "5 samples · 200 steps · 10 recycles · "
+        f"one RTX PRO 6000 ({CARD_GIB:.1f} GiB)\n"
+        "OpenDDE ends at 1,003 tokens because upstream OpenDDE fails at 1,354, "
+        "where FoldJAX reaches it; AlphaFold 3 is upstream's own code, which "
+        "FoldJAX drives",
+        color=fg,
+        fontsize=10.5,
+        x=0.006,
+        ha="left",
+        va="top",
+        y=0.995,
+    )
+    figure.tight_layout(rect=(0, 0, 1, 0.95))
     out.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(out, facecolor=bg, bbox_inches="tight")
     plt.close(figure)
