@@ -526,15 +526,38 @@ jumps, and it jumps at the same occupancy in every model that reaches it:
 | boltz2 3,012 -> 4,100 | 89% | 3.71 |
 | protenix 3,012 -> 4,100 | 88% | 3.79 |
 
-Around half the pool the exponent is ~3.0; near 90% it is 3.7-4.3. That is
-XLA rematerialising -- recomputing values rather than storing them -- to fit a
-program the pool can no longer hold outright, and paying for it in arithmetic.
-It is not the model becoming more expensive. Protenix-v2's 4.29, which reads as
-an alarming architecture, is this: its checkpoint is the same 4,174 arrays as
-the base model with one width doubled (`c_z` 128 -> 256, visible as the
-dominant trailing dimension in each file), so it reaches any given occupancy a
-size earlier. Where both have room -- 1,354 -> 2,096, at 46% -- their exponents
-are 1.87 and 1.94.
+Around half the pool the exponent is ~3.0; near 90% it is 3.7-4.3.
+
+**This note first said that was XLA rematerialising. That was asserted rather
+than measured, and it is wrong.** Protenix was re-run at both occupancies under
+`TF_CPP_VMODULE=hlo_rematerialization=2`, which makes the pass report itself on
+stderr: **zero lines at 49% and zero at 88%**. The detector is not vacuous --
+the same string appears in this project's own OOM logs, where
+`hlo_rematerialization.cc:3297` reports the budget it could not meet. A first
+attempt to count rematerialisation by grepping the dumped HLO returned zero for
+a worse reason: the string never appears in the dump at all, so that counter
+could not tell "did not happen" from "is not named that".
+
+**The obvious alternative is dead too, and in the opposite direction.** This is
+a 300 W Max-Q part whose SM clock falls to about half its 3,090 MHz ceiling
+under load, so the first thing a reviewer proposed was that longer runs sit hot
+longer and manufacture an exponent. Logged per run: the 3,012-token run
+averaged 1,358.8 MHz, the 4,100-token run **1,658.3 MHz**. The larger job ran at
+the *higher* clock. Normalising wall time by mean clock therefore raises the
+exponent rather than lowering it, from 3.84 to **4.48**.
+
+So the correlation with occupancy is real and reproducible, and the mechanism
+is unidentified. It is not rematerialisation and not throttling. The untested
+candidate is that the working set outruns the cache hierarchy at that
+footprint, which would surface as effective bandwidth rather than as anything
+XLA reports. Do not restate the original claim without measuring it.
+
+Protenix-v2's 4.29 still needs no appeal to architecture: its checkpoint is the
+same 4,174 arrays as the base model with one width doubled (`c_z` 128 -> 256,
+visible as the dominant trailing dimension in each file), so it reaches any
+given occupancy a size earlier. Where both have room -- 1,354 -> 2,096, at 46%
+-- their exponents are 1.87 and 1.94. That much survives; only the named cause
+does not.
 
 **Two levers were measured against this, and neither is one.**
 
@@ -542,8 +565,9 @@ are 1.87 and 1.94.
 tracks `XLA_CLIENT_MEM_FRACTION` exactly -- 85.47 GiB at 0.90 and 90.22 GiB at
 0.95, read off the device rather than computed. Both failures were retried at
 0.95 and both still failed: Protenix at 4,926 needs one contiguous 87.93 GiB
-block, and OpenDDE at 4,100 has a program XLA cannot rematerialise below
-88.77 GiB against a 90.22 GiB pool. A pool with 1.45 GiB of slack cannot lay
+block, and OpenDDE at 4,100 has a program whose own rematerialisation
+report -- one of the few places the pass does speak -- puts it at 88.77 GiB
+against a 90.22 GiB pool. A pool with 1.45 GiB of slack cannot lay
 out that program's co-live set whatever its total says.
 
 *Capping the MSA depth moves almost nothing, at this size too.* The arithmetic
