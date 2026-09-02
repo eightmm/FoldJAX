@@ -42,7 +42,7 @@ before using it.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012 and 4,926 tokens" src="docs/benchmark-dark.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012, 4,100 and 4,926 tokens" src="docs/benchmark-dark.png">
 </picture>
 
 *Each port against the repository it came from — same job, nominal schedule,
@@ -51,9 +51,11 @@ rows used a different effective seed; numbers, method and caveats are in
 [docs/benchmark.md](docs/benchmark.md).*
 
 Across the 20 implementation/checkpoint pairs where both sides complete,
-FoldJAX holds a **1.08x to 3.11x** lower peak and runs at **0.94x to 4.85x** the
+FoldJAX holds a **1.08x to 4.53x** lower peak and runs at **0.94x to 4.85x** the
 speed. At 3,012 tokens, five FoldJAX rows finish (four model families plus the
-Protenix-v2 checkpoint), versus two upstream rows. The caveats that belong with
+Protenix-v2 checkpoint), versus two upstream rows. At 4,100 -- a size measured
+on the FoldJAX side only, and where this card's ceiling turns out to sit --
+three still finish and three do not. The caveats that belong with
 those numbers — including the one row FoldJAX loses on time — are in
 [docs/benchmark.md](docs/benchmark.md).
 

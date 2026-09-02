@@ -45,7 +45,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from figure_style import THEMES, apply_theme, did_not_run  # noqa: E402
 
 MODELS = ("boltz2", "protenix", "protenix-v2", "openfold3", "opendde", "alphafold3")
-SIZES = (499, 1003, 1354, 2096, 3012, 4926)
+# 4,100 has no upstream column: nothing was run there on the reference side, and
+# one OpenFold3 upstream row at 3,012 tokens alone is 6,722 s. It earns its block
+# anyway, because it is where this card's ceiling sits -- three models complete
+# it and three cannot, which the 3,012-to-4,926 jump hid entirely.
+SIZES = (499, 1003, 1354, 2096, 3012, 4100, 4926)
 # `nvidia-smi` reported 97,887 MiB. Keep the plotted unit binary, matching the
 # MiB-to-GiB conversion used for every result bar.
 CARD_GIB = 97_887 / 1024

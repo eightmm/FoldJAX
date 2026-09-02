@@ -16,7 +16,7 @@ dirty-worktree limitation for the optimization rows is recorded below.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmark-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="benchmark-light.png">
-  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012 and 4,926 tokens" src="benchmark-dark.png">
+  <img alt="FoldJAX vs upstream: wall time and peak GPU memory at 499, 1,003, 1,354, 2,096, 3,012, 4,100 and 4,926 tokens" src="benchmark-dark.png">
 </picture>
 
 **The schedule is AlphaFold 3's released default — 5 diffusion samples, 200
@@ -46,38 +46,44 @@ variant that changed 6,782 s/81.0 GiB to 6,722 s/83.2 GiB.
 
 | tokens | model | FoldJAX s | upstream s | FoldJAX GiB | upstream GiB | speed | memory | confidence | FoldJAX | upstream |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 499 | alphafold3 | 302 | - | 3.0 | - | - | - | - | - | - |
+| 499 | alphafold3 | 53 | - | 2.2 | - | - | - | - | - | - |
 | 499 | boltz2 | 34 | 55 | 4.5 | 8.2 | 1.65x | 1.81x | complex_plddt | 0.9704 | 0.9700 |
 | 499 | esmfold2 | 31 | - | 16.1 | - | - | - | - | - | - |
 | 499 | opendde | 80 | 75 | 12.5 | 18.1 | 0.94x | 1.44x | ranking_score | 0.1946 | 0.1947 |
-| 499 | openfold3 | 35 | 97 | 9.9 | 18.7 | 2.76x | 1.88x | ptm† | 0.9325 | 0.9274 |
+| 499 | openfold3 | 36 | 97 | 4.1 | 18.7 | 2.72x | 4.53x | ptm† | 0.9318 | 0.9274 |
 | 499 | protenix | 27 | 63 | 4.6 | 5.0 | 2.36x | 1.08x | ranking_score | 0.1937 | 0.1935 |
 | 499 | protenix-v2 | 38 | 72 | 6.5 | 7.0 | 1.89x | 1.08x | ranking_score | 0.1950 | 0.1947 |
-| 1003 | alphafold3 | 386 | - | 6.7 | - | - | - | - | - | - |
-| 1003 | boltz2 | 96 | 141 | 6.9 | 15.8 | 1.47x | 2.30x | complex_plddt | 0.9495 | 0.9482 |
+| 1003 | alphafold3 | 90 | - | 4.7 | - | - | - | - | - | - |
+| 1003 | boltz2 | 94 | 141 | 6.7 | 15.8 | 1.50x | 2.35x | complex_plddt | 0.9492 | 0.9482 |
 | 1003 | esmfold2 | 69 | - | 23.1 | - | - | - | - | - | - |
-| 1003 | opendde | 281 | 287 | 42.9 | 59.5 | 1.02x | 1.38x | ranking_score | 0.1926 | 0.1930 |
-| 1003 | openfold3 | 121 | 323 | 11.1 | 25.0 | 2.67x | 2.26x | ptm† | 0.9307 | 0.9300 |
-| 1003 | protenix | 67 | 99 | 6.7 | 12.7 | 1.49x | 1.89x | ranking_score | 0.1921 | 0.1922 |
-| 1003 | protenix-v2 | 110 | 138 | 10.1 | 13.3 | 1.26x | 1.32x | ranking_score | 0.1931 | 0.1927 |
-| 1354 | alphafold3 | 478 | - | 11.0 | - | - | - | - | - | - |
+| 1003 | opendde | 277 | 287 | 41.2 | 59.5 | 1.04x | 1.44x | ranking_score | 0.1926 | 0.1930 |
+| 1003 | openfold3 | 121 | 323 | 8.9 | 25.0 | 2.67x | 2.80x | ptm† | 0.9310 | 0.9300 |
+| 1003 | protenix | 66 | 99 | 6.6 | 12.7 | 1.51x | 1.93x | ranking_score | 0.1921 | 0.1922 |
+| 1003 | protenix-v2 | 110 | 138 | 9.7 | 13.3 | 1.26x | 1.37x | ranking_score | 0.1931 | 0.1927 |
+| 1354 | alphafold3 | 104 | - | 7.6 | - | - | - | - | - | - |
 | 1354 | boltz2 | 150 | 204 | 10.2 | 20.6 | 1.36x | 2.02x | complex_plddt | 0.8275 | 0.8305 |
 | 1354 | opendde | 529 | failed | 77.8 | failed | - | - | - | - | - |
-| 1354 | openfold3 | 230 | 652 | 15.4 | 42.7 | 2.83x | 2.78x | ptm† | 0.8264 | 0.8360 |
+| 1354 | openfold3 | 224 | 652 | 13.6 | 42.7 | 2.91x | 3.14x | ptm† | 0.8261 | 0.8360 |
 | 1354 | protenix | 106 | 133 | 9.8 | 21.6 | 1.26x | 2.20x | ranking_score | 0.1800 | 0.1799 |
 | 1354 | protenix-v2 | 186 | 217 | 16.9 | 22.5 | 1.17x | 1.33x | ranking_score | 0.1810 | 0.1811 |
-| 2096 | alphafold3 | 571 | - | 20.5 | - | - | - | - | - | - |
+| 2096 | alphafold3 | 247 | - | 14.5 | - | - | - | - | - | - |
 | 2096 | boltz2 | 347 | 543 | 21.9 | 46.6 | 1.56x | 2.13x | complex_plddt | 0.9799 | 0.9795 |
 | 2096 | opendde | failed | failed | failed | failed | - | - | - | - | - |
-| 2096 | openfold3 | 547 | 2,411 | 29.3 | 91.2 | 4.41x | 3.11x | ptm† | 0.9058 | 0.9175 |
+| 2096 | openfold3 | 545 | 2,411 | 30.0 | 91.2 | 4.42x | 3.04x | ptm† | 0.9057 | 0.9175 |
 | 2096 | protenix | 240 | 323 | 23.2 | 40.8 | 1.35x | 1.76x | ranking_score | 0.9602 | 0.9604 |
 | 2096 | protenix-v2 | 434 | 569 | 39.0 | 47.5 | 1.31x | 1.22x | ranking_score | 0.9645 | 0.9652 |
-| 3012 | alphafold3 | 1,019 | - | 41.3 | - | - | - | - | - | - |
+| 3012 | alphafold3 | 544 | - | 28.7 | - | - | - | - | - | - |
 | 3012 | boltz2 | 1,016 | failed | 43.0 | failed | - | - | - | - | - |
 | 3012 | opendde | failed | failed | failed | failed | - | - | - | - | - |
-| 3012 | openfold3 | 1,385 | 6,722 | 58.4 | 81.3 | 4.85x | 1.39x | ptm† | 0.8711 | 0.8748 |
+| 3012 | openfold3 | 1,386 | 6,722 | 60.0 | 81.3 | 4.85x | 1.35x | ptm† | 0.8711 | 0.8748 |
 | 3012 | protenix | 723 | 797 | 43.7 | 56.0 | 1.10x | 1.28x | ranking_score | 0.9554 | 0.9502 |
 | 3012 | protenix-v2 | 2,054 | failed | 78.2 | failed | - | - | - | - | - |
+| 4100 | alphafold3 | 1,233 | - | 52.1 | - | - | - | - | - | - |
+| 4100 | boltz2 | 3,195 | - | 76.4 | - | - | - | - | - | - |
+| 4100 | opendde | failed | - | failed | - | - | - | - | - | - |
+| 4100 | openfold3 | failed | - | failed | - | - | - | - | - | - |
+| 4100 | protenix | 2,329 | - | 75.3 | - | - | - | - | - | - |
+| 4100 | protenix-v2 | failed | - | failed | - | - | - | - | - | - |
 | 4926 | alphafold3 | failed | - | failed | - | - | - | - | - | - |
 | 4926 | boltz2 | failed | failed | failed | failed | - | - | - | - | - |
 | 4926 | opendde | failed | failed | failed | failed | - | - | - | - | - |
@@ -218,7 +224,13 @@ few homologues. Both columns read the same file, so the comparison between them
 is unaffected; the growth curve is, and this size sits below the trend the
 other five set.
 
-**The AlphaFold 3 rows are the stale ones, and by a lot.** Re-running the same
+**Re-measured 2026-09-02 on current main.** The AlphaFold 3 column was rebuilt
+at every size and OpenFold3's memory with it; the other four models were
+re-checked at 1,003 tokens and matched their recorded times to 2%, so their rows
+stand as they were. A 4,100-token block was added, FoldJAX-side only. What
+follows is why those two columns moved.
+
+**The AlphaFold 3 rows were the stale ones, and by a lot.** Re-running the same
 harness on current main at 1,003 tokens gives 89.8 s and 4.69 GiB where the
 table says 386 s and 6.7 GiB -- 4.3x the time and 1.4x the memory. The harness
 is not at fault: it warms the compile cache in one process and measures in
@@ -229,10 +241,18 @@ tuning cost that has since been measured at 188 s to 326 s depending on size --
 289 s at this one, against a model that takes 87 s.
 
 Correcting for it also removes the gap that made AlphaFold 3 look like a
-different class of implementation. Warm, it is 87.3 s at 1,003 tokens against
-Protenix's 67 and Boltz-2's 96, and 242.6 s at 2,096 against Protenix's 240.
-The AlphaFold 3 column is being re-measured; until it lands, read its rows as
-model plus tuning rather than as model.
+different class of implementation. Warm, it is 90 s at 1,003 tokens against
+Protenix's 66 and Boltz-2's 94, and 247 s at 2,096 against Protenix's 240. Its
+growth exponent reads 2.17 between 2,096 and 3,012 rather than the 1.60 the
+tuned rows gave, which is the same band as its neighbours -- a fixed cost added
+to every point flattens a curve, and this one was not even fixed.
+
+**OpenFold3's memory moved too, and not uniformly.** Its times are unchanged to
+within 2%, but the peak fell from 9.9 to 4.1 GiB at 499 tokens and from 11.1 to
+8.9 at 1,003, while rising 2-3% at 2,096 and 3,012. The bounded confidence pass
+helps most where the pair stack is smallest. That is also what widens this
+table's memory range: the best ratio against an upstream is now OpenFold3's
+4.53x at 499 tokens rather than 3.11x.
 
 **Protenix's rows are one seed's draw of the alignment.** Its trunk samples a
 random number of MSA rows per recycle, so the compiled program's MSA tensor is
