@@ -125,6 +125,27 @@ best-effort layer; the persisted Tokamax result does not claim that every XLA
 executable entry is readable. Two knobs control what happens when that persisted
 result is absent:
 
+**What the autotuning costs, measured.** With the compile cache warm on both
+sides and only the persisted Tokamax store deleted between them, at seed 101 on
+the released schedule:
+
+| tokens | model | autotuning | XLA compile |
+|---:|---:|---:|---:|
+| 132 | 34.4 s | 187.9 s | 135.0 s |
+| 1,003 | 87.3 s | 288.8 s | 137.3 s |
+| 2,096 | 242.6 s | 325.9 s | 136.8 s |
+
+Two things follow. Compilation is flat -- 137 s within two seconds across a
+sixteen-fold range of sizes -- while **autotuning grows with the shape**,
+because it benchmarks candidate configurations at the real dimensions. Treating
+it as a constant, which is the obvious way to correct a wall time that carries
+it, understates it at the top and overstates it at the bottom.
+
+And it dominates. At 1,003 tokens the model is 87 s and the tuning 289 s, so a
+process that tunes spends three quarters of its life not predicting. That is
+what the persisted store removes, and why AlphaFold 3 rows measured before
+2026-08-31 are several times their current cost.
+
 | option | effect |
 |---|---|
 | `--option kernel_autotuning=heuristics` | use a persisted result first; otherwise use upstream's faster guess, which may not fit your device |

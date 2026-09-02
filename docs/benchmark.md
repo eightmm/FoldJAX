@@ -218,6 +218,22 @@ few homologues. Both columns read the same file, so the comparison between them
 is unaffected; the growth curve is, and this size sits below the trend the
 other five set.
 
+**The AlphaFold 3 rows are the stale ones, and by a lot.** Re-running the same
+harness on current main at 1,003 tokens gives 89.8 s and 4.69 GiB where the
+table says 386 s and 6.7 GiB -- 4.3x the time and 1.4x the memory. The harness
+is not at fault: it warms the compile cache in one process and measures in
+another, and it gets the hit. The row is simply older than the change that
+matters. Every AlphaFold 3 time here was taken before 2026-08-31, when nothing
+persisted a Tokamax autotuning result across processes, so each carries a
+tuning cost that has since been measured at 188 s to 326 s depending on size --
+289 s at this one, against a model that takes 87 s.
+
+Correcting for it also removes the gap that made AlphaFold 3 look like a
+different class of implementation. Warm, it is 87.3 s at 1,003 tokens against
+Protenix's 67 and Boltz-2's 96, and 242.6 s at 2,096 against Protenix's 240.
+The AlphaFold 3 column is being re-measured; until it lands, read its rows as
+model plus tuning rather than as model.
+
 **Protenix's rows are one seed's draw of the alignment.** Its trunk samples a
 random number of MSA rows per recycle, so the compiled program's MSA tensor is
 sized by the largest draw across the ten -- 94.5% of the cap at seed 101, and
