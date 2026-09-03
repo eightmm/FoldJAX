@@ -654,6 +654,42 @@ size**, and note that this also disposes of the tempting explanation for why
 AlphaFold 3 completes the same 4,100-token job at 61% of the pool while
 Protenix needs 88%: it is not the 16x deeper alignment.
 
+### The chunk width above 2,560 tokens costs memory rather than saving it
+
+Past its last threshold Protenix's policy resolves one width for five knobs at
+once -- triangle multiplication, triangle attention, single attention, the
+token query and the outer product mean -- and that width is
+`PROTENIX_EXTREME_CHUNK_SIZE = 32`, transcribed from upstream's
+`configs/configs_base.py` and asserted against it by test. At 3,012 tokens,
+which is past the threshold, overriding all five to the same wider value, one
+warm pass per arm, released schedule, seed 101:
+
+| width | wall | peak | vs the default |
+|---:|---:|---:|---|
+| 32 (upstream's, the default here) | 722.9 s | 44,779.8 MiB | -- |
+| 128 | 731.3 s | 42,682.7 MiB | **-2,097 MiB**, -4.7% |
+| 512 | 702.5 s | 42,681.7 MiB | -2,098 MiB, -4.7% |
+
+**The tightest width is the most expensive one, and it buys no time.** The
+three wall times span 4%, with no ordering -- inside what this card's clock
+does between runs, and small beside the 17% the blocked triangle path costs.
+The memory difference is not noise: it is the same 2.1 GiB in both wide arms,
+and 128 and 512 land within a mebibyte of each other, which says the width has
+stopped setting the peak by 128 and only 32 is adding to it.
+
+This is not an argument for changing the default. The threshold table is
+upstream's and a test holds it there; a port that quietly runs a different
+schedule than the config it ships is a worse failure than 2 GiB. It is an
+argument for knowing the knob exists in the direction nobody reaches for:
+`--option token_q_chunk_size=512` and its four siblings, at a size where the
+pool is the binding constraint.
+
+The baseline is the archive's own 3,012-token record rather than a fresh run,
+which is only safe because the two commits that touched `src/foldjax` since it
+was taken changed a warning string and an OpenDDE CLI flag -- no compiled
+program moved. Three times in this repository a "regression" has been a stale
+baseline; the check is cheap and the mistake is not.
+
 ### Protenix's peak moves with the seed, through the alignment
 
 The depth cap is not the depth the trunk reads. Protenix draws a fresh row

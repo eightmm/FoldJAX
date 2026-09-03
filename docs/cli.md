@@ -186,6 +186,14 @@ work; nothing below needs to be set to reach them.
   PAE/PDE logits (`[samples, N, N, 64]` -- tens of GiB at long sequences) are
   returned only on request.
 
+Past 2,560 tokens Protenix and OpenDDE resolve one chunk width for five knobs
+at once, and upstream's value there is 32. Measured at 3,012 tokens, that is
+the most expensive of the widths tried: `--option token_q_chunk_size=512` and
+its four siblings take 2.1 GiB off the peak and cost no time. The default
+stays upstream's, so this is a knob to reach for when the pool is the binding
+constraint, not a setting that is wrong.
+[Details](engineering-notes.md#the-chunk-width-above-2560-tokens-costs-memory-rather-than-saving-it).
+
 `--mem-fraction` is the one memory flag that is not about the model. It sets
 how much of the device JAX preallocates, and FoldJAX defaults it to 0.9 rather
 than JAX's own 0.75: one prediction owns the process, and a quarter of the card
