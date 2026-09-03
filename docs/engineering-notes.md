@@ -218,6 +218,16 @@ Flat, and identical where the released schedule sits. Best `ranking_score`
 moved 0.192628 → 0.192674, which is the map boundary rather than a different
 answer.
 
+That day's wiring reached the resolver and the model, and stopped there. The
+knob still had no `--diffusion-chunk-size` on OpenDDE's own CLI and was not in
+the managed backend's option set, so its only value was ever the policy's --
+`foldjax predict --model opendde --option diffusion_chunk_size=1` answered
+"unsupported opendde options". The measurements above are what the policy
+resolves, and they stand; what a caller could ask for was a separate end, and
+it was connected on 2026-09-03. Protenix had both ends from the start, and
+Boltz-2 and OpenFold3 got both on the day they grew the knob; OpenDDE is the
+one that got half.
+
 **Three times in this campaign a "regression" was a stale baseline.** The
 per-sample route looked 1.9 GiB worse at five samples and again at one, both
 against numbers measured several commits earlier, and both vanished the moment
