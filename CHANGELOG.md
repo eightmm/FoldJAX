@@ -1863,6 +1863,24 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenDDE takes `diffusion_chunk_size`.** `--diffusion-chunk-size` on the
+  native CLI and `--option diffusion_chunk_size=N` through the managed
+  backend, the spelling Boltz-2, OpenFold3 and Protenix already answered to.
+  The resolver
+  and `infer` had accepted the override since they were written, and the four
+  other chunk knobs had flags, so this one's value was always the policy's and
+  the managed backend refused the option outright. Nothing about the default
+  run changes: the released five-sample schedule still takes the single
+  unchunked rollout, because the automatic width engages only above five
+  samples.
+
+- **The out-of-memory explanation names that option.** It used to offer
+  `--num-samples`, which buys memory by dropping predictions; the chunk width
+  narrows the same axis and keeps all of them. Measured at 4,100 tokens, it
+  turned an OpenFold3 failure into a 76.4 GiB run and moved Protenix's peak by
+  one mebibyte, so the sentence says the effect is model-specific rather than
+  promising one.
+
 - **Predictions can now be compared in one rigid coordinate frame without
   duplicating their structure files.** `align_predictions` accepts common
   `PredictionResult` objects and `align_structures` accepts named PDB/mmCIF
