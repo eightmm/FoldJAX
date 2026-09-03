@@ -30,7 +30,7 @@ figure can say about it, and dropping the point would bend the curve into a
 claim that it kept scaling.
 
     uv run --with matplotlib python docs/make_scaling_figure.py \
-        --results ../foldjax-bench/results-merged-20260826
+        --results ../foldjax-bench/results-merged-20260902
 
 That directory is the maintainer's external historical measurement archive; it
 is not shipped in this repository, so this is not a clean-clone reproduction

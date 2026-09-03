@@ -598,7 +598,7 @@ The following is the maintainer replay command for that external measurement
 archive, not a clean-checkout reproduction recipe:
 
     uv run --with matplotlib python docs/make_scaling_figure.py \
-        --results ../foldjax-bench/results-merged-20260826 \
+        --results ../foldjax-bench/results-merged-20260902 \
         --upstream-extra bench/results
 
 ## Where the memory goes during a run

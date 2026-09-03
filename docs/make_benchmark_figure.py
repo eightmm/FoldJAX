@@ -23,7 +23,7 @@ reasons differ anyway — upstream Protenix refuses protenix-v2 above 2,560 toke
 before it allocates anything, which is not running out of memory.
 
     uv run --with matplotlib python docs/make_benchmark_figure.py \
-        --results ../foldjax-bench/results-merged-20260826
+        --results ../foldjax-bench/results-merged-20260902
 
 That directory is the maintainer's external historical measurement archive; it
 is not shipped in this repository, so this is not a clean-clone reproduction
