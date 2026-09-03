@@ -505,7 +505,7 @@ Measured 2026-09-01 on current main, at 4,100 tokens (`L4000_1gte`, 1GTE,
 | alphafold3 | 1,232.8 s | 52.1 GiB | 61% |
 | protenix | 2,329.4 s | 75.3 GiB | 88% |
 | boltz2 | 3,194.5 s | 76.4 GiB | 89% |
-| openfold3 | failed, asked for 107.85 GiB in one block | -- | past the 95.0 GiB card |
+| openfold3 | failed by default; 3,290.6 s with `diffusion_chunk_size=1` | 76.4 GiB | 89% |
 | opendde | failed, asked for 88.75 GiB in one block | -- | past the pool, inside the card |
 
 At 4,926 tokens all six fail, five of them asking for a single block larger
@@ -558,6 +558,30 @@ visible as the dominant trailing dimension in each file), so it reaches any
 given occupancy a size earlier. Where both have room -- 1,354 -> 2,096, at 46%
 -- their exponents are 1.87 and 1.94. That much survives; only the named cause
 does not.
+
+**Four levers were measured against this. One works, on one model.**
+
+*Serialising the diffusion sample axis rescues OpenFold3 and nothing else.* At
+4,100 tokens its default route asks for a single 107.85 GiB block against a
+95.0 GiB card and fails in 336 s. With `diffusion_chunk_size=1` it completes:
+3,290.6 s at 76.4 GiB, 89% of the pool. The same option moved Protenix's peak
+from 77,158.2 MiB to 77,157.2 -- one mebibyte -- and cost 16% in time. The two
+models' peaks sit in different places: Protenix's is the trunk's pair stack,
+which the sample axis does not touch, and OpenFold3's is on the
+sample-expanded path, where serialising deletes the offending block outright.
+A lever measured as inert on one model is not evidence about the next.
+
+OpenFold3's other kernel knob does nothing here. `OPENFOLD3_TRIANGLE_BACKEND=xla`
+selects the blocked triangle *attention* and left the failing request at exactly
+107.85 GiB -- the same number to two decimal places, which is what a lever that
+does not touch the responsible buffer looks like.
+
+*The blocked triangle multiplication is a trade, not a saving.* The warning in
+`triangle.py` said the blocked path is "about 24% cheaper on memory at every
+size tried". That 24% is the ratio for that operation's own two projections,
+not for a run. End to end on Protenix at 4,100 tokens: peak 77,158.2 MiB fused
+against 71,360.6 blocked, **7.5%**, for 2,329 s against 2,715, **+17%**. It
+buys 6.6 points of occupancy (88.1% to 81.5%) and rescues nothing.
 
 **Two levers were measured against this, and neither is one.**
 
