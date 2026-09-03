@@ -177,9 +177,12 @@ row pins fp32. What that run produces is a separate question from whether it
 fits: all five samples report a clash and a mean pLDDT near 42, where Protenix
 on the same input reports 86.9. The memory result does not endorse the
 prediction. The lever is model-specific rather than general: on Protenix at
-this size serialising the samples moves the peak by 1 MiB, because Protenix's
-owning buffer is in the pair stack and OpenFold3's is not. Its
-triangle-attention backend is not a lever at all here --
+this size serialising the samples moves the peak by 1 MiB, and Protenix-v2's
+failing request stays at 117.78 GiB to two decimal places, because their
+owning buffer is the pair stack and OpenFold3's is not. OpenDDE is past levers
+entirely: its own preflight puts 4,100 tokens at 7,876 structural tokens
+needing an estimated 331.5 GiB of temp arena, with the bf16 trunk already
+spent. Its triangle-attention backend is not a lever at all here --
 `OPENFOLD3_TRIANGLE_BACKEND=xla` leaves the failing request at 107.85 GiB, the
 same number to two decimal places.
 

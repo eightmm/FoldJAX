@@ -581,6 +581,22 @@ which the sample axis does not touch, and OpenFold3's is on the
 sample-expanded path, where serialising deletes the offending block outright.
 A lever measured as inert on one model is not evidence about the next.
 
+Protenix-v2 answers the same way its base model does, and the control says so
+exactly: chunked and unchunked it asks for **117.78 GiB**, the same number to
+two decimal places. Its peak is the same pair stack with `c_z` doubled, so
+there was nothing on the sample axis to serialise.
+
+*OpenDDE is not a lever problem at this size.* Its own preflight says so before
+it allocates anything: 4,100 tokens is 7,876 structural tokens, which need an
+estimated **331.5 GiB** of temp arena against roughly 76.9 GiB usable of this
+pool, and "the trunk is already bfloat16, so the dtype lever is spent -- this
+size needs a larger card". The chunked arm ran 829 s and failed anyway, its
+allocator retrying one block at 88.75 GiB, then 44.38, then 29.59. That arm
+took OpenDDE's own bf16 default rather than the `dtype=float32` the comparison
+table pins, so it is not a clean A/B against the 88.75 GiB baseline -- but it
+does not need to be. A model asking four times the card is past every knob
+here, and the estimate is a measured quadratic rather than a guess.
+
 The rescued run is a memory result and not a quality one. All five of its
 samples report a clash and a mean pLDDT near 42 on this input, where Protenix
 reports 86.9 on the same one. Nothing here says the chunking caused that --
