@@ -467,6 +467,13 @@ def main(
         "count), '1d' splits rows only. 'auto' picks 2d when the device "
         "count is a perfect square.",
     )
+    # `resolve_chunk_config` has taken this override all along and `infer`
+    # consumes it, but nothing could set it: the four below had flags and this
+    # did not, so the only value it ever held was the policy's. It is the one
+    # chunk knob measured to change whether a size runs -- serialising the
+    # sample axis took OpenFold3 at 4,100 tokens from an unplaceable 107.85 GiB
+    # request to a completed 76.4 GiB run.
+    parser.add_argument("--diffusion-chunk-size", type=int)
     parser.add_argument("--triangle-mul-chunk-size", type=int)
     parser.add_argument("--triangle-att-q-chunk-size", type=int)
     parser.add_argument("--single-att-q-chunk-size", type=int)
@@ -799,6 +806,7 @@ def main(
                     trunk_dtype=trunk_dtype,
                     chunk_policy=args.chunk_policy,
                     chunk_overrides={
+                        "diffusion_chunk_size": args.diffusion_chunk_size,
                         "triangle_mul_chunk_size": args.triangle_mul_chunk_size,
                         "triangle_att_q_chunk_size": args.triangle_att_q_chunk_size,
                         "single_att_q_chunk_size": args.single_att_q_chunk_size,

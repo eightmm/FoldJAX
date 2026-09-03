@@ -436,9 +436,13 @@ def test_inert_multiplication_chunk_size_says_so_and_says_what_it_costs(
     # number: it must name the buffer and offer the escape without promising it.
     assert "materialises both full projections" in text
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla" in text
-    # The escape is now the measured memory winner, but only on memory: the
-    # text must not read as a blanket recommendation while time is unresolved.
-    assert "unresolved" in text
+    # The escape is a trade, and the text has to say so in both directions.
+    # It used to say "about 24% cheaper on memory at every size tried", which
+    # reads as a whole-peak claim; end to end on Protenix at 4,100 tokens that
+    # is 7.5%, for 17% more wall time. Assert that both halves are present
+    # rather than the sentence carrying them, which has been reworded twice.
+    assert "7.5%" in text and "17%" in text
+    assert "trade" in text
 
     # Once, not once per layer.
     with warnings.catch_warnings():

@@ -538,6 +538,16 @@ def _warn_unchunkable_multiplication(
     the time evidence does not resolve -- 166.2 s fused against 190.6 and 145.2
     s blocked, a spread that straddles the comparison on a card that swings that
     far under throttle.
+
+    **The 24% is the ratio for these two projections, not for a run.** The
+    warning below used to say "about 24% cheaper on memory at every size tried",
+    which reads as a whole-peak claim and is not one. Measured end to end on
+    Protenix at 4,100 tokens, one warm pass per arm: peak 77,158.2 MiB fused
+    against 71,360.6 blocked, which is **7.5%** -- the projections are only part
+    of what sets that peak. The same pair resolves the time question in the
+    direction the escape loses: 2,329 s fused against 2,715 blocked, **+17%**.
+    It bought 6.6 points of pool occupancy (88.1% to 81.5%) and did not rescue
+    any of the three models that fail at that size.
     """
     global _WARNED_UNCHUNKABLE_MUL
     if _WARNED_UNCHUNKABLE_MUL:
@@ -551,8 +561,9 @@ def _warn_unchunkable_multiplication(
         f"materialises both full projections ({projections_mib:,} MiB here), "
         "which is what the chunk size looks like it would bound. Set "
         "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla for the blocked path "
-        "that honours it -- measured about 24% cheaper on memory at every size "
-        "tried, with the time comparison unresolved.",
+        "that honours it: about 24% cheaper on these projections, which was "
+        "7.5% of the whole-process peak on Protenix at 4,100 tokens, for 17% "
+        "more wall time. It is a trade, not a saving.",
         RuntimeWarning,
         stacklevel=2,
     )

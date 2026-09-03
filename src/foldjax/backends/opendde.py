@@ -40,6 +40,7 @@ _CLI_OPTIONS = {
     "cp_devices",
     "cp_layout",
     "diffusion_attention_backend",
+    "diffusion_chunk_size",
     "kalign_binary",
     "max_msa_depth",
     "token_q_chunk_size",
