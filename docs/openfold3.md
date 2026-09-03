@@ -244,6 +244,16 @@ the final exact-source A/B had minimum paired TM-score 0.99986 and maximum CA
 RMSD 0.0924 Å, while confidence remained within the existing inference
 tolerance.
 
+The sampler itself stays batched, and at long targets that is what runs out of
+memory. `--option diffusion_chunk_size=1` denoises the samples one at a time:
+at 4,100 tokens the default route asks for a single 107.85 GiB block and fails,
+where the chunked one completes the same five samples in 3,290.6 s at 76.4 GiB.
+This is not free the way the confidence schedule is — chunking a free axis is
+arithmetically the same prediction but not a bitwise one, measured at 9.5e-06
+on coordinates of magnitude 10–30 — and 4,100 tokens is past anything either
+implementation validates. What comes out says so itself: all five samples
+reported a clash at a mean pLDDT near 42. Fitting is not the same as working.
+
 The common `foldjax.predict()` backend additionally has a narrower managed
 default: its `*_raw.npz` keeps coordinates, pLDDT, pTM, ipTM, chain-pair ipTM,
 and the experimentally-resolved logits, but omits `pae_logits`, `pde_logits`,
