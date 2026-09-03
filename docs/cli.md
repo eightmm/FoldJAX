@@ -226,6 +226,28 @@ potentially harmful when a model embeds the complete alignment before recycling
 the measurements:
 [docs/engineering-notes.md](engineering-notes.md).
 
+### `--option diffusion_chunk_size=N`
+
+Denoises the diffusion samples N at a time instead of all of them at once, on
+Boltz-2, OpenDDE, OpenFold3 and Protenix. Unlike `--num-samples` it narrows the
+sample axis without dropping a prediction, so it is the first thing to try when
+a run is close to fitting. AlphaFold 3 and ESMFold2 do not take it: AlphaFold 3
+already evaluates more than five samples in groups of five, and ESMFold2's
+equivalent is its confidence head, which runs one sample at a time by default.
+
+Whether it helps depends on where the model's peak lives, and that is not the
+same place in every model. Measured at 4,100 tokens: OpenFold3's default route
+asks for a single 107.85 GiB block and fails, and `diffusion_chunk_size=1`
+completes the same five samples at 76.4 GiB; Protenix at that size moved by one
+mebibyte, because its peak is the trunk's pair stack, which no sample axis
+touches. Chunking is arithmetically the same prediction and not a bitwise one --
+the rollout runs on a different array shape per chunk -- which measures 9.5e-06
+on coordinates of magnitude 10-30.
+
+The default is unchunked for the released five-sample schedules; the automatic
+width engages only above five samples. Per-model measurements:
+[docs/engineering-notes.md](engineering-notes.md).
+
 ### Weights and setup
 
 Upstreams publish several formats. `foldjax weights` downloads public files,
