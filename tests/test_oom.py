@@ -236,3 +236,28 @@ def test_the_explainer_separates_a_pool_limit_from_fragmentation(
 
     assert explanation is not None
     assert expected in explanation
+
+
+def test_the_advice_names_the_sample_axis_lever_a_caller_can_actually_type(
+    monkeypatch,
+) -> None:
+    """`--num-samples` was the only sample-axis advice, and it drops predictions.
+
+    The option name is the contract here: the message tells a caller what to
+    type, so renaming the knob has to reach this string too. The caveat is
+    measured -- the same option rescued OpenFold3 at 4,100 tokens and moved
+    Protenix by one mebibyte -- so the sentence promises a lever to try, not a
+    lever that works.
+    """
+    gib = 2**30
+    monkeypatch.setattr(
+        oom, "_pool_card_and_used", lambda: (90.0 * gib, 95.0 * gib, 2 * gib)
+    )
+    message = oom.diagnose(
+        RuntimeError(
+            "RESOURCE_EXHAUSTED: Out of memory while trying to allocate 88.00GiB."
+        )
+    )
+    assert message is not None
+    assert "diffusion_chunk_size" in message
+    assert "model-specific" in message

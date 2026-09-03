@@ -201,7 +201,12 @@ def diagnose(error: BaseException) -> str | None:
         f"Raise it with {configured_fraction_env() or CURRENT_FRACTION_ENV}"
         "=0.95 if the total is past the pool, or lower the job's cost with "
         "--num-samples. If the run needs more than the device has, the fraction "
-        "will not help. --max-msa-depth is not a memory lever here: measured at "
+        "will not help. On a model that takes it, "
+        "--option diffusion_chunk_size=1 narrows the same sample axis without "
+        "dropping a prediction, but whether that touches the buffer that failed "
+        "is model-specific: measured at 4,100 tokens it turned an OpenFold3 "
+        "failure into a 76.4 GiB run and moved Protenix by one mebibyte. "
+        "--max-msa-depth is not a memory lever here: measured at "
         "488 and at 4,100 tokens it moved the peak by under 1%, because the "
         "alignment tensor is not co-live with the pair stack that sets it."
     )

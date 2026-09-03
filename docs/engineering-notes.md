@@ -571,6 +571,12 @@ which the sample axis does not touch, and OpenFold3's is on the
 sample-expanded path, where serialising deletes the offending block outright.
 A lever measured as inert on one model is not evidence about the next.
 
+The rescued run is a memory result and not a quality one. All five of its
+samples report a clash and a mean pLDDT near 42 on this input, where Protenix
+reports 86.9 on the same one. Nothing here says the chunking caused that --
+the same 4,100-token target is what both saw -- but a cell that reads as a
+completed prediction should carry it.
+
 OpenFold3's other kernel knob does nothing here. `OPENFOLD3_TRIANGLE_BACKEND=xla`
 selects the blocked triangle *attention* and left the failing request at exactly
 107.85 GiB -- the same number to two decimal places, which is what a lever that
@@ -583,7 +589,7 @@ not for a run. End to end on Protenix at 4,100 tokens: peak 77,158.2 MiB fused
 against 71,360.6 blocked, **7.5%**, for 2,329 s against 2,715, **+17%**. It
 buys 6.6 points of occupancy (88.1% to 81.5%) and rescues nothing.
 
-**Two levers were measured against this, and neither is one.**
+**The other two turn out not to be levers here at all.**
 
 *The pool fraction is real but does not rescue these runs.* `bytes_limit`
 tracks `XLA_CLIENT_MEM_FRACTION` exactly -- 85.47 GiB at 0.90 and 90.22 GiB at

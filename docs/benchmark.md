@@ -155,12 +155,33 @@ inside what this card's clock does between runs.
 **The gap between 3,012 and 4,926 has since been filled, and the ceiling is in
 it.** A 4,100-token point (`L4000_1gte`) was measured on 2026-09-01: AlphaFold 3
 completes it at 52.1 GiB, Protenix at 75.3 and Boltz-2 at 76.4, while OpenFold3
-asks for a single 107.85 GiB block and OpenDDE for 88.75. The two survivors sit
-at 88-89% of the pool, and their own memory exponents put the wall at roughly
-4,350-4,400 tokens -- so 4,926 failing on all six is a size past the hardware
-rather than a property of the ports. What that costs in time, why the exponent
-jumps there, and the two levers that turn out not to move it are in
+asks for a single 107.85 GiB block and OpenDDE for 88.75. The three that finish
+sit at 61-89% of the pool, and the two at the top have memory exponents that put
+the wall at roughly 4,350-4,400 tokens -- so 4,926 failing on all six is a size
+past the hardware rather than a property of the ports. What that costs in time,
+why the exponent jumps there, and which levers move it are in
 [Where this card's ceiling actually is](engineering-notes.md#where-this-cards-ceiling-actually-is-and-what-does-not-move-it).
+
+**OpenFold3's 4,100 cell is a lever away from a number, and it is the sample
+axis.** With `diffusion_chunk_size=1` -- the diffusion rollout taking one
+sample at a time instead of all five at once -- the same input finishes in
+3,290.6 s at 76.4 GiB, which is 89% of the pool and the same peak Boltz-2
+reaches unaided. A chunk sees the noise its samples would have seen anyway, so
+the result is the same prediction arithmetically, though not bitwise: the
+rollout runs on a different array shape per chunk and XLA fuses it
+differently, which measures 9.5e-06 on coordinates of magnitude 10-30. Its
+confidence head already runs one sample at a time by default, so the rollout
+is the sample-shaped buffer that was left. The row still reads `failed`
+because that is what the released schedule does, in the same way the OpenDDE
+row pins fp32. What that run produces is a separate question from whether it
+fits: all five samples report a clash and a mean pLDDT near 42, where Protenix
+on the same input reports 86.9. The memory result does not endorse the
+prediction. The lever is model-specific rather than general: on Protenix at
+this size serialising the samples moves the peak by 1 MiB, because Protenix's
+owning buffer is in the pair stack and OpenFold3's is not. Its
+triangle-attention backend is not a lever at all here --
+`OPENFOLD3_TRIANGLE_BACKEND=xla` leaves the failing request at 107.85 GiB, the
+same number to two decimal places.
 
 That is the expected result rather than a null one. Those commits are
 loader-stage and host-side by their own description; the peak here is an XLA
