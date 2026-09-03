@@ -516,7 +516,13 @@ Measured 2026-09-01 on current main, at 4,100 tokens (`L4000_1gte`, 1GTE,
 | protenix | 2,329.4 s | 75.3 GiB | 88% |
 | boltz2 | 3,194.5 s | 76.4 GiB | 89% |
 | openfold3 | failed by default; 3,290.6 s with `diffusion_chunk_size=1` | 76.4 GiB | 89% |
+| protenix-v2 | failed, asked for 117.78 GiB in one block | -- | past the device |
 | opendde | failed, asked for 88.75 GiB in one block | -- | past the pool, inside the card |
+
+OpenDDE's row understates it. That 88.75 GiB is the block the allocator
+happened to fail on; the model's own preflight puts the whole run at an
+estimated 331.5 GiB of temp arena for this size's 7,876 structural tokens,
+with the bf16 trunk already spent.
 
 At 4,926 tokens all six fail, five of them asking for a single block larger
 than the card (105.65 to 170.01 GiB). So the ceiling on this hardware sits
