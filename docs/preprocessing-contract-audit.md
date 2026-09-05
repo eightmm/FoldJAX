@@ -6,6 +6,11 @@ The finite input-kind panel and its exceptions are recorded in
 Raw dictionaries are compared before classifying differences; matching their
 intersection does not establish a complete inference contract.
 
+The later [fresh multimodal comparisons](benchmark-followup-2026-09-05.md)
+include native-mixed-precision divergence and fixed-tape execution variability.
+Read those results alongside the earlier controls below; a single small FP32
+residual is not a native-default or repeatability guarantee.
+
 The [portable result record](../bench/experiments/independent-input-entity-parity-2026-09-05.json)
 retains the 202-cell comparison summary and all five Boltz sample pairs for the
 failed baseline, XLA control, and corrected fused path. Raw tapes and runtime
@@ -24,6 +29,7 @@ logs remain outside the package; publication includes no weights or raw datasets
 | ESMFold2 `disto_cond`, `disto_cond_mask` | Optional conditioning | Zero/inactive in the tested panel; active conditioning remains unverified |
 | ESMFold2 string arrays | FoldJAX writer metadata | Not extra learned input channels |
 | Protenix/OpenDDE compact relative-position fields, `d_lm`, `v_lm` | Runtime values constructed at different stages | Seven-case derived-input comparisons reconstruct the categorical representation and compare geometry |
+| OpenDDE `inference_seed` | Runner-added rollout RNG seed, after preprocessing | Fresh native-forward capture verifies the int64 scalar against the actual sampler tape seed; replay injects those draws, not an upstream feature tensor |
 | Protenix `is_ligand` | **Confidence/ranking input** | Previously omitted at the caller; now generated from polymer identity, padded, retained by the compiled-input filter and supplied as `atom_is_polymer` |
 | Protenix/OpenDDE `entity_mol_id`, `mol_atom_index` | Label/chain permutation metadata | Native unlabeled inference does not invoke the label-permutation path; labeled/training use is outside this audit |
 | Protenix/OpenDDE `bond_mask`, `resolution` | Loss bookkeeping | Distinct from runtime `token_bonds`, which is compared |

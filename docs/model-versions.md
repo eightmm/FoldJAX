@@ -11,13 +11,18 @@ be used as the model identity of an experiment.
 
 ## Latest validation checkpoint (2026-09-05)
 
-The [independent-input and entity-level audit](preprocessing-contract-audit.md)
-supersedes the earlier unresolved Boltz 5SAK diagnosis below. Explicitly passing
-the active JAX precision to fused triangle multiplication reduces five-sample
-global-fit entity maxima to protein **0.003870 Å** and ligand **0.000689 Å**.
-The original failed runs remain historical evidence, not current fixed-code
-results. OpenFold3 cyclic preprocessing/relative positions and Protenix
-ligand-aware confidence identity were also corrected.
+The [fresh multimodal comparisons](benchmark-followup-2026-09-05.md) record
+nine new five-sample Boltz/OpenDDE comparison cells and a fixed-tape repeat.
+Boltz's native-mixed-precision 5SAK reference remains substantially divergent
+(entity maxima: protein **16.21 Å**, ligand **13.17 Å**). Its FP32 fixed-tape
+repetitions also vary; no bitwise or native-default equivalence is established.
+
+The earlier [independent-input audit](preprocessing-contract-audit.md) identified
+and fixed precision forwarding to fused triangle multiplication. Its reported
+protein **0.003870 Å** / ligand **0.000689 Å** maxima are one historical FP32
+control, not a stable bound on current runs. OpenFold3 cyclic preprocessing/
+relative positions and Protenix ligand-aware confidence identity were also
+corrected. Their finite input checks remain separate from full output parity.
 
 The finite preprocessing panel compares 202 of 216 model/input cells; remaining
 cells are unsupported or rejected and raw key/dtype exceptions remain explicit.
