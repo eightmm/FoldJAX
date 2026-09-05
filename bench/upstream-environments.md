@@ -4,9 +4,9 @@ When a fast path supported by the reference and this hardware is merely
 unprovisioned, comparing that fallback is a handicap match. Each upstream
 repository here runs in its own virtualenv, and two arrived incomplete in ways
 that inflated their numbers. This is what it took to provision those paths and
-how to check them. Hardware-incompatible paths, such as OpenFold3 0.3.1's
-sm_120 limitation, remain explicitly qualified rather than described as a
-missing install.
+how to check them. Hardware-incompatible paths in retained historical results,
+such as OpenFold3 0.3.1's sm_120 limitation, remain explicitly qualified rather
+than described as a missing install.
 
 Nothing here touches the system: every install goes into that project's own
 `.venv`, and nothing is removed.
@@ -160,32 +160,55 @@ what it measures against. Two consequences worth stating plainly:
 
 ## A note on torch versions
 
-Both OpenDDE and Protenix pin torch versions in their `pyproject.toml`
-(`2.7.1` for OpenDDE) that predate this GPU. Those wheels carry no SM_120
-kernels and fail with "no kernel image is available" — OpenDDE's runner
-reporting success while doing so. Both virtualenvs were already upgraded to
-`2.12.0+cu130` before this work; that is a deviation from their pins and is the
-only way either runs on this card.
+OpenDDE pins torch `2.7.1`, but the build matters. The ordinary CUDA 12.6
+wheel (`2.7.1+cu126`) carries no SM_120 kernel and fails with "no kernel image
+is available" on this card. PyTorch also publishes an official CUDA 12.8 build
+of the same version, and `2.7.1+cu128` includes `sm_120`; the
+upstream-default n=5 experiment uses that build without changing OpenDDE's
+version pin. The historical large-input performance environment instead used
+`2.12.0+cu130` to pair with its provisioned cuEquivariance CUDA 13 packages, so
+those timing rows retain that disclosed runtime deviation.
 
-## OpenFold3 (added 2026-08-12)
+Protenix's environment uses `2.12.0+cu130` for this GPU and retains the exact
+reviewed SM_120 layer-norm patch described above. Runtime build identities are
+therefore part of each result record rather than inferred from the public
+model version.
 
-Runs from the `openfold3-v031` worktree (tag 0.3.1): `of3_ft3_v1.pt` -- the
-weights the FoldJAX port runs -- is the legacy p1 checkpoint with
-`version_compatibility="<0.4"`, and the 0.4.4 checkout refuses it. The
-`pae_enabled` preset must be on (the checkpoint carries the PAE head; 0.3.1
-builds it only under that preset).
+## OpenFold3 (updated 2026-09-04)
+
+The current harness selects the `openfold3-v050` worktree (tag v0.5.0) and the
+publisher's default OpenBind checkpoint,
+`of3-ob-2025-06-30-174k.pt`. `bench/openfold3_runner.yml` keeps v0.5's released
+Triton attention and dynamic chunk tuner, pins 10 recycles and seed 101, and
+disables only confidence-head host offload on this large-memory benchmark host.
+This route has not yet replaced the checked-in performance matrix, so no p1
+timing below should be read as an OpenBind measurement.
+
+That runner file belongs to the universal throughput/memory schedule. The
+upstream-default n=5 experiment uses a separate runner configuration containing
+only the `predict` preset and seed 101; it therefore keeps v0.5/OpenBind's
+native 3 configured recycles, 200 diffusion steps, `32-true` precision, Triton
+attention, and dynamic chunk tuning. Its isolated runtime follows the v0.5 CUDA
+13 lock family (`torch 2.12.1+cu130`, PyTorch Lightning 2.6.1, RDKit 2025.9.6,
+and wandb 0.28.0).
+
+### Historical p1 environment (retired 2026-09-04)
+
+The checked-in OpenFold3 rows ran from `openfold3-v031` (tag 0.3.1) with
+`of3_ft3_v1.pt`. That old checkpoint required `version_compatibility="<0.4"`
+and the `pae_enabled` preset; neither is part of the current harness.
 
 Seed audit (2026-08-31): the original recorded rows also passed
 `--num_model_seeds 1`. In 0.3.1 that replaces the runner YAML's `[101]` with a
 seed generated from the hard-coded start 42 (`2746317213`). Time and peak
 memory remain shape-valid, but confidence is not a seed-matched parity point.
-The harness now omits the flag so the YAML seed is authoritative.
+The v0.5 harness omits the flag so the YAML seed is authoritative.
 
 The original command also left `--use_templates` at 0.3.1's `true` default
 even though these native jobs supplied no template path. The model ultimately
 received zero-template features, so outputs and GPU inference are unaffected,
-but wall time included avoidable template/CCD initialization. Current runs
-pass `--use_templates false`; historical timing retains this disclosed caveat.
+but wall time included avoidable template/CCD initialization. The v0.5 route
+passes `--use_templates false`; historical timing retains this disclosed caveat.
 
 Kernels: none. The default DS4Sci `evoformer_attn` fails its cutlass JIT on
 sm_120, and the experimental `use_cueq_triangle_kernels` path crashes in the
@@ -213,18 +236,24 @@ no larger-card preset. The offload stays off (peak 81.0 -> 83.2 GiB, still
 fits), so the row is an explicitly disclosed harness variant of the upstream
 prediction preset rather than an untouched-default claim.
 
-## ESMFold2 — the `transformers` reference for the atom parity test
+## ESMFold2 — two explicit Torch references
 
-`tests/models/esmfold2/test_atom_parity.py` compares the atom stack against
-`transformers`. FoldJAX's own environment is Torch-free on purpose, so the two
-tests that need it skip there and only the window test runs. To run all of
-them:
+ESMFold2 has two related but non-interchangeable upstreams. The model port
+tracks the creator's untagged `Biohub/transformers` snapshot at
+`ef32577f55da19a4989cd7b22e004dc43a4998cb`. Its
+`modeling_esmfold2_common` module is the reference for the parameter-free
+rotary implementation and for the full upstream runs. Hugging Face later
+integrated ESMFold2 into `transformers` 5.16.x with a different CamelCase API;
+that implementation plus `biohub/ESMFold2-hf` is a secondary, independently
+versioned atom-encoder parity reference.
+
+FoldJAX's own environment is Torch-free on purpose. Create the secondary
+environment with exact package versions:
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-parity uv sync --extra cuda13
-uv pip install --python .venv-parity/bin/python torch transformers
-JAX_PLATFORMS=cpu .venv-parity/bin/python -m pytest \
-    tests/models/esmfold2/test_atom_parity.py
+uv pip install --python .venv-parity/bin/python \
+    torch==2.13.0 transformers==5.16.1
 ```
 
 **`uv pip install` reads `--python` or `VIRTUAL_ENV`, not
@@ -233,13 +262,12 @@ project's own `.venv` -- the one environment this repository keeps Torch out of,
 and the one every other measurement runs in. `uv sync` puts it back, but a
 benchmark taken in between would have been taken somewhere else.
 
-Verified 2026-08-27 with `transformers` 5.16.1 and `torch` 2.13.0: the rotary
-tables are bit-identical, and the encoder test skips with its reason. The
-import path matters -- upstream moved this from
-`modeling_esmfold2_common`, which held free functions taking explicit widths,
-to `modeling_esmfold2`, which builds modules from a config. The old path is
-still importable-looking enough that the file simply reported "skipped" on a
-machine that could have run it.
+Verified 2026-09-04: the creator snapshot's rotary tables are bit-identical,
+and the released atom encoder passes against `transformers` 5.16.1 with its
+own re-exported weights. One environment cannot supply both APIs: the creator
+snapshot uses `ESMFold2*` classes and `modeling_esmfold2_common`, while 5.16.1
+uses `EsmFold2*` classes and no common module. The tests therefore skip only
+the reference absent from the selected environment.
 
 ### The two artifacts, and why both are needed
 
@@ -264,18 +292,17 @@ A name mapping would reintroduce the rename table that naming after the
 checkpoint was chosen to delete, and would pass just as happily lining up the
 wrong tensors.
 
-The library's side is `biohub/ESMFold2-hf`, 24.5 GB of which almost all is the
+The library's side is `biohub/ESMFold2-hf` at immutable revision
+`bce015efb23b5dc604842d0ab5c2bbb02c7bd3ee`. Its 24.5 GB is almost all the
 language model. safetensors keeps byte offsets in its header, so the 28
-atom-encoder tensors come out with range requests:
+atom-encoder tensors and matching pinned config come out with range requests:
 
 ```bash
 python tests/models/esmfold2/fetch_hf_atom_weights.py \
     "$FOLDJAX_BENCH_DATA/esmfold2-hf/atom_encoder.npz"
-curl -sLo "$FOLDJAX_BENCH_DATA/esmfold2-hf/config.json" \
-    https://huggingface.co/biohub/ESMFold2-hf/resolve/main/config.json
 ESMFOLD2_HF_ATOM_WEIGHTS="$FOLDJAX_BENCH_DATA/esmfold2-hf/atom_encoder.npz" \
 JAX_PLATFORMS=cpu .venv-parity/bin/python -m pytest \
-    tests/models/esmfold2/test_atom_parity.py
+    tests/models/esmfold2/test_atom_parity.py::test_the_atom_encoder_matches
 ```
 
 3.6 MiB rather than the 4.7 GiB shard they live in.

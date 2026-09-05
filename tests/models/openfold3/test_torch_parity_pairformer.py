@@ -57,7 +57,6 @@ def _apb():
         c_z=C_Z,
         c_hidden=C_HIDDEN_PAIR_BIAS,
         no_heads=HEADS_PAIR_BIAS,
-        use_ada_layer_norm=False,
         gating=True,
         inf=1e9,
     )
@@ -123,7 +122,7 @@ def test_attention_pair_bias_matches_torch(
     z = torch.randn(1, N, N, C_Z)
     single, _pair = _masks(torch)
     with torch.no_grad():
-        expected = module(a=a, z=z, s=None, mask=single)
+        expected = module(a=a, z=z, mask=single)
     actual = attention_pair_bias(
         jnp.asarray(a.numpy()),
         jnp.asarray(z.numpy()),

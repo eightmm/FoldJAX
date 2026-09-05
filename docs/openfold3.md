@@ -50,9 +50,12 @@ so vendoring OpenFold3 added no base dependency.
 
 ## Weights
 
-The checkpoint supported by this port is OpenFold3 p1's `of3_ft3_v1.pt`. The
-code and weights are Apache-2.0, and upstream publishes this exact p1 file from
-an unsigned S3 bucket. FoldJAX pins its size and SHA-256 before staging it.
+The only supported checkpoint family is OpenFold3 `v0.5.0` OpenBind. Upstream
+names `openbind-2025-06-30-174k` as the release default and publishes
+`of3-ob-2025-06-30-174k.pt` from its `openfold3-data` bucket. FoldJAX pins its
+2,287,872,989-byte size and SHA-256
+`bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4`
+before staging it.
 
 Because that key needs no account and no request, **`foldjax setup` fetches it
 along with Boltz-2, OpenDDE and Protenix** — 2.29 GB. Fetching it on its own,
@@ -63,10 +66,12 @@ foldjax weights fetch --model openfold3
 foldjax weights path --model openfold3
 ```
 
-Upstream's current OpenBind v0.5 checkpoint and its older p2 checkpoint use
-newer architectures and are not compatible with FoldJAX's p1 port. They are
-therefore never silently substituted for `of3_ft3_v1.pt`. A compatible p1 file
-can still be passed explicitly with `--weights`.
+The mapper requires OpenBind's model version `[2, 0, 0]`, stack-level diffusion
+pair norm, and corrected ending-node triangle bias. p1 and p2 checkpoints are
+rejected with a compatibility error; there is no legacy fallback or silent
+substitution. See the
+[model version ledger](model-versions.md#openfold3) for the exact source commits,
+checkpoint hashes, and support boundary.
 
 Nothing is converted: the port reads the released checkpoint directly with
 FoldJAX's restricted torch-archive reader. It reconstructs `.pt`/`.ckpt`
@@ -293,31 +298,36 @@ afford doing so. It no longer does.
 
 The whole latent trunk — Pairformer stack (AF3 Alg. 17), MSA module stack
 (AF3 Alg. 8) and template pair stack (AF2 Alg. 16) — plus the diffusion sampler
-and confidence heads are ported and gated against the real upstream torch
-modules at `rtol=atol=1e-4` on the full-precision CPU/XLA reference route.
+and confidence heads are ported and gated against the real v0.5 upstream torch
+modules. Layer gates use `rtol=atol=1e-4` on the full-precision CPU/XLA route;
+the randomized composite atom-head sink uses `atol=3e-3` because a preceding
+sub-`1e-4` activation difference is amplified by LayerNorm.
 Parity is checked at three levels: per layer,
 against upstream's own *composed* code (`run_trunk`, `DiffusionModule.forward`,
 `SampleDiffusion.forward`, `AuxiliaryHeadsAllAtom.forward`), and `predict()`
-against `OpenFold3.forward` as a single call. At the released settings the worst
-reference-route disagreement is 2.1e-5 on coordinates whose maximum is 35.0.
-The shipped cuEquivariance GPU route has the separate production envelope
-described below.
+against `OpenFold3.forward` as a single call. With the actual OpenBind checkpoint,
+identical prepared 1BNA features and a shared random tape, the model-core
+Kabsch RMSD is `5.78e-6 Å`. The shipped cuEquivariance GPU route has the
+separate production envelope described below.
 
-Every parameter of the released model is read by the inference path — 416 of 416
-unique tensors — measured by a test that fails if any group goes unread, which is
-how three unwired subsystems were originally found.
+Every parameter group of the v0.5 model is read by the inference path, measured
+by a test that fails if any non-alias tensor goes unread. The official checkpoint
+contains 4,890 tensors; 740 are verified byte-identical sampler aliases before
+they are pruned.
 
 Checkpoint mapping is not conditional on one triangular-multiplication layout.
-The released p1 config sets `fuse_projection_weights: false`, and a gate records
-that unfused layout. The same composite mapper is also tested against an
+The released OpenBind config sets `fuse_projection_weights: false`, and a gate
+records that unfused layout. The same composite mapper is also tested against an
 upstream model with every stack fused: it splits each `2*c_hidden` projection
 into the two parameters consumed by the forward pass, and both layouts produce
 the same mapped shapes. `detect_fused_tri_mul` is therefore an inspection aid,
 not an unsupported-checkpoint gate.
 
-The benchmark also drives OpenFold3 0.3.1 as a complete upstream program with
-the same p1 checkpoint and 5 / 200 / 10 schedule. Its historical rows are real
-time/memory comparisons with a hardware qualification: 0.3.1's accelerated
+The checked-in benchmark table still contains historical OpenFold3 0.3.1/p1
+rows with a 5 / 200 / 10 schedule. They remain real time/memory records rather
+than being relabelled as v0.5. The current harness now drives the v0.5.0 worktree
+and OpenBind file, so new measurements cannot accidentally extend that old
+series. The historical rows have a hardware qualification: 0.3.1's accelerated
 attention paths do not run on this host's sm_120 GPU, so the timing uses plain
 Torch attention. Those historical wall times also include avoidable
 template/CCD initialization, while the retained 3,012-token row explicitly

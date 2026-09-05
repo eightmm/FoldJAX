@@ -1,0 +1,326 @@
+{
+  "schema": 1,
+  "date": "2026-09-04",
+  "purpose": "Close the per-model version, modality, template, affinity, and matched-randomness validation gaps against current pinned upstream targets",
+  "claim_boundary": {
+    "proves": [
+      "all six released backends execute protein, DNA, RNA, CCD ligand, SMILES ligand, and ion inputs with real weights",
+      "each port is separately checked against its own pinned upstream at feature, component, or matched-random-tape level",
+      "every supported template route and the sole supported affinity head execute with real weights"
+    ],
+    "does_not_prove": [
+      "different model families predict identical coordinates",
+      "two frameworks given only the same integer seed consume identical random numbers",
+      "the short execution matrix measures released-schedule accuracy",
+      "scientific validity on an external blind benchmark"
+    ],
+    "ion_representation": "MG as a CCD non-polymer ligand; ion is not a separate common-schema entity type"
+  },
+  "source": {
+    "foldjax_base_revision": "ab08a822500d69f5a9a249a75b1545ad82ae3f66",
+    "foldjax_src_tree_sha256": "b80de731f0975a0808669ffb274fdce5cebfb6c997d4e5244a1f4514762ed25b",
+    "foldjax_src_tree_sha256_format": "sha256 of sorted sha256sum records for regular files under src/foldjax, excluding __pycache__ and pyc",
+    "state": "working tree with the validation/version uplift; use the tree digest rather than the base revision alone"
+  },
+  "targets": {
+    "alphafold3": {
+      "version": "3.0.4",
+      "source_revision": "85c4d20505fd5cef05eac22b534d4e793971ae69",
+      "checkpoint": "user-supplied af3.bin; validation directory tree SHA-256 a18d7c299109ba6dd7e8f4769eb34925a2779ad9ef7ff1a33e31d167b772dada"
+    },
+    "boltz2": {
+      "version": "2.2.1 package metadata",
+      "source_revision": "b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+      "checkpoint_revision": "6fdef46d763fee7fbb83ca5501ccceff43b85607"
+    },
+    "esmfold2": {
+      "version": "untagged creator snapshot",
+      "source_revision": "ef32577f55da19a4989cd7b22e004dc43a4998cb",
+      "structure_checkpoint_revision": "8fc3ff471022fdce52c77030685eb775de0c00a3",
+      "esmc_checkpoint_revision": "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",
+      "secondary_hf_integration": "transformers 5.16.1 with biohub/ESMFold2-hf at bce015efb23b5dc604842d0ab5c2bbb02c7bd3ee"
+    },
+    "opendde": {
+      "version": "1.1.1",
+      "source_revision": "ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+      "checkpoint_revision": "eddd563ce96571f784012edd8f045181c8f8627d",
+      "profiles": [
+        "released",
+        "abag"
+      ]
+    },
+    "openfold3": {
+      "version": "0.5.0",
+      "source_revision": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+      "checkpoint": "OpenBind of3-ob-2025-06-30-174k.pt, SHA-256 bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+      "legacy_checkpoint_policy": "p1 and p2 rejected"
+    },
+    "protenix": {
+      "version": "2.0.0 package metadata",
+      "source_revision": "4c355be4553512f72453ecbfb65e69f4c35d1413",
+      "profile": "v2",
+      "checkpoint_sha256": "8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599"
+    }
+  },
+  "software": {
+    "python": "3.13.15",
+    "foldjax": "0.3.0",
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "numpy": "2.1.3",
+    "gemmi": "0.7.5",
+    "rdkit": "2026.3.5",
+    "tokamax": "0.0.13",
+    "triton": "3.7.1"
+  },
+  "real_weight_modality_matrix": {
+    "schedule": {
+      "seed": 101,
+      "num_samples": 1,
+      "num_steps": 2,
+      "num_recycles": 1,
+      "max_msa_depth": 16,
+      "padding": true
+    },
+    "cases": [
+      "protein",
+      "dna",
+      "rna",
+      "ccd_ligand",
+      "smiles_ligand",
+      "ion",
+      "all_modalities"
+    ],
+    "all_modalities_entities": [
+      "protein",
+      "dna",
+      "rna",
+      "ATP",
+      "SMILES CC(=O)N",
+      "MG"
+    ],
+    "standard_runs": 42,
+    "standard_runs_completed": 42,
+    "extra_opendde_abag_all_modalities": 1,
+    "total_manifests": 43,
+    "manifest_counts": {
+      "alphafold3:released": 7,
+      "boltz2:released": 7,
+      "esmfold2:released": 7,
+      "opendde:released": 7,
+      "opendde:abag": 1,
+      "openfold3:OpenBind": 7,
+      "protenix:v2": 7
+    },
+    "validated_atoms": 12188,
+    "validated_numeric_scores": 297,
+    "gemmi_parse_failures": 0,
+    "nonfinite_coordinate_failures": 0,
+    "nonfinite_score_failures": 0,
+    "structure_hash_failures": 0,
+    "manifest_set_sha256": "20298bb90466077703673795639b1ff83608c2553fc1cc2ed8aafcfd2cbeba0d",
+    "structure_set_sha256": "e15c922beb5f23dcbbac2a2b58ddca4b7c175eb83f727557fb88854c61d3625a",
+    "successful_tsp_jobs": [
+      52,
+      53,
+      54,
+      55,
+      56,
+      58,
+      59
+    ],
+    "repaired_failure": "job 57 exposed OpenFold3 zero-template padding expansion; the regression was fixed and all seven cells passed in job 59"
+  },
+  "templates": {
+    "case": "9FM7 protein-ligand complex with one real template row",
+    "schedule": "same short execution schedule as the modality matrix",
+    "completed": {
+      "alphafold3": "mapped common-schema template",
+      "boltz2": "unmapped/self-aligned template",
+      "opendde": "mapped template, use_template=true, native Kalign 3.3.5",
+      "openfold3": "native v0.5 query-pipeline template",
+      "protenix:v2": "mapped common-schema template"
+    },
+    "unsupported_by_design": "esmfold2",
+    "runs": 5,
+    "validated_atoms": 21856,
+    "validated_numeric_scores": 36,
+    "structure_set_sha256": "4b345991ae7dba7999360b5bdd38a4812ffc441629bd442137aaf3ce62bfa14e",
+    "successful_tsp_jobs": [
+      69,
+      70,
+      72,
+      73,
+      77
+    ],
+    "operator_retry": "job 71 pointed at the extracted Kalign directory; job 77 used the actual kalign-avx2 3.3.5 executable and passed"
+  },
+  "affinity": {
+    "supported_model": "boltz2",
+    "unsupported_models_reject_instead_of_drop": true,
+    "common_api_tsp_job": 74,
+    "raw_head_tsp_job": 80,
+    "structure_atoms": 171,
+    "structure_sha256": "59775e13b56a81785b2bf4037ed7959ad4c301bf8aa3e0d046cbba3066d3ac34",
+    "affinity_pred_value": 1.3738985061645508,
+    "affinity_probability_binary": 0.07554831355810165,
+    "raw_head_finite": true
+  },
+  "matched_randomness": {
+    "boltz2": {
+      "case": "all_modalities",
+      "num_steps": 20,
+      "num_recycles": 1,
+      "same_upstream_noise_tape": true,
+      "schedule_max_abs": 0.0,
+      "raw_all_atom_rmsd_angstrom": 0.19436532647725355,
+      "kabsch_all_atom_rmsd_angstrom": 0.19392935934073058,
+      "minimum_trunk_correlation": 0.9999999201314415,
+      "metrics_sha256": "53bbb29be22be33dfce71dc1fc5e408457916a36a411144abdb9c5c7ebe734a1",
+      "tsp_jobs": [
+        75,
+        76
+      ],
+      "diagnostic": "a two-step execution smoke had 0.033855 A Kabsch RMSD but 2.863 A raw RMSD because a 0.092-degree frame drift was amplified by an approximately 2221 A coordinate radius; the 20-step strict raw gate passed"
+    },
+    "opendde_abag": {
+      "case": "protein",
+      "num_steps": 2,
+      "num_recycles": 1,
+      "same_upstream_msa": true,
+      "same_upstream_noise_tape": true,
+      "raw_all_atom_rmsd_angstrom": 0.08171354710195212,
+      "coordinate_max_abs_error_angstrom": 0.18896484375,
+      "metrics_sha256": "51461bbdc6b8a168428acc7b222b29b76850a7c1fb3f8fe464f1746d6ab60462",
+      "tsp_jobs": [
+        62,
+        63
+      ]
+    },
+    "openfold3_openbind": {
+      "case": "1BNA DNA",
+      "num_steps": 20,
+      "upstream_num_recycles": 10,
+      "same_prepared_features_and_noise_tape": true,
+      "raw_all_atom_rmsd_angstrom": 0.000030113698812783696,
+      "kabsch_all_atom_rmsd_angstrom": 0.000005781785106865615,
+      "minimum_trunk_correlation": 0.9999999999999253,
+      "metrics_sha256": "2d957a0752941f6253fd9c3e68ad95a4368191c0244b3072ab089614e52df8c7"
+    },
+    "protenix_v2": {
+      "case": "all_modalities",
+      "num_steps": 2,
+      "cycles": 1,
+      "same_noise": true,
+      "raw_all_atom_rmsd_angstrom": 0.016047321259975433,
+      "kabsch_all_atom_rmsd_angstrom": 0.01596050977774886,
+      "minimum_trunk_correlation": 0.9999996105786708,
+      "metrics_sha256": "c5aa864a75e1106f3ca96392030ba4bc61ab3153bc6bcf42537077eb3da4cb31",
+      "tsp_jobs": [
+        65,
+        66
+      ]
+    },
+    "esmfold2": {
+      "coordinate_claim": "independent stochastic samples; no matched-coordinate claim",
+      "real_weight_end_to_end_cells": 6,
+      "lengths": [
+        128,
+        488,
+        976
+      ],
+      "implementations_per_length": [
+        "foldjax",
+        "creator upstream"
+      ],
+      "finite_structure_fraction": 1.0,
+      "summary_sha256": "a36bc270fa0504ed144e582d3db7c8817c3cfea943f3c92fc8d2bcddd20b1ce8"
+    },
+    "alphafold3": {
+      "coordinate_claim": "not applicable as an independent port comparison because FoldJAX executes the audited vendored upstream source"
+    }
+  },
+  "feature_and_component_gates": {
+    "alphafold3": "complete source-tree drift audit: only eight declared runtime patch paths differ from 3.0.4",
+    "boltz2": "77 tests passed against a clean b1ebfc46 upstream checkout, covering current checkpoint components, mixed featurization, templates, and weighted rigid alignment",
+    "esmfold2_creator": "creator-reference selected suite: 50 passed and one HF-only atom encoder test skipped; a focused rerun gave 2 passed and one expected HF-only skip",
+    "esmfold2_hf": {
+      "result": "released atom encoder passed against transformers 5.16.1; full focused file gave 2 passed and one expected creator-common-module skip",
+      "config_sha256": "a821096ea81dd82bed9a78b5e3ab3b270c0d473c4566f09f94c063f256d52240",
+      "atom_tensor_subset_sha256": "140c3d1d7f33ff452d2ca0bca0006a5aa005085947b4648aed71afb1ac6c2509"
+    },
+    "opendde": {
+      "cases": 10,
+      "shared_arrays_per_case": 60,
+      "exact_shared_array_comparisons": 600,
+      "artifact_set_sha256": "2f1607cb158430e1ad340464209f63f503f73f08148a8c75e3f2908021f7b309",
+      "cases_include": [
+        "protein",
+        "dna",
+        "rna",
+        "ccd_ligand",
+        "smiles_ligand",
+        "ion",
+        "native_ion_order",
+        "all_modalities",
+        "rna_msa",
+        "template"
+      ]
+    },
+    "openfold3": "7 tests passed against the exact c4771653 v0.5 checkout: four real targets plus ladder guard and two preprocessing/direct-template gates",
+    "protenix": "75 modality/search/feature tests passed; two optional publisher-example template tests skipped because their external example/database assets were unavailable, while the pinned 9FM7 template path passed separately"
+  },
+  "gpu_queue": {
+    "scheduler": "tsp",
+    "all_gpu_work_serialized": true,
+    "successful_final_jobs": [
+      52,
+      53,
+      54,
+      55,
+      56,
+      58,
+      59,
+      62,
+      63,
+      65,
+      66,
+      69,
+      70,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      80
+    ]
+  },
+  "final_repository_gate": {
+    "pytest": {
+      "command": "JAX_PLATFORMS=cpu uv run --group dev pytest -q",
+      "passed": 3462,
+      "skipped": 417,
+      "warnings": 55,
+      "seconds": 551.91,
+      "exit_code": 0
+    },
+    "ruff": {
+      "command": "uv run --group dev ruff check .",
+      "result": "All checks passed!",
+      "exit_code": 0
+    },
+    "uv_lock": {
+      "command": "uv lock --check",
+      "exit_code": 0
+    },
+    "git_diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0
+    },
+    "json_parse": {
+      "command": "jq empty bench/experiments/latest-model-validation-2026-09-04.json docs/ports/opendde/OFFICIAL_ASSETS.json",
+      "exit_code": 0
+    }
+  }
+}

@@ -5,7 +5,9 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax
 import jax.numpy as jnp
+import pytest
 
 from foldjax.models.boltz2.models.triangle.triangle import (
     triangle_multiplication_forward,
@@ -16,7 +18,10 @@ from foldjax.models.boltz2.models.triangle.triangle_cueq import (
 )
 
 
-def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "policy, expected", [("default", "DEFAULT"), ("highest", "IEEE")]
+)
+def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch, policy, expected) -> None:
     captured = {}
 
     def fake_triangle_multiplicative_update(**kwargs):
@@ -27,6 +32,7 @@ def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch) -> None:
         sys.modules,
         "cuequivariance_jax",
         SimpleNamespace(
+            TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
             triangle_multiplicative_update=fake_triangle_multiplicative_update
         ),
     )
@@ -41,14 +47,16 @@ def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch) -> None:
     x = jnp.ones((1, 3, 3, 4))
     mask = jnp.ones((1, 3, 3))
 
-    output = cueq_triangle_multiplication_forward(
-        params, x, mask, "incoming", eps=1e-4
-    )
+    with jax.default_matmul_precision(policy):
+        output = cueq_triangle_multiplication_forward(
+            params, x, mask, "incoming", eps=1e-4
+        )
 
     assert output is x
     assert captured["direction"] == "incoming"
     assert captured["fallback"] is False
     assert captured["eps"] == 1e-4
+    assert captured["precision"] == expected
     assert jnp.array_equal(captured["p_in_weight"], params["p_in"]["kernel"].T)
     assert jnp.array_equal(captured["g_in_weight"], params["g_in"]["kernel"].T)
     assert jnp.array_equal(captured["p_out_weight"], params["p_out"]["kernel"].T)

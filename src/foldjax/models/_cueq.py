@@ -24,6 +24,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 from jax import lax
 
@@ -61,6 +62,29 @@ def load_cueq():
         )
         raise RuntimeError(msg) from error
     return cuex
+
+
+def triangle_multiplication_precision(cuex):
+    """Translate JAX's float32 policy for the FFI, which cannot inherit it."""
+    policy = jax.config.jax_default_matmul_precision
+    modes = {
+        None: "DEFAULT",
+        "default": "DEFAULT",
+        "bfloat16": "DEFAULT",
+        "high": "TF32",
+        "tensorfloat32": "TF32",
+        "highest": "IEEE",
+        "float32": "IEEE",
+        "TF32_TF32_F32": "TF32",
+        "TF32_TF32_F32_X3": "TF32x3",
+        "F32_F32_F32": "IEEE",
+    }
+    if policy not in modes:
+        raise ValueError(
+            f"cuEquivariance multiplication cannot represent JAX precision {policy!r}; "
+            "select XLA multiplication for this policy"
+        )
+    return getattr(cuex.TriMulPrecision, modes[policy])
 
 
 def cueq_attention_core(

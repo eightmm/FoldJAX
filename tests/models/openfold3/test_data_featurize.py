@@ -3,8 +3,7 @@
 This is the layer that was missing: the model reads 34 features and nothing in the
 package produced them, so the port could not fold anything from a sequence.
 
-Featurization delegates to upstream's ``InferenceDataset``, so these tests are not
-checking chemistry -- upstream owns that. They check the contract this package adds:
+Featurization uses the portable NumPy preprocessing path. These tests check:
 that every feature the model reads is produced, that ``max_atom_per_token_mask``
 (which the dataset does not emit) is right, that padding preserves the masks, and
 that the result actually drives ``predict``.
@@ -23,8 +22,6 @@ from foldjax.models.openfold3.data import (
     pad_features,
     save_features,
 )
-
-pytestmark = pytest.mark.torch_parity
 
 UBIQUITIN = (
     "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
@@ -49,7 +46,7 @@ def _spec(**chain_extra) -> dict:
 
 
 @pytest.fixture(scope="module")
-def features(openfold3_source: Path) -> dict:
+def features() -> dict:
     return featurize_query(_spec())
 
 
@@ -90,7 +87,7 @@ def test_max_atom_per_token_mask_counts_the_real_atoms(features: dict) -> None:
     np.testing.assert_array_equal(blocks.sum(axis=-1), counts.astype(mask.dtype))
 
 
-def test_msa_files_reach_the_features(openfold3_source: Path, tmp_path: Path) -> None:
+def test_msa_files_reach_the_features(tmp_path: Path) -> None:
     """Without alignments the MSA is the query alone, which is a much weaker input.
 
     The query specification carries per-chain alignment paths, so this checks that
@@ -107,7 +104,7 @@ def test_msa_files_reach_the_features(openfold3_source: Path, tmp_path: Path) ->
     without = featurize_query(_spec())
     with_msa = featurize_query(_spec(main_msa_file_paths=[str(a3m)]))
 
-    assert without["msa"].shape[1] == 1, "expected a single-sequence MSA baseline"
+    assert without["msa"].shape[1] == 2, "expected native query-only MSA rows"
     assert with_msa["msa"].shape[1] > 1, "alignment file did not reach the features"
     assert with_msa["msa_mask"].shape[1] == with_msa["msa"].shape[1]
 
@@ -154,7 +151,7 @@ def test_saved_features_load_without_torch(features: dict, tmp_path: Path) -> No
         np.testing.assert_array_equal(loaded[name], features[name], err_msg=name)
 
 
-def test_a_multi_query_spec_requires_choosing(openfold3_source: Path) -> None:
+def test_a_multi_query_spec_requires_choosing() -> None:
     spec = _spec()
     spec["queries"]["second"] = spec["queries"]["ubq"]
     with pytest.raises(KeyError, match="pass query_id"):
@@ -163,27 +160,23 @@ def test_a_multi_query_spec_requires_choosing(openfold3_source: Path) -> None:
         featurize_query(spec, query_id="absent")
 
 
-def test_selected_query_rejects_native_covalent_bonds(
-    openfold3_source: Path,
-) -> None:
+def test_selected_query_rejects_native_covalent_bonds() -> None:
     spec = _spec()
-    spec["queries"]["ubq"]["covalent_bonds"] = [
-        [["A", 1, 1], ["A", 2, 2]]
-    ]
+    spec["queries"]["ubq"]["covalent_bonds"] = [[["A", 1, 1], ["A", 2, 2]]]
 
     with pytest.raises(ValueError, match="covalent_bonds.*does not apply"):
         featurize_query(spec)
 
 
 def test_unselected_query_msa_filename_is_not_validated(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     stray = tmp_path / "ignored.a3m"
     stray.write_text(f">query\n{UBIQUITIN}\n")
     spec = _spec()
-    spec["queries"]["unused"] = _spec(
-        main_msa_file_paths=[str(stray)]
-    )["queries"]["ubq"]
+    spec["queries"]["unused"] = _spec(main_msa_file_paths=[str(stray)])["queries"][
+        "ubq"
+    ]
 
     selected = featurize_query(spec, query_id="ubq")
 
@@ -191,7 +184,7 @@ def test_unselected_query_msa_filename_is_not_validated(
 
 
 def test_an_unrecognized_alignment_filename_is_refused(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """Upstream skips unknown stems silently and then dies in the parser.
 
@@ -205,7 +198,7 @@ def test_an_unrecognized_alignment_filename_is_refused(
 
 
 def test_a_recognized_stem_in_a_subdirectory_is_accepted(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """The check is on the stem, not the parent directory."""
     nested = tmp_path / "aln"
@@ -217,7 +210,7 @@ def test_a_recognized_stem_in_a_subdirectory_is_accepted(
 
 
 def test_msa_directory_requires_a_supported_accepted_alignment(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     directory = tmp_path / "alignments"
     directory.mkdir()
@@ -229,7 +222,7 @@ def test_msa_directory_requires_a_supported_accepted_alignment(
 
 
 def test_msa_directory_accepts_a_supported_alignment_among_other_files(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     directory = tmp_path / "alignments"
     directory.mkdir()
@@ -243,6 +236,7 @@ def test_msa_directory_accepts_a_supported_alignment_among_other_files(
     assert features["msa"].shape[1] > 1
 
 
+@pytest.mark.torch_parity
 def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -> None:
     """Sequence in, coordinates out.
 
@@ -270,9 +264,7 @@ def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -
     model = randomized(OpenFold3(_reduced_config()), scale=COMPOSITE_SCALE)
     params = map_inference_params(dict(model.state_dict()))
 
-    config = released_config(
-        n_token=n_token, n_atom=n_atom, num_samples=1, num_steps=2
-    )
+    config = released_config(n_token=n_token, n_atom=n_atom, num_samples=1, num_steps=2)
     prediction = predict(
         jax.random.key(0),
         {name: jnp.asarray(value) for name, value in features.items()},
@@ -300,7 +292,7 @@ def _msa_features(tmp_path: Path):
 
 
 def test_subsampling_cuts_rows_and_leaves_the_profile(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """The cut must land on the alignment axis and nowhere else.
 
@@ -329,7 +321,7 @@ def test_subsampling_cuts_rows_and_leaves_the_profile(
 
 
 def test_subsampling_keeps_valid_rows_before_all_masked_filler(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """Upstream's rule ranks rows by validity, not by position.
 
@@ -361,7 +353,7 @@ def test_subsampling_keeps_valid_rows_before_all_masked_filler(
 
 
 def test_subsampling_agrees_with_the_model_side_selection(
-    openfold3_source: Path, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """The host-side rule and the port's jnp ``subsample_msa`` must select alike.
 

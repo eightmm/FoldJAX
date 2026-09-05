@@ -13,8 +13,8 @@ Step 3 takes the self-contained ``.npz`` made by ``openfold3-jax-featurize``.
 Its token and atom sizes are read from the archive; ``--tokens``/``--atoms`` are
 optional assertions for scripts that want to pin the expected bucket.
 
-    openfold3-jax-verify-checkpoint of3_ft3_v1.pt
-    openfold3-jax-verify-checkpoint of3_ft3_v1.pt --batch batch.npz
+    openfold3-jax-verify-checkpoint of3-ob-2025-06-30-174k.pt
+    openfold3-jax-verify-checkpoint of3-ob-2025-06-30-174k.pt --batch batch.npz
 """
 
 from __future__ import annotations
@@ -148,7 +148,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     import jax.numpy as jnp
     import numpy as onp
 
-    from foldjax.models.openfold3.data import normalize_asym_ids, subsample_msa_rows
+    from foldjax.models.openfold3.data import (
+        normalize_asym_ids,
+        prepare_msa_cycle_features,
+    )
     from foldjax.models.openfold3.inference import predict, released_config
 
     config = released_config(
@@ -158,7 +161,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         num_samples=args.samples,
         num_steps=args.steps,
     )
-    batch_np = subsample_msa_rows(batch_np, config.msa_depth)
+    batch_np = prepare_msa_cycle_features(
+        batch_np,
+        config.msa_depth,
+        num_recycles=config.num_recycles,
+        rng=onp.random.default_rng(0),
+    )
     batch_np, n_chain = normalize_asym_ids(batch_np)
     batch = {key: jnp.asarray(value) for key, value in batch_np.items()}
     print(f"\nrunning predict on {jax.devices()[0]} ...")

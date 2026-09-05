@@ -25,6 +25,30 @@ def kabsch_rmsd(p: np.ndarray, q: np.ndarray) -> float:
     return rmsd(pc @ rotation.T, qc)
 
 
+def sample_coordinates(array: np.ndarray, *, num_samples: int) -> np.ndarray:
+    value = np.asarray(array)
+    while value.ndim > 3 and value.shape[0] == 1:
+        value = value[0]
+    if value.ndim == 2 and num_samples == 1:
+        value = value[None, ...]
+    if value.ndim != 3 or value.shape[0] != num_samples:
+        raise ValueError(
+            f"expected ({num_samples}, atoms, 3) coordinates, got {value.shape}"
+        )
+    return value
+
+
+def sample_rmsds(
+    left: np.ndarray, right: np.ndarray, indices: np.ndarray | None = None
+) -> tuple[list[float], list[float]]:
+    if indices is not None:
+        left = left[:, indices]
+        right = right[:, indices]
+    raw = [rmsd(a, b) for a, b in zip(left, right, strict=True)]
+    aligned = [kabsch_rmsd(a, b) for a, b in zip(left, right, strict=True)]
+    return raw, aligned
+
+
 def array_metrics(left: np.ndarray, right: np.ndarray) -> dict[str, float]:
     x = left.astype(np.float64, copy=False).ravel()
     y = right.astype(np.float64, copy=False).ravel()
@@ -59,6 +83,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.999,
         help="fail if any trunk tensor correlates below this with upstream's",
+    )
+    parser.add_argument(
+        "--max-rmsd",
+        type=float,
+        default=0.5,
+        help="fail above this matched-noise all-atom Kabsch RMSD in angstrom",
     )
     parser.add_argument("--bf16-trunk", action="store_true")
     parser.add_argument(
@@ -98,7 +128,11 @@ def main() -> int:
     with np.load(args.torch_dir / "noise.npz") as data:
         init = data["init"].astype(np.float32)
         steps = data["steps"].astype(np.float32)
-    torch_coordinate = np.load(args.torch_dir / "coordinate.npy").astype(np.float32)[0]
+    num_samples = int(init.shape[0])
+    torch_coordinate = sample_coordinates(
+        np.load(args.torch_dir / "coordinate.npy").astype(np.float32),
+        num_samples=num_samples,
+    )
     with np.load(args.torch_dir / "trunk.npz") as data:
         torch_trunk = {key: data[key] for key in data.files}
     with np.load(args.torch_dir / "denoise0.npz") as data:
@@ -124,7 +158,7 @@ def main() -> int:
             params,
             features,
             key=jax.random.PRNGKey(0),
-            num_samples=1,
+            num_samples=num_samples,
             num_sampling_steps=args.steps,
             recycling_steps=args.cycles,
             use_pairformer_scan=not args.no_pairformer_scan,
@@ -151,19 +185,32 @@ def main() -> int:
     warm_seconds = time.perf_counter() - started
     diffusion.diffusion_module_forward = original_denoise
 
-    coordinate = np.asarray(warm_output["coordinate"])[0]
+    coordinate = sample_coordinates(
+        np.asarray(warm_output["coordinate"]), num_samples=num_samples
+    )
     ca = ca_indices(features)
     jax_denoise0 = captured_denoise[0] if captured_denoise else None
     if jax_denoise0 is not None:
-        while jax_denoise0.ndim > 3:
-            jax_denoise0 = jax_denoise0[0]
-        if jax_denoise0.ndim == 3:
-            jax_denoise0 = jax_denoise0[0]
-    torch_d0 = torch_denoise0["x_denoised"]
-    while torch_d0.ndim > 3:
-        torch_d0 = torch_d0[0]
-    if torch_d0.ndim == 3:
-        torch_d0 = torch_d0[0]
+        jax_denoise0 = sample_coordinates(
+            jax_denoise0, num_samples=num_samples
+        )
+    torch_d0 = sample_coordinates(
+        torch_denoise0["x_denoised"], num_samples=num_samples
+    )
+
+    raw_rmsds, kabsch_rmsds = sample_rmsds(coordinate, torch_coordinate)
+    if ca.size >= 3:
+        ca_raw_rmsds, ca_kabsch_rmsds = sample_rmsds(
+            coordinate, torch_coordinate, ca
+        )
+    else:
+        ca_raw_rmsds = ca_kabsch_rmsds = None
+    if jax_denoise0 is None:
+        denoise_raw_rmsds = denoise_kabsch_rmsds = None
+    else:
+        denoise_raw_rmsds, denoise_kabsch_rmsds = sample_rmsds(
+            jax_denoise0, torch_d0
+        )
 
     memory = jax.devices()[0].memory_stats() or {}
     metrics = {
@@ -174,6 +221,7 @@ def main() -> int:
         "msa_rows": int(features["msa"].shape[-2]),
         "cycles": args.cycles,
         "num_steps": args.steps,
+        "samples": num_samples,
         "pairformer_scan": not args.no_pairformer_scan,
         "diffusion_attention_backend": args.diffusion_attention_backend,
         "trunk_single_attention_backend": args.trunk_single_attention_backend,
@@ -181,11 +229,17 @@ def main() -> int:
         "cold_seconds": cold_seconds,
         "warm_seconds": warm_seconds,
         "peak_vram_gb": memory.get("peak_bytes_in_use", 0) / 1e9,
-        "all_atom_raw_rmsd": rmsd(coordinate, torch_coordinate),
-        "all_atom_kabsch_rmsd": kabsch_rmsd(coordinate, torch_coordinate),
+        "all_atom_raw_rmsd": max(raw_rmsds),
+        "all_atom_raw_rmsd_per_sample": raw_rmsds,
+        "all_atom_kabsch_rmsd": max(kabsch_rmsds),
+        "all_atom_kabsch_rmsd_per_sample": kabsch_rmsds,
         "ca_count": int(ca.size),
-        "ca_raw_rmsd": rmsd(coordinate[ca], torch_coordinate[ca]),
-        "ca_kabsch_rmsd": kabsch_rmsd(coordinate[ca], torch_coordinate[ca]),
+        "ca_raw_rmsd": None if ca_raw_rmsds is None else max(ca_raw_rmsds),
+        "ca_raw_rmsd_per_sample": ca_raw_rmsds,
+        "ca_kabsch_rmsd": (
+            None if ca_kabsch_rmsds is None else max(ca_kabsch_rmsds)
+        ),
+        "ca_kabsch_rmsd_per_sample": ca_kabsch_rmsds,
         "determinism_max_abs": float(
             np.max(
                 np.abs(
@@ -204,11 +258,13 @@ def main() -> int:
             np.asarray(warm_output["z_trunk"]), torch_trunk["z_trunk"]
         ),
         "denoise0_raw_rmsd": (
-            None if jax_denoise0 is None else rmsd(jax_denoise0, torch_d0)
+            None if denoise_raw_rmsds is None else max(denoise_raw_rmsds)
         ),
+        "denoise0_raw_rmsd_per_sample": denoise_raw_rmsds,
         "denoise0_kabsch_rmsd": (
-            None if jax_denoise0 is None else kabsch_rmsd(jax_denoise0, torch_d0)
+            None if denoise_kabsch_rmsds is None else max(denoise_kabsch_rmsds)
         ),
+        "denoise0_kabsch_rmsd_per_sample": denoise_kabsch_rmsds,
     }
     (args.out_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
@@ -216,15 +272,25 @@ def main() -> int:
     np.save(args.out_dir / "coordinate.npy", coordinate)
     print(json.dumps(metrics, indent=2))
 
-    verdict = _verdict(metrics, min_correlation=args.min_correlation)
+    verdict = _verdict(
+        metrics,
+        min_correlation=args.min_correlation,
+        max_rmsd=args.max_rmsd,
+    )
     if verdict:
         print("\n".join(["", "PARITY FAILED:", *verdict]))
         return 1
-    print(f"\nPARITY OK: every trunk tensor correlates >= {args.min_correlation:g}.")
+    print(
+        "\nPARITY OK: matched-noise all-atom Kabsch RMSD "
+        f"{metrics['all_atom_kabsch_rmsd']:.4f} A <= {args.max_rmsd:g} A and "
+        f"every trunk tensor correlates >= {args.min_correlation:g}."
+    )
     return 0
 
 
-def _verdict(metrics: dict, *, min_correlation: float) -> list[str]:
+def _verdict(
+    metrics: dict, *, min_correlation: float, max_rmsd: float
+) -> list[str]:
     """Which trunk tensors fall short, as lines to print.
 
     Printing metrics is not checking them. This harness reported a `z_trunk`
@@ -234,6 +300,13 @@ def _verdict(metrics: dict, *, min_correlation: float) -> list[str]:
     answer.
     """
     failures = []
+    coordinate_rmsd = metrics.get("all_atom_kabsch_rmsd")
+    if coordinate_rmsd is None:
+        failures.append("  all_atom_kabsch_rmsd: not reported")
+    elif not coordinate_rmsd <= max_rmsd:
+        failures.append(
+            f"  all-atom Kabsch RMSD {coordinate_rmsd:.4f} A > {max_rmsd:g} A"
+        )
     for name in ("s_inputs", "s_trunk", "z_trunk"):
         correlation = metrics.get(name, {}).get("correlation")
         if correlation is None:

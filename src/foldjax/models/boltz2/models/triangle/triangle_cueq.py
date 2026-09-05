@@ -10,6 +10,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cueq import triangle_multiplication_precision
 from foldjax.models.boltz2.models.triangle.triangle import (
     TriangleDirection,
     TriangleMultiplicationParams,
@@ -98,5 +99,6 @@ def cueq_triangle_multiplication_forward(
         p_out_weight=params["p_out"]["kernel"].T,
         g_out_weight=params["g_out"]["kernel"].T,
         eps=eps,
+        precision=triangle_multiplication_precision(cuex),
         fallback=False,
     )

@@ -41,7 +41,9 @@ def _spec() -> dict:
     }
 
 
-def _torch_reference(spec: dict | None = None) -> dict[str, np.ndarray]:
+def _torch_reference(
+    tmp_path: Path, spec: dict | None = None
+) -> dict[str, np.ndarray]:
     from openfold3.core.data.framework.single_datasets.inference import (
         InferenceDataset,
     )
@@ -57,7 +59,28 @@ def _torch_reference(spec: dict | None = None) -> dict[str, np.ndarray]:
         InferenceQuerySet,
     )
 
-    query_set = InferenceQuerySet.model_validate(_spec() if spec is None else spec)
+    native_spec = _spec() if spec is None else spec
+    native_spec = {
+        "queries": {
+            name: {
+                **query,
+                "chains": [dict(chain) for chain in query["chains"]],
+            }
+            for name, query in native_spec["queries"].items()
+        }
+    }
+    for query_index, query in enumerate(native_spec["queries"].values()):
+        for chain_index, chain in enumerate(query["chains"]):
+            if (
+                str(chain["molecule_type"]).lower() in {"protein", "rna"}
+                and chain.get("main_msa_file_paths") is None
+            ):
+                directory = tmp_path / f"query_{query_index}" / f"chain_{chain_index}"
+                directory.mkdir(parents=True)
+                dummy = directory / "dummy.a3m"
+                dummy.write_text(f">query\n{chain['sequence']}\n")
+                chain["main_msa_file_paths"] = [str(dummy)]
+    query_set = InferenceQuerySet.model_validate(native_spec)
     raw = InferenceDataset(
         InferenceJobConfig(
             query_set=query_set,
@@ -74,9 +97,11 @@ def _torch_reference(spec: dict | None = None) -> dict[str, np.ndarray]:
     }
 
 
-def test_numpy_preprocessing_matches_torch_reference(openfold3_source: Path) -> None:
+def test_numpy_preprocessing_matches_torch_reference(
+    openfold3_source: Path, tmp_path: Path
+) -> None:
     actual = featurize_query(_spec(), seed=0)
-    expected = _torch_reference()
+    expected = _torch_reference(tmp_path)
 
     for name in MODEL_FEATURES:
         if name == "max_atom_per_token_mask":

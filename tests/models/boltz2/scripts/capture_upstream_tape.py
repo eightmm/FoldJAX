@@ -66,9 +66,15 @@ def parse_args() -> argparse.Namespace:
         help="a Boltz job YAML, or a FoldJAX common-schema JSON to translate",
     )
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--n-sample", type=int, default=1)
-    parser.add_argument("--n-step", type=int, default=20)
-    parser.add_argument("--n-cycle", type=int, default=1)
+    parser.add_argument(
+        "--num-samples", "--n-sample", dest="num_samples", type=int, default=1
+    )
+    parser.add_argument(
+        "--num-steps", "--n-step", dest="num_steps", type=int, default=20
+    )
+    parser.add_argument(
+        "--num-recycles", "--n-cycle", dest="num_recycles", type=int, default=1
+    )
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument(
         "--precision",
@@ -362,7 +368,7 @@ def main() -> int:
         str(args.num_recycles),
         "--sampling_steps",
         str(args.num_steps),
-        "--num_samples",
+        "--diffusion_samples",
         str(args.num_samples),
         "--seed",
         str(args.seed),

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bench import drive, run_gap_ablation, run_upstream
+from bench import drive, run_foldjax, run_gap_ablation, run_upstream
 from bench.provenance import (
     CURRENT_RESULT_SCHEMA,
     ArtifactFingerprintError,
@@ -142,6 +142,48 @@ def test_artifact_fingerprints_are_deterministic_and_path_free(
     assert changed != first
     with pytest.raises(ArtifactFingerprintError, match="identity changed"):
         require_unchanged(first, changed)
+
+
+def test_native_input_can_be_fingerprinted_without_a_common_job(
+    tmp_path: Path,
+) -> None:
+    alignment = tmp_path / "query.a3m"
+    alignment.write_text(">query\nACDE\n")
+    native = tmp_path / "openfold3.json"
+    native.write_text(
+        json.dumps(
+            {
+                "queries": {
+                    "query": {
+                        "chains": [
+                            {
+                                "molecule_type": "protein",
+                                "chain_ids": ["A"],
+                                "sequence": "ACDE",
+                                "unpaired_msa_file_paths": [str(alignment)],
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+    )
+    checkpoint = tmp_path / "weights.bin"
+    checkpoint.write_bytes(b"weights")
+
+    identity = artifact_identity(
+        native_input=native,
+        checkpoints={"model": checkpoint},
+    )
+
+    assert set(identity["inputs"]) == {
+        "native.document",
+        "native.reference-0000",
+    }
+    assert run_foldjax._artifact_input_arguments(native, "openfold3") == {
+        "native_input": native
+    }
+    assert run_foldjax._artifact_input_arguments(native, "foldjax") == {"job": native}
 
 
 def test_common_job_fingerprints_every_suffixed_msa_and_template(
@@ -547,7 +589,7 @@ def test_openfold3_identity_binds_biotite_runtime_ccd(
     assert custom_selected == {"openfold3.biotite_components": custom}
 
 
-def test_upstream_boltz_implicit_identity_selects_only_canonical_pickles(
+def test_upstream_boltz_implicit_identity_selects_job_molecules(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -564,6 +606,9 @@ def test_upstream_boltz_implicit_identity_selects_only_canonical_pickles(
     mols.mkdir()
     for token in ("ALA", "UNK"):
         (mols / f"{token}.pkl").write_bytes(token.encode())
+    (mols / "A.pkl").write_bytes(b"rna-a")
+    (mols / "DC.pkl").write_bytes(b"dna-c")
+    (mols / "ATP.pkl").write_bytes(b"ligand-atp")
     unused = mols / "LIG.pkl"
     unused.write_bytes(b"unused")
     native_input = tmp_path / "boltz2_input.yaml"
@@ -578,7 +623,10 @@ def test_upstream_boltz_implicit_identity_selects_only_canonical_pickles(
                             "sequence": "AX",
                             "msa": "empty",
                         }
-                    }
+                    },
+                    {"rna": {"id": ["R"], "sequence": "AA"}},
+                    {"dna": {"id": ["D"], "sequence": "CC"}},
+                    {"ligand": {"id": ["L"], "ccd": "ATP"}},
                 ],
             }
         )
@@ -603,6 +651,9 @@ def test_upstream_boltz_implicit_identity_selects_only_canonical_pickles(
     assert selected == {
         "boltz.canonical-protein.ALA": mols / "ALA.pkl",
         "boltz.canonical-protein.UNK": mols / "UNK.pkl",
+        "boltz.rna.A": mols / "A.pkl",
+        "boltz.dna.DC": mols / "DC.pkl",
+        "boltz.ligand.ATP": mols / "ATP.pkl",
     }
     before = {label: fingerprint_path(path) for label, path in selected.items()}
     unused.write_bytes(b"unused changed")
@@ -664,7 +715,7 @@ def test_upstream_boltz_runtime_inventory_matches_reviewed_source(
     [
         {
             "version": 1,
-            "sequences": [{"ligand": {"id": "L", "ccd": "ATP"}}],
+            "sequences": [{"ligand": {"id": ["L"], "smiles": "CCO"}}],
         },
         {
             "version": 1,
@@ -688,7 +739,7 @@ def test_upstream_boltz_narrow_assets_reject_noncanonical_jobs(
     native_input = tmp_path / "boltz2_input.yaml"
     native_input.write_text(json.dumps(document))
 
-    with pytest.raises(ArtifactFingerprintError, match="pure unmodified protein"):
+    with pytest.raises(ArtifactFingerprintError, match="generated"):
         upstream_implicit_asset_paths("boltz2", native_input=native_input)
 
 
@@ -810,7 +861,7 @@ def test_upstream_openfold3_resolves_biotite_ccd_from_its_venv(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    repo = tmp_path / "openfold3-v031"
+    repo = tmp_path / "openfold3-v050"
     repo.mkdir()
     ccd = tmp_path / "venv/components.bcif"
     ccd.parent.mkdir()
@@ -914,6 +965,32 @@ def test_execution_identity_binds_runtime_control_environment(
     assert name in changed["environment"]
 
 
+def test_boltz_effective_environment_projects_template_parser_defaults() -> None:
+    effective = foldjax_effective_environment({}, model="boltz2")
+    after_template_parse = {
+        **effective,
+        "KMP_DUPLICATE_LIB_OK": "True",
+        "KMP_INIT_AT_FORK": "FALSE",
+    }
+
+    assert execution_identity(
+        effective,
+        timing_state="cold-or-unspecified",
+        traced=False,
+    ) == execution_identity(
+        after_template_parse,
+        timing_state="cold-or-unspecified",
+        traced=False,
+    )
+    assert (
+        foldjax_effective_environment(
+            {"KMP_DUPLICATE_LIB_OK": "user", "KMP_INIT_AT_FORK": "user"},
+            model="boltz2",
+        )["KMP_DUPLICATE_LIB_OK"]
+        == "user"
+    )
+
+
 def test_driver_and_child_project_the_same_alphafold3_environment(
     tmp_path: Path,
     monkeypatch,
@@ -990,6 +1067,7 @@ def test_foldjax_runner_rechecks_live_environment_after_prediction(
     case = SimpleNamespace(name="tiny", length=4, job=job)
     request = SimpleNamespace(
         input=job,
+        input_format="foldjax",
         weights=weights,
         options={},
     )
@@ -1400,10 +1478,38 @@ def test_openfold3_upstream_keeps_the_runner_yaml_seed() -> None:
     assert "seeds:\n    - 101" in runner_yaml.read_text()
 
 
+def test_openfold3_upstream_accepts_an_explicit_runner_yaml(tmp_path: Path) -> None:
+    runner_yaml = tmp_path / "native-defaults.yml"
+    runner_yaml.write_text("experiment_settings:\n  seeds: [101]\n")
+
+    argv, _cwd, _environment = command(
+        "openfold3",
+        Path("query.json"),
+        Path("output"),
+        {"num_samples": 5, "num_steps": 200, "num_recycles": 3},
+        101,
+        runner_yaml,
+    )
+
+    assert Path(argv[argv.index("--runner_yaml") + 1]) == runner_yaml
+
+
+@pytest.mark.parametrize(
+    "field,value", [("seed", 7), ("num_steps", 20), ("num_recycles", 3)]
+)
+def test_openfold3_runner_rejects_misrecorded_schedule(field, value):
+    schedule = {"num_samples": 5, "num_steps": 200, "num_recycles": 10}
+    seed = value if field == "seed" else 101
+    if field != "seed":
+        schedule[field] = value
+    with pytest.raises(ValueError, match="runner seed/recycles/steps"):
+        command("openfold3", Path("query.json"), Path("output"), schedule, seed)
+
+
 def test_upstream_root_can_be_relocated(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FOLDJAX_BENCH_ROOT", str(tmp_path))
 
-    _argv, cwd, _environment = command(
+    _argv, cwd, environment = command(
         "boltz2",
         Path("query.yaml"),
         Path("output"),
@@ -1412,6 +1518,7 @@ def test_upstream_root_can_be_relocated(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert cwd == tmp_path / "boltz"
+    assert environment["PYTHONPATH"] == str(tmp_path / "boltz/src")
 
 
 def test_upstream_provenance_requires_the_exact_tracked_diff(
@@ -1656,6 +1763,14 @@ def test_upstream_rejects_nominal_success_without_structure_or_peak(
             str(output),
             "--json-out",
             str(row),
+            "--seed",
+            "7",
+            "--num-samples",
+            "5",
+            "--num-steps",
+            "17",
+            "--num-recycles",
+            "3",
         ],
     )
 
@@ -1663,6 +1778,12 @@ def test_upstream_rejects_nominal_success_without_structure_or_peak(
     record = json.loads(row.read_text())
     assert record["failed"] is True
     assert expected_reason in record["reason"]
+    assert record["seed"] == 7
+    assert record["schedule"] == {
+        "num_samples": 5,
+        "num_steps": 17,
+        "num_recycles": 3,
+    }
     assert "argv" not in record
     assert "execution_environment" not in record
 

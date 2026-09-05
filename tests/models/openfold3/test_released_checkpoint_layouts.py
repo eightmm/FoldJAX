@@ -30,12 +30,12 @@ def _optional_released_checkpoint() -> Path | None:
         / ".foldjax"
         / "weights"
         / "openfold3"
-        / "of3_ft3_v1.pt",
+        / "of3-ob-2025-06-30-174k.pt",
         repository.parent
         / "openfold3"
         / "openfold3_weights"
         / "checkpoints"
-        / "of3_ft3_v1.pt",
+        / "of3-ob-2025-06-30-174k.pt",
     ]
     return next(
         (path for path in candidates if path is not None and path.is_file()), None
@@ -57,7 +57,7 @@ def test_squeeze_trailing_accepts_the_released_column_vector() -> None:
     """``fourier_emb.w`` ships as ``(c, 1)`` though it is declared ``(c,)``.
 
     Upstream declares the buffer ``torch.empty(c)``, but the released
-    ``of3_ft3_v1`` checkpoint stores it with a trailing axis. Left alone it turns
+    A released checkpoint may store it with a trailing axis. Left alone it turns
     ``x * w`` into a ``[..., c, 1]`` outer product, and the noise-level embedding
     then fails to add to the single representation with
     ``add got incompatible shapes: (5, 76, 384), (256, 1, 384)``.
@@ -164,21 +164,11 @@ def test_the_released_checkpoint_really_stores_a_column_vector(
     point is to notice if a future release changes the layout, not to require
     a 2 GB download to run the suite.
     """
-    from pathlib import Path
-
     from foldjax.models.openfold3.bridge.checkpoint import load_checkpoint
 
-    candidates = [
-        # Inside the checkout since 2026-08-06; the sibling layout came first.
-        openfold3_source / "openfold3_weights" / "checkpoints" / "of3_ft3_v1.pt",
-        openfold3_source.parent
-        / "openfold3_weights"
-        / "checkpoints"
-        / "of3_ft3_v1.pt",
-    ]
-    path = next((c for c in candidates if Path(c).is_file()), None)
+    path = _optional_released_checkpoint()
     if path is None:
-        pytest.skip(f"no released checkpoint at {candidates[0]}")
+        pytest.skip("no OpenBind checkpoint; set OPENFOLD3_CHECKPOINT")
 
     state = load_checkpoint(path)
     keys = [name for name in state if name.endswith("fourier_emb.w")]
@@ -203,7 +193,7 @@ def test_the_released_checkpoint_alias_group_is_completely_prunable() -> None:
     path = _optional_released_checkpoint()
     if path is None:
         pytest.skip(
-            "no released checkpoint; set OPENFOLD3_CHECKPOINT to enable this gate"
+            "no OpenBind checkpoint; set OPENFOLD3_CHECKPOINT to enable this gate"
         )
 
     state = load_checkpoint(path)
@@ -220,11 +210,15 @@ def test_the_released_checkpoint_alias_group_is_completely_prunable() -> None:
     pruned = map_inference_params(state, prefix)
     jax.block_until_ready(pruned)
 
-    assert removed == len(alias_keys) == 767
-    assert alias_bytes == 812_960_240
+    assert removed == len(alias_keys) == 740
+    assert alias_bytes == 812_948_208
     assert not any(key.startswith("sample_diffusion.") for key in state)
-    assert _tree_digest(pruned) == baseline_digest == (
-        "9569dfaf02f752c33753d0231ee9c00e4587fc413ebe2c84c2e62070c404657b",
-        593,
-        1_473_188_784,
+    assert (
+        _tree_digest(pruned)
+        == baseline_digest
+        == (
+            "c31d8b8380ef52a6e11d7b9c08ad8b26ec0279a315c6b12875cf7723a72b5962",
+            596,
+            1_473_177_200,
+        )
     )

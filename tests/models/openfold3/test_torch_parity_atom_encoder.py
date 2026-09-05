@@ -49,7 +49,6 @@ def _encoder(noisy: bool):
         n_transition=2,
         n_query=N_QUERY,
         n_key=N_KEY,
-        use_ada_layer_norm=noisy,
         c_s=C_S if noisy else None,
         c_z=C_Z if noisy else None,
     )

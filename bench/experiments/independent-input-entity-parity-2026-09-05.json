@@ -1,0 +1,349 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "publication": "Partial validation checkpoint, not a release or universal parity assertion",
+  "method": {
+    "experimental_coordinates": false,
+    "features": "Independently constructed; actual reference augmentation and sampler draws controlled",
+    "alignment": "One proper unweighted global Kabsch per paired sample on all 3073 valid atoms; measure each entity instance without refitting",
+    "samples": 5,
+    "steps": 200,
+    "recycles": 3,
+    "precision": "FP32/highest numerical control, not native mixed-precision throughput",
+    "leaf_tolerance": {
+      "atol": 0.0001,
+      "rtol": 0.0001
+    },
+    "entity_acceptance_threshold": null
+  },
+  "input_panel": {
+    "cases": 36,
+    "cells": 216,
+    "scope": "bounded input-kind preprocessing panel, not exhaustive chemistry or five-sample output parity",
+    "provenance_caveat": "Captures include cached unchanged cells and corrected rechecks; not all were created from one immutable commit. Raw failures retained in survey.json and logs.",
+    "summary": {
+      "alphafold3": {
+        "compared": 35,
+        "common_shapes_and_values_exact": 35,
+        "raw_dictionary_exact": 35,
+        "max_ref_pos_abs_error": 0,
+        "value_difference_keys": [],
+        "dtype_difference_keys": [],
+        "other_statuses": {
+          "unsupported_common_schema": 1
+        }
+      },
+      "boltz2": {
+        "compared": 34,
+        "common_shapes_and_values_exact": 4,
+        "raw_dictionary_exact": 0,
+        "max_ref_pos_abs_error": 9.5367431640625e-7,
+        "value_difference_keys": [
+          "ref_pos"
+        ],
+        "dtype_difference_keys": [],
+        "other_statuses": {
+          "both_reject": 1,
+          "unsupported_common_schema": 1
+        }
+      },
+      "esmfold2": {
+        "compared": 34,
+        "common_shapes_and_values_exact": 34,
+        "raw_dictionary_exact": 0,
+        "max_ref_pos_abs_error": 0,
+        "value_difference_keys": [],
+        "dtype_difference_keys": [],
+        "other_statuses": {
+          "unsupported_common_schema": 2
+        }
+      },
+      "opendde": {
+        "compared": 33,
+        "common_shapes_and_values_exact": 33,
+        "raw_dictionary_exact": 0,
+        "max_ref_pos_abs_error": 0,
+        "value_difference_keys": [],
+        "dtype_difference_keys": [
+          "output_atom_chain_id",
+          "output_atom_element",
+          "output_atom_name",
+          "output_atom_res_name",
+          "template_aatype",
+          "template_atom_mask"
+        ],
+        "other_statuses": {
+          "foldjax_rejects_native_accepts": 1,
+          "native_rejects_foldjax_accepts": 1,
+          "unsupported_common_schema": 1
+        }
+      },
+      "openfold3": {
+        "compared": 33,
+        "common_shapes_and_values_exact": 1,
+        "raw_dictionary_exact": 0,
+        "max_ref_pos_abs_error": 0.000001430511474609375,
+        "value_difference_keys": [
+          "ref_pos"
+        ],
+        "dtype_difference_keys": [
+          "output.atom_name",
+          "output.chain_id",
+          "output.element"
+        ],
+        "other_statuses": {
+          "unsupported_common_schema": 3
+        }
+      },
+      "protenix": {
+        "compared": 33,
+        "common_shapes_and_values_exact": 33,
+        "raw_dictionary_exact": 0,
+        "max_ref_pos_abs_error": 0,
+        "value_difference_keys": [],
+        "dtype_difference_keys": [
+          "distogram_rep_atom_mask",
+          "output_atom_chain_id",
+          "output_atom_element",
+          "output_atom_name",
+          "output_atom_res_name",
+          "ref_atom_name_chars",
+          "ref_charge",
+          "ref_element",
+          "ref_mask",
+          "template_aatype"
+        ],
+        "other_statuses": {
+          "foldjax_rejects_native_accepts": 1,
+          "native_rejects_foldjax_accepts": 1,
+          "unsupported_common_schema": 1
+        }
+      }
+    }
+  },
+  "boltz_5sak": {
+    "before": {
+      "global_rmsd": [
+        1.1743919571814823,
+        0.1664523070122369,
+        0.05770420931394313,
+        1.0152831164223977,
+        0.4799990031167267
+      ],
+      "global_max_rmsd": 1.1743919571814823,
+      "entity_rmsd": {
+        "0": [
+          0.4401347415288665,
+          0.1669335249801217,
+          0.05787367696512052,
+          1.0182017386126805,
+          0.48139537321177556
+        ],
+        "1": [
+          14.233100027226891,
+          0.021854560295886588,
+          0.002339942404380473,
+          0.15330631666882405,
+          0.05053066961932585
+        ]
+      },
+      "entity_max_rmsd": {
+        "0": 1.0182017386126805,
+        "1": 14.233100027226891
+      },
+      "atom_counts": [
+        3073,
+        3073,
+        3073,
+        3073,
+        3073
+      ],
+      "coordinates_equal": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "entity_names": {
+        "0": "protein",
+        "1": "ligand"
+      },
+      "scope": "independent preprocessing, actual reference and sampler draws; FP32 control; five paired samples; no experimental coordinates"
+    },
+    "xla_control": {
+      "global_rmsd": [
+        0.00235797674061453,
+        0.0007809855094976054,
+        0.0007173297781590064,
+        0.00039211169980533163,
+        0.003533584595585108
+      ],
+      "global_max_rmsd": 0.003533584595585108,
+      "entity_rmsd": {
+        "0": [
+          0.0023645596310236674,
+          0.0007832494088783983,
+          0.0007194370011616635,
+          0.00039323441061998095,
+          0.003543920031789115
+        ],
+        "1": [
+          0.000532672650035506,
+          0.00009437199560020027,
+          0.00002670292380562528,
+          0.00006406784882555853,
+          0.00026681960714726005
+        ]
+      },
+      "entity_max_rmsd": {
+        "0": 0.003543920031789115,
+        "1": 0.000532672650035506
+      },
+      "atom_counts": [
+        3073,
+        3073,
+        3073,
+        3073,
+        3073
+      ],
+      "coordinates_equal": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "entity_names": {
+        "0": "protein",
+        "1": "ligand"
+      },
+      "scope": "independent preprocessing, actual reference and sampler draws; FP32 control; five paired samples; no experimental coordinates",
+      "arm": "jax-xla-multiplication",
+      "trunk_source": "foldjax"
+    },
+    "patched_fused": {
+      "global_rmsd": [
+        0.0038587997551304144,
+        0.0005033124874080508,
+        0.001049930302213707,
+        0.0007521111992795325,
+        0.0016797856192889672
+      ],
+      "global_max_rmsd": 0.0038587997551304144,
+      "entity_rmsd": {
+        "0": [
+          0.0038697898091862313,
+          0.000504764952479786,
+          0.0010530150062037702,
+          0.0007542808078571251,
+          0.0016846678773138636
+        ],
+        "1": [
+          0.0006888645933113327,
+          0.00006940205593515371,
+          0.000037036882317031735,
+          0.00010474415753363696,
+          0.00018384892314453937
+        ]
+      },
+      "entity_max_rmsd": {
+        "0": 0.0038697898091862313,
+        "1": 0.0006888645933113327
+      },
+      "atom_counts": [
+        3073,
+        3073,
+        3073,
+        3073,
+        3073
+      ],
+      "coordinates_equal": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "entity_names": {
+        "0": "protein",
+        "1": "ligand"
+      },
+      "scope": "independent preprocessing, actual reference and sampler draws; FP32 control; five paired samples; no experimental coordinates",
+      "arm": "jax-patched-cueq",
+      "trunk_source": "foldjax"
+    },
+    "patched_run_metrics": {
+      "tokens": 437,
+      "atoms": 3104,
+      "resolved_atoms": 3073,
+      "msa_depth": 4436,
+      "num_recycles": 3,
+      "num_steps": 200,
+      "samples": 5,
+      "upstream_precision": "32",
+      "upstream_kernels": false,
+      "upstream_subsample_msa": false,
+      "jax_subsample_msa": false,
+      "jax_subsample_depth": null,
+      "msa_rows_injected": false,
+      "trunk_source": "jax",
+      "triangle_backend": "xla",
+      "triangle_multiplication_backend": "cueq",
+      "jax_default_matmul_precision": "highest",
+      "attention_backend": "xla",
+      "trunk_atom_attention_backend": null,
+      "schedule_max_abs": 0,
+      "trunk_seconds": 115.63304531399626,
+      "sample_seconds": 72.1743088120129,
+      "all_atom_rmsd_angstrom": 0.004583825032625947,
+      "all_atom_rmsd_angstrom_per_sample": [
+        0.004583825032625947,
+        0.0007120822559839122,
+        0.0010512083727118899,
+        0.0007810580263288159,
+        0.0016860270829675708
+      ],
+      "all_atom_kabsch_rmsd_angstrom": 0.0038587997551304144,
+      "all_atom_kabsch_rmsd_angstrom_per_sample": [
+        0.0038587997551304144,
+        0.0005033124874080508,
+        0.001049930302213707,
+        0.0007521111992795325,
+        0.0016797856192889672
+      ],
+      "coordinate_max_abs_error_angstrom": 0.1460113525390625,
+      "padded_all_atom_rmsd_angstrom": 0.004560948005362281,
+      "padded_all_atom_rmsd_angstrom_per_sample": [
+        0.004560948005362281,
+        0.0007085547727319689,
+        0.0010459857433818506,
+        0.0007771754505971198,
+        0.0016776006219087355
+      ],
+      "s_inputs": {
+        "correlation": 0.999999999999998,
+        "rmse": 1.4998406784440293e-8,
+        "max_abs": 9.834766387939453e-7
+      },
+      "s_trunk": {
+        "correlation": 0.999999999999634,
+        "rmse": 0.00005181312264701453,
+        "max_abs": 0.00128173828125
+      },
+      "z_trunk": {
+        "correlation": 0.9999999999999372,
+        "rmse": 0.000008417404950029275,
+        "max_abs": 0.000274658203125
+      }
+    }
+  },
+  "remaining": [
+    "All-six-model corrected independent-input n=5 output closure is incomplete.",
+    "Raw dictionary keys/dtypes differ for models other than AlphaFold 3; consumer classifications are in the linked audit.",
+    "Coordinate equality is false; raw component maximum is reported and no entity threshold is retroactively asserted.",
+    "Shared Protenix/OpenDDE precision forwarding has unit coverage but no fresh full-output GPU rerun.",
+    "Historical independent-RNG and shared-feature controls remain separate evidence."
+  ],
+  "documentation": "../../docs/preprocessing-contract-audit.md"
+}

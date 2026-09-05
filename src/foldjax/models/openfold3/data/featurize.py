@@ -55,7 +55,7 @@ MODEL_FEATURES = (
 # template chemistry: rows already present in the source remain active (even
 # when chemically empty, matching the released fixed-width input), while rows
 # appended only for a serving bucket are excluded from the template reduction.
-OPTIONAL_MODEL_FEATURES = ("template_padding_mask",)
+OPTIONAL_MODEL_FEATURES = ("template_padding_mask", "cyclic_mask")
 
 # Private trace-time provenance inserted only by
 # :func:`compact_zero_template_pair_features`.  Presence of this key changes the
@@ -80,11 +80,17 @@ _COMPACT_MSA_MARKER = "_foldjax_compact_msa"
 _COMPACT_MSA_INDICES = "_foldjax_msa_indices"
 COMPACT_MSA_PRIVATE_FEATURES = (_COMPACT_MSA_MARKER, _COMPACT_MSA_INDICES)
 
+# Runtime-only row addresses.  The first axis is recycling, not batch or
+# diffusion sample; keeping that distinction on the host avoids accidentally
+# widening an MSA selection when the sampler widens the batch later.
+_MSA_CYCLE_INDICES = "_foldjax_msa_cycle_indices"
+
 # Private runtime-only features are never part of portable archives, but must
 # survive the backend's model-ABI filter after trusted raw preprocessing.
 PRIVATE_MODEL_FEATURES = (
     _ZERO_TEMPLATE_PAIR_MARKER,
     *COMPACT_MSA_PRIVATE_FEATURES,
+    _MSA_CYCLE_INDICES,
 )
 
 # Produced by the dataset for bookkeeping, not consumed by the model.
@@ -376,9 +382,7 @@ def output_metadata_from_atom_array(
         bond_type = np.empty((0,), dtype="U20")
     else:
         if bonds.ndim != 2 or bonds.shape[1] != 3:
-            raise ValueError(
-                "OpenFold3 atom-array bonds must have shape (n_bond, 3)"
-            )
+            raise ValueError("OpenFold3 atom-array bonds must have shape (n_bond, 3)")
         from biotite.structure import BondType
 
         endpoints = bonds[:, :2].astype(np.int64, copy=False)
@@ -460,9 +464,11 @@ def _max_atom_per_token_mask(
     counts = features["num_atoms_per_token"].astype(np.int64)
     slots = np.arange(max_atoms_per_token)
     present = slots[None, None, :] < counts[..., None]
-    return (present * token_mask[..., None].astype(present.dtype)).reshape(
-        *token_mask.shape[:-1], -1
-    ).astype(np.float32)
+    return (
+        (present * token_mask[..., None].astype(present.dtype))
+        .reshape(*token_mask.shape[:-1], -1)
+        .astype(np.float32)
+    )
 
 
 # Explicit shape semantics from upstream's feature schema. Negative axes keep the
@@ -503,6 +509,7 @@ _TOKEN_AXES: dict[str, tuple[int, ...]] = {
     "token_bonds": (-2, -1),
     "token_index": (-1,),
     "token_mask": (-1,),
+    "cyclic_mask": (-1,),
 }
 
 _ATOM_AXES: dict[str, tuple[int, ...]] = {
@@ -603,13 +610,11 @@ def pad_features(
         raise ValueError(
             "released OpenFold3 requires max_atoms_per_token=23; "
             f"got {max_atoms_per_token}"
-    )
+        )
     tokens = features["token_mask"].shape[-1]
     atoms = features["atom_mask"].shape[-1]
 
-    def declared_size(
-        schemas: Mapping[str, tuple[int, ...]], *, kind: str
-    ) -> int:
+    def declared_size(schemas: Mapping[str, tuple[int, ...]], *, kind: str) -> int:
         sizes = {
             int(np.asarray(features[name]).shape[axes[0]])
             for name, axes in schemas.items()
@@ -662,7 +667,12 @@ def pad_features(
     for name, value in source.items():
         array = np.asarray(value)
         if (
-            name in {_ZERO_TEMPLATE_PAIR_MARKER, _COMPACT_MSA_MARKER}
+            name
+            in {
+                _ZERO_TEMPLATE_PAIR_MARKER,
+                _COMPACT_MSA_MARKER,
+                _MSA_CYCLE_INDICES,
+            }
             and array.ndim == 0
         ):
             # Private provenance markers carry no semantic axis. NumPy does not
@@ -766,9 +776,7 @@ def validate_output_metadata(
     real_atoms = int(np.count_nonzero(atom_mask > 0))
 
     arrays = {name: np.asarray(values[name]) for name in OutputMetadata._fields}
-    object_fields = [
-        name for name, value in arrays.items() if value.dtype.kind == "O"
-    ]
+    object_fields = [name for name, value in arrays.items() if value.dtype.kind == "O"]
     if object_fields:
         raise ValueError(
             "OpenFold3 output metadata cannot use pickle/object arrays: "
@@ -881,9 +889,7 @@ def validate_output_metadata(
 
     bonds = arrays["bonds"]
     if bonds.ndim != 2 or bonds.shape[1] != 2:
-        raise ValueError(
-            "OpenFold3 output metadata bonds must have shape (n_bond, 2)"
-        )
+        raise ValueError("OpenFold3 output metadata bonds must have shape (n_bond, 2)")
     if not np.issubdtype(bonds.dtype, np.integer):
         raise ValueError("OpenFold3 output metadata bonds must contain integers")
     bond_type = arrays["bond_type"]
@@ -1118,6 +1124,97 @@ def subsample_msa_rows(
         array = out.get(name)
         if array is not None:
             out[name] = array[:, order]
+    return out
+
+
+def prepare_msa_cycle_features(
+    features: Mapping[str, np.ndarray],
+    no_subsampled: int | None,
+    *,
+    num_recycles: int,
+    rng: np.random.Generator | None = None,
+    selected_indices: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """Plan native MSA row selection once per recycle without staging all rows.
+
+    ``selected_indices`` is an optional native-captured tape in source-row
+    coordinates.  Otherwise this consumes only ``rng`` (never the diffusion
+    sampler stream) using the upstream valid/invalid rule.
+    """
+    if (
+        isinstance(num_recycles, (bool, np.bool_))
+        or not isinstance(num_recycles, (int, np.integer))
+        or num_recycles < 1
+    ):
+        raise ValueError(f"num_recycles must be at least 1; got {num_recycles}")
+    if no_subsampled is None:
+        if selected_indices is not None:
+            raise ValueError("selected-index tape requires an explicit msa_depth")
+        return dict(features)
+    if (
+        isinstance(no_subsampled, (bool, np.bool_))
+        or not isinstance(no_subsampled, (int, np.integer))
+        or no_subsampled < 1
+    ):
+        raise ValueError(f"msa_depth must be at least 1; got {no_subsampled}")
+    mask = np.asarray(features["msa_mask"])
+    if mask.ndim != 3 or mask.shape[0] != 1:
+        raise ValueError(
+            "OpenFold3 MSA cycle sampling needs msa_mask [1, rows, tokens]"
+        )
+    if not np.isfinite(mask).all():
+        raise ValueError("OpenFold3 MSA mask must be finite for cycle sampling")
+    if not np.isin(mask, (0, 1)).all():
+        raise ValueError("OpenFold3 MSA mask must be binary for cycle sampling")
+    rows = mask.shape[1]
+    if rows == 0:
+        raise ValueError("OpenFold3 MSA must contain at least one row")
+    for name in (*MSA_ROW_FEATURES, _COMPACT_MSA_INDICES):
+        if name in features and np.asarray(features[name]).shape[:3] != mask.shape:
+            raise ValueError(
+                f"OpenFold3 MSA row feature {name} disagrees with msa_mask"
+            )
+    target = min(rows, no_subsampled)
+    if selected_indices is None:
+        generator = rng if rng is not None else np.random.default_rng()
+        valid = np.any(np.isfinite(mask[0]) & (mask[0] != 0), axis=-1)
+        valid_rows = np.flatnonzero(valid)
+        invalid_rows = np.flatnonzero(~valid)
+        selections = []
+        for _ in range(num_recycles):
+            if len(valid_rows) >= no_subsampled:
+                selected = generator.permutation(valid_rows)[:target]
+            else:
+                filler = generator.permutation(invalid_rows)[: target - len(valid_rows)]
+                selected = np.concatenate((valid_rows, filler))
+            selections.append(selected)
+        selected_indices = np.stack(selections)
+    else:
+        selected_indices = np.asarray(selected_indices)
+        if selected_indices.shape != (num_recycles, target):
+            raise ValueError(
+                "OpenFold3 MSA selected-index tape must have shape "
+                f"({num_recycles}, {target}); got {selected_indices.shape}"
+            )
+        if not np.issubdtype(selected_indices.dtype, np.integer):
+            raise ValueError(
+                "OpenFold3 MSA selected-index tape must have integer dtype"
+            )
+        if np.any(selected_indices < 0) or np.any(selected_indices >= rows):
+            raise ValueError("OpenFold3 MSA selected-index tape is outside source rows")
+        if any(np.unique(row).size != target for row in selected_indices):
+            raise ValueError(
+                "OpenFold3 MSA selected-index tape contains duplicate rows"
+            )
+    selected_indices = selected_indices.astype(np.int32, copy=False)
+    union = np.unique(selected_indices)
+    remap = np.searchsorted(union, selected_indices).astype(np.int32, copy=False)
+    out = dict(features)
+    for name in (*MSA_ROW_FEATURES, _COMPACT_MSA_INDICES):
+        value = out.get(name)
+        if value is not None:
+            out[name] = value[:, union]
+    out[_MSA_CYCLE_INDICES] = remap
     return out
 
 

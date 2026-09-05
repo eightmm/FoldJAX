@@ -111,6 +111,38 @@ def test_triangle_attention_matches_torch_with_mask(
     _assert_close(actual, expected, f"TriangleAttention(masked,{starting})")
 
 
+def test_openbind_transposed_triangle_bias_matches_torch_primitives(
+    openfold3_source: Path, randomized
+) -> None:
+    """Exercise the v0.5 ending-node bias orientation with upstream operations."""
+    from openfold3.core.utils.tensor_utils import permute_final_dims
+
+    torch = _torch()
+    module = randomized(_tri_att(starting=True), seed=29)
+    x = torch.randn(1, N, N, C_Z)
+    mask = _pair_mask(torch)
+    with torch.no_grad():
+        normalized = module.layer_norm(x)
+        mask_bias = (module.inf * (mask - 1))[..., :, None, None, :]
+        triangle_bias = permute_final_dims(
+            module.linear_z(normalized), (2, 1, 0)
+        ).unsqueeze(-4)
+        expected = module.mha(
+            q_x=normalized,
+            kv_x=normalized,
+            biases=[mask_bias, triangle_bias],
+        )
+
+    actual = triangle_attention(
+        jnp.asarray(x.numpy()),
+        map_triangle_attention(dict(module.state_dict())),
+        no_heads=HEADS,
+        mask=jnp.asarray(mask.numpy()),
+        transpose_bias=True,
+    )
+    _assert_close(actual, expected, "OpenBind transposed triangle bias")
+
+
 def test_starting_and_ending_node_actually_differ(
     openfold3_source: Path, randomized
 ) -> None:

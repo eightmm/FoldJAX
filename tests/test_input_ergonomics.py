@@ -32,9 +32,7 @@ def _write(path: Path, document: dict[str, Any]) -> Path:
 
 
 def _materialize(source: Path, model: str, out: Path, **kwargs: Any) -> Path:
-    return materialize_native_input(
-        source, capabilities(model), out, seed=0, **kwargs
-    )
+    return materialize_native_input(source, capabilities(model), out, seed=0, **kwargs)
 
 
 def test_a_pasted_block_scalar_sequence_loses_its_whitespace(tmp_path: Path) -> None:
@@ -401,21 +399,18 @@ def test_capabilities_name_what_the_common_schema_cannot_reach() -> None:
     assert "unpaired_msa" in protenix.common_schema_features
     assert "templates" in protenix.common_schema_features
     # ESMFold2 has no template head at all, so there is nothing to report.
-    assert "templates" not in native_only_features(
-        "esmfold2", capabilities("esmfold2")
-    )
+    assert "templates" not in native_only_features("esmfold2", capabilities("esmfold2"))
     # Boltz derives pairing from one per-chain a3m; a paired MSA has nowhere
     # to go and the document is refused rather than quietly halved.
     assert "paired_msa" not in common_schema_features("boltz2")
     assert "templates_unmapped" in common_schema_features("boltz2")
 
-    # OpenDDE contains dormant template machinery, but its runnable released
-    # configuration discards templatesPath. Neither the backend capability nor
-    # the common reach should advertise it; native passthrough retains the
-    # compatibility warning/drop policy.
+    # OpenDDE's released default leaves templates off, but the v1.1.1 route is
+    # reachable through the explicit use_template option. Capabilities describe
+    # what can be selected, while compatibility below enforces the opt-in.
     opendde = capabilities("opendde")
-    assert opendde.supports_templates is False
-    assert "templates" not in opendde.common_schema_features
+    assert opendde.supports_templates is True
+    assert "templates" in opendde.common_schema_features
     assert "templates" not in opendde.native_only_features
 
 
@@ -429,7 +424,7 @@ def test_capabilities_name_what_the_common_schema_cannot_reach() -> None:
                 "sequence": "ACGU",
                 "unpaired_msa": "rna.a3m",
             },
-            "use_rna_msa=False",
+            "use_rna_msa=true",
         ),
         (
             {
@@ -444,7 +439,7 @@ def test_capabilities_name_what_the_common_schema_cannot_reach() -> None:
                     }
                 ],
             },
-            "use_template=False",
+            "use_template=true",
         ),
     ],
 )
@@ -541,6 +536,49 @@ def test_a_mapped_template_reaches_alphafold3_and_protenix(tmp_path: Path) -> No
     assert payload[0]["queryIndices"] == [1, 2, 3]
 
 
+def test_alphafold3_filters_a_named_template_chain_to_a_sidecar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    template = _template_cif(tmp_path)
+    source = _write(
+        tmp_path / "job.json",
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": ["A", "B"],
+                    "sequence": SEQUENCE,
+                    "templates": [
+                        {
+                            "mmcif": str(template),
+                            "chain_id": "Q",
+                            "query_indices": [1],
+                            "template_indices": [2],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    seen: list[tuple[Path, str]] = []
+
+    def filter_template(path: Path, chain_id: str) -> str:
+        seen.append((path, chain_id))
+        return "data_filtered\n_entry.id filtered\n"
+
+    monkeypatch.setattr(
+        "foldjax.input._filter_alphafold3_template_mmcif", filter_template
+    )
+
+    written = _materialize(source, "alphafold3", tmp_path / "af3")
+    native = json.loads(written.read_text())
+    sidecar = Path(native["sequences"][0]["protein"]["templates"][0]["mmcifPath"])
+
+    assert seen == [(template, "Q")]
+    assert sidecar == tmp_path / "af3/templates/entity_0000_template_0000.cif"
+    assert sidecar.read_text() == "data_filtered\n_entry.id filtered\n"
+
+
 def test_an_unmapped_template_reaches_boltz_and_is_refused_elsewhere(
     tmp_path: Path,
 ) -> None:
@@ -553,14 +591,16 @@ def test_an_unmapped_template_reaches_boltz_and_is_refused_elsewhere(
                     "type": "protein",
                     "id": "A",
                     "sequence": SEQUENCE,
-                    "templates": [{"mmcif": str(template)}],
+                    "templates": [{"mmcif": str(template), "chain_id": "Q"}],
                 }
             ]
         },
     )
 
     native = json.loads(_materialize(source, "boltz2", tmp_path / "b").read_text())
-    assert native["templates"] == [{"cif": str(template)}]
+    assert native["templates"] == [
+        {"cif": str(template), "chain_id": ["A"], "template_id": ["Q"]}
+    ]
 
     with pytest.raises(ValueError, match="requires query_indices"):
         _materialize(source, "protenix", tmp_path / "px")

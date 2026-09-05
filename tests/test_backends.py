@@ -949,9 +949,9 @@ def test_opendde_capabilities_match_the_current_native_runtime() -> None:
     capabilities = OpenDDEBackend().capabilities()
     assert capabilities.input_formats == ("native", "opendde", "foldjax")
     assert capabilities.supports_msa is True
-    assert capabilities.supports_templates is False
-    assert "warn and drop" in capabilities.input_requirements["native"].notes
-    assert "reject templates and RNA MSAs" in (
+    assert capabilities.supports_templates is True
+    assert "use_template=true" in capabilities.input_requirements["native"].notes
+    assert "matching native options are true" in (
         capabilities.input_requirements["foldjax"].notes
     )
 
@@ -1524,13 +1524,93 @@ def test_the_vendored_alphafold3_runner_matches_upstream() -> None:
     Skipped without a checkout, like the other upstream comparisons -- the point
     is to notice a divergence on the machine that does the updating.
     """
-    checkout = Path(__file__).resolve().parents[2] / "AlphaFold3" / "run_alphafold.py"
+    checkout = Path(
+        os.environ.get(
+            "ALPHAFOLD3_SOURCE", Path(__file__).resolve().parents[2] / "AlphaFold3"
+        )
+    ) / "run_alphafold.py"
     if not checkout.is_file():
         pytest.skip(f"no AlphaFold 3 checkout at {checkout}")
     assert VENDORED_RUNNER.read_bytes() == checkout.read_bytes(), (
         "vendored run_alphafold.py differs from the checkout; re-copy it and "
         "update the commit in _alphafold3_upstream/NOTICE"
     )
+
+
+def test_the_vendored_alphafold3_tree_matches_the_pinned_release() -> None:
+    """Every departure from v3.0.4 is named and reviewable.
+
+    AlphaFold 3's generated Git version fallback is stale at its own v3.0.4
+    tag, so checking a version string alone would have certified the wrong
+    source.  Compare the complete carried source tree to the exact commit and
+    require the observed byte differences to equal the maintained patch set.
+    """
+
+    import hashlib
+
+    from foldjax.models.alphafold3 import build
+    from foldjax.models.alphafold3.provenance import (
+        PACKAGE_ONLY_FILES,
+        UPSTREAM_COMMIT,
+        UPSTREAM_PATCHES,
+        UPSTREAM_VERSION,
+    )
+
+    checkout = Path(
+        os.environ.get(
+            "ALPHAFOLD3_SOURCE", Path(__file__).resolve().parents[2] / "AlphaFold3"
+        )
+    )
+    reference = checkout / "src" / "alphafold3"
+    if not reference.is_dir():
+        pytest.skip(f"no AlphaFold 3 checkout at {checkout}")
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{commit}"], cwd=checkout, text=True
+    ).strip()
+    assert revision == UPSTREAM_COMMIT
+    assert build.source_version() == UPSTREAM_VERSION == "3.0.4"
+    assert build.source_revision() == revision
+
+    def source_files(root: Path) -> dict[str, Path]:
+        return {
+            path.relative_to(root).as_posix(): path
+            for path in root.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix not in {".pickle", ".pyc", ".so"}
+        }
+
+    carried = source_files(build.source_package())
+    # An editable upstream install copies license assets into the package.
+    # Compare the pinned source tree, not these ignored installation products.
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z", "--", "src/alphafold3"], cwd=checkout, text=True
+    ).split("\0")
+    upstream = {
+        name.removeprefix("src/alphafold3/"): checkout / name
+        for name in tracked
+        if name and not name.startswith("src/alphafold3/test_data/")
+    }
+    assert set(carried) - PACKAGE_ONLY_FILES == set(upstream)
+    assert PACKAGE_ONLY_FILES <= set(carried)
+    differences = {
+        name
+        for name in upstream
+        if hashlib.sha256(carried[name].read_bytes()).digest()
+        != hashlib.sha256(upstream[name].read_bytes()).digest()
+    }
+    assert differences == UPSTREAM_PATCHES
+
+    upstream_root = build.source_package().parent
+    for name in (
+        "CMakeLists.txt",
+        "LICENSE",
+        "OUTPUT_TERMS_OF_USE.md",
+        "WEIGHTS_PROHIBITED_USE_POLICY.md",
+        "WEIGHTS_TERMS_OF_USE.md",
+        "pyproject.toml",
+    ):
+        assert (upstream_root / name).read_bytes() == (checkout / name).read_bytes()
 
 
 def test_openfold3_predicts_from_the_vendored_package() -> None:
@@ -1717,7 +1797,12 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         seen["config_per_sample_token_cutoff_present"] = (
             "per_sample_token_cutoff" in kwargs
         )
-        return SimpleNamespace(msa_depth=1024)
+        return SimpleNamespace(msa_depth=1024, num_recycles=4)
+
+    def prepare_msa_cycle_features(batch, depth, *, num_recycles, rng):
+        seen["msa_cycle_plan"] = (depth, num_recycles)
+        assert isinstance(rng, np.random.Generator)
+        return batch
 
     def unexpected_compaction(batch):
         raise AssertionError("precompacted raw templates were compacted twice")
@@ -1751,7 +1836,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
                 "_foldjax_msa_indices",
             ),
             featurize_query_with_metadata=fake_featurize,
-            subsample_msa_rows=lambda batch, depth: batch,
+            prepare_msa_cycle_features=prepare_msa_cycle_features,
             collapse_identical_templates=lambda batch: batch,
             compact_zero_template_pair_features=unexpected_compaction,
             compact_msa_features=unexpected_compaction,
@@ -1835,7 +1920,8 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         assert seen["output_metadata"] is output_metadata
     else:
         assert "writer_array_budget" not in seen
-    assert seen["preprocess_msa_depth"] == 1024
+    assert seen["preprocess_msa_depth"] is None
+    assert seen["msa_cycle_plan"] == (1024, 4)
     assert seen["compact_empty_template_pairs"] is True
     assert seen["compact_msa"] is True
     np.testing.assert_array_equal(seen["compact_marker"], np.zeros((), np.float32))
@@ -1918,7 +2004,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
                 features,
                 output_metadata,
             ),
-            subsample_msa_rows=lambda batch, depth: batch,
+            prepare_msa_cycle_features=lambda batch, depth, **kwargs: batch,
             collapse_identical_templates=lambda batch: batch,
             compact_zero_template_pair_features=compact_zero_template_pair_features,
             has_atomized_tokens=has_atomized_tokens,
@@ -1929,6 +2015,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             released_config=lambda **kwargs: SimpleNamespace(
                 msa_depth=1024,
                 num_samples=2,
+                num_recycles=4,
             ),
             compile_predict=fake_compile,
         ),

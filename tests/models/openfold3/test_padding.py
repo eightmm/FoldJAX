@@ -98,6 +98,21 @@ def test_padding_plan_reports_real_storage_and_standard_targets() -> None:
     }
 
 
+def test_padding_plan_accepts_compacted_empty_template_geometry() -> None:
+    features = minimal_features(tokens=4, atoms=7, msa_rows=2, templates=4)
+    features["template_pseudo_beta_mask"].fill(0.0)
+    features["template_backbone_frame_mask"].fill(0.0)
+    compact = compact_zero_template_pair_features(
+        collapse_identical_templates(features)
+    )
+
+    plan = _padding_plan(compact, PaddingConfig())
+
+    assert plan.actual["templates"] == 0
+    assert plan.storage["templates"] == 1
+    assert plan.target["templates"] == 1
+
+
 def test_existing_archive_padding_is_never_shrunk() -> None:
     features = minimal_features(tokens=4, atoms=7, msa_rows=2, templates=1)
     padded = pad_features(

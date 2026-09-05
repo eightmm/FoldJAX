@@ -10,7 +10,28 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Validation checkpoint (2026-09-05)
+
+- Recorded independent preprocessing across 202 comparable model/input cells,
+  with unsupported/rejected cells and key/dtype differences kept separate.
+- Fixed OpenFold3 cyclic input/relative positions and Protenix ligand identity
+  in confidence calculation.
+- Forwarded the active JAX precision policy into Boltz and Protenix/OpenDDE
+  fused triangle multiplication. On the five-sample 5SAK FP32 control, maximum
+  global-fit protein/ligand RMSD fell from 1.018202/14.233100 Å to
+  0.003870/0.000689 Å. This is not bitwise equality or all-model output closure.
+- Preserved historical failed controls alongside corrected results in the
+  [validation audit](docs/preprocessing-contract-audit.md). This main-branch
+  checkpoint does not declare a new release or universal scientific parity.
+
 ### Removed
+
+- **OpenFold3 p1/p2 checkpoint compatibility.** The `openfold3` backend now
+  targets only upstream v0.5.0's default OpenBind checkpoint,
+  `of3-ob-2025-06-30-174k.pt`. The managed asset, mapper contract, upstream
+  benchmark worktree, tests, CLI examples, and notebook all use that identity;
+  legacy checkpoints fail before inference instead of selecting old norm or
+  triangle-bias behavior.
 
 - **Decorative images and superseded measurement write-ups.** The repository
   banner, the two port hero images, and seven unreferenced wordmark/logo drafts
@@ -39,6 +60,18 @@ unless it says so here, in its own paragraph.
   reproduction rather than remove clutter.
 
 ### Changed
+
+- **Every model now has an explicit, immutable version target and a dated
+  latest-upstream audit.** The README and `docs/model-versions.md` distinguish
+  source versions and commits from checkpoint revisions, hashes, and
+  Protenix/ESMFold2 profiles. OpenFold3 is a single managed
+  `v0.5.0`/OpenBind target. AlphaFold 3 now carries `v3.0.4` with its complete
+  source drift allowlisted and tested. OpenDDE now tracks `v1.1.1`, including
+  OXT and ion-order behavior, opt-in RNA-MSA/templates, and the isolated
+  antibody-antigen `abag` checkpoint profile. The validation ledger keeps
+  feature, matched-RNG model-core, and independent-sample claims separate;
+  benchmark manifests remain authoritative for the upstream executable used by
+  an individual comparison.
 
 - **The documented CLI and Python surfaces now match the real ones.** Checked by
   walking the argparse tree and `PredictionRequest`'s fields rather than by

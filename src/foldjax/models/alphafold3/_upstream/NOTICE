@@ -1,6 +1,23 @@
-This directory vendors the AlphaFold 3 source code, unmodified, from
+This directory is based on AlphaFold 3 v3.0.4, commit
+85c4d20505fd5cef05eac22b534d4e793971ae69, from
 https://github.com/google-deepmind/alphafold3 (DeepMind Technologies Limited),
 licensed under the Apache License, Version 2.0 -- see LICENSE beside this file.
+
+All carried Python/C++ source files match that commit byte-for-byte except the
+following explicit FoldJAX runtime patches:
+
+- alphafold3/constants/chemical_components.py
+- alphafold3/data/pipeline.py
+- alphafold3/model/confidences.py
+- alphafold3/model/features.py
+- alphafold3/model/model.py
+- alphafold3/model/network/diffusion_head.py
+- alphafold3/structure/chemical_components.py
+- alphafold3/structure/parsing.py
+
+They redirect generated chemistry and bounded caches to the managed runtime,
+isolate per-job cache/RNG state, and bound sample/confidence memory. The exact
+allowlist is enforced against an upstream checkout by the test suite.
 
 Model parameters are not included and are not redistributable: they are
 licensed separately by Google under the terms at
@@ -8,4 +25,6 @@ https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 and must be requested there, then placed in the FoldJAX weight store.
 
 Excluded from the vendored tree: test data, the generated chemical-component
-pickles (built into the FoldJAX store instead), and compiled artifacts.
+pickles (built into the FoldJAX store instead), and compiled artifacts. Copies
+of the repository-level parameter/output terms are also retained inside the
+package so they remain present in built wheels.

@@ -35,6 +35,7 @@ pytestmark = pytest.mark.torch_parity
 
 RTOL = 1e-4
 ATOL = 1e-4
+COMPOSITE_ATOM_HEAD_ATOL = ATOL
 
 # Coordinates are compared with a looser absolute tolerance than the logits.
 # The rollout starts at ``noise_schedule[0]`` -- 2560 for the released schedule --
@@ -209,7 +210,16 @@ def test_confidence_matches_at_released_depths(
     released_reference, released_prediction, field: str, key: str
 ) -> None:
     _state, _batch, _draws, output, _n_atom, _architecture = released_reference
-    _close(getattr(released_prediction, field), output[key], key)
+    _close(
+        getattr(released_prediction, field),
+        output[key],
+        key,
+        atol=(
+            COMPOSITE_ATOM_HEAD_ATOL
+            if field == "experimentally_resolved_logits"
+            else ATOL
+        ),
+    )
 
 
 def test_the_deep_stacks_actually_contribute(released_prediction) -> None:

@@ -2,8 +2,14 @@ OpenDDE JAX
 Copyright 2026
 
 This product includes software developed by Aureka AI Research for OpenDDE
-(https://github.com/aurekaresearch/OpenDDE), licensed under Apache-2.0.
+(https://github.com/aurekaresearch/OpenDDE), licensed under Apache-2.0. The
+implemented source target is OpenDDE v1.1.1, commit
+ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f.
+
+Model parameters are not included. The managed `released` and `abag` profiles
+refer to `opendde.pt` and `opendde_abag.pt`, respectively, at Hugging Face
+revision eddd563ce96571f784012edd8f045181c8f8627d. They remain subject to the
+publisher's terms.
 
 This product reuses JAX components from Protenix-JAX, also licensed under
 Apache-2.0.
-

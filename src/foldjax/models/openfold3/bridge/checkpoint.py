@@ -3,8 +3,8 @@
 Reads an OpenFold3 checkpoint into a flat ``{key: array}`` mapping that the
 mappers in ``torch_mapping`` consume. Loading is deliberately separated from
 mapping so a checkpoint can be *inspected* before any parameter layout is
-assumed. The released p1 checkpoint uses unfused triangular multiplication;
-the composite mapper and synthetic gates also support upstream's fused layout.
+assumed. FoldJAX targets OpenFold3 v0.5.0's OpenBind checkpoint and accepts
+either triangular-multiplication storage layout used by that model family.
 
 ``safetensors`` uses its native NumPy loader. ``.pt``/``.ckpt`` uses FoldJAX's
 restricted torch-archive reader, which reconstructs tensors as NumPy arrays and

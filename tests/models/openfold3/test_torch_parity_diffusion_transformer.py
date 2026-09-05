@@ -46,9 +46,11 @@ def _assert_close(actual: jnp.ndarray, expected, name: str) -> None:
 
 
 def _apb():
-    from openfold3.core.model.layers.attention_pair_bias import AttentionPairBias
+    from openfold3.core.model.layers.attention_pair_bias import (
+        DiffusionAttentionPairBias,
+    )
 
-    return AttentionPairBias(
+    return DiffusionAttentionPairBias(
         c_q=C_TOKEN,
         c_k=C_TOKEN,
         c_v=C_TOKEN,
@@ -56,7 +58,6 @@ def _apb():
         c_z=C_Z,
         c_hidden=C_HIDDEN,
         no_heads=HEADS,
-        use_ada_layer_norm=True,
         gating=True,
         inf=1e9,
     )
@@ -72,7 +73,6 @@ def _kwargs() -> dict:
         "c_hidden": C_HIDDEN,
         "no_heads": HEADS,
         "n_transition": 2,
-        "use_ada_layer_norm": True,
         "n_query": None,
         "n_key": None,
         "inf": 1e9,
@@ -90,9 +90,7 @@ def _block():
 def _stack(no_blocks: int):
     from openfold3.core.model.layers.diffusion_transformer import DiffusionTransformer
 
-    return DiffusionTransformer(
-        no_blocks=no_blocks, blocks_per_ckpt=None, **_kwargs()
-    )
+    return DiffusionTransformer(no_blocks=no_blocks, blocks_per_ckpt=None, **_kwargs())
 
 
 def _inputs(torch):
@@ -130,9 +128,8 @@ def test_ada_variant_has_its_own_layout(openfold3_source: Path) -> None:
     assert "layer_norm_a.linear_g.weight" in state  # AdaLN, not a plain norm
     assert "linear_ada_out.weight" in state
     assert "linear_ada_out.bias" in state
-    # Scale-only pair norm here, unlike the trunk variant.
-    assert "layer_norm_z.weight" in state
-    assert "layer_norm_z.bias" not in state
+    # OpenBind normalizes z once in the enclosing transformer stack.
+    assert "layer_norm_z.weight" not in state
 
 
 def test_diffusion_transformer_block_matches_torch(
@@ -164,9 +161,7 @@ def test_transition_consumes_the_updated_activation(
     params = map_diffusion_transformer_block(dict(module.state_dict()))
     ja, js, jz = (jnp.asarray(x.numpy()) for x in (a, s, z))
     jmask = jnp.asarray(mask.numpy())
-    actual = diffusion_transformer_block(
-        ja, js, jz, params, no_heads=HEADS, mask=jmask
-    )
+    actual = diffusion_transformer_block(ja, js, jz, params, no_heads=HEADS, mask=jmask)
 
     from foldjax.models.openfold3.models.primitives import conditioned_transition_block
 
@@ -200,6 +195,49 @@ def test_diffusion_transformer_matches_torch(
         mask=jnp.asarray(mask.numpy()),
     )
     _assert_close(actual, expected, f"DiffusionTransformer({no_blocks})")
+
+
+def test_openbind_stack_owns_the_only_pair_norm(
+    openfold3_source: Path, randomized
+) -> None:
+    """OpenBind's pair norm is mapped once, before all transformer blocks."""
+    torch = _torch()
+    module = randomized(_stack(3), seed=23)
+    a, s, z, mask = _inputs(torch)
+    with torch.no_grad():
+        expected = module(a=a, s=s, z=z, mask=mask)
+
+    state = dict(module.state_dict())
+    assert "layer_norm_z.weight" in state
+    assert not any(
+        key.endswith("attention_pair_bias.layer_norm_z.weight") for key in state
+    )
+    params = map_diffusion_transformer(state)
+    assert all(
+        not hasattr(block.attention_pair_bias, "layer_norm_z")
+        for block in params.blocks
+    )
+
+    actual = diffusion_transformer(
+        jnp.asarray(a.numpy()),
+        jnp.asarray(s.numpy()),
+        jnp.asarray(z.numpy()),
+        params,
+        no_heads=HEADS,
+        mask=jnp.asarray(mask.numpy()),
+    )
+    _assert_close(actual, expected, "OpenBind stack-level pair norm")
+
+
+def test_mapper_rejects_a_legacy_stack_without_the_openbind_norm(
+    openfold3_source: Path,
+) -> None:
+    _torch()
+    state = dict(_stack(1).state_dict())
+    del state["layer_norm_z.weight"]
+
+    with pytest.raises(KeyError, match="layer_norm_z.weight"):
+        map_diffusion_transformer(state)
 
 
 def test_block_state_dict_layout(openfold3_source: Path) -> None:

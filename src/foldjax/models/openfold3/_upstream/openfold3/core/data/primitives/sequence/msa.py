@@ -1,4 +1,5 @@
 # Copyright 2026 AlQuraishi Laboratory
+# Modified by FoldJAX for portable v0.5.0 input parity; see the port NOTICE.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1213,7 +1214,7 @@ def calculate_profile(
         # Flatten subarray (size = n_rows * block_n_cols)
         val_indices = msa_chunk.ravel()  # row-major flatten by default
         # Build local col_indices of the same flattened shape
-        col_indices_local = np.repeat(np.arange(block_n_cols), n_rows)
+        col_indices_local = np.tile(np.arange(block_n_cols), n_rows)
         # Now each col in this chunk is offset from the "absolute" col_start, but for
         # bincount we just care about "relative" indexing from 0...(block_n_cols-1). We
         # combine into a single 1D array: offset + val Where offset = col_indices_local

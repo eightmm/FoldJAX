@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
+
+WORKSPACE = Path(__file__).resolve().parents[5]
 
 
 def load_features(path: Path, device: torch.device) -> dict:
@@ -35,8 +38,23 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--features", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=WORKSPACE / "protenix",
+        help="upstream Protenix checkout; defaults to a sibling of this repo",
+    )
+    parser.add_argument(
+        "--model-name", default="protenix_base_default_v1.0.0"
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="checkpoint path; defaults to <repo>/checkpoint/<model-name>.pt",
+    )
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--cycles", type=int, default=10)
+    parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--seed", type=int, default=101)
     return parser.parse_args()
 
@@ -44,9 +62,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault(
-        "PROTENIX_ROOT_DIR", str(Path(__file__).resolve().parents[2] / "protenix")
-    )
+    repo = args.repo.resolve()
+    if not (repo / "protenix").is_dir():
+        raise FileNotFoundError(f"invalid Protenix checkout: {repo}")
+    sys.path.insert(0, str(repo))
+    os.environ["PROTENIX_ROOT_DIR"] = str(repo)
     os.environ.setdefault("LAYERNORM_TYPE", "torch")
 
     from configs.configs_base import configs as configs_base
@@ -61,7 +81,9 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
-    model_name = "protenix_base_default_v1.0.0"
+    model_name = args.model_name
+    if model_name not in model_configs:
+        raise ValueError(f"unknown upstream Protenix model: {model_name}")
     inference_configs["model_name"] = model_name
     configs = parse_configs(
         configs={**configs_base, **{"data": data_configs}, **inference_configs},
@@ -69,7 +91,7 @@ def main() -> None:
     )
     configs.update(ConfigDict(model_configs[model_name]))
     configs.model.N_cycle = args.cycles
-    configs.sample_diffusion.N_sample = 1
+    configs.sample_diffusion.N_sample = args.samples
     configs.sample_diffusion.N_step = args.steps
     configs.dtype = "fp32"
     configs.use_msa = True
@@ -83,9 +105,9 @@ def main() -> None:
     configs.sample_diffusion.guidance.enable = False
     device = torch.device("cuda:0")
     model = Protenix(configs).to(device)
-    checkpoint_path = (
-        Path(os.environ["PROTENIX_ROOT_DIR"]) / "checkpoint" / (model_name + ".pt")
-    )
+    checkpoint_path = args.checkpoint or repo / "checkpoint" / (model_name + ".pt")
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"missing Protenix checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint["model"]
     if next(iter(state_dict)).startswith("module."):
@@ -98,6 +120,12 @@ def main() -> None:
     features.pop("d_lm", None)
     features.pop("v_lm", None)
     features.pop("pad_info", None)
+    # Managed FoldJAX archives keep the 139-channel relative-position tensor in
+    # an exact compact form.  The upstream model normally materializes ``relp``
+    # in ``forward``; this stage-level harness calls ``get_pairformer_output``
+    # directly, so reproduce that boundary here when the dense tensor is absent.
+    if "relp" not in features:
+        features = model.relative_position_encoding.generate_relp(features)
     features = update_input_feature_dict(features)
     # The JAX static-feature path consumes all materialized MSA rows. Pin the
     # upstream sampler to the same full-depth, ordered contract for parity.
@@ -164,7 +192,7 @@ def main() -> None:
                 pair_z=None,
                 p_lm=None,
                 c_l=None,
-                N_sample=1,
+                N_sample=args.samples,
                 noise_schedule=noise_schedule,
                 inplace_safe=True,
                 enable_efficient_fusion=False,
@@ -195,7 +223,9 @@ def main() -> None:
     np.savez_compressed(args.out_dir / "denoise0.npz", **denoise0)
     metrics = {
         "backend": "torch",
-        "checkpoint": "protenix_base_default_v1.0.0",
+        "checkpoint": model_name,
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "source_path": str(repo),
         "precision": "fp32_tf32_disabled",
         "tokens": int(features["residue_index"].shape[-1]),
         "atoms": int(features["atom_to_token_idx"].shape[-1]),
@@ -203,6 +233,7 @@ def main() -> None:
         "msa_sampling": "full_depth_topk",
         "cycles": args.cycles,
         "num_steps": args.steps,
+        "samples": args.samples,
         "trunk_seconds": trunk_seconds,
         "diffusion_seconds": diffusion_seconds,
         "warm_compute_seconds": trunk_seconds + diffusion_seconds,

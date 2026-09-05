@@ -1954,7 +1954,11 @@ class AtomCrossAtt:
     # dummy layout entries the key gathers require.
     key_source_size = max(padding_shapes.num_atoms, keys_subset_size)
     padded_key_layout = flat_layout.copy_and_pad_to((key_source_size,))
-    key_bound = max(num_atoms, keys_subset_size)
+    key_bound = (
+        max(num_atoms, keys_subset_size)
+        if padding_shapes.num_atoms < keys_subset_size
+        else num_atoms
+    )
     # Create initial gather indices (contain out-of-bound indices)
     subset_centers = np.arange(
         queries_subset_size / 2, padding_shapes.num_atoms, queries_subset_size

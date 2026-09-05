@@ -6,6 +6,11 @@ same FoldJAX interface. The useful comparison is against each model's own
 reference repository, on the same job, under the same nominal schedule, measured the
 same way.
 
+The [model version ledger](model-versions.md) gives the exact source and
+checkpoint target implemented by each port. A benchmark's upstream checkout is
+a separate identity and is taken from that row's manifest, never inferred from
+the short model name.
+
 That is what [`bench/`](../bench/) does. The current harness reruns one row per
 process and records byte identities for its external inputs and checkpoints,
 plus upstream source/runtime identity where applicable. The checked-in table
@@ -35,8 +40,9 @@ The recorded upstream OpenFold3 rows passed 0.3.1's `--num_model_seeds 1`; that
 flag overrides the YAML list and generated its sole seed from 42
 (`2746317213`) instead of using 101. Their shapes, schedule, time, and memory
 remain valid, but their confidence values are not seed-matched to FoldJAX. The
-harness now omits that flag and takes `[101]` from `openfold3_runner.yml`; the
-upstream OpenFold3 confidence cells below carry a dagger until re-measured.
+harness now targets v0.5.0/OpenBind, omits that flag, and takes `[101]` from
+`openfold3_runner.yml`; the upstream OpenFold3 confidence cells below carry a
+dagger until the current route is re-measured.
 Those historical upstream rows also left `--use_templates=true` despite having
 no template input, so their wall times include avoidable template/CCD
 initialization. Current runs pass `--use_templates false`; the old timings stay

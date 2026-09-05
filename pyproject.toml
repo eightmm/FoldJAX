@@ -145,7 +145,7 @@ alphafold3 = [
 # No backend needs a package from outside this file. AlphaFold 3's source is
 # vendored at `foldjax.models.alphafold3._upstream` (its compiled half is built
 # in the writable FoldJAX runtime store on first use). Publisher-authorized
-# public parameters, including OpenFold3 p1, are downloaded with
+# public parameters, including OpenFold3 v0.5.0 OpenBind, are downloaded with
 # `foldjax weights fetch`; AlphaFold 3 parameters are placed manually under
 # their publisher's terms.
 

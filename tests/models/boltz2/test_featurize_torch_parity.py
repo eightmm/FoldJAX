@@ -24,6 +24,24 @@ _JOB = {
     "sequences": [{"protein": {"id": ["A"], "sequence": "LSDEDFKAV", "msa": "empty"}}],
 }
 
+_ALL_MODALITIES_JOB = {
+    "version": 1,
+    "sequences": [
+        {
+            "protein": {
+                "id": ["A"],
+                "sequence": "ACDEFGHIK",
+                "msa": "empty",
+            }
+        },
+        {"dna": {"id": ["D"], "sequence": "ACGTAC"}},
+        {"rna": {"id": ["R"], "sequence": "ACGUAC"}},
+        {"ligand": {"id": ["C"], "ccd": "ATP"}},
+        {"ligand": {"id": ["S"], "smiles": "CC(=O)N"}},
+        {"ligand": {"id": ["I"], "ccd": "MG"}},
+    ],
+}
+
 # The random roto-translation applied to the reference conformers is unseeded,
 # so it differs between two runs of torch itself. The model is trained to be
 # invariant to it.
@@ -65,14 +83,21 @@ def _featurize(job: Path, out: Path, backend: str, mols: Path) -> dict:
     return dict(np.load(f"{out}.npz"))
 
 
-def test_the_numpy_layer_reproduces_the_torch_featurizer(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "job_spec",
+    [_JOB, _ALL_MODALITIES_JOB],
+    ids=["protein", "protein-dna-rna-ccd-smiles-ion"],
+)
+def test_the_numpy_layer_reproduces_the_torch_featurizer(
+    tmp_path: Path, job_spec: dict
+) -> None:
     pytest.importorskip("torch")
     mols = weights_dir("boltz2") / "mols"
     if not mols.is_dir():
         pytest.skip("boltz2 molecule directory not fetched")
 
     job = tmp_path / "job.yaml"
-    job.write_text(json.dumps(_JOB))
+    job.write_text(json.dumps(job_spec))
 
     with_torch = _featurize(job, tmp_path / "torch", "torch", mols)
     with_numpy = _featurize(job, tmp_path / "numpy", "numpy", mols)

@@ -54,6 +54,11 @@ PROTENIX_V2_PROFILE = "v2"
 PROTENIX_BASE_20250630_PROFILE = "base-20250630"
 PROTENIX_MINI_ESM_PROFILE = "mini-esm-v0.5.0"
 PROTENIX_MINI_ISM_PROFILE = "mini-ism-v0.5.0"
+OPENDDE_ABAG_PROFILE = "abag"
+
+# Alternate checkpoints use isolated storage roots so their conversion
+# manifests and native files cannot overwrite the released default.
+_OPENDDE_ABAG_MODEL = "opendde-abag"
 
 # Publisher SHA-256 identities for both Protenix mini profiles and their exact
 # ESM/ISM encoders. Conversion manifests bind native outputs to these values.
@@ -322,7 +327,10 @@ def _convert_opendde(model: str, source: Path) -> Path:
         save_native_weights,
     )
 
-    out = weights_dir(model) / "opendde.jax"
+    abag = model == _OPENDDE_ABAG_MODEL
+    checkpoint_name = "opendde_abag.pt" if abag else "opendde.pt"
+    native_name = "opendde_abag.jax" if abag else "opendde.jax"
+    out = weights_dir(model) / native_name
     out.parent.mkdir(parents=True, exist_ok=True)
     # Written uncompressed and published atomically for the same reason as the
     # Protenix archive above.
@@ -331,7 +339,9 @@ def _convert_opendde(model: str, source: Path) -> Path:
     ) as scratch:
         staged = Path(scratch) / out.name
         save_native_weights(
-            staged, load_torch_checkpoint(source / "opendde.pt"), compress=False
+            staged,
+            load_torch_checkpoint(source / checkpoint_name),
+            compress=False,
         )
         if not _nonempty_file(staged):
             raise RuntimeError("OpenDDE conversion produced empty native weights")
@@ -670,6 +680,16 @@ _TEMPLATE_OBSOLETE = Download(
     shared=True,
 )
 
+_OPENDDE_ABAG = Download(
+    name="opendde_abag.pt",
+    url=(
+        "https://huggingface.co/aurekaresearch/OpenDDE/resolve/"
+        "eddd563ce96571f784012edd8f045181c8f8627d/opendde_abag.pt"
+    ),
+    sha256="5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d",
+    size=2_625_271_509,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _ProtenixVariant:
@@ -792,7 +812,11 @@ _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_V2_MODEL] = PROTENIX_V2_PROFILE
 def _public_model_name(model: str) -> str:
     """Hide profile-specific storage roots from user-facing model labels."""
 
-    return "protenix" if model in _PROTENIX_PROFILE_BY_INTERNAL_MODEL else model
+    if model in _PROTENIX_PROFILE_BY_INTERNAL_MODEL:
+        return "protenix"
+    if model == _OPENDDE_ABAG_MODEL:
+        return "opendde"
+    return model
 
 
 def _stage_esmfold2(
@@ -1608,34 +1632,32 @@ REGISTRY: dict[str, ModelAssets] = {
             "academic and commercial use)"
         ),
         downloads=(
-            # OpenFold3 tag 0.3.1's own download script uses this unsigned
-            # bucket/key. Version 0.4 explicitly breaks p1 checkpoint
-            # compatibility, so this must not track upstream's moving default.
+            # OpenFold3 v0.5.0 names this OpenBind checkpoint as its default and
+            # publishes it through the official openfold3-data bucket.
             Download(
-                name="of3_ft3_v1.pt",
+                name="of3-ob-2025-06-30-174k.pt",
                 url=(
-                    "https://openfold.s3.amazonaws.com/"
-                    "openfold3_params/of3_ft3_v1.pt"
+                    "https://openfold3-data.s3.amazonaws.com/"
+                    "openfold3-parameters/of3-ob-2025-06-30-174k.pt"
                 ),
                 sha256=(
-                    "aedd8f3eb814e3926c8974ef34c9499d"
-                    "f224443f173b7e396c97684da6e3eeb6"
+                    "bd43301c011d5f87580d3e8b54865886"
+                    "9433e4488399feb03035ba248f8e29e4"
                 ),
-                size=2_288_027_095,
+                size=2_287_872_989,
             ),
         ),
-        native="of3_ft3_v1.pt",
-        requires=("of3_ft3_v1.pt",),
+        native="of3-ob-2025-06-30-174k.pt",
+        requires=("of3-ob-2025-06-30-174k.pt",),
         convert=_stage_single_published_file,
-        conversion_sources=("of3_ft3_v1.pt",),
-        conversion_schema="openfold3-public-p1-stage-v1",
-        notes="FoldJAX implements OpenFold3 p1 and fetches its exact public "
-        "of3_ft3_v1.pt checkpoint from the publisher's unsigned S3 bucket. "
-        "Upstream p2 and OpenBind v0.5 checkpoints target newer, incompatible "
-        "architectures and are not substituted. The port reads p1 directly "
-        "with FoldJAX's built-in torch-archive reader, so loading needs no "
-        "PyTorch installation. A compatible p1 file or safetensors export can "
-        "still be supplied explicitly with --weights.",
+        conversion_sources=("of3-ob-2025-06-30-174k.pt",),
+        conversion_schema="openfold3-openbind-v050-stage-v1",
+        notes="FoldJAX targets OpenFold3 v0.5.0 and its default public "
+        "OpenBind checkpoint, of3-ob-2025-06-30-174k.pt, from the publisher's "
+        "openfold3-data bucket. Legacy p1 and p2 checkpoints are rejected; "
+        "FoldJAX does not silently reinterpret them as OpenBind. The native "
+        "checkpoint is read directly with FoldJAX's restricted torch-archive "
+        "reader, so loading needs no PyTorch installation.",
     ),
     "boltz2": ModelAssets(
         model="boltz2",
@@ -1692,6 +1714,30 @@ REGISTRY: dict[str, ModelAssets] = {
         "torch-free checkpoint reader and NumPy featurizer.",
     ),
 }
+
+
+def _opendde_abag_assets() -> ModelAssets:
+    """The released ABAG checkpoint in its own conversion/provenance root."""
+
+    base = REGISTRY["opendde"]
+    shared = tuple(item for item in base.downloads if item.shared)
+    native = "opendde_abag.jax"
+    return dataclasses.replace(
+        base,
+        model=_OPENDDE_ABAG_MODEL,
+        downloads=(_OPENDDE_ABAG, *shared),
+        native=native,
+        requires=(native,),
+        in_default_setup=False,
+        conversion_sources=("opendde_abag.pt",),
+        conversion_schema="opendde-abag-native-v1",
+        requires_manifest=True,
+        notes=(
+            "OpenDDE's released antibody-antigen-optimized checkpoint. It uses "
+            "the same 655,791,538-parameter architecture and source path as "
+            "the general-purpose release, but is an opt-in scientific target."
+        ),
+    )
 
 
 def _protenix_v2_assets() -> ModelAssets:
@@ -1808,6 +1854,8 @@ def available_profiles(model: str) -> tuple[str, ...]:
         )
     if normalized == "esmfold2":
         return (RELEASED_PROFILE, STRUCTURE_ONLY_PROFILE)
+    if normalized == "opendde":
+        return (RELEASED_PROFILE, OPENDDE_ABAG_PROFILE)
     if normalized == "protenix":
         return (
             RELEASED_PROFILE,
@@ -1832,6 +1880,14 @@ def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
             )
         normalized = "protenix"
         profile = internal_profile
+    elif model == _OPENDDE_ABAG_MODEL:
+        if profile is not None and profile != OPENDDE_ABAG_PROFILE:
+            raise ValueError(
+                f"internal asset root {model!r} belongs to profile "
+                f"{OPENDDE_ABAG_PROFILE!r}, not {profile!r}"
+            )
+        normalized = "opendde"
+        profile = OPENDDE_ABAG_PROFILE
     else:
         normalized = normalize_model_name(model)
     if normalized not in REGISTRY:
@@ -1856,6 +1912,9 @@ def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
         if selected == PROTENIX_BASE_20250630_PROFILE:
             return _protenix_base_20250630_assets()
         return _protenix_variant_assets(selected)
+
+    if normalized == "opendde":
+        return _opendde_abag_assets()
 
     downloads = tuple(
         item for item in spec.downloads if not item.name.startswith("esmc/")

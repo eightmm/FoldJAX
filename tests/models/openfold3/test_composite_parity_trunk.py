@@ -86,7 +86,7 @@ def reference(request, openfold3_source: Path, randomized):
     # output, so a single cycle would not exercise the recycling projections.
     num_recycles = request.param
     with torch.no_grad():
-        s_input, s, z = model.run_trunk(batch=batch, num_recycles=num_recycles)
+        s_input, s, z = model.run_trunk(batch=batch, num_cycles=num_recycles)
     return model, batch, (s_input, s, z), num_recycles
 
 

@@ -149,7 +149,8 @@ def test_no_field_is_left_unchecked(upstream) -> None:
     foldjax_only = {
         "n_token",
         "n_atom",
-        "pair_chunk_size",
+            "pair_chunk_size",
+            "diffusion_chunk_size",
         "returned_pair_logits",
         "has_atomized_tokens",
         "returned_representations",

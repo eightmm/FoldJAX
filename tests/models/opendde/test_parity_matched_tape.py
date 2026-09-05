@@ -14,9 +14,43 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tests.models.opendde.scripts.capture_upstream_tape import _translation_samples
 from tests.models.opendde.scripts.parity_matched_tape import build_cycle_msa
 
 FIELDS = ("msa", "has_deletion", "deletion_value")
+
+
+def test_later_nonfinite_sample_cannot_hide_behind_scalar_max():
+    from tests.models.opendde.scripts.parity_matched_tape import _verdict
+
+    values = [0.0, float("nan"), 0.0, 0.0, 0.0]
+    metrics = {
+        "stages": {},
+        "stages_deliberately_absent": True,
+        "all_atom_rmsd_angstrom": max(values),
+        "all_atom_rmsd_angstrom_per_sample": values,
+    }
+    assert _verdict(metrics, max_rmsd=0.5, min_correlation=0.999)
+
+
+@pytest.mark.parametrize(
+    "shape,samples",
+    [((1, 1, 3), 1), ((5, 1, 3), 5), ((1, 5, 1, 3), 5)],
+)
+def test_capture_normalizes_translation_sample_axis(
+    shape: tuple[int, ...], samples: int
+) -> None:
+    value = np.arange(np.prod(shape), dtype=np.float64).reshape(shape)
+
+    normalized = _translation_samples(value)
+
+    assert normalized.shape == (samples, 3)
+    assert normalized.dtype == np.float32
+
+
+def test_capture_rejects_translation_without_singleton_atom_axis() -> None:
+    with pytest.raises(RuntimeError, match="translation must have shape"):
+        _translation_samples(np.zeros((5, 2, 3), dtype=np.float32))
 
 
 def _features(n_row: int = 6, n_token: int = 4) -> dict[str, np.ndarray]:

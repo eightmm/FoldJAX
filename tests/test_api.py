@@ -214,6 +214,35 @@ def test_esmfold2_request_resolution_selects_the_matching_asset_profile(
     assert calls == [("esmfold2", expected_profile)]
 
 
+def test_opendde_abag_profile_resolves_the_isolated_managed_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_path = tmp_path / "job.json"
+    input_path.write_text('{"name":"abag","entities":[]}')
+    resolved_weights = tmp_path / "opendde-abag" / "opendde_abag.jax"
+    resolved_weights.parent.mkdir()
+    resolved_weights.write_bytes(b"weights")
+    calls = []
+
+    def fake_resolve(model: str, *, profile: str | None = None) -> Path:
+        calls.append((model, profile))
+        return resolved_weights
+
+    monkeypatch.setattr(foldjax.assets, "resolve_weights", fake_resolve)
+    resolved = foldjax.resolve_request(
+        PredictionRequest(
+            model="opendde",
+            input=input_path,
+            output_dir=tmp_path / "out",
+            profile="abag",
+        )
+    )
+
+    assert resolved.weights == resolved_weights
+    assert resolved.profile == "abag"
+    assert calls == [("opendde", "abag")]
+
+
 @pytest.mark.parametrize(
     ("model_name", "expected_profile"),
     [
@@ -681,7 +710,7 @@ def test_openfold3_npz_auto_reports_the_jax_only_feature_dialect(
 ) -> None:
     archive = tmp_path / "features.npz"
     archive.write_bytes(b"not loaded during planning")
-    weights = tmp_path / "of3_ft3_v1.pt"
+    weights = tmp_path / "of3-ob-2025-06-30-174k.pt"
     weights.write_bytes(b"weights")
 
     resolved = foldjax.resolve_request(

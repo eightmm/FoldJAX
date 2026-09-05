@@ -1,14 +1,25 @@
 {
   "schema_version": 1,
-  "verified_on": "2026-07-31",
-  "opendde_source_revision": "f607bb3c9ff299c0627ac20f5ef8e25d716ed46f",
+  "verified_on": "2026-09-04",
+  "opendde_source_version": "1.1.1",
+  "opendde_source_revision": "ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
   "template_policy": {
     "max_template_date": "2021-09-30",
     "release_dates_asset": "release_date_cache.json",
     "obsolete_map_asset": "obsolete_to_successor.json",
     "selected_hits": {
-      "9fm7": ["5ocm_A", "3zgy_A", "5a9s_B", "5a9r_A"],
-      "MGYP004658859411": ["2PE5_B", "3KJX_D", "1JFT_A", "1QPZ_A"]
+      "9fm7": ["5ocm_A", "3zgy_A", "5a9s_B"],
+      "MGYP004658859411": ["2PE5_B", "3KJX_D", "1JFT_A"]
+    },
+    "post_realign_duplicates": {
+      "9fm7": ["5a9r_A"],
+      "MGYP004658859411": ["1QPZ_A"]
+    },
+    "validated_aligner": {
+      "name": "kalign",
+      "version": "3.3.5",
+      "9fm7_shared_feature_arrays_bitwise_equal": "60/60",
+      "9fm7_template_mask_sums": [13700, 13472, 13162, 0]
     },
     "mapping_sha256": {
       "5ocm_A": "5a08463e330ab8580b546796834a0e479a16a15106645e90cb9b3d2378510887",
@@ -28,6 +39,15 @@
       "url": "https://huggingface.co/aurekaresearch/OpenDDE/resolve/eddd563ce96571f784012edd8f045181c8f8627d/opendde.pt",
       "bytes": 2625249069,
       "sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+      "redistributed": false
+    },
+    {
+      "name": "opendde_abag.pt",
+      "kind": "official_checkpoint",
+      "profile": "abag",
+      "url": "https://huggingface.co/aurekaresearch/OpenDDE/resolve/eddd563ce96571f784012edd8f045181c8f8627d/opendde_abag.pt",
+      "bytes": 2625271509,
+      "sha256": "5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d",
       "redistributed": false
     },
     {
@@ -176,8 +196,14 @@
     {
       "name": "opendde.jax",
       "source": "opendde.pt",
-      "bytes": 2623328025,
-      "sha256": "161801261e288f225c3250e0fd12ca36ced52fde78837eed9407606c5759d155"
+      "bytes": 2623328201,
+      "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee"
+    },
+    {
+      "name": "opendde_abag.jax",
+      "source": "opendde_abag.pt",
+      "bytes": 2623328201,
+      "sha256": "c5eec319ed9c8f445c93bcce92d9aca82dc745d0f01b67f39c3bc85e31e4f5ca"
     }
   ],
   "licensing_note": "OpenDDE source is Apache-2.0. Kalign is an external GPL-3+ executable and is not linked into or redistributed by this project. Verify checkpoint and common-asset redistribution rights separately; this project records provenance but does not redistribute these files. PDB coordinate use remains subject to wwPDB/RCSB terms."

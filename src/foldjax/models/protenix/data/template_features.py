@@ -282,9 +282,7 @@ def dedup_templates(features: Mapping[str, Any]) -> Mapping[str, Any]:
         asserts the featurizer's own dict reaches the model.
     """
     present = {
-        name: np.asarray(features[name])
-        for name in TEMPLATE_FIELDS
-        if name in features
+        name: np.asarray(features[name]) for name in TEMPLATE_FIELDS if name in features
     }
     if not present:
         return features
@@ -342,6 +340,7 @@ def _parse_template_mmcif(
     mmcif_string: str,
     *,
     chain_id: str | None = None,
+    observed_residues: bool = False,
 ) -> tuple[str, np.ndarray, np.ndarray]:
     """Parse a simplified template mmCIF chain, torch ``parse_simple_cif``.
 
@@ -353,6 +352,10 @@ def _parse_template_mmcif(
 
     doc = gemmi.cif.read_string(mmcif_string)
     structure = gemmi.make_structure_from_block(doc[0])
+    if observed_residues:
+        # Biopython groups non-contiguous polymer/ligand/water segments by auth
+        # chain ID; Gemmi otherwise leaves these as separate chain objects.
+        structure.merge_chain_parts()
     model = structure[0]
     chains = list(model)
     if not chains:
@@ -362,7 +365,11 @@ def _parse_template_mmcif(
         _template_chain_sequence,
     )
 
-    seqres_chains = _mmcif_chain_sequences(mmcif_string)
+    # Native mapped JSON uses parse_simple_cif, unlike the search-hit parser:
+    # its indices address observed residues of the first chain, including HETATM.
+    if observed_residues:
+        chain_id = None
+    seqres_chains = {} if observed_residues else _mmcif_chain_sequences(mmcif_string)
     if seqres_chains:
         actual_chain_id, chain_sequence = _template_chain_sequence(
             mmcif_string, chain_id
@@ -443,7 +450,7 @@ def _parse_template_mmcif(
 
 
 def _single_json_template(
-    template_info: dict[str, Any], num_query: int
+    template_info: dict[str, Any], num_query: int, *, observed_residues: bool = False
 ) -> dict[str, np.ndarray]:
     """Port of one iteration of torch ``parse_json_templates``."""
 
@@ -454,7 +461,9 @@ def _single_json_template(
         raise ValueError("invalid template info: missing mmcif or index mismatch")
     mapping = dict(zip(q_indices, t_indices))
     template_seq, all_pos, all_mask = _parse_template_mmcif(
-        mmcif_str, chain_id=template_info.get("chainId")
+        mmcif_str,
+        chain_id=template_info.get("chainId"),
+        observed_residues=observed_residues,
     )
 
     out_pos = np.zeros((num_query, ATOM37_NUM, 3), dtype=np.float32)
@@ -641,7 +650,10 @@ def chain_template_dense(
         )
     else:
         raise ValueError("templatesPath must end in .json, .a3m, or .hhr")
-    hits = [_single_json_template(t, num_res) for t in template_list]
+    hits = [
+        _single_json_template(t, num_res, observed_residues=suffix == ".json")
+        for t in template_list
+    ]
     if not hits:
         return _pad_templates(*_empty_chain_dense(num_res))
     aatype = np.stack([h["template_aatype"] for h in hits], axis=0)

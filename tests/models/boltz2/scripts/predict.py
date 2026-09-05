@@ -58,7 +58,7 @@ def main() -> None:
     p.add_argument("--out-dir", type=Path, default=ROOT / "outputs/predictions")
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--recycling", type=int, default=3)
-    p.add_argument("--diffusion-samples", type=int, default=1)
+    p.add_argument("--diffusion-samples", dest="num_samples", type=int, default=1)
     p.add_argument("--sampling-steps-affinity", type=int, default=200)
     p.add_argument("--diffusion-samples-affinity", type=int, default=5)
     p.add_argument("--affinity-mw-correction", action="store_true")
@@ -293,6 +293,9 @@ def main() -> None:
         "confidence_sequentially": args.num_samples > 1,
         "return_pair_chains_iptm": False,
         "recompute_nonpolymer_frames": bool(np.any(feats_np["mol_type"] == 3)),
+        "use_template": bool(
+            np.any(feats_np.get("template_mask", np.zeros(1)) != 0)
+        ),
         "steering_args": steering_args,
     }
     def run_model(model_params, model_feats, model_key):
@@ -343,6 +346,9 @@ def main() -> None:
             "confidence_sequentially": args.diffusion_samples_affinity > 1,
             "recompute_nonpolymer_frames": True,
             "affinity_mw_correction": args.affinity_mw_correction,
+            "use_template": bool(
+                np.any(affinity_feats_np.get("template_mask", np.zeros(1)) != 0)
+            ),
         }
 
         def run_affinity(model_params, model_feats, model_key):

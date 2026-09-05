@@ -120,6 +120,24 @@ def _modifications(entity: Mapping[str, Any]) -> dict[int, str]:
     }
 
 
+def _entity_key(entity: Mapping[str, Any]) -> tuple[object, ...]:
+    """Biohub's canonical chemical identity, independent of common input index."""
+
+    kind = str(entity["type"])
+    if kind == "ligand":
+        if entity.get("ccd"):
+            return ("NONPOLYMER", None, (str(entity["ccd"]).upper(),))
+        return ("NONPOLYMER", entity.get("smiles"), ())
+    return (
+        kind.upper(),
+        str(entity["sequence"]),
+        frozenset(
+            (int(item["position"]) - 1, str(item["ccd"]).upper(), None)
+            for item in entity.get("modifications", ())
+        ),
+    )
+
+
 def _element(atom_name: str) -> str:
     name = atom_name.strip().upper()
     if not name:
@@ -505,16 +523,22 @@ def _build_chains(
         for bond in document.get("bonds", ())
         for endpoint in bond
     }
+    entity_ids: dict[tuple[object, ...], int] = {}
+    entity_sym_counts: dict[int, int] = {}
     for entity_index, entity in enumerate(document["entities"]):
         kind = str(entity["type"])
-        for sym_id, chain_id in enumerate(_ids(entity)):
+        key = _entity_key(entity)
+        entity_id = entity_ids.setdefault(key, len(entity_ids))
+        for chain_id in _ids(entity):
+            sym_id = entity_sym_counts.get(entity_id, 0)
+            entity_sym_counts[entity_id] = sym_id + 1
             asym_id = len(chains)
             start = len(tokens)
             ligand_bonds: list[tuple[str, str]] = []
             common = dict(
                 asym_id=asym_id,
                 sym_id=sym_id,
-                entity_id=entity_index + 1,
+                entity_id=entity_id,
                 tokens=tokens,
                 atoms=atoms,
             )
@@ -540,7 +564,7 @@ def _build_chains(
                     chain_id=chain_id,
                     asym_id=asym_id,
                     entity_index=entity_index,
-                    entity_id=entity_index + 1,
+                    entity_id=entity_id,
                     sym_id=sym_id,
                     kind=kind,
                     sequence=None if kind == "ligand" else str(entity["sequence"]),
@@ -676,48 +700,45 @@ def _msa(
     *,
     msa_depth: int | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    from foldjax.models.esmfold2.data.features import _iter_a3m
+    from foldjax.models.esmfold2.data.paired_msa import (
+        MSA,
+        MSAEntry,
+        construct_paired_msa,
+        read_a3m,
+    )
 
-    query = np.asarray([token.res_type for token in tokens], dtype=np.int64)
-    rows = [query.copy()]
-    deletion_rows = [np.zeros(len(tokens), dtype=np.float32)]
+    chain_msas = {}
+    chain_queries = {}
     for chain in chains:
-        if chain.kind != "protein" or chain.sequence is None:
-            continue
         path = alignments.get(chain.entity_index)
-        if path is None:
-            continue
-        token_indices_by_residue: dict[int, list[int]] = defaultdict(list)
-        for token in chain.tokens:
-            token_indices_by_residue[token.residue_index].append(token.token_index)
-        for sequence, counts in _iter_a3m(path, query=chain.sequence):
-            row = np.full(len(tokens), MSA_GAP_TOKEN_ID, dtype=np.int64)
-            deletion = np.zeros(len(tokens), dtype=np.float32)
-            for residue_index, (letter, count) in enumerate(
-                zip(sequence, counts, strict=True)
-            ):
-                residue_name = (
-                    None
-                    if letter == "-"
-                    else PROTEIN_1TO3.get(letter, "UNK")
-                )
-                value = (
-                    MSA_GAP_TOKEN_ID
-                    if residue_name is None
-                    else PROTEIN_RESIDUE_TO_RES_TYPE.get(
-                        residue_name, PROTEIN_UNK_RES_TYPE
-                    )
-                )
-                for token_index in token_indices_by_residue[residue_index]:
-                    row[token_index] = value
-                    deletion[token_index] = float(count)
-            rows.append(row)
-            deletion_rows.append(deletion)
-            if msa_depth is not None and len(rows) >= msa_depth:
-                break
-    msa = np.stack(rows)
-    values = np.stack(deletion_rows)
-    return msa, np.ones_like(msa, dtype=bool), values > 0, values
+        chain_queries[chain.asym_id] = np.asarray(
+            [token.res_type for token in chain.tokens], dtype=np.int64
+        )
+        if chain.kind == "protein" and chain.sequence is not None:
+            chain_msas[chain.asym_id] = (
+                read_a3m(path, expected_columns=len(chain.sequence))
+                if path is not None
+                else MSA((MSAEntry("query", chain.sequence),))
+            )
+        else:
+            chain_msas[chain.asym_id] = None
+    max_seqs = 16384 if msa_depth is None else msa_depth
+    msa, raw_deletions, _paired = construct_paired_msa(
+        chain_msas,
+        chain_queries,
+        np.asarray([token.asym_id for token in tokens], dtype=np.int64),
+        np.asarray([token.residue_index for token in tokens], dtype=np.int64),
+        max_seqs=max_seqs,
+    )
+    for chain in chains:
+        if chain_msas[chain.asym_id] is None:
+            indices = [token.token_index for token in chain.tokens]
+            msa[:, indices] = MSA_GAP_TOKEN_ID
+            msa[0, indices] = chain_queries[chain.asym_id]
+    deletion_value = np.arctan(raw_deletions / np.float32(3)) * np.float32(
+        np.pi / 2
+    )
+    return msa, np.ones_like(msa, dtype=bool), raw_deletions > 0, deletion_value
 
 
 def build_job_features(

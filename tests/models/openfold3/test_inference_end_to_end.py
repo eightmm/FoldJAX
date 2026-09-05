@@ -121,7 +121,6 @@ def _params(torch, randomized) -> InferenceParams:
             "n_transition": 2,
             "n_query": 4,
             "n_key": 8,
-            "use_ada_layer_norm": noisy,
         }
         if noisy:
             cfg |= {"add_noisy_pos": True, "c_s": C_S, "c_z": C_Z}
@@ -214,7 +213,7 @@ def _params(torch, randomized) -> InferenceParams:
                 randomized(
                     DiffusionTransformer(
                         c_a=C_TOKEN, c_s=C_S, c_z=C_Z, c_hidden=4, no_heads=2,
-                        no_blocks=1, n_transition=2, use_ada_layer_norm=True,
+                        no_blocks=1, n_transition=2,
                         n_query=None, n_key=None, inf=1e9,
                     )
                 ).state_dict()
@@ -227,7 +226,7 @@ def _params(torch, randomized) -> InferenceParams:
                     AtomAttentionDecoder(
                         c_token=C_TOKEN, c_atom=C_ATOM, c_atom_pair=C_ATOM_PAIR,
                         c_hidden=4, no_heads=2, no_blocks=1, n_transition=2,
-                        n_query=4, n_key=8, use_ada_layer_norm=True,
+                        n_query=4, n_key=8,
                     )
                 ).state_dict()
             )

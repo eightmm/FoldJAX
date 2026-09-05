@@ -78,17 +78,13 @@ def test_managed_asset_profile_tracks_the_language_model_variant() -> None:
     assert managed_asset_profile({"no_language_model": True}) == "structure-only"
     assert managed_asset_profile({"esmc_weights": "/tmp/esmc"}) == "structure-only"
     assert (
-        managed_asset_profile(
-            {"no_language_model": False, "esmc_weights": "/tmp/esmc"}
-        )
+        managed_asset_profile({"no_language_model": False, "esmc_weights": "/tmp/esmc"})
         == "structure-only"
     )
     with pytest.raises(ValueError, match="no_language_model must be a boolean"):
         managed_asset_profile({"no_language_model": "true"})
     with pytest.raises(ValueError, match="esmc_weights cannot be combined"):
-        managed_asset_profile(
-            {"no_language_model": True, "esmc_weights": "/tmp/esmc"}
-        )
+        managed_asset_profile({"no_language_model": True, "esmc_weights": "/tmp/esmc"})
 
 
 def test_external_esmc_keeps_the_released_language_model_branch(
@@ -222,7 +218,7 @@ def test_all_released_biomolecule_types_are_advertised() -> None:
         },
         {
             "entities": [{"type": "protein", "id": "P", "sequence": "AS"}],
-            "bonds": [[['P', 1, 'CA'], ['P', 2, 'CA']]],
+            "bonds": [[["P", 1, "CA"], ["P", 2, "CA"]]],
         },
     ],
 )
@@ -236,6 +232,21 @@ def test_plain_protein_keeps_the_historical_feature_path() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "entities",
+    [
+        [{"type": "protein", "id": "P", "sequence": "AS", "unpaired_msa": "p.a3m"}],
+        [{"type": "protein", "id": ["A", "B"], "sequence": "AS"}],
+        [
+            {"type": "protein", "id": "A", "sequence": "AS"},
+            {"type": "protein", "id": "B", "sequence": "AS"},
+        ],
+    ],
+)
+def test_protein_msa_and_multichain_jobs_use_creator_preprocessing(entities) -> None:
+    assert _requires_all_atom_features({"entities": entities})
+
+
 def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) -> None:
     job = tmp_path / "mixed.json"
     document = {
@@ -246,7 +257,7 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
             {"type": "rna", "id": "R", "sequence": "AU"},
             {"type": "ligand", "id": "L", "ccd": "ATP"},
         ],
-        "bonds": [[['P', 2, 'CA'], ['L', 1, 'PA']]],
+        "bonds": [[["P", 2, "CA"], ["L", 1, "PA"]]],
     }
     job.write_text(json.dumps(document))
     weights = tmp_path / "weights"
@@ -740,9 +751,7 @@ def _fake_session_modules(tmp_path, calls):
         return state
 
     def language_model_embedding(features, loaded, *, packed_length):
-        state = language_model_states(
-            features, loaded, packed_length=packed_length
-        )
+        state = language_model_states(features, loaded, packed_length=packed_length)
         embedding = state + np.float32(100.0)
         calls.setdefault("embedding", []).append(embedding.copy())
         return embedding
@@ -752,9 +761,7 @@ def _fake_session_modules(tmp_path, calls):
         lm_input = kwargs.get(
             "precomputed_lm_embedding", kwargs.get("precomputed_lm_states")
         )
-        calls["predict"].append(
-            (key, lm_input, dict(kwargs))
-        )
+        calls["predict"].append((key, lm_input, dict(kwargs)))
         return {}
 
     inference = SimpleNamespace(
@@ -1040,9 +1047,7 @@ def test_compact_language_model_observes_explicit_matmul_precision(
 
     def language_model_embedding(features, loaded, *, packed_length):
         observed.append(resolved_matmul_precision("port-default"))
-        return original_embedding(
-            features, loaded, packed_length=packed_length
-        )
+        return original_embedding(features, loaded, packed_length=packed_length)
 
     inference.language_model_embedding = language_model_embedding
     monkeypatch.setattr(
@@ -1064,9 +1069,7 @@ def test_compact_language_model_observes_explicit_matmul_precision(
     backend = ESMFold2Backend()
 
     with backend.session((request,)):
-        backend.predict(
-            dataclasses.replace(request, seed=0, num_seeds=None)
-        )
+        backend.predict(dataclasses.replace(request, seed=0, num_seeds=None))
         if mutate_between_seeds:
             input_path.write_text(
                 json.dumps(
@@ -1287,15 +1290,12 @@ def test_request_session_loads_once_and_runs_esmc_once_per_input(
     assert len(calls["lm"]) == 2
     assert len(calls["embedding"]) == 2
     assert len(calls["predict"]) == 6
-    assert all(
-        call[2]["return_distogram_logits"] is False for call in calls["predict"]
-    )
+    assert all(call[2]["return_distogram_logits"] is False for call in calls["predict"])
     assert all(
         call[2]["return_auxiliary_outputs"] is False for call in calls["predict"]
     )
     assert all(
-        "precomputed_lm_embedding" in call[2]
-        and "precomputed_lm_states" not in call[2]
+        "precomputed_lm_embedding" in call[2] and "precomputed_lm_states" not in call[2]
         for call in calls["predict"]
     )
     assert calls["predict"][0][1] is calls["predict"][1][1]
@@ -1320,9 +1320,7 @@ def test_legacy_split_wrapper_recomputes_raw_states_without_retaining_them(
     weights = _fake_session_weights(tmp_path)
     request = PredictionRequest(
         model="esmfold2",
-        input=_job(
-            tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]
-        ),
+        input=_job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]),
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=2,
@@ -1342,8 +1340,7 @@ def test_legacy_split_wrapper_recomputes_raw_states_without_retaining_them(
 
     assert len(calls["lm"]) == 2
     assert all(
-        "precomputed_lm_states" in call[2]
-        and "precomputed_lm_embedding" not in call[2]
+        "precomputed_lm_states" in call[2] and "precomputed_lm_embedding" not in call[2]
         for call in calls["predict"]
     )
     assert backend._lm_embedding is None
@@ -1485,9 +1482,7 @@ def test_resumed_seed_anchors_weights_before_the_first_load(
     weights = _fake_session_weights(tmp_path)
     request = PredictionRequest(
         model="esmfold2",
-        input=_job(
-            tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]
-        ),
+        input=_job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]),
         weights=weights,
         output_dir=tmp_path / "out",
         num_seeds=2,
@@ -1560,9 +1555,7 @@ def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(
     tmp_path, monkeypatch
 ) -> None:
     weights = _fake_session_weights(tmp_path)
-    job = _job(
-        tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]
-    )
+    job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
     calls = {"load": 0, "predict_job": 0}
     model = SimpleNamespace(has_language_model=True)
 

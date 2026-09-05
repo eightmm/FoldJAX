@@ -23,6 +23,29 @@ def test_valid_released_feature_abi_is_accepted() -> None:
 
 
 @pytest.mark.parametrize(
+    "mask",
+    [
+        np.ones((1, 3), np.int32),
+        np.ones((1, 2), bool),
+    ],
+)
+def test_cyclic_mask_has_explicit_boolean_token_contract(mask) -> None:
+    features = _features()
+    features["cyclic_mask"] = mask
+    with pytest.raises(ValueError, match="cyclic_mask"):
+        validate_features(features)
+
+
+def test_cyclic_mask_cannot_include_padding() -> None:
+    from foldjax.models.openfold3.data.featurize import pad_features
+
+    features = pad_features(_features(), n_token=4, n_atom=5)
+    features["cyclic_mask"] = np.ones((1, 4), bool)
+    with pytest.raises(ValueError, match="cyclic_mask.*padded"):
+        validate_features(features)
+
+
+@pytest.mark.parametrize(
     ("name", "replacement", "message"),
     [
         ("restype", np.zeros((1, 3, 31), dtype=np.int32), "expected"),

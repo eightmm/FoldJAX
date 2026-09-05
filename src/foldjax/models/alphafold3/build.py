@@ -18,7 +18,6 @@ import hashlib
 import importlib.util
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -175,12 +174,25 @@ def source_package() -> Path:
 
 
 def source_version() -> str:
-    """Version of the vendored package and runner snapshot."""
-    version_source = (_PACKAGE / "version.py").read_text(encoding="utf-8")
-    match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", version_source)
-    if match is None:
-        raise RuntimeError("vendored AlphaFold 3 version.py has no __version__")
-    return match.group(1)
+    """Release version of the vendored package and runner snapshot.
+
+    Upstream derives this value from Git.  Its source fallback still says
+    ``3.0.2`` at the v3.0.4 tag, and FoldJAX deliberately does not vendor the
+    upstream ``.git`` directory, so use the independently pinned release
+    identity instead of misreporting the fallback.
+    """
+
+    from foldjax.models.alphafold3.provenance import UPSTREAM_VERSION
+
+    return UPSTREAM_VERSION
+
+
+def source_revision() -> str:
+    """Immutable upstream commit carried by this runtime generation."""
+
+    from foldjax.models.alphafold3.provenance import UPSTREAM_COMMIT
+
+    return UPSTREAM_COMMIT
 
 
 def _extension_suffix() -> str:

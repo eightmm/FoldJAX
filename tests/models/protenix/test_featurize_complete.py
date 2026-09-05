@@ -280,9 +280,7 @@ def test_ccd_block_lookup_binary_searches_sorted_files(
 ) -> None:
     components = tmp_path / "components.cif"
     components.write_text(
-        "".join(
-            f"data_{index:04d}\n_value {index}\n#\n" for index in range(1000)
-        ),
+        "".join(f"data_{index:04d}\n_value {index}\n#\n" for index in range(1000)),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -380,7 +378,7 @@ def test_smiles_preserves_charge_stereo_and_bond_graph():
     assert features["chemical_bond_atom_indices"].shape == (5, 2)
     assert features["output_atom_name"].tolist() == ["C1", "C2", "N1", "C3", "O1", "O2"]
     assert set(features["output_atom_element"]) == {"C", "N", "O"}
-    assert set(features["output_atom_res_name"]) == {"UNL"}
+    assert set(features["output_atom_res_name"]) == {"l01"}
     assert set(features["output_atom_chain_id"]) == {"L"}
     assert set(features["output_atom_res_id"]) == {1}
 
@@ -665,6 +663,71 @@ def test_modified_nucleic_acids_are_atom_tokenized_with_terminal_rules(
     np.testing.assert_array_equal(np.argmax(rna["restype"], axis=-1), [21] + [23] * 21)
     second = np.flatnonzero(rna["atom_residue_index"] == 2)
     assert "OP3" not in rna["output_atom_name"][second]
+
+
+@pytest.mark.parametrize("kind", ["dnaSequence", "rnaSequence"])
+def test_standard_nucleotide_atom_slots_keep_canonical_op3_offset(kind: str) -> None:
+    features = featurize_protein_json(_job({kind: {"sequence": "AA", "id": ["N"]}}))
+
+    second = np.flatnonzero(features["atom_residue_index"] == 2)
+    names = features["output_atom_name"][second]
+    slots = features["atom_to_tokatom_idx"][second]
+    code = "DA" if kind == "dnaSequence" else "A"
+    canonical = featurize_impl._ccd_nucleotides()[code]["names"].astype(str)
+    expected = [int(np.flatnonzero(canonical == name)[0]) for name in names]
+
+    assert "OP3" not in names
+    assert int(slots[names == "P"][0]) == 1
+    np.testing.assert_array_equal(slots, expected)
+
+
+def test_molecule_ids_follow_native_inference_without_merging_ligand_bonds() -> None:
+    features = featurize_protein_json(
+        _job(
+            {"proteinChain": {"sequence": "C", "id": ["Z"]}},
+            {"ion": {"ion": "MG", "id": ["M"]}},
+            {"ligand": {"ligand": "[O:7]", "id": ["A"]}},
+            covalent_bonds=[
+                {
+                    "entity1": 1,
+                    "copy1": 1,
+                    "position1": 1,
+                    "atom1": "SG",
+                    "entity2": 3,
+                    "copy2": 1,
+                    "position2": 1,
+                    "atom2": 7,
+                }
+            ],
+        )
+    )
+
+    chain_ids = features["output_atom_chain_id"]
+    mol_ids = features["mol_id"]
+    np.testing.assert_array_equal(np.unique(mol_ids[chain_ids == "A"]), [0])
+    np.testing.assert_array_equal(np.unique(mol_ids[chain_ids == "Z"]), [2])
+    np.testing.assert_array_equal(np.unique(mol_ids[chain_ids == "M"]), [1])
+    assert features["covalent_atom_indices"].shape == (1, 2)
+
+
+def test_modified_polymer_is_not_a_ligand_for_confidence() -> None:
+    features = featurize_protein_json(
+        _job(
+            {
+                "proteinChain": {
+                    "sequence": "AS",
+                    "id": ["A"],
+                    "modifications": [{"ptmPosition": 2, "ptmType": "CCD_SEP"}],
+                }
+            },
+            {"ligand": {"ligand": "CCD_ATP", "id": ["L"]}},
+        )
+    )
+    atoms = features["output_atom_chain_id"] == "L"
+    np.testing.assert_array_equal(features["is_ligand"], atoms.astype(np.int64))
+    np.testing.assert_array_equal(
+        features["token_is_ligand"][features["atom_to_token_idx"]], atoms
+    )
 
 
 def test_polymer_modification_without_canonical_type_is_rejected(

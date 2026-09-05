@@ -13,10 +13,14 @@ adapter in :mod:`foldjax.models.openfold3.data.featurize` adds the leading batch
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import random
-from collections.abc import Mapping
+import tempfile
+import warnings
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -133,6 +137,11 @@ def _structure_features(atom_array: Any, n_tokens: int) -> dict[str, np.ndarray]
         "is_ligand": (molecule_type == MoleculeType.LIGAND).astype(np.int32),
         "is_atomized": np.asarray(atom_array.is_atomized[starts], dtype=np.int32),
         "token_mask": np.ones(len(starts), dtype=np.float32),
+        "cyclic_mask": (
+            np.asarray(atom_array.is_cyclic[starts], dtype=bool)
+            if "is_cyclic" in atom_array.get_annotation_categories()
+            else np.zeros(len(starts), dtype=bool)
+        ),
         "num_atoms_per_token": counts,
         "start_atom_index": np.asarray(starts, dtype=np.int32),
         "atom_mask": np.ones(int(counts.sum()), dtype=np.float32),
@@ -147,6 +156,7 @@ def _structure_features(atom_array: Any, n_tokens: int) -> dict[str, np.ndarray]
     }
 
     token_features = (
+        "cyclic_mask",
         "token_index",
         "restype",
         "is_protein",
@@ -234,14 +244,12 @@ def _conformer_features(
             charges.append(atom.GetFormalCharge())
             space_uids.append(molecule_index)
             atom_name = atom.GetProp("annot_atom_name").ljust(4)
-            atom_name_chars.append(
-                [ord(character) - 32 for character in atom_name]
-            )
+            atom_name_chars.append([ord(character) - 32 for character in atom_name])
 
         molecule_mask = np.asarray(molecule_masks, dtype=np.int32)
-        molecule_position = np.asarray(
-            molecule_positions, dtype=np.float32
-        ).reshape(-1, 3)
+        molecule_position = np.asarray(molecule_positions, dtype=np.float32).reshape(
+            -1, 3
+        )
         if np.any(molecule_mask):
             molecule_position = _augment_reference_positions(
                 molecule_position, molecule_mask, rng
@@ -277,9 +285,64 @@ class _MsaPrecursor(NamedTuple):
     deletion_mean: np.ndarray
 
 
-def _msa_precursor(
-    atom_array: Any, collection: Any, n_tokens: int
-) -> _MsaPrecursor:
+@contextmanager
+def _query_with_native_dummy_msas(query: Any) -> Iterator[Any]:
+    """Match the released CLI's query-only MSA fallback for proteins and RNA."""
+    from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
+        MoleculeType,
+    )
+
+    missing = [
+        chain
+        for chain in query.chains
+        if chain.molecule_type in {MoleculeType.PROTEIN, MoleculeType.RNA}
+        and chain.main_msa_file_paths is None
+    ]
+    if not missing:
+        yield query
+        return
+
+    from foldjax.models.openfold3.data.cache import save_preparsed_msas
+
+    augmented = query.model_copy(deep=True)
+    with tempfile.TemporaryDirectory(prefix="foldjax-openfold3-dummy-msa-") as root:
+        root_path = Path(root)
+        written: set[Path] = set()
+        for chain in augmented.chains:
+            if (
+                chain.molecule_type not in {MoleculeType.PROTEIN, MoleculeType.RNA}
+                or chain.main_msa_file_paths is not None
+            ):
+                continue
+            sequence = str(chain.sequence)
+            digest = hashlib.sha256(sequence.encode("utf-8")).hexdigest()
+            path = root_path / "dummy" / f"{digest}.npz"
+            if path not in written:
+                save_preparsed_msas(
+                    {
+                        "dummy": {
+                            "msa": [sequence],
+                            "deletion_matrix": np.zeros(
+                                (1, len(sequence)), dtype=np.int64
+                            ),
+                            "metadata": ["query"],
+                        }
+                    },
+                    path,
+                )
+                written.add(path)
+            chain.main_msa_file_paths = [path]
+            warnings.warn(
+                "Expected an OpenFold3 MSA for protein/RNA chain(s) "
+                f"{','.join(chain.chain_ids)}; using the released CLI's "
+                "query-only dummy MSA.",
+                UserWarning,
+                stacklevel=3,
+            )
+        yield augmented
+
+
+def _msa_precursor(atom_array: Any, collection: Any, n_tokens: int) -> _MsaPrecursor:
     """Map processed upstream MSA arrays onto query token positions."""
     from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.structure.labels import (  # noqa: E501
         get_token_starts,
@@ -306,9 +369,7 @@ def _msa_precursor(
     msa_index = np.full((rows, n_tokens), gap_index, dtype=np.int64)
     deletion_matrix = np.zeros((rows, n_tokens), dtype=np.int64)
     msa_mask = np.ones((rows, n_tokens), dtype=np.float32)
-    profile = np.zeros(
-        (n_tokens, len(STANDARD_RESIDUES_WITH_GAP_1)), dtype=np.float32
-    )
+    profile = np.zeros((n_tokens, len(STANDARD_RESIDUES_WITH_GAP_1)), dtype=np.float32)
     deletion_mean = np.zeros(n_tokens, dtype=np.float32)
 
     for chain_id in collection.chain_id_to_rep_id:
@@ -394,7 +455,7 @@ def _tensorize_msa_precursor(
     features = {
         "has_deletion": (deletion != 0).astype(np.float32),
         "deletion_value": (
-            np.arctan(deletion / 3.0) * (8.0 / np.pi)
+            np.arctan(deletion.astype(np.float32) / 3.0) * (2.0 / np.pi)
         ).astype(np.float32),
         "deletion_mean": precursor.deletion_mean.astype(np.float32, copy=False),
         "profile": precursor.profile.astype(np.float32, copy=False),
@@ -430,9 +491,11 @@ def _msa_features(
     from foldjax.models.openfold3._upstream.openfold3.core.data.pipelines.sample_processing.msa import (  # noqa: E501
         MsaSampleProcessorInference,
     )
+
     create_input = MsaSampleProcessorInputInference.create_from_inference_query_entry
-    processor_input = create_input(inference_query=query)
-    collection = MsaSampleProcessorInference(config=settings)(input=processor_input)
+    with _query_with_native_dummy_msas(query) as augmented_query:
+        processor_input = create_input(inference_query=augmented_query)
+        collection = MsaSampleProcessorInference(config=settings)(input=processor_input)
     precursor = _msa_precursor(atom_array, collection, n_tokens)
     precursor = _subsample_msa_precursor(precursor, msa_depth)
     return _tensorize_msa_precursor(precursor, compact_msa=compact_msa)
@@ -506,9 +569,7 @@ def _aligned_residue_map(template: Any) -> np.ndarray | None:
             "query/template alignment coordinate shapes"
         )
     aligned = (query_positions > 0) & (template_positions > 0)
-    return np.stack(
-        (query_positions[aligned], template_positions[aligned]), axis=-1
-    )
+    return np.stack((query_positions[aligned], template_positions[aligned]), axis=-1)
 
 
 def _template_entry_from_cif(
@@ -669,9 +730,7 @@ def _template_entry_from_alignment(
 
     index_map = _aligned_residue_map(template)
     mapping_is_complete = (
-        bool(template.seq)
-        and index_map is not None
-        and bool(template.q_cov)
+        bool(template.seq) and index_map is not None and bool(template.q_cov)
     )
     if not mapping_is_complete:
         return _template_entry_from_cif(
@@ -1057,9 +1116,7 @@ def _template_precursor(
                 ValueError,
             ) as error:
                 failures.append(str(error))
-                logger.warning(
-                    "Skipping invalid OpenFold3 template slice: %s", error
-                )
+                logger.warning("Skipping invalid OpenFold3 template slice: %s", error)
 
     if input_count and not accepted_count and failures:
         raise ValueError(
@@ -1158,9 +1215,7 @@ def _template_features(
     c_position = frame_zero[..., 2, :]
     axis_x = _normalize(c_position - ca_position)
     axis_y_seed = n_position - ca_position
-    axis_y = _normalize(
-        axis_y_seed - _dot3(axis_y_seed, axis_x)[..., None] * axis_x
-    )
+    axis_y = _normalize(axis_y_seed - _dot3(axis_y_seed, axis_x)[..., None] * axis_x)
     axis_z = np.cross(axis_x, axis_y)
     delta = ca_position[..., None, :, :] - ca_position[..., :, None, :]
     local = np.stack(
@@ -1172,9 +1227,7 @@ def _template_features(
         axis=-1,
     )
     unit_vector = _normalize(local).astype(np.float32)
-    frame_pair_mask = (
-        frame_mask[..., :, None] * frame_mask[..., None, :] * same_chain
-    )
+    frame_pair_mask = frame_mask[..., :, None] * frame_mask[..., None, :] * same_chain
     unit_vector *= frame_pair_mask[..., None]
 
     return {
@@ -1229,9 +1282,7 @@ def featurize_query_numpy(
     n_tokens = get_token_count(atom_array)
 
     features = _structure_features(atom_array, n_tokens)
-    features.update(
-        _conformer_features(processed_reference_molecules, seed=int(seed))
-    )
+    features.update(_conformer_features(processed_reference_molecules, seed=int(seed)))
     features.update(
         _msa_features(
             query,

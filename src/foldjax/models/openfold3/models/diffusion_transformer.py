@@ -8,9 +8,8 @@ the AF3 supplement that this port keeps:
 * the transition consumes the *updated* ``a`` from the attention step rather than
   the block's input.
 
-Only the self-attention configuration is ported. The cross-attention variant
-(``CrossAttentionPairBias``, used by the atom encoder/decoder with a neighbourhood
-mask) applies a single ``layer_norm_z`` at the stack level and is not covered.
+OpenFold3 v0.5 applies ``layer_norm_z`` once at the stack level before sharing
+the normalized pair representation across all attention blocks.
 """
 
 from __future__ import annotations
@@ -42,9 +41,10 @@ class DiffusionTransformerBlockParams(NamedTuple):
 
 
 class DiffusionTransformerParams(NamedTuple):
-    """Parameters for a ``DiffusionTransformer``: one entry per block, in order."""
+    """Parameters for an OpenFold3 v0.5 ``DiffusionTransformer`` stack."""
 
     blocks: tuple[DiffusionTransformerBlockParams, ...]
+    layer_norm_z: LayerNormParams
 
 
 def diffusion_transformer_block(
@@ -109,10 +109,12 @@ def diffusion_transformer(
 ) -> jnp.ndarray:
     """Run every diffusion transformer block in order.
 
-        scan_blocks: run the blocks as one scanned body over stacked parameters
-            instead of unrolling them. Identical arithmetic; see
-            :mod:`foldjax.models.openfold3.models.stacking` for the measured effect.
+    scan_blocks: run the blocks as one scanned body over stacked parameters
+        instead of unrolling them. Identical arithmetic; see
+        :mod:`foldjax.models.openfold3.models.stacking` for the measured effect.
     """
+    z = layer_norm(z, params.layer_norm_z, eps=eps)
+
     settings = dict(
         no_heads=no_heads,
         mask=mask,

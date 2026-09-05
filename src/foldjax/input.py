@@ -16,13 +16,13 @@ import os
 import shutil
 import string
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from foldjax.models.boltz2.data.identifiers import validate_ccd_identifier
-from foldjax.schema import MSA_POLICIES, ModelCapabilities
+from foldjax.schema import MSA_POLICIES, ModelCapabilities, _strict_boolean
 
 _ENTITY_TYPES = ("protein", "dna", "rna", "ligand")
 _JOB_KEYS = frozenset({"name", "entities", "bonds", "properties"})
@@ -67,7 +67,7 @@ _ALL_FEATURES = frozenset(
         # template-residue map and refuse a bare file (`folding_input.py:378`,
         # `template_features.py:329`); Boltz-2 takes a path and aligns it itself
         # (`parse/schema.py:986`). OpenDDE's shipped inference configuration
-        # disables its template path, so the common route refuses both forms.
+        # disables its template path unless the request explicitly enables it.
         # These are different inputs, not one input in two spellings, so they
         # are separate features and a document is refused by whichever model
         # cannot use its form.
@@ -84,19 +84,16 @@ _NO_TEMPLATES = {"templates", "templates_unmapped", "affinity"}
 # Boltz derives pairing from a single per-chain a3m, so a separate paired MSA has
 # nowhere to go.
 _TARGETS = {
-    "alphafold3": _Target(
-        ".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}
-    ),
+    "alphafold3": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     # foldjax.models.boltz2 dispatches its parser on the file suffix and rejects .json
     # outright; JSON is a YAML subset, so the document is written as .yaml.
     "boltz2": _Target(".yaml", _ALL_FEATURES - {"paired_msa", "templates"}),
     # OpenDDE consumes most of the Protenix list-of-jobs dialect, including its
     # modified-polymer and entity/copy-addressed covalent-bond representations.
-    # Its released inference defaults set ``use_template=False``: a generated
-    # ``templatesPath`` is deliberately discarded by the native compatibility
-    # path.  A common job must therefore reject templates instead of advertising
-    # a field whose scientific input will not reach the model.
-    "opendde": _Target(".json", _ALL_FEATURES - _NO_TEMPLATES),
+    # OpenDDE accepts Protenix-style mapped templates and exposes the dormant
+    # upstream path behind ``use_template=true``.  The validation below still
+    # refuses the field at the released default instead of silently dropping it.
+    "opendde": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     "protenix": _Target(".json", _ALL_FEATURES - {"templates_unmapped", "affinity"}),
     # OpenFold3 expresses everything, but with two constraints its own layer
     # enforces and this writer therefore has to: alignment files are selected by
@@ -191,9 +188,7 @@ def assign_chain_ids(entities: list[dict[str, Any]]) -> None:
             taken.add(value.strip())
         elif isinstance(value, list):
             taken.update(
-                item.strip()
-                for item in value
-                if isinstance(item, str) and item.strip()
+                item.strip() for item in value if isinstance(item, str) and item.strip()
             )
     labels = chain_labels()
     for entity in entities:
@@ -243,9 +238,7 @@ def _normalize_sequence(value: Any, *, kind: str, chain: str) -> str:
         window = sequence[max(0, position - 12) : position + 11]
         caret = " " * (position - max(1, position - 11)) + "^"
         expected = (
-            "letters only"
-            if allowed is None
-            else "IUPAC " + "".join(sorted(allowed))
+            "letters only" if allowed is None else "IUPAC " + "".join(sorted(allowed))
         )
         raise ValueError(
             f"{kind} entity {chain!r} has an unsupported residue {residue!r} at "
@@ -292,9 +285,7 @@ def _modifications(entity: dict[str, Any]) -> list[tuple[str, int]]:
         if not isinstance(item["ccd"], str):
             raise ValueError("modification ccd must be a string")
         ccd = item["ccd"].strip()
-        position = _strict_position(
-            item["position"], name="modification position"
-        )
+        position = _strict_position(item["position"], name="modification position")
         if not ccd:
             raise ValueError("modification ccd must be non-empty")
         if not 1 <= position <= length:
@@ -308,9 +299,7 @@ def _modifications(entity: dict[str, Any]) -> list[tuple[str, int]]:
     return pairs
 
 
-_TEMPLATE_KEYS = frozenset(
-    {"mmcif", "query_indices", "template_indices", "chain_id"}
-)
+_TEMPLATE_KEYS = frozenset({"mmcif", "query_indices", "template_indices", "chain_id"})
 
 
 def _templates(entity: dict[str, Any]) -> list[dict[str, Any]]:
@@ -445,8 +434,20 @@ def _validate(
     model: str,
     target: _Target,
     entity_types: tuple[str, ...],
+    *,
+    options: Mapping[str, Any] | None = None,
 ) -> None:
     """Check the common document against what ``model`` can express."""
+    options = options or {}
+    use_template = False
+    use_rna_msa = False
+    if model == "opendde":
+        use_template = _strict_boolean(
+            options.get("use_template", False), name="use_template"
+        )
+        use_rna_msa = _strict_boolean(
+            options.get("use_rna_msa", False), name="use_rna_msa"
+        )
     _reject_unknown(set(job) - _JOB_KEYS, _JOB_KEYS, "top-level fields")
     entities = job.get("entities")
     if not isinstance(entities, list) or not entities:
@@ -475,9 +476,7 @@ def _validate(
                 if field_value is not None and (
                     not isinstance(field_value, str) or not field_value.strip()
                 ):
-                    raise ValueError(
-                        f"ligand {field_name} must be a non-empty string"
-                    )
+                    raise ValueError(f"ligand {field_name} must be a non-empty string")
                 if field_value is not None:
                     entity[field_name] = field_value.strip()
             if not (entity.get("ccd") or entity.get("smiles")):
@@ -498,19 +497,24 @@ def _validate(
         )
         for feature in ("unpaired_msa", "paired_msa"):
             value = entity.get(feature)
-            if value is not None and (
-                not isinstance(value, str) or not value.strip()
-            ):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{feature} must be a non-empty path string")
             if value is not None and feature not in target.features:
                 _reject(model, feature, f"remove it from entity {_ids(entity)[0]!r}")
             if value is not None and model == "opendde" and kind == "rna":
-                _reject(
-                    model,
-                    f"RNA {feature}",
-                    "its shipped inference default is use_rna_msa=False and "
-                    "would discard the alignment; protein MSAs remain supported",
-                )
+                if feature == "paired_msa":
+                    _reject(
+                        model,
+                        "RNA paired_msa",
+                        "upstream accepts only rnaSequence.unpairedMsaPath",
+                    )
+                if not use_rna_msa:
+                    _reject(
+                        model,
+                        "RNA unpaired_msa",
+                        "set the native option use_rna_msa=true; the released "
+                        "default is false and would discard the alignment",
+                    )
             if value is not None:
                 entity[feature] = value.strip()
         if entity.get("modifications") and "modifications" not in target.features:
@@ -526,15 +530,15 @@ def _validate(
 
         for template in _templates(entity):
             feature = "templates" if template["mapping"] else "templates_unmapped"
-            if feature in target.features:
-                continue
-            if model == "opendde":
+            if model == "opendde" and feature == "templates" and not use_template:
                 _reject(
                     model,
                     "templates in the common schema",
-                    "its shipped inference default is use_template=False and "
-                    "would discard the generated templatesPath",
+                    "set the native option use_template=true; the released "
+                    "default is false and would discard templatesPath",
                 )
+            if feature in target.features:
+                continue
             if feature == "templates_unmapped" and "templates" in target.features:
                 _reject(
                     model,
@@ -568,9 +572,68 @@ def _validate(
     _affinity_binder(job, chains)
 
 
-def _alphafold3(job: dict[str, Any], base: Path, seed: int) -> dict[str, Any]:
+def _filter_alphafold3_template_mmcif(source: Path, chain_id: str) -> str:
+    """Return an mmCIF containing the selected author polymer chain.
+
+    AlphaFold 3's input dialect has no template-chain field. Its featurizer
+    instead requires each template file to contain exactly one polymer chain,
+    so preserving a common-schema ``chain_id`` means filtering the structure
+    before the native document is written.
+    """
+
+    from foldjax.models.alphafold3 import build
+
+    build.register_runtime()
+    from alphafold3 import structure
+    from alphafold3.constants import mmcif_names
+
+    parsed = structure.from_mmcif(source.read_bytes(), include_other=True)
+    selected = parsed.filter(chain_auth_asym_id=chain_id)
+    polymer_count = sum(
+        chain_type in mmcif_names.POLYMER_CHAIN_TYPES
+        for chain_type in selected.chains_table.type
+    )
+    if polymer_count != 1:
+        available = sorted(set(map(str, parsed.chains_table.auth_asym_id)))
+        raise ValueError(
+            f"AlphaFold 3 template chain_id {chain_id!r} selected "
+            f"{polymer_count} polymer chains in {source}; available author "
+            f"chain IDs: {available}"
+        )
+    return selected.to_mmcif()
+
+
+def _alphafold3_template_path(
+    template: dict[str, Any],
+    base: Path,
+    destination: Path,
+    entity_index: int,
+    template_index: int,
+) -> str:
+    source = Path(_path(template["mmcif"], base))
+    chain_id = template["chain_id"]
+    if chain_id is None:
+        return str(source)
+
+    directory = destination / "templates"
+    if directory.is_symlink():
+        raise ValueError(f"generated template directory is a symlink: {directory}")
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / (
+        f"entity_{entity_index:04d}_template_{template_index:04d}.cif"
+    )
+    _write_text_atomic(
+        target,
+        _filter_alphafold3_template_mmcif(source, chain_id),
+    )
+    return str(target)
+
+
+def _alphafold3(
+    job: dict[str, Any], base: Path, seed: int, destination: Path
+) -> dict[str, Any]:
     sequences = []
-    for entity in job["entities"]:
+    for entity_index, entity in enumerate(job["entities"]):
         kind = entity["type"]
         body: dict[str, Any] = {"id": _ids(entity)}
         if kind == "ligand":
@@ -618,11 +681,17 @@ def _alphafold3(job: dict[str, Any], base: Path, seed: int) -> dict[str, Any]:
                 # split into two parallel lists (`folding_input.py:389`).
                 body["templates"] = [
                     {
-                        "mmcifPath": _path(template["mmcif"], base),
+                        "mmcifPath": _alphafold3_template_path(
+                            template,
+                            base,
+                            destination,
+                            entity_index,
+                            template_index,
+                        ),
                         "queryIndices": [pair[0] for pair in template["mapping"]],
                         "templateIndices": [pair[1] for pair in template["mapping"]],
                     }
-                    for template in templates
+                    for template_index, template in enumerate(templates)
                 ]
         sequences.append({kind: body})
     native: dict[str, Any] = {
@@ -676,11 +745,22 @@ def _boltz(job: dict[str, Any], base: Path) -> dict[str, Any]:
         ]
     # Boltz keeps templates at the top level and aligns each one itself
     # (`parse/schema.py:1633`), so there is no residue map to carry across.
-    templates = [
-        {"cif": _path(template["mmcif"], base)}
-        for entity in job["entities"]
-        for template in _templates(entity)
-    ]
+    templates = []
+    for entity in job["entities"]:
+        query_chain_ids = _ids(entity)
+        for template in _templates(entity):
+            entry: dict[str, Any] = {
+                "cif": _path(template["mmcif"], base),
+                # Boltz stores templates at the top level, so scope this one
+                # back to the common-schema entity it came from.
+                "chain_id": query_chain_ids,
+            }
+            if template["chain_id"] is not None:
+                # Its ``template_id`` is the source-structure chain, while
+                # ``chain_id`` above names query chains. One entity can denote
+                # several copies, each using the same source chain.
+                entry["template_id"] = [template["chain_id"]] * len(query_chain_ids)
+            templates.append(entry)
     if templates:
         native["templates"] = templates
     binder = _affinity_binder(job, set())
@@ -1053,9 +1133,7 @@ def _search_alignments(
             )
         )
     if rna and rna_pipeline is not None:
-        searched.extend(
-            _run_search(rna_pipeline, rna, policy=policy, paired=False)
-        )
+        searched.extend(_run_search(rna_pipeline, rna, policy=policy, paired=False))
     return searched
 
 
@@ -1271,6 +1349,7 @@ def materialize_native_input(
     *,
     seed: int,
     msa: str = "none",
+    options: Mapping[str, Any] | None = None,
 ) -> Path:
     """Translate a FoldJAX JSON document to one backend-native input file."""
     model = capabilities.model
@@ -1283,7 +1362,13 @@ def materialize_native_input(
     job = read_job_document(source)
     if not isinstance(job, dict):
         raise ValueError("a FoldJAX job must be a JSON or YAML mapping")
-    _validate(job, model, target, capabilities.entity_types)
+    _validate(
+        job,
+        model,
+        target,
+        capabilities.entity_types,
+        options=options,
+    )
 
     base = source.parent
     # Created before the dialects are built: OpenFold3 writes alongside its
@@ -1311,7 +1396,7 @@ def materialize_native_input(
                 entity["unpaired_msa"] = _path(entity["unpaired_msa"], base)
         document: Any = job
     elif model == "alphafold3":
-        document = _alphafold3(job, base, seed)
+        document = _alphafold3(job, base, seed, output_dir)
     elif model == "boltz2":
         document = _boltz(job, base)
     elif model in {"opendde", "protenix"}:

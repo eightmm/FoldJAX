@@ -46,6 +46,7 @@ from foldjax.models.openfold3.data.compact_categories import (
     COMPACT_REF_ELEMENT_IDS,
     validate_compact_ref_atom_categories,
 )
+from foldjax.models.openfold3.data.featurize import _MSA_CYCLE_INDICES
 from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
 from foldjax.models.openfold3.models.confidence import (
     bin_centers,
@@ -703,6 +704,15 @@ def predict(
             f"mesh has {_active_cp_shards()} shard(s); run through "
             "compile_predict or activate context_parallel() yourself"
         )
+    if (
+        config.msa_depth is not None
+        and batch["msa_mask"].shape[1] > config.msa_depth
+        and _MSA_CYCLE_INDICES not in batch
+    ):
+        raise ValueError(
+            "OpenFold3 direct predict with an over-depth MSA needs "
+            "prepare_msa_cycle_features; fixed first-row selection is not native"
+        )
     batch = _restore_ref_atom_category_one_hot(batch)
     s_input, s_trunk, z = trunk(
         batch,
@@ -720,6 +730,8 @@ def predict(
         opm_first=config.opm_first,
         chunk_size=config.pair_chunk_size,
     )
+    # This axis indexes recycling, not batch: it must not reach sample expansion.
+    batch = {name: value for name, value in batch.items() if name != _MSA_CYCLE_INDICES}
 
     schedule = noise_schedule(
         config.num_steps,

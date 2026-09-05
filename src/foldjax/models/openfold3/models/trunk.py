@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import shard_pair_rows
+from foldjax.models.openfold3.data.featurize import _MSA_CYCLE_INDICES
 from foldjax.models.openfold3.models.input_embedders import (
     InputEmbedderParams,
     MSAEmbedderParams,
@@ -142,17 +143,31 @@ def trunk(
     token_mask = batch["token_mask"]
     pair_mask = token_mask[..., :, None] * token_mask[..., None, :]
 
-    # The MSA embedding reads only the features and the input embedding, neither of
-    # which a cycle changes, so it is the same tensor every cycle. It used to be
-    # rebuilt inside the loop, which at the released four cycles meant three
-    # redundant evaluations. (A port that resampled the alignment per cycle -- some
-    # do -- could not hoist this.)
-    m, msa_mask = msa_embedder(batch, s_input, params.msa_module_embedder)
+    cycle_indices = batch.get(_MSA_CYCLE_INDICES)
+    if cycle_indices is not None:
+        if cycle_indices.ndim != 2 or cycle_indices.shape[0] != num_recycles:
+            raise ValueError("OpenFold3 MSA cycle indices must be [recycles, rows]")
 
     def cycle(
+        cycle_index: int,
         carry: tuple[jnp.ndarray, jnp.ndarray],
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         s, z = carry
+        if cycle_indices is None:
+            msa_batch = batch
+        else:
+            indices = cycle_indices[cycle_index]
+            msa_batch = dict(batch)
+            for name in (
+                "msa",
+                "msa_mask",
+                "has_deletion",
+                "deletion_value",
+                "_foldjax_msa_indices",
+            ):
+                if name in msa_batch:
+                    msa_batch[name] = jnp.take(msa_batch[name], indices, axis=1)
+        m, msa_mask = msa_embedder(msa_batch, s_input, params.msa_module_embedder)
         # Initial embedding plus a projection of the previous cycle, not a sum.
         z = shard_pair_rows(
             z_init
@@ -211,10 +226,10 @@ def trunk(
     # a graph four times larger, and compile time follows it.
     if scan_cycles and num_recycles > 1:
         s, z = jax.lax.fori_loop(
-            0, num_recycles, lambda _i, carry: cycle(carry), (s, z)
+            0, num_recycles, lambda i, carry: cycle(i, carry), (s, z)
         )
     else:
-        for _cycle in range(num_recycles):
-            s, z = cycle((s, z))
+        for cycle_index in range(num_recycles):
+            s, z = cycle(cycle_index, (s, z))
 
     return s_input, s, z

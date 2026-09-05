@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from foldjax.models._cueq import cueq_attention_core, load_cueq
+from foldjax.models._cueq import (
+    cueq_attention_core,
+    load_cueq,
+    triangle_multiplication_precision,
+)
 from foldjax.models.protenix.models.triangle.triangle import (
     TriangleDirection,
     TriangleMultiplicationParams,
@@ -42,6 +46,7 @@ def cueq_triangle_multiplication(
         p_out_weight=params.linear_z.weight,
         g_out_weight=params.linear_g.weight,
         eps=eps,
+        precision=triangle_multiplication_precision(cuex),
         fallback=False,
     )
     return output[0] if unbatched else output

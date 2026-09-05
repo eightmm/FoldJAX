@@ -17,6 +17,7 @@ from foldjax.models.esmfold2.data.all_atom_constants import (
     MOL_TYPE_NONPOLYMER,
     MOL_TYPE_PROTEIN,
     MOL_TYPE_RNA,
+    MSA_GAP_TOKEN_ID,
 )
 from foldjax.models.esmfold2.data.ccd import CCDStore
 from foldjax.models.esmfold2.models import esmc
@@ -103,14 +104,13 @@ def _mixed_document() -> dict:
             {"type": "ligand", "id": "ATPCHAIN", "ccd": "ATP"},
             {"type": "ligand", "id": "SMILES", "smiles": "CCO"},
         ],
-        "bonds": [[['PROT', 2, 'OG'], ['ATPCHAIN', 1, 'PA']]],
+        "bonds": [[["PROT", 2, "OG"], ["ATPCHAIN", 1, "PA"]]],
     }
 
 
 def _decode_rows(array: np.ndarray) -> list[str]:
     return [
-        bytes(int(value) for value in row if value).decode("ascii")
-        for row in array
+        bytes(int(value) for value in row if value).decode("ascii") for row in array
     ]
 
 
@@ -129,9 +129,7 @@ def test_mixed_biomolecules_reach_one_model_feature_dictionary(fake_ccd) -> None
         MOL_TYPE_NONPOLYMER,
     }
     assert built["token_bonds"].shape == (1, n_tokens, n_tokens, 1)
-    assert np.array_equal(
-        built["token_bonds"], built["token_bonds"].swapaxes(1, 2)
-    )
+    assert np.array_equal(built["token_bonds"], built["token_bonds"].swapaxes(1, 2))
     assert built["token_bonds"].sum() > 0
     assert built["ref_pos"].shape[1] % all_atom.ATOM_BLOCK == 0
     assert np.all(atom_mask[: int(atom_mask.sum())])
@@ -144,9 +142,7 @@ def test_mixed_biomolecules_reach_one_model_feature_dictionary(fake_ccd) -> None
         "SMILES",
     }
     residue_names = _decode_rows(built["token_residue_name_chars"][0])
-    assert {"SEP", "DA", "DT", "A", "U", "ATP", "LIG"} <= set(
-        residue_names
-    )
+    assert {"SEP", "DA", "DT", "A", "U", "ATP", "LIG"} <= set(residue_names)
 
     # The explicit protein-ligand bond resolves by chain/residue/atom name.
     atom_names = [pdb.decode_atom_name(row) for row in built["ref_atom_name_chars"][0]]
@@ -198,6 +194,198 @@ def test_all_atom_dictionary_has_the_model_feature_contract(fake_ccd) -> None:
     assert mixed["mol_type"][0, :2].tolist() == [MOL_TYPE_PROTEIN] * 2
     assert mixed["distogram_atom_idx"][0, :2].tolist() == [4, 6]
     assert np.array_equal(mixed["ref_pos"][0, 0], [0, 1, 2])
+
+
+def _write_a3m(path: Path, records: list[tuple[str, str]]) -> Path:
+    path.write_text("".join(f">{header}\n{sequence}\n" for header, sequence in records))
+    return path
+
+
+def test_all_atom_msa_taxonomy_pairs_and_transforms_insertions(
+    fake_ccd, tmp_path: Path
+) -> None:
+    left = _write_a3m(tmp_path / "left.a3m", [("query", "AG"), ("left key=7", "A.aG")])
+    right = _write_a3m(tmp_path / "right.a3m", [("query", "ST"), ("right key=7", "S-")])
+    built = all_atom.build_job_features(
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": "AG",
+                    "unpaired_msa": left.name,
+                },
+                {
+                    "type": "protein",
+                    "id": "B",
+                    "sequence": "ST",
+                    "unpaired_msa": right.name,
+                },
+                {"type": "dna", "id": "D", "sequence": "A"},
+            ]
+        },
+        base_dir=tmp_path,
+        ccd_path="unused.pkl",
+        seed=0,
+    )
+
+    assert built["msa"].shape == (1, 2, 5)
+    assert built["msa"][0, 1, :4].tolist() == [
+        all_atom.PROTEIN_RESIDUE_TO_RES_TYPE["ALA"],
+        all_atom.PROTEIN_RESIDUE_TO_RES_TYPE["GLY"],
+        all_atom.PROTEIN_RESIDUE_TO_RES_TYPE["SER"],
+        MSA_GAP_TOKEN_ID,
+    ]
+    expected = np.float32(np.arctan(np.float32(2) / 3) * (np.pi / 2))
+    assert built["has_deletion"][0, 1, 1]
+    assert built["deletion_value"].dtype == np.float32
+    np.testing.assert_array_equal(built["deletion_value"][0, 1], [0, expected, 0, 0, 0])
+    np.testing.assert_array_equal(
+        built["deletion_mean"][0], built["deletion_value"][0].mean(axis=0)
+    )
+
+
+def test_all_atom_msa_keeps_unpaired_and_duplicate_query_hits(
+    fake_ccd, tmp_path: Path
+) -> None:
+    left = _write_a3m(tmp_path / "left.a3m", [("query", "AG"), ("duplicate", "AG")])
+    right = _write_a3m(tmp_path / "right.a3m", [("query", "ST"), ("hit", "ST")])
+    built = all_atom.build_job_features(
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": "AG",
+                    "unpaired_msa": left.name,
+                },
+                {
+                    "type": "protein",
+                    "id": "B",
+                    "sequence": "ST",
+                    "unpaired_msa": right.name,
+                },
+            ]
+        },
+        base_dir=tmp_path,
+        ccd_path="unused.pkl",
+        seed=0,
+    )
+
+    assert built["msa"].shape == (1, 2, 4)
+    assert np.all(built["msa"][0, 1, :2] != MSA_GAP_TOKEN_ID)
+    assert np.all(built["msa"][0, 1, 2:] != MSA_GAP_TOKEN_ID)
+
+
+def test_all_atom_entity_identity_is_chemical_and_symmetry_is_global(fake_ccd) -> None:
+    built = all_atom.build_job_features(
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "M",
+                    "sequence": "AS",
+                    "modifications": [{"ccd": "SEP", "position": 2}],
+                },
+                {"type": "protein", "id": "A", "sequence": "AS"},
+                {"type": "protein", "id": "B", "sequence": "AS"},
+            ]
+        },
+        base_dir=".",
+        ccd_path="unused.pkl",
+        seed=0,
+    )
+
+    asym = built["asym_id"][0]
+    entity = built["entity_id"][0]
+    symmetry = built["sym_id"][0]
+    assert np.unique(entity[asym == 0]).tolist() == [0]
+    assert np.unique(entity[asym == 1]).tolist() == [1]
+    assert np.unique(entity[asym == 2]).tolist() == [1]
+    assert np.unique(symmetry[asym == 0]).tolist() == [0]
+    assert np.unique(symmetry[asym == 1]).tolist() == [0]
+    assert np.unique(symmetry[asym == 2]).tolist() == [1]
+
+
+def test_all_atom_msa_applies_the_requested_native_row_cap(
+    fake_ccd, tmp_path: Path
+) -> None:
+    msa = _write_a3m(
+        tmp_path / "cap.a3m", [("query", "AG"), ("one", "AG"), ("two", "AG")]
+    )
+    built = all_atom.build_job_features(
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": "AG",
+                    "unpaired_msa": msa.name,
+                }
+            ]
+        },
+        base_dir=tmp_path,
+        ccd_path="unused.pkl",
+        seed=0,
+        msa_depth=2,
+    )
+    assert built["msa"].shape == (1, 2, 2)
+
+
+def test_all_atom_msa_rejects_malformed_match_columns(fake_ccd, tmp_path: Path) -> None:
+    msa = _write_a3m(tmp_path / "bad.a3m", [("query", "AG"), ("bad", "A")])
+
+    with pytest.raises(ValueError, match="inconsistent A3M match-column counts"):
+        all_atom.build_job_features(
+            {
+                "entities": [
+                    {
+                        "type": "protein",
+                        "id": "A",
+                        "sequence": "AG",
+                        "unpaired_msa": msa.name,
+                    }
+                ]
+            },
+            base_dir=tmp_path,
+            ccd_path="unused.pkl",
+            seed=0,
+        )
+
+
+def test_modified_protein_query_msa_uses_polymer_sequence(fake_ccd) -> None:
+    built = all_atom.build_job_features(
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": "ASG",
+                    "modifications": [{"ccd": "SEP", "position": 2}],
+                }
+            ]
+        },
+        base_dir=".",
+        ccd_path="unused.pkl",
+        seed=0,
+    )
+    residue = built["residue_index"][0]
+    expected = np.asarray(
+        [all_atom.PROTEIN_RESIDUE_TO_RES_TYPE[name] for name in ("ALA", "SER", "GLY")]
+    )[residue]
+    np.testing.assert_array_equal(built["msa"][0, 0], expected)
+
+
+@pytest.mark.parametrize("depth", [0, -1, True, 1.5])
+def test_all_atom_msa_rejects_invalid_depth(fake_ccd, depth) -> None:
+    with pytest.raises(ValueError, match="positive integers"):
+        all_atom.build_job_features(
+            {"entities": [{"type": "protein", "id": "A", "sequence": "AG"}]},
+            base_dir=".",
+            ccd_path="unused.pkl",
+            seed=0,
+            msa_depth=depth,
+        )
 
 
 def test_all_biomolecule_mmcif_keeps_identity(fake_ccd) -> None:

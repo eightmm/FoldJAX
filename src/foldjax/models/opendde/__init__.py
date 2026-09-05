@@ -41,14 +41,22 @@ from foldjax.models.opendde.postprocess import (
     compute_contact_prob,
     opendde_confidence_scores,
 )
+from foldjax.models.opendde.provenance import (
+    CHECKPOINT_REVISION,
+    UPSTREAM_COMMIT,
+    UPSTREAM_VERSION,
+)
 
 __all__ = [
     "DistogramParams",
     "DiffusionConditioningParams",
     "DiffusionModuleParams",
     "OpenDDEInferenceParams",
+    "CHECKPOINT_REVISION",
     "STRUCTURAL_TOKEN_ROLES",
     "StructuralTokenExpanderParams",
+    "UPSTREAM_COMMIT",
+    "UPSTREAM_VERSION",
     "build_structural_pair_features",
     "centre_random_augmentation",
     "compute_contact_prob",

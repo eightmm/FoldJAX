@@ -51,13 +51,122 @@ def test_seed_deterministically_controls_reference_conformer() -> None:
     assert set(MODEL_FEATURES).issubset(first)
 
 
+def test_native_cyclic_query_mask_survives_archive_and_padding(tmp_path) -> None:
+    from foldjax.models.openfold3.data.featurize import (
+        load_features,
+        pad_features,
+        save_features,
+    )
+
+    linear = featurize_query(_spec(), seed=7)
+    cyclic = featurize_query(_spec(cyclic=True), seed=7)
+    assert not linear["cyclic_mask"].any()
+    assert cyclic["cyclic_mask"].all()
+    path = save_features(cyclic, tmp_path / "cyclic.npz")
+    restored, _ = load_features(path)
+    np.testing.assert_array_equal(restored["cyclic_mask"], cyclic["cyclic_mask"])
+    padded = pad_features(
+        restored,
+        n_token=len(SEQUENCE) + 3,
+        n_atom=restored["atom_mask"].shape[-1],
+    )
+    np.testing.assert_array_equal(padded["cyclic_mask"][0, : len(SEQUENCE)], True)
+    assert not padded["cyclic_mask"][0, len(SEQUENCE) :].any()
+
+
+def test_v050_profile_counts_columns_not_flattened_row_blocks() -> None:
+    from foldjax.models.openfold3._upstream.openfold3.core.data.primitives.sequence.msa import (  # noqa: E501
+        calculate_profile,
+    )
+    from foldjax.models.openfold3._upstream.openfold3.core.data.resources.residues import (  # noqa: E501
+        MoleculeType,
+        map_str_array_to_idx_array,
+    )
+
+    msa = np.array([list("ACDE"), list("AGDE"), list("ACDF")])
+    indices = map_str_array_to_idx_array(msa, MoleculeType.PROTEIN)
+    expected = (indices[..., None] == np.arange(32)).mean(axis=0)
+    for chunk_size in (1, 2, 1000):
+        np.testing.assert_array_equal(
+            calculate_profile(msa, MoleculeType.PROTEIN, chunk_size), expected
+        )
+
+
+def test_v050_main_msa_deduplicates_and_uses_native_deletion_scale(tmp_path) -> None:
+    path = tmp_path / "colabfold_main.a3m"
+    path.write_text(
+        f">query\n{SEQUENCE}\n>hit\nAaaaADEFGHIK\n>duplicate\nAaaaADEFGHIK\n"
+    )
+    features = featurize_query(_spec(main_msa_file_paths=[str(path)]), seed=101)
+    assert features["msa"].shape[1] == 3
+    np.testing.assert_allclose(
+        np.max(features["deletion_value"]), 0.5, rtol=0, atol=1e-7
+    )
+
+
+def test_missing_rna_msa_matches_native_query_only_dummy_rows() -> None:
+    sequence = "ACGU"
+    features = featurize_query(
+        {
+            "queries": {
+                "query": {
+                    "chains": [
+                        {
+                            "molecule_type": "rna",
+                            "chain_ids": ["R"],
+                            "sequence": sequence,
+                        },
+                        {
+                            "molecule_type": "ligand",
+                            "chain_ids": ["L"],
+                            "smiles": "CCO",
+                        },
+                    ]
+                }
+            }
+        },
+        seed=5,
+    )
+
+    msa = features["msa"][0]
+    restype = features["restype"][0]
+    profile = features["profile"][0]
+    assert msa.shape[0] == 2
+    np.testing.assert_array_equal(msa[0], msa[1])
+    np.testing.assert_array_equal(
+        msa[:, : len(sequence)],
+        np.broadcast_to(restype[None, :4], (2, 4, 32)),
+    )
+    np.testing.assert_array_equal(profile[: len(sequence)], restype[:4])
+    assert np.all(np.argmax(msa[:, len(sequence) :], axis=-1) == 31)
+    assert not np.any(profile[len(sequence) :])
+
+
+def test_v050_ccd_ligand_retains_stereochemistry_before_regeneration(monkeypatch):
+    from rdkit import Chem
+
+    assigned = []
+    original = Chem.AssignStereochemistryFrom3D
+
+    def record(mol, *args, **kwargs):
+        original(mol, *args, **kwargs)
+        assigned.append(Chem.FindMolChiralCenters(mol, includeUnassigned=False))
+
+    monkeypatch.setattr(Chem, "AssignStereochemistryFrom3D", record)
+    spec = _spec()
+    spec["queries"]["query"]["chains"].append(
+        {"molecule_type": "ligand", "chain_ids": ["L"], "ccd_codes": ["SAM"]}
+    )
+    featurize_query(spec, seed=101)
+    assert len(assigned) == 1
+    assert assigned[0]
+
+
 def test_raw_query_and_msa_execute_with_a_hard_torch_import_block(
     tmp_path: Path,
 ) -> None:
     alignment = tmp_path / "colabfold_main.a3m"
-    alignment.write_text(
-        f">query\n{SEQUENCE}\n>hit\n{'A' * len(SEQUENCE)}\n"
-    )
+    alignment.write_text(f">query\n{SEQUENCE}\n>hit\n{'A' * len(SEQUENCE)}\n")
     script = r"""
 import builtins
 import sys
@@ -485,9 +594,7 @@ def test_alignment_indel_map_is_preserved_without_canonical_realign(
     def unexpected_realign(*_args, **_kwargs):
         raise AssertionError("complete supplied alignment must not be realigned")
 
-    monkeypatch.setattr(
-        numpy_features, "_template_entry_from_cif", unexpected_realign
-    )
+    monkeypatch.setattr(numpy_features, "_template_entry_from_cif", unexpected_realign)
     candidate = numpy_features._template_entry_from_alignment(
         cif, template, TEMPLATE_SEQUENCE
     )
@@ -511,9 +618,7 @@ def test_a3m_indel_position_reaches_template_mask(tmp_path: Path) -> None:
     shutil.copy2(fixture, tmp_path / "gaag.cif")
 
     insertion = 2
-    query_sequence = (
-        TEMPLATE_SEQUENCE[:insertion] + "A" + TEMPLATE_SEQUENCE[insertion:]
-    )
+    query_sequence = TEMPLATE_SEQUENCE[:insertion] + "A" + TEMPLATE_SEQUENCE[insertion:]
     template_alignment = (
         TEMPLATE_SEQUENCE[:insertion] + "-" + TEMPLATE_SEQUENCE[insertion:]
     )

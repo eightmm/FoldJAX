@@ -539,7 +539,7 @@ def foldjax_implicit_asset_paths(
 
 
 def _input_artifact_paths(
-    job: Path,
+    job: Path | None,
     *,
     native_input: Path | None,
 ) -> dict[str, Path]:
@@ -548,13 +548,15 @@ def _input_artifact_paths(
         native_input_dependency_paths,
     )
 
-    dependencies = common_job_dependency_paths(job)
-    if dependencies is None:
-        raise ArtifactFingerprintError(
-            "benchmark job is not a valid FoldJAX common-schema document"
-        )
-    inputs = {"common.job": Path(job)}
-    inputs.update({f"common.{label}": path for label, path in dependencies.items()})
+    inputs: dict[str, Path] = {}
+    if job is not None:
+        dependencies = common_job_dependency_paths(job)
+        if dependencies is None:
+            raise ArtifactFingerprintError(
+                "benchmark job is not a valid FoldJAX common-schema document"
+            )
+        inputs["common.job"] = Path(job)
+        inputs.update({f"common.{label}": path for label, path in dependencies.items()})
     if native_input is not None:
         native_dependencies = native_input_dependency_paths(native_input)
         if native_dependencies is None:
@@ -565,12 +567,16 @@ def _input_artifact_paths(
         inputs.update(
             {f"native.{label}": path for label, path in native_dependencies.items()}
         )
+    if not inputs:
+        raise ArtifactFingerprintError(
+            "benchmark identity needs a common job or native input"
+        )
     return inputs
 
 
 def artifact_identity(
     *,
-    job: Path,
+    job: Path | None = None,
     checkpoints: Mapping[str, Path],
     native_input: Path | None = None,
     implicit_assets: Mapping[str, Path] | None = None,
@@ -579,7 +585,10 @@ def artifact_identity(
 
     return {
         "inputs": fingerprint_artifacts(
-            _input_artifact_paths(Path(job), native_input=native_input),
+            _input_artifact_paths(
+                Path(job) if job is not None else None,
+                native_input=native_input,
+            ),
             allow_directories=False,
         ),
         "checkpoints": fingerprint_artifacts(checkpoints),
@@ -752,6 +761,14 @@ def foldjax_effective_environment(
         )
         if libcifpp is not None:
             effective["LIBCIFPP_DATA_DIR"] = str(libcifpp)
+    elif model == "boltz2":
+        # The template-only path imports sklearn's threadpoolctl after the
+        # benchmark snapshot. threadpoolctl and the loaded OpenMP runtime set
+        # these defaults process-wide; project them up front so a deterministic
+        # library initialization is not mistaken for a caller changing the
+        # execution controls mid-prediction.
+        effective.setdefault("KMP_DUPLICATE_LIB_OK", "True")
+        effective.setdefault("KMP_INIT_AT_FORK", "FALSE")
     return effective
 
 
@@ -771,9 +788,7 @@ def execution_identity(
     controls: dict[str, Any] = {}
     names = set(_EXECUTION_ENVIRONMENT_NAMES)
     names.update(
-        name
-        for name in environment
-        if name.startswith(_EXECUTION_ENVIRONMENT_PREFIXES)
+        name for name in environment if name.startswith(_EXECUTION_ENVIRONMENT_PREFIXES)
     )
     for name in sorted(names):
         value = environment.get(name)
@@ -784,7 +799,8 @@ def execution_identity(
         sensitive = (
             name not in _EXECUTION_ENVIRONMENT_NAMES
             or name in _PATH_ENVIRONMENT_NAMES
-            or name in {
+            or name
+            in {
                 "CUDA_VISIBLE_DEVICES",
                 "XLA_FLAGS",
             }

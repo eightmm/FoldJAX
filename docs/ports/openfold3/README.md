@@ -9,15 +9,14 @@
 
 A JAX inference port of [OpenFold3](https://github.com/aqlaboratory/openfold-3).
 
-**Status: end-to-end inference runs on the released weights.** The whole latent trunk
+**Current status: v0.5.0/OpenBind end-to-end inference is the only supported
+profile.** The whole latent trunk
 — Pairformer stack (AF3 Alg. 17), MSA module stack (AF3 Alg. 8) and template pair
 stack (AF2 Alg. 16) — plus the diffusion sampler and confidence heads are ported and
-gated against the real upstream torch modules. The released `of3_ft3_v1` checkpoint
-loads and predicts: real 1UBQ folds to 2.5 Å CA RMSD from its deposition using the
-query sequence alone, and benchmark targets up to 3,012 tokens run on the
-documented card. Raw-job
+gated against the real upstream torch modules. Raw-job
 featurization and inference use FoldJAX's NumPy/JAX path and import neither
-torch nor the publisher runtime.
+torch nor the publisher runtime. The p1 measurements retained below are
+historical evidence, not a supported checkpoint path.
 
 `PROJECT.md`'s milestone numbering predates all of that and understates where the
 port is; the tables below are what has actually been gated.
@@ -215,7 +214,8 @@ not.
 
 ### What has actually been run
 
-The released `of3_ft3_v1` checkpoint (4945 tensors, 48/4/24/3 blocks, unfused
+**Historical p1 result.** The retired `of3_ft3_v1` checkpoint (4945 tensors,
+48/4/24/3 blocks, unfused
 triangular multiplication) loads and predicts. On real 1UBQ from its sequence alone,
 with no alignment and no template, the five samples land **2.52–2.79 Å CA RMSD** from
 the deposition, with CA–CA spacing of 3.74 Å and a radius of gyration of 11.4 Å
@@ -463,8 +463,8 @@ the order that fails cheapest first — block counts against the released
 architecture, then the trunk mapper, then optionally the forward pass:
 
 ```bash
-openfold3-jax-verify-checkpoint of3_ft3_v1.pt
-openfold3-jax-verify-checkpoint of3_ft3_v1.pt --batch batch.npz --tokens 384 --atoms 3072
+openfold3-jax-verify-checkpoint of3-ob-2025-06-30-174k.pt
+openfold3-jax-verify-checkpoint of3-ob-2025-06-30-174k.pt --batch batch.npz --tokens 384 --atoms 3072
 ```
 
 It exits non-zero on a block-count mismatch rather than mapping a checkpoint the
@@ -492,8 +492,8 @@ The released config sets `fuse_projection_weights: false`, so real checkpoints
 are expected unfused; a test records that, and another builds a fully fused model
 from upstream's config and maps it, so neither path can rot unnoticed.
 
-Weights are never committed here. FoldJAX fetches the public p1
-`of3_ft3_v1.pt` from the publisher's unsigned
-`s3://openfold/openfold3_params/` bucket and verifies its pinned SHA-256. This
-port implements p1; upstream p2 and OpenBind v0.5 checkpoints use incompatible
-architectures and must not be substituted.
+Weights are never committed here. FoldJAX fetches the public v0.5.0 OpenBind
+`of3-ob-2025-06-30-174k.pt` from the publisher's `openfold3-data` bucket and
+verifies its pinned SHA-256. It is the sole managed target. Legacy p1 and p2
+checkpoints are rejected before inference. Exact commits and hashes are in the
+[model version ledger](../../model-versions.md#openfold3).

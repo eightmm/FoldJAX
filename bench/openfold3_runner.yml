@@ -7,10 +7,6 @@
 model_update:
   presets:
     - predict
-    # of3_ft3_v1.pt carries the PAE aux head; 0.3.1 builds it only under this
-    # preset, and a strict load rejects the checkpoint without it. (0.4.x
-    # deprecates the preset -- the head became unconditional there.)
-    - pae_enabled
   custom:
     architecture:
       shared:
@@ -18,21 +14,10 @@ model_update:
     settings:
       memory:
         eval:
-          # Plain torch attention: the only path 0.3.1 can complete on this
-          # card. Its default DS4Sci evoformer_attn refuses to build for
-          # sm_120 (cutlass generation), and its experimental cueq flag dies
-          # in the confidence stack at num_samples>1 (bias batched over
-          # samples where the kernel wants (B, 1, H, S, S)). Recorded in
-          # upstream-environments.md; the timing column carries this caveat.
-          use_cueq_triangle_kernels: false
-          use_deepspeed_evo_attention: false
-          # The predict preset offloads the confidence heads to the host above
-          # 2,800 tokens (model_setting_presets.yml: token_cutoff 2800) -- a
-          # small-card accommodation that turned the 3,012-token cell into
-          # 6,782 s where N^3 scaling predicts ~2,900. This card holds the
-          # heads in HBM with room to spare, so the offload is disabled; the
-          # preset's chunk_size 4 is upstream's considered inference default
-          # and stays.
+          # The v0.5 predict preset dynamically tunes chunks up to 1,024 and
+          # offloads confidence heads above 2,800 tokens. This benchmark host
+          # has enough HBM to keep those heads on device, so only that offload
+          # is disabled; the released chunk tuner and Triton defaults remain.
           offload_inference:
             confidence_heads: false
 experiment_settings:

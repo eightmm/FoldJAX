@@ -1,4 +1,4 @@
-"""OpenDDE discards two inputs its upstream defaults never read.
+"""OpenDDE keeps upstream's defaults but exposes both optional input paths.
 
 `use_template=False` and `use_rna_msa=False` are OpenDDE's shipped inference
 defaults (config/inference_defaults.py:28-29), so upstream's featurizer never
@@ -7,8 +7,8 @@ featurizer, which does.
 
 That divergence is the dangerous kind: nothing fails, both runs finish, and the
 structures differ only on jobs where a user supplied the very file they cared
-about. The port drops the fields to match upstream and warns, because matching
-upstream's answer is the goal and copying upstream's silence about it is not.
+about. The port drops the fields at those defaults and warns. Explicit opt-in
+retains them, matching the corresponding upstream CLI flags.
 """
 
 from __future__ import annotations
@@ -71,6 +71,35 @@ def test_rna_alignment_is_dropped_with_a_warning(tmp_path) -> None:
         prepared = _prepare(document, tmp_path)
 
     assert "unpairedMsaPath" not in _chain(prepared)
+
+
+@pytest.mark.parametrize(
+    ("kind", "field", "filename", "options"),
+    [
+        ("proteinChain", "templatesPath", "t.cif", {"use_template": True}),
+        ("rnaSequence", "unpairedMsaPath", "r.a3m", {"use_rna_msa": True}),
+    ],
+)
+def test_explicit_upstream_feature_flag_keeps_the_input(
+    tmp_path, kind: str, field: str, filename: str, options: dict
+) -> None:
+    (tmp_path / filename).write_text("feature\n")
+    document = {
+        "sequences": [
+            {
+                kind: {
+                    "sequence": "ACGU" if kind == "rnaSequence" else "ACD",
+                    "count": 1,
+                    field: filename,
+                }
+            }
+        ]
+    }
+
+    with NoWarning():
+        prepared = fj._prepare_job(document, base_dir=tmp_path, **options)
+
+    assert _chain(prepared)[field] == str(tmp_path / filename)
 
 
 def test_a_protein_alignment_is_kept(tmp_path) -> None:

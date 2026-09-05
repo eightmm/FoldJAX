@@ -1119,10 +1119,16 @@ def _chains_from_document(
 
 
 def _requires_all_atom_features(document: Mapping[str, Any]) -> bool:
-    """Whether the official all-biomolecule tokenizer is semantically needed."""
+    """Use the creator pipeline beyond the legacy single-protein/query-only case."""
 
-    return bool(document.get("bonds")) or any(
-        entity.get("type") != "protein" or entity.get("modifications")
+    chains = sum(
+        1 if isinstance(entity["id"], str) else len(entity["id"])
+        for entity in document["entities"]
+    )
+    return chains != 1 or bool(document.get("bonds")) or any(
+        entity.get("type") != "protein"
+        or entity.get("modifications")
+        or entity.get("unpaired_msa")
         for entity in document["entities"]
     )
 

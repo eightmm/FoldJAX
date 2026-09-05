@@ -23,7 +23,7 @@ def _is_checkout(path: Path) -> bool:
     return (
         (path / "openfold3" / "core" / "model").is_dir()
         and metadata.is_file()
-        and 'version = "0.3.1"' in metadata.read_text()
+        and "0.5.0" in metadata.read_text()
     )
 
 
@@ -33,9 +33,9 @@ def _find_source() -> Path | None:
         Path(explicit).expanduser()
         if (explicit := os.environ.get("OPENFOLD3_SOURCE"))
         else None,
-        repository_root.parent / "openfold3-v031",
-        Path.cwd() / "openfold3-v031",
-        Path.cwd().parent / "openfold3-v031",
+        repository_root.parent / "openfold3-v050",
+        Path.cwd() / "openfold3-v050",
+        Path.cwd().parent / "openfold3-v050",
     ]
     return next(
         (path for path in candidates if path is not None and _is_checkout(path)),
@@ -44,7 +44,7 @@ def _find_source() -> Path | None:
 
 
 OPENFOLD3_SOURCE = (
-    _find_source() or Path(__file__).resolve().parents[4] / "openfold3-v031"
+    _find_source() or Path(__file__).resolve().parents[4] / "openfold3-v050"
 )
 
 

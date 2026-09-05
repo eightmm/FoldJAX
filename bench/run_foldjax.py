@@ -69,6 +69,12 @@ _oom = __import__("foldjax.oom", fromlist=["oom"])
 _oom.set_mem_fraction(_oom.PREDICT_MEM_FRACTION)
 
 
+def _artifact_input_arguments(path: Path, input_format: str) -> dict[str, Path]:
+    if input_format == "foldjax":
+        return {"job": Path(path)}
+    return {"native_input": Path(path)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
@@ -121,6 +127,12 @@ def main() -> int:
         "keep the pinned schedule",
     )
     parser.add_argument(
+        "--padding",
+        action="store_true",
+        help="use FoldJAX's standard neutral padding buckets; this is needed "
+        "when a native upstream enables bucketing by default",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         help="use an isolated persistent-cache root for a cache-behaviour gate",
@@ -171,10 +183,14 @@ def main() -> int:
             options=options,
             profile=profile,
             cache_dir=args.cache_dir,
+            padding=True if args.padding else None,
             **schedule,
         )
     )
     assert request.weights is not None
+    artifact_input_arguments = _artifact_input_arguments(
+        Path(request.input), request.input_format
+    )
     try:
         checkpoint_paths = foldjax_checkpoint_paths(model, Path(request.weights))
         implicit_asset_paths = foldjax_implicit_asset_paths(
@@ -183,7 +199,7 @@ def main() -> int:
             options=request.options,
         )
         artifacts = artifact_identity(
-            job=Path(request.input),
+            **artifact_input_arguments,
             checkpoints=checkpoint_paths,
             implicit_assets=implicit_asset_paths,
         )
@@ -203,6 +219,8 @@ def main() -> int:
     except ArtifactFingerprintError as error:
         parser.error(str(error))
     portable = portable_options(options)
+    if args.padding:
+        portable["neutral_padding"] = "standard"
     identity = benchmark_identity(
         impl="foldjax",
         model=args.model,
@@ -246,7 +264,7 @@ def main() -> int:
     require_unchanged(
         artifacts,
         artifact_identity(
-            job=Path(request.input),
+            **artifact_input_arguments,
             checkpoints=checkpoint_paths,
             implicit_assets=foldjax_implicit_asset_paths(
                 model,
@@ -296,6 +314,8 @@ def main() -> int:
             {"seed": sample.seed, "scores": sample.scores} for sample in result.samples
         ],
     }
+    if result.shape_profile is not None:
+        record["shape_profile"] = result.shape_profile
     if not reusable_result(record, expected_identity=identity):
         record["failed"] = True
         record["reason"] = (

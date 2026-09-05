@@ -58,9 +58,7 @@ def _alias_state(*, prefix: str = "wrapper") -> dict[str, np.ndarray]:
 def test_prunes_only_a_complete_alias_group_at_the_resolved_nested_prefix() -> None:
     state = _alias_state()
 
-    removed = torch_mapping.prune_sample_diffusion_aliases(
-        state, prefix="wrapper"
-    )
+    removed = torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper")
 
     assert removed == 2
     assert set(state) == {
@@ -74,9 +72,7 @@ def test_preserves_a_partial_sample_diffusion_group() -> None:
     state = _alias_state()
     del state["wrapper.sample_diffusion.diffusion_module.b"]
 
-    assert (
-        torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper") == 0
-    )
+    assert torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper") == 0
     assert "wrapper.sample_diffusion.diffusion_module.a" in state
 
 
@@ -86,27 +82,21 @@ def test_preserves_a_nonmatching_sample_diffusion_group_bitwise() -> None:
         [1.0, 0.0], dtype=np.float32
     )
 
-    assert (
-        torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper") == 0
-    )
+    assert torch_mapping.prune_sample_diffusion_aliases(state, prefix="wrapper") == 0
     assert "wrapper.sample_diffusion.diffusion_module.a" in state
 
 
 def test_compares_scalar_aliases_bitwise_without_aborting() -> None:
     identical = {
         "diffusion_module.scalar": np.asarray(-0.0, dtype=np.float32),
-        "sample_diffusion.diffusion_module.scalar": np.asarray(
-            -0.0, dtype=np.float32
-        ),
+        "sample_diffusion.diffusion_module.scalar": np.asarray(-0.0, dtype=np.float32),
     }
     assert torch_mapping.prune_sample_diffusion_aliases(identical, prefix="") == 1
     assert set(identical) == {"diffusion_module.scalar"}
 
     different = {
         "diffusion_module.scalar": np.asarray(-0.0, dtype=np.float32),
-        "sample_diffusion.diffusion_module.scalar": np.asarray(
-            0.0, dtype=np.float32
-        ),
+        "sample_diffusion.diffusion_module.scalar": np.asarray(0.0, dtype=np.float32),
     }
     assert torch_mapping.prune_sample_diffusion_aliases(different, prefix="") == 0
     assert "sample_diffusion.diffusion_module.scalar" in different
@@ -171,8 +161,38 @@ def test_maps_a_real_model_state_dict(released_state: dict) -> None:
     # seeded torch stream that generated them.
     assert params.diffusion_conditioning.fourier_emb.w.shape[-1] > 0
     # The pair conditioning path must be mapped, not silently skipped.
-    assert params.diffusion_conditioning.linear_z is not None
+    assert params.diffusion_conditioning.linear_z.weight.shape
     assert len(params.diffusion_conditioning.transition_z) == 2
+
+
+def test_openbind_layout_is_the_only_inference_contract(
+    released_state: dict,
+) -> None:
+    params = map_inference_params(released_state, prestack=False)
+    transformer = params.denoiser.diffusion_transformer
+    assert transformer.layer_norm_z.weight.shape
+    assert all(
+        not hasattr(block.attention_pair_bias, "layer_norm_z")
+        for block in transformer.blocks
+    )
+
+
+def test_rejects_a_legacy_checkpoint_without_the_openbind_marker(
+    released_state: dict,
+) -> None:
+    state = dict(released_state)
+    del state["diffusion_module.diffusion_transformer.layer_norm_z.weight"]
+
+    with pytest.raises(KeyError, match="v0.5.0/OpenBind checkpoints only"):
+        map_inference_params(state)
+
+
+def test_rejects_a_non_openbind_model_version(released_state: dict) -> None:
+    state = dict(released_state)
+    state["version_tensor"] = np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+
+    with pytest.raises(ValueError, match=r"model version \[2, 0, 0\] only"):
+        map_inference_params(state)
 
 
 def test_pruning_keeps_the_mapped_tree_bitwise_exact(released_state: dict) -> None:
@@ -337,9 +357,9 @@ def test_every_parameter_of_the_real_model_is_consumed(released_state: dict) -> 
     for key in aliases:
         mirrored = key[len("sample_diffusion.") :]
         assert mirrored in released_state, f"{key} is not an alias after all"
-        assert (
-            released_state[key].data_ptr() == released_state[mirrored].data_ptr()
-        ), f"{key} does not share storage with {mirrored}"
+        assert released_state[key].data_ptr() == released_state[mirrored].data_ptr(), (
+            f"{key} does not share storage with {mirrored}"
+        )
 
     remaining = [
         key

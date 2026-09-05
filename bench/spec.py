@@ -74,10 +74,9 @@ MODELS = (
 #: installation rather than reimplementing it, so both columns would run the
 #: same code.
 #:
-#: OpenFold3 is included through the upstream 0.3.1 environment and the p1
-#: checkpoint this port implements. ``openfold3_runner.yml`` pins the shared
-#: schedule; the recorded speed column remains hardware-qualified because the
-#: upstream accelerated attention paths do not run on this host's sm_120 GPU.
+#: OpenFold3 is included through the upstream v0.5.0 environment and the
+#: OpenBind checkpoint this port implements. ``openfold3_runner.yml`` pins the
+#: shared schedule and seed.
 REIMPLEMENTED = (
     "boltz2",
     "opendde",

@@ -261,6 +261,13 @@ Matched-noise multimodal checks reached all-atom Kabsch errors of
 checks reached maximum energy and gradient differences of approximately
 `4.8e-7` and `2.9e-6` against the Torch implementation.
 
+For the current `v2` checkpoint, a shared-noise input containing protein, DNA,
+RNA, ATP, a SMILES ligand, and MG gave `0.016047 Å` raw and `0.015961 Å`
+Kabsch all-atom RMSD; `s_inputs`, `s_trunk`, and `z_trunk` correlations were
+`1.0`, `0.9999999995`, and `0.9999996106`. A separate mapped-template 9FM7
+real-weight run also completed with one nonzero template row. These use a
+two-step/one-cycle parity schedule, not the released accuracy schedule.
+
 ## Development
 
 ```bash

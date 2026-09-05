@@ -75,6 +75,7 @@ def test_single_conditioning_matches_transcribed_reference(
 ) -> None:
     """The concat order and the noise-embedding addition are what matter here."""
     torch = _torch()
+    from openfold3.core.model.layers.transition import SwiGLUTransition
     from openfold3.core.model.primitives import LayerNorm, Linear
 
     ln_s = randomized(LayerNorm(C_S + C_S_INPUT, create_offset=False))
@@ -101,6 +102,10 @@ def test_single_conditioning_matches_transcribed_reference(
         ("fourier_emb", fourier),
         ("layer_norm_n", ln_n),
         ("linear_n", lin_n),
+        ("layer_norm_z", LayerNorm(C_S, create_offset=False)),
+        ("linear_z", Linear(C_S, C_S, bias=False)),
+        ("transition_z.0", SwiGLUTransition(c_in=C_S, n=2)),
+        ("transition_z.1", SwiGLUTransition(c_in=C_S, n=2)),
     ):
         for key, value in module.state_dict().items():
             state[f"{name}.{key}"] = value
@@ -125,6 +130,7 @@ def test_single_conditioning_matches_transcribed_reference(
 def test_noise_level_changes_the_conditioning(openfold3_source: Path) -> None:
     """0.25*log(t/sigma_data) must actually reach the output."""
     _torch()
+    from openfold3.core.model.layers.transition import SwiGLUTransition
     from openfold3.core.model.primitives import LayerNorm, Linear
 
     fourier = _fourier()
@@ -135,6 +141,10 @@ def test_noise_level_changes_the_conditioning(openfold3_source: Path) -> None:
         ("fourier_emb", fourier),
         ("layer_norm_n", LayerNorm(C_FOURIER, create_offset=False)),
         ("linear_n", Linear(C_FOURIER, C_S, bias=False)),
+        ("layer_norm_z", LayerNorm(C_S, create_offset=False)),
+        ("linear_z", Linear(C_S, C_S, bias=False)),
+        ("transition_z.0", SwiGLUTransition(c_in=C_S, n=2)),
+        ("transition_z.1", SwiGLUTransition(c_in=C_S, n=2)),
     ):
         for key, value in module.state_dict().items():
             state[f"{name}.{key}"] = value
@@ -156,6 +166,7 @@ def test_noise_level_changes_the_conditioning(openfold3_source: Path) -> None:
 def test_mapper_requires_the_fourier_buffers(openfold3_source: Path) -> None:
     """The buffers cannot be re-sampled in JAX, so their absence must fail."""
     _torch()
+    from openfold3.core.model.layers.transition import SwiGLUTransition
     from openfold3.core.model.primitives import LayerNorm, Linear
 
     state = {}
@@ -164,6 +175,10 @@ def test_mapper_requires_the_fourier_buffers(openfold3_source: Path) -> None:
         ("linear_s", Linear(C_S + C_S_INPUT, C_S, bias=False)),
         ("layer_norm_n", LayerNorm(C_FOURIER, create_offset=False)),
         ("linear_n", Linear(C_FOURIER, C_S, bias=False)),
+        ("layer_norm_z", LayerNorm(C_S, create_offset=False)),
+        ("linear_z", Linear(C_S, C_S, bias=False)),
+        ("transition_z.0", SwiGLUTransition(c_in=C_S, n=2)),
+        ("transition_z.1", SwiGLUTransition(c_in=C_S, n=2)),
     ):
         for key, value in module.state_dict().items():
             state[f"{name}.{key}"] = value

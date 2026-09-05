@@ -1,4 +1,5 @@
 # Copyright 2026 AlQuraishi Laboratory
+# Modified by FoldJAX for portable v0.5.0 input parity; see the port NOTICE.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -211,6 +212,8 @@ def processed_reference_molecule_from_atom_array(
     # Convert to RDKit mol
     mol = to_mol(atom_array, kekulize=True)
     Chem.SanitizeMol(mol)
+    if np.all(atom_array.molecule_type_id == MoleculeType.LIGAND):
+        Chem.AssignStereochemistryFrom3D(mol)
     mol.RemoveConformer(0)
 
     return processed_reference_molecule_from_mol(
@@ -632,6 +635,9 @@ def structure_with_ref_mols_from_query(query: Query) -> StructureWithReferenceMo
             )
 
             # Append atom array to end
+            segment_atom_array.set_annotation(
+                "is_cyclic", np.repeat(chain.cyclic, len(segment_atom_array))
+            )
             if atom_array is None:
                 atom_array = segment_atom_array
             else:

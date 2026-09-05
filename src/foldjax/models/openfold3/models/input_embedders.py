@@ -4,8 +4,8 @@ Concatenates the one-hot MSA with its two deletion features, projects to the MSA
 channel width, and adds the single-representation projection broadcast across
 sequences.
 
-MSA **subsampling is not performed here, and that is a real divergence above a
-threshold.** The released config sets ``subsample_all_msa=True`` with
+MSA **subsampling is not performed here.** The released config sets
+``subsample_all_msa=True`` with
 ``min_subsampled_all_msa == max_subsampled_all_msa == 1024``, and upstream's
 ``MSAModuleEmbedder.forward`` applies it with no ``self.training`` guard -- so it
 runs at inference too. An earlier version of this note claimed the opposite.
@@ -17,14 +17,13 @@ which JAX cannot reproduce. What that costs depends on the MSA:
   and pads with all-masked rows. Appending all-masked rows is bit-identical to
   omitting them (``test_masked_msa_rows_are_a_no_op``), so this port agrees
   exactly.
-* **more than 1024 valid rows**: upstream keeps a random 1024 of them. This port
-  uses all rows, so the two differ, and no choice of PRNG makes them agree.
+* **more than 1024 valid rows**: upstream keeps a random 1024 of them. The host
+  cycle planner stores their compact union and supplies each recycle's selection.
 
 Selecting rows is a data-pipeline decision, not a network one, so
 :func:`subsample_msa` performs the selection outside the embedder: it reproduces
-upstream's ordering (valid rows first, in ascending order) and takes an explicit
-row permutation when the caller has one, which is the only way to match upstream's
-random choice above the threshold.
+upstream's ordering and explicit selected-index tapes remain available for
+low-level parity tests.
 """
 
 from __future__ import annotations

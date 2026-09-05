@@ -96,6 +96,7 @@ def tri_att_start_end(
         params.tri_att_end,
         no_heads=no_heads_pair,
         mask=jnp.swapaxes(pair_mask, -1, -2),
+        transpose_bias=True,
         inf=inf,
         eps=eps,
         chunk_size=chunk_size,

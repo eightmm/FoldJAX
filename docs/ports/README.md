@@ -6,6 +6,10 @@ before it was called done. The code moved into `src/foldjax/models/<name>/` and
 the test suites into `tests/models/<name>/`; this directory is where the
 *reasoning* moved, so the sibling checkouts can be deleted without losing it.
 
+These files are historical evidence, not the current version declaration. The
+[model version ledger](../model-versions.md) is the canonical list of source
+commits, checkpoint identities, profiles, and verified support boundaries.
+
 The dated benchmark write-ups those gates were once argued from have been
 removed: they measured revisions from July 2026 and were being read as current
 numbers. [`docs/benchmark.md`](../benchmark.md) is the one measured comparison,

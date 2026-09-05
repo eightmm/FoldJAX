@@ -23,6 +23,15 @@ from foldjax.schema import PaddingConfig, PredictionError
 PREPARED_PARAMS_LOADER_API = True
 
 
+def _boolean(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
 def _load_jobs(path: Path) -> list[dict[str, Any]]:
     from foldjax.models.opendde.data.featurize_json import load_jobs
 
@@ -348,6 +357,7 @@ def _score(
 def _write(root: Path, **kwargs: Any) -> list[Path]:
     from foldjax.models.opendde.postprocess import (
         SHAPE_COMPLEMENTARITY_SCORE_KEYS,
+        repair_terminal_oxt_coordinates,
     )
     from foldjax.models.protenix.data.output import write_protenix_outputs
 
@@ -356,6 +366,14 @@ def _write(root: Path, **kwargs: Any) -> list[Path]:
     # reported outputs, so opt them in explicitly without widening Protenix's
     # allowlist or exposing unrelated pair arrays.
     kwargs["extra_summary_fields"] = SHAPE_COMPLEMENTARITY_SCORE_KEYS
+    output = kwargs.get("output")
+    features = kwargs.get("features")
+    if isinstance(output, Mapping) and isinstance(features, Mapping):
+        coordinates, repaired = repair_terminal_oxt_coordinates(
+            output.get("coordinate"), features
+        )
+        if repaired:
+            kwargs["output"] = {**output, "coordinate": coordinates}
     return write_protenix_outputs(root, **kwargs)
 
 
@@ -421,6 +439,8 @@ def main(
     )
     parser.add_argument("--n-queries", type=int, default=32)
     parser.add_argument("--n-keys", type=int, default=128)
+    parser.add_argument("--use-template", type=_boolean, default=False)
+    parser.add_argument("--use-rna-msa", type=_boolean, default=False)
     parser.add_argument(
         "--max-msa-depth",
         "--max-msa-rows",
@@ -692,6 +712,8 @@ def main(
                     n_keys=args.n_keys,
                     max_msa_depth=args.max_msa_depth,
                     seed=seed,
+                    use_template=args.use_template,
+                    use_rna_msa=args.use_rna_msa,
                 )
                 features = compact_msa_storage(features)
                 output_features = (

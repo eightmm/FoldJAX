@@ -108,17 +108,25 @@ defaults to 3 recycles rather than 10, so this asks more of it than its own
 default does; it asks the same of its upstream, which is what makes the
 comparison mean anything. See `spec.py`.
 
-The historical upstream OpenFold3 cells in `docs/benchmark.md` predate a seed
-control fix: 0.3.1's `--num_model_seeds 1` replaced the YAML seed with one
-generated from 42. Those rows remain valid time/memory measurements but their
-confidence is explicitly marked not seed-matched. Current runs omit that flag
-and use the YAML's sole seed, 101. They also pass `--use_templates false`:
-these benchmark jobs have no template input, and letting 0.3.1's default remain
-true only initialized template/CCD preprocessing that could not add a template.
+The historical upstream OpenFold3 cells in `docs/benchmark.md` used the retired
+0.3.1/p1 route and predate a seed-control fix: `--num_model_seeds 1` replaced
+the YAML seed with one generated from 42. Those rows remain valid time/memory
+measurements but their confidence is explicitly marked not seed-matched. The
+current v0.5.0/OpenBind route omits that flag, uses the YAML's sole seed 101,
+and passes `--use_templates false` because these jobs have no template input.
 
 MSA depth is deliberately not pinned: not every upstream exposes a depth
 argument, so fixing one would mean FoldJAX doing something its own reference
 cannot. Both sides read the same alignment and apply the same default.
+
+The universal schedule above is the historical throughput/memory protocol. It
+must not be presented as every model's native default. The distinct
+upstream-default n=5 protocol keeps each release's own recycle/loop count,
+precision, and MSA limit, overriding only the sample count for Boltz-2 (1→5)
+and ESMFold2 (32→5). Its controlled 1UBQ distributional result is recorded in
+[`experiments/upstream-default-n5-2026-09-04.json`](experiments/upstream-default-n5-2026-09-04.json);
+the claim is deliberately limited to one protein and is not a performance
+ranking or a matched-random-tape test.
 
 ## Every upstream path is disclosed
 
@@ -144,10 +152,10 @@ and, more importantly, how to verify each one actually took effect. A kernel
 built for the wrong architecture fails *asynchronously*, so the call returns
 normally and the error surfaces somewhere else entirely.
 
-Boltz-2 needed nothing: it already had cuEquivariance. OpenFold3 is a different
-case rather than an incomplete environment: its p1-compatible 0.3.1 kernels do
-not support this sm_120 route, so its plain-Torch timing is explicitly qualified
-in the OpenFold3 section below.
+Boltz-2 needed nothing: it already had cuEquivariance. The OpenFold3 limitation
+described in the checked-in report applies only to the historical 0.3.1/p1
+measurements; the current v0.5.0/OpenBind route retains upstream's Triton and
+dynamic chunk-tuning defaults and needs a fresh benchmark matrix.
 
 ## Running it
 
@@ -263,26 +271,19 @@ beside a stated dtype and not in a column that implies one.
 ## OpenFold3's upstream route
 
 OpenFold3 is in both `MODELS` and `REIMPLEMENTED`. `run_upstream.py`
-drives the provisioned `openfold3-v031` environment rather than the current
-upstream checkout: the `of3_ft3_v1.pt` p1 checkpoint implemented by FoldJAX has
-`version_compatibility="<0.4"`, and current OpenFold3 rejects that architecture.
+drives the pinned `openfold3-v050` worktree and its default OpenBind checkpoint,
+`of3-ob-2025-06-30-174k.pt`. This is the same model architecture and parameter
+artifact implemented by the FoldJAX arm; p1 and p2 are not selectable profiles.
 
 The command-line flag sets five diffusion samples. The other controlled
-settings live in `openfold3_runner.yml`: it selects the
-prediction and PAE presets, overrides the upstream default from 3 to 10
-recycles, supplies the sole model seed, 101, and disables confidence-head host
-offload; the latter changed the 3,012-token historical wall time by about one
-minute and raised peak by about 2.2 GiB while remaining within capacity. The
-harness deliberately does
-not pass 0.3.1's `--num_model_seeds`: that flag discards the YAML seed list and
-generates a new one from 42. The release already supplies 200 rollout steps.
-This is the current harness configuration. Historical upstream cells in
-`docs/benchmark.md` used the generated seed described above and retain their
-explicit dagger rather than being relabeled as current runs.
+settings live in `openfold3_runner.yml`: it selects the v0.5 prediction preset,
+overrides the upstream default from 3 to 10 recycles, supplies the sole model
+seed 101, and disables confidence-head host offload on this large-memory host.
+The release already supplies 200 rollout steps and five samples. Its released
+Triton attention and dynamic chunk tuner remain enabled.
 
-Its timing needs one hardware caveat. OpenFold3 0.3.1's DS4Sci attention does
-not build for sm_120, and its experimental cuEquivariance path fails in the
-multi-sample confidence stack, so the recorded upstream runs use plain Torch
-attention. That makes the comparison real but not a claim about upstream's
-fastest path on supported older hardware. `upstream-environments.md` records
-the environment, failures, and verification commands.
+The OpenFold3 cells currently checked into `docs/benchmark.md` are historical
+0.3.1/p1 measurements, not results for this route. They retain their seed and
+sm_120 kernel caveats and must not be used as v0.5/OpenBind performance claims.
+`upstream-environments.md` separates that retired environment from the current
+selection.

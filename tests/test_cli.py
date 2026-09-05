@@ -526,6 +526,7 @@ def test_setup_all_takes_the_models_held_back_for_their_size(
         ("esmfold2", None),
         ("esmfold2", "structure-only"),
         ("opendde", None),
+        ("opendde", "abag"),
         ("openfold3", None),
         ("protenix", None),
         ("protenix", "v2"),

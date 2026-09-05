@@ -59,6 +59,50 @@ from foldjax.models.protenix.models.trunk_blocks.trunk import (
 )
 
 
+@pytest.mark.parametrize("identity", ["explicit", "native", "legacy_polymer_type"])
+def test_confidence_receives_explicit_ligand_identity(monkeypatch, identity) -> None:
+    from foldjax.models.protenix.models import model as implementation
+
+    features = _toy_features()
+    features["is_ligand"] = jnp.asarray([0, 1, 1], dtype=jnp.int32)
+    features["token_is_ligand"] = jnp.asarray([False, True])
+    if identity == "native":
+        features.pop("token_is_ligand")
+    elif identity == "legacy_polymer_type":
+        features.pop("is_ligand")
+        features.pop("token_is_ligand")
+        features["token_polymer_type"] = jnp.asarray([1, 0])
+    seen = []
+
+    def capture(**kwargs):
+        seen.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(implementation, "confidence_scores_from_logits", capture)
+    protenix_infer_static(
+        features,
+        _toy_params(),
+        jnp.asarray([1.0, 0.0]),
+        key=None,
+        num_samples=1,
+        init_noise=jnp.ones((1, 3, 3)),
+        step_noises=(jnp.zeros((1, 3, 3)),),
+        num_recycles=1,
+        input_atom_heads=1,
+        atom_encoder_heads=1,
+        token_heads=1,
+        atom_decoder_heads=1,
+        n_queries=2,
+        n_keys=4,
+        sigma_data=4.0,
+        centre_each_step=False,
+    )
+    assert seen
+    np.testing.assert_array_equal(seen[0]["atom_is_polymer"], [1, 0, 0])
+    np.testing.assert_array_equal(seen[0]["token_is_ligand"], [False, True])
+    assert {"is_ligand", "token_is_ligand"} <= implementation._PADDED_MODEL_FEATURES
+
+
 def test_protenix_infer_static_returns_core_outputs() -> None:
     params = _toy_params()
     features = _toy_features()
@@ -129,9 +173,7 @@ def test_constraint_embedder_rejects_feature_without_matching_weights() -> None:
     )
 
     with pytest.raises(ValueError, match="contact.*no matching embedder weights"):
-        constraint_embedder(
-            {"contact": jnp.ones((2, 2, 1), dtype=jnp.float32)}, params
-        )
+        constraint_embedder({"contact": jnp.ones((2, 2, 1), dtype=jnp.float32)}, params)
 
 
 def test_constraint_embedder_uses_only_present_weighted_channels() -> None:

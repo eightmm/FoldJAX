@@ -5,7 +5,9 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
+import jax
 import jax.numpy as jnp
+import pytest
 from jax import lax
 
 from foldjax.models.protenix.models.primitives.primitives import (
@@ -36,7 +38,12 @@ def _params(c_z: int = 4, c_hidden: int = 4) -> TriangleMultiplicationParams:
     )
 
 
-def test_cueq_triangle_maps_upstream_torch_weights(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "policy, expected", [("default", "DEFAULT"), ("highest", "IEEE")]
+)
+def test_cueq_triangle_maps_upstream_torch_weights(
+    monkeypatch, policy, expected
+) -> None:
     captured = {}
 
     def fake_triangle_multiplicative_update(**kwargs):
@@ -47,6 +54,7 @@ def test_cueq_triangle_maps_upstream_torch_weights(monkeypatch) -> None:
         sys.modules,
         "cuequivariance_jax",
         SimpleNamespace(
+            TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
             triangle_multiplicative_update=fake_triangle_multiplicative_update
         ),
     )
@@ -54,13 +62,15 @@ def test_cueq_triangle_maps_upstream_torch_weights(monkeypatch) -> None:
     z = jnp.ones((3, 3, 4), dtype=jnp.bfloat16)
     mask = jnp.ones((3, 3), dtype=jnp.bfloat16)
 
-    output = cueq_triangle_multiplication(z, mask, params, "incoming")
+    with jax.default_matmul_precision(policy):
+        output = cueq_triangle_multiplication(z, mask, params, "incoming")
 
     assert jnp.array_equal(output, z)
     assert captured["x"].shape == (1, 3, 3, 4)
     assert captured["mask"].shape == (1, 3, 3)
     assert captured["direction"] == "incoming"
     assert captured["fallback"] is False
+    assert captured["precision"] == expected
     assert jnp.array_equal(
         captured["p_in_weight"],
         jnp.concatenate((params.linear_a_p.weight, params.linear_b_p.weight)),

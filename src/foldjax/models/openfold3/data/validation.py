@@ -143,7 +143,9 @@ def validate_features(
     arrays: dict[str, np.ndarray] = {}
     for name, value in features.items():
         array = np.asarray(value)
-        if not np.issubdtype(array.dtype, np.number):
+        if not np.issubdtype(array.dtype, np.number) and not (
+            name == "cyclic_mask" and array.dtype == np.dtype(bool)
+        ):
             raise ValueError(
                 f"OpenFold3 feature {name!r} must be numeric; got {array.dtype}"
             )
@@ -152,6 +154,12 @@ def validate_features(
         arrays[name] = array
 
     token_mask = arrays["token_mask"]
+    if "cyclic_mask" in arrays:
+        cyclic = arrays["cyclic_mask"]
+        if cyclic.dtype != np.dtype(bool) or cyclic.shape != token_mask.shape:
+            raise ValueError("OpenFold3 cyclic_mask must be bool with token_mask shape")
+        if np.any(cyclic & (token_mask == 0)):
+            raise ValueError("OpenFold3 cyclic_mask cannot include padded tokens")
     atom_mask = arrays["atom_mask"]
     if token_mask.ndim != 2 or token_mask.shape[0] != 1:
         raise ValueError(

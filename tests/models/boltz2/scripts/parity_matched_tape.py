@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
@@ -73,6 +74,12 @@ def parse_args() -> argparse.Namespace:
         "--triangle-backend",
         choices=("xla", "cueq", "tokamax", "pallas"),
         default="xla",
+    )
+    parser.add_argument(
+        "--triangle-multiplication-backend",
+        choices=("xla", "cueq"),
+        default="xla",
+        help="Separate from triangle attention; default XLA for the FP32 control.",
     )
     parser.add_argument(
         "--attention-backend",
@@ -168,6 +175,25 @@ def kabsch_rmsd(left: np.ndarray, right: np.ndarray) -> float:
     return rmsd(lc @ rotation.T, rc)
 
 
+def sample_rmsds(
+    left: np.ndarray, right: np.ndarray, mask: np.ndarray | None = None
+) -> tuple[list[float], list[float]]:
+    if left.ndim == 2:
+        left = left[None, ...]
+    if right.ndim == 2:
+        right = right[None, ...]
+    if left.shape != right.shape or left.ndim != 3:
+        raise ValueError(
+            f"sample coordinate shapes differ: {left.shape}, {right.shape}"
+        )
+    if mask is not None:
+        left = left[:, mask]
+        right = right[:, mask]
+    raw = [rmsd(a, b) for a, b in zip(left, right, strict=True)]
+    aligned = [kabsch_rmsd(a, b) for a, b in zip(left, right, strict=True)]
+    return raw, aligned
+
+
 def array_metrics(left: np.ndarray, right: np.ndarray) -> dict[str, float]:
     x = np.asarray(left, dtype=np.float64).ravel()
     y = np.asarray(right, dtype=np.float64).ravel()
@@ -224,6 +250,9 @@ def load_tape(path: Path, meta: dict) -> dict[str, np.ndarray]:
 
 def main() -> int:
     args = parse_args()
+    os.environ["BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"] = (
+        args.triangle_multiplication_backend
+    )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     jax.config.update("jax_default_matmul_precision", "highest")
 
@@ -358,8 +387,10 @@ def main() -> int:
             f"{upstream_coordinate.shape}"
         )
     resolved = np.asarray(features["atom_pad_mask"])[0].astype(bool)
-    left = coordinate[0]
-    right = upstream_coordinate[0]
+    left = coordinate
+    right = upstream_coordinate
+    per_sample_raw, per_sample_kabsch = sample_rmsds(left, right, resolved)
+    padded_raw, _ = sample_rmsds(left, right)
 
     metrics = {
         "tokens": int(meta["n_token"]),
@@ -377,17 +408,26 @@ def main() -> int:
         "msa_rows_injected": msa_rows is not None,
         "trunk_source": args.trunk_source,
         "triangle_backend": args.triangle_backend,
+        "triangle_multiplication_backend": os.environ.get(
+            "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq"
+        ),
+        "jax_default_matmul_precision": jax.config.jax_default_matmul_precision,
         "attention_backend": args.attention_backend,
         "trunk_atom_attention_backend": args.trunk_atom_attention_backend,
         "schedule_max_abs": schedule_max_abs,
         "trunk_seconds": trunk_seconds,
         "sample_seconds": sample_seconds,
-        "all_atom_rmsd_angstrom": rmsd(left[resolved], right[resolved]),
-        "all_atom_kabsch_rmsd_angstrom": kabsch_rmsd(left[resolved], right[resolved]),
+        # Maxima make the existing scalar verdict fail closed if any captured
+        # trajectory exceeds the threshold; the full vector remains auditable.
+        "all_atom_rmsd_angstrom": max(per_sample_raw),
+        "all_atom_rmsd_angstrom_per_sample": per_sample_raw,
+        "all_atom_kabsch_rmsd_angstrom": max(per_sample_kabsch),
+        "all_atom_kabsch_rmsd_angstrom_per_sample": per_sample_kabsch,
         "coordinate_max_abs_error_angstrom": float(
-            np.max(np.abs(left[resolved] - right[resolved]))
+            np.max(np.abs(left[:, resolved] - right[:, resolved]))
         ),
-        "padded_all_atom_rmsd_angstrom": rmsd(left, right),
+        "padded_all_atom_rmsd_angstrom": max(padded_raw),
+        "padded_all_atom_rmsd_angstrom_per_sample": padded_raw,
         "s_inputs": array_metrics(
             np.asarray(trunk["s_inputs"]), upstream_trunk["s_inputs"]
         ),

@@ -7,6 +7,7 @@ from typing import Any
 
 import jax.nn as jnn
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models._output_features import has_complete_output_atom_metadata
 from foldjax.models.protenix.models.heads.confidence import (
@@ -29,6 +30,10 @@ OPENDDE_GENERATED_OUTPUT_FEATURE_FIELDS = frozenset(
         "atom_entity_id",
         "output_atom_polymer_type",
         "covalent_atom_indices",
+        # OpenDDE 1.1.1 repairs invalid terminal OXT coordinates from the CCD
+        # reference frame immediately before serialization.
+        "ref_pos",
+        "ref_mask",
         # Shape-complementarity resolution.
         "token_index",
         "atom_to_token_idx",
@@ -94,6 +99,161 @@ _OPENDDE_SCORE_KEYS = frozenset(
 CONFIDENCE_DETAIL_KEYS = frozenset(
     {"token_pair_pae", "token_pair_pde", "contact_probs"}
 )
+
+_MIN_TERMINAL_C_OXT_DISTANCE = 1.0
+_MAX_TERMINAL_C_OXT_DISTANCE = 1.7
+_MIN_TERMINAL_C_CA_DISTANCE = 1.3
+_MAX_TERMINAL_C_CA_DISTANCE = 1.7
+_MIN_TERMINAL_C_O_DISTANCE = 1.0
+_MAX_TERMINAL_C_O_DISTANCE = 1.5
+_MIN_TERMINAL_O_OXT_DISTANCE = 1.8
+
+
+def _local_coordinate_frame(
+    carbon: np.ndarray,
+    alpha_carbon: np.ndarray,
+    oxygen: np.ndarray,
+) -> np.ndarray | None:
+    ca_axis = alpha_carbon - carbon
+    ca_norm = np.linalg.norm(ca_axis)
+    if not np.isfinite(ca_norm) or ca_norm < 1e-6:
+        return None
+    ca_axis = ca_axis / ca_norm
+
+    oxygen_axis = oxygen - carbon
+    oxygen_axis -= np.dot(oxygen_axis, ca_axis) * ca_axis
+    oxygen_norm = np.linalg.norm(oxygen_axis)
+    if not np.isfinite(oxygen_norm) or oxygen_norm < 1e-6:
+        return None
+    oxygen_axis = oxygen_axis / oxygen_norm
+    return np.column_stack((ca_axis, oxygen_axis, np.cross(ca_axis, oxygen_axis)))
+
+
+def repair_terminal_oxt_coordinates(
+    coordinates: Any,
+    features: Mapping[str, Any],
+) -> tuple[np.ndarray, int]:
+    """Apply OpenDDE 1.1.1's free C-terminal OXT serialization repair.
+
+    This is deliberately a writer-side operation: model coordinates and
+    confidence calculations retain the network output, while serialized CIFs
+    avoid a collapsed/chemically invalid OXT.  Caller-owned arrays are never
+    mutated.
+    """
+
+    result = np.asarray(coordinates).copy()
+    if result.ndim != 3 or result.shape[-1] != 3:
+        return result, 0
+    required = {
+        "output_atom_name",
+        "output_atom_chain_id",
+        "output_atom_res_id",
+        "output_atom_polymer_type",
+        "ref_pos",
+    }
+    if not required <= features.keys():
+        return result, 0
+
+    names = np.asarray(features["output_atom_name"], dtype=str)
+    chain_ids = np.asarray(features["output_atom_chain_id"], dtype=str)
+    residue_ids = np.asarray(features["output_atom_res_id"], dtype=np.int64)
+    polymer_types = np.asarray(features["output_atom_polymer_type"], dtype=str)
+    reference = np.asarray(features["ref_pos"], dtype=np.float64)
+    n_atom = result.shape[-2]
+    if any(
+        value.shape != (n_atom,)
+        for value in (names, chain_ids, residue_ids, polymer_types)
+    ) or reference.shape != (n_atom, 3):
+        return result, 0
+    ref_mask = np.asarray(
+        features.get("ref_mask", np.ones(n_atom, dtype=bool)), dtype=bool
+    )
+    if ref_mask.shape != (n_atom,):
+        return result, 0
+    bonds = np.asarray(
+        features.get("covalent_atom_indices", np.empty((0, 2), dtype=np.int64))
+    )
+    if bonds.size:
+        if bonds.ndim != 2 or bonds.shape[1] != 2:
+            return result, 0
+        bonds = bonds.astype(np.int64, copy=False)
+    else:
+        bonds = np.empty((0, 2), dtype=np.int64)
+
+    repaired = 0
+    protein = polymer_types == "polypeptide(L)"
+    for chain_id in np.unique(chain_ids[protein]):
+        chain_mask = protein & (chain_ids == chain_id)
+        terminal_residue = np.max(residue_ids[chain_mask])
+        terminal_mask = chain_mask & (residue_ids == terminal_residue)
+        matches = {
+            name: np.flatnonzero(terminal_mask & (names == name))
+            for name in ("CA", "C", "O", "OXT")
+        }
+        if any(len(indices) != 1 for indices in matches.values()):
+            continue
+        indices = {name: int(value[0]) for name, value in matches.items()}
+
+        if len(bonds):
+            terminal_indices = {indices["C"], indices["O"], indices["OXT"]}
+            if any(
+                (int(left) in terminal_indices and not terminal_mask[int(right)])
+                or (int(right) in terminal_indices and not terminal_mask[int(left)])
+                for left, right in bonds
+                if 0 <= int(left) < n_atom and 0 <= int(right) < n_atom
+            ):
+                continue
+
+        ordered = np.asarray(
+            [indices["C"], indices["CA"], indices["O"], indices["OXT"]]
+        )
+        if not np.all(ref_mask[ordered]) or not np.all(np.isfinite(reference[ordered])):
+            continue
+        reference_coordinates = reference[ordered]
+        for sample in range(result.shape[0]):
+            predicted = np.asarray(result[sample, ordered], dtype=np.float64)
+            if not np.all(np.isfinite(predicted[:3])):
+                continue
+            c_oxt = np.linalg.norm(predicted[3] - predicted[0])
+            o_oxt = np.linalg.norm(predicted[3] - predicted[2])
+            if (
+                np.isfinite(c_oxt)
+                and _MIN_TERMINAL_C_OXT_DISTANCE
+                <= c_oxt
+                <= _MAX_TERMINAL_C_OXT_DISTANCE
+                and np.isfinite(o_oxt)
+                and o_oxt >= _MIN_TERMINAL_O_OXT_DISTANCE
+            ):
+                continue
+            c_ca = np.linalg.norm(predicted[1] - predicted[0])
+            c_o = np.linalg.norm(predicted[2] - predicted[0])
+            if not (
+                _MIN_TERMINAL_C_CA_DISTANCE <= c_ca <= _MAX_TERMINAL_C_CA_DISTANCE
+                and _MIN_TERMINAL_C_O_DISTANCE <= c_o <= _MAX_TERMINAL_C_O_DISTANCE
+            ):
+                continue
+            predicted_frame = _local_coordinate_frame(*predicted[:3])
+            reference_frame = _local_coordinate_frame(*reference_coordinates[:3])
+            if predicted_frame is None or reference_frame is None:
+                continue
+            reference_c_oxt = reference_coordinates[3] - reference_coordinates[0]
+            reference_c_oxt_distance = np.linalg.norm(reference_c_oxt)
+            reference_o_oxt_distance = np.linalg.norm(
+                reference_coordinates[3] - reference_coordinates[2]
+            )
+            if not (
+                _MIN_TERMINAL_C_OXT_DISTANCE
+                <= reference_c_oxt_distance
+                <= _MAX_TERMINAL_C_OXT_DISTANCE
+                and reference_o_oxt_distance >= _MIN_TERMINAL_O_OXT_DISTANCE
+            ):
+                continue
+            rotation = predicted_frame @ reference_frame.T
+            result[sample, indices["OXT"]] = (
+                predicted[0] + rotation @ reference_c_oxt
+            )
+            repaired += 1
+    return result, repaired
 
 
 def project_generated_output_features(
@@ -352,4 +512,5 @@ __all__ = [
     "compute_contact_prob",
     "opendde_confidence_scores",
     "project_generated_output_features",
+    "repair_terminal_oxt_coordinates",
 ]

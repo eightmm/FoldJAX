@@ -282,6 +282,49 @@ def test_ligand_atoms_remain_atom_level_structural_tokens() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "sequences",
+    [
+        [{"proteinChain": {"sequence": "ACDEF"}}, {"ion": {"ion": "ZN"}}],
+        [{"ion": {"ion": "ZN"}}, {"proteinChain": {"sequence": "ACDEF"}}],
+        [
+            {"proteinChain": {"sequence": "ACDEF"}},
+            {"ion": {"ion": "ZN", "count": 2}},
+        ],
+        [
+            {"proteinChain": {"sequence": "ACDEF"}},
+            {"ligand": {"ligand": "CCD_ATP"}},
+            {"ion": {"ion": "ZN"}},
+        ],
+        [
+            {"ion": {"ion": "ZN"}},
+            {"ion": {"ion": "MG"}},
+            {"proteinChain": {"sequence": "ACDEF"}},
+        ],
+        [
+            {"proteinChain": {"sequence": "ACDEF"}},
+            {"ion": {"ion": "ZN"}},
+            {"proteinChain": {"sequence": "GHIKL"}},
+        ],
+    ],
+)
+def test_v111_ion_metadata_keeps_msa_and_template_widths(
+    sequences: list[dict[str, object]],
+) -> None:
+    features = featurize_opendde_json(
+        {"sequences": sequences},
+        n_queries=2,
+        n_keys=4,
+        augment_reference=False,
+    )
+    n_token = int(np.asarray(features["restype"]).shape[0])
+
+    assert np.asarray(features["msa"]).shape[1] == n_token
+    assert np.asarray(features["profile"]).shape[0] == n_token
+    assert np.asarray(features["template_aatype"]).shape[1] == n_token
+    assert np.asarray(features["template_atom_mask"]).shape[1] == n_token
+
+
 def test_mse_uses_standard_met_structural_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -296,7 +339,9 @@ def test_mse_uses_standard_met_structural_tokens(
             }
         ]
     }
-    base_features = featurize_protein_json(job, n_queries=2, n_keys=4)
+    base_features = featurize_protein_json(
+        job, n_queries=2, n_keys=4, augment_reference=False
+    )
     features = featurize_opendde_json(
         job,
         n_queries=2,
@@ -549,6 +594,36 @@ def test_official_repo_root_relative_msa_path_falls_back_from_json_parent(
     )
 
     assert np.asarray(features["msa"]).shape == (2, 1)
+
+
+def test_native_msa_deletion_counts_saturate_before_nonlinear_transform(tmp_path):
+    msa = tmp_path / "unpaired.a3m"
+    counts = [126, 127, 128, 131]
+    msa.write_text(
+        ">query\nACDEF\n"
+        + "".join(
+            f">row{i}\nA{'a' * count}{'GHIK'[i]}DEF\n" for i, count in enumerate(counts)
+        )
+    )
+    job = {
+        "sequences": [
+            {
+                "proteinChain": {
+                    "sequence": "ACDEF",
+                    "unpairedMsaPath": str(msa),
+                }
+            }
+        ]
+    }
+    native = featurize_opendde_json(job, seed=101, n_queries=2, n_keys=4)
+    protenix = featurize_protein_json(job, seed=101, n_queries=2, n_keys=4)
+    ceiling = np.float32(np.arctan(127 / 3.0) * (2.0 / np.pi))
+    assert np.max(protenix["deletion_value"]) == ceiling
+    np.testing.assert_array_equal(
+        native["deletion_value"], np.minimum(protenix["deletion_value"], ceiling)
+    )
+    np.testing.assert_array_equal(native["deletion_mean"], protenix["deletion_mean"])
+    assert protenix["deletion_mean"][1] > sum(min(count, 127) for count in counts) / 6
 
 
 def test_json_parent_relative_asset_path_has_priority_over_repo_fallback(

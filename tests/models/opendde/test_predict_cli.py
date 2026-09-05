@@ -254,6 +254,10 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         "2",
         "--n-cycle",
         "3",
+        "--use-template",
+        "true",
+        "--use-rna-msa",
+        "true",
         "--components-cif",
         str(components_path),
         "--ccd-rdkit-cache",
@@ -289,6 +293,8 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert calls[0][2]["return_confidence_details"] is False
     assert featurize_calls[0][0] is job
     assert featurize_calls[0][1]["seed"] == 101
+    assert featurize_calls[0][1]["use_template"] is True
+    assert featurize_calls[0][1]["use_rna_msa"] is True
     assert os.environ["PROTENIX_CCD_COMPONENTS_FILE"] == str(components_path.resolve())
     assert os.environ["PROTENIX_CCD_RDKIT_MOL_FILE"] == str(rdkit_cache_path.resolve())
     assert os.environ["PROTENIX_TEMPLATE_MMCIF_DIR"] == str(

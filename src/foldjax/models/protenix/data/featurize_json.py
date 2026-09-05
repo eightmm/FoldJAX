@@ -21,6 +21,7 @@ from typing import Any
 
 import gemmi
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from foldjax.models.protenix.data.static_io import save_static_feature_npz
 from foldjax.models.protenix.data.template_features import (
@@ -269,6 +270,8 @@ def featurize_protein_json(
     n_keys: int = 128,
     max_msa_depth: int = 16384,
     seed: int | None = None,
+    center_reference: bool = True,
+    augment_reference: bool = True,
 ) -> dict[str, Any]:
     """Build static features for proteinChain inputs."""
 
@@ -315,7 +318,6 @@ def featurize_protein_json(
     asym_id = np.zeros((n_token,), dtype=np.int64)
     entity_id = np.zeros((n_token,), dtype=np.int64)
     sym_id = np.zeros((n_token,), dtype=np.int64)
-    has_frame = np.ones((n_token,), dtype=np.int64)
     profile = np.zeros((n_token, 32), dtype=np.float32)
     deletion_mean = np.zeros((n_token,), dtype=np.float32)
 
@@ -387,13 +389,35 @@ def featurize_protein_json(
     covalent_atom_indices, covalent_token_indices = _apply_covalent_bonds(
         job.get("covalent_bonds", []), state
     )
+    mol_id_arr = _assign_molecule_ids(state)
 
     atom_to_token = np.asarray(atom_to_token_idx, dtype=np.int64)
     ref_pos_arr = np.asarray(ref_pos, dtype=np.float32)
     ref_space_uid_arr = np.asarray(ref_space_uid, dtype=np.int64)
-    for uid in np.unique(ref_space_uid_arr):
-        in_ref_space = ref_space_uid_arr == uid
-        ref_pos_arr[in_ref_space] -= ref_pos_arr[in_ref_space].mean(axis=0)
+    if center_reference:
+        for uid in np.unique(ref_space_uid_arr):
+            in_ref_space = ref_space_uid_arr == uid
+            ref_pos_arr[in_ref_space] -= ref_pos_arr[in_ref_space].mean(axis=0)
+    if augment_reference:
+        reference_rng = np.random.RandomState(_resolve_featurization_seed(job, seed))
+        for uid in np.unique(ref_space_uid_arr):
+            in_ref_space = ref_space_uid_arr == uid
+            # Native Protenix translates before rotating; OpenDDE opts out
+            # and applies its own rotate-then-translate augmentation.
+            translation = reference_rng.uniform(-1, 1, size=3)
+            rotation = Rotation.random(random_state=reference_rng).as_matrix()
+            ref_pos_arr[in_ref_space] = (
+                ref_pos_arr[in_ref_space] + translation
+            ) @ rotation.T
+    has_frame, frame_atom_index = _reference_frames(
+        atom_to_token,
+        np.asarray(ref_atom_names),
+        ref_pos_arr,
+        np.asarray(ref_mask_list),
+        ref_space_uid_arr,
+        state["token_is_standard_polymer"],
+        state["token_polymer_type"],
+    )
     d_lm, v_lm, pad_info = _local_atom_geometry(
         ref_pos_arr,
         ref_space_uid_arr,
@@ -440,7 +464,8 @@ def featurize_protein_json(
         "msa": msa,
         "has_deletion": np.clip(deletion_matrix, 0.0, 1.0).astype(np.float32),
         "deletion_value": (
-            np.arctan(deletion_matrix.astype(np.float32) / 3.0) * (2.0 / np.pi)
+            np.arctan(np.clip(deletion_matrix, -128, 127).astype(np.float64) / 3.0)
+            * (2.0 / np.pi)
         ).astype(np.float32),
         "token_bonds": token_bonds,
         "residue_index": residue_index,
@@ -449,12 +474,17 @@ def featurize_protein_json(
         "entity_id": entity_id,
         "sym_id": sym_id,
         "has_frame": has_frame,
+        "frame_atom_index": frame_atom_index,
         "distogram_rep_atom_mask": np.asarray(
             distogram_rep_atom_mask,
             dtype=np.float32,
         ),
         "atom_to_tokatom_idx": np.asarray(atom_to_tokatom_idx, dtype=np.int64),
-        "mol_id": np.asarray(mol_id, dtype=np.int64),
+        "mol_id": mol_id_arr,
+        "is_ligand": (
+            np.asarray(state["token_polymer_type"])[atom_to_token] == 0
+        ).astype(np.int64),
+        "token_is_ligand": np.asarray(state["token_polymer_type"]) == 0,
         "atom_entity_id": np.asarray(atom_entity_id, dtype=np.int64),
         "atom_copy_id": np.asarray(atom_copy_id, dtype=np.int64),
         "atom_residue_index": np.asarray(atom_residue_index, dtype=np.int64),
@@ -495,6 +525,58 @@ def featurize_protein_json(
     if template_features is not None:
         out.update(template_features)
     return out
+
+
+def _reference_frames(
+    atom_to_token: np.ndarray,
+    atom_names: np.ndarray,
+    ref_pos: np.ndarray,
+    ref_mask: np.ndarray,
+    ref_space_uid: np.ndarray,
+    standard_polymer: np.ndarray,
+    polymer_type: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reproduce native reference-frame validity, including its angle epsilon."""
+    n_token = len(standard_polymer)
+    has_frame = np.zeros(n_token, dtype=np.int64)
+    frames = np.full((n_token, 3), -1, dtype=np.int64)
+    for token in range(n_token):
+        atoms = np.flatnonzero(atom_to_token == token)
+        if not atoms.size:
+            raise ValueError(f"token {token} has no atoms")
+        if standard_polymer[token] and len(atoms) > 1:
+            names = (
+                ("N", "CA", "C") if polymer_type[token] == 1 else ("C1'", "C3'", "C4'")
+            )
+            lookup = {str(atom_names[i]): int(i) for i in atoms}
+            if names[0] not in lookup:
+                continue
+            frames[token] = [lookup[name] for name in names]
+            has_frame[token] = 1
+            continue
+        centre = int(atoms[0])
+        group = np.flatnonzero(ref_space_uid == ref_space_uid[centre])
+        frames[token, 1] = centre
+        if group.size < 3:
+            continue
+        # Distances in the native KDTree are evaluated in float64.
+        points = ref_pos[group].astype(np.float64)
+        order = np.argsort(
+            np.linalg.norm(points - ref_pos[centre], axis=-1), kind="stable"
+        )
+        frames[token] = [group[order[1]], centre, group[order[2]]]
+        frame = frames[token]
+        if not np.all(ref_mask[frame]):
+            continue
+        ab = ref_pos[frame[1]] - ref_pos[frame[0]]
+        bc = ref_pos[frame[2]] - ref_pos[frame[1]]
+        norm_ab, norm_bc = np.linalg.norm(ab), np.linalg.norm(bc)
+        if np.isclose(norm_ab, 0) or np.isclose(norm_bc, 0):
+            continue
+        cosine = np.clip(np.dot(ab, bc) / (norm_ab * norm_bc + 1e-4), -1, 1)
+        angle = np.degrees(np.arccos(cosine))
+        has_frame[token] = int(25 < angle < 155)
+    return has_frame, frames
 
 
 def _assemble_chain_templates(
@@ -594,6 +676,7 @@ def _expand_chains(
         raise ValueError("job must contain a non-empty sequences list")
     built_entities: list[tuple[int, dict[str, Any]]] = []
     reserved_chain_ids: set[str] = set()
+    non_ccd_ligand_count = 0
     for entity_number, entry in enumerate(sequences, start=1):
         if not isinstance(entry, dict) or len(entry) != 1:
             raise ValueError("each sequence entry must have one entity key")
@@ -606,6 +689,13 @@ def _expand_chains(
             built = _build_ligand_chain(entry[kind], kind=kind, base_dir=base_dir)
         else:
             raise ValueError(f"unsupported entity kind: {kind}")
+        if kind == "ligand" and not str(entry[kind]["ligand"]).startswith("CCD_"):
+            non_ccd_ligand_count += 1
+            if non_ccd_ligand_count > 99:
+                raise ValueError("at most 99 non-CCD ligand entities are supported")
+            residue_name = f"l{non_ccd_ligand_count:02d}"
+            for _res_id, residue in built["chain"]["residues"]:
+                residue["output_code"] = residue_name
         built["polymer_type"] = {
             "proteinChain": "polypeptide(L)",
             "dnaSequence": "polydeoxyribonucleotide",
@@ -1045,7 +1135,9 @@ def _emit_ligand_tokens(chain: dict[str, Any], state: dict[str, Any]) -> None:
             state["sym_id"][token_i] = chain["sym_id"]
             state["token_entity_number"][token_i] = chain["entity_number"]
             state["token_copy_id"][token_i] = chain["copy_id"]
-            state["token_ccd_codes"][token_i] = str(entry.get("code", "UNL"))
+            state["token_ccd_codes"][token_i] = str(
+                entry.get("output_code", entry.get("code", "UNL"))
+            )
             state["token_polymer_type"][token_i] = _TOKEN_POLYMER_TYPE["ligand"]
             state["token_reference_is_mse"][token_i] = int(
                 entry.get("reference_is_mse", False)
@@ -1101,12 +1193,23 @@ def _emit_nucleic_tokens(chain: dict[str, Any], state: dict[str, Any]) -> None:
         names = entry["names"]
         is_first = pos == 1
         rep = "C4" if code in _PURINE_CODES else "C2"
+        canonical_code = {"N": "C", "DN": "DC"}.get(code, code)
+        canonical_names = np.asarray(
+            _ccd_nucleotides()[canonical_code]["names"]
+        ).astype(str)
+        canonical_slots = {
+            atom_name: index for index, atom_name in enumerate(canonical_names)
+        }
         for j, atom_name in enumerate(names):
             atom_name = str(atom_name)
             if atom_name == "OP3" and not is_first:
                 continue
+            if atom_name not in canonical_slots:
+                raise ValueError(
+                    f"standard nucleotide {code!r} contains unknown atom {atom_name!r}"
+                )
             state["atom_to_token_idx"].append(token_i)
-            state["atom_to_tokatom_idx"].append(j)
+            state["atom_to_tokatom_idx"].append(canonical_slots[atom_name])
             xyz = entry["coord"][j]
             state["ref_pos"].append((float(xyz[0]), float(xyz[1]), float(xyz[2])))
             state["ref_space_uid"].append(ref_space_uid)
@@ -2017,9 +2120,7 @@ def _read_ccd_block(path: Path, code: str) -> str:
             return mapped[start:end].decode("utf-8")
 
 
-def _sorted_ccd_block_bounds(
-    mapped: mmap.mmap, code: bytes
-) -> tuple[int, int] | None:
+def _sorted_ccd_block_bounds(mapped: mmap.mmap, code: bytes) -> tuple[int, int] | None:
     """Binary-search a code-sorted CCD without first building a 49k-row index."""
 
     low = 0
@@ -2054,9 +2155,7 @@ def _sorted_ccd_block_bounds(
     return None
 
 
-def _linear_ccd_block_bounds(
-    mapped: mmap.mmap, code: bytes
-) -> tuple[int, int] | None:
+def _linear_ccd_block_bounds(mapped: mmap.mmap, code: bytes) -> tuple[int, int] | None:
     """Historical exact lookup for an unsorted custom components.cif."""
 
     marker = b"data_" + code + b"\n"
@@ -2174,12 +2273,12 @@ def _rdkit_ligand_entry(
         if mol is None:
             raise ValueError(f"invalid SMILES ligand: {ligand!r}")
         mol = Chem.AddHs(mol)
-        params = AllChem.ETKDGv3()
-        params.randomSeed = 0
-        status = AllChem.EmbedMolecule(mol, params)
+        # Match the released Protenix/OpenDDE parser exactly.  RDKit's default
+        # embedding stream is deterministic for a fixed process/input order;
+        # forcing ETKDGv3 randomSeed=0 selects a different conformer prior.
+        status = AllChem.EmbedMolecule(mol)
         if status != 0:
-            params.useRandomCoords = True
-            status = AllChem.EmbedMolecule(mol, params)
+            status = AllChem.EmbedMolecule(mol, useRandomCoords=True)
         if status != 0:
             raise ValueError(f"3D conformer generation failed for SMILES: {ligand!r}")
 
@@ -2248,7 +2347,9 @@ def _append_atom_metadata(
     state["ligand_stereo_atom"].append(
         int(entry.get("stereo", np.zeros(len(entry["names"])))[atom_index])
     )
-    state["output_atom_res_name"].append(str(entry.get("code", "UNK")))
+    state["output_atom_res_name"].append(
+        str(entry.get("output_code", entry.get("code", "UNK")))
+    )
     state["output_atom_chain_id"].append(chain["chain_id"])
     state["output_atom_res_id"].append(position)
     state["output_atom_polymer_type"].append(chain["polymer_type"])
@@ -2690,6 +2791,20 @@ def _apply_covalent_bonds(
         np.asarray(atom_pairs, dtype=np.int64).reshape((-1, 2)),
         np.asarray(token_pairs, dtype=np.int64).reshape((-1, 2)),
     )
+
+
+def _assign_molecule_ids(state: dict[str, Any]) -> np.ndarray:
+    """Match native inference's sorted, independently labelled chains.
+
+    Native add_entity_atom_array supplies a sequence even for ligands and ions.
+    Thus entity_poly_type contains every input entity, and the native molecule
+    labeller removes all inter-chain bonds from its temporary graph. This does
+    not remove the chemical bonds used by token features or output metadata.
+    """
+    _, inverse = np.unique(
+        np.asarray(state["output_atom_chain_id"], dtype=str), return_inverse=True
+    )
+    return inverse.astype(np.int64)
 
 
 def _keep_covalent_token_bond(

@@ -46,6 +46,8 @@ from foldjax.schema import PaddingConfig, PredictionRequest
 
 def test_feature_padding_resolves_every_axis_and_crop_restores_public_shapes() -> None:
     features = _features()
+    features["is_ligand"] = np.zeros(features["ref_pos"].shape[0], np.int64)
+    features["token_is_ligand"] = np.zeros(features["restype"].shape[0], bool)
 
     padded, plan = pad_protenix_features(
         features,
@@ -89,6 +91,23 @@ def test_feature_padding_resolves_every_axis_and_crop_restores_public_shapes() -
     assert cropped["contact_probs"].shape == (2, 3, 3)
     assert cropped["s_trunk"].shape == (3, 4)
     assert cropped["z_trunk"].shape == (3, 3, 4)
+
+
+def test_generated_reference_frames_pad_without_creating_valid_dummy_frames():
+    from foldjax.models.protenix.data.featurize_json import featurize_protein_json
+
+    features = featurize_protein_json(
+        {"sequences": [{"proteinChain": {"sequence": "AG"}}]}, n_queries=2, n_keys=4
+    )
+    original = features["frame_atom_index"].copy()
+    padded, _ = pad_protenix_features(
+        features, PaddingConfig(tokens=4), n_queries=2, n_keys=4
+    )
+    assert padded["frame_atom_index"].shape == (4, 3)
+    np.testing.assert_array_equal(padded["frame_atom_index"][:2], original)
+    np.testing.assert_array_equal(padded["frame_atom_index"][2:], -1)
+    np.testing.assert_array_equal(padded["has_frame"][2:], 0)
+    np.testing.assert_array_equal(features["frame_atom_index"], original)
 
 
 def test_feature_padding_keeps_compact_relp_and_zeroes_dummy_pairs() -> None:
@@ -422,14 +441,10 @@ def test_padded_noise_keeps_every_sample_real_prefix(chunk_size) -> None:
     )
     expected_init_chunks = []
     expected_step_chunks = [[] for _ in range(3)]
-    for expected_chunk_size, chunk_key in zip(
-        chunk_sizes, chunk_keys, strict=True
-    ):
+    for expected_chunk_size, chunk_key in zip(chunk_sizes, chunk_keys, strict=True):
         chunk_key, init_key = jax.random.split(chunk_key)
         expected_init_chunks.append(
-            jax.random.normal(
-                init_key, (expected_chunk_size, 3, 3), dtype=jnp.float32
-            )
+            jax.random.normal(init_key, (expected_chunk_size, 3, 3), dtype=jnp.float32)
         )
         for step_index, step_key in enumerate(jax.random.split(chunk_key, 3)):
             expected_step_chunks[step_index].append(
@@ -606,8 +621,7 @@ def test_masked_padding_noise_is_lazy_and_requires_partitionable_threefry() -> N
     compact_memory = compact_executable.memory_analysis()
 
     assert (
-        old_memory.argument_size_in_bytes
-        > 25 * compact_memory.argument_size_in_bytes
+        old_memory.argument_size_in_bytes > 25 * compact_memory.argument_size_in_bytes
     )
     compact_hlo = compact.lower(key, atom_mask).compiler_ir(dialect="stablehlo")
     assert "stablehlo.while" in str(compact_hlo)

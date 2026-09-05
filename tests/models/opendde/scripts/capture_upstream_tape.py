@@ -51,9 +51,12 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
+
+if TYPE_CHECKING:
+    import torch
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,9 +64,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-json", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--n-sample", type=int, default=1)
-    parser.add_argument("--n-step", type=int, default=20)
-    parser.add_argument("--n-cycle", type=int, default=1)
+    parser.add_argument(
+        "--num-samples", "--n-sample", dest="num_samples", type=int, default=1
+    )
+    parser.add_argument(
+        "--num-steps", "--n-step", dest="num_steps", type=int, default=20
+    )
+    parser.add_argument(
+        "--num-recycles", "--n-cycle", dest="num_recycles", type=int, default=1
+    )
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument(
         "--repo",
@@ -125,6 +134,18 @@ def _drop_batch(array: np.ndarray, rank: int) -> np.ndarray:
     if array.ndim != rank:
         raise RuntimeError(f"cannot reduce shape {array.shape} to rank {rank}")
     return array.astype(np.float32)
+
+
+def _translation_samples(array: np.ndarray) -> np.ndarray:
+    """Normalize one upstream translation draw to ``[samples, 3]``."""
+    while array.ndim > 3 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 3 or array.shape[-2:] != (1, 3):
+        raise RuntimeError(
+            "translation must have shape [samples, 1, 3] after optional "
+            f"batch axes, got {array.shape}"
+        )
+    return array[..., 0, :].astype(np.float32)
 
 
 class TapeRecorder:
@@ -421,6 +442,10 @@ class StageRecorder:
 
 
 def main() -> int:
+    global torch
+
+    import torch
+
     args = parse_args()
     os.environ.setdefault("PYTHONPATH", str(args.repo))
     import sys
@@ -554,7 +579,7 @@ def main() -> int:
         init_noise=_drop_batch(coordinate_draws[0], 3),
         step_noises=np.stack([_drop_batch(a, 3) for a in coordinate_draws[1:]]),
         rotations=np.stack([_drop_batch(a, 3) for a in recorder.rotations]),
-        translations=np.stack([_drop_batch(a, 2) for a in translations]),
+        translations=np.stack([_translation_samples(a) for a in translations]),
     )
     # `run_official_smoke.py --reference-coordinates` reads an archive keyed
     # `coordinate`, so write that form rather than a bare array.

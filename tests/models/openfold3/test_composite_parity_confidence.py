@@ -41,6 +41,8 @@ COMPOSITE_SCALE = 0.05
 
 RTOL = 1e-4
 ATOL = 1e-4
+# Keep the declared tolerance; composite drift remains an unresolved gate.
+COMPOSITE_ATOM_HEAD_ATOL = ATOL
 
 N_TOKEN, N_SAMPLES = 12, 2
 
@@ -57,7 +59,7 @@ def reference(openfold3_source: Path, randomized):
     n_atom = batch["atom_mask"].shape[-1]
 
     with torch.no_grad():
-        s_input, s_trunk, z = model.run_trunk(batch=batch, num_recycles=1)
+        s_input, s_trunk, z = model.run_trunk(batch=batch, num_cycles=1)
         generator = torch.Generator().manual_seed(2)
         x_pred = torch.randn((1, N_SAMPLES, n_atom, 3), generator=generator)
 
@@ -88,12 +90,12 @@ def _as_jax(batch: dict) -> dict:
     }
 
 
-def _close(actual, expected, name: str) -> None:
+def _close(actual, expected, name: str, *, atol: float = ATOL) -> None:
     np.testing.assert_allclose(
         np.asarray(actual, dtype=np.float64),
         expected.detach().numpy().astype(np.float64),
         rtol=RTOL,
-        atol=ATOL,
+        atol=atol,
         err_msg=f"{name} diverged from upstream aux_heads",
     )
 
@@ -221,6 +223,7 @@ def test_plddt_and_experimentally_resolved_match_upstream(
             ),
             aux[name],
             name,
+            atol=COMPOSITE_ATOM_HEAD_ATOL,
         )
 
 

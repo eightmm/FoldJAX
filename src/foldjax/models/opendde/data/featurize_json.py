@@ -53,11 +53,21 @@ _OPENDDE_IGNORED_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
 _warned_dropped: set[str] = set()
 
 
-def _drop_fields_opendde_ignores(kind: str, info: dict[str, Any]) -> None:
+def _drop_fields_opendde_ignores(
+    kind: str,
+    info: dict[str, Any],
+    *,
+    use_template: bool,
+    use_rna_msa: bool,
+) -> None:
     """Remove what upstream's defaults would have ignored, and say which."""
     import warnings
 
     for key, flag in _OPENDDE_IGNORED_FIELDS.get(kind, ()):
+        if key == "templatesPath" and use_template:
+            continue
+        if key == "unpairedMsaPath" and use_rna_msa:
+            continue
         if not info.pop(key, None):
             continue
         if key in _warned_dropped:
@@ -134,6 +144,8 @@ def featurize_opendde_json(
     max_msa_depth: int = 16384,
     seed: int | None = None,
     augment_reference: bool = True,
+    use_template: bool = False,
+    use_rna_msa: bool = False,
 ) -> dict[str, Any]:
     """Build Torch-free residue and OpenDDE structural-token input features.
 
@@ -142,7 +154,12 @@ def featurize_opendde_json(
     proteins, DNA, RNA, CCD polymer modifications, and atom-tokenized ligands.
     """
 
-    prepared_job = _prepare_job(job, base_dir=base_dir)
+    prepared_job = _prepare_job(
+        job,
+        base_dir=base_dir,
+        use_template=use_template,
+        use_rna_msa=use_rna_msa,
+    )
     _validate_supported_polymers(prepared_job)
     resolved_seed = _resolve_seed(job, seed)
     features = featurize_protein_json(
@@ -152,6 +169,8 @@ def featurize_opendde_json(
         n_keys=n_keys,
         max_msa_depth=max_msa_depth,
         seed=resolved_seed,
+        center_reference=False,
+        augment_reference=False,
     )
     _prepare_reference_features(
         features,
@@ -163,11 +182,15 @@ def featurize_opendde_json(
     return _add_open_dde_metadata(features)
 
 
-def _prepare_job(job: dict[str, Any], *, base_dir: str | Path | None) -> dict[str, Any]:
+def _prepare_job(
+    job: dict[str, Any],
+    *,
+    base_dir: str | Path | None,
+    use_template: bool = False,
+    use_rna_msa: bool = False,
+) -> dict[str, Any]:
     prepared = deepcopy(job)
     prepared.pop("assembly_id", None)
-    if base_dir is None:
-        return prepared
 
     sequences = prepared.get("sequences")
     if not isinstance(sequences, list):
@@ -187,20 +210,27 @@ def _prepare_job(job: dict[str, Any], *, base_dir: str | Path | None) -> dict[st
             ),
             "rnaSequence": ("unpairedMsaPath",),
         }.get(kind, ())
-        for key in path_keys:
-            value = info.get(key)
-            if isinstance(value, (str, Path)) and str(value):
-                info[key] = str(_resolve_asset_path(value, base_dir=base_dir))
-        _drop_fields_opendde_ignores(kind, info)
+        if base_dir is not None:
+            for key in path_keys:
+                value = info.get(key)
+                if isinstance(value, (str, Path)) and str(value):
+                    info[key] = str(_resolve_asset_path(value, base_dir=base_dir))
+        _drop_fields_opendde_ignores(
+            kind,
+            info,
+            use_template=use_template,
+            use_rna_msa=use_rna_msa,
+        )
         if kind == "proteinChain" and isinstance(info.get("msa"), dict):
             directory = info["msa"].get("precomputed_msa_dir")
             if isinstance(directory, (str, Path)) and str(directory):
-                info["msa"]["precomputed_msa_dir"] = str(
-                    _resolve_asset_path(directory, base_dir=base_dir)
-                )
+                if base_dir is not None:
+                    info["msa"]["precomputed_msa_dir"] = str(
+                        _resolve_asset_path(directory, base_dir=base_dir)
+                    )
         if kind == "ligand" and isinstance(info.get("ligand"), str):
             ligand = info["ligand"]
-            if ligand.startswith("FILE_"):
+            if ligand.startswith("FILE_") and base_dir is not None:
                 info["ligand"] = "FILE_" + str(
                     _resolve_asset_path(ligand[5:], base_dir=base_dir)
                 )

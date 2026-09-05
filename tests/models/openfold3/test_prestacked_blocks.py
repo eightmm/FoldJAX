@@ -80,7 +80,13 @@ def test_inference_mapping_prestacks_on_host_then_transfers_once(monkeypatch) ->
     ):
         monkeypatch.setattr(torch_mapping, name, lambda *_args, **_kwargs: simple)
 
-    state = {"aux_heads.pae.stub": np.zeros((1,), dtype=np.float32)}
+    state = {
+        "version_tensor": np.asarray([2.0, 0.0, 0.0], dtype=np.float32),
+        "diffusion_module.diffusion_transformer.layer_norm_z.weight": np.ones(
+            (1,), dtype=np.float32
+        ),
+        "aux_heads.pae.stub": np.zeros((1,), dtype=np.float32),
+    }
     params = torch_mapping.map_inference_params(state, "")
     plain_params = torch_mapping.map_inference_params(state, "", prestack=False)
 

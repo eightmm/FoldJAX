@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "historical_status": "Predates independent-input precision correction. Generic-rounding interpretation below is superseded by independent-input-entity-parity-2026-09-05.json; original measurements are retained unchanged. Matched-tape unavailable means unverified, not scientifically inapplicable.",
+  "purpose": "FoldJAX versus pinned native upstreams across seven biomolecular compositions, using both independent released-default n=5 ensembles and n=5 upstream-captured random tapes",
+  "foldjax_revision": "ab08a822500d69f5a9a249a75b1545ad82ae3f66",
+  "panel": [
+    {"case": "protein_1ubq", "modality": "protein", "reference_markers": "76/76"},
+    {"case": "protein_rna_1urn", "modality": "protein-rna", "reference_markers": "113/118"},
+    {"case": "rna_ligand_3gca", "modality": "rna-ligand", "reference_markers": "33/33"},
+    {"case": "protein_rna_ligand_3v7e", "modality": "protein-rna-ligand", "reference_markers": "207/208"},
+    {"case": "protein_dna_7r6r", "modality": "protein-dna", "reference_markers": "209/245"},
+    {"case": "protein_ligand_5sak", "modality": "protein-ligand", "reference_markers": "330/419"},
+    {"case": "protein_protein_7st3", "modality": "protein-protein", "reference_markers": "467/545"}
+  ],
+  "targets": {
+    "alphafold3": {
+      "upstream": "3.0.4@85c4d20505fd5cef05eac22b534d4e793971ae69",
+      "parameters": "caller-supplied AlphaFold 3 parameter bundle; the per-arm manifests retain its run-specific digest",
+      "ordinary_schedule": "5 samples, 200 steps, 10 recycles",
+      "matched_tape": "not applicable: FoldJAX executes the audited vendored upstream JAX core"
+    },
+    "boltz2": {
+      "upstream": "2.2.1@b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+      "parameters": "boltz-community/boltz-2@6fdef46d763fee7fbb83ca5501ccceff43b85607",
+      "ordinary_schedule": "5 samples, 200 steps, 3 recycles, released bf16-mixed precision",
+      "matched_schedule": "5 samples, 200 steps, 3 recycles, FP32/highest"
+    },
+    "opendde": {
+      "upstream": "1.1.1@ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+      "parameters": "released opendde.pt@7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+      "ordinary_schedule": "5 samples, 200 steps, 10 recycles, FP32",
+      "matched_schedule": "5 samples, 200 steps, 10 recycles, FP32/highest"
+    },
+    "openfold3": {
+      "upstream": "0.5.0@c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+      "parameters": "OpenBind of3-ob-2025-06-30-174k.pt@bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+      "ordinary_schedule": "5 samples, 200 steps, 3 configured recycles, 32-true",
+      "matched_schedule": "5 samples, 200 steps, 3 configured recycles, FP32/highest; both cores consume the same ordered MSA capped to 1024 valid rows"
+    },
+    "protenix-v2": {
+      "upstream": "2.0.0@4c355be4553512f72453ecbfb65e69f4c35d1413",
+      "parameters": "protenix-v2.pt@8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599",
+      "ordinary_schedule": "5 samples, 200 steps, 10 recycles, released BF16 AMP/TF32",
+      "matched_schedule": "5 samples, 200 steps, 10 recycles, FP32/highest"
+    },
+    "esmfold2": {
+      "upstream": "Biohub Transformers@ef32577f55da19a4989cd7b22e004dc43a4998cb",
+      "parameters": "ESMFold2@8fc3ff471022fdce52c77030685eb775de0c00a3 plus ESMC-6B@45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",
+      "ordinary_schedule": "5 samples, 14 diffusion steps, 3 loops, MSA depth 1024; FoldJAX FP32 and shipped BF16 arms",
+      "matched_tape": "not applicable: neither core exposes an injectable tape for every stochastic consumer"
+    }
+  },
+  "ordinary_independent_rng": {
+    "seed": 101,
+    "samples_per_arm": 5,
+    "completed_arms": 91,
+    "failed_arms": 0,
+    "comparison_rows": 49,
+    "exact_label_assignments_per_row": 252,
+    "raw_p_at_most_0_05": 5,
+    "holm_significant_rows": 0,
+    "reference_resolved_raw_p_at_most_0_05": 7,
+    "reference_resolved_holm_significant_rows": 0,
+    "interpretation": "The same integer seed is not a shared RNG stream. No framework pair was separated after Holm correction in either the complete-output or reference-resolved family."
+  },
+  "matched_rng_tape": {
+    "seed": 101,
+    "samples_per_row": 5,
+    "rows": 28,
+    "passed_rows": 27,
+    "failed_rows": 1,
+    "thresholds": {"max_coordinate_rmsd_angstrom": 0.5, "min_trunk_correlation_when_recorded": 0.999},
+    "metric": "OpenDDE uses raw-frame all-atom RMSD after symmetric released OXT repair; Boltz-2, OpenFold3, and Protenix-v2 use all-atom Kabsch RMSD",
+    "max_rmsd_angstrom_by_case": {
+      "protein_1ubq": {"boltz2": 0.0015310933622509168, "opendde": 0.0039011603619157173, "openfold3": 0.00001771343997418894, "protenix-v2": 0.002357261182979586},
+      "protein_rna_1urn": {"boltz2": 0.003162040918160764, "opendde": 0.07282542741483763, "openfold3": 0.000020689985176702998, "protenix-v2": 0.0071665746876264395},
+      "rna_ligand_3gca": {"boltz2": 0.000679007466409845, "opendde": 0.007075487340345436, "openfold3": 0.00000830056203173285, "protenix-v2": 0.0004559434109302999},
+      "protein_rna_ligand_3v7e": {"boltz2": 0.0009071085073996354, "opendde": 0.014694135375193668, "openfold3": 0.0007036985751664651, "protenix-v2": 0.018714592663066517},
+      "protein_dna_7r6r": {"boltz2": 0.04215075075968033, "opendde": 0.0725461450935592, "openfold3": 0.00016468950995261706, "protenix-v2": 0.009996460849743196},
+      "protein_ligand_5sak": {"boltz2": 1.1760580717550877, "opendde": 0.017320850663291375, "openfold3": 0.0010149817461219388, "protenix-v2": 0.1610727636581202},
+      "protein_protein_7st3": {"boltz2": 0.006575766364482092, "opendde": 0.09570547540919551, "openfold3": 0.00011083640774354213, "protenix-v2": 0.03349845235469282}
+    },
+    "failure": {
+      "case": "protein_ligand_5sak",
+      "model": "boltz2",
+      "max_kabsch_rmsd_angstrom": 1.1760580717550877,
+      "per_sample_kabsch_rmsd_angstrom": [1.1760580717550877, 0.170051597779151, 0.06321363654891692, 1.0426112397849578, 0.47746753820841303],
+      "upstream_trunk_plus_foldjax_sampler_max_kabsch_rmsd_angstrom": 0.000766189495166178,
+      "full_core_no_scan_max_kabsch_rmsd_angstrom": 1.1752202542091725,
+      "interpretation": "The sampler-only replay passes and disabling scan reproduces the outlier. Small PyTorch/JAX trunk rounding differences are amplified by some 5SAK long-diffusion trajectories; the preregistered full-core threshold remains failed."
+    }
+  },
+  "verification": {
+    "tsp_jobs": {"full_matched_matrix": 101, "upstream_trunk_diagnostic": 102, "no_scan_diagnostic": 103},
+    "focused_tests": "45 passed, 2 skipped",
+    "ruff_and_py_compile": "passed",
+    "foldjax_source_harness_sha256": "abb6ff8fb880338a197e3990b4a939b34dd7a33ec86f56de49a233c7191855b1",
+    "matched_capture_replay_harness_sha256": "b15be13ccd19af4aedfa3f275bd9e66ad76358e62fbefc3227debb080a1b06cc",
+    "matched_driver_sha256": "c7a332b6cb2fc7f01e968adb00acc2f049d60569e4194e4f941b775c6dd1fc09",
+    "run_summary_sha256": "1ba6567f1c7e447065203d414dd4ad693252099498be0482eeeb2318d4637eb1",
+    "ordinary_comparison_sha256": "5b740c18c1baff0b35f7a35ad5a7cc6b9baa37f039c95cf93e10e5adc74078d9",
+    "matched_summary_sha256": "44a32da8f1ee45c5fb36f162eaaef4b35f7bb33d83f5ba1f546420ccd10f4265",
+    "combined_diagnostics_sha256": "7f087781ef76bea5023cf2e8bfafabcd07cef8cb25f7639b182410d608fa294f",
+    "combined_markdown_sha256": "2f77120341d46373ec6286c8fb5c920eeafd2d706bccbcd5291f3dc98588a936"
+  },
+  "claim_boundary": "This validates port behavior on seven selected complexes and conditional n=5 ensembles. It is not proof for every protein, DNA, RNA, ligand, ion, or covalent chemistry; not a replicated-seed population equivalence test; not a blind accuracy benchmark; and not a throughput comparison. Ligand pose RMSD is not symmetry corrected."
+}

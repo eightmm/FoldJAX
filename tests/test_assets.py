@@ -106,7 +106,7 @@ def test_registry_declares_what_each_model_needs() -> None:
         spec = assets.REGISTRY[name]
         # AlphaFold 3 still has nothing public to download, but needs a registry
         # entry so the store knows where manually supplied parameters belong.
-        # OpenFold3 p1 is public through its publisher's unsigned S3 bucket.
+        # OpenFold3 OpenBind is public through its publisher's S3 bucket.
         if name != "alphafold3":
             assert spec.downloads, name
         assert spec.requires, name
@@ -781,6 +781,59 @@ def test_esmfold2_profiles_publish_their_exact_transfer_contract() -> None:
         assets.assets_for("opendde", profile="structure-only")
 
 
+def test_opendde_profiles_isolate_the_released_abag_checkpoint() -> None:
+    assert assets.available_profiles("opendde") == ("released", "abag")
+    released = assets.assets_for("opendde")
+    abag = assets.assets_for("opendde", profile="abag")
+
+    assert abag.model == "opendde-abag"
+    assert abag.model != released.model
+    assert abag.native == "opendde_abag.jax"
+    assert abag.requires == ("opendde_abag.jax",)
+    assert abag.conversion_sources == ("opendde_abag.pt",)
+    assert abag.conversion_schema == "opendde-abag-native-v1"
+    assert abag.requires_manifest
+    assert not abag.in_default_setup
+    checkpoint = next(item for item in abag.downloads if not item.shared)
+    assert checkpoint.name == "opendde_abag.pt"
+    assert checkpoint.size == 2_625_271_509
+    assert checkpoint.sha256 == (
+        "5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d"
+    )
+    assert assets.assets_for("opendde-abag", profile="abag") == abag
+
+
+def test_opendde_abag_conversion_uses_its_own_source_and_native_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.models.opendde.bridge import export_weights
+
+    monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
+    source = tmp_path / "source"
+    source.mkdir()
+    checkpoint = source / "opendde_abag.pt"
+    checkpoint.write_bytes(b"abag")
+    loaded: list[Path] = []
+
+    def fake_load(path: Path):
+        loaded.append(path)
+        return {"abag": True}
+
+    def fake_save(path: Path, params, *, compress: bool) -> None:
+        assert params == {"abag": True}
+        assert compress is False
+        path.write_bytes(b"native abag")
+
+    monkeypatch.setattr(export_weights, "load_torch_checkpoint", fake_load)
+    monkeypatch.setattr(export_weights, "save_native_weights", fake_save)
+
+    result = assets._convert_opendde("opendde-abag", source)
+
+    assert loaded == [checkpoint]
+    assert result.name == "opendde_abag.jax"
+    assert result.read_bytes() == b"native abag"
+
+
 def test_protenix_profiles_publish_isolated_structure_and_encoder_bundles() -> None:
     assert assets.available_profiles("protenix") == (
         "released",
@@ -1259,10 +1312,10 @@ def test_openfold3_public_checkpoint_is_staged_atomically(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
-    payload = b"public-openfold3-p1"
+    payload = b"public-openfold3-openbind"
     item = assets.Download(
-        name="of3_ft3_v1.pt",
-        url="https://example.invalid/of3_ft3_v1.pt",
+        name="of3-ob-2025-06-30-174k.pt",
+        url="https://example.invalid/of3-ob-2025-06-30-174k.pt",
         sha256=hashlib.sha256(payload).hexdigest(),
         size=len(payload),
     )
@@ -1416,9 +1469,9 @@ def test_openfold3_fetch_downloads_stages_and_records_public_source(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path / "home"))
-    payload = b"small stand-in for public p1 weights"
+    payload = b"small stand-in for public OpenBind weights"
     item = assets.Download(
-        name="of3_ft3_v1.pt",
+        name="of3-ob-2025-06-30-174k.pt",
         url=_serve(tmp_path, payload),
         sha256=hashlib.sha256(payload).hexdigest(),
         size=len(payload),
@@ -1617,7 +1670,7 @@ def test_fetching_a_non_redistributable_model_explains_itself(
     assert str(tmp_path) in message, "must say where to put the file"
 
 
-def test_openfold3_registry_uses_the_publishers_public_p1_checkpoint(
+def test_openfold3_registry_uses_the_publishers_public_openbind_checkpoint(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("FOLDJAX_HOME", str(tmp_path))
@@ -1627,24 +1680,24 @@ def test_openfold3_registry_uses_the_publishers_public_p1_checkpoint(
     # like any other published checkpoint. AlphaFold 3 is the one model left
     # that a person has to supply, and it is a licence, not a download.
     assert spec.in_default_setup
-    assert spec.conversion_sources == ("of3_ft3_v1.pt",)
+    assert spec.conversion_sources == ("of3-ob-2025-06-30-174k.pt",)
     assert len(spec.downloads) == 1
     checkpoint = spec.downloads[0]
-    assert checkpoint.name == "of3_ft3_v1.pt"
+    assert checkpoint.name == "of3-ob-2025-06-30-174k.pt"
     assert checkpoint.url == (
-        "https://openfold.s3.amazonaws.com/"
-        "openfold3_params/of3_ft3_v1.pt"
+        "https://openfold3-data.s3.amazonaws.com/"
+        "openfold3-parameters/of3-ob-2025-06-30-174k.pt"
     )
-    assert checkpoint.size == 2_288_027_095
+    assert checkpoint.size == 2_287_872_989
     assert checkpoint.sha256 == (
-        "aedd8f3eb814e3926c8974ef34c9499d"
-        "f224443f173b7e396c97684da6e3eeb6"
+        "bd43301c011d5f87580d3e8b54865886"
+        "9433e4488399feb03035ba248f8e29e4"
     )
     info = model_info("openfold3")
     assert info.weights_fetchable
     assert info.download_bytes == checkpoint.size
-    assert "OpenFold3 p1" in spec.notes
-    assert "incompatible" in spec.notes
+    assert "OpenFold3 v0.5.0" in spec.notes
+    assert "rejected" in spec.notes
 
 
 def test_openfold3_missing_weights_point_to_the_managed_fetch_command(
@@ -1657,7 +1710,7 @@ def test_openfold3_missing_weights_point_to_the_managed_fetch_command(
 
     message = str(error.value)
     assert "foldjax weights fetch --model openfold3" in message
-    assert "of3_ft3_v1.pt" in message
+    assert "of3-ob-2025-06-30-174k.pt" in message
     assert "Request access" not in message
 
 

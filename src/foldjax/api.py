@@ -998,6 +998,7 @@ def _predict_once(
                 request.output_dir / "inputs",
                 seed=request.seed,
                 msa=request.msa,
+                options=backend.apply_sampling(request),
             )
         # Most backends have a dialect of their own and the materialised file
         # is in it. ESMFold2 does not -- its adapter reads the common schema

@@ -723,10 +723,10 @@ def test_colab_notebook_exposes_practical_multi_model_choices() -> None:
     assert "ESMFold2 accepts protein, DNA, RNA" in markdown
     assert "structure+ESMC+chemistry bundle is about 26.77 GB" in markdown
     assert (
-        "OpenFold3's compatible p1 checkpoint is a public managed download"
+        "OpenFold3's v0.5.0 OpenBind checkpoint is a public managed download"
         in markdown
     )
-    assert "p2/OpenBind checkpoints are not compatible" in markdown
+    assert "Legacy p1/p2 checkpoints are rejected" in markdown
     assert "AlphaFold3 still requires parameters" in markdown
     assert "requires a runtime reporting more than 16 GiB" in markdown
     assert "structure-only" not in markdown.lower()
@@ -825,7 +825,7 @@ def test_colab_discloses_each_checkpoint_licence_with_a_source() -> None:
         (
             "OpenFold3",
             "Apache-2.0 model and parameters",
-            "huggingface.co/OpenFold/OpenFold3",
+            "github.com/aqlaboratory/openfold-3/releases/tag/v0.5.0",
         ),
         (
             "AlphaFold 3",
@@ -997,7 +997,7 @@ def test_colab_defaults_model_assets_msa_outputs_and_compile_cache_to_drive(
         / "models"
         / "openfold3"
         / "weights"
-        / "p1.pt"
+        / "openbind.pt"
     )
     cached_download = (
         tmp_path
@@ -1070,10 +1070,10 @@ def test_colab_defaults_model_assets_msa_outputs_and_compile_cache_to_drive(
     )
     assert not (namespace["MODEL_ASSET_STORE"] / "models").exists()
     assert (
-        namespace["foldjax_home"] / "weights" / "openfold3" / "p1.pt"
+        namespace["foldjax_home"] / "weights" / "openfold3" / "openbind.pt"
     ).read_bytes() == b"cached"
     assert (
-        namespace["MODEL_STORE_ROOT"] / "openfold3" / "weights" / "p1.pt"
+        namespace["MODEL_STORE_ROOT"] / "openfold3" / "weights" / "openbind.pt"
     ).read_bytes() == b"cached"
     assert (
         namespace["MODEL_STORE_ROOT"]
@@ -1089,7 +1089,7 @@ def test_colab_defaults_model_assets_msa_outputs_and_compile_cache_to_drive(
 
     assert namespace["MIGRATED_MODEL_STORES"] == ()
     assert (
-        namespace["MODEL_STORE_ROOT"] / "openfold3" / "weights" / "p1.pt"
+        namespace["MODEL_STORE_ROOT"] / "openfold3" / "weights" / "openbind.pt"
     ).read_bytes() == b"cached"
 
 
@@ -1163,7 +1163,7 @@ def test_colab_model_store_migration_never_merges_conflicting_directories(
         / "model-assets"
         / "weights"
         / "openfold3"
-        / "p1.pt"
+        / "openbind.pt"
     )
     new_weight = (
         tmp_path
@@ -1171,7 +1171,7 @@ def test_colab_model_store_migration_never_merges_conflicting_directories(
         / "model-assets"
         / "openfold3"
         / "weights"
-        / "p1.pt"
+        / "openbind.pt"
     )
     old_weight.parent.mkdir(parents=True)
     new_weight.parent.mkdir(parents=True)
@@ -2175,7 +2175,7 @@ def test_colab_accepts_esmfold2_all_biomolecule_input(
     assert calls[0][0][0][-2:] == ["--model", "esmfold2"]
 
 
-def test_colab_fetches_public_openfold3_p1_automatically(
+def test_colab_fetches_public_openfold3_openbind_automatically(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
@@ -2186,7 +2186,7 @@ def test_colab_fetches_public_openfold3_p1_automatically(
         features=("ligand_ccd", "ligand_smiles"),
         fetchable=True,
         ready=False,
-        weights_path=tmp_path / "managed" / "of3_ft3_v1.pt",
+        weights_path=tmp_path / "managed" / "of3-ob-2025-06-30-174k.pt",
     )
     monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
     namespace = {
@@ -2221,7 +2221,7 @@ def test_colab_fetches_public_openfold3_p1_automatically(
     assert calls[0][0][0][-2:] == ["--model", "openfold3"]
 
 
-def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
+def test_colab_reuses_cached_openfold3_openbind_without_a_fetch_process(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls = []
@@ -2236,7 +2236,7 @@ def test_colab_reuses_cached_openfold3_p1_without_a_fetch_process(
         features=("ligand_ccd", "ligand_smiles"),
         fetchable=True,
         ready=True,
-        weights_path=tmp_path / "managed" / "of3_ft3_v1.pt",
+        weights_path=tmp_path / "managed" / "of3-ob-2025-06-30-174k.pt",
     )
     monkeypatch.setattr(foldjax, "model_info", lambda _model: info)
     namespace = {

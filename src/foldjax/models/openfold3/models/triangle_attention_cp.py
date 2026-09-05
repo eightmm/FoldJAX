@@ -18,9 +18,9 @@ from foldjax.models.openfold3.models.primitives import (
     layer_norm,
     linear,
 )
-from foldjax.models.openfold3.models.triangle import permute_final_dims
 from foldjax.models.openfold3.models.triangle_attention import (
     TriangleAttentionParams,
+    _project_triangle_bias,
 )
 from foldjax.models.openfold3.models.triangle_attention import (
     triangle_attention as _triangle_attention,
@@ -34,6 +34,7 @@ def triangle_attention(
     no_heads: int,
     mask: jnp.ndarray | None = None,
     starting: bool = True,
+    transpose_bias: bool = False,
     inf: float = 1e9,
     eps: float = 1e-5,
     chunk_size: int | None = None,
@@ -54,6 +55,7 @@ def triangle_attention(
             no_heads=no_heads,
             mask=mask,
             starting=starting,
+            transpose_bias=transpose_bias,
             inf=inf,
             eps=eps,
             chunk_size=chunk_size,
@@ -81,18 +83,12 @@ def triangle_attention(
     x = shard_pair_rows(x, row_axis=-3)
     x = layer_norm(x, params.layer_norm, eps=eps)
     mask_bias = (inf * (mask.astype(jnp.float32) - 1.0))[..., :, None, None, :]
-    triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
+    triangle_bias = _project_triangle_bias(x, params, transpose_bias)
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
 
-    query = jnp.swapaxes(
-        split_heads(linear(x, params.mha.linear_q), no_heads), -2, -3
-    )
-    key = jnp.swapaxes(
-        split_heads(linear(x, params.mha.linear_k), no_heads), -2, -3
-    )
-    value = jnp.swapaxes(
-        split_heads(linear(x, params.mha.linear_v), no_heads), -2, -3
-    )
+    query = jnp.swapaxes(split_heads(linear(x, params.mha.linear_q), no_heads), -2, -3)
+    key = jnp.swapaxes(split_heads(linear(x, params.mha.linear_k), no_heads), -2, -3)
+    value = jnp.swapaxes(split_heads(linear(x, params.mha.linear_v), no_heads), -2, -3)
     query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
 
     out = ring_triangle_attention_2d(

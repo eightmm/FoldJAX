@@ -5,25 +5,42 @@
 Biomolecular structure prediction in JAX. Six models behind one interface,
 all carried inside the package:
 
-| model | licence | upstream |
-|---|---|---|
-| `alphafold3` | Apache-2.0 code; parameters under DeepMind's own terms | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
-| `boltz2` | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
-| `esmfold2` | MIT + Biohub acceptable-use policy | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
-| `opendde` | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE#license) |
-| `openfold3` | Apache-2.0 | [OpenFold/OpenFold3](https://huggingface.co/OpenFold/OpenFold3) |
-| `protenix` | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
+| model | ported upstream target | licence | upstream |
+|---|---|---|---|
+| `alphafold3` | [3.0.4 (`85c4d20`)](docs/model-versions.md#alphafold-3) | Apache-2.0 code; parameters under DeepMind's own terms | [google-deepmind/alphafold3](https://github.com/google-deepmind/alphafold3) |
+| `boltz2` | [2.2.1 metadata (`b1ebfc4`)](docs/model-versions.md#boltz-2) | MIT | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) |
+| `esmfold2` | [Biohub snapshot (`ef32577`)](docs/model-versions.md#esmfold2) | MIT + Biohub acceptable-use policy | [biohub/ESMFold2](https://huggingface.co/biohub/ESMFold2) |
+| `opendde` | [1.1.1 (`ddfa1df`); base + ABAG](docs/model-versions.md#opendde) | Apache-2.0 | [aurekaresearch/OpenDDE](https://huggingface.co/aurekaresearch/OpenDDE#license) |
+| `openfold3` | [0.5.0/OpenBind (`c477165`)](docs/model-versions.md#openfold3) | Apache-2.0 | [aqlaboratory/openfold-3](https://github.com/aqlaboratory/openfold-3) |
+| `protenix` | [2.0.0 metadata (`4c355be`); five weight profiles](docs/model-versions.md#protenix) | Apache-2.0 | [bytedance/Protenix](https://github.com/bytedance/Protenix#license) |
+
+These are fixed implementation targets, not aliases for upstream `latest`.
+[The complete version ledger](docs/model-versions.md) records full source
+commits, checkpoint revisions or hashes, and the support boundary of every
+profile.
 
 Each is vendored at `foldjax.models.<name>`. The full parameter terms per
 model, which are not always the code licence, are in
 [docs/licences.md](docs/licences.md) — publisher summaries, not legal advice.
 
-Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations
-that match their upstream's results; AlphaFold 3 is upstream's own source,
-vendored. Weights are never redistributed — each file comes from its own
-publisher, under that project's terms. `foldjax setup` fetches every one that
-is published, OpenFold3's exact p1 checkpoint included, and converts or stages
-it. **AlphaFold 3 is the only model whose weights you have to supply
+Boltz-2, OpenDDE, Protenix, OpenFold3 and ESMFold2 are JAX reimplementations;
+AlphaFold 3 is upstream's own source, vendored. “Matches upstream” is always a
+scoped claim: feature parity, matched-random-tape model parity, and
+independently sampled scientific agreement are recorded separately in the
+[version and validation ledger](docs/model-versions.md). It never means that
+different models, or different RNG implementations given the same integer
+seed, should emit the same coordinates.
+
+The 2026-09-04 closure gate completed all 42 model-by-modality real-weight
+smokes plus OpenDDE ABAG, all five supported template routes, and Boltz-2's
+affinity head. The exact upstream versions, matched-random results, hashes, and
+limits are in the [validation ledger](docs/model-versions.md#validation-boundary-2026-09-04).
+These short runs prove executable coverage, not released-schedule accuracy.
+
+Weights are never redistributed — each file comes from its own publisher,
+under that project's terms. `foldjax setup` fetches every one that is published
+and converts or stages it, including OpenFold3's default v0.5.0 OpenBind
+checkpoint. **AlphaFold 3 is the only model whose weights you have to supply
 yourself**, because DeepMind releases its parameters only to applicants who
 accept their terms. ESMFold2 is public but stays opt-in for its size: the full
 bundle is about 26.8 GB.

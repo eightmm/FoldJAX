@@ -435,10 +435,10 @@ def upstream_checkpoint_paths(model: str) -> dict[str, Path]:
     if model == "openfold3":
         return {
             "model": root
-            / "openfold3"
+            / "openfold3-v050"
             / "openfold3_weights"
             / "checkpoints"
-            / "of3_ft3_v1.pt"
+            / "of3-ob-2025-06-30-174k.pt"
         }
     if model == "opendde":
         return {"model": _store() / "downloads" / "opendde" / "opendde.pt"}
@@ -505,14 +505,10 @@ def _upstream_boltz_canonical_tokens() -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)) or not value:
         raise RuntimeError("upstream Boltz canonical tokens are unavailable")
     tokens = tuple(value)
-    if (
-        any(
-            not isinstance(token, str)
-            or re.fullmatch(r"[A-Z0-9]+", token) is None
-            for token in tokens
-        )
-        or len(set(tokens)) != len(tokens)
-    ):
+    if any(
+        not isinstance(token, str) or re.fullmatch(r"[A-Z0-9]+", token) is None
+        for token in tokens
+    ) or len(set(tokens)) != len(tokens):
         raise RuntimeError("upstream Boltz canonical tokens are invalid")
     _require_upstream_boltz_runtime_inventory(source, tokens)
     return tokens
@@ -539,6 +535,7 @@ print(json.dumps({
         completed = subprocess.run(
             [str(python), "-c", script],
             cwd=repo,
+            env={**os.environ, "PYTHONPATH": str(repo / "src")},
             capture_output=True,
             text=True,
             timeout=30,
@@ -562,8 +559,19 @@ print(json.dumps({
         )
 
 
-def _require_boltz_protein_benchmark(native_input: Path | None) -> None:
-    """Limit the narrow asset inventory to our generated protein-only jobs."""
+def _boltz_job_molecule_tokens(native_input: Path | None) -> dict[str, str]:
+    """Validate one generated Boltz job and return its non-protein molecules.
+
+    Boltz always loads its canonical protein inventory, then resolves nucleotide
+    and ligand CCD records from ``mols`` on demand.  The benchmark provenance
+    therefore has to bind those job-dependent records too; rejecting every
+    non-protein job made the upstream comparison artificially protein-only.
+
+    This remains deliberately narrower than Boltz's full public schema.  The
+    common-input translator emits this exact subset for unmodified, unbonded,
+    template-free jobs.  SMILES ligands and modifications need a different
+    provenance boundary and are refused instead of being incompletely hashed.
+    """
 
     if native_input is None:
         raise ArtifactFingerprintError(
@@ -584,25 +592,95 @@ def _require_boltz_protein_benchmark(native_input: Path | None) -> None:
         or not document["sequences"]
     ):
         raise ArtifactFingerprintError(
-            "upstream Boltz provenance supports only pure unmodified protein jobs"
+            "upstream Boltz provenance supports only generated unmodified jobs"
         )
+    selected: dict[str, str] = {}
     for entity in document["sequences"]:
-        if not isinstance(entity, dict) or set(entity) != {"protein"}:
+        if not isinstance(entity, dict) or len(entity) != 1:
             raise ArtifactFingerprintError(
-                "upstream Boltz provenance supports only pure unmodified protein jobs"
+                "upstream Boltz provenance supports only generated unmodified jobs"
             )
-        protein = entity["protein"]
+        kind, body = next(iter(entity.items()))
         if (
-            not isinstance(protein, dict)
-            or set(protein) != {"id", "sequence", "msa"}
-            or not isinstance(protein["sequence"], str)
-            or not protein["sequence"].strip()
-            or not isinstance(protein["msa"], str)
-            or not protein["msa"].strip()
+            kind not in {"protein", "rna", "dna", "ligand"}
+            or not isinstance(body, dict)
+            or not _valid_boltz_ids(body.get("id"))
         ):
             raise ArtifactFingerprintError(
-                "upstream Boltz provenance supports only pure unmodified protein jobs"
+                "upstream Boltz provenance supports only generated unmodified jobs"
             )
+        if kind == "ligand":
+            if set(body) != {"id", "ccd"} or not _valid_boltz_token(body["ccd"]):
+                raise ArtifactFingerprintError(
+                    "upstream Boltz provenance supports only generated CCD ligands"
+                )
+            selected[f"boltz.ligand.{body['ccd']}"] = str(body["ccd"])
+            continue
+
+        allowed = (
+            {"id", "sequence", "msa"}
+            if kind in {"protein", "rna"}
+            else {
+                "id",
+                "sequence",
+            }
+        )
+        required = (
+            {"id", "sequence", "msa"}
+            if kind == "protein"
+            else {
+                "id",
+                "sequence",
+            }
+        )
+        sequence = body.get("sequence")
+        if (
+            not required.issubset(body)
+            or not set(body).issubset(allowed)
+            or not isinstance(sequence, str)
+            or not sequence
+            or not sequence.isascii()
+            or not sequence.isalpha()
+            or sequence != sequence.upper()
+            or ("msa" in body and (not isinstance(body["msa"], str) or not body["msa"]))
+        ):
+            raise ArtifactFingerprintError(
+                "upstream Boltz provenance supports only generated unmodified jobs"
+            )
+        if kind == "protein":
+            if any(letter not in "ACDEFGHIKLMNPQRSTVWYX" for letter in sequence):
+                raise ArtifactFingerprintError(
+                    "invalid generated Boltz protein sequence"
+                )
+            continue
+        alphabet = "ACGUN" if kind == "rna" else "ACGTN"
+        if any(letter not in alphabet for letter in sequence):
+            raise ArtifactFingerprintError(
+                f"invalid generated Boltz {kind.upper()} sequence"
+            )
+        for letter in sorted(set(sequence)):
+            token = letter if kind == "rna" else f"D{letter}"
+            selected[f"boltz.{kind}.{token}"] = token
+    return selected
+
+
+def _valid_boltz_ids(value: object) -> bool:
+    """Return whether ``value`` is a non-empty generated chain id or id list."""
+
+    if isinstance(value, str):
+        return bool(value)
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and bool(item) for item in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _valid_boltz_token(value: object) -> bool:
+    """Reject paths/SMILES while accepting the CCD identifiers we can hash."""
+
+    return isinstance(value, str) and re.fullmatch(r"[A-Z0-9]{1,8}", value) is not None
 
 
 def _upstream_biotite_ccd(repo: Path) -> Path:
@@ -640,11 +718,12 @@ def upstream_implicit_asset_paths(
     model: str,
     *,
     native_input: Path | None = None,
+    openfold3_runner_yaml: Path | None = None,
 ) -> dict[str, Path]:
     """Exact non-checkpoint assets selected by each upstream command."""
 
     if model == "boltz2":
-        _require_boltz_protein_benchmark(native_input)
+        job_tokens = _boltz_job_molecule_tokens(native_input)
         cache = upstream_checkpoint_paths(model)["model"].parent
         for name, role in (
             ("mols.tar", "molecule archive"),
@@ -661,10 +740,14 @@ def upstream_implicit_asset_paths(
                     f"upstream Boltz benchmark requires a regular {role}"
                 )
         mols = cache / "mols"
-        return {
+        assets = {
             f"boltz.canonical-protein.{token}": mols / f"{token}.pkl"
             for token in _upstream_boltz_canonical_tokens()
         }
+        assets.update(
+            {label: mols / f"{token}.pkl" for label, token in job_tokens.items()}
+        )
+        return assets
     if model in {"protenix", "protenix-v2", "opendde"}:
         return {
             "ccd.components": COMPONENTS,
@@ -672,15 +755,26 @@ def upstream_implicit_asset_paths(
         }
     if model == "openfold3":
         return {
-            "openfold3.runner_yaml": Path(__file__).parent / "openfold3_runner.yml",
+            "openfold3.runner_yaml": (
+                Path(__file__).parent / "openfold3_runner.yml"
+                if openfold3_runner_yaml is None
+                else Path(openfold3_runner_yaml)
+            ),
             "openfold3.biotite_components": _upstream_biotite_ccd(
-                _upstream_root() / "openfold3-v031"
+                _upstream_root() / "openfold3-v050"
             ),
         }
     raise ValueError(f"no upstream assets for {model}")
 
 
-def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
+def command(
+    model: str,
+    job: Path,
+    out: Path,
+    schedule: dict,
+    seed: int,
+    openfold3_runner_yaml: Path | None = None,
+):
     """Return (argv, cwd, extra_env) for one upstream prediction."""
     root = _upstream_root()
     if model == "boltz2":
@@ -713,7 +807,7 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
                 "mmcif",
             ],
             repo,
-            {},
+            {"PYTHONPATH": str(repo / "src")},
         )
     if model in {"protenix", "protenix-v2"}:
         repo = root / "protenix"
@@ -749,19 +843,36 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
             {"PYTHONPATH": str(repo), **_toolkit_env(repo)},
         )
     if model == "openfold3":
-        # The 0.3.1 worktree, not the main checkout: `of3_ft3_v1.pt` -- the
-        # weights the FoldJAX port runs -- is the legacy p1 checkpoint with
-        # `version_compatibility="<0.4"` (entry_points/parameters.py). The
-        # current 0.4.4 code refuses it (layer_norm_z / fourier_emb drift),
-        # and running the >=0.4 default p2 weights instead would put two
-        # different models in one table row.
-        repo = root / "openfold3-v031"
+        # FoldJAX targets OpenFold3 v0.5.0's default OpenBind checkpoint. Keep
+        # the upstream arm on that exact tag/worktree and checkpoint too.
+        import yaml
+
+        runner = (
+            Path(__file__).parent / "openfold3_runner.yml"
+            if openfold3_runner_yaml is None
+            else Path(openfold3_runner_yaml)
+        )
+        config = yaml.safe_load(runner.read_text())
+        update = config.get("model_update", {})
+        if update.get("presets", ["predict"]) != ["predict"]:
+            raise ValueError("OpenFold3 benchmark requires the predict preset")
+        shared = update.get("custom", {}).get("architecture", {}).get("shared", {})
+        actual = (
+            config.get("experiment_settings", {}).get("seeds"),
+            shared.get("num_recycles", 3),
+            shared.get("diffusion", {}).get("no_full_rollout_steps", 200),
+        )
+        expected = ([seed], schedule["num_recycles"], schedule["num_steps"])
+        if actual != expected:
+            raise ValueError(
+                f"OpenFold3 runner seed/recycles/steps {actual} "
+                f"!= recorded {expected}; "
+                "provide a matching --openfold3-runner-yaml"
+            )
+        repo = root / "openfold3-v050"
         checkpoint = upstream_checkpoint_paths(model)["model"]
         return (
             [
-                # `python -m`: 0.3.1's console script trips over a cutlass
-                # import shim and presents the wrong argparse; the module
-                # entry is the same `cli`. Underscore flags only in 0.3.1.
                 str(repo / ".venv/bin/python"),
                 "-m",
                 "openfold3.run_openfold",
@@ -773,7 +884,7 @@ def command(model: str, job: Path, out: Path, schedule: dict, seed: int):
                 "--num_diffusion_samples",
                 str(schedule["num_samples"]),
                 "--runner_yaml",
-                str(Path(__file__).parent / "openfold3_runner.yml"),
+                str(runner),
                 "--use_msa_server",
                 "false",
                 "--use_templates",
@@ -847,9 +958,7 @@ def scores(model: str, out: Path) -> list[dict]:
     elif model == "openfold3":
         # `<case>/seed_<n>/
         #    <case>_seed_<n>_sample_<k>_confidences_aggregated.json`;
-        # the runner YAML supplies the requested seed directly. Do not pass
-        # ``--num_model_seeds``: pinned 0.3.1 interprets that as a request to
-        # discard the YAML list and generate seeds from its hard-coded 42.
+        # the runner YAML supplies the requested seed directly.
         # `ptm` is the key the FoldJAX column also writes, so the report can
         # compare like with like; `avg_plddt` is 0-100 where FoldJAX's
         # `mean_plddt` is 0-1, so both ride along unrenamed rather than
@@ -908,6 +1017,36 @@ def main() -> int:
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--timeout", type=int, default=7200)
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="override the pinned benchmark seed for a separately labelled run",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="override the pinned diffusion sample count",
+    )
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help="override the pinned diffusion step count",
+    )
+    parser.add_argument(
+        "--num-recycles",
+        type=int,
+        default=None,
+        help="override the pinned recycle count",
+    )
+    parser.add_argument(
+        "--openfold3-runner-yaml",
+        type=Path,
+        help="runner config whose recycle/step/seed values match the recorded "
+        "OpenFold3 schedule",
+    )
+    parser.add_argument(
         "--timing-state",
         choices=("cold-or-unspecified", "warm-after-successful-prefill"),
         default="cold-or-unspecified",
@@ -923,10 +1062,27 @@ def main() -> int:
     from bench.spec import SCHEDULE, SEED, cases
 
     case = next(item for item in cases() if item.name == args.case)
+    seed = SEED if args.seed is None else args.seed
+    schedule = dict(SCHEDULE)
+    for name in ("num_samples", "num_steps", "num_recycles"):
+        value = getattr(args, name)
+        if value is not None:
+            if value < 1:
+                parser.error(f"--{name.replace('_', '-')} must be positive")
+            schedule[name] = value
+    if args.openfold3_runner_yaml is not None and args.model != "openfold3":
+        parser.error("--openfold3-runner-yaml only applies to model 'openfold3'")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     peak_file = args.output_dir / "peak_bytes.txt"
 
-    argv, cwd, extra = command(args.model, args.job, args.output_dir, SCHEDULE, SEED)
+    argv, cwd, extra = command(
+        args.model,
+        args.job,
+        args.output_dir,
+        schedule,
+        seed,
+        args.openfold3_runner_yaml,
+    )
     environment = upstream_environment(argv, extra, peak_file=peak_file)
     diagnostic_paths = {
         "native-input": args.job.parent,
@@ -951,6 +1107,7 @@ def main() -> int:
         implicit_asset_paths = upstream_implicit_asset_paths(
             args.model,
             native_input=args.job,
+            openfold3_runner_yaml=args.openfold3_runner_yaml,
         )
         artifacts = artifact_identity(
             job=case.job,
@@ -973,8 +1130,8 @@ def main() -> int:
         model=args.model,
         case=case.name,
         length=case.length,
-        schedule=SCHEDULE,
-        seed=SEED,
+        schedule=schedule,
+        seed=seed,
         artifacts=artifacts,
         source=source,
         runtime=runtime,
@@ -1049,6 +1206,7 @@ def main() -> int:
                 implicit_assets=upstream_implicit_asset_paths(
                     args.model,
                     native_input=args.job,
+                    openfold3_runner_yaml=args.openfold3_runner_yaml,
                 ),
             ),
         )
@@ -1093,8 +1251,8 @@ def main() -> int:
         "model": args.model,
         "case": case.name,
         "length": case.length,
-        "schedule": dict(SCHEDULE),
-        "seed": SEED,
+        "schedule": schedule,
+        "seed": seed,
         "options": {},
         "artifacts": artifacts,
         "source": source,
@@ -1150,14 +1308,14 @@ def main() -> int:
             # 95.6 GiB `nvidia-smi` total, which looks like an out-of-memory and
             # is not proof of one.
             record["stderr_tail"] = portable_diagnostic(stderr[-2000:])
-    elif len(structures) != SCHEDULE["num_samples"]:
+    elif len(structures) != schedule["num_samples"]:
         record["failed"] = True
         record["reason"] = (
             f"produced {len(structures)} structures for "
-            f"{SCHEDULE['num_samples']} requested samples"
+            f"{schedule['num_samples']} requested samples"
         )
     elif (
-        len(found) != SCHEDULE["num_samples"]
+        len(found) != schedule["num_samples"]
         or any(not entry for entry in found)
         or any(not math.isfinite(value) for entry in found for value in entry.values())
     ):

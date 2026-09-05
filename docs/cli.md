@@ -340,10 +340,11 @@ None of that is overhead this port could remove — the same doubling costs
 upstream 1.08x to 1.32x *more* than it costs FoldJAX at each size it will run.
 It is what the extra capacity weighs. Above about a thousand tokens the peak
 tracks `2.1 GiB + 0.0086 MiB × tokens²` closely enough to size a card before
-starting, which is what the warning prints. OpenFold3's 2.29 GB p1
-checkpoint comes from the publisher's own unsigned S3 key, pinned by SHA-256,
-so it needs no account and no request; upstream p2 and OpenBind v0.5 target
-newer incompatible architectures and are not substituted.
+starting, which is what the warning prints. OpenFold3's 2.29 GB v0.5.0 OpenBind
+checkpoint comes from the publisher's own S3 bucket, pinned by SHA-256, so it
+needs no account and no request. It is the sole managed profile; legacy p1 and
+p2 files are rejected. The exact identity is recorded in the
+[model version ledger](model-versions.md#openfold3).
 
 Two models are outside that, for two different reasons. ESMFold2 is public but
 held back from the default because its full structure+ESMC+chemistry bundle is

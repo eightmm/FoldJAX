@@ -4,7 +4,7 @@ Completes the split the other CLIs already have: ``openfold3-jax-featurize`` nee
 upstream's data stack, this needs only JAX and a checkpoint. Passing features as
 ``.npz`` is what makes that possible -- the two steps can run on different machines.
 
-    openfold3-jax-predict ubq.npz --checkpoint of3_ft3_v1.pt -o out/
+    openfold3-jax-predict ubq.npz --checkpoint of3-ob-2025-06-30-174k.pt -o out/
     openfold3-jax-predict ubq.npz --checkpoint w.pt -o out/ --samples 5 --steps 200
 """
 
@@ -15,6 +15,8 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from foldjax.models import _representations
 
@@ -171,7 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         has_atomized_tokens,
         load_feature_archive,
         normalize_asym_ids,
-        subsample_msa_rows,
+        prepare_msa_cycle_features,
     )
     from foldjax.models.openfold3.inference import (
         compile_predict,
@@ -225,9 +227,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # discarded before inference started.
     overrides["max_array_bytes"] = array_budget_bytes
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
-    # Keep a full alignment on the host only. At long sequences it can be
-    # several GiB, so converting before this cut defeats the memory saving.
-    raw = subsample_msa_rows(raw, config.msa_depth)
+    raw = prepare_msa_cycle_features(
+        raw,
+        config.msa_depth,
+        num_recycles=config.num_recycles,
+        rng=np.random.default_rng(args.seed),
+    )
     # An archive built for a query with no templates carries four identical
     # empty ones, which the stack would embed four times to average back to the
     # value one gives. The FoldJAX backend cuts them in the same place, so both

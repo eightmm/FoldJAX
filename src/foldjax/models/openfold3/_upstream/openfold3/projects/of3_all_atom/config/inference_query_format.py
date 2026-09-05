@@ -1,4 +1,5 @@
 # Copyright 2026 AlQuraishi Laboratory
+# Modified by FoldJAX for portable v0.5.0 input parity; see the port NOTICE.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -74,6 +75,7 @@ class Chain(BaseModel):
         Annotated[list[str | None], BeforeValidator(_ensure_list)] | None
     ) = None
     sdf_file_path: FilePath | None = None
+    cyclic: bool = False
 
     @field_serializer("molecule_type", return_type=str)
     def serialize_enum_name(self, v: MoleculeType, _info):

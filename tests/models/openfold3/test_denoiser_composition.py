@@ -78,7 +78,6 @@ def _parts(torch, randomized):
             n_transition=2,
             n_query=N_QUERY,
             n_key=N_KEY,
-            use_ada_layer_norm=True,
             c_s=C_S,
             c_z=C_Z,
         )
@@ -94,7 +93,6 @@ def _parts(torch, randomized):
             n_transition=2,
             n_query=N_QUERY,
             n_key=N_KEY,
-            use_ada_layer_norm=True,
         )
     )
     dt = randomized(
@@ -106,7 +104,6 @@ def _parts(torch, randomized):
             no_heads=TOKEN_HEADS,
             no_blocks=1,
             n_transition=2,
-            use_ada_layer_norm=True,
             n_query=None,
             n_key=None,
             inf=1e9,

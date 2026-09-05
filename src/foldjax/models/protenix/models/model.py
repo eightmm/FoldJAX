@@ -89,6 +89,9 @@ _PADDED_MODEL_FEATURES = frozenset(
         "has_deletion",
         "has_frame",
         "mol_id",
+        "is_ligand",
+        "token_is_ligand",
+        "token_polymer_type",
         "msa",
         "msa_mask",
         "pad_info",
@@ -207,6 +210,35 @@ def cast_trunk_params(
     )
 
 
+def _confidence_ligand_masks(features):
+    """Recover chemistry from native masks or older FoldJAX archive identity.
+
+    Unknown restype is not ligand identity: modified polymers may share that
+    code. Retain the historical fallback only for archives lacking chemistry.
+    """
+    token_ligand = features.get("token_is_ligand")
+    atom_ligand = features.get("is_ligand")
+    if token_ligand is None and "token_polymer_type" in features:
+        token_ligand = features["token_polymer_type"] == 0
+    if atom_ligand is None and token_ligand is not None:
+        atom_ligand = token_ligand[features["atom_to_token_idx"]]
+    if token_ligand is None and atom_ligand is not None:
+        token_ligand = (
+            jax.ops.segment_max(
+                atom_ligand.astype(jnp.int32),
+                features["atom_to_token_idx"],
+                num_segments=features["restype"].shape[-2],
+            )
+            > 0
+        )
+    if token_ligand is None:
+        token_ligand = jnp.argmax(features["restype"], axis=-1) == 20
+    return (
+        None if atom_ligand is None else ~atom_ligand.astype(bool),
+        token_ligand,
+    )
+
+
 def protenix_infer_static(
     input_feature_dict: dict[str, jnp.ndarray | dict[str, jnp.ndarray]],
     params: ProtenixInferenceParams,
@@ -305,8 +337,7 @@ def protenix_infer_static(
 
     if cp_layout != (_active_cp_layout() or "1d"):
         raise RuntimeError(
-            f"cp_layout={cp_layout!r} but the active mesh is "
-            f"{_active_cp_layout()!r}"
+            f"cp_layout={cp_layout!r} but the active mesh is {_active_cp_layout()!r}"
         )
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -509,6 +540,9 @@ def protenix_infer_static(
             )
             piece = dict(logits) if return_confidence_logits else {}
             if run_confidence_scores:
+                atom_polymer, token_ligand = _confidence_ligand_masks(
+                    input_feature_dict
+                )
                 piece.update(
                     confidence_scores_from_logits(
                         plddt_logits=logits["plddt"],
@@ -517,17 +551,12 @@ def protenix_infer_static(
                         distogram_logits=distogram_logits,
                         token_has_frame=input_feature_dict.get("has_frame"),
                         token_asym_id=input_feature_dict.get("asym_id"),
-                        atom_to_token_idx=input_feature_dict.get(
-                            "atom_to_token_idx"
-                        ),
+                        atom_to_token_idx=input_feature_dict.get("atom_to_token_idx"),
                         atom_coordinate=sample_coordinates,
+                        atom_is_polymer=atom_polymer,
                         elements_one_hot=input_feature_dict.get("ref_element"),
                         mol_id=input_feature_dict.get("mol_id"),
-                        token_is_ligand=input_feature_dict.get(
-                            "token_is_ligand",
-                            jnp.argmax(input_feature_dict["restype"], axis=-1)
-                            == 20,
-                        ),
+                        token_is_ligand=token_ligand,
                         num_recycles=num_recycles,
                         n_chain=n_chain,
                         token_mask=token_padding_mask,
@@ -684,8 +713,7 @@ def protenix_infer_compiled(
         getattr(params, "confidence", None), "distance_embedding", None
     )
     kwargs["compact_confidence_distance_bins"] = (
-        compact_requested
-        and can_compact_confidence_distance_embedding(distance_params)
+        compact_requested and can_compact_confidence_distance_embedding(distance_params)
     )
     param_arrays, treedef, flags = split_static_flags(params)
     model_features = traceable_features(input_feature_dict)

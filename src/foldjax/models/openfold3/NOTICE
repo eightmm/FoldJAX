@@ -16,3 +16,8 @@ FoldJAX vendors the Apache-2.0 OpenFold3 data definitions and NumPy preprocessin
 helpers required for standalone inference under `_upstream/`. Training, model,
 and tensor-runtime modules are not included. Compatibility changes are limited
 to the FoldJAX package namespace, NumPy-only MSA parsing, and local data loading.
+
+Modified by FoldJAX for the v0.5.0/OpenBind target (2026-09-05): retained MSA
+parsing and processing correct profile indexing and main-alignment deduplication;
+query definitions and structure construction preserve native cyclic-chain
+annotations. These carried files are adapted, not byte-identical upstream files.

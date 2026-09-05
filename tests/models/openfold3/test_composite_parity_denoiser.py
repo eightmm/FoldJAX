@@ -58,7 +58,7 @@ def reference(openfold3_source: Path, randomized):
     batch = make_batch(n_token=N_TOKEN, n_msa=N_MSA, n_templ=N_TEMPL)
 
     with torch.no_grad():
-        s_input, s_trunk, z = model.run_trunk(batch=batch, num_recycles=1)
+        s_input, s_trunk, z = model.run_trunk(batch=batch, num_cycles=1)
 
         n_atom = batch["atom_mask"].shape[-1]
         generator = torch.Generator().manual_seed(1)

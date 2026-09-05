@@ -23,6 +23,7 @@ from foldjax.padding import PaddingPlan, resolve_axis
 from foldjax.schema import PaddingConfig
 
 _TOKEN_FIELDS = {
+    "token_is_ligand",
     "restype",
     "profile",
     "deletion_mean",
@@ -32,6 +33,7 @@ _TOKEN_FIELDS = {
     "entity_id",
     "sym_id",
     "has_frame",
+    "frame_atom_index",
     "token_entity_id",
     "token_copy_id",
     "token_is_modified",
@@ -42,6 +44,7 @@ _TOKEN_FIELDS = {
     "esm_token_embedding",
 }
 _ATOM_FIELDS = {
+    "is_ligand",
     "ref_pos",
     "ref_charge",
     "ref_mask",
@@ -203,6 +206,19 @@ def pad_protenix_features(
 
     output = dict(features)
     _pad_named_axis(output, _TOKEN_FIELDS, storage_token, target_token, axis=0)
+    if "frame_atom_index" in output:
+        frames = np.asarray(output["frame_atom_index"])
+        if frames.shape != (target_token, 3) or not np.issubdtype(
+            frames.dtype, np.integer
+        ):
+            raise ValueError(
+                "frame_atom_index must contain three integer atom indices per token"
+            )
+        if np.any(frames[:storage_token] < -1) or np.any(
+            frames[:storage_token] >= storage_atom
+        ):
+            raise ValueError("frame_atom_index contains out-of-range atom indices")
+        frames[storage_token:] = -1
     _pad_named_axis(output, _ATOM_FIELDS, storage_atom, target_atom, axis=0)
 
     token_bonds = np.asarray(features["token_bonds"])

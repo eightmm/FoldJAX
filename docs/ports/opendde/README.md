@@ -7,7 +7,8 @@
 
 Inference-only JAX port of
 [Aureka AI Research OpenDDE](https://github.com/aurekaresearch/OpenDDE), pinned
-to source revision `f607bb3c9ff299c0627ac20f5ef8e25d716ed46f`.
+to release `v1.1.1`, source revision
+`ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f`.
 
 The native prediction path now runs an OpenDDE JSON job through
 featurization, the released 655,791,538-parameter model, confidence scoring,
@@ -26,6 +27,17 @@ actual-checkpoint comparison using the same random tape measured raw coordinate
 RMSE `0.000189 Å`, all-atom RMSD `0.000327 Å`, and maximum absolute error
 `0.000977 Å`.
 
+The current 1.1.1 closure adds the parts that example did not cover. The
+released checkpoint completed protein, DNA, RNA, CCD ligand, SMILES ligand,
+ion, and a mixed all-entity input; the ABAG checkpoint completed the mixed
+input as well. Ten upstream/FoldJAX preprocessing cases, including RNA MSA and
+the 9FM7 template, had all 60 shared arrays bit-identical per case. The template
+tensors were nonzero and the mapped 9FM7 real-weight GPU run completed with
+native Kalign 3.3.5. Finally, ABAG driven by the same upstream MSA and diffusion
+tape measured `0.081714 Å` raw all-atom RMSD. The short two-step executions are
+port gates rather than accuracy measurements; the released-schedule evidence
+below remains the scientific runtime comparison.
+
 The full 200-step, 10-cycle schedule is also verified for one FP32 sample on an
 RTX PRO 6000 Blackwell Max-Q. Both pinned upstream OpenDDE and native JAX
 completed the official protein/DNA `7R6R` job with the official weights, MSA
@@ -35,19 +47,21 @@ memory, and score comparisons are below.
 ## Checkpoint provenance and conversion
 
 Checkpoints are not bundled, and prediction never downloads them implicitly.
-The explicit `foldjax weights fetch --model opendde` command downloads and
-verifies the general checkpoint from Hugging Face revision
+The explicit weight command downloads and verifies one selected checkpoint
+from Hugging Face revision
 `eddd563ce96571f784012edd8f045181c8f8627d`:
 
 | Asset | Size (bytes) | SHA-256 |
 | --- | ---: | --- |
 | `opendde.pt` | 2,625,249,069 | `7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc` |
+| `opendde_abag.pt` (`abag` profile) | 2,625,271,509 | `5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d` |
 
 A verified local conversion contains 655,791,538 parameters:
 
 | Derived asset | Size (bytes) | SHA-256 |
 | --- | ---: | --- |
-| `opendde.jax` | 2,623,328,025 | `161801261e288f225c3250e0fd12ca36ced52fde78837eed9407606c5759d155` |
+| `opendde.jax` | 2,623,328,201 | `bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee` |
+| `opendde_abag.jax` | 2,623,328,201 | `c5eec319ed9c8f445c93bcce92d9aca82dc745d0f01b67f39c3bc85e31e4f5ca` |
 
 After obtaining that asset from the
 [official OpenDDE Hugging Face repository](https://huggingface.co/aurekaresearch/OpenDDE/tree/eddd563ce96571f784012edd8f045181c8f8627d),
@@ -64,6 +78,9 @@ publisher checkpoint with the NumPy reader:
 
 ```bash
 foldjax weights fetch --model opendde
+
+# Opt-in antibody-antigen checkpoint, stored separately from the default:
+foldjax weights fetch --model opendde --profile abag
 ```
 
 To convert a trusted local copy explicitly instead, use the native exporter;
@@ -95,7 +112,7 @@ also supply the assets a job needs explicitly:
 | `--template-mmcif-dir DIR` | local PDB mmCIF files referenced by precomputed template hits |
 | `--template-release-dates PATH` | official `release_date_cache.json` for the model cutoff |
 | `--template-obsolete-map PATH` | official `obsolete_to_successor.json` mapping |
-| `--kalign-binary PATH` | executable Kalign 3.3.5 or newer for query-to-mmCIF template realignment; `kalign-py` from the `kalign-python` wheel counts |
+| `--kalign-binary PATH` | native Kalign 3.3.5 executable for the verified query-to-mmCIF template realignment path |
 
 The RDKit cache is a pickle and must be treated as trusted input; use only the
 pinned official SHA-256
@@ -159,14 +176,15 @@ lower-level entry point for an already featurized, unbatched example.
   in output CIF.
 - User-supplied protein/RNA MSA files, legacy precomputed-MSA directories, and
   precomputed template-hit A3M plus local mmCIF coordinates. JSON-relative
-  paths resolve from the input file first. Exact template coordinate mapping
-  requires a Kalign 3.3.5 or newer executable; anything older fails
-  explicitly instead of silently changing the alignment. The floor was an exact
-  pin until 2026-08-25, which no upstream asks for and which made templates
-  reachable only through a system package: PyPI's `kalign-python` wheel starts
-  at 3.4.8. Whether versions above the floor align identically has not been
-  measured, so pin one with `PROTENIX_KALIGN_BINARY` when a run has to be
-  reproduced exactly.
+  paths resolve from the input file first. OpenDDE defaults both
+  `use_rna_msa` and `use_template` to false; FoldJAX preserves those defaults
+  and exposes the two paths only when the matching option is true.
+- Exact template coordinate parity is pinned to the native Kalign 3.3.5 CLI.
+  `kalign-py` 3.6.0 is executable through its different `--format` spelling,
+  but produced a different alignment in the checked 9FM7 case. Upstream
+  OpenDDE itself sends that wrapper the unsupported native `-format` spelling
+  and yields no usable template rows. Therefore “3.3.5 or newer” is not a
+  reproducibility claim; use the recorded 3.3.5 binary and hash for parity.
 - OpenDDE's exact 16-key summary contract: `plddt`, `gpde`, `ptm`, `iptm`,
   `chain_gpde`, `chain_pair_gpde`, `chain_ptm`, `chain_iptm`,
   `chain_pair_iptm`, `chain_pair_iptm_global`, `chain_plddt`,
@@ -202,13 +220,19 @@ inference has been verified on CPU and on the single GPU described below.
 The released-example preprocessing matrix can be reproduced with
 `opendde-jax-verify-inputs` after setting the six asset environment variables
 corresponding to the CLI options above. The checked matrix covers 8 JSON files
-and 10 jobs: all features are finite, `torch_imported=false`, and the two
-template jobs contain four coordinate-backed template rows each. Their
-assembled shapes/mask sums are `9fm7: [4,644,24,3] / [13700,13472,13162,13394]`
-and `MGYP004658859411: [4,345,24,3] / [7656,7872,7872,7872]`.
+and 10 jobs: all features are finite and `torch_imported=false`. OpenDDE 1.1.1
+performs a second sequence deduplication after Kalign realignment, so 5A9R is a
+duplicate of 5A9S in 9FM7 and 1QPZ is a duplicate of 1JFT in
+MGYP004658859411; each case has three coordinate-backed rows plus one zero
+padding row, not four distinct templates. The current 9FM7 native-Kalign-3.3.5
+capture has shape `[4,644,24,3]`, mask sums
+`[13700,13472,13162,0]`, and all 60 shared FoldJAX/upstream arrays are bitwise
+equal.
 
-### Full-schedule GPU gate (2026-08-01)
+### Historical full-schedule GPU gate (OpenDDE 1.0.2, 2026-08-01)
 
+This result predates the v1.1.1 source lift and is retained as a long-schedule
+performance/scientific-behavior record, not as the current source-parity gate.
 The real official `7R6R` input contains 245 residue tokens, 475 structural
 tokens, 2,529 atoms, and protein plus two DNA chains. With MSA enabled, the
 released fixed-depth, duplicate-preserving path assembled 703 rows from 702

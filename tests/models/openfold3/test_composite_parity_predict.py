@@ -29,6 +29,7 @@ pytestmark = pytest.mark.torch_parity
 
 RTOL = 1e-4
 ATOL = 1e-4
+COMPOSITE_ATOM_HEAD_ATOL = ATOL
 
 # Coordinates are compared with a looser absolute tolerance than the logits.
 # The rollout starts at ``noise_schedule[0]`` -- 2560 for the released schedule --
@@ -209,7 +210,11 @@ def test_confidence_outputs_match_upstream(
         np.asarray(actual, dtype=np.float64).reshape(-1),
         expected.detach().numpy().astype(np.float64).reshape(-1),
         rtol=RTOL,
-        atol=ATOL,
+        atol=(
+            COMPOSITE_ATOM_HEAD_ATOL
+            if field == "experimentally_resolved_logits"
+            else ATOL
+        ),
         err_msg=f"{key} diverged from upstream forward",
     )
 

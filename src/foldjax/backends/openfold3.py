@@ -71,6 +71,11 @@ _RELEASED_MSA_DEPTH = 1024
 #: still written regardless of this value.
 _MANAGED_ARRAY_BUDGET_BYTES = 0
 
+# Private marker inserted by ``data.compact_zero_template_pair_features``.
+# Keep the spelling pinned here because the padding planner intentionally runs
+# without importing the model package at module import time.
+_ZERO_TEMPLATE_PAIR_MARKER = "_foldjax_zero_template_pair_features"
+
 #: ``released_config`` values whose explicit spellings are identical to leaving
 #: the public request unset.  Keep these lightweight copies beside the backend
 #: so resolving a cache directory does not import the model/JAX runtime; a test
@@ -95,17 +100,23 @@ def _real_prefix_size(mask: np.ndarray, *, axis: str) -> int:
     return size
 
 
-def _padding_plan(
-    features: dict[str, Any], config: PaddingConfig
-) -> PaddingPlan:
+def _padding_plan(features: dict[str, Any], config: PaddingConfig) -> PaddingPlan:
     """Resolve OpenFold3's four independently compiled feature axes."""
 
     token_mask = np.asarray(features["token_mask"]) > 0
     atom_mask = np.asarray(features["atom_mask"]) > 0
     msa_mask = np.asarray(features["msa_mask"]) > 0
-    template_mask = (
-        np.asarray(features["template_backbone_frame_mask"]) > 0
-    ) | (np.asarray(features["template_pseudo_beta_mask"]) > 0)
+    if _ZERO_TEMPLATE_PAIR_MARKER in features:
+        # Trusted raw preprocessing may compact the four all-zero template
+        # geometry tensors before serving padding.  The retained restype still
+        # carries the released template storage width; semantically there are
+        # no non-empty templates in this branch.
+        template_restype = np.asarray(features["template_restype"])
+        template_mask = np.zeros(template_restype.shape[:-1], dtype=bool)
+    else:
+        template_mask = (
+            np.asarray(features["template_backbone_frame_mask"]) > 0
+        ) | (np.asarray(features["template_pseudo_beta_mask"]) > 0)
 
     msa_rows = np.any(msa_mask, axis=(0, 2))
     template_rows = np.any(template_mask, axis=(0, 2))
@@ -184,7 +195,8 @@ class OpenFold3Backend(Backend):
     execution_options = {
         **MATMUL_PRECISION_OPTION,
         "triangle_kernel": (
-            "triangle_kernel", {"auto": "cueq", "cueq": "cueq", "xla": "xla"}
+            "triangle_kernel",
+            {"auto": "cueq", "cueq": "cueq", "xla": "xla"},
         ),
     }
     compile_options = _COMPILE_OPTIONS
@@ -246,7 +258,9 @@ class OpenFold3Backend(Backend):
         profile["cp_layout"] = (
             "serial"
             if cp_shards <= 1
-            else "1d" if requested_layout == "auto" else requested_layout
+            else "1d"
+            if requested_layout == "auto"
+            else requested_layout
         )
         profile["triangle_kernel"] = resolve_triangle_kernel(
             options.get("triangle_kernel"), cp_shards=cp_shards
@@ -354,12 +368,9 @@ class OpenFold3Backend(Backend):
         all_arrays = _strict_boolean(
             options.pop("all_arrays", False), name="all_arrays"
         )
-        requested_msa_depth = options.get("max_msa_depth")
-        preprocess_msa_depth = (
-            int(requested_msa_depth)
-            if requested_msa_depth is not None
-            else int(getattr(inference, "RELEASED_MSA_DEPTH", 1024))
-        )
+        # Native samples inside each recycle.  Retain the compact precursor here;
+        # the later cycle planner transfers only the union of selected rows.
+        preprocess_msa_depth = None
         # Raw preprocessing otherwise builds the complete
         # [rows, tokens, 32] int32 one-hot before the identical host cut below.
         # Portable feature archives stay full-depth in the loader branch.
@@ -450,15 +461,15 @@ class OpenFold3Backend(Backend):
         # as long as pTM/ipTM need it. The raw CLI and direct inference API retain
         # their historical DEFAULT_ARRAY_BUDGET_BYTES / all-arrays behaviour.
         retain_pair_arrays = all_arrays and request.stop_after != "trunk"
-        array_budget_bytes = (
-            None if retain_pair_arrays else _MANAGED_ARRAY_BUDGET_BYTES
-        )
+        array_budget_bytes = None if retain_pair_arrays else _MANAGED_ARRAY_BUDGET_BYTES
         overrides["max_array_bytes"] = array_budget_bytes
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
-        # Upstream subsamples inside `MSAModuleEmbedder.forward`; this port does it
-        # on the host, before the alignment reaches the device. Unconditional, so
-        # the default path is the released one rather than a full-depth divergence.
-        features = data.subsample_msa_rows(features, config.msa_depth)
+        features = data.prepare_msa_cycle_features(
+            features,
+            config.msa_depth,
+            num_recycles=config.num_recycles,
+            rng=np.random.default_rng(request.seed),
+        )
         # A query with no templates is still featurized as the released
         # fixed-width axis of four identical empty ones, which the template
         # stack then embeds four times and averages. Dropping the duplicates

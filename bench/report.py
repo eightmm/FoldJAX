@@ -213,10 +213,11 @@ change the conclusions rather than shade them -- see
   own virtualenv, and adding sm_120 to an architecture list that stopped at
   compute_100, took its 970-token time from 235 s to 94 s.
 
-Boltz-2 needed nothing: it already had cuEquivariance. OpenFold3 0.3.1 is the
-explicit hardware-qualified exception: its DS4Sci path does not build for
-sm_120 and its experimental cuEquivariance path fails for multiple samples, so
-the recorded p1-compatible upstream rows use plain Torch attention.
+Boltz-2 needed nothing: it already had cuEquivariance. The checked-in historical
+OpenFold3 0.3.1 rows are the explicit hardware-qualified exception: DS4Sci does
+not build for sm_120 and its experimental cuEquivariance path fails for multiple
+samples, so those retired p1-compatible rows use plain Torch attention. The
+current harness instead targets v0.5.0/OpenBind and needs fresh measurements.
 """.rstrip()
 
 

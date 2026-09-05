@@ -296,6 +296,55 @@ def test_template_mmcif_uses_first_equal_occupancy_alt_conformer(
     np.testing.assert_allclose(ca_minus_n, [1.46, 0.0, 0.0], atol=1e-6)
 
 
+def test_mapped_json_uses_observed_indices_even_with_seqres(tmp_path, monkeypatch):
+    database = _write_local_template_db(tmp_path, monkeypatch, observed_start=3)
+    artifact = tmp_path / "mapped.json"
+    artifact.write_text(
+        json.dumps(
+            [
+                {
+                    "mmcif": (database / "1abc.cif").read_text(),
+                    # Native parse_simple_cif ignores even an absent chainId.
+                    "chainId": "not-the-first-chain",
+                    "queryIndices": list(range(10)),
+                    "templateIndices": list(range(10)),
+                }
+            ]
+        )
+    )
+    features = featurize_protein_json(
+        {
+            "sequences": [
+                {
+                    "proteinChain": {
+                        "sequence": "AGSRFAGSRF",
+                        "templatesPath": str(artifact),
+                    }
+                }
+            ]
+        }
+    )
+    assert features["template_atom_mask"][0].any(axis=1).tolist() == [
+        *([True] * 8),
+        False,
+        False,
+    ]
+    assert features["template_aatype"][0, :8].tolist() == [15, 1, 13, 0, 7, 15, 1, 13]
+
+
+def test_mapped_json_merges_disjoint_auth_chain_segments(tmp_path, monkeypatch):
+    database = _write_local_template_db(tmp_path, monkeypatch)
+    mmcif = (database / "1abc.cif").read_text()
+    mmcif += (
+        "ATOM 999 N N . ALA Y 2 1 ? 100 0 0 1 20 ? 1 Y 1\n"
+        "HETATM 1000 O O . HOH Z 3 . ? 200 0 0 1 20 ? 100 X 1\n"
+    )
+    sequence, positions, mask = _parse_template_mmcif(mmcif, observed_residues=True)
+    assert sequence == "AGSRFAGSRFX"
+    assert mask[-1, ATOM37_ORDER["O"]] == 1
+    np.testing.assert_allclose(positions[mask.astype(bool)].mean(axis=0), 0, atol=1e-5)
+
+
 def test_template_search_artifact_requires_local_mmcif_db(
     tmp_path, monkeypatch
 ) -> None:

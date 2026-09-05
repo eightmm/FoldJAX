@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "date": "2026-09-04",
+  "purpose": "FoldJAX versus each pinned native upstream at its released inference defaults, changing only the requested sample count to five",
+  "foldjax_revision": "ab08a822500d69f5a9a249a75b1545ad82ae3f66",
+  "case": {
+    "name": "protein_1ubq",
+    "sequence_length": 76,
+    "common_job_sha256": "ab14f04427c60a177ef9724ee9fe80572fb4ff4d96c2093c7f33011636032373",
+    "unpaired_msa_sha256": "4bf7b489a4eb98c0192cda21f1757feae3fa458bc714fed00aed0730615f5cb7",
+    "experimental_reference": "1UBQ"
+  },
+  "randomness": {
+    "seed": 101,
+    "num_samples_per_arm": 5,
+    "matched_random_tape": false,
+    "interpretation": "The integer seed is shared, but JAX and PyTorch do not generally consume the same random stream. Primary comparisons use all 25 cross-arm pairs against the 20 pooled within-arm pairs."
+  },
+  "targets": {
+    "alphafold3": {
+      "upstream": "3.0.4@85c4d20505fd5cef05eac22b534d4e793971ae69",
+      "schedule": "5 samples, 200 steps, 10 recycles (11 passes)",
+      "precision": "BF16 all",
+      "sample_override": false
+    },
+    "boltz2": {
+      "upstream": "2.2.1@b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+      "schedule": "5 samples, 200 steps, 3 recycles (4 passes)",
+      "precision": "bf16-mixed",
+      "sample_override": "1 to 5"
+    },
+    "esmfold2": {
+      "upstream": "Biohub source ef32577f55da19a4989cd7b22e004dc43a4998cb; checkpoint 8fc3ff471022fdce52c77030685eb775de0c00a3",
+      "schedule": "5 samples, 14 steps, 3 loops (4 passes), MSA depth 1024",
+      "precision": "upstream FP32; FoldJAX FP32 parity control and shipped BF16",
+      "sample_override": "32 to 5"
+    },
+    "opendde": {
+      "upstream": "1.1.1@ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+      "schedule": "5 samples, 200 steps, 10 recycles",
+      "precision": "FP32",
+      "sample_override": false
+    },
+    "openfold3": {
+      "upstream": "0.5.0@c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+      "checkpoint": "OpenBind of3-ob-2025-06-30-174k.pt@bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+      "schedule": "5 samples, 200 steps, 3 configured recycles (4 passes)",
+      "precision": "32-true",
+      "sample_override": false
+    },
+    "protenix-v2": {
+      "upstream": "2.0.0@4c355be4553512f72453ecbfb65e69f4c35d1413",
+      "schedule": "5 samples, 200 steps, 10 recycles",
+      "precision": "BF16 AMP with TF32",
+      "sample_override": false
+    }
+  },
+  "results": [
+    {
+      "model": "alphafold3",
+      "cross_ca_rmsd_median_angstrom": 0.2624859486645988,
+      "pooled_within_ca_rmsd_median_angstrom": 0.35245611252699205,
+      "cross_within_ca_ratio": 0.744733711050328,
+      "cross_within_all_atom_ratio": 0.9553369826454176,
+      "reference_ca_rmsd_median_foldjax": 0.7665106636750953,
+      "reference_ca_rmsd_median_upstream": 0.7665585513025173,
+      "ptm_median_foldjax": 0.85,
+      "ptm_median_upstream": 0.85
+    },
+    {
+      "model": "boltz2",
+      "cross_ca_rmsd_median_angstrom": 1.1127809348398976,
+      "pooled_within_ca_rmsd_median_angstrom": 0.8749256105115386,
+      "cross_within_ca_ratio": 1.2718577687871009,
+      "cross_within_all_atom_ratio": 1.0997355110352052,
+      "reference_ca_rmsd_median_foldjax": 1.4024385531497718,
+      "reference_ca_rmsd_median_upstream": 0.7989618436426844,
+      "ptm_median_foldjax": 0.9127307534217834,
+      "ptm_median_upstream": 0.9109632968902588
+    },
+    {
+      "model": "opendde",
+      "cross_ca_rmsd_median_angstrom": 0.3336316663176403,
+      "pooled_within_ca_rmsd_median_angstrom": 0.35649063058174746,
+      "cross_within_ca_ratio": 0.9358777978910575,
+      "cross_within_all_atom_ratio": 1.0011458619729723,
+      "reference_ca_rmsd_median_foldjax": 0.9346040359461241,
+      "reference_ca_rmsd_median_upstream": 0.9242018316387685,
+      "ptm_median_foldjax": 0.9458641409873962,
+      "ptm_median_upstream": 0.9458911418914795
+    },
+    {
+      "model": "openfold3",
+      "cross_ca_rmsd_median_angstrom": 1.1976312755077902,
+      "pooled_within_ca_rmsd_median_angstrom": 1.413063391763453,
+      "cross_within_ca_ratio": 0.8475424970235688,
+      "cross_within_all_atom_ratio": 0.8887319203887996,
+      "reference_ca_rmsd_median_foldjax": 0.9797172518976252,
+      "reference_ca_rmsd_median_upstream": 1.112948078744841,
+      "ptm_median_foldjax": 0.8912570476531982,
+      "ptm_median_upstream": 0.888575
+    },
+    {
+      "model": "protenix-v2",
+      "cross_ca_rmsd_median_angstrom": 1.0501085501047314,
+      "pooled_within_ca_rmsd_median_angstrom": 0.9315933394386197,
+      "cross_within_ca_ratio": 1.1272177522625153,
+      "cross_within_all_atom_ratio": 1.0188334610436882,
+      "reference_ca_rmsd_median_foldjax": 1.1818092354990881,
+      "reference_ca_rmsd_median_upstream": 1.8060805358484215,
+      "ptm_median_foldjax": 0.9349821209907532,
+      "ptm_median_upstream": 0.9344802498817444
+    },
+    {
+      "model": "esmfold2-float32-parity",
+      "cross_ca_rmsd_median_angstrom": 0.9225511685187213,
+      "pooled_within_ca_rmsd_median_angstrom": 0.8637133220978709,
+      "cross_within_ca_ratio": 1.068121962363553,
+      "cross_within_all_atom_ratio": 1.003672484167918,
+      "reference_ca_rmsd_median_foldjax": 1.6756341967262804,
+      "reference_ca_rmsd_median_upstream": 1.5902479817644786,
+      "ptm_median_foldjax": 0.7419899106025696,
+      "ptm_median_upstream": 0.732684314250946
+    },
+    {
+      "model": "esmfold2-shipped-bfloat16",
+      "cross_ca_rmsd_median_angstrom": 0.9221706041369486,
+      "pooled_within_ca_rmsd_median_angstrom": 0.8544611136675655,
+      "cross_within_ca_ratio": 1.07924233108603,
+      "cross_within_all_atom_ratio": 1.00852449979361,
+      "reference_ca_rmsd_median_foldjax": 1.6826745102697938,
+      "reference_ca_rmsd_median_upstream": 1.5902479817644786,
+      "ptm_median_foldjax": 0.7411908507347107,
+      "ptm_median_upstream": 0.732684314250946
+    }
+  ],
+  "verification": {
+    "completed_arms": 13,
+    "failed_arms": 0,
+    "comparison_rows": 7,
+    "within_pairs_per_arm": 10,
+    "cross_pairs_per_row": 25,
+    "reference_pairs_per_arm": 5,
+    "all_metrics_finite": true,
+    "source_guards_passed": true,
+    "tsp_jobs": {
+      "initial_diagnostic_run": 81,
+      "runtime_fix_and_successful_retry": 82,
+      "final_report": 85,
+      "final_validation": 86
+    },
+    "full_contract_sha256": "657d0a4f04d7b74663966c6a1dc3109f854737750461df25e493bc7b535d6ccd",
+    "run_summary_sha256": "db3d914231b31beed7c9559a2ecc17080f5a9888b312a9ddf59a29a46d1f11c9",
+    "full_comparison_sha256": "b381fd19d5c3adb10852ac35a0d16d7e8338c3e31d32c0187559484b1c57c39c",
+    "rendered_results_sha256": "08b10dd36de9aff8bf4206b8a646abd8b1c8a4d9d3f34bf7fc52443dff6b392c"
+  },
+  "claim_boundary": "This is a controlled distributional comparison on one 76-residue protein. It is not matched-noise parity, a blind accuracy benchmark, a performance ranking, or proof of statistical equivalence."
+}

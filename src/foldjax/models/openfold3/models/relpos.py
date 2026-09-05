@@ -25,10 +25,16 @@ def binned_one_hot(x: jnp.ndarray, bins: jnp.ndarray) -> jnp.ndarray:
 
 
 def _relpos(
-    pos: jnp.ndarray, condition: jnp.ndarray, rel_clip_idx: int
+    pos: jnp.ndarray,
+    condition: jnp.ndarray,
+    rel_clip_idx: int,
+    cyclic_offsets: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """Clipped relative-offset one-hot with an out-of-condition bin at the end."""
     offset = pos[..., :, None] - pos[..., None, :]
+    if cyclic_offsets is not None:
+        mask, wrapped = cyclic_offsets
+        offset = jnp.where(mask, wrapped, offset)
     clipped = jnp.clip(offset + rel_clip_idx, 0, 2 * rel_clip_idx)
     # The extra bin index 2*k+1 means "condition not satisfied".
     final = jnp.where(condition, clipped, 2 * rel_clip_idx + 1)
@@ -62,11 +68,31 @@ def relpos_complex(
     same_res = res_idx[..., :, None] == res_idx[..., None, :]
     same_entity = entity_id[..., :, None] == entity_id[..., None, :]
 
-    rel_pos = _relpos(res_idx, same_chain, max_relative_idx)
+    cyclic_offsets = None
+    if "cyclic_mask" in batch:
+        mask = jnp.asarray(batch["cyclic_mask"], dtype=bool)
+        within = same_chain & mask[..., :, None] & mask[..., None, :]
+        # Native wraps the ordered cyclic token subset, not residue numbers.
+        # Its round(length / 2) uses ties-to-even, including odd-length rings.
+        order = jnp.arange(mask.shape[-1])
+        rank = jnp.sum(within & (order[:, None] > order[None, :]), axis=-1)
+        length = jnp.maximum(jnp.sum(within, axis=-1), 1)
+        distance = (rank[..., None, :] - rank[..., :, None]) % length[..., :, None]
+        centre = jnp.rint(length.astype(jnp.float32) / 2).astype(length.dtype)
+        wrapped = jnp.where(
+            distance <= centre[..., :, None],
+            -distance,
+            length[..., :, None] - distance,
+        )
+        cyclic_offsets = within, wrapped
+
+    rel_pos = _relpos(res_idx, same_chain, max_relative_idx, cyclic_offsets)
     rel_token = _relpos(
-        batch["token_index"], same_chain & same_res, max_relative_idx
+        batch["token_index"], same_chain & same_res, max_relative_idx, cyclic_offsets
     )
-    rel_chain = _relpos(batch["sym_id"], same_entity, max_relative_chain)
+    rel_chain = _relpos(
+        batch["sym_id"], same_entity, max_relative_chain, cyclic_offsets
+    )
 
     # Order matters: it fixes the layout linear_z expects.
     return jnp.concatenate(

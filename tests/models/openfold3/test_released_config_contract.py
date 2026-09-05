@@ -5,7 +5,7 @@ into :func:`released_config`. Nothing checked that the two sides named the same
 things, so adding ``returned_representations``/``stop_after_trunk`` to the
 backend without adding them to the constructor made *every* OpenFold3
 prediction fail with a ``TypeError`` before the model was reached. This static
-contract catches the mismatch without requiring the optional multi-gigabyte p1
+contract catches the mismatch without requiring the multi-gigabyte OpenBind
 checkpoint or running a prediction.
 """
 

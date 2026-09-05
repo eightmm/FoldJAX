@@ -1,11 +1,9 @@
 """Noise and single conditioning for the diffusion module (AF3 Algorithm 21).
 
-Covers the single-representation half of ``DiffusionConditioning``: the trunk and
-input representations are concatenated and projected, then a Fourier embedding of
-the log noise level is added.
-
-The pair half additionally needs relative-position encoding, which lives with the
-input embedders (milestone 6) and is not included here.
+Covers both halves of ``DiffusionConditioning``: the trunk and input single
+representations are concatenated and projected, a Fourier embedding of the log
+noise level is added, and the trunk pair representation is conditioned with
+relative-position features.
 
 ``FourierEmbedding``'s ``w``/``b`` are *buffers*, not learned parameters — they
 are sampled once from a seeded generator at construction. They appear in the
@@ -50,12 +48,10 @@ class DiffusionConditioningParams(NamedTuple):
     fourier_emb: FourierEmbeddingParams
     layer_norm_n: LayerNormParams
     linear_n: LinearParams
-    transition_s: tuple[SwiGLUTransitionParams, ...] = ()
-    # The pair path. Absent only in checkpoints predating it; the caller then has
-    # to supply the trunk pair representation unchanged.
-    layer_norm_z: LayerNormParams | None = None
-    linear_z: LinearParams | None = None
-    transition_z: tuple[SwiGLUTransitionParams, ...] = ()
+    transition_s: tuple[SwiGLUTransitionParams, ...]
+    layer_norm_z: LayerNormParams
+    linear_z: LinearParams
+    transition_z: tuple[SwiGLUTransitionParams, ...]
 
 
 # Kept as an alias: the name described only the single path, which this type
@@ -131,11 +127,6 @@ def pair_conditioning(
     Returns:
         ``[..., N_token, N_token, c_z]`` conditioned pair representation.
     """
-    if params.layer_norm_z is None or params.linear_z is None:
-        raise ValueError(
-            "these parameters have no pair conditioning path "
-            "(layer_norm_z/linear_z are absent)"
-        )
     relpos = relpos_complex(
         batch,
         max_relative_idx=max_relative_idx,

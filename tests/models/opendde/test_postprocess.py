@@ -11,6 +11,7 @@ from foldjax.models.opendde.postprocess import (
     SHAPE_COMPLEMENTARITY_SCORE_KEYS,
     compute_contact_prob,
     opendde_confidence_scores,
+    repair_terminal_oxt_coordinates,
 )
 from foldjax.models.protenix.data.output import _sample_summary
 
@@ -33,6 +34,86 @@ def _writer_features() -> dict[str, np.ndarray]:
         "asym_id": np.asarray([0, 1], dtype=np.int64),
         "residue_index": np.ones(2, dtype=np.int64),
     }
+
+
+def _terminal_oxt_features(*, externally_bonded: bool = False) -> dict[str, np.ndarray]:
+    features = {
+        "output_atom_name": np.asarray(["C", "CA", "O", "OXT", "MG"]),
+        "output_atom_chain_id": np.asarray(["A", "A", "A", "A", "M"]),
+        "output_atom_res_id": np.asarray([1, 1, 1, 1, 1]),
+        "output_atom_polymer_type": np.asarray(
+            ["polypeptide(L)"] * 4 + ["non-polymer"]
+        ),
+        "ref_pos": np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.5, 0.0, 0.0],
+                [0.0, 1.2, 0.0],
+                [0.0, -1.2, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        "ref_mask": np.ones(5, dtype=np.int64),
+    }
+    if externally_bonded:
+        features["covalent_atom_indices"] = np.asarray([[3, 4]], dtype=np.int64)
+    return features
+
+
+def test_opendde_111_repairs_only_invalid_free_terminal_oxt_coordinates() -> None:
+    coordinates = np.asarray(
+        [
+            [
+                [10.0, 0.0, 0.0],
+                [10.0, 1.5, 0.0],
+                [8.8, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0],
+            ],
+            [
+                [10.0, 0.0, 0.0],
+                [10.0, 1.5, 0.0],
+                [8.8, 0.0, 0.0],
+                [11.2, 0.0, 0.0],
+                [20.0, 0.0, 0.0],
+            ],
+        ],
+        dtype=np.float32,
+    )
+    original = coordinates.copy()
+
+    repaired, count = repair_terminal_oxt_coordinates(
+        coordinates, _terminal_oxt_features()
+    )
+
+    assert count == 1
+    np.testing.assert_array_equal(coordinates, original)
+    np.testing.assert_allclose(repaired[0, 3], [11.2, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_array_equal(repaired[1], original[1])
+    np.testing.assert_array_equal(repaired[:, :3], original[:, :3])
+
+
+def test_opendde_111_preserves_externally_bonded_terminal_oxt() -> None:
+    coordinates = np.asarray(
+        [
+            [
+                [10.0, 0.0, 0.0],
+                [10.0, 1.5, 0.0],
+                [8.8, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0],
+            ]
+        ],
+        dtype=np.float32,
+    )
+
+    repaired, count = repair_terminal_oxt_coordinates(
+        coordinates, _terminal_oxt_features(externally_bonded=True)
+    )
+
+    assert count == 0
+    np.testing.assert_array_equal(repaired, coordinates)
 
 
 def test_contact_probability_uses_opendde_inclusive_bin_tops() -> None:

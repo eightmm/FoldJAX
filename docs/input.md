@@ -117,10 +117,12 @@ key, so upgrading a database invalidates the alignments it produced instead of
 mixing generations. `foldjax doctor` prints which search is configured.
 
 OpenDDE's released inference configuration sets `use_rna_msa=False`. A
-FoldJAX common-schema job therefore rejects an RNA `unpaired_msa` or
-`paired_msa` instead of materializing a file the model will discard; protein
-MSAs remain supported. Native OpenDDE input keeps the upstream-compatibility
-policy and emits a warning when it drops an RNA `unpairedMsaPath`.
+FoldJAX request preserves that default and rejects an RNA `unpaired_msa` or
+`paired_msa` instead of materializing a file the model will discard. Set
+`options={"use_rna_msa": true}` (CLI:
+`--option use_rna_msa=true`) to opt into OpenDDE 1.1.1's RNA-MSA path; protein
+MSAs remain supported independently. Native OpenDDE input follows the same
+rule for `unpairedMsaPath`.
 
 ### Templates and binding affinity
 
@@ -142,10 +144,13 @@ The two forms of a template are different inputs, not one input in two
 spellings. AlphaFold 3 and Protenix require the query→template residue map and
 refuse a bare file; **Boltz-2 aligns the mmCIF itself** and refuses a map it
 would have to ignore. OpenDDE has native template machinery, but its released
-inference configuration sets `use_template=False`: common-schema templates are
-rejected instead of being converted to a `templatesPath` that will be dropped.
-Its runtime capability therefore reports `supports_templates=false`; native
-OpenDDE input retains the compatibility warning/drop policy. Affinity
+inference configuration sets `use_template=False`: FoldJAX preserves that
+default and rejects common-schema templates instead of silently dropping them.
+Set `options={"use_template": true}` (CLI:
+`--option use_template=true`) to materialize the mapped templates and run the
+v1.1.1 template path. Native `templatesPath` follows the same opt-in rule.
+Exact checked parity uses native Kalign 3.3.5; newer wrapper builds are not
+assumed alignment-equivalent. Affinity
 reaches Boltz-2 alone — it is the only carried model with that head. OpenFold3
 builds template features from its own pipeline and has no per-job field, so a
 template addressed to it is refused. `foldjax capabilities --model MODEL`

@@ -93,12 +93,14 @@ def test_local_atom_geometry_masks_cross_residue_reference_pairs() -> None:
     assert features["pad_info"]["mask_trunked"][
         0, first_residue_atom, key_offset + second_residue_atom
     ]
-    assert features["v_lm"][
-        0, first_residue_atom, key_offset + second_residue_atom, 0
-    ] == 0.0
-    assert features["v_lm"][
-        0, first_residue_atom, key_offset + first_residue_atom, 0
-    ] == 1.0
+    assert (
+        features["v_lm"][0, first_residue_atom, key_offset + second_residue_atom, 0]
+        == 0.0
+    )
+    assert (
+        features["v_lm"][0, first_residue_atom, key_offset + first_residue_atom, 0]
+        == 1.0
+    )
 
 
 @pytest.mark.parametrize(
@@ -115,7 +117,9 @@ def test_reference_positions_are_centered_per_reference_space(
     sequence_entry: dict[str, dict[str, str]],
     expected_ref_spaces: int,
 ) -> None:
-    features = featurize_protein_json({"sequences": [sequence_entry]})
+    features = featurize_protein_json(
+        {"sequences": [sequence_entry]}, augment_reference=False
+    )
 
     ref_space_uid = features["ref_space_uid"]
     assert np.unique(ref_space_uid).size == expected_ref_spaces
@@ -125,6 +129,35 @@ def test_reference_positions_are_centered_per_reference_space(
             np.zeros(3, dtype=np.float32),
             atol=1e-6,
         )
+
+
+def test_reference_augmentation_matches_native_shift_then_rotation() -> None:
+    from scipy.spatial.transform import Rotation
+
+    job = {"sequences": [{"proteinChain": {"sequence": "AG"}}]}
+    unaugmented = featurize_protein_json(job, augment_reference=False)
+    expected = unaugmented["ref_pos"].copy()
+    rng = np.random.RandomState(101)
+    for uid in np.unique(unaugmented["ref_space_uid"]):
+        mask = unaugmented["ref_space_uid"] == uid
+        translation = rng.uniform(-1, 1, size=3)
+        rotation = Rotation.random(random_state=rng).as_matrix()
+        expected[mask] = (expected[mask] + translation) @ rotation.T
+
+    actual = featurize_protein_json(job, seed=101)
+    np.testing.assert_array_equal(actual["ref_pos"], expected)
+    np.testing.assert_array_equal(
+        featurize_protein_json(job, seed=101)["ref_pos"], expected
+    )
+    assert not np.array_equal(
+        featurize_protein_json(job, seed=102)["ref_pos"], expected
+    )
+
+
+def test_single_atom_ion_has_no_reference_frame() -> None:
+    features = featurize_protein_json({"sequences": [{"ion": {"ion": "MG"}}]})
+    np.testing.assert_array_equal(features["has_frame"], [0])
+    np.testing.assert_array_equal(features["frame_atom_index"], [[-1, 0, -1]])
 
 
 def test_parse_a3m_profile_maps_insertions_and_ambiguous_codes() -> None:
@@ -279,12 +312,8 @@ def test_featurize_json_multimer_pairing_matches_torch() -> None:
 def test_featurize_json_paired_msa_path_loading(tmp_path) -> None:
     # pairedMsaPath/unpairedMsaPath must match inline pairedMsa/unpairedMsa.
     seq_a, seq_b = "AGCDEFHIKL", "KLMNPQRSTV"
-    (tmp_path / "pa.a3m").write_text(
-        ">q\nAGCDEFHIKL\n>UniRef100_a_HUMAN\nAGCDAFHIKL\n"
-    )
-    (tmp_path / "pb.a3m").write_text(
-        ">q\nKLMNPQRSTV\n>UniRef100_c_HUMAN\nKLMNAQRSTV\n"
-    )
+    (tmp_path / "pa.a3m").write_text(">q\nAGCDEFHIKL\n>UniRef100_a_HUMAN\nAGCDAFHIKL\n")
+    (tmp_path / "pb.a3m").write_text(">q\nKLMNPQRSTV\n>UniRef100_c_HUMAN\nKLMNAQRSTV\n")
     (tmp_path / "ua.a3m").write_text(">q\nAGCDEFHIKL\n>h2\nAGCDEFHIKK\n")
     job = {
         "sequences": [
@@ -382,11 +411,7 @@ def test_featurize_rna_unpaired_msa_path_matches_inline(tmp_path) -> None:
     a3m = ">query\nAGCUA\n>hit\nAgu-TUA\n"
     (tmp_path / "rna.a3m").write_text(a3m)
     inline = featurize_protein_json(
-        {
-            "sequences": [
-                {"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}
-            ]
-        }
+        {"sequences": [{"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}]}
     )
     from_path = featurize_protein_json(
         {
@@ -419,11 +444,7 @@ def test_featurize_rna_unpaired_msa_rejects_invalid_rows(
 ) -> None:
     with pytest.raises(ValueError, match=error):
         featurize_protein_json(
-            {
-                "sequences": [
-                    {"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}
-                ]
-            }
+            {"sequences": [{"rnaSequence": {"sequence": "AGCUA", "unpairedMsa": a3m}}]}
         )
 
 
@@ -436,10 +457,12 @@ def test_featurize_rejects_unsupported_nucleotide_base() -> None:
 
 def test_featurize_accepts_unknown_dna_and_rna_nucleotide() -> None:
     features = featurize_protein_json(
-        {"sequences": [
-            {"dnaSequence": {"sequence": "AN"}},
-            {"rnaSequence": {"sequence": "UN"}},
-        ]}
+        {
+            "sequences": [
+                {"dnaSequence": {"sequence": "AN"}},
+                {"rnaSequence": {"sequence": "UN"}},
+            ]
+        }
     )
     assert features["restype"].argmax(axis=-1).tolist() == [26, 30, 24, 25]
     assert features["token_ccd_code_chars"][1, :2].tolist() == [ord("D"), ord("N")]
@@ -470,27 +493,48 @@ def test_deprecated_precomputed_msa_directory_is_supported(tmp_path) -> None:
     (msa_dir / "pairing.a3m").write_text(">q\nACDEF\n>p\nAC-EF\n")
     (msa_dir / "non_pairing.a3m").write_text(">q\nACDEF\n>u\n-CDEF\n")
     legacy = featurize_protein_json(
-        {"sequences": [{"proteinChain": {
-            "sequence": "ACDEF",
-            "msa": {"precomputed_msa_dir": "legacy", "pairing_db": "uniref100"},
-        }}]},
+        {
+            "sequences": [
+                {
+                    "proteinChain": {
+                        "sequence": "ACDEF",
+                        "msa": {
+                            "precomputed_msa_dir": "legacy",
+                            "pairing_db": "uniref100",
+                        },
+                    }
+                }
+            ]
+        },
         base_dir=tmp_path,
     )
     modern = featurize_protein_json(
-        {"sequences": [{"proteinChain": {
-            "sequence": "ACDEF",
-            "pairedMsaPath": str(msa_dir / "pairing.a3m"),
-            "unpairedMsaPath": str(msa_dir / "non_pairing.a3m"),
-        }}]}
+        {
+            "sequences": [
+                {
+                    "proteinChain": {
+                        "sequence": "ACDEF",
+                        "pairedMsaPath": str(msa_dir / "pairing.a3m"),
+                        "unpairedMsaPath": str(msa_dir / "non_pairing.a3m"),
+                    }
+                }
+            ]
+        }
     )
     np.testing.assert_array_equal(legacy["msa"], modern["msa"])
     (tmp_path / "empty").mkdir()
     with pytest.raises(ValueError, match="legacy MSA directory.*no pairing"):
         featurize_protein_json(
-            {"sequences": [{"proteinChain": {
-                "sequence": "ACDEF",
-                "msa": {"precomputed_msa_dir": "empty"},
-            }}]},
+            {
+                "sequences": [
+                    {
+                        "proteinChain": {
+                            "sequence": "ACDEF",
+                            "msa": {"precomputed_msa_dir": "empty"},
+                        }
+                    }
+                ]
+            },
             base_dir=tmp_path,
         )
 
@@ -692,9 +736,7 @@ def test_compact_relative_position_storage_rebuilds_exact_int8_feature() -> None
     assert relp.shape == (n, n, 139)
     assert set(np.unique(relp).tolist()) <= {0, 1}
     np.testing.assert_array_equal(relp[..., :66].sum(-1), np.ones((n, n), np.int8))
-    np.testing.assert_array_equal(
-        relp[..., 66:132].sum(-1), np.ones((n, n), np.int8)
-    )
+    np.testing.assert_array_equal(relp[..., 66:132].sum(-1), np.ones((n, n), np.int8))
     np.testing.assert_array_equal(relp[..., 133:].sum(-1), np.ones((n, n), np.int8))
     assert all(storage[name].shape == (n, n) for name in COMPACT_RELP_COMPONENTS)
     assert sum(storage[name].nbytes for name in COMPACT_RELP_COMPONENTS) == 4 * n * n

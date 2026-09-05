@@ -8,8 +8,21 @@ from foldjax.input import _boltz, materialize_native_input
 from foldjax.registry import capabilities
 
 
-def _materialize(source: Path, model: str, output_dir: Path, *, seed: int = 9) -> Path:
-    return materialize_native_input(source, capabilities(model), output_dir, seed=seed)
+def _materialize(
+    source: Path,
+    model: str,
+    output_dir: Path,
+    *,
+    seed: int = 9,
+    options: dict | None = None,
+) -> Path:
+    return materialize_native_input(
+        source,
+        capabilities(model),
+        output_dir,
+        seed=seed,
+        options=options,
+    )
 
 
 def _write(path: Path, job: dict) -> Path:
@@ -299,7 +312,7 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
                     ]
                 }
             ),
-            "use_template=False",
+            "use_template=true",
         ),
         (
             "opendde",
@@ -310,7 +323,7 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
                     "unpaired_msa": "rna.a3m",
                 }
             ),
-            "use_rna_msa=False",
+            "use_rna_msa=true",
         ),
         (
             "opendde",
@@ -321,7 +334,7 @@ def test_protenix_bond_copy_index_follows_chain_order(tmp_path: Path) -> None:
                     "paired_msa": "rna-paired.a3m",
                 }
             ),
-            "use_rna_msa=False",
+            "only rnaSequence.unpairedMsaPath",
         ),
     ],
 )
@@ -332,6 +345,55 @@ def test_unsupported_features_fail_instead_of_being_dropped(
     source = _write(tmp_path / "job.json", job)
     with pytest.raises(ValueError, match=message):
         _materialize(source, model, tmp_path)
+
+
+def test_opendde_opt_in_materializes_rna_msa_and_mapped_template(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "rna.a3m").write_text(">query\nACGU\n")
+    (tmp_path / "template.cif").write_text("data_template\n")
+    source = _write(
+        tmp_path / "opendde-features.json",
+        {
+            "entities": [
+                {
+                    "type": "protein",
+                    "id": "A",
+                    "sequence": "ACD",
+                    "templates": [
+                        {
+                            "mmcif": "template.cif",
+                            "query_indices": [1],
+                            "template_indices": [1],
+                        }
+                    ],
+                },
+                {
+                    "type": "rna",
+                    "id": "R",
+                    "sequence": "ACGU",
+                    "unpaired_msa": "rna.a3m",
+                },
+            ]
+        },
+    )
+
+    path = _materialize(
+        source,
+        "opendde",
+        tmp_path / "out",
+        options={"use_template": True, "use_rna_msa": True},
+    )
+    sequences = json.loads(path.read_text())[0]["sequences"]
+
+    protein = sequences[0]["proteinChain"]
+    assert Path(protein["templatesPath"]).is_file()
+    assert json.loads(Path(protein["templatesPath"]).read_text())[0]["mmcif"] == (
+        "data_template\n"
+    )
+    assert sequences[1]["rnaSequence"]["unpairedMsaPath"] == str(
+        tmp_path / "rna.a3m"
+    )
 
 
 def test_rejects_unsupported_common_entity(common_job: Path, tmp_path: Path) -> None:

@@ -182,10 +182,11 @@ is the separate FoldJAX-vs-upstream harness that reads ESMFold2's own released
 configuration on both sides and explicitly cuts only the sample count to four.
 
 `foldjax.capabilities(model)` reports the runnable backend's scientific input
-and sampling surface. A dormant code path disabled by the shipped inference
-configuration is not a capability; for example, OpenDDE reports
-`supports_templates=false` because its fixed `use_template=False` path drops
-template input. Two fields further describe the *common schema* route:
+and sampling surface. OpenDDE reports template and RNA-MSA support, but both
+routes are deliberately opt-in: set `options.use_template=true` and/or
+`options.use_rna_msa=true` in the common job. Their default is false, and a job
+that supplies either input without its opt-in is rejected instead of silently
+dropping scientific input. Two fields further describe the *common schema* route:
 `common_schema_features` is what this backend's dialect can carry from a
 FoldJAX job document, and `native_only_features` names abilities the model has
 but the common adapter cannot safely reach. Templates are the case that

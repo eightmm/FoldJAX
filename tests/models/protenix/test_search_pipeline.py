@@ -429,12 +429,21 @@ def test_template_resolution_honors_max_four_and_missing_coordinate_errors(
     database = tmp_path / "mmcif"
     database.mkdir()
     query = "ACDEFGHIKLMN"
-    _write_seqres_mmcif(database / "1abc.cif", chain_id="A", sequence=query)
+    pdb_ids = ("1abc", "2abc", "3abc", "4abc", "5abc")
+    for pdb_id, residue in zip(pdb_ids, "ACDEF", strict=True):
+        _write_seqres_mmcif(
+            database / f"{pdb_id}.cif",
+            chain_id="A",
+            sequence=residue * len(query),
+        )
     release_dates = tmp_path / "release_dates.json"
     release_dates.write_text(
         json.dumps(
             {
-                "1abc": {"release_date": "2020-01-01"},
+                **{
+                    pdb_id: {"release_date": "2020-01-01"}
+                    for pdb_id in pdb_ids
+                },
                 "9xyz": {"release_date": "2020-01-01"},
             }
         )
@@ -445,8 +454,10 @@ def test_template_resolution_honors_max_four_and_missing_coordinate_errors(
     artifact.write_text(
         f">query\n{query}\n"
         + "".join(
-            f">1abc_A mol:protein 1-12 hit-{index}\n{residue * 12}\n"
-            for index, residue in enumerate("RSTVW")
+            f">{pdb_id}_A mol:protein 1-12 hit-{index}\n{residue * 12}\n"
+            for index, (pdb_id, residue) in enumerate(
+                zip(pdb_ids, "RSTVW", strict=True)
+            )
         )
     )
     parse_calls = 0
@@ -468,8 +479,7 @@ def test_template_resolution_honors_max_four_and_missing_coordinate_errors(
     )
     assert len(resolved) == 4
     assert all(hit["chainId"] == "A" for hit in resolved)
-    assert parse_calls == 1
-    assert all(hit["mmcif"] is resolved[0]["mmcif"] for hit in resolved)
+    assert parse_calls == 4
 
     missing = tmp_path / "missing.a3m"
     missing.write_text(f">query\n{query}\n>9xyz_A mol:protein 1-12\n{'Y' * 12}\n")
@@ -678,16 +688,18 @@ def test_template_resolution_matches_opendde_prefilter_order_and_dedup(
     )
     database = tmp_path / "mmcif"
     database.mkdir()
-    for pdb_id, chain_id in {
-        "1aaa": "A",
-        "2bbb": "B.1",
-        "5new": "C",
-        "2ddd": "D",
-        "3eee": "E",
-        "4fff": "F",
+    for pdb_id, (chain_id, coordinate_sequence) in {
+        "1aaa": ("A", "A" * len(query)),
+        "2bbb": ("B.1", "C" * len(query)),
+        "5new": ("C", "D" * len(query)),
+        "2ddd": ("D", "E" * len(query)),
+        "3eee": ("E", "F" * len(query)),
+        "4fff": ("F", "G" * len(query)),
     }.items():
         _write_seqres_mmcif(
-            database / f"{pdb_id}.cif", chain_id=chain_id, sequence=query
+            database / f"{pdb_id}.cif",
+            chain_id=chain_id,
+            sequence=coordinate_sequence,
         )
     release_dates = tmp_path / "release_dates.json"
     release_dates.write_text(
@@ -728,6 +740,54 @@ def test_template_resolution_matches_opendde_prefilter_order_and_dedup(
     ]
 
 
+def test_template_resolution_deduplicates_the_realigned_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_fake_kalign(tmp_path, monkeypatch)
+    query = "ACDEFGHIKLMNPQRSTVWY"
+    artifact = tmp_path / "hits.hhr"
+    artifact.write_text(
+        "".join(
+            [
+                _hhr_hit(1, "1aaa_A", "A" * len(query), 3.0),
+                _hhr_hit(2, "2bbb_B", "C" * len(query), 2.0),
+                _hhr_hit(3, "3ccc_C", "D" * len(query), 1.0),
+            ]
+        )
+    )
+    database = tmp_path / "mmcif"
+    database.mkdir()
+    _write_seqres_mmcif(database / "1aaa.cif", chain_id="A", sequence=query)
+    _write_seqres_mmcif(database / "2bbb.cif", chain_id="B", sequence=query)
+    _write_seqres_mmcif(
+        database / "3ccc.cif", chain_id="C", sequence="Y" * len(query)
+    )
+    release_dates = tmp_path / "release_dates.json"
+    release_dates.write_text(
+        json.dumps(
+            {
+                pdb_id: {"release_date": "2020-01-01"}
+                for pdb_id in ("1aaa", "2bbb", "3ccc")
+            }
+        )
+    )
+    obsolete = tmp_path / "obsolete.json"
+    obsolete.write_text("{}")
+
+    resolved = resolve_template_search_hits(
+        artifact,
+        query_sequence=query,
+        mmcif_dir=database,
+        release_dates_path=release_dates,
+        obsolete_pdbs_path=obsolete,
+    )
+
+    assert [(hit["pdbId"], hit["chainId"]) for hit in resolved] == [
+        ("1aaa", "A"),
+        ("3ccc", "C"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("example_json", "artifact_path", "expected"),
     [
@@ -753,12 +813,6 @@ def test_template_resolution_matches_opendde_prefilter_order_and_dedup(
                     "deb8ab5bfcea5083df1e0e84f0275adfaafe4f40a8c1708998fdc0f1b0869d63",
                     "0e79a791d06c94067ecd1caa1bd8b229924e025e3a12eab5f028283fce844947",
                 ),
-                (
-                    "5a9r",
-                    "A",
-                    "deb8ab5bfcea5083df1e0e84f0275adfaafe4f40a8c1708998fdc0f1b0869d63",
-                    "a918e3d4cb2c2045907372d244e48e17a9e26245aff21463e54a0ee50565dfc5",
-                ),
             ],
         ),
         (
@@ -782,12 +836,6 @@ def test_template_resolution_matches_opendde_prefilter_order_and_dedup(
                     "A",
                     "665dc9548c79f53531af7e48032ca7c1b939da559c271abc9425bdbb1d7702fb",
                     "8a2a9692603543489494720ee762121fb3261a592f8bc3fc07a1359dbc6c4827",
-                ),
-                (
-                    "1qpz",
-                    "A",
-                    "665dc9548c79f53531af7e48032ca7c1b939da559c271abc9425bdbb1d7702fb",
-                    "3395db8498a5c36770eb0f1e31b369bf33166c7618017322b1d16cdd945856f3",
                 ),
             ],
         ),
@@ -944,6 +992,34 @@ def test_resolver_accepts_the_wheels_console_script(
     monkeypatch.setenv("PATH", str(bin_dir))
 
     assert templates._resolve_kalign_binary(None) == str(binary)
+
+
+def test_alignment_uses_the_wheels_console_script_format_flag(
+    tmp_path: Path,
+) -> None:
+    """The wheel accepts ``--format`` while native Kalign uses ``-format``."""
+    import sys
+
+    from foldjax.models.protenix.data.search import templates
+
+    binary = tmp_path / "kalign-py"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib\n"
+        "import sys\n"
+        "if '-format' in sys.argv or '--format' not in sys.argv:\n"
+        "    raise SystemExit(2)\n"
+        "source = pathlib.Path(sys.argv[sys.argv.index('-i') + 1])\n"
+        "target = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])\n"
+        "target.write_text(source.read_text())\n"
+    )
+    binary.chmod(0o755)
+
+    mapping = templates._align_query_to_template(
+        "ACDEFG", "ACDEFG", kalign_binary=str(binary)
+    )
+
+    assert mapping == {index: index for index in range(6)}
 
 
 def test_resolver_refuses_an_older_kalign_and_an_unreadable_banner(

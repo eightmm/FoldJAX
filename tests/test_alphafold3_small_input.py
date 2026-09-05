@@ -6,6 +6,7 @@ import weakref
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 
 def _generic_chain_pair_pae_reference(
@@ -646,7 +647,10 @@ def test_monomer_skips_interface_tm_but_multimer_keeps_it(monkeypatch) -> None:
     np.testing.assert_array_equal(iptm, np.asarray([0.7], dtype=np.float32))
 
 
-def test_atom_cross_attention_pads_a_shorter_than_key_window_layout() -> None:
+@pytest.mark.parametrize("padded_atoms", [96, 160])
+def test_atom_cross_attention_pads_a_shorter_than_key_window_layout(
+    padded_atoms,
+) -> None:
     """Four-residue jobs work without forcing the released 256-token bucket."""
     from foldjax.models.alphafold3 import build
 
@@ -687,13 +691,19 @@ def test_atom_cross_attention_pads_a_shorter_than_key_window_layout() -> None:
             msa_size=1,
             num_chains=1,
             num_templates=0,
-            num_atoms=96,
+            num_atoms=padded_atoms,
         ),
     )
 
-    assert result.tokens_to_keys.gather_idxs.shape == (3, 128)
-    assert result.tokens_to_keys.gather_mask.shape == (3, 128)
-    assert np.count_nonzero(result.tokens_to_keys.gather_mask) == 3 * 20
+    rows = padded_atoms // 32
+    assert result.tokens_to_keys.gather_idxs.shape == (rows, 128)
+    assert result.tokens_to_keys.gather_mask.shape == (rows, 128)
+    assert np.count_nonzero(result.tokens_to_keys.gather_mask) == rows * 20
+    if padded_atoms >= 128:
+        # Native negative gather indices wrap into existing padded storage.
+        # The tiny-storage extension must not reorder these ordinary windows.
+        assert not result.tokens_to_keys.gather_mask[2, :-20].any()
+        assert result.tokens_to_keys.gather_mask[2, -20:].all()
 
 
 def test_diffusion_padding_preserves_multisample_noise_across_every_step(

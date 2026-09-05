@@ -247,9 +247,7 @@ def map_pairformer_block(
     """Map one ``PairFormerBlock``."""
     return PairformerBlockParams(
         pair_stack=map_pair_block(state, _join(prefix, "pair_stack")),
-        attn_pair_bias=map_attention_pair_bias(
-            state, _join(prefix, "attn_pair_bias")
-        ),
+        attn_pair_bias=map_attention_pair_bias(state, _join(prefix, "attn_pair_bias")),
         single_transition=map_swiglu_transition(
             state, _join(prefix, "single_transition")
         ),
@@ -302,7 +300,9 @@ def map_tri_mul(
     return map_triangle_multiplication(state, prefix)
 
 
-def map_pair_block(state: Mapping[str, Any], prefix: str = "") -> PairBlockParams:
+def map_pair_block(
+    state: Mapping[str, Any], prefix: str = ""
+) -> PairBlockParams:
     """Map a ``PairBlock`` built with a SwiGLU transition.
 
     Either triangular-multiplication layout is accepted; see :func:`map_tri_mul`.
@@ -312,9 +312,7 @@ def map_pair_block(state: Mapping[str, Any], prefix: str = "") -> PairBlockParam
         tri_mul_in=map_tri_mul(state, _join(prefix, "tri_mul_in")),
         tri_att_start=map_triangle_attention(state, _join(prefix, "tri_att_start")),
         tri_att_end=map_triangle_attention(state, _join(prefix, "tri_att_end")),
-        pair_transition=map_swiglu_transition(
-            state, _join(prefix, "pair_transition")
-        ),
+        pair_transition=map_swiglu_transition(state, _join(prefix, "pair_transition")),
     )
 
 
@@ -441,10 +439,7 @@ def map_ref_atom_feature_embedder(
         "linear_valid_mask",
     )
     return RefAtomFeatureEmbedderParams(
-        **{
-            name: map_linear(state, _join(prefix, name), bias=False)
-            for name in names
-        }
+        **{name: map_linear(state, _join(prefix, name), bias=False) for name in names}
     )
 
 
@@ -479,10 +474,7 @@ def map_ada_attention_pair_bias(
     """Map the AdaLN-conditioned ``AttentionPairBias`` used inside diffusion."""
     return AdaAttentionPairBiasParams(
         layer_norm_a=map_adaln(state, _join(prefix, "layer_norm_a")),
-        linear_ada_out=map_linear(
-            state, _join(prefix, "linear_ada_out"), bias=True
-        ),
-        layer_norm_z=map_layer_norm(state, _join(prefix, "layer_norm_z")),
+        linear_ada_out=map_linear(state, _join(prefix, "linear_ada_out"), bias=True),
         linear_z=map_linear(state, _join(prefix, "linear_z"), bias=False),
         mha=map_attention(state, _join(prefix, "mha"), q_bias=True),
     )
@@ -507,11 +499,18 @@ def map_diffusion_transformer(
 ) -> DiffusionTransformerParams:
     """Map a ``DiffusionTransformer`` by discovering its ``blocks.N`` prefixes."""
     root = _join(prefix, "blocks")
+    norm_key = _join(prefix, "layer_norm_z.weight")
+    if norm_key not in state:
+        raise KeyError(
+            "OpenFold3 v0.5.0/OpenBind requires one stack-level diffusion "
+            f"pair norm; missing checkpoint key: {norm_key}"
+        )
     return DiffusionTransformerParams(
         blocks=tuple(
             map_diffusion_transformer_block(state, f"{root}.{index}")
             for index in _block_indices(state, root)
-        )
+        ),
+        layer_norm_z=map_layer_norm(state, _join(prefix, "layer_norm_z")),
     )
 
 
@@ -531,9 +530,7 @@ def map_pair_head(
     )
 
 
-def map_atom_logit_head(
-    state: Mapping[str, Any], prefix: str = ""
-) -> AtomHeadParams:
+def map_atom_logit_head(state: Mapping[str, Any], prefix: str = "") -> AtomHeadParams:
     """Map a per-atom logit head (pLDDT or experimentally resolved)."""
     return AtomHeadParams(
         layer_norm=map_layer_norm(state, _join(prefix, "layer_norm")),
@@ -544,23 +541,14 @@ def map_atom_logit_head(
 def map_cross_attention_pair_bias(
     state: Mapping[str, Any], prefix: str = ""
 ) -> CrossAttentionPairBiasParams:
-    """Map a ``CrossAttentionPairBias``.
-
-    The AdaLN form is detected from the checkpoint: it carries a
-    ``linear_ada_out`` and its norms have their own sub-projections.
-    """
-    ada_key = _join(prefix, "linear_ada_out.weight")
-    conditioned = ada_key in state
-    norm = map_adaln if conditioned else map_layer_norm
+    """Map OpenFold3 v0.5's AdaLN-conditioned ``CrossAttentionPairBias``."""
     return CrossAttentionPairBiasParams(
-        layer_norm_a_q=norm(state, _join(prefix, "layer_norm_a_q")),
-        layer_norm_a_k=norm(state, _join(prefix, "layer_norm_a_k")),
+        layer_norm_a_q=map_adaln(state, _join(prefix, "layer_norm_a_q")),
+        layer_norm_a_k=map_adaln(state, _join(prefix, "layer_norm_a_k")),
         linear_z=map_linear(state, _join(prefix, "linear_z"), bias=False),
         mha=map_attention(state, _join(prefix, "mha"), q_bias=True),
-        linear_ada_out=(
-            map_linear(state, _join(prefix, "linear_ada_out"), bias=True)
-            if conditioned
-            else None
+        linear_ada_out=map_linear(
+            state, _join(prefix, "linear_ada_out"), bias=True
         ),
     )
 
@@ -623,9 +611,7 @@ def map_atom_attention_encoder(
             state, _join(prefix, "ref_atom_feature_embedder")
         ),
         pair_conditioning=map_atom_pair_conditioning(state, prefix),
-        atom_transformer=map_atom_transformer(
-            state, _join(prefix, "atom_transformer")
-        ),
+        atom_transformer=map_atom_transformer(state, _join(prefix, "atom_transformer")),
         linear_q=map_linear(state, _join(prefix, "linear_q.0"), bias=False),
         noisy_position_embedder=(
             map_noisy_position_embedder(state, noisy_prefix) if has_noisy else None
@@ -639,9 +625,7 @@ def map_atom_attention_decoder(
     """Map an ``AtomAttentionDecoder``; its layer norm is scale-only."""
     return AtomAttentionDecoderParams(
         linear_q_in=map_linear(state, _join(prefix, "linear_q_in"), bias=False),
-        atom_transformer=map_atom_transformer(
-            state, _join(prefix, "atom_transformer")
-        ),
+        atom_transformer=map_atom_transformer(state, _join(prefix, "atom_transformer")),
         layer_norm=map_layer_norm(state, _join(prefix, "layer_norm")),
         linear_q_out=map_linear(state, _join(prefix, "linear_q_out"), bias=False),
     )
@@ -650,18 +634,14 @@ def map_atom_attention_decoder(
 def map_denoiser(state: Mapping[str, Any], prefix: str = "") -> DenoiserParams:
     """Map the diffusion denoiser body."""
     return DenoiserParams(
-        atom_attn_enc=map_atom_attention_encoder(
-            state, _join(prefix, "atom_attn_enc")
-        ),
+        atom_attn_enc=map_atom_attention_encoder(state, _join(prefix, "atom_attn_enc")),
         layer_norm_s=map_layer_norm(state, _join(prefix, "layer_norm_s")),
         linear_s=map_linear(state, _join(prefix, "linear_s"), bias=False),
         diffusion_transformer=map_diffusion_transformer(
             state, _join(prefix, "diffusion_transformer")
         ),
         layer_norm_a=map_layer_norm(state, _join(prefix, "layer_norm_a")),
-        atom_attn_dec=map_atom_attention_decoder(
-            state, _join(prefix, "atom_attn_dec")
-        ),
+        atom_attn_dec=map_atom_attention_decoder(state, _join(prefix, "atom_attn_dec")),
     )
 
 
@@ -677,7 +657,6 @@ def map_diffusion_conditioning(
     root = _join(prefix, "transition_s")
     has_transitions = any(key.startswith(root + ".") for key in state)
     z_root = _join(prefix, "transition_z")
-    has_pair = _join(prefix, "linear_z.weight") in state
     return DiffusionConditioningParams(
         layer_norm_s=map_layer_norm(state, _join(prefix, "layer_norm_s")),
         linear_s=map_linear(state, _join(prefix, "linear_s"), bias=False),
@@ -697,24 +676,16 @@ def map_diffusion_conditioning(
             map_swiglu_transition(state, f"{root}.{index}")
             for index in (_block_indices(state, root) if has_transitions else ())
         ),
-        layer_norm_z=(
-            map_layer_norm(state, _join(prefix, "layer_norm_z")) if has_pair else None
-        ),
-        linear_z=(
-            map_linear(state, _join(prefix, "linear_z"), bias=False)
-            if has_pair
-            else None
-        ),
+        layer_norm_z=map_layer_norm(state, _join(prefix, "layer_norm_z")),
+        linear_z=map_linear(state, _join(prefix, "linear_z"), bias=False),
         transition_z=tuple(
             map_swiglu_transition(state, f"{z_root}.{index}")
-            for index in (_block_indices(state, z_root) if has_pair else ())
+            for index in _block_indices(state, z_root)
         ),
     )
 
 
-def map_msa_embedder(
-    state: Mapping[str, Any], prefix: str = ""
-) -> MSAEmbedderParams:
+def map_msa_embedder(state: Mapping[str, Any], prefix: str = "") -> MSAEmbedderParams:
     """Map an ``MSAModuleEmbedder``'s projections."""
     return MSAEmbedderParams(
         linear_m=map_linear(state, _join(prefix, "linear_m"), bias=False),
@@ -727,9 +698,7 @@ def map_input_embedder(
 ) -> InputEmbedderParams:
     """Map an ``InputEmbedderAllAtom``."""
     return InputEmbedderParams(
-        atom_attn_enc=map_atom_attention_encoder(
-            state, _join(prefix, "atom_attn_enc")
-        ),
+        atom_attn_enc=map_atom_attention_encoder(state, _join(prefix, "atom_attn_enc")),
         linear_s=map_linear(state, _join(prefix, "linear_s"), bias=False),
         linear_z_i=map_linear(state, _join(prefix, "linear_z_i"), bias=False),
         linear_z_j=map_linear(state, _join(prefix, "linear_z_j"), bias=False),
@@ -740,7 +709,9 @@ def map_input_embedder(
     )
 
 
-def map_trunk(state: Mapping[str, Any], prefix: str = "") -> TrunkParams:
+def map_trunk(
+    state: Mapping[str, Any], prefix: str = ""
+) -> TrunkParams:
     """Map the trunk, including its two recycling projections."""
     return TrunkParams(
         input_embedder=map_input_embedder(state, _join(prefix, "input_embedder")),
@@ -846,9 +817,7 @@ def find_model_prefix(state: Mapping[str, Any]) -> str | None:
     return None
 
 
-def resolve_model_prefix(
-    state: Mapping[str, Any], prefix: str | None = None
-) -> str:
+def resolve_model_prefix(state: Mapping[str, Any], prefix: str | None = None) -> str:
     """Return an explicit model root or detect it with the mapper's error."""
     if prefix is not None:
         return prefix
@@ -883,9 +852,7 @@ def _bitwise_identical_checkpoint_arrays(left: Any, right: Any) -> bool:
         return False
 
 
-def prune_sample_diffusion_aliases(
-    state: dict[str, Any], *, prefix: str
-) -> int:
+def prune_sample_diffusion_aliases(state: dict[str, Any], *, prefix: str) -> int:
     """Discard one complete, byte-identical sampler alias group in place.
 
     Upstream registers the denoiser both as ``diffusion_module`` and below
@@ -903,14 +870,10 @@ def prune_sample_diffusion_aliases(
     alias_root = f"{root}sample_diffusion."
     canonical_root = f"{root}diffusion_module."
     aliases = {
-        key[len(alias_root) :]: key
-        for key in state
-        if key.startswith(alias_root)
+        key[len(alias_root) :]: key for key in state if key.startswith(alias_root)
     }
     canonical = {
-        key[len(root) :]: key
-        for key in state
-        if key.startswith(canonical_root)
+        key[len(root) :]: key for key in state if key.startswith(canonical_root)
     }
     if not aliases or aliases.keys() != canonical.keys():
         return 0
@@ -933,9 +896,7 @@ def map_pairformer_embedding(
     return PairformerEmbeddingParams(
         linear_i=map_linear(state, _join(prefix, "linear_i"), bias=False),
         linear_j=map_linear(state, _join(prefix, "linear_j"), bias=False),
-        linear_distance=map_linear(
-            state, _join(prefix, "linear_distance"), bias=False
-        ),
+        linear_distance=map_linear(state, _join(prefix, "linear_distance"), bias=False),
         pairformer_stack=map_pairformer_stack(
             state, _join(prefix, "pairformer_stack")
         ),
@@ -998,6 +959,25 @@ def map_inference_params(
             mapping bug.
     """
     prefix = resolve_model_prefix(state, prefix)
+    openbind_marker = _join(
+        prefix,
+        "diffusion_module.diffusion_transformer.layer_norm_z.weight",
+    )
+    if openbind_marker not in state:
+        raise KeyError(
+            "FoldJAX supports OpenFold3 v0.5.0/OpenBind checkpoints only; "
+            f"required marker {openbind_marker!r} is absent. Legacy p1/p2 "
+            "checkpoints are not compatible."
+        )
+    version_key = _join(prefix, "version_tensor")
+    version = _require(state, version_key)
+    if version.shape != (3,) or not np.array_equal(
+        version, np.asarray([2, 0, 0], dtype=version.dtype)
+    ):
+        raise ValueError(
+            "FoldJAX supports OpenFold3 v0.5.0/OpenBind model version "
+            f"[2, 0, 0] only; {version_key!r} contains {version.tolist()!r}."
+        )
 
     pae_root = _join(prefix, INFERENCE_PREFIXES["pae_head"])
     if not any(key.startswith(pae_root + ".") for key in state):
@@ -1054,12 +1034,8 @@ def map_template_pair_embedder(
     """Map a ``TemplatePairEmbedderAllAtom``; every projection is bias-free."""
     return TemplatePairEmbedderParams(
         dgram_linear=map_linear(state, _join(prefix, "dgram_linear"), bias=False),
-        aatype_linear_1=map_linear(
-            state, _join(prefix, "aatype_linear_1"), bias=False
-        ),
-        aatype_linear_2=map_linear(
-            state, _join(prefix, "aatype_linear_2"), bias=False
-        ),
+        aatype_linear_1=map_linear(state, _join(prefix, "aatype_linear_1"), bias=False),
+        aatype_linear_2=map_linear(state, _join(prefix, "aatype_linear_2"), bias=False),
         pseudo_beta_mask_linear=map_linear(
             state, _join(prefix, "pseudo_beta_mask_linear"), bias=False
         ),

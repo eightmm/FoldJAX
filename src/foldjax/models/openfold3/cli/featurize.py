@@ -99,7 +99,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     atoms = features["atom_mask"].shape[-1]
     msa_rows = features["msa"].shape[1]
     print(f"featurized {tokens} tokens, {atoms} atoms, {msa_rows} MSA rows")
-    if msa_rows == 1:
+    # The released CLI represents a query-only alignment twice: its mandatory
+    # query row plus the one-row dummy main MSA. Both one and two rows therefore
+    # mean that no evolutionary alignment reached the model.
+    if msa_rows <= 2:
         print(
             "  only the query sequence is in the MSA -- accuracy will be much lower "
             "than with alignments. Add main_msa_file_paths to the chains."

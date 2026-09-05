@@ -59,6 +59,8 @@ _CLI_OPTIONS = {
     "template_release_dates",
     "trunk_dtype",
     "trunk_single_attention_backend",
+    "use_rna_msa",
+    "use_template",
 }
 
 #: Compile-relevant defaults released by the native OpenDDE prediction CLI.
@@ -81,6 +83,8 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "chunk_policy": "auto",
     "cp_devices": 1,
     "cp_layout": "auto",
+    "use_template": False,
+    "use_rna_msa": False,
 }
 _CONFIDENCE_INFIX = "_summary_confidence_sample_"
 
@@ -171,6 +175,8 @@ class OpenDDEBackend(Backend):
 
     def validate_native_options(self, options: dict[str, object]) -> None:
         _strict_boolean(options.get("include_raw", False), name="include_raw")
+        _strict_boolean(options.get("use_template", False), name="use_template")
+        _strict_boolean(options.get("use_rna_msa", False), name="use_rna_msa")
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, object]:
         """Keep explicit released defaults in the omitted cache namespace.
@@ -206,17 +212,18 @@ class OpenDDEBackend(Backend):
             notes=(
                 "NumPy/Gemmi/RDKit featurization and JAX prediction are included "
                 "in the base install and do not import PyTorch. Native "
-                "templatesPath and RNA unpairedMsaPath fields retain OpenDDE's "
-                "released compatibility policy: warn and drop because its "
-                "shipped defaults disable them."
+                "templatesPath and RNA unpairedMsaPath are used when the native "
+                "options use_template=true and use_rna_msa=true are selected; "
+                "both retain upstream's released false defaults."
             )
         )
         common_requirement = InputRequirement(
             notes=(
                 "NumPy/Gemmi/RDKit featurization and JAX prediction are included "
                 "in the base install and do not import PyTorch. FoldJAX common "
-                "inputs reject templates and RNA MSAs because OpenDDE's shipped "
-                "defaults would discard them; protein MSAs remain supported."
+                "inputs can carry mapped templates and RNA unpaired MSAs when "
+                "their matching native options are true; otherwise they are "
+                "rejected before materialization."
             )
         )
         return ModelCapabilities(
@@ -229,11 +236,7 @@ class OpenDDEBackend(Backend):
                 "opendde": native_requirement,
                 "foldjax": common_requirement,
             },
-            # The implementation contains template machinery, but the shipped
-            # inference contract fixes use_template=False and discards the
-            # native field. Capabilities describe the runnable configuration,
-            # not dormant code paths.
-            supports_templates=False,
+            supports_templates=True,
             padding_axes=self.padding_axes,
         )
 

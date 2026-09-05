@@ -45,7 +45,6 @@ def _decoder():
         n_transition=2,
         n_query=N_QUERY,
         n_key=N_KEY,
-        use_ada_layer_norm=True,
     )
 
 

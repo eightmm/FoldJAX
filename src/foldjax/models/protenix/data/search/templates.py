@@ -668,6 +668,14 @@ def _align_query_to_template(
             encoding="utf-8",
         )
         try:
+            # The native executable spells this historical option ``-format``;
+            # PyPI's ``kalign-python`` console wrapper exposes the same engine
+            # but uses argparse's conventional ``--format`` spelling.
+            format_flag = (
+                "--format"
+                if Path(kalign_binary).name == "kalign-py"
+                else "-format"
+            )
             completed = subprocess.run(
                 [
                     kalign_binary,
@@ -675,7 +683,7 @@ def _align_query_to_template(
                     str(input_path),
                     "-o",
                     str(output_path),
-                    "-format",
+                    format_flag,
                     "fasta",
                 ],
                 check=False,
@@ -877,6 +885,7 @@ def resolve_template_search_hits(
     limit = min(max_templates, _MAX_TEMPLATE_HITS)
     resolved: list[dict[str, Any]] = []
     missing_coordinates: list[str] = []
+    seen_mapped_sequences: set[str] = set()
     resolved_kalign_binary: str | None = None
     mmcif_cache: dict[Path, tuple[str, dict[str, _MmcifChainSequence]]] = {}
     for hit, pdb_id, chain_id in candidates:
@@ -908,6 +917,16 @@ def resolve_template_search_hits(
             kalign_binary=resolved_kalign_binary,
         )
         query_indices = sorted(mapping)
+        mapped_sequence = ["-"] * len(search["query_sequence"])
+        for query_index in query_indices:
+            mapped_sequence[query_index] = chain.sequence[mapping[query_index]]
+        mapped_sequence_key = "".join(mapped_sequence)
+        # OpenDDE/Protenix perform a second de-duplication after realignment,
+        # using the sequence projected onto query positions. Distinct search
+        # rows (and even distinct PDB entries) can resolve to the same template.
+        if mapped_sequence_key in seen_mapped_sequences:
+            continue
+        seen_mapped_sequences.add(mapped_sequence_key)
         resolved.append(
             {
                 "mmcif": mmcif,

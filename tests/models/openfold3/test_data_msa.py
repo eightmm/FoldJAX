@@ -227,7 +227,7 @@ def test_the_featurizer_sees_the_alignments(
     )
     with_msa = featurize_query(updated)
     without = featurize_query(_spec(UBIQUITIN))
-    assert without["msa"].shape[1] == 1
+    assert without["msa"].shape[1] == 2
     assert with_msa["msa"].shape[1] > without["msa"].shape[1]
 
 

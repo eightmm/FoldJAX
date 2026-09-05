@@ -92,6 +92,17 @@ class TriangleAttentionParams(NamedTuple):
     mha: AttentionParams
 
 
+def _project_triangle_bias(
+    x: jnp.ndarray,
+    params: TriangleAttentionParams,
+    transpose_bias: bool,
+) -> jnp.ndarray:
+    """Project the pair bias with the checkpoint's ending-node orientation."""
+    projected = linear(x, params.linear_z)
+    permutation = (2, 1, 0) if transpose_bias else (2, 0, 1)
+    return permute_final_dims(projected, permutation)
+
+
 def triangle_attention(
     x: jnp.ndarray,
     params: TriangleAttentionParams,
@@ -99,6 +110,7 @@ def triangle_attention(
     no_heads: int,
     mask: jnp.ndarray | None = None,
     starting: bool = True,
+    transpose_bias: bool = False,
     inf: float = 1e9,
     eps: float = 1e-5,
     chunk_size: int | None = None,
@@ -112,6 +124,8 @@ def triangle_attention(
         no_heads: attention head count.
         mask: ``[..., I, J]`` pair mask; ``None`` means all ones.
         starting: ``True`` for Algorithm 14, ``False`` for Algorithm 15.
+        transpose_bias: use OpenBind v0.5's corrected ending-node pair-bias
+            orientation. Pair blocks set this only for their second attention.
         inf: masking constant; upstream uses ``inf * (mask - 1)``.
         eps: layer norm epsilon.
         chunk_size: rows of ``I`` to attend at a time. ``None`` does it in one
@@ -146,6 +160,7 @@ def triangle_attention(
             no_heads=no_heads,
             mask=mask,
             starting=starting,
+            transpose_bias=transpose_bias,
             inf=inf,
             eps=eps,
             chunk_size=chunk_size,
@@ -169,7 +184,7 @@ def triangle_attention(
     mask_bias = (inf * (mask - 1.0))[..., :, None, None, :]
 
     # [..., H, I, J] -> [..., 1, H, I, J]
-    triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
+    triangle_bias = _project_triangle_bias(x, params, transpose_bias)
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
 
     if backend == "cueq":
@@ -334,6 +349,7 @@ def _triangle_attention_cp(
     no_heads: int,
     mask: jnp.ndarray | None,
     starting: bool,
+    transpose_bias: bool,
     inf: float,
     eps: float,
     chunk_size: int | None,
@@ -369,7 +385,7 @@ def _triangle_attention_cp(
 
     x = layer_norm(x, params.layer_norm, eps=eps)
     mask_bias = (inf * (mask - 1.0))[..., :, None, None, :]
-    triangle_bias = permute_final_dims(linear(x, params.linear_z), (2, 0, 1))
+    triangle_bias = _project_triangle_bias(x, params, transpose_bias)
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
 
     if cp_layout() == "2d":

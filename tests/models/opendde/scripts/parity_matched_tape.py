@@ -212,13 +212,15 @@ def _squeeze_batch(array: np.ndarray, rank: int) -> np.ndarray:
     return array
 
 
-def load_tape(path: Path, *, num_steps: int, n_atom: int) -> tuple[np.ndarray, dict]:
+def load_tape(
+    path: Path, *, num_steps: int, num_samples: int, n_atom: int
+) -> tuple[np.ndarray, dict]:
     contracts = {
         "noise_schedule": (num_steps + 1,),
-        "init_noise": (1, n_atom, 3),
-        "step_noises": (num_steps, 1, n_atom, 3),
-        "rotations": (num_steps, 1, 3, 3),
-        "translations": (num_steps, 1, 3),
+        "init_noise": (num_samples, n_atom, 3),
+        "step_noises": (num_steps, num_samples, n_atom, 3),
+        "rotations": (num_steps, num_samples, 3, 3),
+        "translations": (num_steps, num_samples, 3),
     }
     with np.load(path, allow_pickle=False) as archive:
         missing = set(contracts).difference(archive.files)
@@ -236,6 +238,19 @@ def load_tape(path: Path, *, num_steps: int, n_atom: int) -> tuple[np.ndarray, d
         "rotations": arrays["rotations"],
         "translations": arrays["translations"],
     }
+
+
+def sample_coordinates(array: np.ndarray, *, num_samples: int) -> np.ndarray:
+    value = np.asarray(array)
+    while value.ndim > 3 and value.shape[0] == 1:
+        value = value[0]
+    if value.ndim == 2 and num_samples == 1:
+        value = value[None, ...]
+    if value.ndim != 3 or value.shape[0] != num_samples:
+        raise ValueError(
+            f"expected ({num_samples}, atoms, 3) coordinates, got {value.shape}"
+        )
+    return value
 
 
 def build_cycle_msa(
@@ -505,10 +520,12 @@ def main() -> int:
         load_jobs,
     )
     from foldjax.models.opendde.models.model import opendde_infer_static
+    from foldjax.models.opendde.postprocess import repair_terminal_oxt_coordinates
 
     meta = json.loads((args.tape_dir / "tape.json").read_text(encoding="utf-8"))
     num_recycles = int(meta["num_recycles"])
     num_steps = int(meta["num_steps"])
+    num_samples = int(meta["num_samples"])
     seed = int(meta["seed"])
 
     with np.load(args.tape_dir / "msa.npz", allow_pickle=False) as archive:
@@ -537,7 +554,10 @@ def main() -> int:
     features = featurize_opendde_json(job, base_dir=args.input_json.parent, seed=seed)
     n_atom = int(features["ref_pos"].shape[0])
     noise_schedule, tape = load_tape(
-        args.tape_dir / "tape.npz", num_steps=num_steps, n_atom=n_atom
+        args.tape_dir / "tape.npz",
+        num_steps=num_steps,
+        num_samples=num_samples,
+        n_atom=n_atom,
     )
 
     params = load_native_weights(args.weights)
@@ -587,7 +607,7 @@ def main() -> int:
             params,
             noise_schedule,
             key=None,
-            num_samples=1,
+            num_samples=num_samples,
             num_recycles=num_recycles,
             run_confidence=False,
             cycle_msa_features=cycle_msa,
@@ -600,13 +620,29 @@ def main() -> int:
         )
         coordinate = np.asarray(jax.device_get(output["coordinate"]), np.float64)
         sample_seconds = time.perf_counter() - started
-        left = _squeeze_batch(coordinate, 2)
-        right = _squeeze_batch(upstream_coordinate, 2)
+        left = sample_coordinates(coordinate, num_samples=num_samples)
+        right = sample_coordinates(upstream_coordinate, num_samples=num_samples)
         if left.shape != right.shape:
             raise RuntimeError(f"coordinate shape {left.shape} != {right.shape}")
+        network_per_sample_rmsd = [
+            rmsd(a, b) for a, b in zip(left, right, strict=True)
+        ]
+        network_max_abs = float(np.max(np.abs(left - right)))
+        left, foldjax_oxt_repairs = repair_terminal_oxt_coordinates(left, features)
+        right, upstream_oxt_repairs = repair_terminal_oxt_coordinates(right, features)
+        per_sample_rmsd = [
+            rmsd(a, b) for a, b in zip(left, right, strict=True)
+        ]
         metrics.update(
             sample_seconds=sample_seconds,
-            all_atom_rmsd_angstrom=rmsd(left, right),
+            coordinate_comparison="after mirrored OpenDDE 1.1.1 writer OXT repair",
+            network_all_atom_rmsd_angstrom=max(network_per_sample_rmsd),
+            network_all_atom_rmsd_angstrom_per_sample=network_per_sample_rmsd,
+            network_coordinate_max_abs_error_angstrom=network_max_abs,
+            foldjax_terminal_oxt_repairs=foldjax_oxt_repairs,
+            upstream_terminal_oxt_repairs=upstream_oxt_repairs,
+            all_atom_rmsd_angstrom=max(per_sample_rmsd),
+            all_atom_rmsd_angstrom_per_sample=per_sample_rmsd,
             coordinate_max_abs_error_angstrom=float(np.max(np.abs(left - right))),
             coordinate_mean_abs_error_angstrom=float(np.mean(np.abs(left - right))),
         )
@@ -653,6 +689,11 @@ def _verdict(metrics: dict, *, max_rmsd: float, min_correlation: float) -> list[
                 f"  {name}: correlation {row['correlation']:.8f} < {min_correlation:g}"
             )
     value = metrics.get("all_atom_rmsd_angstrom")
+    for index, sample in enumerate(
+        metrics.get("all_atom_rmsd_angstrom_per_sample", ())
+    ):
+        if not np.isfinite(sample) or not sample <= max_rmsd:
+            failures.append(f"  sample {index}: invalid or excessive RMSD {sample}")
     if value is not None and not value <= max_rmsd:
         failures.append(f"  all-atom RMSD {value:.4f} A > {max_rmsd:g} A")
     return failures
