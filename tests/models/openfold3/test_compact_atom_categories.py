@@ -662,7 +662,7 @@ def test_managed_raw_and_archive_paths_compact_only_the_model_copy(
         featurize_query_with_metadata=featurize_query_with_metadata,
         has_compact_zero_template_pair_features=lambda batch: False,
         has_compact_msa_features=lambda batch: False,
-        subsample_msa_rows=lambda batch, depth: batch,
+        prepare_msa_cycle_features=lambda batch, depth, **kwargs: batch,
         collapse_identical_templates=lambda batch: batch,
         compact_zero_template_pair_features=lambda batch: batch,
         compact_msa_features=lambda batch: batch,
@@ -674,7 +674,9 @@ def test_managed_raw_and_archive_paths_compact_only_the_model_copy(
         "foldjax.models.openfold3.data": data,
         "foldjax.models.openfold3.inference": SimpleNamespace(
             RELEASED_MSA_DEPTH=1024,
-            released_config=lambda **kwargs: SimpleNamespace(msa_depth=1024),
+            released_config=lambda **kwargs: SimpleNamespace(
+                msa_depth=1024, num_recycles=4
+            ),
             compile_predict=fake_compile,
         ),
         "foldjax.models.openfold3.output": SimpleNamespace(

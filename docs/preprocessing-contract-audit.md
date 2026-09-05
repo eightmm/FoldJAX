@@ -171,3 +171,8 @@ remain unresolved and are not counted as strict parity successes. The portable
 CPU suite skips publisher-runtime comparisons when PyTorch is absent; its pass
 does not close those gates. The review-correction regression selection passes
 68 tests, including the mismatched-runner and later-sample-NaN controls.
+
+The first full CPU publication check found 15 stale test-double failures after
+the cycle-MSA API change (3,560 other tests passed). Four fixture modules now
+provide the current planner/config/mask contract; all 15 focused regressions
+pass without weakening runtime validation or changing model calculations.

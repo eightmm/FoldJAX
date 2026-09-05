@@ -610,6 +610,7 @@ def _install_tiny_predict(monkeypatch) -> tuple[dict[str, jax.Array], object]:
     )
 
     batch = {
+        "msa_mask": jnp.ones((1, 1, n_token), dtype=jnp.float32),
         "token_mask": jnp.asarray([[1, 1, 0, 1]], dtype=jnp.float32),
         "asym_id": jnp.asarray([[0, 0, 1, 2]], dtype=jnp.int32),
         "atom_mask": jnp.ones((1, n_atom), dtype=jnp.float32),

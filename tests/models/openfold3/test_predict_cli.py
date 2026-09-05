@@ -277,7 +277,9 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     monkeypatch.setattr(
         data, "load_feature_archive", lambda path: (raw, object(), None)
     )
-    monkeypatch.setattr(data, "subsample_msa_rows", lambda features, depth: features)
+    monkeypatch.setattr(
+        data, "prepare_msa_cycle_features", lambda features, depth, **kwargs: features
+    )
 
     def compact(features):
         call_order.append("templates")

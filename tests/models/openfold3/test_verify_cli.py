@@ -141,7 +141,9 @@ def test_verifier_passes_normalized_static_chain_count(
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(data, "load_features", lambda path: (raw, object()))
-    monkeypatch.setattr(data, "subsample_msa_rows", lambda features, depth: features)
+    monkeypatch.setattr(
+        data, "prepare_msa_cycle_features", lambda features, depth, **kwargs: features
+    )
     monkeypatch.setattr(checkpoint, "load_checkpoint", lambda path: {})
     monkeypatch.setattr(checkpoint, "detect_fused_tri_mul", lambda state: False)
     monkeypatch.setattr(
@@ -155,7 +157,7 @@ def test_verifier_passes_normalized_static_chain_count(
     monkeypatch.setattr(
         inference,
         "released_config",
-        lambda **kwargs: SimpleNamespace(msa_depth=1024),
+        lambda **kwargs: SimpleNamespace(msa_depth=1024, num_recycles=4),
     )
 
     def fake_predict(key, batch, params, config, table, *, n_chain=None):
