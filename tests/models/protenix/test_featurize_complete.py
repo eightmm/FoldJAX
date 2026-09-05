@@ -710,7 +710,7 @@ def test_molecule_ids_follow_native_inference_without_merging_ligand_bonds() -> 
     assert features["covalent_atom_indices"].shape == (1, 2)
 
 
-def test_modified_polymer_is_not_a_ligand_for_confidence() -> None:
+def _assert_modified_polymer_identity() -> None:
     features = featurize_protein_json(
         _job(
             {
@@ -728,6 +728,52 @@ def test_modified_polymer_is_not_a_ligand_for_confidence() -> None:
     np.testing.assert_array_equal(
         features["token_is_ligand"][features["atom_to_token_idx"]], atoms
     )
+    assert np.any(features["token_is_modified"])
+    assert atoms.any() and (~atoms).any()
+    sep_atoms = features["output_atom_res_name"] == "SEP"
+    assert sep_atoms.any()
+    assert not np.any(features["is_ligand"][sep_atoms])
+
+
+def test_modified_polymer_is_not_a_ligand_for_confidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A small synthetic phosphoserine fixture exercises the real CCD parser,
+    # modification expansion and identity builder, without a publisher database.
+    mol = Chem.AddHs(Chem.MolFromSmiles("N[C@@H](COP(=O)(O)O)C(=O)O"))
+    assert AllChem.EmbedMolecule(mol, randomSeed=7) == 0
+    mol = Chem.RemoveHs(mol)
+    names = ["N", "CA", "CB", "OG", "P", "O1P", "O2P", "O3P", "C", "O", "OXT"]
+    assert len(names) == mol.GetNumAtoms()
+    rows = "\n".join(
+        f"SEP {name} {atom.GetSymbol()} {'Y' if name == 'OXT' else 'N'}"
+        for name, atom in zip(names, mol.GetAtoms(), strict=True)
+    )
+    components = tmp_path / "components.cif"
+    components.write_text(
+        "data_SEP\n_chem_comp.type 'L-PEPTIDE LINKING'\n"
+        "_chem_comp.one_letter_code S\nloop_\n"
+        "_chem_comp_atom.comp_id\n_chem_comp_atom.atom_id\n"
+        "_chem_comp_atom.type_symbol\n_chem_comp_atom.pdbx_leaving_atom_flag\n"
+        + rows + "\n#\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PROTENIX_CCD_COMPONENTS_FILE", str(components))
+    monkeypatch.setenv("PROTENIX_CCD_RDKIT_MOL_FILE", str(tmp_path / "absent.pkl"))
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_MOLS", {"SEP": mol})
+    monkeypatch.setattr(featurize_impl, "_EXTERNAL_CCD_ATOMS", OrderedDict())
+    monkeypatch.setattr(
+        featurize_impl, "_managed_ccd_asset", lambda name: tmp_path / "absent" / name
+    )
+    _assert_modified_polymer_identity()
+
+
+@pytest.mark.official_parity
+def test_modified_polymer_identity_with_official_ccd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_official_ccd_assets(monkeypatch)
+    _assert_modified_polymer_identity()
 
 
 def test_polymer_modification_without_canonical_type_is_rejected(

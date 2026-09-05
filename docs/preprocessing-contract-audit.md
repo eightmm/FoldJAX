@@ -176,3 +176,21 @@ The first full CPU publication check found 15 stale test-double failures after
 the cycle-MSA API change (3,560 other tests passed). Four fixture modules now
 provide the current planner/config/mask contract; all 15 focused regressions
 pass without weakening runtime validation or changing model calculations.
+
+## CI asset isolation
+
+The published checkpoint's hosted CI exposed one test-only dependency: the SEP
+confidence-identity regression loaded a full local CCD database without declaring
+it. The regular regression now supplies a small synthetic phosphoserine CIF and
+RDKit molecule, disables managed-asset fallback, and exercises the real parser,
+modification expansion and ligand-identity builder. Synthetic coordinates are
+test data, not scientific reference coordinates. A separate `official_parity`
+test retains the full-database integration check and skips explicitly if those
+publisher assets are unavailable. No model computation or CI job is removed.
+
+Run the portable regression with
+`pytest tests/models/protenix/test_featurize_complete.py -k modified_polymer_is_not`;
+run the asset-backed check with
+`pytest tests/models/protenix/test_featurize_complete.py -k modified_polymer_identity_with_official_ccd`.
+Scientific reruns must still use pinned real assets and the five-sample protocol
+above; passing the synthetic test is not a new model-parity result.
