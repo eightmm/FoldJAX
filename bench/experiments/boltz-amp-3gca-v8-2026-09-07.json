@@ -1,0 +1,1539 @@
+{
+  "acceptance": "historical strict diagnostics only; no new allowance or native-repeat calibration",
+  "candidate_compilation": {
+    "compiler_options": {
+      "xla_allow_excess_precision": false
+    },
+    "confidence_chain_ids": [
+      0,
+      1
+    ],
+    "effective_options_hash_bound": true
+  },
+  "candidate_kind": "foldjax",
+  "coordinates": {
+    "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+    "atom_counts": [
+      718,
+      718,
+      718,
+      718,
+      718
+    ],
+    "coordinate_diagnostic": {
+      "coordinate_gate_passed": true,
+      "entity_max_rmsd": {
+        "entity=0|mol_type=2|asym=0": 0.009784990093082062,
+        "entity=1|mol_type=3|asym=1": 0.011572273554594486
+      },
+      "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+      "threshold_angstrom": 0.05
+    },
+    "coordinates_equal": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "entity_max_rmsd": {
+      "entity=0|mol_type=2|asym=0": 0.009784990093082062,
+      "entity=1|mol_type=3|asym=1": 0.011572273554594486
+    },
+    "entity_rmsd": {
+      "entity=0|mol_type=2|asym=0": [
+        0.0041872665837438434,
+        0.003508793508959803,
+        0.0037178346976724746,
+        0.009784990093082062,
+        0.009627621759847221
+      ],
+      "entity=1|mol_type=3|asym=1": [
+        0.004003072671103064,
+        0.005292020878020065,
+        0.0043022946088935215,
+        0.008355763795460902,
+        0.011572273554594486
+      ]
+    },
+    "global_max_rmsd": 0.009760973126109695,
+    "global_rmsd": [
+      0.004184003676639751,
+      0.0035490537375246997,
+      0.0037292311535137906,
+      0.009760973126109695,
+      0.00966630953414592
+    ]
+  },
+  "native_nonarray_forward_fields": [
+    "diff_token_repr"
+  ],
+  "not_parity_admission": true,
+  "public_confidence": {
+    "extra_in_candidate": [],
+    "leaves": {
+      "complex_ipde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0016515254974365234,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0012203697994503646,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_iplddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0003674626350402832,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.00024905040326124244,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 2,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.001399397850036621,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0009296442713143891,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.00018107891082763672,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.00013159310668210542,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.002061188220977783,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.001429791499045089,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "ligand_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0,
+        "shape_equal": true,
+        "storage_bytes_equal": true,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "pae": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46,
+          46
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 10580,
+        "max_abs": 0.9691066741943359,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46,
+          46
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.07038953454895461,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 10216,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0024773478507995605,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.002142551180177004,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.004143834114074707,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.003187072875543358,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 4,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.002061188220977783,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.001429791499045089,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0008705258369445801,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0006641628876417322,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 4,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46,
+          46
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 10580,
+        "max_abs": 0.04414355754852295,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46,
+          46
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.004560166870465125,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 9076,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 230,
+        "max_abs": 0.001934826374053955,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0003522046794778484,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 108,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "protein_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0,
+        "shape_equal": true,
+        "storage_bytes_equal": true,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "ptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.002222299575805664,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0019260028405928737,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      }
+    },
+    "missing_from_candidate": [
+      "confidence_score"
+    ],
+    "original_dtypes_equal": false,
+    "strict_atol": 0.0001,
+    "strict_pass": false,
+    "strict_rtol": 0.0001
+  },
+  "raw_confidence": {
+    "extra_in_candidate": [],
+    "leaves": {
+      "complex_ipde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0016515254974365234,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0012203697994503646,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_iplddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0003674626350402832,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.00024905040326124244,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 2,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.001399397850036621,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0009296442713143891,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.00018107891082763672,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.00013159310668210542,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.002061188220977783,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.001429791499045089,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "ligand_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0,
+        "shape_equal": true,
+        "storage_bytes_equal": true,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "pae": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46,
+          46
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 10580,
+        "max_abs": 0.9691066741943359,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46,
+          46
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.07038953454895461,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 10216,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pae_logits": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46,
+          46,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 677120,
+        "max_abs": 2.8125,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46,
+          46,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.06291390435085836,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 515090,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0024773478507995605,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.002142551180177004,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.004143834114074707,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.003187072875543358,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 4,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.002061188220977783,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.001429791499045089,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0008705258369445801,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0006641628876417322,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 4,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pbfactor": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          1,
+          46,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 2944,
+        "max_abs": 4.0,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          1,
+          46,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.9600242787207369,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 383,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46,
+          46
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 10580,
+        "max_abs": 0.04414355754852295,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46,
+          46
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.004560166870465125,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 9076,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pde_logits": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46,
+          46,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 677120,
+        "max_abs": 4.1875,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46,
+          46,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.07803306921774221,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 441129,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pdistogram": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          1,
+          46,
+          46,
+          1,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 135424,
+        "max_abs": 1.0,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          1,
+          46,
+          46,
+          1,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.06290707846029703,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 84092,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          46
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 230,
+        "max_abs": 0.001934826374053955,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          46
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0003522046794778484,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 108,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "plddt_logits": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          5,
+          46,
+          50
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 11500,
+        "max_abs": 0.1875,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          5,
+          46,
+          50
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.022281011173872583,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5535,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "protein_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0,
+        "shape_equal": true,
+        "storage_bytes_equal": true,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "ptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.002222299575805664,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0019260028405928737,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "resolved_logits": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          5,
+          46,
+          2
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 460,
+        "max_abs": 0.09375,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          5,
+          46,
+          2
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.019261038442985722,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 145,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      }
+    },
+    "missing_from_candidate": [],
+    "original_dtypes_equal": true,
+    "strict_atol": 0.0001,
+    "strict_pass": false,
+    "strict_rtol": 0.0001
+  },
+  "reference_control": {
+    "feature_entry_hashes_verified": true,
+    "feature_mapping": "captured int64 -> int32 and float64 -> float32; otherwise unchanged",
+    "independent_preprocessing": false,
+    "native_artifact_hashes_verified": true,
+    "sampler_entry_hashes_verified": true
+  },
+  "sample_order": "original sampler index 0..4; no ranking permutation",
+  "schema_version": 1,
+  "scope": "captured-native-feature core diagnostic; not independent preprocessing or full admission",
+  "source_ids": {
+    "candidate_provenance_sha256": "2a347ff456d526431bfe70a3bbe0c338b2f65ec5e487db072a8c023d3aa335fc",
+    "candidate_source_id": "131b84bd1a6e6747cfcd0c101f517bb741e603e88b6e91fde8b65af683f2d6b4",
+    "native_provenance_sha256": "01389dd274975899d1b8604fab33f112da1c51e28b34c7b61414dc6d517ed373",
+    "native_source_id": "c0561af47e9e619f379e7c825fdbdafaa35ab7242217d7645f5e4e16af756a28"
+  },
+  "stage_comparisons": {
+    "cycle-00/msa_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "delta_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.70654296875,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.018896111313761645,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 260368,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.5,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.004510836847185623,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 1624,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "cycle-00/pairformer_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "input_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 17664,
+          "max_abs": 0.0625,
+          "native_original_dtype": "bfloat16",
+          "native_shape": [
+            1,
+            46,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": false,
+          "rmse": 0.0014439348318269376,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 144,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.7158203125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.019486123189974218,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 254905,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 17664,
+          "max_abs": 0.35565185546875,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.06264816476511828,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 16789,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 3.030242919921875,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.1476874834145579,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 267724,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": false,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "cycle-03/msa_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "delta_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.6632843017578125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.030140395512775423,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 264009,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.5625,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.017057826097003053,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 188546,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "cycle-03/pairformer_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "input_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 17664,
+          "max_abs": 0.25,
+          "native_original_dtype": "bfloat16",
+          "native_shape": [
+            1,
+            46,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": false,
+          "rmse": 0.005176209186161061,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 1393,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.77459716796875,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.041547593011014676,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 262981,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 17664,
+          "max_abs": 0.3311767578125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.060255719325657806,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 16699,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 1.919921875,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.1339103319494571,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 267266,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": false,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "input_embedder": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            46,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 17664,
+          "max_abs": 0.0005297064781188965,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            46,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 1.1790578767284475e-05,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 29,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "rel_pos": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "": {
+          "candidate_original_dtype": "bfloat16",
+          "candidate_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 270848,
+          "max_abs": 0.0,
+          "native_original_dtype": "bfloat16",
+          "native_shape": [
+            1,
+            46,
+            46,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.0,
+          "shape_equal": true,
+          "storage_bytes_equal": true,
+          "strict_failures": 0,
+          "strict_pass": true,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": true,
+      "strict_rtol": 0.0001
+    }
+  },
+  "tape_scope": "entry/archive identity, not independent per-step device consumer proof",
+  "trunk_only": false,
+  "trunk_representations": {
+    "extra_in_candidate": [],
+    "leaves": {
+      "s": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          1,
+          46,
+          384
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 17664,
+        "max_abs": 0.3311767578125,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          1,
+          46,
+          384
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.060255719325657806,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 16699,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "z": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          1,
+          46,
+          46,
+          128
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 270848,
+        "max_abs": 1.919921875,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          1,
+          46,
+          46,
+          128
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.1339103319494571,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 267266,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      }
+    },
+    "missing_from_candidate": [],
+    "original_dtypes_equal": true,
+    "strict_atol": 0.0001,
+    "strict_pass": false,
+    "strict_rtol": 0.0001
+  },
+  "verified_artifacts": {
+    "candidate": {
+      "effective-options.json": "3ff1e416b70e55758c7336fc382e7bfb034e7ae224b1fe2260212e83b304c6ce",
+      "prediction.npz": "3d427e27c0d5e80964bf029d3e6a34e231951bee5713e7fa85c4818eaddcc536",
+      "prediction.tree.json": "b10a569a77fbd058821543cf28b29cd7f2c1c17ef521f2a08897870de095b8b0",
+      "trunk-boundaries/cycle-00/msa_module.npz": "01cd3d86ddaf952acbe7922f0ea7cf0820f82f855a141590cfa9a220bb96e19d",
+      "trunk-boundaries/cycle-00/msa_module.tree.json": "f3355bbe105e2a663d6506b3ce26e5c5a6686d42b85f8aadee5f0a79d0155ae0",
+      "trunk-boundaries/cycle-00/pairformer_module.npz": "d6f2eeb30cc119697b4bc98788f0dd8821fc880fd34403ed705414e240803033",
+      "trunk-boundaries/cycle-00/pairformer_module.tree.json": "1d5b2cb11a24a5369ebad91ea4d29d4ff9ec827e298fff83c0b5a2b0d6c63a55",
+      "trunk-boundaries/cycle-03/msa_module.npz": "a628809def7e2e120f8c470cfa6cccc2ca2e2e488dd721edf50a1eeb4ea4bd65",
+      "trunk-boundaries/cycle-03/msa_module.tree.json": "f3355bbe105e2a663d6506b3ce26e5c5a6686d42b85f8aadee5f0a79d0155ae0",
+      "trunk-boundaries/cycle-03/pairformer_module.npz": "de5ff050e432eb38b3f76a7f2ab0b1ff6bb124272e1d0ebaac9d4742bdc8f04d",
+      "trunk-boundaries/cycle-03/pairformer_module.tree.json": "1d5b2cb11a24a5369ebad91ea4d29d4ff9ec827e298fff83c0b5a2b0d6c63a55",
+      "trunk-boundaries/input_embedder.npz": "9b271d35624f5f042a78a90e1c84f97b195ae65a4ad9c58013130d25f1341341",
+      "trunk-boundaries/input_embedder.tree.json": "55de8a5be6580b4187a519612c3468ec6ca6b63f7122abd12e72e01e4fd8425d",
+      "trunk-boundaries/input_embedder/atom_attention_encoder.npz": "bf160c3387c8aacaf82cdf123fd16efe2511d62bcab94c2dede1ef934268b331",
+      "trunk-boundaries/input_embedder/atom_attention_encoder.tree.json": "f51f6d3751497cf3b058e87abff757f5fbfac76da732ac83c85da438118afbe0",
+      "trunk-boundaries/input_embedder/atom_encoder.npz": "d94143bc0ea73164f33ba294b282dfd4be7b3fef1754d1ebfe0c2fa4784d7856",
+      "trunk-boundaries/input_embedder/atom_encoder.tree.json": "26b2449a5ef5f00ce4ae8b43ec2581309b0643abc3359dae217e82fb76cf69e4",
+      "trunk-boundaries/rel_pos.npz": "c0a07938c3c9dce032e8fade942fa58b66f77a07581eee03e87047f9a1b9ebef",
+      "trunk-boundaries/rel_pos.tree.json": "97c07d56bc52ad43f4c842b902214726ab1f374420c01a74ae1ad95e1cece24a"
+    },
+    "native": {
+      "forward-output.npz": "3094a4a3671ae4fdb7cad0d18bbf6ccd6ac9b35ef9d18da27cc15bf57d002224",
+      "forward-output.tree.json": "0f6875a14ac11cf80c1ec13507116ec9c8ea16a23d6789e592d6be6f5c839c78",
+      "predict-step-output.npz": "d9cfbe9c5f39179555486ba8b07a6276fc504ce800633c9166076a73627b4dbe",
+      "predict-step-output.tree.json": "4e4a1b8e601aa886435d40b6904e074b06660a1c9de19cdc815f39d7e77f250b",
+      "preprocessing-tape.npz": "e4d0839a7f41ca6804a1afc40c8a22d38515bf11b6dcd2eefca8855321c8bde3",
+      "preprocessing-tape.tree.json": "62bb1fb48a98d997afd64b3580800d9a752f266e4c8c237ac81b039a85964d6d",
+      "trunk-boundaries/contact_conditioning.npz": "3a31aa0dcdfc0f93914657a7c45cc6259af9d78abadcf225c06396f0e3368ab8",
+      "trunk-boundaries/contact_conditioning.tree.json": "02b6d0ad6ae663a1ed9765bc0d66100d8da5e9be0457db1598e38a7767fdb821",
+      "trunk-boundaries/cycle-00/msa_module.npz": "1817c7f8bac3e8399da01812bf1ba420c4991ada356240d3548e2ade9a1746de",
+      "trunk-boundaries/cycle-00/msa_module.tree.json": "767aef0557435ce72196559e817e594a7dc9b79baee11167adda15042361f863",
+      "trunk-boundaries/cycle-00/pairformer_module.npz": "d6e524ff0f718ddacaaf3eeffad8ca3b1ad2b12944c6d16aee80c0a73dc28c00",
+      "trunk-boundaries/cycle-00/pairformer_module.tree.json": "e0731a37ec21984f1aa998c34f37ff0d70604fdf1cf96e0c22fb4111cf40f467",
+      "trunk-boundaries/cycle-00/s_norm.npz": "3890ff02e926994c21727d5256969dc4586e468e438437cfcc0b75bc7a91d79e",
+      "trunk-boundaries/cycle-00/s_norm.tree.json": "f9cb2cfe17c7c097f647e5c47398342f674124e0bcbaa90cd06b9c134bb0fa2e",
+      "trunk-boundaries/cycle-00/s_recycle.npz": "d38a7335ecb2dba1cdc06cc5c7376d80b32f772c1f4f1c68232bed9a03164dcf",
+      "trunk-boundaries/cycle-00/s_recycle.tree.json": "520f825e159348596d521f6d7ed9612cdde260a80f3e178156c956189772d44e",
+      "trunk-boundaries/cycle-00/z_norm.npz": "a4e92c49deb490610d2794793287c9785e3311999d430769c782188c3d6e6fc8",
+      "trunk-boundaries/cycle-00/z_norm.tree.json": "02b6d0ad6ae663a1ed9765bc0d66100d8da5e9be0457db1598e38a7767fdb821",
+      "trunk-boundaries/cycle-00/z_recycle.npz": "0c04e5102db8221f23792eaf596e92de66b7a79e2799b419a73593b42dc4260c",
+      "trunk-boundaries/cycle-00/z_recycle.tree.json": "ffbf95d373cbccbc13bfa8345009672f6be31e86d7b51f8ae22f063949148a97",
+      "trunk-boundaries/cycle-03/msa_module.npz": "11b363de4178d7424912d97da480ee99ddb97cb830bf3429805423cb9ed485ef",
+      "trunk-boundaries/cycle-03/msa_module.tree.json": "767aef0557435ce72196559e817e594a7dc9b79baee11167adda15042361f863",
+      "trunk-boundaries/cycle-03/pairformer_module.npz": "3da36fea168b18402b0d5a7d2c64580914600fe101d628d56601b48097f7e8e6",
+      "trunk-boundaries/cycle-03/pairformer_module.tree.json": "e0731a37ec21984f1aa998c34f37ff0d70604fdf1cf96e0c22fb4111cf40f467",
+      "trunk-boundaries/cycle-03/s_norm.npz": "24baff3fe94bd3a45f660c85d56c5d8c5236b704a95fb4598f3c57da89012f92",
+      "trunk-boundaries/cycle-03/s_norm.tree.json": "f9cb2cfe17c7c097f647e5c47398342f674124e0bcbaa90cd06b9c134bb0fa2e",
+      "trunk-boundaries/cycle-03/s_recycle.npz": "8deb7ad7e350c2c7932dcb51ee635b3b67ac1ad5a8b7b87cf20fac63e50e5beb",
+      "trunk-boundaries/cycle-03/s_recycle.tree.json": "520f825e159348596d521f6d7ed9612cdde260a80f3e178156c956189772d44e",
+      "trunk-boundaries/cycle-03/z_norm.npz": "a34a77c086e92fcbe46aded82241e0a230d4862d6b67aaa1fc1776186175f954",
+      "trunk-boundaries/cycle-03/z_norm.tree.json": "02b6d0ad6ae663a1ed9765bc0d66100d8da5e9be0457db1598e38a7767fdb821",
+      "trunk-boundaries/cycle-03/z_recycle.npz": "0e54014ef03f803a25f72ea937ada373ab30caa91f23d64f2503d10a41295238",
+      "trunk-boundaries/cycle-03/z_recycle.tree.json": "ffbf95d373cbccbc13bfa8345009672f6be31e86d7b51f8ae22f063949148a97",
+      "trunk-boundaries/diffusion_conditioning.npz": "1e39ec09614e22ec4d806fe2f23940b4a5daa4f421ca7b77880f9cb73cde673c",
+      "trunk-boundaries/diffusion_conditioning.tree.json": "efc7423b8bc12ad696994d69678bb2bbf23df80e6d3e88e3d1902eb73d6a63d9",
+      "trunk-boundaries/initial.npz": "99403a7658f4fa891d377f20bd6cf30f1ba12ed68540af552aa8482712398d54",
+      "trunk-boundaries/initial.tree.json": "c982e05e064e02eedcb0ac1086157a189306ce8541e039b447aad69e26c658a1",
+      "trunk-boundaries/input_embedder.npz": "7d09f0740d054a7209a21b5432af70bff6713994b6c51d9081e37a88ce12d88a",
+      "trunk-boundaries/input_embedder.tree.json": "f9cb2cfe17c7c097f647e5c47398342f674124e0bcbaa90cd06b9c134bb0fa2e",
+      "trunk-boundaries/rel_pos.npz": "c0a07938c3c9dce032e8fade942fa58b66f77a07581eee03e87047f9a1b9ebef",
+      "trunk-boundaries/rel_pos.tree.json": "ffbf95d373cbccbc13bfa8345009672f6be31e86d7b51f8ae22f063949148a97",
+      "trunk-boundaries/s_init.npz": "6a157ae9f2b230aff00d1eae14e7964e7e932e9d4e85105066db29ba6dcbe57d",
+      "trunk-boundaries/s_init.tree.json": "520f825e159348596d521f6d7ed9612cdde260a80f3e178156c956189772d44e",
+      "trunk-boundaries/token_bonds.npz": "50b1daf5be1271c622c11b0eb3cba84c1b0bd5231dc9e700449769ed18f5d5b2",
+      "trunk-boundaries/token_bonds.tree.json": "ffbf95d373cbccbc13bfa8345009672f6be31e86d7b51f8ae22f063949148a97",
+      "trunk-boundaries/token_bonds_type.npz": "2cf0f3747233e6b152b59f7842440983c783542703c16245f484f2cadb16bcfa",
+      "trunk-boundaries/token_bonds_type.tree.json": "02b6d0ad6ae663a1ed9765bc0d66100d8da5e9be0457db1598e38a7767fdb821",
+      "trunk-boundaries/z_init_1.npz": "496227737804f73589932723a76eb6e0b6277873749b588ce0b516ca9a04b682",
+      "trunk-boundaries/z_init_1.tree.json": "12e4417ff4f9c735510b436f3fe8025304bbc7cff07466b691af6dc282eb0d67",
+      "trunk-boundaries/z_init_2.npz": "befcc397355992814162cb47c5c9c5359b9356c7be4b9f9b82cd9083ccd8a2c5",
+      "trunk-boundaries/z_init_2.tree.json": "12e4417ff4f9c735510b436f3fe8025304bbc7cff07466b691af6dc282eb0d67"
+    }
+  }
+}

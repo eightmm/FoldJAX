@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from foldjax.models._cp import cp_mesh
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_unit
+from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 
 TransitionParams = Mapping[str, Mapping[str, jnp.ndarray]]
 
@@ -43,6 +44,8 @@ def transition_forward(
     eps: float = 1e-5,
     row_chunk_size: int | None = None,
     glu_backend: str = "xla",
+    compute_dtype: jnp.dtype | None = None,
+    native_amp_norm: bool = False,
 ) -> jnp.ndarray:
     """Run a Boltz Transition block using mapped PyTorch parameters.
 
@@ -60,6 +63,11 @@ def transition_forward(
     (GPU, low precision); ``"xla"`` (default) keeps the bit-exact split-matmul.
     """
 
+    if compute_dtype is None and params["fc1"]["kernel"].dtype in (
+        jnp.bfloat16,
+        jnp.float16,
+    ):
+        compute_dtype = params["fc1"]["kernel"].dtype
     if cp_mesh() is not None:
         # Under context parallelism axis 1 is the sharded row axis; slicing
         # it block by block would fight the partitioner, and the memory the
@@ -86,14 +94,37 @@ def transition_forward(
                     # Already split; 0 stops the slice from splitting again.
                     row_chunk_size=0,
                     glu_backend=glu_backend,
+                    compute_dtype=compute_dtype,
+                    native_amp_norm=native_amp_norm,
                 )
             )
         return jnp.concatenate(blocks, axis=1)
 
-    x = _layer_norm(x, params["norm"]["scale"], params["norm"]["bias"], eps)
+    if compute_dtype is not None:
+        # CUDA autocast keeps LayerNorm (including affine) in FP32, then
+        # narrows inputs/weights at each Linear boundary.
+        x = x.astype(jnp.float32)
+    norm = (
+        amp_layer_norm
+        if native_amp_norm and compute_dtype == jnp.bfloat16
+        else _layer_norm
+    )
+    x = norm(x, params["norm"]["scale"], params["norm"]["bias"], eps)
     fc1_kernel = params["fc1"]["kernel"]
     fc2_kernel = params["fc2"]["kernel"]
     fc3_kernel = params["fc3"]["kernel"]
+    if compute_dtype is not None:
+        x = x.astype(compute_dtype)
+        fc1_kernel = fc1_kernel.astype(compute_dtype)
+        fc2_kernel = fc2_kernel.astype(compute_dtype)
+        fc3_kernel = fc3_kernel.astype(compute_dtype)
+
+    def silu(value):
+        if compute_dtype is not None:
+            # Torch's SiLU is one op: do not introduce a bf16 sigmoid rounding
+            # before the multiplication inside the activation.
+            return jax.nn.silu(value.astype(jnp.float32)).astype(value.dtype)
+        return jax.nn.silu(value)
 
     if glu_backend != "xla":
         hidden = gated_linear_unit(
@@ -104,7 +135,7 @@ def transition_forward(
     if chunk_size is None:
         fc12 = x @ jnp.concatenate((fc1_kernel, fc2_kernel), axis=-1)
         fc1, fc2 = jnp.split(fc12, 2, axis=-1)
-        hidden = jax.nn.silu(fc1) * fc2
+        hidden = silu(fc1) * fc2
         return hidden @ fc3_kernel
 
     if chunk_size <= 0:
@@ -115,8 +146,6 @@ def transition_forward(
     hidden_dim = fc3_kernel.shape[0]
     for start in range(0, hidden_dim, chunk_size):
         stop = min(start + chunk_size, hidden_dim)
-        hidden = jax.nn.silu(x @ fc1_kernel[:, start:stop]) * (
-            x @ fc2_kernel[:, start:stop]
-        )
+        hidden = silu(x @ fc1_kernel[:, start:stop]) * (x @ fc2_kernel[:, start:stop])
         out = out + hidden @ fc3_kernel[start:stop, :]
     return out

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "status": "operator_diagnostic_not_admission",
+  "source_snapshot": "operator-source-v5",
+  "native_normalized_projection_controls": {
+    "all_heads_default": {
+      "max_abs": 0.0625,
+      "rmse": 0.0001838505567539989,
+      "unequal": 48,
+      "values_equal": false
+    },
+    "fp64_oracle": {
+      "max_abs": 0.0625,
+      "rmse": 0.00007297939248394272,
+      "unequal": 22,
+      "values_equal": false
+    },
+    "one_column_default": {
+      "max_abs": 0.0625,
+      "rmse": 0.015217713033039546,
+      "unequal": 392096,
+      "values_equal": false
+    },
+    "one_column_fp32_accumulator": {
+      "max_abs": 0.0625,
+      "rmse": 0.00011093877552469425,
+      "unequal": 25,
+      "values_equal": false
+    }
+  },
+  "reference_sha256": "b2bcc63100a7a7c63f771b69cc3767979f3ca99fddd4f2eabb217f24be30b263",
+  "wrapper_sha256": "5eed1ba07828d14243fa27bc531d119bbe8dab8d56cee99d52cb4b74c15f7b10",
+  "compiler_options": {
+    "xla_allow_excess_precision": false
+  },
+  "stages_sha256": "3a0227eb5847eb3039e37dc1d204dd31e5149f36953ab7f5d8818e651b20cce5"
+}

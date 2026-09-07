@@ -19,9 +19,13 @@ from foldjax.models.boltz2.models.triangle.triangle_cueq import (
 
 
 @pytest.mark.parametrize(
-    "policy, expected", [("default", "DEFAULT"), ("highest", "IEEE")]
+    "policy, expected", [("default", "DEFAULT"), ("high", "TF32"),
+                         ("highest", "IEEE")]
 )
-def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch, policy, expected) -> None:
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16, jnp.float16])
+def test_cueq_triangle_maps_boltz_kernel_layout(
+    monkeypatch, policy, expected, dtype
+) -> None:
     captured = {}
 
     def fake_triangle_multiplicative_update(**kwargs):
@@ -32,7 +36,9 @@ def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch, policy, expected) -
         sys.modules,
         "cuequivariance_jax",
         SimpleNamespace(
-            TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
+            TriMulPrecision=SimpleNamespace(
+                DEFAULT="DEFAULT", IEEE="IEEE", TF32="TF32"
+            ),
             triangle_multiplicative_update=fake_triangle_multiplicative_update
         ),
     )
@@ -44,8 +50,8 @@ def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch, policy, expected) -
         "p_out": {"kernel": jnp.arange(16).reshape(4, 4)},
         "g_out": {"kernel": jnp.arange(16, 32).reshape(4, 4)},
     }
-    x = jnp.ones((1, 3, 3, 4))
-    mask = jnp.ones((1, 3, 3))
+    x = jnp.ones((1, 3, 3, 4), dtype=dtype)
+    mask = jnp.ones((1, 3, 3), dtype=dtype)
 
     with jax.default_matmul_precision(policy):
         output = cueq_triangle_multiplication_forward(
@@ -56,7 +62,7 @@ def test_cueq_triangle_maps_boltz_kernel_layout(monkeypatch, policy, expected) -
     assert captured["direction"] == "incoming"
     assert captured["fallback"] is False
     assert captured["eps"] == 1e-4
-    assert captured["precision"] == expected
+    assert captured["precision"] == (expected if dtype == jnp.float32 else "DEFAULT")
     assert jnp.array_equal(captured["p_in_weight"], params["p_in"]["kernel"].T)
     assert jnp.array_equal(captured["g_in_weight"], params["g_in"]["kernel"].T)
     assert jnp.array_equal(captured["p_out_weight"], params["p_out"]["kernel"].T)

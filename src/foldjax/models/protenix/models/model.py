@@ -248,6 +248,8 @@ def protenix_infer_static(
     num_samples: int,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    rotations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    translations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     num_recycles: int = 1,
     pair_mask: jnp.ndarray | None = None,
     input_atom_heads: int = 4,
@@ -371,6 +373,12 @@ def protenix_infer_static(
             ),
             input_feature_dict,
         )
+        # Native autocast does not narrow the raw fields concatenated to the
+        # atom embedding. Diffusion/confidence reuse this FP32 conditioning.
+        trunk_features.update(
+            {name: input_feature_dict[name] for name in
+             ("restype", "profile", "deletion_mean")}
+        )
         if pair_mask is not None:
             trunk_pair_mask = pair_mask.astype(trunk_dtype)
     s_inputs = input_feature_embedder(
@@ -442,7 +450,7 @@ def protenix_infer_static(
     )
     diffusion_features = {**input_feature_dict, "relp": relp}
 
-    def sample(key, init_noise, step_noises):
+    def sample(key, init_noise, step_noises, rotations, translations):
         return sample_diffusion_with_module(
             diffusion_features,
             diffusion_s_inputs,
@@ -476,14 +484,18 @@ def protenix_infer_static(
             preserve_prefix_rng=preserve_prefix_rng,
             init_noise=init_noise,
             step_noises=step_noises,
+            rotations=rotations,
+            translations=translations,
             guidance_config=guidance_config,
             guidance_features=(
                 input_feature_dict if guidance_features is None else guidance_features
             ),
         )
 
-    coordinates = sample(key, init_noise, step_noises)
-    distogram_logits = distogram_head(diffusion_z_trunk, params.distogram)
+    coordinates = sample(key, init_noise, step_noises, rotations, translations)
+    distogram_logits = distogram_head(
+        z_trunk, params.distogram, compute_dtype=trunk_dtype
+    )
     output = {"coordinate": coordinates}
     if return_trunk:
         # The historical names, kept because the native writers and the

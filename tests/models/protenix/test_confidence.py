@@ -592,6 +592,38 @@ def test_confidence_scores_adds_vdw_penalized_ranking_when_inputs_are_given() ->
     )
 
 
+@pytest.mark.parametrize("batch_shape", [(), (2,)])
+def test_confidence_pair_initialization_preserves_native_direction(
+    monkeypatch: pytest.MonkeyPatch, batch_shape: tuple[int, ...]
+) -> None:
+    from foldjax.models.protenix.models.heads import confidence as module
+
+    params = _empty_confidence_params(c_s_inputs=1, c_s=2, c_z=2)._replace(
+        linear_s1=LinearParams(weight=jnp.asarray([[1.0], [10.0]]), bias=None),
+        linear_s2=LinearParams(weight=jnp.asarray([[2.0], [20.0]]), bias=None),
+    )
+    # Observe the pair state before final projections can hide a transposition.
+    monkeypatch.setattr(
+        module, "confidence_output_logits", lambda s, z, *args: {"pair": z}
+    )
+    inputs = jnp.broadcast_to(jnp.asarray([[1.0], [3.0]]), (*batch_shape, 2, 1))
+    output = module.confidence_head_single_sample(
+        inputs,
+        jnp.zeros((*batch_shape, 2, 2)),
+        jnp.zeros((*batch_shape, 2, 2, 2)),
+        None,
+        jnp.zeros((*batch_shape, 2, 3)),
+        jnp.asarray([0, 1]),
+        jnp.asarray([0, 0]),
+        params,
+    )
+    # Both native OpenDDE and Protenix use s1[j] + s2[i], with no weight swap.
+    expected = np.asarray([[[3.0, 30.0], [5.0, 50.0]], [[7.0, 70.0], [9.0, 90.0]]])
+    np.testing.assert_array_equal(
+        output["pair"], np.broadcast_to(expected, (*batch_shape, 2, 2, 2))
+    )
+
+
 def test_confidence_head_stacks_sample_axis_like_protenix() -> None:
     params = _empty_confidence_params(c_s_inputs=3, c_s=2, c_z=2)
     features = {
@@ -668,9 +700,7 @@ def test_confidence_mapped_loop_preserves_leading_batch_axes(
         "atom_to_token_idx": jnp.asarray([0, 1, 1]),
         "atom_to_tokatom_idx": jnp.asarray([0, 0, 1]),
     }
-    coordinates = jnp.arange(2 * 3 * 3 * 3, dtype=jnp.float32).reshape(
-        2, 3, 3, 3
-    )
+    coordinates = jnp.arange(2 * 3 * 3 * 3, dtype=jnp.float32).reshape(2, 3, 3, 3)
     output = confidence_impl.confidence_head(
         features,
         s_inputs=jnp.zeros((2, 3), dtype=jnp.float32),
@@ -686,15 +716,9 @@ def test_confidence_mapped_loop_preserves_leading_batch_axes(
         for sample in range(3)
     ]
     expected = {
-        "plddt": jnp.stack(
-            [value["plddt"] for value in expected_per_sample], axis=-3
-        ),
-        "pae": jnp.stack(
-            [value["pae"] for value in expected_per_sample], axis=-4
-        ),
-        "pde": jnp.stack(
-            [value["pde"] for value in expected_per_sample], axis=-4
-        ),
+        "plddt": jnp.stack([value["plddt"] for value in expected_per_sample], axis=-3),
+        "pae": jnp.stack([value["pae"] for value in expected_per_sample], axis=-4),
+        "pde": jnp.stack([value["pde"] for value in expected_per_sample], axis=-4),
         "resolved": jnp.stack(
             [value["resolved"] for value in expected_per_sample], axis=-3
         ),
@@ -725,9 +749,7 @@ def test_confidence_sample_loop_is_mapped_only_for_serial_graphs(
         "atom_to_token_idx": jnp.asarray([0, 1, 1]),
         "atom_to_tokatom_idx": jnp.asarray([0, 0, 1]),
     }
-    coordinates = jnp.arange(samples * 3 * 3, dtype=jnp.float32).reshape(
-        samples, 3, 3
-    )
+    coordinates = jnp.arange(samples * 3 * 3, dtype=jnp.float32).reshape(samples, 3, 3)
 
     lowered = jax.jit(
         lambda value: confidence_head(
@@ -810,9 +832,7 @@ def test_padded_rows_cannot_invent_a_clash() -> None:
     the chunk size. This asserts the fixture is arranged so that would show.
     """
     coords, asym_id, atom_to_token_idx = _clash_case(n_atom=17, n_chain=3)
-    origin_atoms = np.flatnonzero(
-        np.all(np.asarray(coords[0]) == 0.0, axis=-1)
-    )
+    origin_atoms = np.flatnonzero(np.all(np.asarray(coords[0]) == 0.0, axis=-1))
     assert origin_atoms.size >= 1, "no atom at the origin; padding damage would hide"
     assert int(asym_id[origin_atoms[0]]) != 0
 
@@ -834,7 +854,10 @@ def test_calculate_clash_is_independent_of_the_row_chunk(row_chunk_size) -> None
         coords, asym_id, atom_to_token_idx, threshold=2.0, row_chunk_size=17
     )
     actual = calculate_clash(
-        coords, asym_id, atom_to_token_idx, threshold=2.0,
+        coords,
+        asym_id,
+        atom_to_token_idx,
+        threshold=2.0,
         row_chunk_size=row_chunk_size,
     )
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(reference))
@@ -863,7 +886,11 @@ def test_calculate_vdw_clash_is_independent_of_the_row_chunk(row_chunk_size) -> 
         coords, asym_id, atom_to_token_idx, elements, threshold=0.75, row_chunk_size=17
     )
     actual = calculate_vdw_clash(
-        coords, asym_id, atom_to_token_idx, elements, threshold=0.75,
+        coords,
+        asym_id,
+        atom_to_token_idx,
+        elements,
+        threshold=0.75,
         row_chunk_size=row_chunk_size,
     )
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(reference))

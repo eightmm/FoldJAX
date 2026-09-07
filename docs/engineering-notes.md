@@ -475,6 +475,11 @@ the default on 2026-08-28, once the same comparison had a rerun floor beside it
 and the confidence score came back unchanged rather than 0.5% down — see
 "Why OpenDDE moved" above. `--option dtype=float32` is still one flag away.
 
+Historical default decision superseded on 2026-09-06: OpenDDE now defaults to
+native FP32 again. Five-sample native fixed-tape comparisons fail the 0.05 Å
+per-entity diagnostic for BF16 on 5SAK and 1URN; the historical timing/mean-score
+evidence above does not admit BF16 under the clarified upstream-first contract.
+
 **Dead outputs cost twice.** OpenDDE returned six representation tensors that
 nothing reads; the structural pair representation alone was 1,311 MiB of a
 1,869 MiB output, and returning it kept the refiner's working buffer live to

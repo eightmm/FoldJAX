@@ -1,0 +1,927 @@
+{
+  "status": "partial diagnosis, not native equivalence",
+  "operator_5sak_gpu": {
+    "case": "protein_ligand_5sak",
+    "device": "cuda:0",
+    "arms": {
+      "before": {"exact": false, "different_elements": 7790185, "total_elements": 24444032, "max_abs": 0.0625},
+      "after": {"exact": true, "different_elements": 0, "total_elements": 24444032, "max_abs": 0.0}
+    },
+    "source_hashes": {
+      "before": "bb37f722d67036d8a50421af597e8da6d47bafb2a2221388be36ce5cc0daf321",
+      "after": "63d7a6769308cba8c0138b529b51f8ef9c38a39c55b5c7e6e5147996eb813313"
+    }
+  },
+  "upstream_commit": "b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+  "method": "n5 sample-index pairing; one global proper Kabsch then entity-instance RMSD without refitting; no crystal coordinates",
+  "entities": {
+    "0": "protein",
+    "1": "ligand"
+  },
+  "operator_control": {
+    "case": "rna_ligand_3gca",
+    "device": "cpu:0",
+    "arms": {
+      "before": {
+        "exact": false,
+        "different_elements": 71262,
+        "total_elements": 270848,
+        "max_abs": 0.0625
+      },
+      "after": {
+        "exact": true,
+        "different_elements": 0,
+        "total_elements": 270848,
+        "max_abs": 0.0
+      }
+    },
+    "source_hashes": {
+      "before": "bb37f722d67036d8a50421af597e8da6d47bafb2a2221388be36ce5cc0daf321",
+      "after": "63d7a6769308cba8c0138b529b51f8ef9c38a39c55b5c7e6e5147996eb813313"
+    }
+  },
+  "cells": {
+    "own_trunk_before": {
+      "provenance": {
+        "source_sha256": "f4c3d560f119e3ea6b2979401a77a04eaa1cbb902a141f237329208f1fbd721f",
+        "harness_sha256": "b40e8c3df46339dcfeefe55b2bfb85c6b57f9062a25d53b9c4972feab7e07a33",
+        "wrapper_sha256": "59d04c1ffa604c6232126a517f7ef98dc152580bfeaf60b05aca4ddf4cf967a9",
+        "weights_sha256": "0e71c12cab5b68778220c2db3dd2fcf0726405145227fea8d84c0844c43eace6",
+        "case": "protein_ligand_5sak",
+        "mode": "native-default",
+        "variant": "corrected",
+        "inputs": {
+          "torch/features.npz": "1646a8ea1c37ba554495c06a812789ae76b22d8016c4a8549f831c7e9c668f38",
+          "torch/tape.npz": "5803906bc5c3f66d0daaec5f6504f77ed54f63825450a5539079ffbcc2e5ce0b",
+          "torch/coordinate.npz": "08f5a03a7d3dff4563292c2bf8cabade578a13f4d48542f323b8e88a766acc26",
+          "torch/trunk.npz": "c9effa5ba76d76bf736fbc0c8f9847cbbf442c64a6d2b958e4639f3ad1bda529",
+          "upstream-reference-tape.npz": "d14df4dd4a67cc58ab3ef14b10cb70e9dd48e42eb99f9ff3dbddacc241762081"
+        },
+        "foldjax_features_sha256": "a85504770fbda991cdb909ceec3a32d7851314c1fbf637bae67285f1b7222873",
+        "trunk_source": "jax",
+        "n_samples": 5,
+        "input_audit": {
+          "missing_from_left": [],
+          "missing_from_right": [
+            "disto_target"
+          ],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {
+            "ref_pos": 2036
+          },
+          "max_absolute_error": {
+            "affinity_token_mask": 0.0,
+            "asym_id": 0.0,
+            "atom_backbone_feat": 0.0,
+            "atom_pad_mask": 0.0,
+            "atom_to_token": 0.0,
+            "bfactor": 0.0,
+            "chiral_atom_index": 0.0,
+            "connected_atom_index": 0.0,
+            "connected_chain_index": 0.0,
+            "contact_conditioning": 0.0,
+            "contact_pair_index": 0.0,
+            "contact_threshold": 0.0,
+            "contact_thresholds": 0.0,
+            "contact_union_index": 0.0,
+            "coords": 0.0,
+            "cyclic_period": 0.0,
+            "deletion_mean": 0.0,
+            "deletion_value": 0.0,
+            "disto_center": 0.0,
+            "disto_coords_ensemble": 0.0,
+            "ensemble_ref_idxs": 0.0,
+            "entity_id": 0.0,
+            "frames_idx": 0.0,
+            "method_feature": 0.0,
+            "modified": 0.0,
+            "mol_type": 0.0,
+            "msa": 0.0,
+            "msa_mask": 0.0,
+            "msa_paired": 0.0,
+            "planar_bond_index": 0.0,
+            "planar_ring_5_index": 0.0,
+            "planar_ring_6_index": 0.0,
+            "plddt": 0.0,
+            "profile": 0.0,
+            "query_to_template": 0.0,
+            "r_set_to_rep_atom": 0.0,
+            "rdkit_bounds_index": 0.0,
+            "rdkit_lower_bounds": 0.0,
+            "rdkit_upper_bounds": 0.0,
+            "ref_atom_name_chars": 0.0,
+            "ref_charge": 0.0,
+            "ref_chirality": 0.0,
+            "ref_element": 0.0,
+            "ref_pos": 4.76837158203125e-07,
+            "ref_space_uid": 0.0,
+            "res_type": 0.0,
+            "residue_index": 0.0,
+            "stereo_bond_index": 0.0,
+            "sym_id": 0.0,
+            "symmetric_chain_index": 0.0,
+            "template_ca": 0.0,
+            "template_cb": 0.0,
+            "template_frame_rot": 0.0,
+            "template_frame_t": 0.0,
+            "template_mask": 0.0,
+            "template_mask_cb": 0.0,
+            "template_mask_frame": 0.0,
+            "template_restype": 0.0,
+            "token_bonds": 0.0,
+            "token_disto_mask": 0.0,
+            "token_index": 0.0,
+            "token_pad_mask": 0.0,
+            "token_resolved_mask": 0.0,
+            "token_to_center_atom": 0.0,
+            "token_to_rep_atom": 0.0,
+            "type_bonds": 0.0,
+            "visibility_ids": 0.0
+          },
+          "equal": false
+        },
+        "foldjax_triangle_multiplication": "cueq",
+        "foldjax_triangle_attention": "xla",
+        "deviations": [
+          "five samples",
+          "coordinate-only replay",
+          "FoldJAX triangle attention XLA; native fused kernels in native-default",
+          "remaining trunk autocast differences"
+        ],
+        "elapsed_seconds": 140.13361191001604,
+        "legacy_diagnostic_exit": 1
+      },
+      "entity_parity": {
+        "global_rmsd": [
+          1.683298787464608,
+          5.382295393638865,
+          7.733888400814991,
+          5.064164908718763,
+          1.8631216538968582
+        ],
+        "global_max_rmsd": 7.733888400814991,
+        "entity_rmsd": {
+          "0": [
+            1.68822915344039,
+            5.397770731936991,
+            7.7557330493815595,
+            5.079022671386382,
+            1.8684753373575735
+          ],
+          "1": [
+            0.11056645502566693,
+            0.8094226958922145,
+            1.5443163135088107,
+            0.26031942737534824,
+            0.28380897990744053
+          ]
+        },
+        "entity_max_rmsd": {
+          "0": 7.7557330493815595,
+          "1": 1.5443163135088107
+        },
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "metrics": {
+        "tokens": 437,
+        "atoms": 3104,
+        "resolved_atoms": 3073,
+        "msa_depth": 4436,
+        "num_recycles": 3,
+        "num_steps": 200,
+        "samples": 5,
+        "upstream_precision": "bf16-mixed",
+        "upstream_kernels": true,
+        "upstream_subsample_msa": false,
+        "jax_subsample_msa": false,
+        "jax_subsample_depth": null,
+        "msa_rows_injected": false,
+        "trunk_source": "jax",
+        "triangle_backend": "xla",
+        "triangle_multiplication_backend": "cueq",
+        "jax_default_matmul_precision": "highest",
+        "attention_backend": "xla",
+        "trunk_atom_attention_backend": null,
+        "schedule_max_abs": 0.0,
+        "trunk_seconds": 65.22375979597564,
+        "sample_seconds": 70.35287854599301,
+        "all_atom_rmsd_angstrom": 9.493189288569038,
+        "all_atom_rmsd_angstrom_per_sample": [
+          2.0088773045558574,
+          9.493189288569038,
+          7.911631025551882,
+          5.286379100080703,
+          2.016695156477408
+        ],
+        "all_atom_kabsch_rmsd_angstrom": 7.733888400814991,
+        "all_atom_kabsch_rmsd_angstrom_per_sample": [
+          1.683298787464608,
+          5.382295393638865,
+          7.733888400814991,
+          5.064164908718763,
+          1.8631216538968582
+        ],
+        "coordinate_max_abs_error_angstrom": 44.7879695892334,
+        "padded_all_atom_rmsd_angstrom": 9.445690253197412,
+        "padded_all_atom_rmsd_angstrom_per_sample": [
+          1.9988433346037835,
+          9.445690253197412,
+          7.872089832585838,
+          5.260045283392377,
+          2.006609054072479
+        ],
+        "s_inputs": {
+          "correlation": 0.9999918776041168,
+          "rmse": 0.0009696028684702561,
+          "max_abs": 0.05146598815917969
+        },
+        "s_trunk": {
+          "correlation": 0.9999871527732904,
+          "rmse": 0.3069690196876355,
+          "max_abs": 5.8228759765625
+        },
+        "z_trunk": {
+          "correlation": 0.9997914006397353,
+          "rmse": 0.5145861141511722,
+          "max_abs": 33.26904296875
+        }
+      }
+    },
+    "native_trunk": {
+      "provenance": {
+        "source_sha256": "f4c3d560f119e3ea6b2979401a77a04eaa1cbb902a141f237329208f1fbd721f",
+        "harness_sha256": "b40e8c3df46339dcfeefe55b2bfb85c6b57f9062a25d53b9c4972feab7e07a33",
+        "wrapper_sha256": "59d04c1ffa604c6232126a517f7ef98dc152580bfeaf60b05aca4ddf4cf967a9",
+        "weights_sha256": "0e71c12cab5b68778220c2db3dd2fcf0726405145227fea8d84c0844c43eace6",
+        "case": "protein_ligand_5sak",
+        "mode": "native-default",
+        "variant": "corrected",
+        "inputs": {
+          "torch/features.npz": "1646a8ea1c37ba554495c06a812789ae76b22d8016c4a8549f831c7e9c668f38",
+          "torch/tape.npz": "5803906bc5c3f66d0daaec5f6504f77ed54f63825450a5539079ffbcc2e5ce0b",
+          "torch/coordinate.npz": "08f5a03a7d3dff4563292c2bf8cabade578a13f4d48542f323b8e88a766acc26",
+          "torch/trunk.npz": "c9effa5ba76d76bf736fbc0c8f9847cbbf442c64a6d2b958e4639f3ad1bda529",
+          "upstream-reference-tape.npz": "d14df4dd4a67cc58ab3ef14b10cb70e9dd48e42eb99f9ff3dbddacc241762081"
+        },
+        "foldjax_features_sha256": "a85504770fbda991cdb909ceec3a32d7851314c1fbf637bae67285f1b7222873",
+        "trunk_source": "upstream",
+        "n_samples": 5,
+        "input_audit": {
+          "missing_from_left": [],
+          "missing_from_right": [
+            "disto_target"
+          ],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {
+            "ref_pos": 2036
+          },
+          "max_absolute_error": {
+            "affinity_token_mask": 0.0,
+            "asym_id": 0.0,
+            "atom_backbone_feat": 0.0,
+            "atom_pad_mask": 0.0,
+            "atom_to_token": 0.0,
+            "bfactor": 0.0,
+            "chiral_atom_index": 0.0,
+            "connected_atom_index": 0.0,
+            "connected_chain_index": 0.0,
+            "contact_conditioning": 0.0,
+            "contact_pair_index": 0.0,
+            "contact_threshold": 0.0,
+            "contact_thresholds": 0.0,
+            "contact_union_index": 0.0,
+            "coords": 0.0,
+            "cyclic_period": 0.0,
+            "deletion_mean": 0.0,
+            "deletion_value": 0.0,
+            "disto_center": 0.0,
+            "disto_coords_ensemble": 0.0,
+            "ensemble_ref_idxs": 0.0,
+            "entity_id": 0.0,
+            "frames_idx": 0.0,
+            "method_feature": 0.0,
+            "modified": 0.0,
+            "mol_type": 0.0,
+            "msa": 0.0,
+            "msa_mask": 0.0,
+            "msa_paired": 0.0,
+            "planar_bond_index": 0.0,
+            "planar_ring_5_index": 0.0,
+            "planar_ring_6_index": 0.0,
+            "plddt": 0.0,
+            "profile": 0.0,
+            "query_to_template": 0.0,
+            "r_set_to_rep_atom": 0.0,
+            "rdkit_bounds_index": 0.0,
+            "rdkit_lower_bounds": 0.0,
+            "rdkit_upper_bounds": 0.0,
+            "ref_atom_name_chars": 0.0,
+            "ref_charge": 0.0,
+            "ref_chirality": 0.0,
+            "ref_element": 0.0,
+            "ref_pos": 4.76837158203125e-07,
+            "ref_space_uid": 0.0,
+            "res_type": 0.0,
+            "residue_index": 0.0,
+            "stereo_bond_index": 0.0,
+            "sym_id": 0.0,
+            "symmetric_chain_index": 0.0,
+            "template_ca": 0.0,
+            "template_cb": 0.0,
+            "template_frame_rot": 0.0,
+            "template_frame_t": 0.0,
+            "template_mask": 0.0,
+            "template_mask_cb": 0.0,
+            "template_mask_frame": 0.0,
+            "template_restype": 0.0,
+            "token_bonds": 0.0,
+            "token_disto_mask": 0.0,
+            "token_index": 0.0,
+            "token_pad_mask": 0.0,
+            "token_resolved_mask": 0.0,
+            "token_to_center_atom": 0.0,
+            "token_to_rep_atom": 0.0,
+            "type_bonds": 0.0,
+            "visibility_ids": 0.0
+          },
+          "equal": false
+        },
+        "foldjax_triangle_multiplication": "cueq",
+        "foldjax_triangle_attention": "xla",
+        "deviations": [
+          "five samples",
+          "coordinate-only replay",
+          "FoldJAX triangle attention XLA; native fused kernels in native-default",
+          "remaining trunk autocast differences"
+        ],
+        "conditioning_capture_sha256": "a1a417c5a8d9c44bf8b3c7e0560cf551e92e2c434e0eddb70eef3e0a7a46e3d5",
+        "elapsed_seconds": 145.47364740798366,
+        "legacy_diagnostic_exit": 0
+      },
+      "entity_parity": {
+        "global_rmsd": [
+          0.07999656008923856,
+          0.008520204448711507,
+          0.001288685804499372,
+          0.35761084701943274,
+          0.011617353706723945
+        ],
+        "global_max_rmsd": 0.35761084701943274,
+        "entity_rmsd": {
+          "0": [
+            0.08022838426667095,
+            0.008544569568675548,
+            0.0012920989703928151,
+            0.3586552644472309,
+            0.01164782815724651
+          ],
+          "1": [
+            0.009761388236589896,
+            0.0014233357015499015,
+            0.00040704794773054054,
+            0.030324585276695935,
+            0.003825040144768466
+          ]
+        },
+        "entity_max_rmsd": {
+          "0": 0.3586552644472309,
+          "1": 0.030324585276695935
+        },
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "metrics": {
+        "tokens": 437,
+        "atoms": 3104,
+        "resolved_atoms": 3073,
+        "msa_depth": 4436,
+        "num_recycles": 3,
+        "num_steps": 200,
+        "samples": 5,
+        "upstream_precision": "bf16-mixed",
+        "upstream_kernels": true,
+        "upstream_subsample_msa": false,
+        "jax_subsample_msa": false,
+        "jax_subsample_depth": null,
+        "msa_rows_injected": false,
+        "trunk_source": "upstream",
+        "triangle_backend": "xla",
+        "triangle_multiplication_backend": "cueq",
+        "jax_default_matmul_precision": "highest",
+        "attention_backend": "xla",
+        "trunk_atom_attention_backend": null,
+        "schedule_max_abs": 0.0,
+        "trunk_seconds": 68.23408677001134,
+        "sample_seconds": 71.86166324999067,
+        "all_atom_rmsd_angstrom": 0.3602819816662865,
+        "all_atom_rmsd_angstrom_per_sample": [
+          0.08514582147909602,
+          0.016407521377726875,
+          0.007960159523589439,
+          0.3602819816662865,
+          0.013565743163306282
+        ],
+        "all_atom_kabsch_rmsd_angstrom": 0.35761084701943274,
+        "all_atom_kabsch_rmsd_angstrom_per_sample": [
+          0.07999656008923856,
+          0.008520204448711507,
+          0.001288685804499372,
+          0.35761084701943274,
+          0.011617353706723945
+        ],
+        "coordinate_max_abs_error_angstrom": 3.352313995361328,
+        "padded_all_atom_rmsd_angstrom": 0.3584795417783089,
+        "padded_all_atom_rmsd_angstrom_per_sample": [
+          0.08472199252721019,
+          0.01632573992967202,
+          0.007920364314668653,
+          0.3584795417783089,
+          0.013498153156368342
+        ],
+        "s_inputs": {
+          "correlation": 0.9999918989252262,
+          "rmse": 0.0009682462385938494,
+          "max_abs": 0.05146598815917969
+        },
+        "s_trunk": {
+          "correlation": 0.9999860933139348,
+          "rmse": 0.31824169940756103,
+          "max_abs": 4.1246337890625
+        },
+        "z_trunk": {
+          "correlation": 0.9997742872423647,
+          "rmse": 0.5360775798849854,
+          "max_abs": 33.26904296875
+        }
+      }
+    },
+    "native_trunk_and_conditioning": {
+      "provenance": {
+        "source_sha256": "f4c3d560f119e3ea6b2979401a77a04eaa1cbb902a141f237329208f1fbd721f",
+        "harness_sha256": "b40e8c3df46339dcfeefe55b2bfb85c6b57f9062a25d53b9c4972feab7e07a33",
+        "wrapper_sha256": "bd1a94b8bbf8a26ae54dfe821f39b70b4d101dac69bdf6b59e3139ca071e7496",
+        "weights_sha256": "0e71c12cab5b68778220c2db3dd2fcf0726405145227fea8d84c0844c43eace6",
+        "case": "protein_ligand_5sak",
+        "mode": "native-default",
+        "variant": "corrected",
+        "inputs": {
+          "torch/features.npz": "1646a8ea1c37ba554495c06a812789ae76b22d8016c4a8549f831c7e9c668f38",
+          "torch/tape.npz": "5803906bc5c3f66d0daaec5f6504f77ed54f63825450a5539079ffbcc2e5ce0b",
+          "torch/coordinate.npz": "08f5a03a7d3dff4563292c2bf8cabade578a13f4d48542f323b8e88a766acc26",
+          "torch/trunk.npz": "c9effa5ba76d76bf736fbc0c8f9847cbbf442c64a6d2b958e4639f3ad1bda529",
+          "upstream-reference-tape.npz": "d14df4dd4a67cc58ab3ef14b10cb70e9dd48e42eb99f9ff3dbddacc241762081"
+        },
+        "foldjax_features_sha256": "a85504770fbda991cdb909ceec3a32d7851314c1fbf637bae67285f1b7222873",
+        "trunk_source": "conditioning",
+        "n_samples": 5,
+        "input_audit": {
+          "missing_from_left": [],
+          "missing_from_right": [
+            "disto_target"
+          ],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {
+            "ref_pos": 2036
+          },
+          "max_absolute_error": {
+            "affinity_token_mask": 0.0,
+            "asym_id": 0.0,
+            "atom_backbone_feat": 0.0,
+            "atom_pad_mask": 0.0,
+            "atom_to_token": 0.0,
+            "bfactor": 0.0,
+            "chiral_atom_index": 0.0,
+            "connected_atom_index": 0.0,
+            "connected_chain_index": 0.0,
+            "contact_conditioning": 0.0,
+            "contact_pair_index": 0.0,
+            "contact_threshold": 0.0,
+            "contact_thresholds": 0.0,
+            "contact_union_index": 0.0,
+            "coords": 0.0,
+            "cyclic_period": 0.0,
+            "deletion_mean": 0.0,
+            "deletion_value": 0.0,
+            "disto_center": 0.0,
+            "disto_coords_ensemble": 0.0,
+            "ensemble_ref_idxs": 0.0,
+            "entity_id": 0.0,
+            "frames_idx": 0.0,
+            "method_feature": 0.0,
+            "modified": 0.0,
+            "mol_type": 0.0,
+            "msa": 0.0,
+            "msa_mask": 0.0,
+            "msa_paired": 0.0,
+            "planar_bond_index": 0.0,
+            "planar_ring_5_index": 0.0,
+            "planar_ring_6_index": 0.0,
+            "plddt": 0.0,
+            "profile": 0.0,
+            "query_to_template": 0.0,
+            "r_set_to_rep_atom": 0.0,
+            "rdkit_bounds_index": 0.0,
+            "rdkit_lower_bounds": 0.0,
+            "rdkit_upper_bounds": 0.0,
+            "ref_atom_name_chars": 0.0,
+            "ref_charge": 0.0,
+            "ref_chirality": 0.0,
+            "ref_element": 0.0,
+            "ref_pos": 4.76837158203125e-07,
+            "ref_space_uid": 0.0,
+            "res_type": 0.0,
+            "residue_index": 0.0,
+            "stereo_bond_index": 0.0,
+            "sym_id": 0.0,
+            "symmetric_chain_index": 0.0,
+            "template_ca": 0.0,
+            "template_cb": 0.0,
+            "template_frame_rot": 0.0,
+            "template_frame_t": 0.0,
+            "template_mask": 0.0,
+            "template_mask_cb": 0.0,
+            "template_mask_frame": 0.0,
+            "template_restype": 0.0,
+            "token_bonds": 0.0,
+            "token_disto_mask": 0.0,
+            "token_index": 0.0,
+            "token_pad_mask": 0.0,
+            "token_resolved_mask": 0.0,
+            "token_to_center_atom": 0.0,
+            "token_to_rep_atom": 0.0,
+            "type_bonds": 0.0,
+            "visibility_ids": 0.0
+          },
+          "equal": false
+        },
+        "foldjax_triangle_multiplication": "cueq",
+        "foldjax_triangle_attention": "xla",
+        "deviations": [
+          "five samples",
+          "coordinate-only replay",
+          "FoldJAX triangle attention XLA; native fused kernels in native-default",
+          "remaining trunk autocast differences"
+        ],
+        "conditioning_capture_sha256": "a1a417c5a8d9c44bf8b3c7e0560cf551e92e2c434e0eddb70eef3e0a7a46e3d5",
+        "elapsed_seconds": 138.49880304100225,
+        "legacy_diagnostic_exit": 0
+      },
+      "entity_parity": {
+        "global_rmsd": [
+          0.0017150452964925077,
+          0.00010499232309949232,
+          0.0001346245392831425,
+          0.0010834716283396385,
+          0.0011223700873779798
+        ],
+        "global_max_rmsd": 0.0017150452964925077,
+        "entity_rmsd": {
+          "0": [
+            0.001719977336393727,
+            0.00010526737415853801,
+            0.00013496760134002557,
+            0.00108657747787437,
+            0.0011256390370354597
+          ],
+          "1": [
+            0.00025690992840507785,
+            3.475610000678713e-05,
+            4.9261501566751194e-05,
+            0.00017323142813517822,
+            0.00011175431555098949
+          ]
+        },
+        "entity_max_rmsd": {
+          "0": 0.001719977336393727,
+          "1": 0.00025690992840507785
+        },
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "metrics": {
+        "tokens": 437,
+        "atoms": 3104,
+        "resolved_atoms": 3073,
+        "msa_depth": 4436,
+        "num_recycles": 3,
+        "num_steps": 200,
+        "samples": 5,
+        "upstream_precision": "bf16-mixed",
+        "upstream_kernels": true,
+        "upstream_subsample_msa": false,
+        "jax_subsample_msa": false,
+        "jax_subsample_depth": null,
+        "msa_rows_injected": false,
+        "trunk_source": "upstream",
+        "triangle_backend": "xla",
+        "triangle_multiplication_backend": "cueq",
+        "jax_default_matmul_precision": "highest",
+        "attention_backend": "xla",
+        "trunk_atom_attention_backend": null,
+        "schedule_max_abs": 0.0,
+        "trunk_seconds": 64.71273592900252,
+        "sample_seconds": 69.1356478370144,
+        "all_atom_rmsd_angstrom": 0.0018726933866456711,
+        "all_atom_rmsd_angstrom_per_sample": [
+          0.0018726933866456711,
+          0.0002094660626263544,
+          0.0001700470960333021,
+          0.0010939276789562302,
+          0.001151528662173732
+        ],
+        "all_atom_kabsch_rmsd_angstrom": 0.0017150452964925077,
+        "all_atom_kabsch_rmsd_angstrom_per_sample": [
+          0.0017150452964925077,
+          0.00010499232309949232,
+          0.0001346245392831425,
+          0.0010834716283396385,
+          0.0011223700873779798
+        ],
+        "coordinate_max_abs_error_angstrom": 0.033031463623046875,
+        "padded_all_atom_rmsd_angstrom": 0.0018634765951819608,
+        "padded_all_atom_rmsd_angstrom_per_sample": [
+          0.0018634765951819608,
+          0.00020846739408701868,
+          0.00016986064753661613,
+          0.0010884620819726033,
+          0.0011457806336734717
+        ],
+        "s_inputs": {
+          "correlation": 0.9999918943002388,
+          "rmse": 0.0009685805511468644,
+          "max_abs": 0.05146598815917969
+        },
+        "s_trunk": {
+          "correlation": 0.9999867025612285,
+          "rmse": 0.3112728969180148,
+          "max_abs": 5.1937255859375
+        },
+        "z_trunk": {
+          "correlation": 0.999791759635917,
+          "rmse": 0.5141260200746464,
+          "max_abs": 33.617462158203125
+        }
+      }
+    },
+    "own_trunk_rounding_repair": {
+      "provenance": {
+        "source_sha256": "2a6825a0b6c7791dbd7e985392c88c600f6198826cde381cd076115d3727c508",
+        "harness_sha256": "b40e8c3df46339dcfeefe55b2bfb85c6b57f9062a25d53b9c4972feab7e07a33",
+        "wrapper_sha256": "bd1a94b8bbf8a26ae54dfe821f39b70b4d101dac69bdf6b59e3139ca071e7496",
+        "weights_sha256": "0e71c12cab5b68778220c2db3dd2fcf0726405145227fea8d84c0844c43eace6",
+        "case": "protein_ligand_5sak",
+        "mode": "native-default",
+        "variant": "corrected",
+        "inputs": {
+          "torch/features.npz": "1646a8ea1c37ba554495c06a812789ae76b22d8016c4a8549f831c7e9c668f38",
+          "torch/tape.npz": "5803906bc5c3f66d0daaec5f6504f77ed54f63825450a5539079ffbcc2e5ce0b",
+          "torch/coordinate.npz": "08f5a03a7d3dff4563292c2bf8cabade578a13f4d48542f323b8e88a766acc26",
+          "torch/trunk.npz": "c9effa5ba76d76bf736fbc0c8f9847cbbf442c64a6d2b958e4639f3ad1bda529",
+          "upstream-reference-tape.npz": "d14df4dd4a67cc58ab3ef14b10cb70e9dd48e42eb99f9ff3dbddacc241762081"
+        },
+        "foldjax_features_sha256": "a85504770fbda991cdb909ceec3a32d7851314c1fbf637bae67285f1b7222873",
+        "trunk_source": "jax",
+        "n_samples": 5,
+        "input_audit": {
+          "missing_from_left": [],
+          "missing_from_right": [
+            "disto_target"
+          ],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {
+            "ref_pos": 2036
+          },
+          "max_absolute_error": {
+            "affinity_token_mask": 0.0,
+            "asym_id": 0.0,
+            "atom_backbone_feat": 0.0,
+            "atom_pad_mask": 0.0,
+            "atom_to_token": 0.0,
+            "bfactor": 0.0,
+            "chiral_atom_index": 0.0,
+            "connected_atom_index": 0.0,
+            "connected_chain_index": 0.0,
+            "contact_conditioning": 0.0,
+            "contact_pair_index": 0.0,
+            "contact_threshold": 0.0,
+            "contact_thresholds": 0.0,
+            "contact_union_index": 0.0,
+            "coords": 0.0,
+            "cyclic_period": 0.0,
+            "deletion_mean": 0.0,
+            "deletion_value": 0.0,
+            "disto_center": 0.0,
+            "disto_coords_ensemble": 0.0,
+            "ensemble_ref_idxs": 0.0,
+            "entity_id": 0.0,
+            "frames_idx": 0.0,
+            "method_feature": 0.0,
+            "modified": 0.0,
+            "mol_type": 0.0,
+            "msa": 0.0,
+            "msa_mask": 0.0,
+            "msa_paired": 0.0,
+            "planar_bond_index": 0.0,
+            "planar_ring_5_index": 0.0,
+            "planar_ring_6_index": 0.0,
+            "plddt": 0.0,
+            "profile": 0.0,
+            "query_to_template": 0.0,
+            "r_set_to_rep_atom": 0.0,
+            "rdkit_bounds_index": 0.0,
+            "rdkit_lower_bounds": 0.0,
+            "rdkit_upper_bounds": 0.0,
+            "ref_atom_name_chars": 0.0,
+            "ref_charge": 0.0,
+            "ref_chirality": 0.0,
+            "ref_element": 0.0,
+            "ref_pos": 4.76837158203125e-07,
+            "ref_space_uid": 0.0,
+            "res_type": 0.0,
+            "residue_index": 0.0,
+            "stereo_bond_index": 0.0,
+            "sym_id": 0.0,
+            "symmetric_chain_index": 0.0,
+            "template_ca": 0.0,
+            "template_cb": 0.0,
+            "template_frame_rot": 0.0,
+            "template_frame_t": 0.0,
+            "template_mask": 0.0,
+            "template_mask_cb": 0.0,
+            "template_mask_frame": 0.0,
+            "template_restype": 0.0,
+            "token_bonds": 0.0,
+            "token_disto_mask": 0.0,
+            "token_index": 0.0,
+            "token_pad_mask": 0.0,
+            "token_resolved_mask": 0.0,
+            "token_to_center_atom": 0.0,
+            "token_to_rep_atom": 0.0,
+            "type_bonds": 0.0,
+            "visibility_ids": 0.0
+          },
+          "equal": false
+        },
+        "foldjax_triangle_multiplication": "cueq",
+        "foldjax_triangle_attention": "xla",
+        "deviations": [
+          "five samples",
+          "coordinate-only replay",
+          "FoldJAX triangle attention XLA; native fused kernels in native-default",
+          "remaining trunk autocast differences"
+        ],
+        "elapsed_seconds": 142.85950916798902,
+        "legacy_diagnostic_exit": 1
+      },
+      "entity_parity": {
+        "global_rmsd": [
+          15.995821880626558,
+          5.550922166634676,
+          3.6672631293947866,
+          5.1552884852019725,
+          0.8665360714335456
+        ],
+        "global_max_rmsd": 15.995821880626558,
+        "entity_rmsd": {
+          "0": [
+            16.038989555950675,
+            5.566875087237721,
+            3.6387184721955297,
+            5.170428249801464,
+            0.868948004170097
+          ],
+          "1": [
+            4.600307606360892,
+            0.8429570984656114,
+            6.98883646001102,
+            0.21096812251920993,
+            0.20112050996560826
+          ]
+        },
+        "entity_max_rmsd": {
+          "0": 16.038989555950675,
+          "1": 6.98883646001102
+        },
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "metrics": {
+        "tokens": 437,
+        "atoms": 3104,
+        "resolved_atoms": 3073,
+        "msa_depth": 4436,
+        "num_recycles": 3,
+        "num_steps": 200,
+        "samples": 5,
+        "upstream_precision": "bf16-mixed",
+        "upstream_kernels": true,
+        "upstream_subsample_msa": false,
+        "jax_subsample_msa": false,
+        "jax_subsample_depth": null,
+        "msa_rows_injected": false,
+        "trunk_source": "jax",
+        "triangle_backend": "xla",
+        "triangle_multiplication_backend": "cueq",
+        "jax_default_matmul_precision": "highest",
+        "attention_backend": "xla",
+        "trunk_atom_attention_backend": null,
+        "schedule_max_abs": 0.0,
+        "trunk_seconds": 68.88940886798082,
+        "sample_seconds": 68.9945422669989,
+        "all_atom_rmsd_angstrom": 18.38453508960518,
+        "all_atom_rmsd_angstrom_per_sample": [
+          18.38453508960518,
+          9.761008377210654,
+          4.093125992541331,
+          5.51474994558069,
+          1.2011271639170036
+        ],
+        "all_atom_kabsch_rmsd_angstrom": 15.995821880626558,
+        "all_atom_kabsch_rmsd_angstrom_per_sample": [
+          15.995821880626558,
+          5.550922166634676,
+          3.6672631293947866,
+          5.1552884852019725,
+          0.8665360714335456
+        ],
+        "coordinate_max_abs_error_angstrom": 46.050209045410156,
+        "padded_all_atom_rmsd_angstrom": 18.292667682602566,
+        "padded_all_atom_rmsd_angstrom_per_sample": [
+          18.292667682602566,
+          9.71218516977987,
+          4.074050724909678,
+          5.487268963783567,
+          1.1951313726803305
+        ],
+        "s_inputs": {
+          "correlation": 0.9999919214379949,
+          "rmse": 0.0009668839851850084,
+          "max_abs": 0.05146598815917969
+        },
+        "s_trunk": {
+          "correlation": 0.9999873295687185,
+          "rmse": 0.304054958685008,
+          "max_abs": 3.154296875
+        },
+        "z_trunk": {
+          "correlation": 0.9997919187315392,
+          "rmse": 0.5144324976175666,
+          "max_abs": 29.26904296875
+        }
+      }
+    }
+  }
+}

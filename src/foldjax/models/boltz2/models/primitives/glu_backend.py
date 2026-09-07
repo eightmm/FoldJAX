@@ -2,8 +2,8 @@
 
 Mirrors AF3's use of ``tokamax.gated_linear_unit`` for the Transition MLP
 (swish GLU) and TriangleMultiplication projection+gate (sigmoid GLU). The
-default ``"xla"`` path is the plain split-matmul-then-gate our modules have
-always used (bit-exact, CPU-friendly). The opt-in ``"tokamax"`` path runs the
+default ``"xla"`` path uses split matmuls, preserving native single-operator
+rounding for low-precision activations. The opt-in ``"tokamax"`` path runs the
 fused Triton GLU kernel; it only pays off in low precision (fp16/bf16) on a
 supported GPU and is verified numerically against the xla path on GPU.
 
@@ -33,8 +33,15 @@ def gated_linear_unit(
     ``w_gate`` / ``w_value`` are ``[K, N]`` kernels. ``backend="xla"`` keeps the
     plain elementwise gate; ``backend="tokamax"`` fuses via the Triton kernel.
     """
+    if w_gate.dtype in (jnp.bfloat16, jnp.float16):
+        x = x.astype(w_gate.dtype)
     if backend == "xla":
-        return activation(x @ w_gate) * (x @ w_value)
+        gate = x @ w_gate
+        if gate.dtype in (jnp.bfloat16, jnp.float16):
+            activated = activation(gate.astype(jnp.float32)).astype(gate.dtype)
+        else:
+            activated = activation(gate)
+        return activated * (x @ w_value)
     if backend == "tokamax":
         import tokamax
         from absl import flags

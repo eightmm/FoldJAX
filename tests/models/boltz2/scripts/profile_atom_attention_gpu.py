@@ -27,8 +27,7 @@ from foldjax.models.boltz2.models.trunk_blocks.input_embedder import (
     input_embedder_forward,
 )
 from foldjax.models.boltz2.models.trunk_blocks.trunk import (
-    _cast_float_feats,
-    _cast_params,
+    _cast_trunk_params,
 )
 
 
@@ -100,13 +99,13 @@ def _primitive_inputs(windows: int):
 def _primitive(mode: str, q, k, v, bias, mask):
     if mode == "xla":
         return _no_proj_qblock(
-            q,
-            k,
-            v,
-            bias,
+            q.astype(jnp.float32),
+            k.astype(jnp.float32),
+            v.astype(jnp.float32),
+            bias.astype(jnp.float32),
             mask[:, None, None, :],
             jnp.sqrt(jnp.asarray(q.shape[-1], dtype=jnp.float32)),
-        )
+        ).astype(v.dtype)
     return tokamax_dot_product_attention(
         q,
         k,
@@ -191,8 +190,8 @@ def main() -> None:
 
     params = load_params(args.weights)
     features = load_features_npz(args.features)
-    trunk_params = _cast_params(params["trunk"], jnp.bfloat16)
-    trunk_features = _cast_float_feats(features, jnp.bfloat16)
+    trunk_params = _cast_trunk_params(params["trunk"], jnp.bfloat16)
+    trunk_features = features
     input_runner = jax.jit(
         lambda p, f: input_embedder_forward(
             p, f, attention_backend=args.mode

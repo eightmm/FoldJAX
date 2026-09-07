@@ -1,0 +1,289 @@
+{
+  "status": "measured",
+  "case": "rna_ligand_3gca",
+  "samples": 5,
+  "scope": "BF16 LayerNorm-only correction; actual input MSA and sampler tape; global fit entity measurement; no complete AMP or confidence claim",
+  "before": {
+    "status": "measured",
+    "legacy_exit_diagnostic_only": 1,
+    "native_references": {
+      "fp32": {
+        "entity_parity": {
+          "global_rmsd": [
+            0.4732404946442726,
+            0.4166372073271121,
+            0.4649101618240672,
+            0.5486027362977817,
+            0.4844948479559298
+          ],
+          "global_max_rmsd": 0.5486027362977817,
+          "entity_rmsd": {
+            "R": [
+              0.47608947298029874,
+              0.41832438668482347,
+              0.46782436279274253,
+              0.5520469579351136,
+              0.4878715871544709
+            ],
+            "L": [
+              0.27762360710750766,
+              0.31157934622930383,
+              0.2617701292877194,
+              0.30836818355818074,
+              0.2375286676070143
+            ]
+          },
+          "entity_max_rmsd": {
+            "R": 0.5520469579351136,
+            "L": 0.31157934622930383
+          },
+          "atom_counts": [
+            719,
+            719,
+            719,
+            719,
+            719
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "R": 0.5520469579351136,
+            "L": 0.31157934622930383
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        }
+      },
+      "bf16": {
+        "entity_parity": {
+          "global_rmsd": [
+            0.4738767071171059,
+            0.416275424095199,
+            0.46630677001685983,
+            0.553336855270532,
+            0.4856926548894296
+          ],
+          "global_max_rmsd": 0.553336855270532,
+          "entity_rmsd": {
+            "R": [
+              0.4767004491465523,
+              0.41782151553212316,
+              0.46921495958631243,
+              0.556906332069653,
+              0.4890270518450028
+            ],
+            "L": [
+              0.28069068114403994,
+              0.3213262584989387,
+              0.2639856969450535,
+              0.3015973815692099,
+              0.24370431402533368
+            ]
+          },
+          "entity_max_rmsd": {
+            "R": 0.556906332069653,
+            "L": 0.3213262584989387
+          },
+          "atom_counts": [
+            719,
+            719,
+            719,
+            719,
+            719
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "R": 0.556906332069653,
+            "L": 0.3213262584989387
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        }
+      }
+    }
+  },
+  "after": {
+    "status": "measured",
+    "legacy_exit_diagnostic_only": 1,
+    "native_references": {
+      "fp32": {
+        "entity_parity": {
+          "global_rmsd": [
+            0.47172957044391145,
+            0.4145010175423488,
+            0.4634328780269599,
+            0.548575793081106,
+            0.4870750914850402
+          ],
+          "global_max_rmsd": 0.548575793081106,
+          "entity_rmsd": {
+            "R": [
+              0.4745756378134328,
+              0.4162289156635094,
+              0.46633342854434146,
+              0.5520386092082262,
+              0.49049826401384095
+            ],
+            "L": [
+              0.27616061193220687,
+              0.3063607768098439,
+              0.26136410172616514,
+              0.3065233265819978,
+              0.2355987281787123
+            ]
+          },
+          "entity_max_rmsd": {
+            "R": 0.5520386092082262,
+            "L": 0.3065233265819978
+          },
+          "atom_counts": [
+            719,
+            719,
+            719,
+            719,
+            719
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "R": 0.5520386092082262,
+            "L": 0.3065233265819978
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        }
+      },
+      "bf16": {
+        "entity_parity": {
+          "global_rmsd": [
+            0.4723311782800851,
+            0.4141337351067696,
+            0.4648196747702407,
+            0.5532115859958724,
+            0.48819456206459977
+          ],
+          "global_max_rmsd": 0.5532115859958724,
+          "entity_rmsd": {
+            "R": [
+              0.4751498617438543,
+              0.4157222972720469,
+              0.46771318473869317,
+              0.5567985899284396,
+              0.49157146823933207
+            ],
+            "L": [
+              0.27939210839264,
+              0.3160919489954212,
+              0.26366504749504527,
+              0.2996847694960182,
+              0.24218318838452635
+            ]
+          },
+          "entity_max_rmsd": {
+            "R": 0.5567985899284396,
+            "L": 0.3160919489954212
+          },
+          "atom_counts": [
+            719,
+            719,
+            719,
+            719,
+            719
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "R": 0.5567985899284396,
+            "L": 0.3160919489954212
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        }
+      }
+    }
+  },
+  "provenance": {
+    "frozen_python_source_sha256": "f5ffe56e7eecaaca735f60b7ecfb743f88767db5dd3332f0eb4e32bdb878e0f3",
+    "wrapper": {
+      "sha256": "4efb93ace1d879b29987b5bb71293ec89ea8ba984326943fa870a0d79ac1254c",
+      "bytes": 4043
+    },
+    "driver": {
+      "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+      "bytes": 19286
+    },
+    "input": {
+      "sha256": "6efe33e33c008af51e58fab7df4188b5d898f93fe2999cfcc80a059c5a3498db",
+      "bytes": 428
+    },
+    "input_assets": {},
+    "weights": {
+      "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+      "bytes": 2623328201
+    },
+    "native_provenance": {
+      "sha256": "79f53a66d25202305c6f30d8b629083442f11d8e852650ad790abf2ab9e7f188",
+      "bytes": 3286
+    },
+    "native_tape": {
+      "sha256": "6bd6125abfb994d2f6f15b4f06bc39a814e605f3c644a7eea66c1aefc78b9ce1",
+      "bytes": 8077373
+    },
+    "samples": 5,
+    "steps": 200,
+    "cycles": 10,
+    "port_trunk_dtype": "bf16",
+    "jax_matmul_precision": "high",
+    "native_tf32": true,
+    "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+  },
+  "artifacts": {
+    "before": "d0cc5807dd4eaa9af412d54550d6e990b5350046cbc2b16f952eaef0f474bf5b",
+    "after": "c3229419e4589aebf9206abd9bd1416568224d1a5060beecf04f0b8598e45f76"
+  },
+  "gpu_operator_totals": {
+    "old": {
+      "unequal_elements": 951506,
+      "total_elements": 2776192,
+      "max_abs": 0.0625
+    },
+    "corrected": {
+      "unequal_elements": 77,
+      "total_elements": 2776192,
+      "max_abs": 0.00390625
+    }
+  }
+}

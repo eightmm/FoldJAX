@@ -19,6 +19,8 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
     features = _toy_features()
     init_noise = jnp.ones((1, 3, 3), dtype=jnp.float32)
     step_noise = jnp.zeros_like(init_noise)
+    rotations = jnp.asarray([[[[0, -1, 0], [1, 0, 0], [0, 0, 1]]]], jnp.float32)
+    translations = jnp.asarray([[[1.25, -0.5, 0.75]]], jnp.float32)
 
     def wrapper(*, graph_jit: bool):
         return protenix_predict_static(
@@ -35,9 +37,11 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
             n_queries=2,
             n_keys=4,
             sigma_data=4.0,
-            centre_each_step=False,
+            centre_each_step=True,
             init_noise=init_noise,
             step_noises=(step_noise,),
+            rotations=rotations,
+            translations=translations,
             graph_jit=graph_jit,
         )
 
@@ -54,6 +58,8 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
         num_samples=1,
         init_noise=init_noise,
         step_noises=(step_noise,),
+        rotations=rotations,
+        translations=translations,
         num_recycles=1,
         input_atom_heads=1,
         atom_encoder_heads=1,
@@ -62,7 +68,7 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
         n_queries=2,
         n_keys=4,
         sigma_data=4.0,
-        centre_each_step=False,
+        centre_each_step=True,
     )
 
     assert actual.keys() == expected.keys()

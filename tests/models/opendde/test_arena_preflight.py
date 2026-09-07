@@ -53,6 +53,9 @@ def test_fires_on_the_float32_wall(pool):
     assert "--trunk-dtype bf16" in message
     # The lever must carry its own caveat, not just its name.
     assert "upstream" in message
+    assert "default is native float32" in message
+    assert "not validated as structurally/confidence-equivalent" in message
+    assert "turned off" not in message
     assert str(N_ST_1531) in message
 
 

@@ -205,8 +205,16 @@ def test_full_inference_mapper_composes_open_dde_specific_modules(
 
 
 @pytest.mark.parametrize("return_representations", [True, False])
+@pytest.mark.parametrize(
+    ("num_samples", "diffusion_chunk_size", "packed_noise"),
+    [(1, None, False), (5, None, False), (5, 5, False), (5, 2, False), (5, 2, True)],
+)
 def test_static_inference_routes_residue_heads_and_structural_diffusion(
-    monkeypatch, return_representations: bool
+    monkeypatch,
+    return_representations: bool,
+    num_samples: int,
+    diffusion_chunk_size: int | None,
+    packed_noise: bool,
 ) -> None:
     """Both output contracts, including the default.
 
@@ -229,7 +237,27 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
     refined_z = structural_z + 1.0
     pair_bias = jnp.arange(9, dtype=jnp.float32).reshape(3, 3)
     pair_cache = jnp.full((3, 3, 2), 8.0)
-    coordinates = jnp.full((1, 3, 3), 9.0)
+    coordinates = jnp.arange(num_samples * 9, dtype=jnp.float32).reshape(
+        num_samples, 3, 3
+    )
+    n_steps = 7
+    tapes = {}
+    if num_samples > 1:
+        tapes = {
+            "init_noise": coordinates + 10,
+            "step_noises": jnp.arange(
+                n_steps * num_samples * 9, dtype=jnp.float32
+            ).reshape(n_steps, num_samples, 3, 3),
+            "rotations": jnp.arange(
+                n_steps * num_samples * 9, dtype=jnp.float32
+            ).reshape(n_steps, num_samples, 3, 3),
+            "translations": jnp.arange(
+                n_steps * num_samples * 3, dtype=jnp.float32
+            ).reshape(n_steps, num_samples, 3),
+        }
+    forwarded_tapes = dict(tapes)
+    if tapes and not packed_noise:
+        forwarded_tapes["step_noises"] = tuple(tapes["step_noises"])
     structural_atom_map = jnp.asarray([0, 2, 2], dtype=jnp.int32)
     residue_pair_mask = jnp.ones((2, 2), dtype=jnp.float32)
     features = _static_validation_features()
@@ -365,12 +393,31 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
 
     monkeypatch.setattr(model_impl, "diffusion_module_forward", fake_denoiser)
 
+    sample_counts = []
+
     def fake_sampler(denoise_fn, *args, **kwargs):
+        start = sum(sample_counts)
+        count = kwargs["num_samples"]
+        stop = start + count
+        sample_counts.append(count)
+        if tapes:
+            np.testing.assert_array_equal(
+                kwargs["init_noise"], tapes["init_noise"][start:stop]
+            )
+            for name in ("step_noises", "rotations", "translations"):
+                np.testing.assert_array_equal(
+                    np.asarray(kwargs[name]), np.asarray(tapes[name])[:, start:stop]
+                )
+        else:
+            assert all(
+                kwargs[name] is None
+                for name in ("init_noise", "step_noises", "rotations", "translations")
+            )
         denoise_fn(
-            jnp.zeros((1, 3, 3), dtype=jnp.float32),
-            jnp.ones((1,), dtype=jnp.float32),
+            jnp.zeros((count, 3, 3), dtype=jnp.float32),
+            jnp.ones((count,), dtype=jnp.float32),
         )
-        return coordinates
+        return coordinates if count == num_samples else coordinates[start:stop]
 
     monkeypatch.setattr(model_impl, "sample_diffusion", fake_sampler)
 
@@ -395,7 +442,9 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
         assert s_trunk is residue_s
         assert z_trunk is residue_z
         assert pair_mask is None
-        assert x_pred_coords is coordinates
+        assert x_pred_coords.shape == (1, 3, 3)
+        if num_samples == 1:
+            assert x_pred_coords is coordinates
         return {"plddt": jnp.full((1, 3, 2), 11.0)}
 
     monkeypatch.setattr(model_impl, "confidence_head", fake_confidence)
@@ -403,11 +452,13 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
     actual = model_impl.opendde_infer_static(
         features,
         params,
-        jnp.asarray([1.0, 0.0]),
+        jnp.linspace(1.0, 0.0, n_steps + 1),
         key=None,
-        num_samples=1,
+        num_samples=num_samples,
+        diffusion_chunk_size=diffusion_chunk_size,
         pair_mask=residue_pair_mask,
         return_representations=return_representations,
+        **forwarded_tapes,
     )
 
     representations = (
@@ -428,9 +479,14 @@ def test_static_inference_routes_residue_heads_and_structural_diffusion(
     else:
         assert not [name for name in representations if name in actual]
     # Whatever the contract, everything the outputs are built from stays.
-    assert actual["coordinate"] is coordinates
+    np.testing.assert_array_equal(actual["coordinate"], coordinates)
+    if diffusion_chunk_size is not None and num_samples > diffusion_chunk_size:
+        assert sample_counts == [2, 2, 1]
+    else:
+        assert sample_counts == [num_samples]
+        assert actual["coordinate"] is coordinates
     assert actual["distogram_logits"].shape == (2, 2, 2)
-    assert actual["plddt"].shape == (1, 3, 2)
+    assert actual["plddt"].shape == (num_samples, 3, 2)
     assert "PROTENIX_TRIANGLE_BACKEND" not in os.environ
     assert "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND" not in os.environ
 

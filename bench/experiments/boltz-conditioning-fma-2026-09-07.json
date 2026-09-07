@@ -1,0 +1,990 @@
+{
+  "status": "conditioning_cause_verified_full_model_not_admitted",
+  "upstream": {
+    "version": "Boltz 2.2.1",
+    "commit": "b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+    "torch": "2.12.0+cu130"
+  },
+  "contract": {
+    "samples": 5,
+    "diffusion_steps": 200,
+    "recycles": 3,
+    "seed": 101,
+    "precision": "native BF16 AMP with FP32 islands",
+    "inputs": "captured native features and sampler tape; full MSA for native trunk",
+    "sample_matching": "original sample index",
+    "alignment": "one proper unweighted whole-system Kabsch; entity measurements without refit",
+    "structural_diagnostic_angstrom": 0.05,
+    "confidence_atol": 0.0001,
+    "confidence_rtol": 0.0001,
+    "crystal_comparison": false
+  },
+  "production_source_snapshot": "conditioning-production-source-v24",
+  "operator_evidence": {
+    "native-conditioning-operators-v16": {
+      "sha256": "407020856fccb32ffd51c6f51291db82020c2e81ea2238130038a3963fece54a",
+      "weight_leaves_exact": null,
+      "results": null
+    },
+    "conditioning-native-stats-v18": {
+      "sha256": "d29ecc1c8b1fb803b30ac34f4acef332b5796d14a164c1bca47f14153f20364d",
+      "weight_leaves_exact": null,
+      "results": null
+    },
+    "conditioning-explicit-fma-v22": {
+      "sha256": "243b9894bfebae1f82f56aaf8a4430188223aecd35e2bb19326326bd3b7636cf",
+      "weight_leaves_exact": 119,
+      "results": null
+    },
+    "conditioning-production-operators-v24": {
+      "sha256": "f1ecad4586699f099a6759bc0431683e45ec82040310443599d4153b09eecd98",
+      "weight_leaves_exact": 119,
+      "results": {
+        "atom_dec_proj_z.0.0": {
+          "bf16_operand": {
+            "max_abs": 0.015625,
+            "rmse": 0.000014631418580682493,
+            "unequal": 127,
+            "values_equal": false
+          },
+          "kind": "LayerNorm",
+          "max_abs": 9.5367431640625e-7,
+          "production_amp_norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "production_shared_norm_affine": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "rmse": 7.089984671890058e-8,
+          "unequal": 3133080,
+          "values_equal": false
+        },
+        "atom_dec_proj_z.0.1": {
+          "kind": "Linear",
+          "max_abs": 0.0078125,
+          "rmse": 0.000006197181183676874,
+          "unequal": 1,
+          "values_equal": false
+        },
+        "atom_enc_proj_z.0.0": {
+          "bf16_operand": {
+            "max_abs": 0.015625,
+            "rmse": 0.000014922154207059332,
+            "unequal": 140,
+            "values_equal": false
+          },
+          "kind": "LayerNorm",
+          "max_abs": 7.152557373046875e-7,
+          "production_amp_norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "production_shared_norm_affine": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "rmse": 5.99637213536657e-8,
+          "unequal": 3102181,
+          "values_equal": false
+        },
+        "atom_enc_proj_z.0.1": {
+          "kind": "Linear",
+          "max_abs": 0.00390625,
+          "rmse": 0.000004938786139574806,
+          "unequal": 35,
+          "values_equal": false
+        },
+        "pairwise_conditioner.dim_pairwise_init_proj.0": {
+          "bf16_operand": {
+            "max_abs": 0.0625,
+            "rmse": 0.000013573441155127998,
+            "unequal": 2372,
+            "values_equal": false
+          },
+          "kind": "LayerNorm",
+          "max_abs": 0.00000476837158203125,
+          "production_amp_norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "production_shared_norm_affine": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "rmse": 7.369285526186381e-8,
+          "unequal": 26524654,
+          "values_equal": false
+        },
+        "pairwise_conditioner.dim_pairwise_init_proj.1": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.0.fc1": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.0.fc2": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.0.fc3": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.0.norm": {
+          "bf16_operand": {
+            "max_abs": 0.0078125,
+            "rmse": 0.000006133932079572852,
+            "unequal": 872,
+            "values_equal": false
+          },
+          "kind": "LayerNorm",
+          "max_abs": 7.152557373046875e-7,
+          "production_amp_norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "production_shared_norm_affine": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "rmse": 2.7359401379446715e-8,
+          "unequal": 10973793,
+          "values_equal": false
+        },
+        "pairwise_conditioner.transitions.0.silu": {
+          "kind": "SiLU",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.1.fc1": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.1.fc2": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.1.fc3": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "pairwise_conditioner.transitions.1.norm": {
+          "bf16_operand": {
+            "max_abs": 0.0078125,
+            "rmse": 0.0000071986814806885446,
+            "unequal": 729,
+            "values_equal": false
+          },
+          "kind": "LayerNorm",
+          "max_abs": 7.152557373046875e-7,
+          "production_amp_norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "production_shared_norm_affine": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "rmse": 3.40380853472854e-8,
+          "unequal": 10489367,
+          "values_equal": false
+        },
+        "pairwise_conditioner.transitions.1.silu": {
+          "kind": "SiLU",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "token_trans_proj_z.0.0": {
+          "bf16_operand": {
+            "max_abs": 0.03125,
+            "rmse": 0.000012884392334659332,
+            "unequal": 198,
+            "values_equal": false
+          },
+          "kind": "LayerNorm",
+          "max_abs": 0.00000286102294921875,
+          "production_amp_norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "production_shared_norm_affine": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "rmse": 7.499080226027817e-8,
+          "unequal": 10107303,
+          "values_equal": false
+        },
+        "token_trans_proj_z.0.1": {
+          "kind": "Linear",
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        }
+      }
+    }
+  },
+  "counterfactuals": {
+    "conditioning-route-5sak-lazy-v15": {
+      "completion_sha256": "b6b82b6a301811b361557c2582d178621796005f92314eb3fbef54b5d893f369",
+      "artifacts": {
+        "comparison.json": "ba1168b768355c20f86d75cd7fab511ff75dae5d0d4d1f7f415fd51e644363c8",
+        "effective-options.json": "acad7ec22b0a5bbda6308501e5df6a3637f615c1aa34e7f2bbfa376d7be59848",
+        "prediction.npz": "fc5b0e5b33dc1bca62dba1669eec286cd7d0dfd6b01c12aa7f68f671f0dea4d1",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "b00a45ea2c88f3ce7182997112a0c45ce84ebe84c1ee56306de3aa8fbdd995cf"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "production_pre_fma",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": false,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.2409678189562564,
+            "entity=1|mol_type=3|asym=1": 0.015838419913843407
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.2409678189562564,
+          "entity=1|mol_type=3|asym=1": 0.015838419913843407
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.011604603470419667,
+            0.005468976245727187,
+            0.001386155286094749,
+            0.2409678189562564,
+            0.03953018691524793
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.002195043117081722,
+            0.0009897785229330352,
+            0.00044773605271482064,
+            0.015838419913843407,
+            0.003578494934375911
+          ]
+        },
+        "global_max_rmsd": 0.24026410965204426,
+        "global_rmsd": [
+          0.011571786275573235,
+          0.005453461688410249,
+          0.0013825143814764353,
+          0.24026410965204426,
+          0.0394151950039622
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-route-5sak-materialized-v15": {
+      "completion_sha256": "79dd26c1586eda317e9407487b1ccfbf497c85474c3789ef9353db8f70f405a0",
+      "artifacts": {
+        "comparison.json": "6933117c63ec412c679f8d0a919a17999c4861820b572b70fef838a5e6c3e78b",
+        "effective-options.json": "91ab92e7629ede2bf843803f3b0bb705a7b85f4594312576dd43be8f212c3c5f",
+        "prediction.npz": "fe3fe2b8cbba05fcfa9d0ef1664756e25c715dc716964e78b26b35873cce0936",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "b00a45ea2c88f3ce7182997112a0c45ce84ebe84c1ee56306de3aa8fbdd995cf"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "production_pre_fma",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": false,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.2496543543915574,
+            "entity=1|mol_type=3|asym=1": 0.01618882527184952
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.2496543543915574,
+          "entity=1|mol_type=3|asym=1": 0.01618882527184952
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.011026887438526105,
+            0.005483301951358231,
+            0.0013933740637916009,
+            0.2496543543915574,
+            0.04001465667190904
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.0020873969876635512,
+            0.0009877462943356295,
+            0.00045270305200682343,
+            0.01618882527184952,
+            0.0035904195354201814
+          ]
+        },
+        "global_max_rmsd": 0.24892519281483086,
+        "global_rmsd": [
+          0.010995705805884944,
+          0.00546774184914845,
+          0.0013897192119001129,
+          0.24892519281483086,
+          0.03989823854858816
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-route-5sak-native-v15": {
+      "completion_sha256": "fed343816ce886812ba0b2d85de8e83ad3cb2f4a26476f06d04dc6b17d718258",
+      "artifacts": {
+        "comparison.json": "b17ea823147531f57113f0c326d88fc7ff7d7e136658fdd21712fd008c6e50e2",
+        "effective-options.json": "49fc093e87e498dd0287541c386307ca06a86e54bee9c3fb692cfd1496f36f17",
+        "prediction.npz": "63762dc0615adff75da5a13854f7cdbfb1b6845370696691fa2c841d92df8ca4",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "adab3a9c5956f238774e6fd57c7afbcc6396b7b4d7aee246e8b563ea9a66c5bf"
+      },
+      "conditioning_source": "native",
+      "norm_control": "production_pre_fma",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.0011831239157719543,
+            "entity=1|mol_type=3|asym=1": 0.00018174349132456152
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.0011831239157719543,
+          "entity=1|mol_type=3|asym=1": 0.00018174349132456152
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.0011831239157719543,
+            0.00012920482245501965,
+            0.00005190461946004917,
+            0.001142066280293134,
+            0.0011361484991965903
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.00018174349132456152,
+            0.00003974559322058725,
+            0.00001943184254723112,
+            0.00015053195683093596,
+            0.00011673192165976158
+          ]
+        },
+        "global_max_rmsd": 0.0011797357740207903,
+        "global_rmsd": [
+          0.0011797357740207903,
+          0.0001288617683844744,
+          0.00005177374563372711,
+          0.0011387748381690578,
+          0.0011328513637425038
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-fma-5sak-v23": {
+      "completion_sha256": "6969a7cacbd407e0beab3bfede29a87bf9098d39eddb21a02054a0a0ee6ac722",
+      "artifacts": {
+        "comparison.json": "b8d05ab7c6074151964f1b1738aec0a5d43bc7ac6925bbe9fb97a30058eda123",
+        "effective-options.json": "0054984af4efe3786da1290a19945c8677679b5496d05fe2d104dd2f874eae04",
+        "prediction.npz": "15e46cd32d506294ed1da2651413788b674cc2b7fa28e50321c5e4934288b257",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "d3c09fde93f68c0eb4479bf556e3c16c5eb9eadefdcf8644294720e886143ae4"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "explicit_fma",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.010290485902910686,
+            "entity=1|mol_type=3|asym=1": 0.0008876551535026916
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.010290485902910686,
+          "entity=1|mol_type=3|asym=1": 0.0008876551535026916
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.0020919029722265953,
+            0.000228139047339469,
+            0.0000825157919617268,
+            0.010290485902910686,
+            0.00021200149745042202
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.0003318057910558153,
+            0.000050308062596966666,
+            0.000017068731568725825,
+            0.0008876551535026916,
+            0.00008170382090705116
+          ]
+        },
+        "global_max_rmsd": 0.010260528449896328,
+        "global_rmsd": [
+          0.002085921931067762,
+          0.00022750249109427758,
+          0.00008228414057213907,
+          0.010260528449896328,
+          0.00021147216072495452
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-production-lazy-5sak-v24": {
+      "completion_sha256": "ab1b8ec468514faa5ec57e5cc4c993486a3d863c0e3325e65ef8dac0b6b4dae7",
+      "artifacts": {
+        "comparison.json": "e0b700e302503af2f42ebdb0b006f9f318075a31971136e02e92585820cb9f41",
+        "effective-options.json": "34c69ea72823b9fec4217b445cfd038fe7a5918590ba4d58b4a3fcb900258880",
+        "prediction.npz": "22098e16b9b2e8af268fcf3f3cbf294b1a765dece4927e5f2ba77e4fc3d42287",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "cc4febb56be936caae2ae6be79b61fbd6a13093c55fc0227e8129517c35c2a93"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "production",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.010366518650818625,
+            "entity=1|mol_type=3|asym=1": 0.0009457763950025256
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.010366518650818625,
+          "entity=1|mol_type=3|asym=1": 0.0009457763950025256
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.001988960629018019,
+            0.0001295641228495131,
+            0.00005216514542267384,
+            0.010366518650818625,
+            0.0012642767220375573
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.0003100816269154868,
+            0.00005276351754500402,
+            0.000015116559031472513,
+            0.0009457763950025256,
+            0.00013884888328491522
+          ]
+        },
+        "global_max_rmsd": 0.010336366734936766,
+        "global_rmsd": [
+          0.0019832689295955675,
+          0.00012924720710558228,
+          0.000052025008721117264,
+          0.010336366734936766,
+          0.0012606133445276482
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-production-materialized-5sak-v24": {
+      "completion_sha256": "653255e2fa1da03613331cc446c00e32a7dec6d3132c51a2f5103dd8e5d060c7",
+      "artifacts": {
+        "comparison.json": "5665dd12f19cbd412e1da76680c27425e991f2ee2ed5020cb9d28aa45554f5c0",
+        "effective-options.json": "c095e1ee1b91507a1933d74972485cde09d5fc15ac5e8b23ba76070307e61b62",
+        "prediction.npz": "b952ebbaea64af4d7346fe5d97ceb3687e3fa13743511e4f4d10739d862b29f9",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "cc4febb56be936caae2ae6be79b61fbd6a13093c55fc0227e8129517c35c2a93"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "production",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.008367430424557135,
+            "entity=1|mol_type=3|asym=1": 0.0007312953167236024
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.008367430424557135,
+          "entity=1|mol_type=3|asym=1": 0.0007312953167236024
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.0018945596666387057,
+            0.00012068862599337696,
+            0.00006592893351448893,
+            0.008367430424557135,
+            0.0011649629315100263
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.00029583472931796,
+            0.00004686985244889442,
+            0.000012883679371338039,
+            0.0007312953167236024,
+            0.00009745677760162079
+          ]
+        },
+        "global_max_rmsd": 0.008343076188758803,
+        "global_rmsd": [
+          0.0018891385403499265,
+          0.00012038809594537801,
+          0.00006574295655823931,
+          0.008343076188758803,
+          0.0011615700015564056
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-production-lazy-1urn-v24": {
+      "completion_sha256": "95100c70bf7a77d6761d3151162b77d2de0dda5befbb75bb420b5050b3db5acd",
+      "artifacts": {
+        "comparison.json": "a40b80f5c311c37a654f8e45b8ac7dc4dc211b61d51765825bbe5e5c9a055e67",
+        "effective-options.json": "a5f743092647b0bf2be6f6ae7d7b927196bf62c79eaee32bdeca10647b17c844",
+        "prediction.npz": "9c00efc0959e184641bdb1f6d70c96000be3061ee497cdd477b957a0aaa6c454",
+        "prediction.tree.json": "84d25cd2bddb8f745471b4f64621de07ce83739ba624006feff198a9e421c533",
+        "provenance.json": "c602ec2db034ecd418927f63444ede79009c4a11fffd48ea1da3c2bfd174c9df"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "production",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          1225,
+          1225,
+          1225,
+          1225,
+          1225
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.00004854136415838266,
+            "entity=1|mol_type=2|asym=1": 0.00005406507021092509
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 0.00004854136415838266,
+          "entity=1|mol_type=2|asym=1": 0.00005406507021092509
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            0.00002845333259774853,
+            0.000022754071741709594,
+            0.00004058279012140503,
+            0.00002403852104275189,
+            0.00004854136415838266
+          ],
+          "entity=1|mol_type=2|asym=1": [
+            0.00003602203264127589,
+            0.000012769966596213956,
+            0.00004316021751820207,
+            0.00002024544688430938,
+            0.00005406507021092509
+          ]
+        },
+        "global_max_rmsd": 0.00005059026685956025,
+        "global_rmsd": [
+          0.00003137632071748636,
+          0.000019764705386739653,
+          0.00004152485289198584,
+          0.00002275202583855288,
+          0.00005059026685956025
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    },
+    "conditioning-production-lazy-3gca-v24": {
+      "completion_sha256": "c5d33d20be7e7db1e1bd5f36785dc104f7baed552f8e1e6a97c1c0cb8ad65357",
+      "artifacts": {
+        "comparison.json": "f2c5b09c0a3a33bc5b57fcc20b2e486a6bac16b7ad5966af2aeb8703ef1710e8",
+        "effective-options.json": "8d68f421fa17b12798fa1c66b9162b72a281164a80ab91afc6e22b2768e97853",
+        "prediction.npz": "7374364c4542429ff9ea1808f9eb7caae8a40b2b3b38e3f620bc39623f23143e",
+        "prediction.tree.json": "d742e3ea93b27fb054e9e5d8bfd066b9a0ad0264dc48b8e7a94efa9fc3b44d89",
+        "provenance.json": "36c6eedf815fdc551b7e71bdec22f926dd3d72c43e6fe13ff8b2983ece8a8921"
+      },
+      "conditioning_source": "foldjax",
+      "norm_control": "production",
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          718,
+          718,
+          718,
+          718,
+          718
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=2|asym=0": 0.00003508505662819576,
+            "entity=1|mol_type=3|asym=1": 0.000013000470043306926
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=2|asym=0": 0.00003508505662819576,
+          "entity=1|mol_type=3|asym=1": 0.000013000470043306926
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=2|asym=0": [
+            0.00003508505662819576,
+            0.00002848864119349011,
+            0.000031810741352255804,
+            0.000017994516675318914,
+            0.000016113408859264637
+          ],
+          "entity=1|mol_type=3|asym=1": [
+            0.00001053338801106403,
+            0.000007061353938039111,
+            0.000010897205750603642,
+            0.000004942025136015238,
+            0.000013000470043306926
+          ]
+        },
+        "global_max_rmsd": 0.000034794862915160645,
+        "global_rmsd": [
+          0.000034794862915160645,
+          0.000028245543506155925,
+          0.00003155553181563285,
+          0.00001784326536572191,
+          0.000016062410059530287
+        ]
+      },
+      "trunk_executed": false,
+      "confidence_executed": false
+    }
+  },
+  "limitations": [
+    "Native trunk substituted in conditioning counterfactuals; no full-model admission",
+    "No confidence evaluation in conditioning counterfactuals",
+    "No independent preprocessing or device-consumer tape audit",
+    "No performance or memory admission; lazy custom-call cost unmeasured",
+    "Native exactness demonstrated at captured finite operands and widths 16, 128, 256",
+    "TPU and real multi-device CP not executed; generic fallbacks retained"
+  ],
+  "repaired_diagnostic_failures": {
+    "371": "Pallas Triton slice lowering unsupported; replaced with equal-width lax.split",
+    "372": "Pallas inline-asm scalar literal lowering failure; tensorized scalars",
+    "cpu_dynamic_eps": "3 failed, 64 passed before eps became explicit Pallas input; corrected suite 67 passed"
+  },
+  "verification": {
+    "focused_cpu": "67 passed",
+    "torch_cpu_parity_environment": "16 passed; Torch 2.13.0+cu130, separate from native GPU 2.12 provenance",
+    "initial_missing_torch": "Explicit Torch test collection failed in standalone environment; existing parity-environment rerun passed",
+    "affected_boltz_cpu": "618 passed, 6 skipped; conditioning-v24-boltz-cpu.xml",
+    "full_5sak_v24": "GPU job 380 completed; structure and strict confidence fail",
+    "remote_ci": "not run",
+    "commit_push": "not performed",
+    "cpu_only_wheel": "10 passed; conditioning-v24-cpu-wheel.xml",
+    "source_snapshot_identity": "All 489 src/bench Python files match v24 snapshot",
+    "lint": "Ruff and git diff --check passed",
+    "artifact_hashes": {
+      "conditioning-v24-boltz-cpu.xml": "7f3db6b207082174a7652093634dba3ef3787b1119e7631932b0080259645673",
+      "conditioning-v24-cpu-wheel.xml": "2729631800b76163fa4005d922e311c713c304595b0830350b209fcc2fb0c714"
+    }
+  },
+  "full_5sak_v24": {
+    "report": "bench/experiments/boltz-amp-5sak-v24-2026-09-07.json",
+    "report_sha256": "7b687d7e356e35909955446fdda99d9e364f06ebe4b3008aca41d0a8f25fec71",
+    "trunk_executed": true,
+    "confidence_executed": true,
+    "coordinates": {
+      "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+      "atom_counts": [
+        3073,
+        3073,
+        3073,
+        3073,
+        3073
+      ],
+      "coordinate_diagnostic": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 2.8645114659798203,
+          "entity=1|mol_type=3|asym=1": 0.38090217074363153
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates_equal": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "entity_max_rmsd": {
+        "entity=0|mol_type=0|asym=0": 2.8645114659798203,
+        "entity=1|mol_type=3|asym=1": 0.38090217074363153
+      },
+      "entity_rmsd": {
+        "entity=0|mol_type=0|asym=0": [
+          2.799287068403221,
+          0.2805827760124267,
+          0.08314475295006404,
+          2.8645114659798203,
+          1.6980313930466864
+        ],
+        "entity=1|mol_type=3|asym=1": [
+          0.20424837784709607,
+          0.03644764561490742,
+          0.011357740048879544,
+          0.38090217074363153,
+          0.15000565570695584
+        ]
+      },
+      "global_max_rmsd": 2.8562585240122806,
+      "global_rmsd": [
+        2.791120434682292,
+        0.2797737234321836,
+        0.08290544358262363,
+        2.8562585240122806,
+        1.6930899309605216
+      ]
+    },
+    "raw_confidence_strict_pass": false,
+    "public_confidence_strict_pass": false,
+    "trunk_representations": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 167808,
+          "max_abs": 0.6966552734375,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.0553629519183404,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 158754,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 5.963043212890625,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.08011121692248513,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 24048820,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "v14_final_pairformer_comparison": {
+      "v14_artifact_sha256": "cdca1ff41a909b52ae56bb4272738cc96ee71009133f51b97e81218486ac60c3",
+      "v24_artifact_sha256": "0821f33261c088b97defc7bc0d244c8650f7cd3d650fde34a945b4e2e8efbe70",
+      "input_z_values_equal": true,
+      "output_z_values_equal": true,
+      "input_s_max_abs": 0.5,
+      "output_s_max_abs": 0.7037353515625,
+      "scope": "Single-track change cause is unresolved. No intended trunk algorithm change; full-run version difference is not an isolated conditioning-only counterfactual."
+    }
+  }
+}

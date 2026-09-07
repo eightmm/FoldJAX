@@ -44,15 +44,20 @@ def attention_pair_bias_forward(
     num_heads = params["proj_z"]["kernel"].shape[-1]
     head_dim = c_s // num_heads
 
-    qg = _linear(
-        s,
-        jnp.concatenate(
-            (params["proj_q"]["kernel"], params["proj_g"]["kernel"]), axis=-1
-        ),
-    )
-    q, g_logits = jnp.split(qg, (params["proj_q"]["kernel"].shape[-1],), axis=-1)
-    q = (q + params["proj_q"]["bias"]).reshape(batch, -1, num_heads, head_dim)
-    g = jax.nn.sigmoid(g_logits)
+    if params["proj_q"]["kernel"].dtype in (jnp.bfloat16, jnp.float16):
+        q = _linear(s, params["proj_q"]["kernel"], params["proj_q"]["bias"])
+        g_logits = _linear(s, params["proj_g"]["kernel"])
+    else:
+        qg = _linear(
+            s,
+            jnp.concatenate(
+                (params["proj_q"]["kernel"], params["proj_g"]["kernel"]), axis=-1
+            ),
+        )
+        q, g_logits = jnp.split(qg, (params["proj_q"]["kernel"].shape[-1],), axis=-1)
+        q = q + params["proj_q"]["bias"]
+    q = q.reshape(batch, -1, num_heads, head_dim)
+    g = jax.nn.sigmoid(g_logits.astype(jnp.float32)).astype(g_logits.dtype)
     kv = _linear(
         k_in,
         jnp.concatenate(

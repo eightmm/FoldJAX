@@ -73,7 +73,7 @@ def test_predict_applies_compute_dtype_to_precomputed_trunk(monkeypatch) -> None
 
     assert seen == {
         "param_dtype": jnp.dtype(jnp.bfloat16),
-        "float_feat_dtype": jnp.dtype(jnp.bfloat16),
+        "float_feat_dtype": jnp.dtype(jnp.float32),
         "int_feat_dtype": jnp.dtype(jnp.int32),
         "sample_trunk_dtype": jnp.dtype(jnp.bfloat16),
     }
@@ -534,7 +534,7 @@ def test_predict_runs_complete_affinity_ensemble_on_best_sample(monkeypatch) -> 
     monkeypatch.setattr(predict_module, "affinity_module_forward", fake_affinity)
 
     out = predict_module.boltz2_predict(
-        {"trunk": {"input_embedder": {}}, "confidence": {}},
+        {"trunk": {"input_embedder": {}}, "confidence": {}, "distogram": {}},
         feats,
         jax.random.PRNGKey(0),
         run_confidence=True,

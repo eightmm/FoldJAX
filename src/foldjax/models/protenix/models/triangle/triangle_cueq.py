@@ -46,7 +46,7 @@ def cueq_triangle_multiplication(
         p_out_weight=params.linear_z.weight,
         g_out_weight=params.linear_g.weight,
         eps=eps,
-        precision=triangle_multiplication_precision(cuex),
+        precision=triangle_multiplication_precision(cuex, dtype=kernel_z.dtype),
         fallback=False,
     )
     return output[0] if unbatched else output

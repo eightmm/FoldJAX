@@ -65,6 +65,19 @@ def layer_norm(
 ) -> jnp.ndarray:
     """Apply layer norm over the final dimension."""
 
+    output_dtype = x.dtype
+    if output_dtype == jnp.bfloat16:
+        # Native BF16 LayerNorm quantizes affine operands but accumulates the
+        # normalization and affine arithmetic in FP32 before one output cast.
+        params = LayerNormParams(
+            *(
+                None
+                if value is None
+                else jnp.asarray(value, dtype=output_dtype).astype(jnp.float32)
+                for value in params
+            )
+        )
+        x = x.astype(jnp.float32)
     mean = jnp.mean(x, axis=-1, keepdims=True)
     var = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
     y = (x - mean) * jax_reciprocal_sqrt(var + eps)
@@ -72,7 +85,7 @@ def layer_norm(
         y = y * params.weight
     if params.bias is not None:
         y = y + params.bias
-    return y
+    return y.astype(output_dtype) if output_dtype == jnp.bfloat16 else y
 
 
 def silu(x: jnp.ndarray) -> jnp.ndarray:

@@ -1,0 +1,143 @@
+{
+  "status": "diagnostic_not_model_admission",
+  "case": "5SAK",
+  "contract": "n=5, 200 steps, captured native trunk/features/tape; one global Kabsch, entity measurement without refit",
+  "arms": {
+    "downstream-foldjax-conditioning": {
+      "complete_sha256": "c81a12dd8a72167a4549606aaec7fcd230f38b52127dd7502bbbcefa29465b17",
+      "artifacts": {
+        "comparison.json": "7d80bed2bb867ca053c58aa704a2a6615b8df382e87ef49e37a87652d0b82120",
+        "effective-options.json": "acad7ec22b0a5bbda6308501e5df6a3637f615c1aa34e7f2bbfa376d7be59848",
+        "prediction.npz": "0b9849e584dc234ff832744cf416ce209ee84732a8f896d30168ebecaf290d12",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "a37be8a9f74536775fe041ebf9c218c79cae33a974dd4fb62dad533d18d7bba8"
+      },
+      "comparison": {
+        "coordinates": {
+          "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+          "atom_counts": [
+            3073,
+            3073,
+            3073,
+            3073,
+            3073
+          ],
+          "coordinate_diagnostic": {
+            "coordinate_gate_passed": false,
+            "entity_max_rmsd": {
+              "entity=0|mol_type=0|asym=0": 0.25344178262134026,
+              "entity=1|mol_type=3|asym=1": 0.01620964117958888
+            },
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+            "threshold_angstrom": 0.05
+          },
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.25344178262134026,
+            "entity=1|mol_type=3|asym=1": 0.01620964117958888
+          },
+          "entity_rmsd": {
+            "entity=0|mol_type=0|asym=0": [
+              0.010429325616951276,
+              0.0053147835042350626,
+              0.0013915239309631117,
+              0.25344178262134026,
+              0.03982484916157951
+            ],
+            "entity=1|mol_type=3|asym=1": [
+              0.0019799145923003764,
+              0.0009727073100545868,
+              0.000443987585407947,
+              0.01620964117958888,
+              0.003588012759809294
+            ]
+          },
+          "global_max_rmsd": 0.25270147412010485,
+          "global_rmsd": [
+            0.010399840035297607,
+            0.0052997179488033,
+            0.0013878585880251473,
+            0.25270147412010485,
+            0.03970899098610563
+          ]
+        },
+        "not_parity_admission": true,
+        "substituted_diagnostic": true
+      }
+    },
+    "downstream-native-conditioning": {
+      "complete_sha256": "2db5f817047728f31c4b3ae8958fe58f87c8a610edc14ac94710e3d37989cc18",
+      "artifacts": {
+        "comparison.json": "2bf754fba893683f99e742fcea5dea8e20d37daa68766f767166651eb3cc38a8",
+        "effective-options.json": "41b197887939b64d71d5ed20b64d1798a8bde7bc53de61d482de96a799ac9e6a",
+        "prediction.npz": "1d9c945a0347e465c2e7b9b596a2388d02c2f5ef452e2ad7b71923b891410005",
+        "prediction.tree.json": "a70ebbd252aa460c2c535795613ec6df36883e0bb807df9bc5c09f8a650f39af",
+        "provenance.json": "a2bb5df3ebaf818d0f84af16965c43ac9635e81fd139e37426dbbd519edf514c"
+      },
+      "comparison": {
+        "coordinates": {
+          "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+          "atom_counts": [
+            3073,
+            3073,
+            3073,
+            3073,
+            3073
+          ],
+          "coordinate_diagnostic": {
+            "coordinate_gate_passed": true,
+            "entity_max_rmsd": {
+              "entity=0|mol_type=0|asym=0": 0.0035408874814897035,
+              "entity=1|mol_type=3|asym=1": 0.00035567803447569216
+            },
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+            "threshold_angstrom": 0.05
+          },
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 0.0035408874814897035,
+            "entity=1|mol_type=3|asym=1": 0.00035567803447569216
+          },
+          "entity_rmsd": {
+            "entity=0|mol_type=0|asym=0": [
+              0.0015833123291040451,
+              0.00012282017628162183,
+              4.8744563255070284e-05,
+              0.0035408874814897035,
+              0.0009293190220972915
+            ],
+            "entity=1|mol_type=3|asym=1": [
+              0.0002334699742369361,
+              3.6965013383809166e-05,
+              2.936129987047506e-05,
+              0.00035567803447569216,
+              9.758639170799163e-05
+            ]
+          },
+          "global_max_rmsd": 0.003530606875293266,
+          "global_rmsd": [
+            0.001578769537889693,
+            0.00012249261490321586,
+            4.865351532252896e-05,
+            0.003530606875293266,
+            0.000926623396135523
+          ]
+        },
+        "not_parity_admission": true,
+        "substituted_diagnostic": true
+      }
+    }
+  }
+}

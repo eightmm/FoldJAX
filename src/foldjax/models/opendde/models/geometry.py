@@ -84,10 +84,18 @@ def centre_random_augmentation(
     elif rotations is None or translations is None:
         raise ValueError("rotations and translations must be provided together")
 
-    augmented = jnp.einsum(
-        "...sij,...saj->...sai",
-        jnp.asarray(rotations, dtype=jnp.float32),
-        expanded,
+    # Native rot_vec_mul deliberately uses scalar FP32 arithmetic: a matrix
+    # contraction here inherits TF32 and changes the sampler's actual input.
+    rotation = jnp.asarray(rotations, dtype=jnp.float32)
+    x, y, z = (expanded[..., axis] for axis in range(3))
+    augmented = jnp.stack(
+        tuple(
+            rotation[..., axis, 0, None] * x
+            + rotation[..., axis, 1, None] * y
+            + rotation[..., axis, 2, None] * z
+            for axis in range(3)
+        ),
+        axis=-1,
     )
     augmented = augmented + jnp.asarray(translations, dtype=jnp.float32)[..., None, :]
     if mask is not None:

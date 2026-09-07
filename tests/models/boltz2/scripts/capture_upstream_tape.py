@@ -304,10 +304,17 @@ def _install_hooks(recorder: TapeRecorder, captured: dict) -> tuple[list, object
             captured.setdefault("s_inputs", output.detach().float().cpu().numpy())
 
         handle = self.input_embedder.register_forward_hook(record_s_inputs)
+        def record_relative_position(_module, _inputs, output) -> None:
+            captured.setdefault(
+                "relative_position_encoding", output.detach().float().cpu().numpy()
+            )
+
+        relative_handle = self.rel_pos.register_forward_hook(record_relative_position)
         try:
             out = original_forward(self, feats, *a, **k)
         finally:
             handle.remove()
+            relative_handle.remove()
         if "coordinate" not in captured:
             for name in ("s", "z", "sample_atom_coords"):
                 captured[name] = out[name].detach().float().cpu().numpy()
@@ -453,6 +460,7 @@ def _write(args, recorder: TapeRecorder, captured: dict) -> int:
         s=captured["s"],
         z=captured["z"],
         s_inputs=captured["s_inputs"],
+        relative_position_encoding=captured["relative_position_encoding"],
     )
     np.savez_compressed(
         args.out_dir / "coordinate.npz",

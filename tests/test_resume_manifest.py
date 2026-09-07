@@ -203,6 +203,152 @@ def test_exact_request_reuses_nonempty_recorded_artifacts(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
+    "change",
+    [None, "legacy", "backend", "cli", "confidence", "geometry", "sampling", "model"],
+)
+def test_opendde_resume_binds_implicit_precision_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str | None
+) -> None:
+    from foldjax import manifest
+
+    calls: list[tuple[str, str, int]] = []
+    request = _request(
+        tmp_path, model="opendde", options={}, padding=None, representations=None
+    )
+    package = Path(manifest.__file__).parent
+    sources = {
+        "backend": (package / "backends/opendde.py").resolve(),
+        "cli": (package / "models/opendde/cli/predict.py").resolve(),
+        **{
+            name: (package / f"models/opendde/models/{name}.py").resolve()
+            for name in ("geometry", "sampling", "model")
+        },
+        "confidence": (
+            package / "models/protenix/models/heads/confidence.py"
+        ).resolve(),
+    }
+    with _backends(calls):
+        foldjax.predict(request)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text())
+        artifacts = document["input_dependencies"]["artifacts"]
+        assert set(map(str, sources.values())) <= {item["path"] for item in artifacts}
+        if change == "legacy":
+            document["input_dependencies"]["artifacts"] = [
+                item
+                for item in artifacts
+                if item["path"] not in map(str, sources.values())
+            ]
+            path.write_text(json.dumps(document))
+        elif change is not None:
+            original = manifest.path_stat_identity
+
+            def changed_identity(source):
+                identity = original(source)
+                if Path(source) == sources[change]:
+                    identity = {**identity, "stat_signature": "changed-policy"}
+                return identity
+
+            monkeypatch.setattr(manifest, "path_stat_identity", changed_identity)
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+
+    assert len(calls) == (1 if change is None else 2)
+    assert resumed.skipped == ((request.output_dir,) if change is None else ())
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/heads/confidence.py",
+        "/models/model.py",
+        "/models/predict.py",
+        "/diffusion/diffusion.py",
+        "/trunk_blocks/trunk.py",
+        "/heads/head.py",
+    ],
+)
+def test_protenix_pre_axis_fix_manifest_is_not_reused(
+    tmp_path: Path, source: str
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+    request = _request(
+        tmp_path, model="protenix", options={}, padding=None, representations=None
+    )
+    with _backends(calls):
+        foldjax.predict(request)
+        unchanged = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+        assert len(calls) == 1
+        assert unchanged.skipped == (request.output_dir,)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text())
+        artifacts = document["input_dependencies"]["artifacts"]
+        legacy = [a for a in artifacts if not a["path"].endswith(source)]
+        assert len(legacy) == len(artifacts) - 1
+        document["input_dependencies"]["artifacts"] = legacy
+        path.write_text(json.dumps(document))
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+
+
+@pytest.mark.parametrize("model", ["boltz2", "opendde", "protenix", "openfold3"])
+def test_legacy_ffi_precision_result_is_not_reused(tmp_path: Path, model: str):
+    calls = []
+    request = _request(tmp_path, model=model)
+    with _backends(calls):
+        foldjax.predict(request)
+        assert foldjax.predict_batch(
+            dataclasses.replace(request, resume=True)
+        ).skipped == (request.output_dir,)
+        path = request.output_dir / MANIFEST_NAME
+        document = json.loads(path.read_text())
+        artifacts = document["input_dependencies"]["artifacts"]
+        legacy = [a for a in artifacts if not a["path"].endswith("/models/_cueq.py")]
+        assert len(legacy) == len(artifacts) - 1
+        document["input_dependencies"]["artifacts"] = legacy
+        path.write_text(json.dumps(document))
+        resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
+    assert len(calls) == 2
+    assert resumed.skipped == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "compile_policy.py",
+        "models/primitives/native_amp_norm.py",
+        "models/trunk_blocks/msa.py",
+    ],
+)
+def test_boltz_model_repair_invalidates_resume(tmp_path, monkeypatch, source):
+    from foldjax import manifest
+
+    request, calls = _request(tmp_path, model="boltz2"), []
+    target = (Path(manifest.__file__).parent / "models/boltz2" / source).resolve()
+    with _backends(calls):
+        foldjax.predict(request)
+        assert foldjax.predict_batch(
+            dataclasses.replace(request, resume=True)
+        ).skipped == (request.output_dir,)
+        original = manifest.path_stat_identity
+
+        def changed_identity(path):
+            identity = original(path)
+            return (
+                {**identity, "stat_signature": "repaired-boltz-source"}
+                if Path(path).resolve() == target
+                else identity
+            )
+
+        monkeypatch.setattr(manifest, "path_stat_identity", changed_identity)
+        assert (
+            foldjax.predict_batch(dataclasses.replace(request, resume=True)).skipped
+            == ()
+        )
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
     "identity",
     [
         "input_format",
@@ -218,17 +364,13 @@ def test_exact_request_reuses_nonempty_recorded_artifacts(tmp_path: Path) -> Non
         "stop_after",
     ],
 )
-def test_changed_request_identity_forces_a_rerun(
-    tmp_path: Path, identity: str
-) -> None:
+def test_changed_request_identity_forces_a_rerun(tmp_path: Path, identity: str) -> None:
     calls: list[tuple[str, str, int]] = []
     request = _request(tmp_path)
     changes = {
         "input_format": {"input_format": "alternate-native"},
         "model": {"model": "opendde"},
-        "weights": {
-            "weights": _file(tmp_path / "other-weights.bin", b"weights-b\n")
-        },
+        "weights": {"weights": _file(tmp_path / "other-weights.bin", b"weights-b\n")},
         "profile": {"profile": "released"},
         "seed": {"seed": 8},
         "msa": {"msa": "required"},
@@ -312,9 +454,7 @@ def test_legacy_or_incomplete_manifest_is_not_reused(
 
 
 @pytest.mark.parametrize("damage", ["missing", "empty"])
-def test_missing_or_empty_structure_is_not_reused(
-    tmp_path: Path, damage: str
-) -> None:
+def test_missing_or_empty_structure_is_not_reused(tmp_path: Path, damage: str) -> None:
     calls: list[tuple[str, str, int]] = []
     request = _request(tmp_path)
     with _backends(calls):
@@ -368,8 +508,11 @@ def test_full_run_cannot_succeed_without_requested_representations(
     backend = _MissingRepresentations("boltz2", calls)
     request = _request(tmp_path)
 
-    with backend_override("boltz2", lambda: backend), pytest.raises(
-        foldjax.PredictionOutputError, match="no requested representations"
+    with (
+        backend_override("boltz2", lambda: backend),
+        pytest.raises(
+            foldjax.PredictionOutputError, match="no requested representations"
+        ),
     ):
         foldjax.predict(request)
 
@@ -885,9 +1028,7 @@ def test_implicit_protenix_ccd_asset_mutation_forces_a_rerun(
     monkeypatch.setenv("PROTENIX_CCD_RDKIT_MOL_FILE", str(rdkit))
     request = _request(tmp_path, model="opendde")
     document = json.loads(request.input.read_text(encoding="utf-8"))
-    document["entities"].append(
-        {"type": "ligand", "id": "L", "ccd": "ATP"}
-    )
+    document["entities"].append({"type": "ligand", "id": "L", "ccd": "ATP"})
     request.input.write_text(json.dumps(document), encoding="utf-8")
     calls: list[tuple[str, str, int]] = []
     with _backends(calls):
@@ -1023,8 +1164,9 @@ def test_invalid_initial_representation_artifact_is_rejected(
     backend = _BrokenRepresentationBackend(calls, damage)
     request = _request(tmp_path)
 
-    with backend_override("boltz2", lambda: backend), pytest.raises(
-        foldjax.PredictionOutputError, match="invalid representations"
+    with (
+        backend_override("boltz2", lambda: backend),
+        pytest.raises(foldjax.PredictionOutputError, match="invalid representations"),
     ):
         foldjax.predict(request)
 
@@ -1054,8 +1196,9 @@ def test_initial_representation_must_be_a_regular_artifact_under_output_root(
     calls: list[tuple[str, str, int]] = []
     backend = _EscapingBackend("boltz2", calls)
     request = _request(tmp_path)
-    with backend_override("boltz2", lambda: backend), pytest.raises(
-        foldjax.PredictionOutputError, match="outside its output root"
+    with (
+        backend_override("boltz2", lambda: backend),
+        pytest.raises(foldjax.PredictionOutputError, match="outside its output root"),
     ):
         foldjax.predict(request)
 
@@ -1204,9 +1347,7 @@ def test_bfloat16_representation_round_trips_and_resumes(tmp_path: Path) -> None
         ) -> Representations | None:
             if not request.representations:
                 return None
-            array = np.asarray(
-                [[1.0, 2.0], [3.0, 4.0]], dtype=ml_dtypes.bfloat16
-            )
+            array = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=ml_dtypes.bfloat16)
             archive = request.output_dir / "representations.npz"
             np.savez(archive, single=array)
             return Representations(

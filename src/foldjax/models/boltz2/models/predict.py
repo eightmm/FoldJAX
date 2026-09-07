@@ -34,8 +34,7 @@ from foldjax.models.boltz2.models.trunk_blocks.input_embedder import (
     input_embedder_forward,
 )
 from foldjax.models.boltz2.models.trunk_blocks.trunk import (
-    _cast_float_feats,
-    _cast_params,
+    _cast_trunk_params,
     boltz2_sample_forward,
     boltz2_trunk_forward,
 )
@@ -105,6 +104,7 @@ def boltz2_predict(
     #: resident alongside the temp arena for the whole run. Same finding as
     #: Protenix (EXPERIMENT_LOG: the 84.1 vs 57.3 attribution).
     return_confidence_logits: bool = True,
+    confidence_chain_ids: tuple[int, ...] | None = None,
     affinity_params: Params | None = None,
     affinity_mw_correction: bool = False,
     eps: float = 1e-5,
@@ -124,6 +124,9 @@ def boltz2_predict(
     Computes the deterministic trunk once, then reuses it for structure sampling
     and downstream heads. Head numerics are identical to calling each head
     function directly with the same trunk/sample tensors.
+
+    For fully-jitted pair-chain confidence, pass ``confidence_chain_ids`` as a
+    static tuple of all unique input ``asym_id`` values, resolved before JIT.
     """
     multiplicity = int(sample_kwargs.pop("multiplicity", 1))
     # The released BF16 graph has one low-precision generic-attention site:
@@ -201,8 +204,7 @@ def boltz2_predict(
         # owns the trunk calculation.  The full predict wrapper computes the
         # trunk separately for reuse by the heads, so it must apply the same
         # casts here rather than handing an already-fp32 trunk to the sampler.
-        trunk_params = _cast_params(trunk_params, compute_dtype)
-        trunk_feats = _cast_float_feats(feats, compute_dtype)
+        trunk_params = _cast_trunk_params(trunk_params, compute_dtype)
 
     # Upstream's MSA subsample is drawn per forward pass from the run's own RNG,
     # so it belongs on the run's key: one seed still reproduces one result.
@@ -326,14 +328,27 @@ def boltz2_predict(
 
     pdistogram = None
     if run_distogram or run_confidence:
-        pdistogram = distogram_forward(params, z)
+        head_params = params
+        if compute_dtype != jnp.float32:
+            head_params = {
+                "distogram": _cast_trunk_params(params["distogram"], compute_dtype)
+            }
+        pdistogram = distogram_forward(head_params, z)
         if run_distogram:
             out["pdistogram"] = pdistogram
 
     if run_bfactor:
-        out["pbfactor"] = bfactor_forward(params, s)
+        bfactor_params = params
+        if compute_dtype != jnp.float32:
+            bfactor_params = {
+                "bfactor": _cast_trunk_params(params["bfactor"], compute_dtype)
+            }
+        out["pbfactor"] = bfactor_forward(bfactor_params, s)
 
     if run_confidence:
+        confidence_params = params["confidence"]
+        if compute_dtype != jnp.float32:
+            confidence_params = _cast_trunk_params(confidence_params, compute_dtype)
         # Boltz2.forward feeds the first distogram's logits: pdistogram[:,:,:,0].
         pred_distogram_logits = pdistogram[:, :, :, 0]
         confidence_kwargs = dict(
@@ -348,6 +363,7 @@ def boltz2_predict(
             triangle_backend=str(sample_kwargs.get("triangle_backend", "cueq")),
             glu_backend=str(sample_kwargs.get("glu_backend", "xla")),
             return_pair_chains_iptm=return_pair_chains_iptm,
+            confidence_chain_ids=confidence_chain_ids,
             recompute_nonpolymer_frames=recompute_nonpolymer_frames,
             atom_context_parallel=bool(
                 sample_kwargs.get("atom_context_parallel", False)
@@ -356,7 +372,7 @@ def boltz2_predict(
 
         def confidence_call(x_pred: jnp.ndarray, conf_multiplicity: int):
             return confidence_module_forward(
-                params["confidence"],
+                confidence_params,
                 s_inputs=s_inputs,
                 s=s,
                 z=z,

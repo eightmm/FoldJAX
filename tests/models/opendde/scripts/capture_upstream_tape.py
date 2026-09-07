@@ -75,6 +75,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="publisher-supported deterministic control, not the native default",
+    )
+    parser.add_argument(
         "--repo",
         type=Path,
         default=Path(__file__).resolve().parents[5] / "OpenDDE",
@@ -409,9 +414,7 @@ class StageRecorder:
             handles.append(
                 msa_block.msa_stack.register_forward_pre_hook(on_msa_stack_in)
             )
-            handles.append(
-                msa_block.msa_stack.register_forward_hook(on_msa_stack_out)
-            )
+            handles.append(msa_block.msa_stack.register_forward_hook(on_msa_stack_out))
 
             # `pair_stack` is called entirely by keyword, so a plain forward
             # hook sees an empty `inputs` tuple and would record nothing.
@@ -724,6 +727,8 @@ def _run(args) -> None:
         argv += ["--dtype", args.dtype]
     if args.disable_tf32:
         argv += ["--enable_tf32", "false"]
+    if args.deterministic:
+        argv += ["--deterministic", "true"]
     from runner.inference import run
 
     saved = sys.argv

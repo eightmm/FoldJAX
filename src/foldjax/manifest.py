@@ -876,6 +876,50 @@ def _input_dependencies(
 
         paths.extend((VENDORED_RUNNER, build.source_package()))
         paths.extend(runtime_paths.values())
+    if request.model == "opendde":
+        # Omitted options can change meaning when the native precision default
+        # changes. Bind both policy definitions so a legacy BF16 result cannot
+        # satisfy an otherwise identical request whose default is now FP32.
+        package = Path(__file__).parent
+        paths.extend(
+            (
+                package / "backends/opendde.py",
+                package / "models/opendde/cli/predict.py",
+                package / "models/opendde/models/geometry.py",
+                package / "models/opendde/models/sampling.py",
+                package / "models/opendde/models/model.py",
+            )
+        )
+    if request.model == "boltz2":
+        # Native AMP/normalization repairs can change predictions with identical
+        # request options. Stat only source files, not mutable __pycache__ trees.
+        package = Path(__file__).parent / "models/boltz2"
+        paths.extend((package / "api.py", package / "compile_policy.py"))
+        paths.extend(sorted((package / "models").rglob("*.py")))
+    if request.model in {"opendde", "protenix"}:
+        # Both ports use this head. Old results predate the corrected directed
+        # pair initialization and must not survive an otherwise identical resume.
+        paths.append(
+            Path(__file__).parent / "models/protenix/models/heads/confidence.py"
+        )
+    if request.model == "protenix":
+        # Rigid augmentation and native mixed-precision conditioning changed
+        # predictions without changing request options or checkpoint bytes.
+        package = Path(__file__).parent / "models/protenix/models"
+        paths.extend(
+            package / name
+            for name in (
+                "model.py",
+                "predict.py",
+                "diffusion/diffusion.py",
+                "trunk_blocks/trunk.py",
+                "heads/head.py",
+            )
+        )
+    if request.model in {"boltz2", "opendde", "protenix", "openfold3"}:
+        # FFI precision corrections change predictions without changing options:
+        # old outputs can contain TF32 attention or zero BF16 triangle updates.
+        paths.append(Path(__file__).parent / "models/_cueq.py")
     weight_bundle = _implicit_weight_assets(request)
     if weight_bundle is None:
         return {"verifiable": False, "artifacts": []}

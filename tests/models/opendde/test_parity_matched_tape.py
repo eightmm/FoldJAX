@@ -17,7 +17,90 @@ import pytest
 from tests.models.opendde.scripts.capture_upstream_tape import _translation_samples
 from tests.models.opendde.scripts.parity_matched_tape import build_cycle_msa
 
+
+@pytest.mark.parametrize("precision", ["high", "highest"])
+def test_explicit_matmul_precision(monkeypatch, precision):
+    from tests.models.opendde.scripts.parity_matched_tape import parse_args
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "replay",
+            "--tape-dir",
+            "tape",
+            "--input-json",
+            "input.json",
+            "--matmul-precision",
+            precision,
+        ],
+    )
+    assert parse_args().matmul_precision == precision
+
+
+def test_default_matmul_precision_remains_highest(monkeypatch):
+    from tests.models.opendde.scripts.parity_matched_tape import parse_args
+
+    monkeypatch.setattr(
+        "sys.argv", ["replay", "--tape-dir", "tape", "--input-json", "input.json"]
+    )
+    assert parse_args().matmul_precision == "highest"
+
+
 FIELDS = ("msa", "has_deletion", "deletion_value")
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bf16"])
+def test_replay_forwards_compute_dtype_to_real_model_call(monkeypatch, tmp_path, dtype):
+    import json
+    from types import SimpleNamespace
+
+    import jax
+    import jax.numpy as jnp
+
+    from foldjax.models.opendde.bridge import weights_io
+    from foldjax.models.opendde.data import featurize_json
+    from foldjax.models.opendde.models import model
+    from tests.models.opendde.scripts import parity_matched_tape as runner
+
+    (tmp_path / "tape.json").write_text(json.dumps({
+        "num_recycles": 10, "num_steps": 200, "num_samples": 5, "seed": 101,
+    }))
+    np.savez(tmp_path / "msa.npz", rows=np.zeros((10, 1), dtype=np.int32))
+    np.savez(tmp_path / "coordinate.npz", coordinate=np.zeros((5, 2, 3)))
+    monkeypatch.setattr(runner, "parse_args", lambda: SimpleNamespace(
+        out_dir=tmp_path, tape_dir=tmp_path, input_json=tmp_path / "input.json",
+        weights=tmp_path / "weights", matmul_precision="high", trunk_dtype=dtype,
+        msa_source="indices", skip_sampler=False,
+    ))
+    monkeypatch.setattr(featurize_json, "load_jobs", lambda _: [{}])
+    monkeypatch.setattr(featurize_json, "featurize_opendde_json", lambda *a, **k: {
+        "ref_pos": np.zeros((2, 3)), "restype": np.zeros((1, 32)),
+    })
+    monkeypatch.setattr(weights_io, "load_native_weights", lambda _: object())
+    monkeypatch.setattr(model, "cast_trunk_params", lambda p, d: p)
+    monkeypatch.setattr(runner, "load_tape", lambda *a, **k: (None, {}))
+    monkeypatch.setattr(runner, "build_cycle_msa", lambda *a, **k: ((), {}))
+    monkeypatch.setattr(runner, "trunk_stages", lambda *a, **k: {
+        "after_pairformer_z": jnp.zeros((1, 1, 1)),
+    })
+
+    class ModelReachedError(Exception):
+        pass
+
+    def infer(*args, **kwargs):
+        assert "trunk_dtype" in kwargs
+        assert kwargs["trunk_dtype"] == (jnp.bfloat16 if dtype == "bf16" else None)
+        assert kwargs["num_samples"] == 5
+        assert kwargs["num_recycles"] == 10
+        raise ModelReachedError
+
+    monkeypatch.setattr(model, "opendde_infer_static", infer)
+    previous_precision = jax.config.jax_default_matmul_precision
+    try:
+        with pytest.raises(ModelReachedError):
+            runner.main()
+    finally:
+        jax.config.update("jax_default_matmul_precision", previous_precision)
 
 
 def test_later_nonfinite_sample_cannot_hide_behind_scalar_max():
@@ -66,9 +149,7 @@ def _archive(features: dict[str, np.ndarray], rows: np.ndarray) -> dict:
     archive = {"rows": rows}
     for name in FIELDS:
         archive[f"input_{name}"] = features[name]
-        archive[f"selected_{name}"] = np.stack(
-            [features[name][row] for row in rows]
-        )
+        archive[f"selected_{name}"] = np.stack([features[name][row] for row in rows])
     return archive
 
 

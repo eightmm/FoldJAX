@@ -374,7 +374,8 @@ def sample(
       )
     else:
       noise = jax.random.normal(key_noise, positions.shape)
-    noise *= noise_scale
+    # Preserve native operand order: commutation changes the compiled graph.
+    noise = noise_scale * noise
     positions_noisy = positions + noise
 
     positions_denoised = denoising_step(positions_noisy, t_hat)

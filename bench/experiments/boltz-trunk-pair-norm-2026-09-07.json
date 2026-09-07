@@ -1,0 +1,1130 @@
+{
+  "status": "in_progress_not_admitted",
+  "scope": "same-input first-recycle full MSA and teacher-forced first MSA pair block; native BF16 AMP and FP32 islands",
+  "units": "representation-space RMSE, not Angstrom",
+  "full_model_v30": {
+    "portable_report": "boltz-amp-5sak-v30-2026-09-07.json",
+    "report_sha256": "b2e14de9da6243eb0377ed61b153598ca74e51d5d3e28883999ef01e25b46e7c",
+    "entity_rmsd": {
+      "entity=0|mol_type=0|asym=0": [
+        1.9120499147484837,
+        0.08166060213528606,
+        0.0474039037462053,
+        1.4888543158371546,
+        0.6422913919030755
+      ],
+      "entity=1|mol_type=3|asym=1": [
+        0.14972648065157357,
+        0.014426982096722869,
+        0.009336247532076018,
+        0.1443997712078806,
+        0.10224158410275325
+      ]
+    },
+    "entity_max_rmsd": {
+      "entity=0|mol_type=0|asym=0": 1.9120499147484837,
+      "entity=1|mol_type=3|asym=1": 0.14972648065157357
+    },
+    "coordinate_passed": false,
+    "raw_confidence_passed": false,
+    "public_confidence_passed": false,
+    "missing_public_confidence": [
+      "confidence_score"
+    ],
+    "trunk_rmse": {
+      "s": 0.05095789676609578,
+      "z": 0.06888224657173023
+    },
+    "stage_rmse": {
+      "cycle-00/msa_module": {
+        "delta_z": 0.03246554531473931,
+        "input_z": 0.0006116185148676643
+      },
+      "cycle-00/pairformer_module": {
+        "input_s": 0.0013635145287574334,
+        "input_z": 0.032480453703772234,
+        "output_s": 0.05286722690951964,
+        "output_z": 0.07729168008078788
+      },
+      "cycle-03/msa_module": {
+        "delta_z": 0.033887615838356165,
+        "input_z": 0.012622612541584258
+      },
+      "cycle-03/pairformer_module": {
+        "input_s": 0.005154154708597613,
+        "input_z": 0.0398305505881312,
+        "output_s": 0.05095789676609578,
+        "output_z": 0.06888224657173023
+      },
+      "input_embedder": {
+        "": 0.000005812563130408627
+      },
+      "rel_pos": {
+        "": 0
+      }
+    }
+  },
+  "additional_full_model_panel_v30": {
+    "1urn": {
+      "portable_report": "boltz-amp-1urn-v30-2026-09-07.json",
+      "report_sha256": "092bd138228b174195f5e212a88c1eb3ebc8fc1fd96e5e44cdf9660f1ee5415d",
+      "entity_rmsd": {
+        "entity=0|mol_type=0|asym=0": [
+          0.006157325632153665,
+          0.0496605324621273,
+          0.005822358004442635,
+          0.006384479312169189,
+          0.008468458396267687
+        ],
+        "entity=1|mol_type=2|asym=1": [
+          0.004302670206127049,
+          0.3111728672784374,
+          0.003829370643948638,
+          0.004201302231914777,
+          0.0039946481461581905
+        ]
+      },
+      "entity_max_rmsd": {
+        "entity=0|mol_type=0|asym=0": 0.0496605324621273,
+        "entity=1|mol_type=2|asym=1": 0.3111728672784374
+      },
+      "coordinate_passed": false,
+      "raw_confidence_passed": false,
+      "public_confidence_passed": false,
+      "historical_v14_entity_max_rmsd": {
+        "entity=0|mol_type=0|asym=0": 0.04236417861979972,
+        "entity=1|mol_type=2|asym=1": 0.31126919748941806
+      },
+      "scope": "full own-trunk n5 same native features and sampler tape; historical v14 predates BOTH conditioning and pair-norm repairs"
+    },
+    "3gca": {
+      "portable_report": "boltz-amp-3gca-v30-2026-09-07.json",
+      "report_sha256": "0977411b3840a8786970453ed302b471209e8cf8efca914bc1552c0aaf95386b",
+      "entity_rmsd": {
+        "entity=0|mol_type=2|asym=0": [
+          0.004483623667882822,
+          0.0034747771295138073,
+          0.003671914530328511,
+          0.004032963352774422,
+          0.003629911806938485
+        ],
+        "entity=1|mol_type=3|asym=1": [
+          0.0049514805332660766,
+          0.00439081924697966,
+          0.004605613835394243,
+          0.005299775942328261,
+          0.0035770004789366897
+        ]
+      },
+      "entity_max_rmsd": {
+        "entity=0|mol_type=2|asym=0": 0.004483623667882822,
+        "entity=1|mol_type=3|asym=1": 0.005299775942328261
+      },
+      "coordinate_passed": true,
+      "raw_confidence_passed": false,
+      "public_confidence_passed": false,
+      "historical_v14_entity_max_rmsd": {
+        "entity=0|mol_type=2|asym=0": 0.009712461352849165,
+        "entity=1|mol_type=3|asym=1": 0.011554736139657957
+      },
+      "scope": "full own-trunk n5 same native features and sampler tape; historical v14 predates BOTH conditioning and pair-norm repairs"
+    }
+  },
+  "msa_controls": {
+    "baseline": {
+      "artifact": "trunk-msa-baseline-v26",
+      "report_sha256": "10ac04476ccb3b390893e2cc8336075fc28ce4ebcd5c3cb0b972b5c738bb02e8",
+      "controls": {
+        "native_dense_embedding": false,
+        "native_msa_norms": false,
+        "normalization_scope": "MSA norms and MSA/pair transitions only"
+      },
+      "output_comparison": {
+        "max_abs": 1.9228973388671875,
+        "rmse": 0.03196874347310737,
+        "unequal": 24427037,
+        "values_equal": false
+      },
+      "first_layer": {
+        "layers/00/input_m": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.00014411428600741148,
+            "unequal": 6239,
+            "values_equal": false
+          }
+        },
+        "layers/00/layer_output": {
+          "m": {
+            "max_abs": 0.75,
+            "rmse": 0.004113365739889452,
+            "unequal": 5003779,
+            "values_equal": false
+          },
+          "z": {
+            "max_abs": 0.51171875,
+            "rmse": 0.0032523595201334496,
+            "unequal": 21491673,
+            "values_equal": false
+          }
+        },
+        "layers/00/msa_transition": {
+          "": {
+            "max_abs": 0.75,
+            "rmse": 0.00410015616822728,
+            "unequal": 4228278,
+            "values_equal": false
+          }
+        },
+        "layers/00/opm": {
+          "": {
+            "max_abs": 0.125,
+            "rmse": 0.0009806302361419406,
+            "unequal": 5049206,
+            "values_equal": false
+          }
+        },
+        "layers/00/pair_output": {
+          "": {
+            "max_abs": 0.51171875,
+            "rmse": 0.0032523595201334496,
+            "unequal": 21491673,
+            "values_equal": false
+          }
+        },
+        "layers/00/pwa": {
+          "": {
+            "max_abs": 0.1875,
+            "rmse": 0.000382389885231984,
+            "unequal": 1199951,
+            "values_equal": false
+          }
+        },
+        "layers/00/transition_z": {
+          "": {
+            "max_abs": 0.5,
+            "rmse": 0.0029476329771563484,
+            "unequal": 11424171,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_end": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0008802443856490312,
+            "unequal": 11685085,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_start": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0005622898740260531,
+            "unequal": 11205723,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_in": {
+          "": {
+            "max_abs": 0.0078125,
+            "rmse": 0.00004525250489181002,
+            "unequal": 3322970,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_out": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.000050163444690930984,
+            "unequal": 3604608,
+            "values_equal": false
+          }
+        }
+      },
+      "initial_m_sha256": "f14b871b0fa3ada32f84b904f7b01a8f0c4ba159688def779630e42d9b9fac84"
+    },
+    "norms": {
+      "artifact": "trunk-msa-norms-v26",
+      "report_sha256": "46a3fc0f82e685cd25fbac449b2cb2748141d53f93dfea9cb41e6bfa782dfc36",
+      "controls": {
+        "native_dense_embedding": false,
+        "native_msa_norms": true,
+        "normalization_scope": "MSA norms and MSA/pair transitions only"
+      },
+      "output_comparison": {
+        "max_abs": 2.1938323974609375,
+        "rmse": 0.03204702596190003,
+        "unequal": 24427040,
+        "values_equal": false
+      },
+      "first_layer": {
+        "layers/00/input_m": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.00014411428600741148,
+            "unequal": 6239,
+            "values_equal": false
+          }
+        },
+        "layers/00/layer_output": {
+          "m": {
+            "max_abs": 0.75,
+            "rmse": 0.00396407438387991,
+            "unequal": 4668207,
+            "values_equal": false
+          },
+          "z": {
+            "max_abs": 0.5078125,
+            "rmse": 0.0032493887237193715,
+            "unequal": 21465338,
+            "values_equal": false
+          }
+        },
+        "layers/00/msa_transition": {
+          "": {
+            "max_abs": 0.75,
+            "rmse": 0.003951531516449392,
+            "unequal": 3940165,
+            "values_equal": false
+          }
+        },
+        "layers/00/opm": {
+          "": {
+            "max_abs": 0.125,
+            "rmse": 0.000970314661348163,
+            "unequal": 4951463,
+            "values_equal": false
+          }
+        },
+        "layers/00/pair_output": {
+          "": {
+            "max_abs": 0.5078125,
+            "rmse": 0.0032493887237193715,
+            "unequal": 21465338,
+            "values_equal": false
+          }
+        },
+        "layers/00/pwa": {
+          "": {
+            "max_abs": 0.1875,
+            "rmse": 0.00036681386951644264,
+            "unequal": 1128161,
+            "values_equal": false
+          }
+        },
+        "layers/00/transition_z": {
+          "": {
+            "max_abs": 0.5,
+            "rmse": 0.002948083996870238,
+            "unequal": 11414545,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_end": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0008828520370602,
+            "unequal": 11716031,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_start": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0005574044385759633,
+            "unequal": 11128112,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_in": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.0000450712497454171,
+            "unequal": 3278057,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_out": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.00004988135139599407,
+            "unequal": 3559798,
+            "values_equal": false
+          }
+        }
+      },
+      "initial_m_sha256": "f14b871b0fa3ada32f84b904f7b01a8f0c4ba159688def779630e42d9b9fac84"
+    },
+    "dense": {
+      "artifact": "trunk-msa-dense-v26",
+      "report_sha256": "7d7d2b5144d7c00e657377d2f19a064cbcb64e12d1ff8459d7bd6981402705ee",
+      "controls": {
+        "native_dense_embedding": true,
+        "native_msa_norms": false,
+        "normalization_scope": "MSA norms and MSA/pair transitions only"
+      },
+      "output_comparison": {
+        "max_abs": 1.93756103515625,
+        "rmse": 0.03209531611824294,
+        "unequal": 24426901,
+        "values_equal": false
+      },
+      "first_layer": {
+        "layers/00/input_m": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.00014411428600741148,
+            "unequal": 6239,
+            "values_equal": false
+          }
+        },
+        "layers/00/layer_output": {
+          "m": {
+            "max_abs": 0.75,
+            "rmse": 0.004139276123754148,
+            "unequal": 5062841,
+            "values_equal": false
+          },
+          "z": {
+            "max_abs": 0.51171875,
+            "rmse": 0.0032488907413976537,
+            "unequal": 21494600,
+            "values_equal": false
+          }
+        },
+        "layers/00/msa_transition": {
+          "": {
+            "max_abs": 0.75,
+            "rmse": 0.004125752398374606,
+            "unequal": 4276666,
+            "values_equal": false
+          }
+        },
+        "layers/00/opm": {
+          "": {
+            "max_abs": 0.125,
+            "rmse": 0.000981573232115816,
+            "unequal": 5058679,
+            "values_equal": false
+          }
+        },
+        "layers/00/pair_output": {
+          "": {
+            "max_abs": 0.51171875,
+            "rmse": 0.0032488907413976537,
+            "unequal": 21494600,
+            "values_equal": false
+          }
+        },
+        "layers/00/pwa": {
+          "": {
+            "max_abs": 0.1875,
+            "rmse": 0.00038562849735915576,
+            "unequal": 1216929,
+            "values_equal": false
+          }
+        },
+        "layers/00/transition_z": {
+          "": {
+            "max_abs": 0.5,
+            "rmse": 0.0029434126165903325,
+            "unequal": 11426042,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_end": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0008804585614594448,
+            "unequal": 11691633,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_start": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0005626040484802024,
+            "unequal": 11203736,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_in": {
+          "": {
+            "max_abs": 0.0078125,
+            "rmse": 0.000045263398216995705,
+            "unequal": 3327189,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_out": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.00005022542985526588,
+            "unequal": 3609304,
+            "values_equal": false
+          }
+        }
+      },
+      "initial_m_sha256": "f14b871b0fa3ada32f84b904f7b01a8f0c4ba159688def779630e42d9b9fac84"
+    },
+    "both": {
+      "artifact": "trunk-msa-both-v26",
+      "report_sha256": "f0663fb4cbbba39dcea9900fc3648b7b78af499bb2a21a848ba18d083c56fd75",
+      "controls": {
+        "native_dense_embedding": true,
+        "native_msa_norms": true,
+        "normalization_scope": "MSA norms and MSA/pair transitions only"
+      },
+      "output_comparison": {
+        "max_abs": 2.1938323974609375,
+        "rmse": 0.03204702596190003,
+        "unequal": 24427040,
+        "values_equal": false
+      },
+      "first_layer": {
+        "layers/00/input_m": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.00014411428600741148,
+            "unequal": 6239,
+            "values_equal": false
+          }
+        },
+        "layers/00/layer_output": {
+          "m": {
+            "max_abs": 0.75,
+            "rmse": 0.00396407438387991,
+            "unequal": 4668207,
+            "values_equal": false
+          },
+          "z": {
+            "max_abs": 0.5078125,
+            "rmse": 0.0032493887237193715,
+            "unequal": 21465338,
+            "values_equal": false
+          }
+        },
+        "layers/00/msa_transition": {
+          "": {
+            "max_abs": 0.75,
+            "rmse": 0.003951531516449392,
+            "unequal": 3940165,
+            "values_equal": false
+          }
+        },
+        "layers/00/opm": {
+          "": {
+            "max_abs": 0.125,
+            "rmse": 0.000970314661348163,
+            "unequal": 4951463,
+            "values_equal": false
+          }
+        },
+        "layers/00/pair_output": {
+          "": {
+            "max_abs": 0.5078125,
+            "rmse": 0.0032493887237193715,
+            "unequal": 21465338,
+            "values_equal": false
+          }
+        },
+        "layers/00/pwa": {
+          "": {
+            "max_abs": 0.1875,
+            "rmse": 0.00036681386951644264,
+            "unequal": 1128161,
+            "values_equal": false
+          }
+        },
+        "layers/00/transition_z": {
+          "": {
+            "max_abs": 0.5,
+            "rmse": 0.002948083996870238,
+            "unequal": 11414545,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_end": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0008828520370602,
+            "unequal": 11716031,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_start": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0005574044385759633,
+            "unequal": 11128112,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_in": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.0000450712497454171,
+            "unequal": 3278057,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_out": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.00004988135139599407,
+            "unequal": 3559798,
+            "values_equal": false
+          }
+        }
+      },
+      "initial_m_sha256": "f14b871b0fa3ada32f84b904f7b01a8f0c4ba159688def779630e42d9b9fac84"
+    },
+    "rows": {
+      "artifact": "trunk-msa-rows-v27",
+      "report_sha256": "f6eb6ef5e245598e59288092a757ee264f563a401365f83cd6645f8a8b739d25",
+      "controls": {
+        "native_dense_embedding": false,
+        "native_msa_norms": false,
+        "native_row_shapes": true,
+        "normalization_scope": "MSA norms and MSA/pair transitions only",
+        "row_shape_scope": "PWA and MSA/pair transitions only; native hidden/head chunks retained"
+      },
+      "output_comparison": {
+        "max_abs": 2.1097412109375,
+        "rmse": 0.031965045361443345,
+        "unequal": 24427037,
+        "values_equal": false
+      },
+      "first_layer": {
+        "layers/00/input_m": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.00014411428600741148,
+            "unequal": 6239,
+            "values_equal": false
+          }
+        },
+        "layers/00/layer_output": {
+          "m": {
+            "max_abs": 0.75,
+            "rmse": 0.004073205090815633,
+            "unequal": 4915583,
+            "values_equal": false
+          },
+          "z": {
+            "max_abs": 0.51171875,
+            "rmse": 0.003253315285872696,
+            "unequal": 21492593,
+            "values_equal": false
+          }
+        },
+        "layers/00/msa_transition": {
+          "": {
+            "max_abs": 0.75,
+            "rmse": 0.004060668495685093,
+            "unequal": 4147936,
+            "values_equal": false
+          }
+        },
+        "layers/00/opm": {
+          "": {
+            "max_abs": 0.125,
+            "rmse": 0.0009791452015530456,
+            "unequal": 5035329,
+            "values_equal": false
+          }
+        },
+        "layers/00/pair_output": {
+          "": {
+            "max_abs": 0.51171875,
+            "rmse": 0.003253315285872696,
+            "unequal": 21492593,
+            "values_equal": false
+          }
+        },
+        "layers/00/pwa": {
+          "": {
+            "max_abs": 0.1875,
+            "rmse": 0.0003709661557829962,
+            "unequal": 1185036,
+            "values_equal": false
+          }
+        },
+        "layers/00/transition_z": {
+          "": {
+            "max_abs": 0.5,
+            "rmse": 0.0029506778827723514,
+            "unequal": 11430962,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_end": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0008796721856793784,
+            "unequal": 11694840,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_start": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0005576473599142037,
+            "unequal": 11192695,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_in": {
+          "": {
+            "max_abs": 0.0078125,
+            "rmse": 0.000045184026121319876,
+            "unequal": 3317263,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_out": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.000050114701059545006,
+            "unequal": 3596345,
+            "values_equal": false
+          }
+        }
+      },
+      "initial_m_sha256": "f14b871b0fa3ada32f84b904f7b01a8f0c4ba159688def779630e42d9b9fac84"
+    },
+    "rows-norms": {
+      "artifact": "trunk-msa-rows-norms-v27",
+      "report_sha256": "e0090b371d14b4548ae94faa78edd7c1e3b065a24c14abb8a3a8ae994e3d7d99",
+      "controls": {
+        "native_dense_embedding": false,
+        "native_msa_norms": true,
+        "native_row_shapes": true,
+        "normalization_scope": "MSA norms and MSA/pair transitions only",
+        "row_shape_scope": "PWA and MSA/pair transitions only; native hidden/head chunks retained"
+      },
+      "output_comparison": {
+        "max_abs": 2.1938323974609375,
+        "rmse": 0.03204702596190003,
+        "unequal": 24427040,
+        "values_equal": false
+      },
+      "first_layer": {
+        "layers/00/input_m": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.00014411428600741148,
+            "unequal": 6239,
+            "values_equal": false
+          }
+        },
+        "layers/00/layer_output": {
+          "m": {
+            "max_abs": 0.75,
+            "rmse": 0.00396407438387991,
+            "unequal": 4668207,
+            "values_equal": false
+          },
+          "z": {
+            "max_abs": 0.5078125,
+            "rmse": 0.0032493887237193715,
+            "unequal": 21465338,
+            "values_equal": false
+          }
+        },
+        "layers/00/msa_transition": {
+          "": {
+            "max_abs": 0.75,
+            "rmse": 0.003951531516449392,
+            "unequal": 3940165,
+            "values_equal": false
+          }
+        },
+        "layers/00/opm": {
+          "": {
+            "max_abs": 0.125,
+            "rmse": 0.000970314661348163,
+            "unequal": 4951463,
+            "values_equal": false
+          }
+        },
+        "layers/00/pair_output": {
+          "": {
+            "max_abs": 0.5078125,
+            "rmse": 0.0032493887237193715,
+            "unequal": 21465338,
+            "values_equal": false
+          }
+        },
+        "layers/00/pwa": {
+          "": {
+            "max_abs": 0.1875,
+            "rmse": 0.00036681386951644264,
+            "unequal": 1128161,
+            "values_equal": false
+          }
+        },
+        "layers/00/transition_z": {
+          "": {
+            "max_abs": 0.5,
+            "rmse": 0.002948083996870238,
+            "unequal": 11414545,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_end": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0008828520370602,
+            "unequal": 11716031,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_att_start": {
+          "": {
+            "max_abs": 0.03125,
+            "rmse": 0.0005574044385759633,
+            "unequal": 11128112,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_in": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.0000450712497454171,
+            "unequal": 3278057,
+            "values_equal": false
+          }
+        },
+        "layers/00/tri_mul_out": {
+          "": {
+            "max_abs": 0.015625,
+            "rmse": 0.00004988135139599407,
+            "unequal": 3559798,
+            "values_equal": false
+          }
+        }
+      },
+      "initial_m_sha256": "f14b871b0fa3ada32f84b904f7b01a8f0c4ba159688def779630e42d9b9fac84"
+    }
+  },
+  "pair_stage_controls": {
+    "pair-native-v28": {
+      "report_sha256": "a8125ef2136c878d066901c636048c1ab10a5968567b772e629fdbc2e3cb7245",
+      "checks": {
+        "pair_output": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "transition_z/input": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "transition_z/output": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_att_end/input": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_att_end/output": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_att_start/input": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_att_start/output": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_mul_in/input": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_mul_in/output": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_mul_out/input": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        },
+        "tri_mul_out/output": {
+          "max_abs": 0,
+          "rmse": 0,
+          "unequal": 0,
+          "values_equal": true
+        }
+      },
+      "norms": {
+        "transition_z": "9d7d6895806696cea580ea4318773084448b7dec9eb1da38212f8bf5c6892602",
+        "tri_att_end": "6c0fdbeb6fef4f77e740da56bb9fa45052f30a7673f3d6cc8c0dce451cf8bddf",
+        "tri_att_start": "36f66629598bb1022bd3b9188a535574752d118cd4ae4e199c138ff7a0ce90a3"
+      },
+      "passed": true,
+      "wrapper_sha256": "00da3e45b4d50db3540a8ced008e095ee6aac9d16b20492df5c94a363563cda8",
+      "reference_sha256": "1b8e1c205b37bc21a82cc7a5ba07351a4796bc439fbb0abbd2bd05b58501d99a",
+      "torch": "2.12.0+cu130"
+    },
+    "pair-foldjax-v29": {
+      "report_sha256": "43dcc90b470ab16e036e3d156ad8563de493135c6fe6cd72f5cc2ea7cdbc57bb",
+      "arms": {
+        "native_norm": {
+          "transition_z": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "transition_z/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_end": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_end/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_start": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_start/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_mul_in": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016630769861996505,
+            "unequal": 2947,
+            "values_equal": false
+          },
+          "tri_mul_out": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016013058298167042,
+            "unequal": 3353,
+            "values_equal": false
+          }
+        },
+        "production": {
+          "transition_z": {
+            "max_abs": 0.125,
+            "rmse": 0.00008142159802680712,
+            "unequal": 16709,
+            "values_equal": false
+          },
+          "transition_z/norm": {
+            "max_abs": 4.172325134277344e-7,
+            "rmse": 2.0130844165543444e-8,
+            "unequal": 15477733,
+            "values_equal": false
+          },
+          "tri_att_end": {
+            "max_abs": 0.0078125,
+            "rmse": 0.00006173455935537131,
+            "unequal": 138931,
+            "values_equal": false
+          },
+          "tri_att_end/norm": {
+            "max_abs": 0.0000019073486328125,
+            "rmse": 5.53662672381159e-8,
+            "unequal": 15182912,
+            "values_equal": false
+          },
+          "tri_att_start": {
+            "max_abs": 0.03125,
+            "rmse": 0.00004190576292120447,
+            "unequal": 140171,
+            "values_equal": false
+          },
+          "tri_att_start/norm": {
+            "max_abs": 0.0000019073486328125,
+            "rmse": 4.866095676091419e-8,
+            "unequal": 14862840,
+            "values_equal": false
+          },
+          "tri_mul_in": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016630769861996505,
+            "unequal": 2947,
+            "values_equal": false
+          },
+          "tri_mul_out": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016013058298167042,
+            "unequal": 3353,
+            "values_equal": false
+          }
+        }
+      },
+      "wrapper_sha256": "2d2496208936b865553f83a6fa5418175d213f48f1f7d6a37f095fb87b7000ac",
+      "native_report_sha256": "a8125ef2136c878d066901c636048c1ab10a5968567b772e629fdbc2e3cb7245",
+      "reference_sha256": "1b8e1c205b37bc21a82cc7a5ba07351a4796bc439fbb0abbd2bd05b58501d99a",
+      "runtime": {
+        "device": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+        "jax": "0.11.1"
+      }
+    },
+    "pair-production-v30": {
+      "report_sha256": "f21f20b1cd1fa6881dc9a9965c828874470f70b12ffe7d9746e0e9c78a88fd02",
+      "arms": {
+        "native_norm": {
+          "transition_z": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "transition_z/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_end": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_end/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_start": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_start/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_mul_in": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016630769861996505,
+            "unequal": 2947,
+            "values_equal": false
+          },
+          "tri_mul_out": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016013058298167042,
+            "unequal": 3353,
+            "values_equal": false
+          }
+        },
+        "production": {
+          "transition_z": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "transition_z/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_end": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_end/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_start": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_att_start/norm": {
+            "max_abs": 0,
+            "rmse": 0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "tri_mul_in": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016630769861996505,
+            "unequal": 2947,
+            "values_equal": false
+          },
+          "tri_mul_out": {
+            "max_abs": 0.00390625,
+            "rmse": 0.0000016013058298167042,
+            "unequal": 3353,
+            "values_equal": false
+          }
+        }
+      },
+      "wrapper_sha256": "8881f3bcb6175256bb0e350687ff532bdb5dd2bf4d642565bac988f49b8454c6",
+      "native_report_sha256": "a8125ef2136c878d066901c636048c1ab10a5968567b772e629fdbc2e3cb7245",
+      "reference_sha256": "1b8e1c205b37bc21a82cc7a5ba07351a4796bc439fbb0abbd2bd05b58501d99a",
+      "runtime": {
+        "device": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+        "jax": "0.11.1"
+      }
+    }
+  },
+  "failed_attempts": [
+    {
+      "job": 389,
+      "artifact": "pair-foldjax-v28",
+      "reason": "diagnostic epsilon captured as dynamic Pallas constant; static diagnostic epsilon retry completed; production kernel already takes epsilon as explicit input"
+    }
+  ],
+  "excluded": [
+    "independent input preprocessing",
+    "full-model admission",
+    "device-consumer tape audit",
+    "performance"
+  ]
+}

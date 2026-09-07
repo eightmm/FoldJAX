@@ -19,6 +19,10 @@ from foldjax.models.boltz2.models.primitives.attention_backend import (
 Params = Mapping[str, object]
 
 
+def _sigmoid(value):
+    return jax.nn.sigmoid(value.astype(jnp.float32)).astype(value.dtype)
+
+
 def adaln_s_terms(
     params: Params,
     s: jnp.ndarray,
@@ -31,7 +35,7 @@ def adaln_s_terms(
     """
 
     s_n = _layer_norm_scale(s, params["s_norm"]["scale"], eps)
-    scale = jax.nn.sigmoid(
+    scale = _sigmoid(
         _linear(s_n, params["s_scale"]["kernel"], params["s_scale"]["bias"])
     )
     bias = _linear(s_n, params["s_bias"]["kernel"])
@@ -52,7 +56,7 @@ def adaln_apply(
 def _gate_s(params: Params, s: jnp.ndarray) -> jnp.ndarray:
     """Sigmoid output gate derived from the layer-constant ``s``."""
 
-    return jax.nn.sigmoid(_linear(s, params["kernel"], params["bias"]))
+    return _sigmoid(_linear(s, params["kernel"], params["bias"]))
 
 
 def conditioned_transition_block_forward(
@@ -80,7 +84,8 @@ def _conditioned_transition_block_apply(
 ) -> jnp.ndarray:
     a = adaln_apply(a, adaln_scale, adaln_bias, eps)
     swish_x, swish_gate = jnp.split(_linear(a, params["swish_gate"]["kernel"]), 2, -1)
-    b = (jax.nn.silu(swish_gate) * swish_x) * _linear(a, params["a_to_b"]["kernel"])
+    activated = jax.nn.silu(swish_gate.astype(jnp.float32)).astype(swish_gate.dtype)
+    b = (activated * swish_x) * _linear(a, params["a_to_b"]["kernel"])
     out = _linear(b, params["b_to_a"]["kernel"])
     return gate * out
 
@@ -201,15 +206,22 @@ def _attention_pair_bias_no_proj_z_forward(
     num_heads = bias.shape[-1]
     head_dim = c_s // num_heads
 
-    qg = _linear(
-        s,
-        jnp.concatenate(
-            (params["proj_q"]["kernel"], params["proj_g"]["kernel"]), axis=-1
-        ),
-    )
-    q, g_logits = jnp.split(qg, (params["proj_q"]["kernel"].shape[-1],), axis=-1)
-    q = (q + params["proj_q"]["bias"]).reshape(batch, -1, num_heads, head_dim)
-    g = jax.nn.sigmoid(g_logits)
+    if params["proj_q"]["kernel"].dtype in (jnp.bfloat16, jnp.float16):
+        # q's bias belongs inside its autocast Linear, not after a rounded
+        # fused q/g projection (which would also promote q back to FP32).
+        q = _linear(s, params["proj_q"]["kernel"], params["proj_q"]["bias"])
+        g_logits = _linear(s, params["proj_g"]["kernel"])
+    else:
+        qg = _linear(
+            s,
+            jnp.concatenate(
+                (params["proj_q"]["kernel"], params["proj_g"]["kernel"]), axis=-1
+            ),
+        )
+        q, g_logits = jnp.split(qg, (params["proj_q"]["kernel"].shape[-1],), axis=-1)
+        q = q + params["proj_q"]["bias"]
+    q = q.reshape(batch, -1, num_heads, head_dim)
+    g = _sigmoid(g_logits)
     kv = _linear(
         k_in,
         jnp.concatenate(
@@ -248,13 +260,9 @@ def _attention_pair_bias_no_proj_z_forward(
             backend=attention_backend,
         )
     elif attention_backend == "xla":
-        # Score dtype: keep the DEFAULT fp32 path bit-exact (compute_dtype is
-        # fp32 -> these casts are no-ops). Under an opted-in low-precision
-        # compute dtype, run the scores/value-contraction matmuls in that dtype
-        # so the [b, heads, N, N] score buffer (the N^2 token-attention OOM
-        # blocker) actually shrinks; the softmax denominator still reduces in
-        # fp32 (precision-sensitive island).
-        score_dtype = q.dtype
+        # Native attentionv2 disables autocast for QK, softmax and P@V.
+        # Bound the FP32 score buffer with query chunks, not a dtype change.
+        score_dtype = jnp.float32
         q_s = q.astype(score_dtype)
         k_s = k.astype(score_dtype)
         v_s = v.astype(score_dtype)
@@ -297,11 +305,8 @@ def _no_proj_qblock(
 ) -> jnp.ndarray:
     """Exact pair-bias attention for a query block.
 
-    The scores einsum runs in the inputs' dtype (fp32 by default, bf16/fp16 when
-    opted in). The softmax (subtract-max + exp + sum) reduces in fp32, then casts
-    the probabilities back to the value dtype for the @v contraction. With fp32
-    inputs every cast is a no-op, so the default path is bit-exact with the
-    previous single-shot fp32 implementation.
+    The caller supplies FP32 Q/K/V/bias for native's autocast-disabled core,
+    and narrows only the completed value contraction to the projection dtype.
     """
 
     in_dtype = q_blk.dtype

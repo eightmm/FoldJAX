@@ -86,6 +86,7 @@ def diffusion_score_model_forward(
 
     mask = jnp.repeat(feats["token_pad_mask"], multiplicity, axis=0)
     token_bias = diffusion_conditioning.get("token_trans_bias")
+    bias_precision = diffusion_conditioning.get("token_trans_bias_precision")
     a = diffusion_transformer_forward(
         params["token_transformer"],
         a=a,
@@ -101,6 +102,7 @@ def diffusion_score_model_forward(
         bias_params=diffusion_conditioning.get("token_trans_bias_params"),
         bias_input=diffusion_conditioning.get("token_trans_bias_input"),
         bias_normed_input=diffusion_conditioning.get("token_trans_bias_normed_input"),
+        bias_compute_dtype=None if bias_precision is None else bias_precision.dtype,
     )
     a_norm = params["a_norm"]
     a = _layer_norm(a, a_norm["scale"], a_norm["bias"], eps)

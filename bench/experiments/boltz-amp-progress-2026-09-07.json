@@ -1,0 +1,130 @@
+{
+  "status": "in_progress_not_admitted",
+  "conditioning_followup": {
+    "report": "bench/experiments/boltz-conditioning-fma-2026-09-07.json",
+    "latest_full_5sak": "bench/experiments/boltz-amp-5sak-v24-2026-09-07.json",
+    "full_5sak_protein_max_rmsd_angstrom": 2.8645114659798203,
+    "full_5sak_ligand_max_rmsd_angstrom": 0.38090217074363153,
+    "structural_and_confidence_admission": false,
+    "scope": "conditioning native-trunk controls pass; full model still fails; cases below retain the historical same-source v14 panel"
+  },
+  "source_snapshot": "foldjax-source-v14",
+  "upstream_commit": "b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+  "scope": "native captured features and tape; n=5/200 steps/3 recycles; no independent preprocessing, performance, or universal model admission",
+  "cases": {
+    "5sak": {
+      "report": "bench/experiments/boltz-amp-5sak-v14-2026-09-07.json",
+      "report_sha256": "a3dcf6ccaf9a6424245f038c302b7e91057aa9d95d5277d7994b3b5eb73e605a",
+      "entity_max_rmsd_angstrom": {
+        "entity=0|mol_type=0|asym=0": 2.862566995930582,
+        "entity=1|mol_type=3|asym=1": 0.3809792118834194
+      },
+      "coordinate_gate_passed": false,
+      "raw_confidence_strict_pass": false,
+      "public_confidence_strict_pass": false
+    },
+    "1urn": {
+      "report": "bench/experiments/boltz-amp-1urn-v14-2026-09-07.json",
+      "report_sha256": "0e9f86db552519bf092af2ea30a32f4adc4a9a43b154495a6c39be225eeffe9e",
+      "entity_max_rmsd_angstrom": {
+        "entity=0|mol_type=0|asym=0": 0.04236417861979972,
+        "entity=1|mol_type=2|asym=1": 0.31126919748941806
+      },
+      "coordinate_gate_passed": false,
+      "raw_confidence_strict_pass": false,
+      "public_confidence_strict_pass": false
+    },
+    "3gca": {
+      "report": "bench/experiments/boltz-amp-3gca-v14-2026-09-07.json",
+      "report_sha256": "d93b9e4ca3248c57ba736d7a86e1a3c19fcb9887c012d7f49c41c8711a1b1d0b",
+      "entity_max_rmsd_angstrom": {
+        "entity=0|mol_type=2|asym=0": 0.009712461352849165,
+        "entity=1|mol_type=3|asym=1": 0.011554736139657957
+      },
+      "coordinate_gate_passed": true,
+      "raw_confidence_strict_pass": false,
+      "public_confidence_strict_pass": false
+    }
+  },
+  "verification": {
+    "cpu-post-msa-residual.xml": {
+      "tests": 4656,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 412,
+      "passed": 4244,
+      "sha256": "f7eeceed0f27fcadcd4dacae7d183dd5613aac6f87356518add3e7aa1bb487c0"
+    },
+    "boltz-final-native-opm.xml": {
+      "tests": 603,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 6,
+      "passed": 597,
+      "sha256": "bdeaec4222dbb3d3198d461247c1f53f71bf5d7f410f048fef25a07a97d329c7"
+    },
+    "scope": "full CPU after MSA residual repair; final OPM change covered by final Boltz affected gate; no remote CI or push"
+  },
+  "native_conditioning_1urn_diagnostic": {
+    "not_model_admission": true,
+    "completion_sha256": "909fc8911faf22a46d109fa666b9f9ca4251ab729709a0433b0beda7184621c6",
+    "comparison": {
+      "coordinates": {
+        "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+        "atom_counts": [
+          1225,
+          1225,
+          1225,
+          1225,
+          1225
+        ],
+        "coordinate_diagnostic": {
+          "coordinate_gate_passed": true,
+          "entity_max_rmsd": {
+            "entity=0|mol_type=0|asym=0": 7.857810071267914e-05,
+            "entity=1|mol_type=2|asym=1": 7.101821046631787e-05
+          },
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+          "threshold_angstrom": 0.05
+        },
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "entity=0|mol_type=0|asym=0": 7.857810071267914e-05,
+          "entity=1|mol_type=2|asym=1": 7.101821046631787e-05
+        },
+        "entity_rmsd": {
+          "entity=0|mol_type=0|asym=0": [
+            2.4125424611527573e-05,
+            7.857810071267914e-05,
+            1.5123702142295722e-05,
+            3.4490328476242676e-05,
+            4.826944289883204e-05
+          ],
+          "entity=1|mol_type=2|asym=1": [
+            3.134047061413566e-05,
+            5.760975036357128e-05,
+            1.6874465086040977e-05,
+            3.7650475540968576e-05,
+            7.101821046631787e-05
+          ]
+        },
+        "global_max_rmsd": 7.177152447360151e-05,
+        "global_rmsd": [
+          2.6934193467421388e-05,
+          7.177152447360151e-05,
+          1.5773475750725195e-05,
+          3.565503823363155e-05,
+          5.746670017971667e-05
+        ]
+      },
+      "not_parity_admission": true,
+      "substituted_diagnostic": true
+    }
+  }
+}

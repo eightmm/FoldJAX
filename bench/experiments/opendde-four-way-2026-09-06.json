@@ -1,0 +1,3578 @@
+{
+  "status": "measured",
+  "samples": 5,
+  "scope": "OpenDDE 4 arms x 3 cases; all six pairwise comparisons; raw sampler coordinates; one global Kabsch then entity measurements; no confidence or crystal claim",
+  "bf16_policy": "FoldJAX current embedder/trunk-only candidate, not native AMP equivalence",
+  "threshold_angstrom": 0.05,
+  "default_dtype_changed": false,
+  "opendde": {
+    "protein_ligand_5sak": {
+      "pairs": {
+        "upstream_fp32__vs__upstream_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.578197386846447,
+              0.6779703956511018,
+              0.16836741602146285,
+              0.10950778171364592,
+              0.1471357195733016
+            ],
+            "global_max_rmsd": 0.6779703956511018,
+            "entity_rmsd": {
+              "A": [
+                0.5798837998909072,
+                0.40900400050841845,
+                0.16872012244227133,
+                0.10976591069100207,
+                0.1474957103381854
+              ],
+              "L": [
+                0.052303647059593505,
+                7.077838971168101,
+                0.09034493770256848,
+                0.04880963281387725,
+                0.0603449164051222
+              ]
+            },
+            "entity_max_rmsd": {
+              "A": 0.5798837998909072,
+              "L": 7.077838971168101
+            },
+            "atom_counts": [
+              3074,
+              3074,
+              3074,
+              3074,
+              3074
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "A": 0.5798837998909072,
+              "L": 7.077838971168101
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_fp32__vs__foldjax_fp32": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.04122285420574047,
+              0.02527190212963864,
+              0.027726207679524675,
+              0.02603723575553368,
+              0.023057184644558224
+            ],
+            "global_max_rmsd": 0.04122285420574047,
+            "entity_rmsd": {
+              "A": [
+                0.04131600239534092,
+                0.02533395636496666,
+                0.02779381072788667,
+                0.026101242570978615,
+                0.02306963834044815
+              ],
+              "L": [
+                0.019849775039005386,
+                0.010272027482402813,
+                0.011467861210575981,
+                0.010552355026727649,
+                0.02083518698670995
+              ]
+            },
+            "entity_max_rmsd": {
+              "A": 0.04131600239534092,
+              "L": 0.02083518698670995
+            },
+            "atom_counts": [
+              3074,
+              3074,
+              3074,
+              3074,
+              3074
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "A": 0.04131600239534092,
+              "L": 0.02083518698670995
+            },
+            "coordinate_gate_passed": true,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_fp32__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              4.4765649876187545,
+              4.2181977530188455,
+              3.8548915013994596,
+              4.236301827309249,
+              3.216745669816833
+            ],
+            "global_max_rmsd": 4.4765649876187545,
+            "entity_rmsd": {
+              "A": [
+                4.466723552432586,
+                4.136605019435691,
+                3.855572952216581,
+                4.245739047517664,
+                3.1902731174709387
+              ],
+              "L": [
+                5.914608212994994,
+                11.555483927508947,
+                3.7373954458825134,
+                2.0871201415752236,
+                6.256475477511719
+              ]
+            },
+            "entity_max_rmsd": {
+              "A": 4.466723552432586,
+              "L": 11.555483927508947
+            },
+            "atom_counts": [
+              3074,
+              3074,
+              3074,
+              3074,
+              3074
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "A": 4.466723552432586,
+              "L": 11.555483927508947
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_bf16__vs__foldjax_fp32": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.577209439494894,
+              0.6811607859096275,
+              0.1802407118490213,
+              0.10343622018083701,
+              0.151271241794049
+            ],
+            "global_max_rmsd": 0.6811607859096275,
+            "entity_rmsd": {
+              "A": [
+                0.5788894402179392,
+                0.4143697493025245,
+                0.1806192145433773,
+                0.10367969643567576,
+                0.15162099467674492
+              ],
+              "L": [
+                0.05848388945004208,
+                7.077163486970669,
+                0.09642286814382665,
+                0.046233435050709135,
+                0.06997975893670663
+              ]
+            },
+            "entity_max_rmsd": {
+              "A": 0.5788894402179392,
+              "L": 7.077163486970669
+            },
+            "atom_counts": [
+              3074,
+              3074,
+              3074,
+              3074,
+              3074
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "A": 0.5788894402179392,
+              "L": 7.077163486970669
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_bf16__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              4.564572579398756,
+              4.521395606523669,
+              3.9353952505692473,
+              4.2494145750053125,
+              3.276452331084881
+            ],
+            "global_max_rmsd": 4.564572579398756,
+            "entity_rmsd": {
+              "A": [
+                4.55551652142039,
+                4.474409407573644,
+                3.9364901027667196,
+                4.258905791614421,
+                3.2510697973721014
+              ],
+              "L": [
+                5.904034087425389,
+                9.602315654704585,
+                3.744876145562618,
+                2.085002797207481,
+                6.234162298213334
+              ]
+            },
+            "entity_max_rmsd": {
+              "A": 4.55551652142039,
+              "L": 9.602315654704585
+            },
+            "atom_counts": [
+              3074,
+              3074,
+              3074,
+              3074,
+              3074
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "A": 4.55551652142039,
+              "L": 9.602315654704585
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "foldjax_fp32__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              4.464926541323877,
+              4.215142118765239,
+              3.8395993227380076,
+              4.239125900313318,
+              3.215087179622884
+            ],
+            "global_max_rmsd": 4.464926541323877,
+            "entity_rmsd": {
+              "A": [
+                4.454936263436089,
+                4.133535111697653,
+                3.840178177682807,
+                4.248565121471624,
+                3.1885221045387633
+              ],
+              "L": [
+                5.921553069680948,
+                11.5515720242773,
+                3.740024026955603,
+                2.0899926947341663,
+                6.26243437258385
+              ]
+            },
+            "entity_max_rmsd": {
+              "A": 4.454936263436089,
+              "L": 11.5515720242773
+            },
+            "atom_counts": [
+              3074,
+              3074,
+              3074,
+              3074,
+              3074
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "A": 4.454936263436089,
+              "L": 11.5515720242773
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        }
+      },
+      "coordinate_artifacts": {
+        "upstream_fp32": {
+          "sha256": "c944f9a0c1ff951f87ace43668656285773d721a7b1e25f016c7693404e43b68",
+          "bytes": 170269
+        },
+        "upstream_bf16": {
+          "sha256": "cbd25010d950f682c7d68c5ad7410788bacb1c057273dfbae212b560a97b31e8",
+          "bytes": 170187
+        },
+        "foldjax_fp32": {
+          "sha256": "cfb2c5ef8331108b9f712d800a7f00f0b337d1887106a686f1c4246c527778f4",
+          "bytes": 369008
+        },
+        "foldjax_bf16": {
+          "sha256": "835be24d2d146fd0f10597dbc1fb6ad55deb7dd706ae8a0de55ca7d51075c08e",
+          "bytes": 369008
+        }
+      },
+      "port_provenance": {
+        "foldjax_fp32": {
+          "frozen_python_source_sha256": "29a8473d149ad11cd00c34ee8c8fe9321ec80bc4132e382e5b446f22a45b1190",
+          "wrapper": {
+            "sha256": "d040ea2b381606ddd980e990d7adb978b3f13c9c89438e1a2e0a1a63da490dc2",
+            "bytes": 4044
+          },
+          "driver": {
+            "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+            "bytes": 19286
+          },
+          "input": {
+            "sha256": "2f7c65031688c2c7ca110dddf192e9f670baab939ac13dd4da58edcf64fe82b8",
+            "bytes": 1001
+          },
+          "input_assets": {
+            "input[0].sequences[0].proteinChain.unpairedMsaPath": {
+              "sha256": "6c9a6237d84990287f4ddef29f327b9dfe0715f055b70c20ef777c84adf89165",
+              "bytes": 2209671
+            }
+          },
+          "weights": {
+            "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+            "bytes": 2623328201
+          },
+          "native_provenance": {
+            "sha256": "daa9eccdae54af457641882dc9e8fe9b62ae3b96c62347943f3539a4cf373aac",
+            "bytes": 3483
+          },
+          "native_tape": {
+            "sha256": "796aa82378cf3b86d5e472ecd7d8cce6387169529f25545a5f57ef2165e2d0fe",
+            "bytes": 34381746
+          },
+          "samples": 5,
+          "steps": 200,
+          "cycles": 10,
+          "port_trunk_dtype": "float32",
+          "jax_matmul_precision": "high",
+          "native_tf32": true,
+          "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+        },
+        "foldjax_bf16": {
+          "frozen_python_source_sha256": "29a8473d149ad11cd00c34ee8c8fe9321ec80bc4132e382e5b446f22a45b1190",
+          "wrapper": {
+            "sha256": "d040ea2b381606ddd980e990d7adb978b3f13c9c89438e1a2e0a1a63da490dc2",
+            "bytes": 4044
+          },
+          "driver": {
+            "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+            "bytes": 19286
+          },
+          "input": {
+            "sha256": "2f7c65031688c2c7ca110dddf192e9f670baab939ac13dd4da58edcf64fe82b8",
+            "bytes": 1001
+          },
+          "input_assets": {
+            "input[0].sequences[0].proteinChain.unpairedMsaPath": {
+              "sha256": "6c9a6237d84990287f4ddef29f327b9dfe0715f055b70c20ef777c84adf89165",
+              "bytes": 2209671
+            }
+          },
+          "weights": {
+            "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+            "bytes": 2623328201
+          },
+          "native_provenance": {
+            "sha256": "daa9eccdae54af457641882dc9e8fe9b62ae3b96c62347943f3539a4cf373aac",
+            "bytes": 3483
+          },
+          "native_tape": {
+            "sha256": "796aa82378cf3b86d5e472ecd7d8cce6387169529f25545a5f57ef2165e2d0fe",
+            "bytes": 34381746
+          },
+          "samples": 5,
+          "steps": 200,
+          "cycles": 10,
+          "port_trunk_dtype": "bf16",
+          "jax_matmul_precision": "high",
+          "native_tf32": true,
+          "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+        }
+      }
+    },
+    "protein_rna_1urn": {
+      "pairs": {
+        "upstream_fp32__vs__upstream_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.02713959302906236,
+              0.032140968277304234,
+              0.1630439130565039,
+              0.11510526294029398,
+              0.07001284489397946
+            ],
+            "global_max_rmsd": 0.1630439130565039,
+            "entity_rmsd": {
+              "P": [
+                0.02048326386799893,
+                0.015803059694224724,
+                0.20186824294309294,
+                0.14092101439640276,
+                0.07938936137338203
+              ],
+              "R": [
+                0.036104618152037866,
+                0.049336496733623045,
+                0.03525430041440369,
+                0.03777843694020265,
+                0.04895045867562795
+              ]
+            },
+            "entity_max_rmsd": {
+              "P": 0.20186824294309294,
+              "R": 0.049336496733623045
+            },
+            "atom_counts": [
+              1227,
+              1227,
+              1227,
+              1227,
+              1227
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "P": 0.20186824294309294,
+              "R": 0.049336496733623045
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_fp32__vs__foldjax_fp32": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.024232493520703106,
+              0.01751147279432604,
+              0.014352387574049748,
+              0.013459020344005554,
+              0.02022663681024982
+            ],
+            "global_max_rmsd": 0.024232493520703106,
+            "entity_rmsd": {
+              "P": [
+                0.0251111395448693,
+                0.014963755292144056,
+                0.012960164121301417,
+                0.012974036073500669,
+                0.02172667551184325
+              ],
+              "R": [
+                0.022575791519596322,
+                0.021322273583756383,
+                0.016553073426360976,
+                0.014285477276245299,
+                0.017220775317184064
+              ]
+            },
+            "entity_max_rmsd": {
+              "P": 0.0251111395448693,
+              "R": 0.022575791519596322
+            },
+            "atom_counts": [
+              1227,
+              1227,
+              1227,
+              1227,
+              1227
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "P": 0.0251111395448693,
+              "R": 0.022575791519596322
+            },
+            "coordinate_gate_passed": true,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_fp32__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              1.1194628178075312,
+              1.4969675072307997,
+              1.2522115899631985,
+              1.1804920227803042,
+              1.615342005370642
+            ],
+            "global_max_rmsd": 1.615342005370642,
+            "entity_rmsd": {
+              "P": [
+                0.5607790884746818,
+                1.2918600297963436,
+                0.7732450959311304,
+                0.5175645563419068,
+                1.4155592938850998
+              ],
+              "R": [
+                1.712376287581264,
+                1.80666225319401,
+                1.817480758084056,
+                1.8458083663767737,
+                1.921558713595252
+              ]
+            },
+            "entity_max_rmsd": {
+              "P": 1.4155592938850998,
+              "R": 1.921558713595252
+            },
+            "atom_counts": [
+              1227,
+              1227,
+              1227,
+              1227,
+              1227
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "P": 1.4155592938850998,
+              "R": 1.921558713595252
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_bf16__vs__foldjax_fp32": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.03784747647478235,
+              0.03881218371071037,
+              0.16284864223046785,
+              0.11637713449608542,
+              0.08028065217303769
+            ],
+            "global_max_rmsd": 0.16284864223046785,
+            "entity_rmsd": {
+              "P": [
+                0.03477034327122185,
+                0.020031370584123465,
+                0.20162076448520083,
+                0.14236673882524822,
+                0.09287117078176785
+              ],
+              "R": [
+                0.04280316209422797,
+                0.05901746305708984,
+                0.03527050295031164,
+                0.03893176490372751,
+                0.05045422085378794
+              ]
+            },
+            "entity_max_rmsd": {
+              "P": 0.20162076448520083,
+              "R": 0.05901746305708984
+            },
+            "atom_counts": [
+              1227,
+              1227,
+              1227,
+              1227,
+              1227
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "P": 0.20162076448520083,
+              "R": 0.05901746305708984
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_bf16__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              1.1259259702168007,
+              1.497300308682346,
+              1.2489772688182732,
+              1.1795070286651825,
+              1.6126206952995177
+            ],
+            "global_max_rmsd": 1.6126206952995177,
+            "entity_rmsd": {
+              "P": [
+                0.5647516595828136,
+                1.2874731090082927,
+                0.7654531757925109,
+                0.49234296624932355,
+                1.4041907784645218
+              ],
+              "R": [
+                1.72183175942155,
+                1.8130213388106626,
+                1.8171741582292997,
+                1.8563634629259567,
+                1.9300852052358082
+              ]
+            },
+            "entity_max_rmsd": {
+              "P": 1.4041907784645218,
+              "R": 1.9300852052358082
+            },
+            "atom_counts": [
+              1227,
+              1227,
+              1227,
+              1227,
+              1227
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "P": 1.4041907784645218,
+              "R": 1.9300852052358082
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "foldjax_fp32__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              1.1218432288519722,
+              1.4973368275097363,
+              1.2506394439969737,
+              1.1812213945665269,
+              1.6144555834182164
+            ],
+            "global_max_rmsd": 1.6144555834182164,
+            "entity_rmsd": {
+              "P": [
+                0.5633327653754815,
+                1.2899340440228577,
+                0.7709295401138901,
+                0.5183718445600811,
+                1.4149745683373887
+              ],
+              "R": [
+                1.715218957783201,
+                1.8099741221753263,
+                1.816221059418148,
+                1.846704173245641,
+                1.9202511480941273
+              ]
+            },
+            "entity_max_rmsd": {
+              "P": 1.4149745683373887,
+              "R": 1.9202511480941273
+            },
+            "atom_counts": [
+              1227,
+              1227,
+              1227,
+              1227,
+              1227
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "P": 1.4149745683373887,
+              "R": 1.9202511480941273
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        }
+      },
+      "coordinate_artifacts": {
+        "upstream_fp32": {
+          "sha256": "1e7a3aa8f686a409a4b6ac276dd3908f301856464c77fedc1871c4960e3fd23c",
+          "bytes": 68397
+        },
+        "upstream_bf16": {
+          "sha256": "565e48b10e2b4e2e44674857056177f437e2419aba80c2f177f2e6af8f296762",
+          "bytes": 68352
+        },
+        "foldjax_fp32": {
+          "sha256": "4eb3dec091528750e1895eca9d66d24b14fab4f4f082e3df8bc258085128e122",
+          "bytes": 147368
+        },
+        "foldjax_bf16": {
+          "sha256": "c6ca136cb9b4487cd8f96e41cf3b150fd524d887365c61c2e8c7aa4b10b02cb2",
+          "bytes": 147368
+        }
+      },
+      "port_provenance": {
+        "foldjax_fp32": {
+          "frozen_python_source_sha256": "29a8473d149ad11cd00c34ee8c8fe9321ec80bc4132e382e5b446f22a45b1190",
+          "wrapper": {
+            "sha256": "d040ea2b381606ddd980e990d7adb978b3f13c9c89438e1a2e0a1a63da490dc2",
+            "bytes": 4044
+          },
+          "driver": {
+            "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+            "bytes": 19286
+          },
+          "input": {
+            "sha256": "62bf237016fe27f58271f8930e1bb9164672930c2ea4b63d4fbc23f9a6888801",
+            "bytes": 697
+          },
+          "input_assets": {
+            "input[0].sequences[0].proteinChain.unpairedMsaPath": {
+              "sha256": "d5395d055509a0a1e5807a1e534be5f933d59b7da8295ef5ebb97a82d54357aa",
+              "bytes": 1724580
+            }
+          },
+          "weights": {
+            "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+            "bytes": 2623328201
+          },
+          "native_provenance": {
+            "sha256": "5f26ba63b57782831a602bda6950a994dca598edf2c30501f7e9f26b3532c12d",
+            "bytes": 3474
+          },
+          "native_tape": {
+            "sha256": "4b39e4665e86b42d9a881f21d6f8a5faf46d0b9708f116e815827ab3fa0b7edc",
+            "bytes": 13751731
+          },
+          "samples": 5,
+          "steps": 200,
+          "cycles": 10,
+          "port_trunk_dtype": "float32",
+          "jax_matmul_precision": "high",
+          "native_tf32": true,
+          "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+        },
+        "foldjax_bf16": {
+          "frozen_python_source_sha256": "29a8473d149ad11cd00c34ee8c8fe9321ec80bc4132e382e5b446f22a45b1190",
+          "wrapper": {
+            "sha256": "d040ea2b381606ddd980e990d7adb978b3f13c9c89438e1a2e0a1a63da490dc2",
+            "bytes": 4044
+          },
+          "driver": {
+            "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+            "bytes": 19286
+          },
+          "input": {
+            "sha256": "62bf237016fe27f58271f8930e1bb9164672930c2ea4b63d4fbc23f9a6888801",
+            "bytes": 697
+          },
+          "input_assets": {
+            "input[0].sequences[0].proteinChain.unpairedMsaPath": {
+              "sha256": "d5395d055509a0a1e5807a1e534be5f933d59b7da8295ef5ebb97a82d54357aa",
+              "bytes": 1724580
+            }
+          },
+          "weights": {
+            "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+            "bytes": 2623328201
+          },
+          "native_provenance": {
+            "sha256": "5f26ba63b57782831a602bda6950a994dca598edf2c30501f7e9f26b3532c12d",
+            "bytes": 3474
+          },
+          "native_tape": {
+            "sha256": "4b39e4665e86b42d9a881f21d6f8a5faf46d0b9708f116e815827ab3fa0b7edc",
+            "bytes": 13751731
+          },
+          "samples": 5,
+          "steps": 200,
+          "cycles": 10,
+          "port_trunk_dtype": "bf16",
+          "jax_matmul_precision": "high",
+          "native_tf32": true,
+          "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+        }
+      }
+    },
+    "rna_ligand_3gca": {
+      "pairs": {
+        "upstream_fp32__vs__upstream_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.01319813340364411,
+              0.012409873875254357,
+              0.01433284787414405,
+              0.018476562844257957,
+              0.01755561143402645
+            ],
+            "global_max_rmsd": 0.018476562844257957,
+            "entity_rmsd": {
+              "R": [
+                0.013129758106743841,
+                0.012381261513270746,
+                0.014345614164600584,
+                0.018521921165191912,
+                0.016608858609878187
+              ],
+              "L": [
+                0.0164910340977344,
+                0.013875417277826615,
+                0.013621583149723844,
+                0.015819127555641736,
+                0.04544005451598772
+              ]
+            },
+            "entity_max_rmsd": {
+              "R": 0.018521921165191912,
+              "L": 0.04544005451598772
+            },
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "R": 0.018521921165191912,
+              "L": 0.04544005451598772
+            },
+            "coordinate_gate_passed": true,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_fp32__vs__foldjax_fp32": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.017656871779264824,
+              0.01416840397702622,
+              0.012520210084625099,
+              0.01040696241928078,
+              0.012097346182305487
+            ],
+            "global_max_rmsd": 0.017656871779264824,
+            "entity_rmsd": {
+              "R": [
+                0.01779820743885174,
+                0.01428444415582573,
+                0.01262044541416988,
+                0.010485306322786105,
+                0.01218342149625949
+              ],
+              "L": [
+                0.0062948896638520225,
+                0.004630053792166399,
+                0.004461082774412664,
+                0.004406247807193027,
+                0.00573097562924828
+              ]
+            },
+            "entity_max_rmsd": {
+              "R": 0.01779820743885174,
+              "L": 0.0062948896638520225
+            },
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "R": 0.01779820743885174,
+              "L": 0.0062948896638520225
+            },
+            "coordinate_gate_passed": true,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_fp32__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.473240494644274,
+              0.41663720732711346,
+              0.46491016182406664,
+              0.5486027362977808,
+              0.484494847955929
+            ],
+            "global_max_rmsd": 0.5486027362977808,
+            "entity_rmsd": {
+              "R": [
+                0.47608947298030024,
+                0.41832438668482486,
+                0.467824362792742,
+                0.5520469579351126,
+                0.4878715871544701
+              ],
+              "L": [
+                0.27762360710750733,
+                0.3115793462293044,
+                0.2617701292877194,
+                0.30836818355818113,
+                0.2375286676070149
+              ]
+            },
+            "entity_max_rmsd": {
+              "R": 0.5520469579351126,
+              "L": 0.3115793462293044
+            },
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "R": 0.5520469579351126,
+              "L": 0.3115793462293044
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_bf16__vs__foldjax_fp32": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.02269759244774735,
+              0.017776471669140457,
+              0.017893951814844003,
+              0.020061130761114616,
+              0.022103367298331553
+            ],
+            "global_max_rmsd": 0.02269759244774735,
+            "entity_rmsd": {
+              "R": [
+                0.022831893793230234,
+                0.01781887553690865,
+                0.017979107879203704,
+                0.020143594744731694,
+                0.021600248860482393
+              ],
+              "L": [
+                0.013531704161052658,
+                0.015298103767386523,
+                0.01242150985692816,
+                0.01491291295804794,
+                0.04102050156342346
+              ]
+            },
+            "entity_max_rmsd": {
+              "R": 0.022831893793230234,
+              "L": 0.04102050156342346
+            },
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "R": 0.022831893793230234,
+              "L": 0.04102050156342346
+            },
+            "coordinate_gate_passed": true,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "upstream_bf16__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.4738767071171047,
+              0.4162754240952025,
+              0.4663067700168601,
+              0.5533368552705323,
+              0.4856926548894287
+            ],
+            "global_max_rmsd": 0.5533368552705323,
+            "entity_rmsd": {
+              "R": [
+                0.4767004491465512,
+                0.4178215155321267,
+                0.46921495958631265,
+                0.5569063320696533,
+                0.4890270518450019
+              ],
+              "L": [
+                0.2806906811440397,
+                0.3213262584989398,
+                0.263985696945054,
+                0.30159738156921,
+                0.2437043140253332
+              ]
+            },
+            "entity_max_rmsd": {
+              "R": 0.5569063320696533,
+              "L": 0.3213262584989398
+            },
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "R": 0.5569063320696533,
+              "L": 0.3213262584989398
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        },
+        "foldjax_fp32__vs__foldjax_bf16": {
+          "entity_parity": {
+            "global_rmsd": [
+              0.4802828808778667,
+              0.41437133108133883,
+              0.46306709252182837,
+              0.5501776053387233,
+              0.48424165130731556
+            ],
+            "global_max_rmsd": 0.5501776053387233,
+            "entity_rmsd": {
+              "R": [
+                0.4831939794372561,
+                0.4160603782125381,
+                0.46597567117662897,
+                0.5536319165728478,
+                0.48761843762300994
+              ],
+              "L": [
+                0.2799120008678784,
+                0.30907855152201535,
+                0.26015613481456623,
+                0.3092337445897578,
+                0.23720235141975887
+              ]
+            },
+            "entity_max_rmsd": {
+              "R": 0.5536319165728478,
+              "L": 0.3092337445897578
+            },
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          "coordinate_gate": {
+            "threshold_angstrom": 0.05,
+            "entity_max_rmsd": {
+              "R": 0.5536319165728478,
+              "L": 0.3092337445897578
+            },
+            "coordinate_gate_passed": false,
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+          }
+        }
+      },
+      "coordinate_artifacts": {
+        "upstream_fp32": {
+          "sha256": "eccf98be12174be32568822a5098e3b2f530553be7119906c2a3decd2d1eb5db",
+          "bytes": 40274
+        },
+        "upstream_bf16": {
+          "sha256": "3f473310126d445ceadff66d50fb61c46e90dd1cb6f4d78799ecf5e32067266c",
+          "bytes": 40274
+        },
+        "foldjax_fp32": {
+          "sha256": "905bb69fb35488bdd6d70bfe41b5e9df9ed83d4b90b9a2f5294c43e4544226e3",
+          "bytes": 86408
+        },
+        "foldjax_bf16": {
+          "sha256": "d0cc5807dd4eaa9af412d54550d6e990b5350046cbc2b16f952eaef0f474bf5b",
+          "bytes": 86408
+        }
+      },
+      "port_provenance": {
+        "foldjax_fp32": {
+          "frozen_python_source_sha256": "29a8473d149ad11cd00c34ee8c8fe9321ec80bc4132e382e5b446f22a45b1190",
+          "wrapper": {
+            "sha256": "d040ea2b381606ddd980e990d7adb978b3f13c9c89438e1a2e0a1a63da490dc2",
+            "bytes": 4044
+          },
+          "driver": {
+            "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+            "bytes": 19286
+          },
+          "input": {
+            "sha256": "6efe33e33c008af51e58fab7df4188b5d898f93fe2999cfcc80a059c5a3498db",
+            "bytes": 428
+          },
+          "input_assets": {},
+          "weights": {
+            "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+            "bytes": 2623328201
+          },
+          "native_provenance": {
+            "sha256": "79f53a66d25202305c6f30d8b629083442f11d8e852650ad790abf2ab9e7f188",
+            "bytes": 3286
+          },
+          "native_tape": {
+            "sha256": "6bd6125abfb994d2f6f15b4f06bc39a814e605f3c644a7eea66c1aefc78b9ce1",
+            "bytes": 8077373
+          },
+          "samples": 5,
+          "steps": 200,
+          "cycles": 10,
+          "port_trunk_dtype": "float32",
+          "jax_matmul_precision": "high",
+          "native_tf32": true,
+          "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+        },
+        "foldjax_bf16": {
+          "frozen_python_source_sha256": "29a8473d149ad11cd00c34ee8c8fe9321ec80bc4132e382e5b446f22a45b1190",
+          "wrapper": {
+            "sha256": "d040ea2b381606ddd980e990d7adb978b3f13c9c89438e1a2e0a1a63da490dc2",
+            "bytes": 4044
+          },
+          "driver": {
+            "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+            "bytes": 19286
+          },
+          "input": {
+            "sha256": "6efe33e33c008af51e58fab7df4188b5d898f93fe2999cfcc80a059c5a3498db",
+            "bytes": 428
+          },
+          "input_assets": {},
+          "weights": {
+            "sha256": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+            "bytes": 2623328201
+          },
+          "native_provenance": {
+            "sha256": "79f53a66d25202305c6f30d8b629083442f11d8e852650ad790abf2ab9e7f188",
+            "bytes": 3286
+          },
+          "native_tape": {
+            "sha256": "6bd6125abfb994d2f6f15b4f06bc39a814e605f3c644a7eea66c1aefc78b9ce1",
+            "bytes": 8077373
+          },
+          "samples": 5,
+          "steps": 200,
+          "cycles": 10,
+          "port_trunk_dtype": "bf16",
+          "jax_matmul_precision": "high",
+          "native_tf32": true,
+          "scope": "existing port trunk-only BF16 candidate; not identical native AMP policy; raw sampler coordinates; no confidence or crystal comparison"
+        }
+      }
+    }
+  },
+  "openfold3_native_repeat_diagnostic": {
+    "comparison": {
+      "status": "measured",
+      "input_and_actual_tape_exact": true,
+      "effective_model_exact": true,
+      "entity_parity": {
+        "global_rmsd": [
+          0.0803302396718649,
+          0.025278610666367354,
+          0.048810259400934114,
+          0.10618544199063225,
+          0.021298532466167194
+        ],
+        "global_max_rmsd": 0.10618544199063225,
+        "entity_rmsd": {
+          "1": [
+            0.08038830830702252,
+            0.025309406757789834,
+            0.04888314482074738,
+            0.03326982672591038,
+            0.021343829709476816
+          ],
+          "2": [
+            0.0697780744998995,
+            0.019354474037804978,
+            0.03426291152269735,
+            1.3179871457891017,
+            0.011215845412007172
+          ]
+        },
+        "entity_max_rmsd": {
+          "1": 0.08038830830702252,
+          "2": 1.3179871457891017
+        },
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "coordinate_gate": {
+        "threshold_angstrom": 0.05,
+        "entity_max_rmsd": {
+          "1": 0.08038830830702252,
+          "2": 1.3179871457891017
+        },
+        "coordinate_gate_passed": false,
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+      },
+      "bf16_admitted": false
+    },
+    "actual_chunks_equal": true,
+    "trunk_hashes_equal": false,
+    "a": {
+      "chunks": [
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        }
+      ],
+      "trunk_boundaries": [
+        {
+          "0": {
+            "shape": [
+              1,
+              437,
+              449
+            ],
+            "dtype": "float32",
+            "sha256": "62e2f489b1b7e34d580fdfcea5060738a256e6dc3bc5885fe91246d215024108"
+          },
+          "1": {
+            "shape": [
+              1,
+              437,
+              384
+            ],
+            "dtype": "float32",
+            "sha256": "3ba65d3d8f383e60bb85d5ead99dfd6d19a1509d1ad55bb8d64954a9e52a49e3"
+          },
+          "2": {
+            "shape": [
+              1,
+              437,
+              437,
+              128
+            ],
+            "dtype": "float32",
+            "sha256": "49e9d88c3badf6a7e2bac62473d79199d468caf03e5d464d6929f35cbf80b485"
+          }
+        }
+      ],
+      "scope": "native defaults; diagnostic CPU synchronization at trunk capture",
+      "wrapper": {
+        "sha256": "2afe5ce96f33930b6e80027cee950bce3fc992266dac2ac4dde5af26bac8df1f",
+        "bytes": 2351
+      },
+      "native_source": {
+        "commit": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+        "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "b": {
+      "chunks": [
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "template_embedder.template_pair_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "msa_module",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "pairformer_stack",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        },
+        {
+          "module": "diffusion_module.diffusion_conditioning",
+          "cap": 1024,
+          "chosen": 1024
+        }
+      ],
+      "trunk_boundaries": [
+        {
+          "0": {
+            "shape": [
+              1,
+              437,
+              449
+            ],
+            "dtype": "float32",
+            "sha256": "38ee98dda41db1c2d05d95c41f4756b16b00034c7c9b3d7568e05c32206ae577"
+          },
+          "1": {
+            "shape": [
+              1,
+              437,
+              384
+            ],
+            "dtype": "float32",
+            "sha256": "3ba65d3d8f383e60bb85d5ead99dfd6d19a1509d1ad55bb8d64954a9e52a49e3"
+          },
+          "2": {
+            "shape": [
+              1,
+              437,
+              437,
+              128
+            ],
+            "dtype": "float32",
+            "sha256": "49e9d88c3badf6a7e2bac62473d79199d468caf03e5d464d6929f35cbf80b485"
+          }
+        }
+      ],
+      "scope": "native defaults; diagnostic CPU synchronization at trunk capture",
+      "wrapper": {
+        "sha256": "2afe5ce96f33930b6e80027cee950bce3fc992266dac2ac4dde5af26bac8df1f",
+        "bytes": 2351
+      },
+      "native_source": {
+        "commit": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+        "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "port_four_way_status": "not run: full augmentation tape adapter and mixed operator policy missing"
+  }
+}

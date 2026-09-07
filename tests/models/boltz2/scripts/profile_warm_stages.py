@@ -16,8 +16,7 @@ from benchmark_warm_predict import _load_features, _memory_stats
 
 from foldjax.models.boltz2.bridge.native import load_params
 from foldjax.models.boltz2.models.trunk_blocks.trunk import (
-    _cast_float_feats,
-    _cast_params,
+    _cast_trunk_params,
     boltz2_sample_forward,
     boltz2_trunk_forward,
 )
@@ -79,8 +78,8 @@ def main() -> None:
         np.any(feats_np["template_mask"] != 0)
     )
     params = load_params(args.weights)
-    trunk_params = _cast_params(params["trunk"], jnp.bfloat16)
-    trunk_feats = _cast_float_feats(feats, jnp.bfloat16)
+    trunk_params = _cast_trunk_params(params["trunk"], jnp.bfloat16)
+    trunk_feats = feats
 
     trunk_fn = jax.jit(
         partial(

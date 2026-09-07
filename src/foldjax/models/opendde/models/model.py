@@ -552,20 +552,19 @@ def prepare_structural_features(
     }
 
 
-def _slice_samples(value, start: int, size: int):
+def _slice_samples(value, start: int, size: int, *, sample_axis: int = -3):
     """Narrow a supplied noise/augmentation tape to one chunk of samples.
 
     `None` passes through: the sampler draws its own when nothing was given.
-    The sample axis is the third from the end on a coordinate tape and the
-    leading one otherwise, which is the same rule Protenix's own slicer uses.
+    Coordinates and rotations have two trailing axes; translations have only
+    the trailing xyz axis and must request `sample_axis=-2`. Rank alone cannot
+    distinguish an initial coordinate tape from a per-step translation tape.
     """
     if value is None:
         return None
-    if value.ndim > 3:
-        return value[..., start : start + size, :, :]
-    if value.ndim == 3:
-        return value[start : start + size]
-    return value[..., start : start + size]
+    index = [slice(None)] * value.ndim
+    index[sample_axis] = slice(start, start + size)
+    return value[tuple(index)]
 
 
 def _slice_step_noises(value, start: int, size: int):
@@ -964,7 +963,7 @@ def opendde_infer_static(
                     _slice_samples(init_noise, start, size),
                     _slice_step_noises(step_noises, start, size),
                     _slice_samples(rotations, start, size),
-                    _slice_samples(translations, start, size),
+                    _slice_samples(translations, start, size, sample_axis=-2),
                     size,
                 )
             )

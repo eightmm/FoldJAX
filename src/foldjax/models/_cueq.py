@@ -64,7 +64,7 @@ def load_cueq():
     return cuex
 
 
-def triangle_multiplication_precision(cuex):
+def triangle_multiplication_precision(cuex, *, dtype):
     """Translate JAX's float32 policy for the FFI, which cannot inherit it."""
     policy = jax.config.jax_default_matmul_precision
     modes = {
@@ -84,7 +84,34 @@ def triangle_multiplication_precision(cuex):
             f"cuEquivariance multiplication cannot represent JAX precision {policy!r}; "
             "select XLA multiplication for this policy"
         )
+    # Native cuEq overrides float32 policies for half-precision operands.
+    # Its TF32 branch uses FP32-only conversion instructions: forwarding
+    # BF16 with TF32 can silently turn every gated projection into zero.
+    if jnp.dtype(dtype) in (jnp.dtype(jnp.bfloat16), jnp.dtype(jnp.float16)):
+        return cuex.TriMulPrecision.DEFAULT
     return getattr(cuex.TriMulPrecision, modes[policy])
+
+
+def triangle_attention_precision():
+    """Pass the active float32 policy across the attention FFI boundary."""
+    policy = jax.config.jax_default_matmul_precision
+    modes = {
+        None: lax.Precision.DEFAULT,
+        "default": lax.Precision.DEFAULT,
+        "bfloat16": lax.Precision.DEFAULT,
+        "high": lax.Precision.HIGH,
+        "tensorfloat32": lax.Precision.HIGH,
+        "highest": lax.Precision.HIGHEST,
+        "float32": lax.Precision.HIGHEST,
+        "TF32_TF32_F32": lax.Precision.HIGH,
+        "F32_F32_F32": lax.Precision.HIGHEST,
+    }
+    if policy not in modes:
+        raise ValueError(
+            f"cuEquivariance attention cannot represent JAX precision {policy!r}; "
+            "select XLA attention for this policy"
+        )
+    return modes[policy]
 
 
 def cueq_attention_core(
@@ -117,6 +144,7 @@ def cueq_attention_core(
     as anything that names the problem.
     """
 
+    precision = triangle_attention_precision()
     cuex = load_cueq()
     # Everything before the (N_row, H, N_col, D) suffix is batch. The three
     # operands carry it in different amounts (the bias has a 1 where q has rows),
@@ -140,6 +168,6 @@ def cueq_attention_core(
         bias=flat(triangle_bias),
         mask=flat(mask_bias) == 0,
         scale=scale,
-        precision=lax.Precision.DEFAULT,
+        precision=precision,
     )
     return output.reshape((*lead, *output.shape[-4:]))

@@ -6,6 +6,8 @@ from collections.abc import Mapping
 
 import jax.numpy as jnp
 
+from foldjax.models.boltz2.models.primitives._common import linear as _linear
+
 Params = Mapping[str, object]
 
 
@@ -16,4 +18,4 @@ def bfactor_forward(params: Params, s: jnp.ndarray) -> jnp.ndarray:
     histogram of ``num_bins`` logits.
     """
 
-    return s @ params["bfactor"]["kernel"] + params["bfactor"]["bias"]
+    return _linear(s, params["bfactor"]["kernel"], params["bfactor"]["bias"])

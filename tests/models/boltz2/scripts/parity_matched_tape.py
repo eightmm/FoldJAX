@@ -248,6 +248,17 @@ def load_tape(path: Path, meta: dict) -> dict[str, np.ndarray]:
     return tape
 
 
+def captured_sampler_trunk(upstream_trunk: dict) -> dict:
+    """Require every learned boundary; recomputing rel-pos confounds isolation."""
+    names = ("s", "z", "s_inputs", "relative_position_encoding")
+    missing = set(names).difference(upstream_trunk)
+    if missing:
+        raise ValueError(
+            f"Incomplete upstream trunk capture: {sorted(missing)}; recapture native"
+        )
+    return {name: jnp.asarray(upstream_trunk[name], jnp.float32) for name in names}
+
+
 def main() -> int:
     args = parse_args()
     os.environ["BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"] = (
@@ -258,12 +269,10 @@ def main() -> int:
 
     from foldjax.models.boltz2.bridge.native import load_params
     from foldjax.models.boltz2.models.trunk_blocks.trunk import (
-        _cast_float_feats,
-        _cast_params,
+        _cast_trunk_params,
         _sample_schedule,
         boltz2_sample_forward,
         boltz2_trunk_forward,
-        relative_position_forward,
     )
 
     meta = json.loads((args.tape_dir / "tape.json").read_text(encoding="utf-8"))
@@ -271,6 +280,11 @@ def main() -> int:
     tape = load_tape(args.tape_dir / "tape.npz", meta)
     with np.load(args.tape_dir / "trunk.npz", allow_pickle=False) as archive:
         upstream_trunk = {name: archive[name] for name in archive.files}
+    captured_trunk = (
+        captured_sampler_trunk(upstream_trunk)
+        if args.trunk_source == "upstream"
+        else None
+    )
     with np.load(args.tape_dir / "coordinate.npz", allow_pickle=False) as archive:
         upstream_coordinate = np.asarray(archive["coordinate"], np.float64)
 
@@ -306,14 +320,12 @@ def main() -> int:
         triangle_backend=args.triangle_backend,
         glu_backend="xla",
     )
-    # `boltz2_trunk_forward` takes no dtype: `boltz2_predict` narrows the trunk
-    # by casting the weights and the float features before the call, and the
-    # comparison is only honest if this harness narrows it the same way.
+    # Match production's operator-selective AMP kernels; raw features and
+    # autocast-disabled parameter islands retain their original precision.
     trunk_params = params["trunk"]
     trunk_features = features
     if compute_dtype != jnp.float32:
-        trunk_params = _cast_params(trunk_params, compute_dtype)
-        trunk_features = _cast_float_feats(features, compute_dtype)
+        trunk_params = _cast_trunk_params(trunk_params, compute_dtype)
 
     started = time.perf_counter()
     trunk = boltz2_trunk_forward(
@@ -340,17 +352,7 @@ def main() -> int:
 
     sampler_trunk = trunk
     if args.trunk_source == "upstream":
-        # The relative position encoding is a deterministic function of integer
-        # features, so recomputing it here is exact; only the three learned
-        # tensors need to come from the capture.
-        sampler_trunk = {
-            "s": jnp.asarray(upstream_trunk["s"], jnp.float32),
-            "z": jnp.asarray(upstream_trunk["z"], jnp.float32),
-            "s_inputs": jnp.asarray(upstream_trunk["s_inputs"], jnp.float32),
-            "relative_position_encoding": relative_position_forward(
-                params["trunk"]["rel_pos"], features
-            ),
-        }
+        sampler_trunk = captured_trunk
 
     started = time.perf_counter()
     output = boltz2_sample_forward(

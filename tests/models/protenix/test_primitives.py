@@ -25,6 +25,33 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import (
 )
 
 
+@pytest.mark.parametrize("affine", ["both", "weight", "bias", "none"])
+@pytest.mark.parametrize("param_dtype", [jnp.float32, jnp.bfloat16])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_bf16_layer_norm_uses_float32_math_with_quantized_affine(
+    affine, param_dtype, compiled,
+) -> None:
+    rng = np.random.default_rng(83)
+    x = jnp.asarray(rng.normal(size=(3, 37)), dtype=jnp.bfloat16)
+    weight = jnp.asarray(rng.normal(size=37), dtype=param_dtype)
+    bias = jnp.asarray(rng.normal(size=37), dtype=param_dtype)
+    params = LayerNormParams(
+        weight if affine in ("both", "weight") else None,
+        bias if affine in ("both", "bias") else None,
+    )
+    wide = np.asarray(x, dtype=np.float32)
+    centered = wide - wide.mean(axis=-1, keepdims=True)
+    expected = centered / np.sqrt((centered**2).mean(axis=-1, keepdims=True) + 1e-5)
+    for value, multiply in ((params.weight, True), (params.bias, False)):
+        if value is not None:
+            value = np.asarray(value.astype(jnp.bfloat16), dtype=np.float32)
+            expected = expected * value if multiply else expected + value
+    expected = np.asarray(jnp.asarray(expected, dtype=jnp.bfloat16), dtype=np.float32)
+    actual = (jax.jit(layer_norm) if compiled else layer_norm)(x, params)
+    assert actual.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(np.asarray(actual, dtype=np.float32), expected)
+
+
 def test_layer_norm_matches_reference_formula() -> None:
     rng = np.random.default_rng(1)
     x = rng.normal(size=(2, 3, 4)).astype(np.float32)

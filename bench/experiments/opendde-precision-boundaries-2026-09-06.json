@@ -1,0 +1,3275 @@
+{
+  "schema_version": 1,
+  "status": "in_progress_not_admitted",
+  "followup": "opendde-native-policy-panel-2026-09-06.json extends this historical record to seven XLA-attention inputs, post-fix shipped-default5SAK, native5SAK repeat and actual RNG-consumer controls; no model acceptance.",
+  "scope": "OpenDDE released checkpoint, seed 101, 200 steps, 10 cycles, five index-paired samples. Not default-policy or all-input closure.",
+  "measurement": "One proper unweighted whole-system Kabsch per sample, then entity-instance RMSD. No entity refits, rematching or crystal comparison.",
+  "confidence_gate": {
+    "atol": 0.0001,
+    "rtol": 0.0001,
+    "relaxation": false
+  },
+  "precision_qualification": "The rotation-fix-highest-trunk report predates the attention FFI correction: requested highest still executed TF32 attention. Only ffi-highest reports have actual HIGHEST/use_tf32=False trace evidence. TF32-off native controls do not replace native TF32 defaults.",
+  "source_report_root": "opendde-closure-20260906",
+  "exclusions": [
+    "These archived runs lack independent JAX consumer observation; the separately identified follow-up3GCA observer passes211 byte-exact events, not automatically this panel",
+    "Instrumented captures are not performance benchmarks",
+    "Native default TF32 strict confidence remains open; this record contains four XLA-attention cases, extended to seven in the follow-up record",
+    "Shipped cuEq attention backend still has an unresolved 5SAK structure gate; XLA candidate success is not shipped-default acceptance",
+    "No ordinary-RNG/writer/extra-checkpoint/all-model closure"
+  ],
+  "comparisons": [
+    {
+      "source_report": "protein_ligand_5sak/xla-attention-high-report.json",
+      "source_report_sha256": "fe8d09e165c8dccde4da1a080de03bc43ffe34ab925371c72877c07f78541730",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [],
+        "backend_environment": {
+          "PROTENIX_TRIANGLE_BACKEND": "xla_jit",
+          "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": null
+        },
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "ad0db5e237db3e7b4e623d447b09a58c77313b61f47c19505bedcb7369180ca5",
+        "859d6595337b6e22bdc9673f9f298582e0c071fe39bba865493cacecf8c18cff"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "A": 0.008825312686347573,
+          "L": 0.005514117583823824
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "A": [
+            0.008825312686347573,
+            0.006937999548415165,
+            0.006769584161570858,
+            0.0048892502185845154,
+            0.006621969553207346
+          ],
+          "L": [
+            0.003151918826933099,
+            0.0036016324084292488,
+            0.005514117583823824,
+            0.003487465151259284,
+            0.0037784381437701766
+          ]
+        },
+        "global_rmsd": [
+          0.008802741018250822,
+          0.006923144678936317,
+          0.006762911099309341,
+          0.0048822135969051,
+          0.006608881071527626
+        ],
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0007374882698059082,
+            "max_scaled_error": 4.291255666043208
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.09855175018310547,
+            "max_scaled_error": 145.8395282123288
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.041131019592285156,
+            "max_scaled_error": 32.134811658879855
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0009995102882385254,
+            "max_scaled_error": 7.2075615804399105
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0708460807800293,
+            "max_scaled_error": 193.6571350494896
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.013103604316711426,
+            "max_scaled_error": 94.21803626479294
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.009556233882904053,
+            "max_scaled_error": 68.04036104292425
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0028876662254333496,
+            "max_scaled_error": 17.863867144509335
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00008934736251831055,
+            "max_scaled_error": 0.5696032570818613
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00009036064147949219,
+            "max_scaled_error": 0.4830095804440508
+          },
+          "summary.chain_pair_gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0004603862762451172,
+            "max_scaled_error": 1.432030783544802
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00009036064147949219,
+            "max_scaled_error": 0.4830095804440508
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00009036064147949219,
+            "max_scaled_error": 0.4830095804440508
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007927417755126953,
+            "max_scaled_error": 0.041267343066344796
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000940561294555664,
+            "max_scaled_error": 0.5774353629173937
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000029861927032470703,
+            "max_scaled_error": 0.2521575164588458
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00004559755325317383,
+            "max_scaled_error": 0.28582987734498194
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00009036064147949219,
+            "max_scaled_error": 0.4830095804440508
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00078582763671875,
+            "max_scaled_error": 0.08440769440874417
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000009655952453613281,
+            "max_scaled_error": 0.05223324361575149
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00007212162017822266,
+            "max_scaled_error": 0.38617915240250666
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "protein_rna_1urn/xla-attention-high-report.json",
+      "source_report_sha256": "e926c4dd9fc7f38bac89df87715e3ff2cb0732c3df3449db5007922a2bfe88ae",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [],
+        "backend_environment": {
+          "PROTENIX_TRIANGLE_BACKEND": "xla_jit",
+          "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": null
+        },
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "d567afb3e09ba5c6d91f4f08292b29d101451d92560d6fb392728b0cbb23e20a",
+        "d39ecddef5f1ce51160e7d0a9e3ef02371798189f6e9c38b68c92228d595986f"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "P": 0.00740915189039114,
+          "R": 0.003699339969592519
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "P": [
+            0.002670011985202214,
+            0.0026291310822908177,
+            0.00740915189039114,
+            0.00315970845880212,
+            0.0027676927868876553
+          ],
+          "R": [
+            0.0028005333834839824,
+            0.0030700907426399926,
+            0.0026372929790453668,
+            0.003699339969592519,
+            0.003103147433698039
+          ]
+        },
+        "global_rmsd": [
+          0.002717537755300098,
+          0.002795269764339177,
+          0.006140379117270537,
+          0.003363191657599972,
+          0.0028924638110701
+        ],
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00029724836349487305,
+            "max_scaled_error": 1.6914100247874495
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.015850067138671875,
+            "max_scaled_error": 46.08411297027486
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0030121803283691406,
+            "max_scaled_error": 7.791196895283372
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0012772679328918457,
+            "max_scaled_error": 8.417645969106779
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.041553497314453125,
+            "max_scaled_error": 69.77224606973367
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.01658034324645996,
+            "max_scaled_error": 62.53391106448056
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00554049015045166,
+            "max_scaled_error": 20.457149079696787
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0024476051330566406,
+            "max_scaled_error": 17.468141161893072
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000039249658584594727,
+            "max_scaled_error": 0.2850798493072678
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000013887882232666016,
+            "max_scaled_error": 0.07214293689375549
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00003814697265625,
+            "max_scaled_error": 0.2756522702602534
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000013887882232666016,
+            "max_scaled_error": 0.07214293689375549
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000013887882232666016,
+            "max_scaled_error": 0.07214293689375549
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00003546476364135742,
+            "max_scaled_error": 0.18774856963988878
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000051915645599365234,
+            "max_scaled_error": 0.2773032157207937
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00012740492820739746,
+            "max_scaled_error": 0.9193538303861214
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00001710653305053711,
+            "max_scaled_error": 0.12196404869561256
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000013887882232666016,
+            "max_scaled_error": 0.07214293689375549
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0035552978515625,
+            "max_scaled_error": 0.3954945867739311
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000045299530029296875,
+            "max_scaled_error": 0.02319284481206731
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000011801719665527344,
+            "max_scaled_error": 0.06112795337159717
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "rna_ligand_3gca/xla-attention-high-report.json",
+      "source_report_sha256": "2dcbbf80a33bf75894fc18eff4652d5de98ec72799641c103b72640fa6e66f42",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [],
+        "backend_environment": {
+          "PROTENIX_TRIANGLE_BACKEND": "xla_jit",
+          "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": null
+        },
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "8c826a184c67f659116350777bc9aaed12a07acbade9b3ec495415c15b6d8204",
+        "ed4ea4ef88c0136965281169a36375aa10322d746378a09ec10f9bc24af584b8"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.0020452213247858855,
+          "R": 0.002855095875431302
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "L": [
+            0.0016379111998044255,
+            0.0018260447787362558,
+            0.0010718753119957085,
+            0.0014120675366820282,
+            0.0020452213247858855
+          ],
+          "R": [
+            0.0016970009715821716,
+            0.0018412579210943592,
+            0.001811301784308668,
+            0.002855095875431302,
+            0.0020493180459545818
+          ]
+        },
+        "global_rmsd": [
+          0.0016959508647586112,
+          0.001840983973283376,
+          0.0018006298965505879,
+          0.00283553138881403,
+          0.0020492440472017434
+        ],
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000060677528381347656,
+            "max_scaled_error": 0.3125208180923152
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.009764671325683594,
+            "max_scaled_error": 12.415657875966541
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00195920467376709,
+            "max_scaled_error": 8.803060197612766
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.001171112060546875,
+            "max_scaled_error": 7.633761141864943
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.018884658813476562,
+            "max_scaled_error": 48.34246354366378
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.006341457366943359,
+            "max_scaled_error": 47.015475025378365
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.002399444580078125,
+            "max_scaled_error": 11.02443968300369
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0033769607543945312,
+            "max_scaled_error": 12.408035858908264
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000015735626220703125,
+            "max_scaled_error": 0.11658406053009093
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007212162017822266,
+            "max_scaled_error": 0.037366089662186464
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000002652406692504883,
+            "max_scaled_error": 0.02036187909395312
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007212162017822266,
+            "max_scaled_error": 0.037366089662186464
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007212162017822266,
+            "max_scaled_error": 0.037366089662186464
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000006854534149169922,
+            "max_scaled_error": 0.03503800968992915
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000012040138244628906,
+            "max_scaled_error": 0.06162340891485112
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00002586841583251953,
+            "max_scaled_error": 0.1429219752383397
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000073909759521484375,
+            "max_scaled_error": 0.05536603602667964
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007212162017822266,
+            "max_scaled_error": 0.037366089662186464
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006866455078125,
+            "max_scaled_error": 0.07105823395970903
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000014781951904296875,
+            "max_scaled_error": 0.07815719207681465
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007450580596923828,
+            "max_scaled_error": 0.038757065257968265
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "protein_dna_7r6r/xla-attention-high-report.json",
+      "source_report_sha256": "92bd5f83172e57db44c84c99e19782592d4c0e6a140bc4b05e3cb7f9f5a6f3e7",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [],
+        "backend_environment": {
+          "PROTENIX_TRIANGLE_BACKEND": "xla_jit",
+          "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": null
+        },
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "6555843eaddf901a3f5cbc9ad9d414e442bc35072e1b0322092d77f6e50a51b0",
+        "8162fbd0ffad277fbad0f0c584bc5944f768a43608e02d1908db5a26110cb3dc"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "A": 0.01097850435078784,
+          "B": 0.006950478379809307,
+          "D": 0.006585479579306342
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "A": [
+            0.01097850435078784,
+            0.006942605381650125,
+            0.006587719364351771,
+            0.009171337024396988,
+            0.007196091749351823
+          ],
+          "B": [
+            0.005766675486424495,
+            0.0035185760475854007,
+            0.0036744019643564154,
+            0.006950478379809307,
+            0.00313872356062493
+          ],
+          "D": [
+            0.005206181600764312,
+            0.0035353087308979134,
+            0.003764147003823116,
+            0.006585479579306342,
+            0.003157446208578667
+          ]
+        },
+        "global_rmsd": [
+          0.009471557204562886,
+          0.005999715382072046,
+          0.005771348105542069,
+          0.00842990448399126,
+          0.006123283342791845
+        ],
+        "atom_counts": [
+          2529,
+          2529,
+          2529,
+          2529,
+          2529
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0007897615432739258,
+            "max_scaled_error": 4.945577004388237
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.09249114990234375,
+            "max_scaled_error": 131.08905429648524
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.017333507537841797,
+            "max_scaled_error": 24.248580953559102
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.001424551010131836,
+            "max_scaled_error": 10.368860498457154
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.06666946411132812,
+            "max_scaled_error": 270.65850752684037
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.01660323143005371,
+            "max_scaled_error": 119.65471690333375
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.008261799812316895,
+            "max_scaled_error": 75.39390892097397
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0028061866760253906,
+            "max_scaled_error": 17.50039747136941
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000036209821701049805,
+            "max_scaled_error": 0.25977835112415926
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00003254413604736328,
+            "max_scaled_error": 0.17907343860752492
+          },
+          "summary.chain_pair_gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0003966093063354492,
+            "max_scaled_error": 2.1340492757558245
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00003451108932495117,
+            "max_scaled_error": 0.1803926690413279
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00003039836883544922,
+            "max_scaled_error": 0.1630947425674208
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000022232532501220703,
+            "max_scaled_error": 0.11807708584992377
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000022172927856445312,
+            "max_scaled_error": 0.11763580864372741
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000020235776901245117,
+            "max_scaled_error": 0.15011772413217364
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00003731250762939453,
+            "max_scaled_error": 0.2670575319566759
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000028014183044433594,
+            "max_scaled_error": 0.14634075563267124
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00133514404296875,
+            "max_scaled_error": 0.15501093668591576
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000011861324310302734,
+            "max_scaled_error": 0.0636308301668202
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000022590160369873047,
+            "max_scaled_error": 0.11867124155261936
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "protein_ligand_5sak/rotation-fix-high-report.json",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": null,
+        "backend_environment": null,
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "ad0db5e237db3e7b4e623d447b09a58c77313b61f47c19505bedcb7369180ca5",
+        "7642e806b62b2c8792aab106d96266a4bb0716fea727bc1dfac97dead3e31842"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "A": 0.052765534684185676,
+          "L": 0.01836032772500623
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "A": [
+            0.03379768431996266,
+            0.052765534684185676,
+            0.04442449547020867,
+            0.024603089456511684,
+            0.037802024593845025
+          ],
+          "L": [
+            0.006618223594736135,
+            0.007828893660524344,
+            0.01836032772500623,
+            0.006691510015915378,
+            0.009237715427118084
+          ]
+        },
+        "global_rmsd": [
+          0.033702392076320566,
+          0.05261423267148796,
+          0.04431651559852846,
+          0.02453629472423069,
+          0.03769781414756622
+        ],
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0018211007118225098,
+            "max_scaled_error": 11.108962599278135
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.2719850540161133,
+            "max_scaled_error": 170.9193078744853
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.20154762268066406,
+            "max_scaled_error": 129.6842729842347
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.013712465763092041,
+            "max_scaled_error": 100.68999103446485
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0913238525390625,
+            "max_scaled_error": 364.9341038318797
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.055062294006347656,
+            "max_scaled_error": 273.6010384637142
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.027153491973876953,
+            "max_scaled_error": 156.21539052561795
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.010411441326141357,
+            "max_scaled_error": 93.35039915085557
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006898343563079834,
+            "max_scaled_error": 4.664464928521563
+          },
+          "summary.chain_iptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006739497184753418,
+            "max_scaled_error": 3.599839005342865
+          },
+          "summary.chain_pair_gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0035343170166015625,
+            "max_scaled_error": 10.99314426469925
+          },
+          "summary.chain_pair_iptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006739497184753418,
+            "max_scaled_error": 3.599839005342865
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006739497184753418,
+            "max_scaled_error": 3.599839005342865
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000438690185546875,
+            "max_scaled_error": 0.22807344225141704
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00010758638381958008,
+            "max_scaled_error": 0.6605066462886644
+          },
+          "summary.chain_ptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0002422332763671875,
+            "max_scaled_error": 1.3067898084543255
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0003848075866699219,
+            "max_scaled_error": 2.4113014741993544
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006739497184753418,
+            "max_scaled_error": 3.599839005342865
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00438690185546875,
+            "max_scaled_error": 0.4699613381196921
+          },
+          "summary.ptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0002619624137878418,
+            "max_scaled_error": 1.4123941102105102
+          },
+          "summary.ranking_score": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0005866885185241699,
+            "max_scaled_error": 3.1415665932645043
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "protein_ligand_5sak/rotation-fix-highest-trunk-report.json",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": null,
+        "backend_environment": null,
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "f713743fe7c8466ca897c92adfbadbc2364249755212ace5215c9335c4838deb",
+        "679b572b8e8ab5de2b2c3125d9f1a5cabefa26d8bf6ec1f47ba093d0bdb55a20"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": false
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "highest",
+          "native_tf32": false
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "A": 0.06081061190637544,
+          "L": 0.01888016904716901
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "A": [
+            0.03520207506983023,
+            0.06081061190637544,
+            0.04932859160526399,
+            0.025665706283476343,
+            0.03411050025760316
+          ],
+          "L": [
+            0.0064031987549579335,
+            0.010024739185768258,
+            0.01888016904716901,
+            0.0087606307011647,
+            0.0068516484648525194
+          ]
+        },
+        "global_rmsd": [
+          0.03510227971139157,
+          0.06063716280624885,
+          0.0492051707554215,
+          0.025599231621340687,
+          0.03401452655627975
+        ],
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0015731453895568848,
+            "max_scaled_error": 10.327793676406937
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.2665996551513672,
+            "max_scaled_error": 160.0900329623402
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.23538589477539062,
+            "max_scaled_error": 141.92240829555084
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.01302388310432434,
+            "max_scaled_error": 95.62203423263968
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0861349105834961,
+            "max_scaled_error": 342.9270886620256
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.052659034729003906,
+            "max_scaled_error": 266.3166682118963
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.027967453002929688,
+            "max_scaled_error": 154.94954600429625
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.010897815227508545,
+            "max_scaled_error": 94.69831150616564
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006799399852752686,
+            "max_scaled_error": 4.601216044023887
+          },
+          "summary.chain_iptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0007129907608032227,
+            "max_scaled_error": 3.8084938263366293
+          },
+          "summary.chain_pair_gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0033838748931884766,
+            "max_scaled_error": 10.524291069279242
+          },
+          "summary.chain_pair_iptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0007129907608032227,
+            "max_scaled_error": 3.8084938263366293
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0007129907608032227,
+            "max_scaled_error": 3.8084938263366293
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00004416704177856445,
+            "max_scaled_error": 0.22992375436634055
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000044465065002441406,
+            "max_scaled_error": 0.260943501334037
+          },
+          "summary.chain_ptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00024968385696411133,
+            "max_scaled_error": 1.3505810932381668
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0003643035888671875,
+            "max_scaled_error": 2.2842152801146054
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0007129907608032227,
+            "max_scaled_error": 3.8084938263366293
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0044097900390625,
+            "max_scaled_error": 0.4736907020989497
+          },
+          "summary.ptm": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0002675056457519531,
+            "max_scaled_error": 1.4459661025336883
+          },
+          "summary.ranking_score": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006178021430969238,
+            "max_scaled_error": 3.3082495775398804
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "protein_ligand_5sak/ffi-highest-trunk-report.json",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [
+          {
+            "dtype": "float32",
+            "precision": "HIGHEST",
+            "use_tf32": false
+          }
+        ],
+        "backend_environment": null,
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "f713743fe7c8466ca897c92adfbadbc2364249755212ace5215c9335c4838deb",
+        "998e232b149be821ed6355c19c3f047a50485777bc3d9c44f8e9491fd2572269"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": false
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "highest",
+          "native_tf32": false
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "A": 0.00020534735766907904,
+          "L": 0.00008212356915464755
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "A": [
+            0.00015829275916270195,
+            0.0001358145623019506,
+            0.00012936596377441988,
+            0.00006167473455849917,
+            0.00020534735766907904
+          ],
+          "L": [
+            0.00006279942235830547,
+            0.000053252239767549935,
+            0.00004018466542535318,
+            0.00002088095963849145,
+            0.00008212356915464755
+          ]
+        },
+        "global_rmsd": [
+          0.00015790177358347864,
+          0.0001354776409697641,
+          0.0001290233006481178,
+          0.00006151465485608342,
+          0.0002048416808124803
+        ],
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000005841255187988281,
+            "max_scaled_error": 0.0369465612478226
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00042724609375,
+            "max_scaled_error": 1.171059534892638
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0011653900146484375,
+            "max_scaled_error": 1.1410233952747812
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007331371307373047,
+            "max_scaled_error": 0.051687034334751414
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0012801885604858398,
+            "max_scaled_error": 4.973111669349341
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0006492137908935547,
+            "max_scaled_error": 1.8409402952976142
+          },
+          "raw.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000047087669372558594,
+            "max_scaled_error": 0.34450820615459277
+          },
+          "raw.resolved": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000013828277587890625,
+            "max_scaled_error": 0.07846251512781068
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 3.5762786865234375e-7,
+            "max_scaled_error": 0.0022801400598833183
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009558559286788735
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000030994415283203125,
+            "max_scaled_error": 0.009629522634933685
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009558559286788735
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009558559286788735
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006197865300243962
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 2.980232238769531e-7,
+            "max_scaled_error": 0.001832466460641241
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 4.76837158203125e-7,
+            "max_scaled_error": 0.004026367675313711
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 2.980232238769531e-7,
+            "max_scaled_error": 0.0018678511034274357
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009558559286788735
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000152587890625,
+            "max_scaled_error": 0.0016313055362676334
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 2.384185791015625e-7,
+            "max_scaled_error": 0.0012856423861638394
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006383299450247909
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "protein_rna_1urn/ffi-highest-report.json",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [
+          {
+            "dtype": "float32",
+            "precision": "HIGHEST",
+            "use_tf32": false
+          }
+        ],
+        "backend_environment": null,
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "0c98152b4e0b1000f0b5c3f27def7d0bcdd8501437a7c754e6529e0480ef5621",
+        "e0ebe6e85de78448c0f0044dffebd24f2782d49e51b563bae2592cc67693d68c"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": false
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "highest",
+          "native_tf32": false
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "P": 0.000029413150989952743,
+          "R": 0.000007618216492055927
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "P": [
+            0.000004272864912246285,
+            0.000005794344448666661,
+            0.0000061191468591658595,
+            0.000007898962553782663,
+            0.000029413150989952743
+          ],
+          "R": [
+            0.000006236393985574847,
+            0.000007359550145620207,
+            0.000006388166017755611,
+            0.00000629325774871385,
+            0.000007618216492055927
+          ]
+        },
+        "global_rmsd": [
+          0.00000506528705687817,
+          0.000006399800385625024,
+          0.000006216955533437723,
+          0.000007363537758997457,
+          0.000023993961546282855
+        ],
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000017285346984863281,
+            "max_scaled_error": 0.009519396837886149
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000845789909362793,
+            "max_scaled_error": 0.4262079503731752
+          },
+          "full.token_pair_pde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000017642974853515625,
+            "max_scaled_error": 0.05841782108070165
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000003993511199951172,
+            "max_scaled_error": 0.025110548222760383
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0005321502685546875,
+            "max_scaled_error": 1.0508996837090243
+          },
+          "raw.pde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00016355514526367188,
+            "max_scaled_error": 0.6086924802087046
+          },
+          "raw.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000030994415283203125,
+            "max_scaled_error": 0.08146086909661306
+          },
+          "raw.resolved": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000017821788787841797,
+            "max_scaled_error": 0.14118048796887267
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.066394805908203e-7,
+            "max_scaled_error": 0.003680412864385229
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009287853809181044
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.00043074896303648384
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009287853809181044
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009287853809181044
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.00031553885611737385
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006367923799895508
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 6.556510925292969e-7,
+            "max_scaled_error": 0.004734005077177408
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 8.940696716308594e-8,
+            "max_scaled_error": 0.000637520897138107
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009287853809181044
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000152587890625,
+            "max_scaled_error": 0.0016970469177470208
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.0003051862683025546
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.7881393432617188e-7,
+            "max_scaled_error": 0.0009260980258090555
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "rna_ligand_3gca/rotation-fix-high-v2-report.json",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [
+          {
+            "dtype": "float32",
+            "precision": "HIGH",
+            "use_tf32": true
+          }
+        ],
+        "backend_environment": null,
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "8c826a184c67f659116350777bc9aaed12a07acbade9b3ec495415c15b6d8204",
+        "75c6fbe3152786205808e681109957a3fecc6b3cb262e8af112580972732f346"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.0019361326590387666,
+          "R": 0.0020375033243253526
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "L": [
+            0.0019361326590387666,
+            0.0018667186333193612,
+            0.0008357125825514179,
+            0.0007779229119910254,
+            0.001755841322429787
+          ],
+          "R": [
+            0.0018202651262286137,
+            0.001878393119835735,
+            0.0020375033243253526,
+            0.0017337581142651808,
+            0.0019504214450336958
+          ]
+        },
+        "global_rmsd": [
+          0.001822425483162354,
+          0.001878182681492144,
+          0.0020221244210290876,
+          0.001721194346739749,
+          0.0019470759275000897
+        ],
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ]
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00006181001663208008,
+            "max_scaled_error": 0.3177675934847286
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.010753631591796875,
+            "max_scaled_error": 14.184347479809183
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.001845717430114746,
+            "max_scaled_error": 8.293564433973199
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0011188983917236328,
+            "max_scaled_error": 6.358332908247685
+          },
+          "raw.pae": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.02005767822265625,
+            "max_scaled_error": 49.48504836730292
+          },
+          "raw.pde": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.005986690521240234,
+            "max_scaled_error": 44.64574794423962
+          },
+          "raw.plddt": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0029697418212890625,
+            "max_scaled_error": 9.179371337202266
+          },
+          "raw.resolved": {
+            "passed": false,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.003731966018676758,
+            "max_scaled_error": 13.569405310217002
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00001665949821472168,
+            "max_scaled_error": 0.12240711779652999
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000010669231414794922,
+            "max_scaled_error": 0.05527720344042843
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000007212162017822266,
+            "max_scaled_error": 0.05536369163997733
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000010669231414794922,
+            "max_scaled_error": 0.05527720344042843
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000010669231414794922,
+            "max_scaled_error": 0.05527720344042843
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000009775161743164062,
+            "max_scaled_error": 0.04996617838132859
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000011801719665527344,
+            "max_scaled_error": 0.06040160662172441
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00001537799835205078,
+            "max_scaled_error": 0.0849633256463478
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000008851289749145508,
+            "max_scaled_error": 0.066304496770971
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000010669231414794922,
+            "max_scaled_error": 0.05527720344042843
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0009765625,
+            "max_scaled_error": 0.10105621109631936
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00001055002212524414,
+            "max_scaled_error": 0.055776362374677674
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000010132789611816406,
+            "max_scaled_error": 0.05270979179260173
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    },
+    {
+      "source_report": "rna_ligand_3gca/ffi-highest-report.json",
+      "foldjax_execution_policy": {
+        "observed_ffi_trace_attributes": [
+          {
+            "dtype": "float32",
+            "precision": "HIGHEST",
+            "use_tf32": false
+          }
+        ],
+        "backend_environment": {
+          "PROTENIX_TRIANGLE_BACKEND": null,
+          "PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND": null
+        },
+        "xla_flags": ""
+      },
+      "arm_provenance_sha256": [
+        "8eb214ab40aba472dc290db99c6e0f3a0ebed1ecf05b460f683920e9a0b2da76",
+        "cf02367f9bfd1adbd93552995be130e0b65136feccb894ca2a354c6f451cc229"
+      ],
+      "passed": true,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": false
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "highest",
+          "native_tf32": false
+        }
+      ],
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.00000886281262924703,
+          "R": 0.0000051964801903990275
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "coordinates": {
+        "entity_rmsd": {
+          "L": [
+            0.000005938912524236869,
+            0.000004221253120897545,
+            0.0000029968112128493346,
+            0.0000060044242057394615,
+            0.00000886281262924703
+          ],
+          "R": [
+            0.0000051964801903990275,
+            0.00000456526449486382,
+            0.000004233951605430856,
+            0.00000508506663955265,
+            0.00000423001404580457
+          ]
+        },
+        "global_rmsd": [
+          0.000005210842948243991,
+          0.000004559274960039259,
+          0.000004214807961243326,
+          0.000005103159696029746,
+          0.000004357720454044339
+        ],
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ]
+      },
+      "confidence": {
+        "passed": true,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 4.76837158203125e-7,
+            "max_scaled_error": 0.0024546261587484667
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "full.token_pair_pae": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00005340576171875,
+            "max_scaled_error": 0.1656670918717252
+          },
+          "full.token_pair_pde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000009179115295410156,
+            "max_scaled_error": 0.04140860679505557
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.contact_probs": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000005364418029785156,
+            "max_scaled_error": 0.03504609301092901
+          },
+          "raw.pae": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00021076202392578125,
+            "max_scaled_error": 0.5075034187019969
+          },
+          "raw.pde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.00007843971252441406,
+            "max_scaled_error": 0.48030534864719715
+          },
+          "raw.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000016689300537109375,
+            "max_scaled_error": 0.030788055466001406
+          },
+          "raw.resolved": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.000006318092346191406,
+            "max_scaled_error": 0.029853627357297813
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.4901161193847656e-7,
+            "max_scaled_error": 0.0010949194903508907
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006175919650791269
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006175919650791269
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006175919650791269
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006093558548007369
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 1.1920928955078125e-7,
+            "max_scaled_error": 0.0006093397030456078
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.066394805908203e-7,
+            "max_scaled_error": 0.00396861979644202
+          },
+          "summary.disorder": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0
+          },
+          "summary.gpde": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.0004465071088396798
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.iptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.00030879708866104804
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "bitwise_equal": true,
+            "max_absolute_error": null,
+            "max_scaled_error": null
+          },
+          "summary.plddt": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 0.0000152587890625,
+            "max_scaled_error": 0.0015790109028334324
+          },
+          "summary.ptm": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.0003151346040737072
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "bitwise_equal": false,
+            "max_absolute_error": 5.960464477539063e-8,
+            "max_scaled_error": 0.0003100399781049767
+          }
+        }
+      },
+      "tape": {
+        "msa.npz": {
+          "exact": true
+        },
+        "tape.npz": {
+          "exact": true
+        }
+      },
+      "native_input_passed": true
+    }
+  ],
+  "attention_same_qkv_probe": {
+    "arm": "foldjax",
+    "implementation_sha256": "860b9ee19361ade2fd6b5e9df86cf35e930a62369aac570d559649e58aeee535",
+    "records": [
+      {
+        "comparisons": {
+          "high-kernel": {
+            "max_abs": 0.0013354718685150146,
+            "rmse": 0.00017328492010510295
+          },
+          "high-native-query": {
+            "max_abs": 0.0013648271560668945,
+            "rmse": 0.00017902741067232775
+          },
+          "high-xla-native-query": {
+            "max_abs": 0.00015120208263397217,
+            "rmse": 0.000005955296555231554
+          },
+          "highest-kernel": {
+            "max_abs": 5.960464477539062e-7,
+            "rmse": 8.986074170872051e-8
+          },
+          "highest-native-query": {
+            "max_abs": 5.960464477539062e-7,
+            "rmse": 6.526759657711335e-8
+          },
+          "highest-xla-native-query": {
+            "max_abs": 1.4901161193847656e-7,
+            "rmse": 2.100653722583284e-8
+          }
+        },
+        "file": "n32-d32.npz",
+        "sha256": "33ed187357c22482800f11370b4a2e6248742d8686e429d69f464f4149657c8e",
+        "shape": [
+          1,
+          1,
+          4,
+          32,
+          32
+        ]
+      },
+      {
+        "comparisons": {
+          "high-kernel": {
+            "unsupported": "Installed cuEq FP32/TF32 requires D<=32"
+          },
+          "high-native-query": {
+            "unsupported": "Installed cuEq FP32/TF32 requires D<=32"
+          },
+          "high-xla-native-query": {
+            "max_abs": 0.000027999281883239746,
+            "rmse": 7.355755638424786e-7
+          },
+          "highest-kernel": {
+            "unsupported": "Installed cuEq FP32/TF32 requires D<=32"
+          },
+          "highest-native-query": {
+            "unsupported": "Installed cuEq FP32/TF32 requires D<=32"
+          },
+          "highest-xla-native-query": {
+            "max_abs": 1.7881393432617188e-7,
+            "rmse": 1.8303692370853614e-8
+          }
+        },
+        "file": "n32-d64.npz",
+        "sha256": "29e3a0c32e76ca820de41087e36ebfe57e851f8a28252af1f492635a06fa90e3",
+        "shape": [
+          1,
+          1,
+          4,
+          32,
+          64
+        ]
+      },
+      {
+        "comparisons": {
+          "high-kernel": {
+            "max_abs": 0.01908278465270996,
+            "rmse": 0.0009679772564771208
+          },
+          "high-native-query": {
+            "max_abs": 0.023482084274291992,
+            "rmse": 0.0009686752877624248
+          },
+          "high-xla-native-query": {
+            "max_abs": 0.0006316900253295898,
+            "rmse": 0.00005088493281507514
+          },
+          "highest-kernel": {
+            "max_abs": 0.0000016689300537109375,
+            "rmse": 7.623295782571586e-8
+          },
+          "highest-native-query": {
+            "max_abs": 0.0000013113021850585938,
+            "rmse": 6.832602168441453e-8
+          },
+          "highest-xla-native-query": {
+            "max_abs": 2.384185791015625e-7,
+            "rmse": 1.570948856713684e-8
+          }
+        },
+        "file": "n437-d32.npz",
+        "sha256": "29fb460e18d774dbeb1e39f9201793d96dcd177776f8196ff66c1c41eacac077",
+        "shape": [
+          1,
+          1,
+          4,
+          437,
+          32
+        ]
+      }
+    ],
+    "scope": "Same-QKV native Torch/cuEq attention controls; no model admission.\n\nThe native arm saves its actual divided queries. Replaying them with scale=1\nisolates the query-scaling boundary without reconstructing rounded operands.\n",
+    "version": "0.11.1",
+    "wrapper_sha256": "c1cf445b7e21686ce21432b0738f6f3c8b72053e5371651fdac463c2667f913b"
+  },
+  "confidence_identical_native_inputs_after_ffi_fix": {
+    "wrapper_sha256": null,
+    "comparisons": {
+      "high-legacy-axis": {
+        "atol": 0.0001,
+        "leaves": {
+          "pae": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.031331777572631836,
+            "max_scaled_error": 256.1122496113708,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "pde": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.015064239501953125,
+            "max_scaled_error": 47.30294410254681,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "plddt": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.012099623680114746,
+            "max_scaled_error": 84.82012661838327,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "resolved": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.005792140960693359,
+            "max_scaled_error": 28.14595420215367,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "high-native-axis": {
+        "atol": 0.0001,
+        "leaves": {
+          "pae": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.03192639350891113,
+            "max_scaled_error": 257.25165694466347,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "pde": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.010750770568847656,
+            "max_scaled_error": 38.6408916345717,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "plddt": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.004975676536560059,
+            "max_scaled_error": 35.26771055723905,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "resolved": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.001852869987487793,
+            "max_scaled_error": 16.178185809788094,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "highest-legacy-axis": {
+        "atol": 0.0001,
+        "leaves": {
+          "pae": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.02434372901916504,
+            "max_scaled_error": 178.32831839817197,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "pde": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.016686439514160156,
+            "max_scaled_error": 45.45446288943651,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "plddt": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.008762896060943604,
+            "max_scaled_error": 58.610063365567775,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "resolved": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.004778385162353516,
+            "max_scaled_error": 20.179529208814067,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "highest-native-axis": {
+        "atol": 0.0001,
+        "leaves": {
+          "pae": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.0005826950073242188,
+            "max_scaled_error": 1.6639736062661359,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "pde": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.0001537799835205078,
+            "max_scaled_error": 1.0348513128478403,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "plddt": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.000030994415283203125,
+            "max_scaled_error": 0.2611577804785539,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "resolved": {
+            "bitwise_equal": false,
+            "dtype_equal": true,
+            "max_absolute_error": 0.00001341104507446289,
+            "max_scaled_error": 0.08097000610412983,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      }
+    }
+  }
+}

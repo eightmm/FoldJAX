@@ -24,6 +24,7 @@ from foldjax.models._cp import (
     transpose_perm,
 )
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
+from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
 from foldjax.models.boltz2.models.primitives.glu_backend import gated_linear_unit
 
 TriangleDirection = Literal["outgoing", "incoming"]
@@ -75,13 +76,16 @@ def triangle_multiplication_forward(
         msg = f"Unsupported triangle multiplication backend: {backend!r}"
         raise ValueError(msg)
 
+    native_amp = (
+        x.dtype == jnp.float32 and params["p_in"]["kernel"].dtype == jnp.bfloat16
+    )
     x = _layer_norm(x, params["norm_in"]["scale"], params["norm_in"]["bias"], eps)
     out_dtype = x.dtype
     x_in = x
     mask = mask.astype(x.dtype)
     # sigmoid GLU: sigmoid(g_in(x)) * p_in(x)
     projected = gated_linear_unit(
-        x,
+        x.astype(jnp.bfloat16) if native_amp else x,
         params["g_in"]["kernel"],
         params["p_in"]["kernel"],
         jax.nn.sigmoid,
@@ -89,16 +93,19 @@ def triangle_multiplication_forward(
     )
     projected = projected * mask[..., None]
     # Coordinate sampling amplifies the small reduction-order differences of a
-    # BF16-output contraction. Keep the historical FP32 contraction as the
-    # accuracy default; the explicit BF16 mode is available for throughput
-    # experiments where that drift has been validated for the target workload.
-    if contraction_precision == "float32":
-        contraction_input = projected.astype(jnp.float32)
-    elif contraction_precision == "bf16":
-        contraction_input = projected
-    else:
+    # BF16-output contraction. Keep the historical precision choice for
+    # homogeneous controls; native AMP follows the publisher's BF16 contraction.
+    if contraction_precision not in ("float32", "bf16"):
         msg = f"Unsupported contraction_precision: {contraction_precision!r}"
         raise ValueError(msg)
+    if native_amp:
+        # Native einsum remains autocast-enabled even after its explicit
+        # a.float()/b.float(): its operands and output are BF16.
+        contraction_input = projected.astype(jnp.bfloat16)
+    elif contraction_precision == "float32":
+        contraction_input = projected.astype(jnp.float32)
+    else:
+        contraction_input = projected
     a, b = jnp.split(contraction_input, 2, axis=-1)
 
     if cp_layout() == "2d":
@@ -121,11 +128,15 @@ def triangle_multiplication_forward(
             direction = "outgoing"
         out = _chunked_triangle_einsum(a, b, direction, chunk_size)
     out = shard_pair_rows(out)
-    out = out.astype(out_dtype)
+    out = out.astype(jnp.bfloat16 if native_amp else out_dtype)
 
+    if native_amp:
+        # Plain Boltz multiplication uses nn.LayerNorm, unlike fused cuEq's
+        # dtype-preserving norm_out.
+        out = out.astype(jnp.float32)
     out = _layer_norm(out, params["norm_out"]["scale"], params["norm_out"]["bias"], eps)
     out = _linear(out, params["p_out"]["kernel"])
-    gate = jax.nn.sigmoid(_linear(x_in, params["g_out"]["kernel"]))
+    gate = _sigmoid(_linear(x_in, params["g_out"]["kernel"]))
     return out * gate
 
 
@@ -255,4 +266,6 @@ def _chunked_triangle_einsum(
 
 
 def _linear(x: jnp.ndarray, kernel: jnp.ndarray) -> jnp.ndarray:
+    if kernel.dtype == jnp.bfloat16:
+        x = x.astype(kernel.dtype)
     return x @ kernel

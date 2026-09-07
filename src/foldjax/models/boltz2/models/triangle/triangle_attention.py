@@ -16,7 +16,11 @@ from foldjax.models._cp import (
     shard_pair_rows,
 )
 from foldjax.models._cp_attention import ring_triangle_attention_2d
-from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
+from foldjax.models.boltz2.models.primitives._common import (
+    layer_norm as _shared_layer_norm,
+)
+from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
+from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 
 TriangleAttentionParams = Mapping[
     str, Mapping[str, jnp.ndarray | Mapping[str, jnp.ndarray]]
@@ -129,7 +133,15 @@ def triangle_attention_forward(
         x = jnp.swapaxes(x, -2, -3)
         mask = jnp.swapaxes(mask, -1, -2)
 
-    x = _layer_norm(
+    # Native AMP normalizes the FP32 pair residual before its BF16 projections.
+    # CUDA Welford/FMA rounding matters at that next cast; leave pure FP32 and
+    # the native custom BF16-input LayerNorm exception on their existing paths.
+    norm = (
+        amp_layer_norm
+        if x.dtype == jnp.float32 and params["linear"]["kernel"].dtype == jnp.bfloat16
+        else _layer_norm
+    )
+    x = norm(
         x,
         params["layer_norm"]["scale"],
         params["layer_norm"]["bias"],
@@ -336,7 +348,7 @@ def _attention_ring_2d(
         precision=precision,
     )
     out = jnp.swapaxes(out, -2, -3)
-    gate = jax.nn.sigmoid(gate)
+    gate = _sigmoid(gate)
     gate = gate.reshape(gate.shape[:-1] + (no_heads, c_hidden))
     out = out * gate
     out = out.reshape(out.shape[:-2] + (c_hidden * no_heads,))
@@ -356,6 +368,9 @@ def _attention(
 ) -> jnp.ndarray:
     no_heads = tri_bias.shape[2]
     c_hidden = params["linear_g"]["kernel"].shape[-1] // no_heads
+    native_amp = (
+        q_x.dtype == jnp.float32 and params["linear_q"]["kernel"].dtype == jnp.bfloat16
+    )
 
     qg = _linear(
         q_x,
@@ -396,8 +411,11 @@ def _attention(
             precision=precision,
         )
     else:
-        q_scale = jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
-        q = q / q_scale
+        if native_amp:
+            q = (q.astype(jnp.float32) / float(c_hidden**0.5)).astype(q.dtype)
+        else:
+            q_scale = jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
+            q = q / q_scale
 
     if triangle_backend == "pallas":
         from foldjax.models.boltz2.models.triangle.triangle_attention_pallas import (
@@ -412,13 +430,22 @@ def _attention(
 
         out = tokamax_attention_core(q, k, v, tri_bias, mask_bias)
     elif triangle_backend == "xla":
-        out = _attention_core(q, k, v, tri_bias, mask_bias, chunk_size, q_chunk_size)
+        out = _attention_core(
+            q,
+            k,
+            v,
+            tri_bias,
+            mask_bias,
+            chunk_size,
+            q_chunk_size,
+            native_amp=native_amp,
+        )
     elif triangle_backend != "cueq":
         msg = f"Unsupported triangle_backend: {triangle_backend!r}"
         raise ValueError(msg)
     out = jnp.swapaxes(out, -2, -3)
 
-    gate = jax.nn.sigmoid(gate)
+    gate = _sigmoid(gate)
     gate = gate.reshape(gate.shape[:-1] + (no_heads, c_hidden))
     out = out * gate
     out = out.reshape(out.shape[:-2] + (c_hidden * no_heads,))
@@ -432,6 +459,8 @@ def _attention_block(
     tri_bias: jnp.ndarray,
     mask_bias_blk: jnp.ndarray,
     q_chunk_size: int | None = None,
+    *,
+    native_amp: bool = False,
 ) -> jnp.ndarray:
     """Exact attention for a chunk of query rows (axis=1 already sliced)."""
     n_q = q_blk.shape[-2]
@@ -442,9 +471,26 @@ def _attention_block(
             q_sub = jax.lax.dynamic_slice_in_dim(q_blk, start, size, axis=-2)
             bias_sub = jax.lax.dynamic_slice_in_dim(tri_bias, start, size, axis=-2)
             out = out.at[..., start : start + size, :].set(
-                _attention_block(q_sub, k, v, bias_sub, mask_bias_blk)
+                _attention_block(
+                    q_sub, k, v, bias_sub, mask_bias_blk, native_amp=native_amp
+                )
             )
         return out
+
+    if native_amp:
+        scores = jnp.matmul(q_blk, jnp.swapaxes(k, -1, -2))
+        # The native non-kernel implementation uses two in-place additions:
+        # each write rounds to the BF16 score buffer, even with FP32 masks.
+        scores = (
+            scores.astype(jnp.float32) + mask_bias_blk.astype(jnp.float32)
+        ).astype(q_blk.dtype)
+        scores = (scores.astype(jnp.float32) + tri_bias.astype(jnp.float32)).astype(
+            q_blk.dtype
+        )
+        probabilities = jax.nn.softmax(scores.astype(jnp.float32), axis=-1).astype(
+            v.dtype
+        )
+        return jnp.matmul(probabilities, v)
 
     scores = jnp.matmul(
         q_blk.astype(jnp.float32),
@@ -463,6 +509,8 @@ def _attention_core(
     mask_bias: jnp.ndarray,
     chunk_size: int,
     q_chunk_size: int | None = None,
+    *,
+    native_amp: bool = False,
 ) -> jnp.ndarray:
     """Compute attention, chunking over axis=1 (the triangle outer/batch axis).
 
@@ -478,7 +526,9 @@ def _attention_core(
     """
     n = q.shape[1]
     if chunk_size <= 0 or chunk_size >= n:
-        return _attention_block(q, k, v, tri_bias, mask_bias, q_chunk_size)
+        return _attention_block(
+            q, k, v, tri_bias, mask_bias, q_chunk_size, native_amp=native_amp
+        )
 
     out = jnp.zeros_like(q)
     for start in range(0, n, chunk_size):
@@ -488,7 +538,15 @@ def _attention_core(
         v_blk = jax.lax.dynamic_slice_in_dim(v, start, size, axis=1)
         mask_blk = jax.lax.dynamic_slice_in_dim(mask_bias, start, size, axis=1)
         out = out.at[:, start : start + size].set(
-            _attention_block(q_blk, k_blk, v_blk, tri_bias, mask_blk, q_chunk_size)
+            _attention_block(
+                q_blk,
+                k_blk,
+                v_blk,
+                tri_bias,
+                mask_blk,
+                q_chunk_size,
+                native_amp=native_amp,
+            )
         )
     return out
 
@@ -498,4 +556,19 @@ def _linear(
     kernel: jnp.ndarray,
     precision: jax.lax.Precision = jax.lax.Precision.HIGHEST,
 ) -> jnp.ndarray:
+    if kernel.dtype == jnp.bfloat16:
+        x = x.astype(kernel.dtype)
     return jnp.matmul(x, kernel, precision=precision)
+
+
+def _layer_norm(x, scale, bias, eps):
+    # Native triangle attention has a custom BF16-input exception: autocast
+    # is disabled and affine values are narrowed before the fused norm.
+    if x.dtype == jnp.bfloat16 and scale.dtype == jnp.float32:
+        return _shared_layer_norm(
+            x.astype(jnp.float32),
+            scale.astype(jnp.bfloat16).astype(jnp.float32),
+            bias.astype(jnp.bfloat16).astype(jnp.float32),
+            eps,
+        ).astype(jnp.bfloat16)
+    return _shared_layer_norm(x, scale, bias, eps)

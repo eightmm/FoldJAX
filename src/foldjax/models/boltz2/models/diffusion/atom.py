@@ -36,6 +36,10 @@ from foldjax.models.boltz2.models.diffusion.diffusion_transformer import (
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.primitives._scan_utils import stack_layer_params
+from foldjax.models.boltz2.models.primitives.native_amp_norm import (
+    amp_affine,
+    amp_layer_norm,
+)
 
 Params = Mapping[str, object]
 
@@ -225,9 +229,10 @@ def atom_to_token_index_from_feats(
             "and index payload"
         )
     marker = feats[COMPACT_ATOM_TO_TOKEN]
-    if getattr(marker, "ndim", None) != 0 or getattr(
-        marker, "dtype", None
-    ) != jnp.uint8:
+    if (
+        getattr(marker, "ndim", None) != 0
+        or getattr(marker, "dtype", None) != jnp.uint8
+    ):
         raise TypeError(f"{COMPACT_ATOM_TO_TOKEN} must be a scalar uint8")
     indices = feats[ATOM_TO_TOKEN_INDEX]
     if indices.ndim != 2 or indices.shape != feats["atom_pad_mask"].shape:
@@ -285,15 +290,14 @@ def token_to_rep_atom_index_from_feats(
             "marker and index payload"
         )
     marker = feats[COMPACT_TOKEN_TO_REP_ATOM]
-    if getattr(marker, "ndim", None) != 0 or getattr(
-        marker, "dtype", None
-    ) != jnp.uint8:
+    if (
+        getattr(marker, "ndim", None) != 0
+        or getattr(marker, "dtype", None) != jnp.uint8
+    ):
         raise TypeError(f"{COMPACT_TOKEN_TO_REP_ATOM} must be a scalar uint8")
     indices = feats[TOKEN_TO_REP_ATOM_INDEX]
     if indices.ndim != 2 or indices.shape != feats["token_pad_mask"].shape:
-        raise ValueError(
-            f"{TOKEN_TO_REP_ATOM_INDEX} must match token_pad_mask shape"
-        )
+        raise ValueError(f"{TOKEN_TO_REP_ATOM_INDEX} must match token_pad_mask shape")
     atom_pad_mask = feats["atom_pad_mask"]
     if (
         atom_pad_mask.ndim != 2
@@ -351,6 +355,7 @@ def diffusion_transformer_forward(
     bias_params: list[Params] | None = None,
     bias_input: jnp.ndarray | None = None,
     bias_normed_input: jnp.ndarray | None = None,
+    bias_compute_dtype: jnp.dtype | None = None,
     precomputed_s_terms: tuple[jnp.ndarray, ...] | None = None,
     precomputed_s_terms_multiplicity: int = 1,
     precomputed_s_terms_num_windows: int | None = None,
@@ -423,6 +428,7 @@ def diffusion_transformer_forward(
                     bias_input,
                     eps,
                     normed_input=bias_normed_input,
+                    compute_dtype=bias_compute_dtype,
                 )
                 if bias_per_layer is None
                 else bias_per_layer[i]
@@ -450,6 +456,7 @@ def diffusion_transformer_forward(
                 bias_input,
                 eps,
                 normed_input=bias_normed_input,
+                compute_dtype=bias_compute_dtype,
             )
         else:
             layer_params, layer_bias, layer_s_terms_i = layer
@@ -537,13 +544,25 @@ def _projection_layer_forward(
     eps: float,
     *,
     normed_input: jnp.ndarray | None = None,
+    compute_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     """One layer of DiffusionConditioning token bias projection."""
+    scale, bias = params["norm"]["scale"], params["norm"]["bias"]
+    if compute_dtype == jnp.bfloat16:
+        if normed_input is None:
+            if x is None:
+                raise ValueError("x is required when normed_input is None")
+            normed = amp_layer_norm(x, scale, bias, eps)
+        else:
+            normed = amp_affine(normed_input, scale, bias)
+        return _linear(
+            normed, params["linear"]["kernel"], compute_dtype=compute_dtype
+        ).astype(jnp.float32)
     if normed_input is None:
         if x is None:
             msg = "x is required when normed_input is None"
             raise ValueError(msg)
-        in_dtype = x.dtype
+        in_dtype = x.dtype if compute_dtype is None else jnp.float32
         xf = x.astype(jnp.float32)
         mean = jnp.mean(xf, axis=-1, keepdims=True)
         variance = jnp.mean(jnp.square(xf - mean), axis=-1, keepdims=True)
@@ -551,7 +570,10 @@ def _projection_layer_forward(
     else:
         x_n = normed_input
     normed = x_n * params["norm"]["scale"] + params["norm"]["bias"]
-    return normed @ params["linear"]["kernel"]
+    projected = _linear(normed, params["linear"]["kernel"], compute_dtype=compute_dtype)
+    # Native precomputes the mixed-precision bias, then widens it on entry to
+    # the FP32 score model. Lazy evaluation must keep the same rounding.
+    return projected if compute_dtype is None else projected.astype(jnp.float32)
 
 
 def atom_transformer_forward(

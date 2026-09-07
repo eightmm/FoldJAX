@@ -10,10 +10,12 @@ Mirrors ``boltz.model.modules.confidencev2.ConfidenceModule`` /
 from __future__ import annotations
 
 from collections.abc import Mapping
+from numbers import Integral
 from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models._cp_atom import replicate_atoms
@@ -24,6 +26,7 @@ from foldjax.models.boltz2.models.diffusion.atom import (
     gather_tokens_to_atoms,
     token_to_rep_atom_index_from_feats,
 )
+from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.trunk_blocks.pairformer import (
     pairformer_module_forward,
 )
@@ -37,10 +40,6 @@ Params = Mapping[str, Any]
 # const.chain_type_ids
 _NONPOLYMER = 3
 _PROTEIN = 0
-
-
-def _linear(x: jnp.ndarray, kernel: jnp.ndarray) -> jnp.ndarray:
-    return x @ kernel
 
 
 def _layer_norm(
@@ -59,11 +58,19 @@ def _cdist(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
     return jnp.sqrt(jnp.maximum(d2, 0.0))
 
 
+def _native_softmax(logits: jnp.ndarray) -> jnp.ndarray:
+    # CUDA autocast softmax returns FP32 even when its preceding Linear
+    # returned BF16. Keep full-precision direct callers unchanged.
+    if logits.dtype in (jnp.bfloat16, jnp.float16):
+        logits = logits.astype(jnp.float32)
+    return jax.nn.softmax(logits, axis=-1)
+
+
 def compute_aggregated_metric(logits: jnp.ndarray, end: float = 1.0) -> jnp.ndarray:
     num_bins = logits.shape[-1]
     bin_width = end / num_bins
     bounds = jnp.arange(0.5 * bin_width, end, bin_width)
-    probs = jax.nn.softmax(logits, axis=-1)
+    probs = _native_softmax(logits)
     shape = (1,) * (probs.ndim - 1) + bounds.shape
     return jnp.sum(probs * bounds.reshape(shape), axis=-1)
 
@@ -71,6 +78,34 @@ def compute_aggregated_metric(logits: jnp.ndarray, end: float = 1.0) -> jnp.ndar
 def _tm_function(d: jnp.ndarray, n_res: jnp.ndarray) -> jnp.ndarray:
     d0 = 1.24 * (jnp.clip(n_res, 19, None) - 15) ** (1 / 3) - 1.8
     return 1.0 / (1.0 + (d / d0) ** 2)
+
+
+def _resolve_confidence_chain_ids(
+    asym_id: jnp.ndarray,
+    confidence_chain_ids: tuple[int, ...] | None,
+) -> tuple[int, ...]:
+    """Resolve static dictionary labels without reading traced feature values."""
+    traced = isinstance(asym_id, jax.core.Tracer)
+    if confidence_chain_ids is None:
+        if traced:
+            raise ValueError(
+                "confidence_chain_ids must be a static tuple of all unique "
+                "feats['asym_id'] values when returning pair_chains_iptm under JIT"
+            )
+        return tuple(int(value) for value in np.unique(np.asarray(asym_id)))
+    if not isinstance(confidence_chain_ids, tuple) or any(
+        not isinstance(value, Integral) or isinstance(value, bool)
+        for value in confidence_chain_ids
+    ):
+        raise ValueError("confidence_chain_ids must be a static tuple of integers")
+    resolved = tuple(sorted(int(value) for value in confidence_chain_ids))
+    if not resolved and asym_id.size:
+        raise ValueError("confidence_chain_ids must match all unique asym_id values")
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("confidence_chain_ids must not contain duplicate labels")
+    if not traced and resolved != _resolve_confidence_chain_ids(asym_id, None):
+        raise ValueError("confidence_chain_ids must match all unique asym_id values")
+    return resolved
 
 
 def confidence_module_forward(
@@ -98,10 +133,15 @@ def confidence_module_forward(
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     return_pair_chains_iptm: bool = True,
+    confidence_chain_ids: tuple[int, ...] | None = None,
     recompute_nonpolymer_frames: bool = True,
     atom_context_parallel: bool = False,
 ) -> dict[str, Any]:
-    """Run ConfidenceModule (real boltz2_conf config) in eval mode."""
+    """Run ConfidenceModule (real boltz2_conf config) in eval mode.
+
+    Fully-jitted pair-chain output requires ``confidence_chain_ids`` resolved
+    from the input on the host, including any labels carried by padding.
+    """
 
     # Confidence frame construction currently consumes a global linear
     # atom stream. Make that O(A) gather explicit at the stage boundary; the
@@ -155,15 +195,18 @@ def confidence_module_forward(
     s_inputs = jnp.repeat(s_inputs, multiplicity, axis=0)
 
     rep_atom_index = token_to_rep_atom_index_from_feats(feats)
-    repeated_rep_atom_index = _repeat_index(
-        rep_atom_index, multiplicity
-    )
+    repeated_rep_atom_index = _repeat_index(rep_atom_index, multiplicity)
     if x_pred.ndim == 4:
         b, mult, n, _ = x_pred.shape
         x_pred = x_pred.reshape(b * mult, n, -1)
     x_pred_repr = gather_rep_atoms_to_tokens(
         None, x_pred, index=repeated_rep_atom_index
     )
+    compute_dtype = params["s_to_z"]["kernel"].dtype
+    if compute_dtype in (jnp.bfloat16, jnp.float16):
+        # Native one-hot bmm is AMP-enabled, then cdist is FP32. Only the
+        # representative distance input is rounded; frames consume raw x_pred.
+        x_pred_repr = x_pred_repr.astype(compute_dtype).astype(jnp.float32)
     d = _cdist(x_pred_repr, x_pred_repr)
     boundaries = params["boundaries"]
     distogram = jnp.sum(d[..., None] > boundaries, axis=-1).astype(jnp.int32)
@@ -205,6 +248,7 @@ def confidence_module_forward(
         multiplicity=multiplicity,
         rep_atom_index=rep_atom_index,
         return_pair_chains_iptm=return_pair_chains_iptm,
+        confidence_chain_ids=confidence_chain_ids,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
     )
 
@@ -222,6 +266,7 @@ def _confidence_heads_forward(
     rep_atom_index: tuple[jnp.ndarray, jnp.ndarray],
     return_pair_chains_iptm: bool,
     recompute_nonpolymer_frames: bool,
+    confidence_chain_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     # use_separate_heads=True
     asym_id_token = feats["asym_id"]
@@ -289,7 +334,7 @@ def _confidence_heads_forward(
 
     pde = compute_aggregated_metric(pde_logits, end=32)
     pred_distogram_prob = jnp.repeat(
-        jax.nn.softmax(pred_distogram_logits, axis=-1), multiplicity, axis=0
+        _native_softmax(pred_distogram_logits), multiplicity, axis=0
     )
     contacts = jnp.zeros((1, 1, 1, 64), dtype=pred_distogram_prob.dtype)
     contacts = contacts.at[:, :, :, :20].set(1.0)
@@ -333,6 +378,7 @@ def _confidence_heads_forward(
         multiplicity,
         rep_atom_index=rep_atom_index,
         return_pair_chains_iptm=return_pair_chains_iptm,
+        confidence_chain_ids=confidence_chain_ids,
         recompute_nonpolymer_frames=recompute_nonpolymer_frames,
     )
     out_dict["ptm"] = ptm
@@ -507,8 +553,14 @@ def _compute_ptms(
     *,
     rep_atom_index: tuple[jnp.ndarray, jnp.ndarray] | None = None,
     return_pair_chains_iptm: bool = True,
+    confidence_chain_ids: tuple[int, ...] | None = None,
     recompute_nonpolymer_frames: bool = True,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
+    chain_ids = (
+        _resolve_confidence_chain_ids(feats["asym_id"], confidence_chain_ids)
+        if return_pair_chains_iptm
+        else ()
+    )
     mask_collinear_pred = _compute_frame_pred_inference(
         x_preds,
         feats["frames_idx"],
@@ -533,7 +585,7 @@ def _compute_ptms(
     pae_value = jnp.arange(0.5 * bin_width, 32.0, bin_width)[None, :]
     n_res = mask_pad.sum(axis=-1, keepdims=True)
     tm_value = _tm_function(pae_value, n_res)[:, None, None, :]
-    probs = jax.nn.softmax(logits, axis=-1)
+    probs = _native_softmax(logits)
     tm_expected_value = jnp.sum(probs * tm_value, axis=-1)
 
     def _agg(mask: jnp.ndarray) -> jnp.ndarray:
@@ -560,12 +612,11 @@ def _compute_ptms(
 
     chain_pair_iptm: dict[Any, dict[Any, jnp.ndarray]] = {}
     if return_pair_chains_iptm:
-        # This legacy nested-dict output depends on runtime chain IDs and is
-        # therefore intentionally excluded from fully-jitted serving graphs.
-        asym_ids_list = jnp.unique(asym_id).tolist()
-        for idx1 in asym_ids_list:
+        # Only labels are static; pair masks and all metric arithmetic remain
+        # dynamic. Keep actual IDs rather than relabeling noncontiguous chains.
+        for idx1 in chain_ids:
             chain_iptm: dict[Any, jnp.ndarray] = {}
-            for idx2 in asym_ids_list:
+            for idx2 in chain_ids:
                 m = (
                     maski[:, :, None]
                     * (asym_id[:, None, :] == idx1)

@@ -13,7 +13,9 @@ modules are imported lazily, so ``import foldjax.models.boltz2`` stays cheap.
 
 For composing with other JAX models, use the lower-level
 ``boltz2_predict`` (a pure JAX function over params + feature pytree)
-and ``foldjax.models.boltz2.load_params`` directly.
+and ``foldjax.models.boltz2.load_params`` directly. For BF16 composition,
+apply ``foldjax.models.boltz2.compile_policy.compiler_options(compute_dtype)``
+to the caller-owned outer ``jax.jit`` to preserve native dtype boundaries.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ from foldjax.execution import auto_diffusion_chunk_size
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
+from foldjax.models.boltz2.compile_policy import compiler_options as _compiler_options
+from foldjax.models.boltz2.compile_policy import jit as _boltz_jit
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
 from foldjax.models.boltz2.data.ownership import (
@@ -433,6 +437,7 @@ def _runner_identity(
     predict_kwargs: Mapping[str, Any],
     noise_mode: str,
     runtime: tuple[Any, ...],
+    compiler_options: Mapping[str, bool] | None = None,
 ) -> tuple[Any, ...]:
     """Everything captured by one retained ``jax.jit`` wrapper."""
 
@@ -467,6 +472,7 @@ def _runner_identity(
         ("noise_mode", noise_mode),
         ("kwargs", _static_runtime_identity(identity_kwargs)),
         ("runtime", runtime),
+        ("compiler_options", tuple(sorted((compiler_options or {}).items()))),
     )
 
 
@@ -655,6 +661,8 @@ def predict(
             f"compute_dtype must be one of {COMPUTE_DTYPES}, got {compute_dtype!r}"
         )
     dtype = {"float32": jnp.float32, "bfloat16": jnp.bfloat16}[compute_dtype]
+    compile_options = _compiler_options(compute_dtype)
+    jit_factory = functools.partial(_boltz_jit, compute_dtype=compute_dtype)
     parameter_identity = _parameter_runtime_identity(
         jax,
         cp_devices=cp_devices,
@@ -925,7 +933,7 @@ def predict(
     if steering_active:
         runner = run_model
     elif _runtime is None:
-        runner = jax.jit(run_model)
+        runner = jit_factory(run_model)
     else:
         runner = _runtime.jit_runner(
             "primary",
@@ -934,10 +942,19 @@ def predict(
                 predict_kwargs=predict_kwargs,
                 noise_mode=padding_noise_mode,
                 runtime=runtime_identity,
+                compiler_options=compile_options,
             ),
             run_model,
-            jax.jit,
+            jit_factory,
         )
+    execution_policy = {
+        "primary": {
+            "mode": "eager" if steering_active else "jit",
+            "compute_dtype": compute_dtype,
+            "compiler_options": {} if steering_active else dict(compile_options),
+            "scope": ("eager_steering_not_covered" if steering_active else "outer_jit"),
+        }
+    }
     # A tap records a tracer of the graph being built, so the capture set
     # has to be live while the program is traced, not while it runs.
     with (
@@ -1022,6 +1039,7 @@ def predict(
             "record_id": record_id,
             "raw": public_out,
             "representations": archive,
+            "execution_policy": execution_policy,
         }
         if padding_plan is not None:
             primary_summary = padding_plan.summary()
@@ -1192,7 +1210,7 @@ def predict(
             )
 
         affinity_runner = (
-            jax.jit(run_affinity)
+            jit_factory(run_affinity)
             if _runtime is None
             else _runtime.jit_runner(
                 "affinity",
@@ -1201,11 +1219,18 @@ def predict(
                     predict_kwargs=affinity_kwargs,
                     noise_mode=affinity_noise_mode,
                     runtime=runtime_identity,
+                    compiler_options=compile_options,
                 ),
                 run_affinity,
-                jax.jit,
+                jit_factory,
             )
         )
+        execution_policy["affinity"] = {
+            "mode": "jit",
+            "compute_dtype": compute_dtype,
+            "compiler_options": dict(compile_options),
+            "scope": "outer_jit",
+        }
         affinity_out = affinity_runner(*affinity_args)
         out.update(
             {
@@ -1245,6 +1270,7 @@ def predict(
         "plddt": public_plddt,
         "record_id": record_id,
         "raw": public_out,
+        "execution_policy": execution_policy,
     }
     if padding_plan is not None:
         primary_summary = padding_plan.summary()

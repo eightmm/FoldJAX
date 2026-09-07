@@ -6,6 +6,8 @@ from collections.abc import Mapping
 
 import jax.numpy as jnp
 
+from foldjax.models.boltz2.models.primitives._common import linear as _linear
+
 Params = Mapping[str, object]
 
 
@@ -22,7 +24,15 @@ def distogram_forward(
     Returns shape ``(b, n, n, num_distograms, num_bins)``.
     """
 
-    logits = z @ params["distogram"]["kernel"]
-    logits = logits + jnp.swapaxes(logits, 1, 2) + params["distogram"]["bias"]
+    projection = params["distogram"]
+    if projection["kernel"].dtype in (jnp.bfloat16, jnp.float16):
+        # AMP rounds z+z.T once at the native Linear boundary; projecting
+        # each side first introduces a different BF16 sum and bias rounding.
+        logits = _linear(
+            z + jnp.swapaxes(z, 1, 2), projection["kernel"], projection["bias"]
+        )
+    else:
+        logits = z @ projection["kernel"]
+        logits = logits + jnp.swapaxes(logits, 1, 2) + projection["bias"]
     b, n, _, _ = logits.shape
     return logits.reshape(b, n, n, num_distograms, num_bins)

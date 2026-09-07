@@ -288,7 +288,10 @@ def sample_diffusion(
         def body(x_carry, xs):
             c_tau_last, c_tau, step_noise, rotation, translation = xs
             if step_noise_keys:
-                step_noise = draw_normal(step_noise)
+                # A replayed tape is already rounded to FP32. Keep the lazy
+                # draw at that same boundary instead of fusing its arithmetic
+                # into the scalar rigid augmentation and Euler update.
+                step_noise = jax.lax.optimization_barrier(draw_normal(step_noise))
             return one_step(
                 x_carry, c_tau_last, c_tau, step_noise, rotation, translation
             ), None

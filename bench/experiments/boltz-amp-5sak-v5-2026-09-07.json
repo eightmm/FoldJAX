@@ -1,0 +1,1539 @@
+{
+  "acceptance": "historical strict diagnostics only; no new allowance or native-repeat calibration",
+  "candidate_compilation": {
+    "compiler_options": {
+      "xla_allow_excess_precision": false
+    },
+    "confidence_chain_ids": [
+      0,
+      1
+    ],
+    "effective_options_hash_bound": true
+  },
+  "candidate_kind": "foldjax",
+  "coordinates": {
+    "alignment": "one proper unweighted whole-system Kabsch per sample; no entity refit",
+    "atom_counts": [
+      3073,
+      3073,
+      3073,
+      3073,
+      3073
+    ],
+    "coordinate_diagnostic": {
+      "coordinate_gate_passed": false,
+      "entity_max_rmsd": {
+        "entity=0|mol_type=0|asym=0": 2.8431081361262707,
+        "entity=1|mol_type=3|asym=1": 0.3642957172493512
+      },
+      "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+      "threshold_angstrom": 0.05
+    },
+    "coordinates_equal": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "entity_max_rmsd": {
+      "entity=0|mol_type=0|asym=0": 2.8431081361262707,
+      "entity=1|mol_type=3|asym=1": 0.3642957172493512
+    },
+    "entity_rmsd": {
+      "entity=0|mol_type=0|asym=0": [
+        2.5978980259461806,
+        0.21506293864348125,
+        0.056401483207275345,
+        2.8431081361262707,
+        1.6631979879757228
+      ],
+      "entity=1|mol_type=3|asym=1": [
+        0.16395227536098111,
+        0.021239765793630367,
+        0.014052132616123137,
+        0.3642957172493512,
+        0.16344145905645252
+      ]
+    },
+    "global_max_rmsd": 2.834906306153588,
+    "global_rmsd": [
+      2.590308691311898,
+      0.21443831286763435,
+      0.056246338419754814,
+      2.834906306153588,
+      1.6583669462193509
+    ]
+  },
+  "native_nonarray_forward_fields": [
+    "diff_token_repr"
+  ],
+  "not_parity_admission": true,
+  "public_confidence": {
+    "extra_in_candidate": [],
+    "leaves": {
+      "complex_ipde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.15633273124694824,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.10243097260023062,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_iplddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.015056967735290527,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.008733894358170142,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.14115309715270996,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.08459375522020306,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.013646125793457031,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.008711627771568295,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.01968562602996826,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.012211219871860133,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "ligand_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.01968562602996826,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.012211219871860133,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pae": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437,
+          437
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 954845,
+        "max_abs": 9.875808715820312,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437,
+          437
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.974070892920867,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 948130,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.014810621738433838,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.00948437137237734,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.027499258518218994,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.015618800791829179,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.01968562602996826,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.012211219871860133,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.003459155559539795,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0021279398307904184,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 4,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437,
+          437
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 954845,
+        "max_abs": 4.82464075088501,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437,
+          437
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.45058049188954846,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 917194,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 2185,
+        "max_abs": 0.15189659595489502,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.018267137490279695,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 1864,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "protein_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0,
+        "shape_equal": true,
+        "storage_bytes_equal": true,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "ptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.013745367527008057,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.008641450388126928,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      }
+    },
+    "missing_from_candidate": [
+      "confidence_score"
+    ],
+    "original_dtypes_equal": false,
+    "strict_atol": 0.0001,
+    "strict_pass": false,
+    "strict_rtol": 0.0001
+  },
+  "raw_confidence": {
+    "extra_in_candidate": [],
+    "leaves": {
+      "complex_ipde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.15633273124694824,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.10243097260023062,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_iplddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.015056967735290527,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.008733894358170142,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.14115309715270996,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.08459375522020306,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "complex_plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.013646125793457031,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.008711627771568295,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.01968562602996826,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.012211219871860133,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "ligand_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.01968562602996826,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.012211219871860133,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pae": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437,
+          437
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 954845,
+        "max_abs": 9.875808715820312,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437,
+          437
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.974070892920867,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 948130,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pae_logits": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437,
+          437,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 61110080,
+        "max_abs": 6.9375,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437,
+          437,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.3477214758984402,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 57162703,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.014810621738433838,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.00948437137237734,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.0.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.027499258518218994,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.015618800791829179,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.0": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.01968562602996826,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.012211219871860133,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pair_chains_iptm.1.1": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.003459155559539795,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0021279398307904184,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 4,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pbfactor": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          1,
+          437,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 27968,
+        "max_abs": 8.0,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          1,
+          437,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.6289116371924179,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 2599,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pde": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437,
+          437
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 954845,
+        "max_abs": 4.82464075088501,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437,
+          437
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.45058049188954846,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 917194,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pde_logits": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437,
+          437,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 61110080,
+        "max_abs": 8.828125,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437,
+          437,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.358316884294709,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 56132236,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "pdistogram": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          1,
+          437,
+          437,
+          1,
+          64
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 12222016,
+        "max_abs": 1.0,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          1,
+          437,
+          437,
+          1,
+          64
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.03712008694696042,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 6399168,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "plddt": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5,
+          437
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 2185,
+        "max_abs": 0.15189659595489502,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5,
+          437
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.018267137490279695,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 1864,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "plddt_logits": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          5,
+          437,
+          50
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 109250,
+        "max_abs": 2.4453125,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          5,
+          437,
+          50
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.23811444191872205,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 100475,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "protein_iptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.0,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.0,
+        "shape_equal": true,
+        "storage_bytes_equal": true,
+        "strict_failures": 0,
+        "strict_pass": true,
+        "undefined_positions_equal": true
+      },
+      "ptm": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          5
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 5,
+        "max_abs": 0.013745367527008057,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          5
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.008641450388126928,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 5,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "resolved_logits": {
+        "candidate_original_dtype": "bfloat16",
+        "candidate_shape": [
+          5,
+          437,
+          2
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 4370,
+        "max_abs": 0.9375,
+        "native_original_dtype": "bfloat16",
+        "native_shape": [
+          5,
+          437,
+          2
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.1369132122924592,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 3710,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      }
+    },
+    "missing_from_candidate": [],
+    "original_dtypes_equal": true,
+    "strict_atol": 0.0001,
+    "strict_pass": false,
+    "strict_rtol": 0.0001
+  },
+  "reference_control": {
+    "feature_entry_hashes_verified": true,
+    "feature_mapping": "captured int64 -> int32 and float64 -> float32; otherwise unchanged",
+    "independent_preprocessing": false,
+    "native_artifact_hashes_verified": true,
+    "sampler_entry_hashes_verified": true
+  },
+  "sample_order": "original sampler index 0..4; no ranking permutation",
+  "schema_version": 1,
+  "scope": "captured-native-feature core diagnostic; not independent preprocessing or full admission",
+  "source_ids": {
+    "candidate_provenance_sha256": "b4e3b38bf6ef8fc108862e13b779ec2e35513045f41fb10d56a6a90199cce92d",
+    "candidate_source_id": "bee81006d4865697fa0f73153c080a7a74afb98d5683b43c62eca913bf503d95",
+    "native_provenance_sha256": "412ccbf71b04092cc65335ab4078f72b21bc6ce7329e5dfd3e7123fdee78ba1c",
+    "native_source_id": "c0561af47e9e619f379e7c825fdbdafaa35ab7242217d7645f5e4e16af756a28"
+  },
+  "stage_comparisons": {
+    "cycle-00/msa_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "delta_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 4.050567626953125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.03688617453372546,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 24025835,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 0.125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.0006116185148676643,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 65243,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "cycle-00/pairformer_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "input_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 167808,
+          "max_abs": 0.5,
+          "native_original_dtype": "bfloat16",
+          "native_shape": [
+            1,
+            437,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": false,
+          "rmse": 0.0013635145287574334,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 406,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 4.050567626953125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.03689982862328542,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 23897880,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 167808,
+          "max_abs": 0.6083984375,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.05696691371174378,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 159252,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 1.8540191650390625,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.07981406940888207,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 24084453,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": false,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "cycle-03/msa_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "delta_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 1.2658233642578125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.036333516294332076,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 24021749,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 0.25,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.012987184444045402,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 15801333,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "cycle-03/pairformer_module": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "input_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 167808,
+          "max_abs": 0.5,
+          "native_original_dtype": "bfloat16",
+          "native_shape": [
+            1,
+            437,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": false,
+          "rmse": 0.0051203216515707094,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 13802,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "input_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 1.2619171142578125,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.042256536621837266,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 23953526,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_s": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 167808,
+          "max_abs": 0.583984375,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.053156209245912196,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 158751,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        },
+        "output_z": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 2.9753646850585938,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.07348414747974341,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 24036941,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": false,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "input_embedder": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "": {
+          "candidate_original_dtype": "float32",
+          "candidate_shape": [
+            1,
+            437,
+            384
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 167808,
+          "max_abs": 0.0007848143577575684,
+          "native_original_dtype": "float32",
+          "native_shape": [
+            1,
+            437,
+            384
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 5.812560552289495e-06,
+          "shape_equal": true,
+          "storage_bytes_equal": false,
+          "strict_failures": 61,
+          "strict_pass": false,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": false,
+      "strict_rtol": 0.0001
+    },
+    "rel_pos": {
+      "extra_in_candidate": [],
+      "leaves": {
+        "": {
+          "candidate_original_dtype": "bfloat16",
+          "candidate_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "candidate_storage_dtype": "float32",
+          "finite_entries": 24444032,
+          "max_abs": 0.0,
+          "native_original_dtype": "bfloat16",
+          "native_shape": [
+            1,
+            437,
+            437,
+            128
+          ],
+          "native_storage_dtype": "float32",
+          "numeric_overflow": false,
+          "original_dtype_equal": true,
+          "rmse": 0.0,
+          "shape_equal": true,
+          "storage_bytes_equal": true,
+          "strict_failures": 0,
+          "strict_pass": true,
+          "undefined_positions_equal": true
+        }
+      },
+      "missing_from_candidate": [],
+      "original_dtypes_equal": true,
+      "strict_atol": 0.0001,
+      "strict_pass": true,
+      "strict_rtol": 0.0001
+    }
+  },
+  "tape_scope": "entry/archive identity, not independent per-step device consumer proof",
+  "trunk_only": false,
+  "trunk_representations": {
+    "extra_in_candidate": [],
+    "leaves": {
+      "s": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          1,
+          437,
+          384
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 167808,
+        "max_abs": 0.583984375,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          1,
+          437,
+          384
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.053156209245912196,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 158751,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      },
+      "z": {
+        "candidate_original_dtype": "float32",
+        "candidate_shape": [
+          1,
+          437,
+          437,
+          128
+        ],
+        "candidate_storage_dtype": "float32",
+        "finite_entries": 24444032,
+        "max_abs": 2.9753646850585938,
+        "native_original_dtype": "float32",
+        "native_shape": [
+          1,
+          437,
+          437,
+          128
+        ],
+        "native_storage_dtype": "float32",
+        "numeric_overflow": false,
+        "original_dtype_equal": true,
+        "rmse": 0.07348414747974341,
+        "shape_equal": true,
+        "storage_bytes_equal": false,
+        "strict_failures": 24036941,
+        "strict_pass": false,
+        "undefined_positions_equal": true
+      }
+    },
+    "missing_from_candidate": [],
+    "original_dtypes_equal": true,
+    "strict_atol": 0.0001,
+    "strict_pass": false,
+    "strict_rtol": 0.0001
+  },
+  "verified_artifacts": {
+    "candidate": {
+      "effective-options.json": "679f0578cf52d76c2e8a6a49e3f6f59570547ea0c9dab513c092c2ce0e708220",
+      "prediction.npz": "282aabe00a635bd121a30f3de70d87c85cb0ff6e953d8690a9067decd9249a30",
+      "prediction.tree.json": "dd39cd0060f77a06a7588de4d6061d1e08d36c9ccbeb11c1c278e3f78424e726",
+      "trunk-boundaries/cycle-00/msa_module.npz": "77dc378272a116d64236b35db4d55024fb1227b2f1890d67c654a3d95cc05729",
+      "trunk-boundaries/cycle-00/msa_module.tree.json": "9f107f79c62a92b92b260f78e69560b3e6554bf22e62b730a43300bf08fc5ba8",
+      "trunk-boundaries/cycle-00/pairformer_module.npz": "d88d5e5878951bd7d4d4090aab62e1cf4ecb05eda80bd36e66b9d749047a7b54",
+      "trunk-boundaries/cycle-00/pairformer_module.tree.json": "f653c902ae9972cd324c8ca646334306f796376454496025391ea9d0ae718c16",
+      "trunk-boundaries/cycle-03/msa_module.npz": "d7fa5e7add526db911fb67e9f5014b670ec2580e4c839fdbfae92f7aed461aed",
+      "trunk-boundaries/cycle-03/msa_module.tree.json": "9f107f79c62a92b92b260f78e69560b3e6554bf22e62b730a43300bf08fc5ba8",
+      "trunk-boundaries/cycle-03/pairformer_module.npz": "d6c19d720a13e88ef1d4dec7120c72f841320fd8a979e72e7859dc738fc074be",
+      "trunk-boundaries/cycle-03/pairformer_module.tree.json": "f653c902ae9972cd324c8ca646334306f796376454496025391ea9d0ae718c16",
+      "trunk-boundaries/input_embedder.npz": "31763b4c4d5b1ae116b4c738c380e084eb8ddfbbfd50a6de073faa5de967a8bd",
+      "trunk-boundaries/input_embedder.tree.json": "7df8c71eb3ced0e8849cecbe464fa6ae5049b0542f6f5ee0ec721126995bbf44",
+      "trunk-boundaries/input_embedder/atom_attention_encoder.npz": "4adb43f20ec12d3de9c921fd423465bb39b20c8fd7ecb080fd69c82571b5cced",
+      "trunk-boundaries/input_embedder/atom_attention_encoder.tree.json": "14d8b9e8f9f4d8a23d38d404c060f204fac76a524936a478fc7bf07879dd4d67",
+      "trunk-boundaries/input_embedder/atom_encoder.npz": "8d6910106f755e4f31505d5aa4c9f8d7eb487d76fb8974a8203566307682e834",
+      "trunk-boundaries/input_embedder/atom_encoder.tree.json": "b510a890ef2f5fd11db1ceac289c4357720fea63d8a1c13a400f9cc0a95c01ca",
+      "trunk-boundaries/rel_pos.npz": "5385b2bbbdc0c52956f45ac05fb2d2a2b9c2ca43ca6ad706b8170b761b637f24",
+      "trunk-boundaries/rel_pos.tree.json": "19f4607fcaab678cb3412d99c633e5bab03cfda094559da4ea04366681b8d6f3"
+    },
+    "native": {
+      "forward-output.npz": "2c4ce11c36414ba6b5fafbcbcf0e8842511ab19b422262065a95be7969ccfdf7",
+      "forward-output.tree.json": "8b8efb1cf140ce64efb681ff6b62c6306e2f1f5e2281702d2b972821c853ff15",
+      "predict-step-output.npz": "f9b2255bd3a1e6bc50ec4a9d61f7511ca7a400586e44698a6b9fec6ed4bb87d2",
+      "predict-step-output.tree.json": "70c37dc6ec403c89865146613d7b48a14df9ba6a037e08bb64048cace2154577",
+      "preprocessing-tape.npz": "d14df4dd4a67cc58ab3ef14b10cb70e9dd48e42eb99f9ff3dbddacc241762081",
+      "preprocessing-tape.tree.json": "19120a220e040c578857c31e5d457c4011f0f842aef4f20cf19762ceaa454252",
+      "trunk-boundaries/contact_conditioning.npz": "df72614dc2fa443f880154976d9d7c8514939667186b8232cf34f33d17ffbbe8",
+      "trunk-boundaries/contact_conditioning.tree.json": "aaf9592193def59b283f492c9087ecab5f9b297ccdf5ddf8b13dd4edf5ba816c",
+      "trunk-boundaries/cycle-00/msa_module.npz": "f10d81166ebc20c89a0c85bd9660fb57b928820f7d0c553baac5283df5ac7357",
+      "trunk-boundaries/cycle-00/msa_module.tree.json": "585d4c184c00bb3087f5983d98541f0fd2726cf8af8726754ed04d6563278fa8",
+      "trunk-boundaries/cycle-00/pairformer_module.npz": "73747d0192a8924271b747b7c51b2129d7e3481f13ad5a98898642f6ef181dcc",
+      "trunk-boundaries/cycle-00/pairformer_module.tree.json": "f9ff6e8fd51f9c94ff4abd64e48c0167a3a17c4998049ded487c90889235f19f",
+      "trunk-boundaries/cycle-00/s_norm.npz": "b9068b079d06e6a95dc29068f8970ca0c17e8abc6b9b00bb9057c0faa67ea659",
+      "trunk-boundaries/cycle-00/s_norm.tree.json": "708d8109bd09d97a556910060b202bcbfdac77c08a26002882ad045acb835947",
+      "trunk-boundaries/cycle-00/s_recycle.npz": "8063180560d23b4bd20d70f34c6fd2ed0a6446768e5d538804d2e05dd7828fe9",
+      "trunk-boundaries/cycle-00/s_recycle.tree.json": "840de8bd9743504c53769c2e1c32aa66db2da4f9eee1ce86e4e4c13b4a628afd",
+      "trunk-boundaries/cycle-00/z_norm.npz": "e13f23ee16aac4f36fa2c83e64bb52ec4a533eed51cd6acdef59e0b2410fcd97",
+      "trunk-boundaries/cycle-00/z_norm.tree.json": "aaf9592193def59b283f492c9087ecab5f9b297ccdf5ddf8b13dd4edf5ba816c",
+      "trunk-boundaries/cycle-00/z_recycle.npz": "ff2615e3b7ca69c186827cf1ccede439ee355cfe6747881151ef278e34482497",
+      "trunk-boundaries/cycle-00/z_recycle.tree.json": "20da95040b888bdbe3eb0d7784ca8948d820e1b94a9c928abfd5ae06ad4edd4c",
+      "trunk-boundaries/cycle-03/msa_module.npz": "0b6f76f2093126f9fc2e7e584cb30520f9b3cd57544e85190ec74462e12e3752",
+      "trunk-boundaries/cycle-03/msa_module.tree.json": "585d4c184c00bb3087f5983d98541f0fd2726cf8af8726754ed04d6563278fa8",
+      "trunk-boundaries/cycle-03/pairformer_module.npz": "d83276fe0ff00ca858c467c5c3aa4bcea1e51f4aae90cb41474592a89de24475",
+      "trunk-boundaries/cycle-03/pairformer_module.tree.json": "f9ff6e8fd51f9c94ff4abd64e48c0167a3a17c4998049ded487c90889235f19f",
+      "trunk-boundaries/cycle-03/s_norm.npz": "4f2f24d3b8efafcbf76d3933f0e724cf26b9648cf230f278d9aa0d2671389a24",
+      "trunk-boundaries/cycle-03/s_norm.tree.json": "708d8109bd09d97a556910060b202bcbfdac77c08a26002882ad045acb835947",
+      "trunk-boundaries/cycle-03/s_recycle.npz": "c48c23a3f5af3aa163f961395a70aea3433412e67263696627c04e0567aaf708",
+      "trunk-boundaries/cycle-03/s_recycle.tree.json": "840de8bd9743504c53769c2e1c32aa66db2da4f9eee1ce86e4e4c13b4a628afd",
+      "trunk-boundaries/cycle-03/z_norm.npz": "31e842253370f3b32583cabf498f285060939c1d76f376a141b80f41574b4ea6",
+      "trunk-boundaries/cycle-03/z_norm.tree.json": "aaf9592193def59b283f492c9087ecab5f9b297ccdf5ddf8b13dd4edf5ba816c",
+      "trunk-boundaries/cycle-03/z_recycle.npz": "52019f9fd4e91cb1497616ac2ee8d9334d487a4d3605d55135740cdfdb47d0d2",
+      "trunk-boundaries/cycle-03/z_recycle.tree.json": "20da95040b888bdbe3eb0d7784ca8948d820e1b94a9c928abfd5ae06ad4edd4c",
+      "trunk-boundaries/diffusion_conditioning.npz": "71a46caaa9ac0eefecacc41db0b004db291248fce71586c887581b1f3f04a91f",
+      "trunk-boundaries/diffusion_conditioning.tree.json": "cdbb949110d2ac1cffc83780dc903a61e9229e74f4e62e3f714dcdbc7f2cd0d6",
+      "trunk-boundaries/initial.npz": "a7bf188fe9e937c81ab9362d767c8312d354956962391f4048791855d282af4f",
+      "trunk-boundaries/initial.tree.json": "5d60f76cc2b798f6281d83ff7837e84d9fd13ed3de46f2b03ae9449e845bb266",
+      "trunk-boundaries/input_embedder.npz": "eec9b40d213111b2ce21c4aeb256f6b999f008e379eb172c80f185ca55ab33d7",
+      "trunk-boundaries/input_embedder.tree.json": "708d8109bd09d97a556910060b202bcbfdac77c08a26002882ad045acb835947",
+      "trunk-boundaries/rel_pos.npz": "5385b2bbbdc0c52956f45ac05fb2d2a2b9c2ca43ca6ad706b8170b761b637f24",
+      "trunk-boundaries/rel_pos.tree.json": "20da95040b888bdbe3eb0d7784ca8948d820e1b94a9c928abfd5ae06ad4edd4c",
+      "trunk-boundaries/s_init.npz": "abf939ba195cf786e52e1ab893c5d4c6514f77ba70b954425269bccfd3629072",
+      "trunk-boundaries/s_init.tree.json": "840de8bd9743504c53769c2e1c32aa66db2da4f9eee1ce86e4e4c13b4a628afd",
+      "trunk-boundaries/token_bonds.npz": "92550f95379730ee1fa1a1746f1f9959c74ddf00c5cdd46fa73243a087182925",
+      "trunk-boundaries/token_bonds.tree.json": "20da95040b888bdbe3eb0d7784ca8948d820e1b94a9c928abfd5ae06ad4edd4c",
+      "trunk-boundaries/token_bonds_type.npz": "4f8ee87ade9a5dc42c65ea907e92615288d85787eaf863085bc2376dbb297bb4",
+      "trunk-boundaries/token_bonds_type.tree.json": "aaf9592193def59b283f492c9087ecab5f9b297ccdf5ddf8b13dd4edf5ba816c",
+      "trunk-boundaries/z_init_1.npz": "48186252eab89aedaac5be925b8d579a6101573dc9a6a9783f12e1224577842b",
+      "trunk-boundaries/z_init_1.tree.json": "8b8232a3e4f21efc003b6b2a0b0ccdfa6be15fff70ae2f64f2bd7a845fcd3201",
+      "trunk-boundaries/z_init_2.npz": "0c4d0b95be2dae1f378d236a393206863e508c01cd5b8591df7c0dcf7518b0d2",
+      "trunk-boundaries/z_init_2.tree.json": "8b8232a3e4f21efc003b6b2a0b0ccdfa6be15fff70ae2f64f2bd7a845fcd3201"
+    }
+  }
+}

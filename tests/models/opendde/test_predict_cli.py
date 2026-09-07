@@ -14,12 +14,9 @@ from foldjax.schema import PredictionError
 def _params_double():
     """A weights stand-in shaped like the real parameter tree.
 
-    `object()` was enough while OpenDDE shipped float32, because that path
-    casts nothing and never touches the tree. The shipped trunk is bfloat16
-    since 2026-08-28, so `cast_trunk_params` runs on every default prediction
-    -- these flows had simply never exercised it. Empty subtrees keep the
-    double cheap: `jax.tree.map` over `{}` is a no-op, and `_replace` is what
-    the cast actually needs.
+    Explicit BF16 still exercises `cast_trunk_params`, even though FP32 is
+    the native default. Empty subtrees keep both routes cheap, and `_replace`
+    is what the optional cast needs.
     """
     from foldjax.models.opendde.models.model import OpenDDEInferenceParams
 
@@ -281,11 +278,8 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert write_calls[0][1]["features"] is features
     assert features["ref_element"].dtype == np.int64
     assert features["ref_atom_name_chars"].dtype == np.int64
-    # Equality, not identity: the shipped bfloat16 trunk casts the weights on
-    # the way in, so `cast_trunk_params` hands the model a rebuilt tree. What
-    # this pins is that the loaded parameters are what reach the model, which
-    # an identity check only expressed by accident while float32 shipped.
     assert calls[0][1] == params
+    assert calls[0][2]["trunk_dtype"] is None
     assert calls[0][2]["seed"] == 101
     assert calls[0][2]["num_samples"] == 1
     assert calls[0][2]["num_steps"] == 2

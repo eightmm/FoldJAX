@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import lax
 
@@ -39,7 +40,8 @@ def _params(c_z: int = 4, c_hidden: int = 4) -> TriangleMultiplicationParams:
 
 
 @pytest.mark.parametrize(
-    "policy, expected", [("default", "DEFAULT"), ("highest", "IEEE")]
+    "policy, expected", [("default", "DEFAULT"), ("high", "DEFAULT"),
+                         ("highest", "DEFAULT")]
 )
 def test_cueq_triangle_maps_upstream_torch_weights(
     monkeypatch, policy, expected
@@ -81,6 +83,32 @@ def test_cueq_triangle_maps_upstream_torch_weights(
     )
     assert captured["p_out_weight"] is params.linear_z.weight
     assert captured["g_out_weight"] is params.linear_g.weight
+
+
+def test_bf16_high_cueq_gpu_preserves_nonzero_triangle_update():
+    """Catch the real fused-kernel failure, not only the requested enum."""
+    if jax.default_backend() != "gpu":
+        pytest.skip("requires a JAX GPU and the cuEq runtime")
+    pytest.importorskip("cuequivariance_jax")
+    rng = np.random.default_rng(173)
+    params = jax.tree.map(
+        lambda value: jnp.asarray(
+            rng.normal(0, 0.1, value.shape), dtype=jnp.bfloat16
+        ),
+        _params(32, 32),
+    )
+    z = jnp.asarray(rng.normal(size=(7, 7, 32)), dtype=jnp.bfloat16)
+    mask = jnp.ones((7, 7), dtype=z.dtype)
+
+    def run(z, params):
+        return cueq_triangle_multiplication(z, mask, params, "outgoing")
+
+    with jax.default_matmul_precision("default"):
+        expected = np.asarray(jax.jit(run)(z, params), dtype=np.float32)
+    with jax.default_matmul_precision("high"):
+        actual = np.asarray(jax.jit(run)(z, params), dtype=np.float32)
+    assert np.isfinite(expected).all() and np.count_nonzero(expected) > 0
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_triangle_multiplication_uses_cueq_by_default(monkeypatch) -> None:

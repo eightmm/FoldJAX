@@ -45,6 +45,18 @@ def _load_cueq():
     return cuex
 
 
+def _load_cueq_amp_primitives():
+    # cuEq 0.11.1 exposes no autocast argument on its public triangle API.
+    # Reuse its pinned implementation's primitives at the native AMP boundaries.
+    from cuequivariance_jax.triangle._layer_norm_transpose import layer_norm_transpose
+    from cuequivariance_jax.triangle._sigmoid_gated_dual_gemm import (
+        sigmoid_gated_dual_gemm,
+        sigmoid_gated_dual_gemm_dual_x,
+    )
+
+    return layer_norm_transpose, sigmoid_gated_dual_gemm, sigmoid_gated_dual_gemm_dual_x
+
+
 def cueq_attention_core(
     q: jnp.ndarray,
     k: jnp.ndarray,
@@ -86,6 +98,10 @@ def cueq_triangle_multiplication_forward(
 
     cuex = _load_cueq()
 
+    compute_dtype = params["p_in"]["kernel"].dtype
+    if x.dtype == jnp.float32 and compute_dtype == jnp.bfloat16:
+        return _cueq_triangle_native_amp(cuex, params, x, mask, direction, eps=eps)
+
     return cuex.triangle_multiplicative_update(
         x=x,
         direction=direction,
@@ -99,6 +115,64 @@ def cueq_triangle_multiplication_forward(
         p_out_weight=params["p_out"]["kernel"].T,
         g_out_weight=params["g_out"]["kernel"].T,
         eps=eps,
-        precision=triangle_multiplication_precision(cuex),
+        precision=triangle_multiplication_precision(cuex, dtype=x.dtype),
         fallback=False,
     )
+
+
+def _cueq_triangle_native_amp(cuex, params, x, mask, direction, *, eps):
+    """Preserve native cuEq's FP32 norm and BF16 GEMM boundaries."""
+    norm, gemm, gemm_dual = _load_cueq_amp_primitives()
+    if direction not in ("incoming", "outgoing"):
+        raise ValueError(
+            f"Unsupported triangle multiplication direction: {direction!r}"
+        )
+    if x.ndim < 3 or x.shape[-3] != x.shape[-2]:
+        raise ValueError("Triangle multiplication requires square pair axes")
+    batch_shape = x.shape[:-3]
+    n, channels = x.shape[-2:]
+    mask = jnp.broadcast_to(mask, x.shape[:-1]).reshape((-1, n, n))
+    x = x.reshape((-1, n, n, channels))
+    x = norm(
+        x,
+        params["norm_in"]["scale"],
+        params["norm_in"]["bias"],
+        eps=eps,
+        layout="bijd->bijd",
+        fallback=False,
+    )
+    # Native Torch autocasts inside gated GEMM, after input normalization.
+    # JAX cuEq instead follows x.dtype and would widen the BF16 kernels to FP32.
+    x_in = x.astype(jnp.bfloat16)
+    precision = triangle_multiplication_precision(cuex, dtype=x_in.dtype)
+    ab = gemm(
+        x_in,
+        params["g_in"]["kernel"].T,
+        params["p_in"]["kernel"].T,
+        mask=mask,
+        transpose_out=True,
+        precision=precision,
+        fallback=False,
+    )
+    a, b = jnp.split(ab, 2, axis=0)
+    equation = "dbik,dbjk->dbij" if direction == "outgoing" else "dbki,dbkj->dbij"
+    contracted = jnp.einsum(equation, a, b)
+    # This is the fused cuEq norm, not nn.LayerNorm: FP32 affine parameters
+    # survive, but its output keeps the BF16 contraction's dtype.
+    x_out = norm(
+        contracted,
+        params["norm_out"]["scale"],
+        params["norm_out"]["bias"],
+        eps=eps,
+        layout="dbij->bijd",
+        fallback=False,
+    )
+    out = gemm_dual(
+        x_in,
+        x_out.astype(jnp.bfloat16),
+        params["g_out"]["kernel"].T,
+        params["p_out"]["kernel"].T,
+        precision=precision,
+        fallback=False,
+    )
+    return out.reshape((*batch_shape, n, n, out.shape[-1]))

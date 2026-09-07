@@ -155,6 +155,10 @@ For a job containing precomputed template-hit A3M files, add:
 ```
 
 The release defaults remain `n_sample=5`, `n_step=200`, and `n_cycle=10`.
+As of the 2026-09-06 upstream-first audit, the default trunk dtype is restored
+to publisher FP32. BF16 remains explicit opt-in, not admitted equivalence:
+native fixed-tape BF16 changes fail the 0.05 Å per-entity diagnostic on 5SAK
+and 1URN. See the [precision protocol](../../precision-selection-protocol-2026-09-06.md).
 The full 200-step, 10-cycle schedule has been checked on GPU both for the FP32
 one-sample publisher-parity run below and for five-sample BF16 performance runs
 at 490 and 970 tokens.

@@ -1,0 +1,1565 @@
+{
+  "failed_attempts": [
+    {
+      "exit": 1,
+      "reason": "Complete-AOT coverage rejected 14 observer-free fusion keys absent from audit map; producer extension preserved old decisions.",
+      "tsp_job": 199
+    },
+    {
+      "exit": 1,
+      "reason": "Template copies make actual native bucket 768; selected 512 Tokamax profile rejected before outputs.",
+      "tsp_job": 217
+    },
+    {
+      "exit": 1,
+      "reason": "Dependent uninstrumented template attempt retained same incorrect Tokamax profile; no outputs.",
+      "tsp_job": 218
+    }
+  ],
+  "graph": {
+    "corrected_foldjax_stablehlo_sha256": "75723f6b90023765dfe9ad5a3fd56b8a96a6cae9b35eab6dbaf28b353b8013c0",
+    "native_stablehlo_sha256": "75723f6b90023765dfe9ad5a3fd56b8a96a6cae9b35eab6dbaf28b353b8013c0",
+    "old_foldjax_stablehlo_sha256": "1857e7bc271ad72b839f93d9c022198fa934908cd1e89f47eb7ca3265f56b610",
+    "parameter_leaves": 405,
+    "parameter_manifests_equal": true,
+    "scope": "Uninstrumented core lowering only, debug metadata excluded; separate full public-API captures provide output evidence"
+  },
+  "independent_autotune": {
+    "native_versus_foldjax": {
+      "artifacts": {
+        "af3-closure-20260906-v4/rna_ligand_3gca/independent-autotune/foldjax": {
+          "confidence.npz": "0047293a3cbee6c1195d9d0e23f785e58d801b67ae5be4e4f0599f73b6ba3837",
+          "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "coordinate.npz": "709ccaff5ff312272cf2dad45548a17660d42ae798d9812bb2423561f3b4463e",
+          "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "finished.json": "55a5f3f4c688a64c3351ad2b59332f94887f6ee9b1758f841ea1ef163ef4e5d2",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "inference-finished.json": "b505432a4fe423df8f9915afea5a56506c8e47c0a2d32185b5347074ab959051",
+          "input-audit.json": "0f26a246b2382686ee457ff25ff2eb1350b4dfd188d36fa7030203d074b88b78",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+          "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+          "provenance.json": "b73b191e6932f3eca3ff5edd173252365592e1fb26f050f5dbc2077d511a63fb",
+          "raw.npz": "1fe321cccd55e40b4a37a7fdef746d6f7eba30ccf4c35b5e7130686dcbede57e",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74",
+          "xla-autotune.textproto": "ea77744f25676279a6a569af88fe7365b0485422c2f37b16d169286c29d236c9"
+        },
+        "af3-closure-20260906-v4/rna_ligand_3gca/independent-autotune/native": {
+          "confidence.npz": "68c7755b581063eeb90abf98d86785af4861cb36471f8a7b58743279d9d5ac57",
+          "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "coordinate.npz": "ada957864f574437fbdfa62de6480941337f435eaf0996dec9004e2c8fa1f61c",
+          "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "finished.json": "8ef9e747e4e276192f4a772ee3c6f159e1e770223e1270c2f444949ef3cd4f4e",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "inference-finished.json": "081fc8661169cb00da8ab50166790ec44ed207186007ef9b64f00b7fbafd830a",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+          "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+          "provenance.json": "5b0611aec93280d33db705701e7172de340164eab2a6ba5f27ad2c064295ec26",
+          "raw.npz": "e5989820cd001f9434a4ee006339915c7b53c476d9afe07439bd2e893e5a8a97",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74",
+          "xla-autotune.textproto": "0e0ece3c029c5e4733800a4b04a0a7ba7de5acf2e148facc3ece68815f8af692"
+        }
+      },
+      "checks": {
+        "compiler_policy": true,
+        "confidence": false,
+        "config.json": true,
+        "coordinates": true,
+        "effective-config.json": true,
+        "gather_mask": true,
+        "identity.npz": true,
+        "input-metadata.json": true,
+        "input.npz": true,
+        "parameters.json": true,
+        "preprocessing_tape": true,
+        "provenance.attention": true,
+        "provenance.buckets": true,
+        "provenance.cpp_sha256": true,
+        "provenance.input_sha256": true,
+        "provenance.jax_version": true,
+        "provenance.kernel_deviation": true,
+        "provenance.kernel_selection": true,
+        "provenance.matmul_precision": true,
+        "provenance.native_recycles": true,
+        "provenance.neutral_padding": true,
+        "provenance.runtime_versions": true,
+        "provenance.samples": true,
+        "provenance.separate_executable_cache": true,
+        "provenance.shared_generated_assets": true,
+        "provenance.steps": true,
+        "provenance.weights_sha256": true,
+        "provenance.xla_autotune_sha256": false,
+        "raw_confidence": false,
+        "raw_masks": true,
+        "separate_executable_cache": true,
+        "tape": true,
+        "tape_coverage": true,
+        "xla_cache_artifacts": true
+      },
+      "confidence_maxima": {
+        "atom_plddt": 0.437530517578125,
+        "metadata.iptm": 0.0005056216162679927,
+        "metadata.ptm": 0.00043018032665842476,
+        "metadata.ranking_score": 0.00044746109841109494,
+        "numerical.full_pae": 0.10419702529907227,
+        "numerical.full_pde": 0.011535406112670898
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.0031766559357058947,
+          "R": 0.007925848102929955
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.0031766559357058947,
+          "R": 0.007925848102929955
+        },
+        "entity_rmsd": {
+          "L": [
+            0.0027620954678652713,
+            0.001036146265303072,
+            0.0031766559357058947,
+            0.001576616739913992,
+            0.0011871760872094413
+          ],
+          "R": [
+            0.006834398294098386,
+            0.0030523693043281665,
+            0.004442791907364212,
+            0.007925848102929955,
+            0.006922321871096031
+          ]
+        },
+        "global_max_rmsd": 0.007856729659610897,
+        "global_rmsd": [
+          0.006782507696316241,
+          0.0030278561608638862,
+          0.004423117801411375,
+          0.007856729659610897,
+          0.006861313544150004
+        ]
+      },
+      "passed": false,
+      "rdkit_rng_scope": "seed/conformer boundary only; internal PRNG unobserved",
+      "scope": "AF3 provisional finite-case diagnostic; not all-model closure"
+    },
+    "native_versus_native": {
+      "artifacts": {
+        "af3-closure-20260906-v3/rna_ligand_3gca/audit/native": {
+          "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+          "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+          "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "finished.json": "896ba100d2bd42e5dad0ee89afbc00459ea26067880d0313765e69094bdfc5e3",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "inference-finished.json": "3fab835d0a09e1863fb6c869310a367d887539ce2de2a7285a549ea75725bd70",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+          "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+          "provenance.json": "f9ea397fb5ef1403ef37ab2d8c811de6a33fe3c7679cade4f537f79c93aedebc",
+          "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74",
+          "xla-autotune.textproto": "01167cc8d1e270176aecb74a52a972b2f4d59aacf736882aa67569214fb197df"
+        },
+        "af3-closure-20260906-v4/rna_ligand_3gca/independent-autotune/native": {
+          "confidence.npz": "68c7755b581063eeb90abf98d86785af4861cb36471f8a7b58743279d9d5ac57",
+          "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "coordinate.npz": "ada957864f574437fbdfa62de6480941337f435eaf0996dec9004e2c8fa1f61c",
+          "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "finished.json": "8ef9e747e4e276192f4a772ee3c6f159e1e770223e1270c2f444949ef3cd4f4e",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "inference-finished.json": "081fc8661169cb00da8ab50166790ec44ed207186007ef9b64f00b7fbafd830a",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+          "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+          "provenance.json": "5b0611aec93280d33db705701e7172de340164eab2a6ba5f27ad2c064295ec26",
+          "raw.npz": "e5989820cd001f9434a4ee006339915c7b53c476d9afe07439bd2e893e5a8a97",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74",
+          "xla-autotune.textproto": "0e0ece3c029c5e4733800a4b04a0a7ba7de5acf2e148facc3ece68815f8af692"
+        }
+      },
+      "checks": {
+        "compiler_policy": true,
+        "confidence": false,
+        "config.json": true,
+        "coordinates": true,
+        "effective-config.json": true,
+        "gather_mask": true,
+        "identity.npz": true,
+        "input-metadata.json": true,
+        "input.npz": true,
+        "parameters.json": true,
+        "preprocessing_tape": true,
+        "provenance.attention": true,
+        "provenance.buckets": true,
+        "provenance.cpp_sha256": true,
+        "provenance.fixed_kernel_control_only": false,
+        "provenance.fixed_kernel_entries": false,
+        "provenance.fixed_kernel_manifest_sha256": false,
+        "provenance.fixed_kernel_result_sha256": false,
+        "provenance.input_sha256": true,
+        "provenance.jax_version": true,
+        "provenance.kernel_deviation": false,
+        "provenance.kernel_selection": false,
+        "provenance.matmul_precision": true,
+        "provenance.native_recycles": true,
+        "provenance.neutral_padding": true,
+        "provenance.runtime_versions": true,
+        "provenance.samples": true,
+        "provenance.separate_executable_cache": true,
+        "provenance.shared_generated_assets": true,
+        "provenance.steps": true,
+        "provenance.weights_sha256": true,
+        "provenance.xla_autotune_sha256": false,
+        "raw_confidence": false,
+        "raw_masks": true,
+        "separate_executable_cache": true,
+        "tape": true,
+        "tape_coverage": true,
+        "xla_cache_artifacts": true
+      },
+      "confidence_maxima": {
+        "atom_plddt": 0.198944091796875,
+        "metadata.iptm": 0.00047283906166661893,
+        "metadata.ptm": 0.00031210417326077433,
+        "metadata.ranking_score": 0.00044069208398545,
+        "numerical.full_pae": 0.10889148712158203,
+        "numerical.full_pde": 0.011535406112670898
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.0015380830462665756,
+          "R": 0.002923438505753649
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.0015380830462665756,
+          "R": 0.002923438505753649
+        },
+        "entity_rmsd": {
+          "L": [
+            0.0015106047148012716,
+            0.0007227862805570894,
+            0.001442026434335066,
+            0.0014816087992394998,
+            0.0015380830462665756
+          ],
+          "R": [
+            0.0017401919822090921,
+            0.0012566147298903375,
+            0.0015014188994139483,
+            0.0015330812062599945,
+            0.002923438505753649
+          ]
+        },
+        "global_max_rmsd": 0.002904262355382072,
+        "global_rmsd": [
+          0.001736310393282018,
+          0.001248989772101913,
+          0.0015003659143009679,
+          0.001532165900680691,
+          0.002904262355382072
+        ]
+      },
+      "passed": false,
+      "rdkit_rng_scope": "seed/conformer boundary only; internal PRNG unobserved",
+      "scope": "AF3 provisional finite-case diagnostic; not all-model closure"
+    },
+    "scope": "Variability diagnostic, not matched-kernel admission. Comparator kernel-policy gates are expected to differ; retain all individual checks."
+  },
+  "input_kind_panel": {
+    "arrays_per_case": 59,
+    "cases": 35,
+    "comparison_sha256": "2e175e4efdb9e31d4bbbc8cdbeba61d5c35bf9815d0e8bcd889e7b24e5b366de",
+    "metadata_fields_per_case": 5,
+    "passed": 35,
+    "provenance_sha256": "d9a5ba065b483308efa14b63029c9d3eb16155e0243f336cd0cdb9eb004bcad6",
+    "records": [
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "03bd4bd395cf20e57cd3e14dfb838c8ed018dcd872004e395e7cce0888f7a35d",
+          "foldjax.npz": "6277cefa800e39fcf194cab34bcdda2b8a2f7de6d02dfc031bb5e3247b7acf2f",
+          "native.metadata.json": "03bd4bd395cf20e57cd3e14dfb838c8ed018dcd872004e395e7cce0888f7a35d",
+          "native.npz": "6277cefa800e39fcf194cab34bcdda2b8a2f7de6d02dfc031bb5e3247b7acf2f"
+        },
+        "case": "all_six",
+        "input_sha256": "f262cb8dcb88f615a2433a56abbb7406713ed38385106eeed926916070472439",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "2a499e11dabef331c37a3780a77291a051def04d77f888cc9b5f6abf3f4c2b93",
+          "foldjax.npz": "efff2b48ea2b0b72635c27484e4360a3ef0f41e012c535e870732bb6e7a8da24",
+          "native.metadata.json": "2a499e11dabef331c37a3780a77291a051def04d77f888cc9b5f6abf3f4c2b93",
+          "native.npz": "efff2b48ea2b0b72635c27484e4360a3ef0f41e012c535e870732bb6e7a8da24"
+        },
+        "case": "ccd",
+        "input_sha256": "6004d86d668b9e5e20941a94cf69a29070a228d66aabc92f39d7cdfa1fbf715c",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "4ccc976e6b5c0e136d36c27e389f5b393e6fe18e04ff91efac0ba931e6331410",
+          "foldjax.npz": "ce095e10d3c6b5508d9dd624e0b2f1124595786609c82905537e0d51c85a0ea8",
+          "native.metadata.json": "4ccc976e6b5c0e136d36c27e389f5b393e6fe18e04ff91efac0ba931e6331410",
+          "native.npz": "ce095e10d3c6b5508d9dd624e0b2f1124595786609c82905537e0d51c85a0ea8"
+        },
+        "case": "ccd_ion",
+        "input_sha256": "c3a86764c37eff4fa9277c3c39beef82e6940fa6e241de7397276865cb2c7694",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "be3161d77251b780c14662b67accb8102f38b7fd8f77ac376d1713bc833e7a18",
+          "foldjax.npz": "c7dbc6cb026dfba36ec397dbb903394aca845e9c4b0f6ca0d6c301f31edaafc5",
+          "native.metadata.json": "be3161d77251b780c14662b67accb8102f38b7fd8f77ac376d1713bc833e7a18",
+          "native.npz": "c7dbc6cb026dfba36ec397dbb903394aca845e9c4b0f6ca0d6c301f31edaafc5"
+        },
+        "case": "ccd_smiles",
+        "input_sha256": "62650543a4ce32bf65181f7889a989c48518d14a9126473e9b67e39cdd77188c",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "8a93b784c44dfb572b28796df2076229a09dd04f632f296bf0ea776169d9830e",
+          "foldjax.npz": "d8b911d74f9836e07068c87a50710647b457f96bcee1b868d2fe437d5b577ac3",
+          "native.metadata.json": "8a93b784c44dfb572b28796df2076229a09dd04f632f296bf0ea776169d9830e",
+          "native.npz": "d8b911d74f9836e07068c87a50710647b457f96bcee1b868d2fe437d5b577ac3"
+        },
+        "case": "dna",
+        "input_sha256": "143eca90e5a53d9ab2c1f36cbd235823494c5320474a9eb725dbbaca180948a1",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "5a3dd260d5f95bc0761208299602cdf6319b62fe61735ca32d70ff56e798da36",
+          "foldjax.npz": "3dee22ae046b89a7314d2c34225e5b04b5217a79340baaa0a12dad7b4e3b5555",
+          "native.metadata.json": "5a3dd260d5f95bc0761208299602cdf6319b62fe61735ca32d70ff56e798da36",
+          "native.npz": "3dee22ae046b89a7314d2c34225e5b04b5217a79340baaa0a12dad7b4e3b5555"
+        },
+        "case": "dna_ccd",
+        "input_sha256": "5bb28f93f2b35d0104ed54d3feeff015d9419103a2b4d4f99aae473886334f9e",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "2397c309d1b3235bb2e2c8640e3f4099002132f401974fc377b8dd67217c1186",
+          "foldjax.npz": "78bb5e9527a3b40cdd2766413062f1aadb6319690200f6cd9e9996003cd36c8e",
+          "native.metadata.json": "2397c309d1b3235bb2e2c8640e3f4099002132f401974fc377b8dd67217c1186",
+          "native.npz": "78bb5e9527a3b40cdd2766413062f1aadb6319690200f6cd9e9996003cd36c8e"
+        },
+        "case": "dna_copies",
+        "input_sha256": "05660e703ce5c5b8fb009c7da525c0a14308232e818f46a698b03b2e64f1b9a5",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "b641da290f48a3fdea0c91d094ca224d704368edbfc60495bb19cc98691ffb37",
+          "foldjax.npz": "96671a721c0828d7b74a5bac594fe5c524588cc43d4b289b7cee46ea80fef49f",
+          "native.metadata.json": "b641da290f48a3fdea0c91d094ca224d704368edbfc60495bb19cc98691ffb37",
+          "native.npz": "96671a721c0828d7b74a5bac594fe5c524588cc43d4b289b7cee46ea80fef49f"
+        },
+        "case": "dna_ion",
+        "input_sha256": "fd459ac7be6d7ab97ee9a5dd879b9faa6f78e35bf359ebf9b0a86e0978799fc3",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "92bee39c69d462adf832eb960800f55dfe9531f80ebb92355ca6a2400a90c813",
+          "foldjax.npz": "6d7aed06097e304b86905abacfc17216720f8e42bf5f684379a608bdc6b7b773",
+          "native.metadata.json": "92bee39c69d462adf832eb960800f55dfe9531f80ebb92355ca6a2400a90c813",
+          "native.npz": "6d7aed06097e304b86905abacfc17216720f8e42bf5f684379a608bdc6b7b773"
+        },
+        "case": "dna_modified",
+        "input_sha256": "3c66b3c93fca5425ba1c5770004311573d98be7d93b035912e40d556b5a7d0b5",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "b9fce657d31096ba1123bc62364d8d58f9f1c3563f4badd63280f2f29ee35e2e",
+          "foldjax.npz": "3c32aeaf86b7709f08d6054c7bae106e4b961d8ecd0f997b32a60bc13184982b",
+          "native.metadata.json": "b9fce657d31096ba1123bc62364d8d58f9f1c3563f4badd63280f2f29ee35e2e",
+          "native.npz": "3c32aeaf86b7709f08d6054c7bae106e4b961d8ecd0f997b32a60bc13184982b"
+        },
+        "case": "dna_modified_valid",
+        "input_sha256": "eb4f02c960ada1fafc5ace9c1f8abcc79cf5d809e5aaf86549583f330b4e797e",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "5949516b089d7ff3e26f3d5d017a2e07b7790b6c3b8ae2ef0816ef48dc22478c",
+          "foldjax.npz": "b70bbfe9e89fd97df435dfe82c70c219ed98e74598a975b7f26dec6653a9c01e",
+          "native.metadata.json": "5949516b089d7ff3e26f3d5d017a2e07b7790b6c3b8ae2ef0816ef48dc22478c",
+          "native.npz": "b70bbfe9e89fd97df435dfe82c70c219ed98e74598a975b7f26dec6653a9c01e"
+        },
+        "case": "dna_rna",
+        "input_sha256": "07ec5be9f2bbe2a88578118932823987a75a47100ed2c7a67264a3dac0f043c7",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "a93b5c2b20b5f1d36086aed124b3fc5a3c9007005f830467dc2eb75a20cc15d4",
+          "foldjax.npz": "d115bfccd297355b9f0d4a3c7a434c665dc6b93ecf9f7aac21b6a00bc6431b38",
+          "native.metadata.json": "a93b5c2b20b5f1d36086aed124b3fc5a3c9007005f830467dc2eb75a20cc15d4",
+          "native.npz": "d115bfccd297355b9f0d4a3c7a434c665dc6b93ecf9f7aac21b6a00bc6431b38"
+        },
+        "case": "dna_smiles",
+        "input_sha256": "698b787fc3c8592e2c71e6a1bfabb20fb31bd5a39254a21bf5c2995664664181",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "a7cd96efb6e89b2f2b988f87b9a4eb4cf12de41a6333901611eac2c7525d6db3",
+          "foldjax.npz": "0671b251d14acffcdb3cb29752957dd8844c55a821966c366bb21255d7161d3c",
+          "native.metadata.json": "a7cd96efb6e89b2f2b988f87b9a4eb4cf12de41a6333901611eac2c7525d6db3",
+          "native.npz": "0671b251d14acffcdb3cb29752957dd8844c55a821966c366bb21255d7161d3c"
+        },
+        "case": "ion",
+        "input_sha256": "0ca44e43548fd8f2a40f159a2d0ef1441154f7431ca460db8859c9dac121938a",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "dba865c68316348957fb75aeec8b07eee87ae1e02c81b8b717a03254dd5b0eb7",
+          "foldjax.npz": "63883b3609e71e7b96f88de88089f50f4fff86ffd9fba126708bc15b611f68e5",
+          "native.metadata.json": "dba865c68316348957fb75aeec8b07eee87ae1e02c81b8b717a03254dd5b0eb7",
+          "native.npz": "63883b3609e71e7b96f88de88089f50f4fff86ffd9fba126708bc15b611f68e5"
+        },
+        "case": "msa_explicit_paired",
+        "input_sha256": "b43b6c8fe9a81adcada3c60a02c8d232fd3c3f0059b23823a032d78b931d7f53",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "08edb06ba409051aba88b6d33bdc5de501ad7278a69dc838175774515fc3bb78",
+          "foldjax.npz": "63883b3609e71e7b96f88de88089f50f4fff86ffd9fba126708bc15b611f68e5",
+          "native.metadata.json": "08edb06ba409051aba88b6d33bdc5de501ad7278a69dc838175774515fc3bb78",
+          "native.npz": "63883b3609e71e7b96f88de88089f50f4fff86ffd9fba126708bc15b611f68e5"
+        },
+        "case": "msa_shared_homomer",
+        "input_sha256": "b5dc8c8b33cad9b446ea946e7211f4b97f36d1e882bb444aea8d23f50be262b8",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "dd2ca6f7658543f608499349fc80772e4e6ce32dd264ffffb26fa902015ea334",
+          "foldjax.npz": "63883b3609e71e7b96f88de88089f50f4fff86ffd9fba126708bc15b611f68e5",
+          "native.metadata.json": "dd2ca6f7658543f608499349fc80772e4e6ce32dd264ffffb26fa902015ea334",
+          "native.npz": "63883b3609e71e7b96f88de88089f50f4fff86ffd9fba126708bc15b611f68e5"
+        },
+        "case": "msa_taxonomy",
+        "input_sha256": "16a55424a0788a4472e83846a12acc7214fcf5f2c0ed8ad1bb336bd3841d96af",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "41b60345e2d1e57630672adb530a722b368245dfda5f963af8af544650319f0a",
+          "foldjax.npz": "52f5a7ed4a6fc6801ab9fed23f6b5378adde7d9f628fd63c2c75c0d4d9e9e75a",
+          "native.metadata.json": "41b60345e2d1e57630672adb530a722b368245dfda5f963af8af544650319f0a",
+          "native.npz": "52f5a7ed4a6fc6801ab9fed23f6b5378adde7d9f628fd63c2c75c0d4d9e9e75a"
+        },
+        "case": "protein",
+        "input_sha256": "a7f3bbf9751d940d6e2730c85eb3bf54ca6d59b6adced859d90c2f8b1a701c5f",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "d630bef883486f4f0389950af67f25581b55be27e8094daf370184513342e676",
+          "foldjax.npz": "b4e9ca15134eecaade6273dfe9562350f1bd12d829c5a38d0a5f758027490764",
+          "native.metadata.json": "d630bef883486f4f0389950af67f25581b55be27e8094daf370184513342e676",
+          "native.npz": "b4e9ca15134eecaade6273dfe9562350f1bd12d829c5a38d0a5f758027490764"
+        },
+        "case": "protein_ccd",
+        "input_sha256": "0a2fbfc3a5adb4791ce138fa8dea29a13780fc6c44a1673b974e331706f9e8c1",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "b3a94d9384a335031b9b9486773abbafc8a5cb04a0a012dcbc60b7cb46a23bb1",
+          "foldjax.npz": "f148dcc6cfc3400cbfef3bb4d8f9c257122aa19afde62d4ff3bee305af1109c2",
+          "native.metadata.json": "b3a94d9384a335031b9b9486773abbafc8a5cb04a0a012dcbc60b7cb46a23bb1",
+          "native.npz": "f148dcc6cfc3400cbfef3bb4d8f9c257122aa19afde62d4ff3bee305af1109c2"
+        },
+        "case": "protein_copies",
+        "input_sha256": "9d9b26349225ffdc3d2d45d2aecd5dd5a62a03a6bb36bc50b130e91423c1a81d",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "9385d9540859e3514334d68a4f08102343752683531eab330ba27e11e7bf12cb",
+          "foldjax.npz": "f148dcc6cfc3400cbfef3bb4d8f9c257122aa19afde62d4ff3bee305af1109c2",
+          "native.metadata.json": "9385d9540859e3514334d68a4f08102343752683531eab330ba27e11e7bf12cb",
+          "native.npz": "f148dcc6cfc3400cbfef3bb4d8f9c257122aa19afde62d4ff3bee305af1109c2"
+        },
+        "case": "protein_disulfide",
+        "input_sha256": "a678bc02bc8d60c78f1ed1182b41905677d90e3dd1e1ac8eaf8083661f27a9ad",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "f9656e353a9a1c9aa465efcb8fe94573c8bc493d93a726b755bfcfa0fc86cd65",
+          "foldjax.npz": "7099536e534eee23fbfc6fd9827da9290860467341e54571dd08533acdf9a755",
+          "native.metadata.json": "f9656e353a9a1c9aa465efcb8fe94573c8bc493d93a726b755bfcfa0fc86cd65",
+          "native.npz": "7099536e534eee23fbfc6fd9827da9290860467341e54571dd08533acdf9a755"
+        },
+        "case": "protein_dna",
+        "input_sha256": "3941f4ec9bfe1deb8084359494f3eadf6d577be493d7106046faae5c3bb24ea5",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "010d8df1d0e573321dc545c2fd1744c29b0445bb3cb908e7ff0d5794219bdd46",
+          "foldjax.npz": "eb501bc4c3c04036cf4c81bb4e33892c940ebced701feb27bdc4d86f91fe9692",
+          "native.metadata.json": "010d8df1d0e573321dc545c2fd1744c29b0445bb3cb908e7ff0d5794219bdd46",
+          "native.npz": "eb501bc4c3c04036cf4c81bb4e33892c940ebced701feb27bdc4d86f91fe9692"
+        },
+        "case": "protein_dna_rna",
+        "input_sha256": "24ce500b26cd80216990cf3fb29d24a325f8f38304c59588cf714c90b5db64ae",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "37805ec61b3a6939a0e9b5434b10f5061de804b66ee47299d96ee2f8a4a2ba76",
+          "foldjax.npz": "c163717381a7797908c6c100c06facd9263f81ff926464de784dda4f762fec63",
+          "native.metadata.json": "37805ec61b3a6939a0e9b5434b10f5061de804b66ee47299d96ee2f8a4a2ba76",
+          "native.npz": "c163717381a7797908c6c100c06facd9263f81ff926464de784dda4f762fec63"
+        },
+        "case": "protein_glycan_bond",
+        "input_sha256": "af21faef9bca0405ab9cb8305921941181af637afe0ab0434e75ec79b0847f5f",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "64b966e9ef8d7d4693525b0cc012a518d3161aa17e9bc03013c33591a2759b0b",
+          "foldjax.npz": "17e4b41a1499ea0374af9784cdbc064266672b45bb0abae203e5cc5413e12fea",
+          "native.metadata.json": "64b966e9ef8d7d4693525b0cc012a518d3161aa17e9bc03013c33591a2759b0b",
+          "native.npz": "17e4b41a1499ea0374af9784cdbc064266672b45bb0abae203e5cc5413e12fea"
+        },
+        "case": "protein_ion",
+        "input_sha256": "df8ca48d797f0722008a2d6fe9513986a758d1c5886c5cfab15d019aef044e98",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "d973584b61c38e5a7a617018ae3c6b19cc4d586bc850caf07ed8b0a3f09db068",
+          "foldjax.npz": "9fd0a07512875066095e3434bfce5744b40793c5d98994bd211ce465b118b496",
+          "native.metadata.json": "d973584b61c38e5a7a617018ae3c6b19cc4d586bc850caf07ed8b0a3f09db068",
+          "native.npz": "9fd0a07512875066095e3434bfce5744b40793c5d98994bd211ce465b118b496"
+        },
+        "case": "protein_modified",
+        "input_sha256": "1faa2f9df15b9445859e69c45bdf5ac39ae7aed87c53b3031a589a3c4ade68b8",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "5a28803b85139b891e4a5c9f7c54e666b66306745cca4b447f29e82d94dbc070",
+          "foldjax.npz": "a3c27fb1cd2c94a8bfe160b0f2d13090b7b6f628b42f32d628191d36b5379d98",
+          "native.metadata.json": "5a28803b85139b891e4a5c9f7c54e666b66306745cca4b447f29e82d94dbc070",
+          "native.npz": "a3c27fb1cd2c94a8bfe160b0f2d13090b7b6f628b42f32d628191d36b5379d98"
+        },
+        "case": "protein_rna",
+        "input_sha256": "fd0f1c8ca37f091e39cffc4d6b35433ac5b0d0ae682e6636e641874954164a71",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "c068680432270b99fdbce85a7a798699b586f4ee6516fdc96f8db92ec0d110dc",
+          "foldjax.npz": "cde237c49dff43230854d66e4058d936e3386477a0505aea2878bfef446baf9a",
+          "native.metadata.json": "c068680432270b99fdbce85a7a798699b586f4ee6516fdc96f8db92ec0d110dc",
+          "native.npz": "cde237c49dff43230854d66e4058d936e3386477a0505aea2878bfef446baf9a"
+        },
+        "case": "protein_smiles",
+        "input_sha256": "54e890cc7ca3580cb7696e72f4440feef9b2b8af9e460949a3c461201a4c66a6",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "80bade4a0af31862a30e839a6a7952b8138710bd2b7d8f785b88d339a12c14f5",
+          "foldjax.npz": "b61f4db9ba07e9309d9b6c9e0809a81285daefc2da84e2e96ff86c099e4dac41",
+          "native.metadata.json": "80bade4a0af31862a30e839a6a7952b8138710bd2b7d8f785b88d339a12c14f5",
+          "native.npz": "b61f4db9ba07e9309d9b6c9e0809a81285daefc2da84e2e96ff86c099e4dac41"
+        },
+        "case": "rna",
+        "input_sha256": "1ac42098c15ad302ecbff7e0f97dc0da9616c438a7c9e5fbd863f664490ba7d0",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "7188e719fdb4092fff27f729e4324cf7364201a435cbb91da34023da8628ed79",
+          "foldjax.npz": "af279ab21c549c38b35b4b9ffe5acae0d768af954eb32448a2d6e8c5f4dc1545",
+          "native.metadata.json": "7188e719fdb4092fff27f729e4324cf7364201a435cbb91da34023da8628ed79",
+          "native.npz": "af279ab21c549c38b35b4b9ffe5acae0d768af954eb32448a2d6e8c5f4dc1545"
+        },
+        "case": "rna_ccd",
+        "input_sha256": "52b6c9eae999a31c4811f73ee22230bfe91fd2d8fe7afb8c70974ec3d6eecc27",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "28e3cf272a306629daac69daa6bc08e9b163d81e373cdbc005c54493b50adf12",
+          "foldjax.npz": "f4ec041f46b7f572819915e009750548112c0439c7a2e307bc9274adb5d0adb3",
+          "native.metadata.json": "28e3cf272a306629daac69daa6bc08e9b163d81e373cdbc005c54493b50adf12",
+          "native.npz": "f4ec041f46b7f572819915e009750548112c0439c7a2e307bc9274adb5d0adb3"
+        },
+        "case": "rna_copies",
+        "input_sha256": "2e2caef6392ed32876169e0b4d55e34650d81c8a44d2690bbfb781ff89885f7c",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "86bd1e775b073891897fba056388a11cc289257b8c157dbac1b79cb28088472c",
+          "foldjax.npz": "dc5f6c93d106504bc78f732204e7b9254b61eac810dc3f56ccd12135eff310be",
+          "native.metadata.json": "86bd1e775b073891897fba056388a11cc289257b8c157dbac1b79cb28088472c",
+          "native.npz": "dc5f6c93d106504bc78f732204e7b9254b61eac810dc3f56ccd12135eff310be"
+        },
+        "case": "rna_ion",
+        "input_sha256": "5cec7a223298ed64ff425ed959d36d4e5512dcbfa123ca6473700a521bb4071f",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "cd8aa0211566fb83ed320be72413aeff296ebe041bd4b14c30b6eab4c63d6103",
+          "foldjax.npz": "4ce6efe7f3c8cee001c9fa54a0cc972bc4585eebcadd0050bf9a04f3743c7f92",
+          "native.metadata.json": "cd8aa0211566fb83ed320be72413aeff296ebe041bd4b14c30b6eab4c63d6103",
+          "native.npz": "4ce6efe7f3c8cee001c9fa54a0cc972bc4585eebcadd0050bf9a04f3743c7f92"
+        },
+        "case": "rna_modified",
+        "input_sha256": "232f98bc59a9b3858b7a7776b85fbe525d89bd4d21bf609a1e36076d81f24db5",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "3f514f4a7dedeb84766a861ab603dd3e9221432e93fac61535392cff922c4835",
+          "foldjax.npz": "eccf3283763526ad6a4a16fd158ee002a0c263387802bd0a495cdec0af7c5aeb",
+          "native.metadata.json": "3f514f4a7dedeb84766a861ab603dd3e9221432e93fac61535392cff922c4835",
+          "native.npz": "eccf3283763526ad6a4a16fd158ee002a0c263387802bd0a495cdec0af7c5aeb"
+        },
+        "case": "rna_smiles",
+        "input_sha256": "d700f7a3de466034cd8fb7a92f785e8491f2a116df48e808f00d05e9186dfc93",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "3f15ecf68b1aa0b7cc7d5bb224617af3ccc18a1feef1fae2d817e90e7259be77",
+          "foldjax.npz": "c0c3c2dbe5ddae8341a1437af4dc6f7ca583c74d6a7cb81bbf60b3b0c9c72ee6",
+          "native.metadata.json": "3f15ecf68b1aa0b7cc7d5bb224617af3ccc18a1feef1fae2d817e90e7259be77",
+          "native.npz": "c0c3c2dbe5ddae8341a1437af4dc6f7ca583c74d6a7cb81bbf60b3b0c9c72ee6"
+        },
+        "case": "smiles",
+        "input_sha256": "19f85d2a885e54e5f2d1158a1a695dd7b0c4f2f943ba68a9aef5f55739ff3fd2",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      },
+      {
+        "arrays": 59,
+        "artifacts": {
+          "foldjax.metadata.json": "35165a8ebde23f4bd382554b2c090493660e0e7763dac96fd60d97c041227f0c",
+          "foldjax.npz": "f2c54812859b32d73e8f8462d54128c197288751a0284038ac4c9b9c200176d7",
+          "native.metadata.json": "35165a8ebde23f4bd382554b2c090493660e0e7763dac96fd60d97c041227f0c",
+          "native.npz": "f2c54812859b32d73e8f8462d54128c197288751a0284038ac4c9b9c200176d7"
+        },
+        "case": "smiles_ion",
+        "input_sha256": "b5d24f7c07233477ff57c3195989350d095cc8630e54998864445ba8f928081c",
+        "metadata_equal": true,
+        "metadata_fields": 5,
+        "passed": true
+      }
+    ],
+    "scope": "35 independently recaptured prepared-native-JSON fixtures; shared CPP/CCD; no database search or universal output claim"
+  },
+  "native_source_commit": "85c4d20505fd5cef05eac22b534d4e793971ae69",
+  "repeat5": {
+    "arms": {
+      "foldjax": {
+        "first_warm": {
+          "all_warm_repeats": true,
+          "passed": true,
+          "raw_repeat": {
+            "atol": 0.0001,
+            "leaves": {
+              "__identifier__": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "average_pde": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "diffusion_samples.atom_positions": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "diffusion_samples.mask": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "distogram.bin_edges": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "distogram.contact_probs": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "full_pae": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "full_pde": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "predicted_experimentally_resolved": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "predicted_lddt": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "tmscore_adjusted_pae_global": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "tmscore_adjusted_pae_interface": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              }
+            },
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "passed": true,
+            "rtol": 0.0001
+          },
+          "scope": "uninstrumented first/warm raw repeat"
+        },
+        "independent_recompile": {
+          "artifacts": {
+            "af3-closure-20260906-v4/rna_ligand_3gca/performance/foldjax": {
+              "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+              "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+              "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "finished.json": "219b72b48210361f9c53a5ccb8a3b1879f8fdc77219027801b6cee116daa09c5",
+              "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+              "inference-finished.json": "e96f5e815cb0b7c5652f8ac4432bb6b12b31016cde20892aefcd956acdaa4493",
+              "input-audit.json": "0f26a246b2382686ee457ff25ff2eb1350b4dfd188d36fa7030203d074b88b78",
+              "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+              "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+              "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+              "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+              "provenance.json": "38d8d7e552c6e4885f3bd4755c5d279ac0822c6d7d5ff70b08b7e5b9ae4c64d3",
+              "raw-first.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "tape.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+              "xla-autotune.textproto": "79f4da75d78cbcec1a146c3592430df83fd4f3aa040875f87f6869f1c75e6017"
+            },
+            "af3-closure-20260906-v4/rna_ligand_3gca/repeat5/foldjax": {
+              "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+              "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+              "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "finished.json": "625f32873ef642edd94ba9d190b7b8ecfc583fdb639f046bead7ae0a6a484986",
+              "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+              "inference-finished.json": "193eb97650950810abd4da14568d601bb3a3a93f0af46cd992d38ad1c59fff40",
+              "input-audit.json": "0f26a246b2382686ee457ff25ff2eb1350b4dfd188d36fa7030203d074b88b78",
+              "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+              "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+              "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+              "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+              "provenance.json": "c320454f4a2fb6300a8362d5a5b5910dc6bddad655e61a47ed5d33b9b3115aa7",
+              "raw-first.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "tape.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+              "xla-autotune.textproto": "79f4da75d78cbcec1a146c3592430df83fd4f3aa040875f87f6869f1c75e6017"
+            }
+          },
+          "checks": {
+            "compiler_policy": true,
+            "confidence": true,
+            "config.json": true,
+            "coordinates": true,
+            "effective-config.json": true,
+            "gather_mask": true,
+            "identity.npz": true,
+            "input-metadata.json": true,
+            "input.npz": true,
+            "parameters.json": true,
+            "provenance.attention": true,
+            "provenance.buckets": true,
+            "provenance.cpp_sha256": true,
+            "provenance.fixed_kernel_control_only": true,
+            "provenance.fixed_kernel_entries": true,
+            "provenance.fixed_kernel_manifest_sha256": true,
+            "provenance.fixed_kernel_result_sha256": true,
+            "provenance.input_sha256": true,
+            "provenance.jax_version": true,
+            "provenance.kernel_deviation": true,
+            "provenance.kernel_selection": true,
+            "provenance.matmul_precision": true,
+            "provenance.native_recycles": true,
+            "provenance.neutral_padding": true,
+            "provenance.runtime_versions": true,
+            "provenance.samples": true,
+            "provenance.separate_executable_cache": true,
+            "provenance.shared_generated_assets": true,
+            "provenance.steps": true,
+            "provenance.weights_sha256": true,
+            "provenance.xla_autotune_sha256": true,
+            "raw_confidence": true,
+            "raw_masks": true,
+            "separate_executable_cache": true,
+            "xla_cache_artifacts": true
+          },
+          "confidence_maxima": {
+            "atom_plddt": 0.0,
+            "metadata.iptm": 0.0,
+            "metadata.ptm": 0.0,
+            "metadata.ranking_score": 0.0,
+            "numerical.full_pae": 0.0,
+            "numerical.full_pde": 0.0
+          },
+          "coordinate_gate": {
+            "coordinate_gate_passed": true,
+            "entity_max_rmsd": {
+              "L": 4.35085119993769e-15,
+              "R": 1.6099534198619772e-14
+            },
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+            "threshold_angstrom": 0.05
+          },
+          "entity_parity": {
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              true,
+              true,
+              true,
+              true,
+              true
+            ],
+            "entity_max_rmsd": {
+              "L": 4.35085119993769e-15,
+              "R": 1.6099534198619772e-14
+            },
+            "entity_rmsd": {
+              "L": [
+                4.35085119993769e-15,
+                2.103044963160949e-15,
+                2.038113997584219e-15,
+                9.891870048249342e-16,
+                1.7184334636183103e-15
+              ],
+              "R": [
+                1.6099534198619772e-14,
+                7.383805003873817e-15,
+                7.107685924463209e-15,
+                3.1855397269016476e-15,
+                7.087980863963456e-15
+              ]
+            },
+            "global_max_rmsd": 1.5964048612144945e-14,
+            "global_rmsd": [
+              1.5964048612144945e-14,
+              7.322211077268779e-15,
+              7.048466769076772e-15,
+              3.1594111149090364e-15,
+              7.027410759174829e-15
+            ]
+          },
+          "passed": true,
+          "rdkit_rng_scope": "seed/conformer boundary only; internal PRNG unobserved",
+          "scope": "output-only audit/performance bridge; no RNG admission"
+        },
+        "timings": {
+          "device_memory_stats": {
+            "bytes_in_use": 1237618944,
+            "bytes_limit": 76478939136,
+            "bytes_reserved": 0,
+            "largest_alloc_size": 561456384,
+            "largest_free_block_bytes": 734003200,
+            "num_allocs": 1599,
+            "peak_bytes_in_use": 1820660992,
+            "peak_bytes_reserved": 0,
+            "peak_pool_bytes": 2162163712,
+            "pool_bytes": 2162163712
+          },
+          "first_inference_seconds": 33.621043932042085,
+          "host_process_maxrss_kib": 7057248,
+          "instrumented": false,
+          "warm_inference_repeats_seconds": [
+            4.393271308974363,
+            4.4224784600082785,
+            4.444732640986331,
+            4.474076029029675,
+            4.479207717988174
+          ],
+          "warm_inference_seconds": 4.444732640986331,
+          "warm_raw_bitwise_equal_to_first": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ]
+        }
+      },
+      "native": {
+        "first_warm": {
+          "all_warm_repeats": true,
+          "passed": true,
+          "raw_repeat": {
+            "atol": 0.0001,
+            "leaves": {
+              "__identifier__": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "average_pde": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "diffusion_samples.atom_positions": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "diffusion_samples.mask": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "distogram.bin_edges": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "distogram.contact_probs": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "full_pae": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "full_pde": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "predicted_experimentally_resolved": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "predicted_lddt": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "tmscore_adjusted_pae_global": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              },
+              "tmscore_adjusted_pae_interface": {
+                "bitwise_equal": true,
+                "dtype_equal": true,
+                "max_absolute_error": 0.0,
+                "max_scaled_error": 0.0,
+                "nonfinite_equal": true,
+                "passed": true,
+                "shape_equal": true
+              }
+            },
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "passed": true,
+            "rtol": 0.0001
+          },
+          "scope": "uninstrumented first/warm raw repeat"
+        },
+        "independent_recompile": {
+          "artifacts": {
+            "af3-closure-20260906-v4/rna_ligand_3gca/performance/native": {
+              "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+              "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+              "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "finished.json": "0fbe908ce44f8e80abab9f6ff35285f96aace30e7ed024a2f46900cde1c99f03",
+              "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+              "inference-finished.json": "1e9627e58ff74e278d31460695400190e8e7407845cf4ca12046d1890d00a9a6",
+              "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+              "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+              "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+              "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+              "provenance.json": "d9d758b6df6a952cabeeacf50c25d88071099cd8a82b422bd0d2451a1de6beb3",
+              "raw-first.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "tape.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+              "xla-autotune.textproto": "79f4da75d78cbcec1a146c3592430df83fd4f3aa040875f87f6869f1c75e6017"
+            },
+            "af3-closure-20260906-v4/rna_ligand_3gca/repeat5/native": {
+              "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+              "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+              "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+              "finished.json": "12fdd63cfc566799c8ae302d330915242927bfde0da95b95d0e9bb246f304235",
+              "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+              "inference-finished.json": "556c2d3d7f129dfc31da6c2e772b77d45d8691ac6c11326a23d303eeaf018f36",
+              "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+              "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+              "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+              "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+              "provenance.json": "a2462cae5fd6e1658c211ece00bcdba00e296cfd81831ab0ccc8919bea6e2b0d",
+              "raw-first.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+              "tape.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+              "xla-autotune.textproto": "79f4da75d78cbcec1a146c3592430df83fd4f3aa040875f87f6869f1c75e6017"
+            }
+          },
+          "checks": {
+            "compiler_policy": true,
+            "confidence": true,
+            "config.json": true,
+            "coordinates": true,
+            "effective-config.json": true,
+            "gather_mask": true,
+            "identity.npz": true,
+            "input-metadata.json": true,
+            "input.npz": true,
+            "parameters.json": true,
+            "provenance.attention": true,
+            "provenance.buckets": true,
+            "provenance.cpp_sha256": true,
+            "provenance.fixed_kernel_control_only": true,
+            "provenance.fixed_kernel_entries": true,
+            "provenance.fixed_kernel_manifest_sha256": true,
+            "provenance.fixed_kernel_result_sha256": true,
+            "provenance.input_sha256": true,
+            "provenance.jax_version": true,
+            "provenance.kernel_deviation": true,
+            "provenance.kernel_selection": true,
+            "provenance.matmul_precision": true,
+            "provenance.native_recycles": true,
+            "provenance.neutral_padding": true,
+            "provenance.runtime_versions": true,
+            "provenance.samples": true,
+            "provenance.separate_executable_cache": true,
+            "provenance.shared_generated_assets": true,
+            "provenance.steps": true,
+            "provenance.weights_sha256": true,
+            "provenance.xla_autotune_sha256": true,
+            "raw_confidence": true,
+            "raw_masks": true,
+            "separate_executable_cache": true,
+            "xla_cache_artifacts": true
+          },
+          "confidence_maxima": {
+            "atom_plddt": 0.0,
+            "metadata.iptm": 0.0,
+            "metadata.ptm": 0.0,
+            "metadata.ranking_score": 0.0,
+            "numerical.full_pae": 0.0,
+            "numerical.full_pde": 0.0
+          },
+          "coordinate_gate": {
+            "coordinate_gate_passed": true,
+            "entity_max_rmsd": {
+              "L": 4.35085119993769e-15,
+              "R": 1.6099534198619772e-14
+            },
+            "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+            "threshold_angstrom": 0.05
+          },
+          "entity_parity": {
+            "atom_counts": [
+              719,
+              719,
+              719,
+              719,
+              719
+            ],
+            "coordinates_equal": [
+              true,
+              true,
+              true,
+              true,
+              true
+            ],
+            "entity_max_rmsd": {
+              "L": 4.35085119993769e-15,
+              "R": 1.6099534198619772e-14
+            },
+            "entity_rmsd": {
+              "L": [
+                4.35085119993769e-15,
+                2.103044963160949e-15,
+                2.038113997584219e-15,
+                9.891870048249342e-16,
+                1.7184334636183103e-15
+              ],
+              "R": [
+                1.6099534198619772e-14,
+                7.383805003873817e-15,
+                7.107685924463209e-15,
+                3.1855397269016476e-15,
+                7.087980863963456e-15
+              ]
+            },
+            "global_max_rmsd": 1.5964048612144945e-14,
+            "global_rmsd": [
+              1.5964048612144945e-14,
+              7.322211077268779e-15,
+              7.048466769076772e-15,
+              3.1594111149090364e-15,
+              7.027410759174829e-15
+            ]
+          },
+          "passed": true,
+          "rdkit_rng_scope": "seed/conformer boundary only; internal PRNG unobserved",
+          "scope": "output-only audit/performance bridge; no RNG admission"
+        },
+        "timings": {
+          "device_memory_stats": {
+            "bytes_in_use": 1242265088,
+            "bytes_limit": 76478939136,
+            "bytes_reserved": 0,
+            "largest_alloc_size": 561456384,
+            "largest_free_block_bytes": 734003200,
+            "num_allocs": 1599,
+            "peak_bytes_in_use": 1825338624,
+            "peak_bytes_reserved": 0,
+            "peak_pool_bytes": 2162163712,
+            "pool_bytes": 2162163712
+          },
+          "first_inference_seconds": 33.45621106697945,
+          "host_process_maxrss_kib": 7069920,
+          "instrumented": false,
+          "warm_inference_repeats_seconds": [
+            4.370368510019034,
+            4.41156850598054,
+            4.4238152540056035,
+            4.446074985025916,
+            4.466380088008009
+          ],
+          "warm_inference_seconds": 4.4238152540056035,
+          "warm_raw_bitwise_equal_to_first": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ]
+        }
+      }
+    },
+    "pair": {
+      "artifacts": {
+        "af3-closure-20260906-v4/rna_ligand_3gca/repeat5/foldjax": {
+          "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+          "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+          "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "finished.json": "625f32873ef642edd94ba9d190b7b8ecfc583fdb639f046bead7ae0a6a484986",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "inference-finished.json": "193eb97650950810abd4da14568d601bb3a3a93f0af46cd992d38ad1c59fff40",
+          "input-audit.json": "0f26a246b2382686ee457ff25ff2eb1350b4dfd188d36fa7030203d074b88b78",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+          "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+          "provenance.json": "c320454f4a2fb6300a8362d5a5b5910dc6bddad655e61a47ed5d33b9b3115aa7",
+          "raw-first.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+          "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+          "tape.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+          "xla-autotune.textproto": "79f4da75d78cbcec1a146c3592430df83fd4f3aa040875f87f6869f1c75e6017"
+        },
+        "af3-closure-20260906-v4/rna_ligand_3gca/repeat5/native": {
+          "confidence.npz": "6113f14e6b89cb22269edd68c1894a4130078d326bf1a515a99b088dd4559d40",
+          "config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "coordinate.npz": "fdc97535cb51272110bf3191f4b3bd26afe498fb2dd5e689783559378d4c6ba9",
+          "effective-config.json": "964a21681d212152c460d115a3a2f944c326d83b10133d9c67f6db4ad30851b8",
+          "finished.json": "12fdd63cfc566799c8ae302d330915242927bfde0da95b95d0e9bb246f304235",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "inference-finished.json": "556c2d3d7f129dfc31da6c2e772b77d45d8691ac6c11326a23d303eeaf018f36",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "parameters.json": "75fd603404eb0f46654dc8711085f8c6c1de4b86eb67faaac2e9f0ecda931502",
+          "preprocessing-tape.json": "544799c58f136b038b31e63c8ab8543e5718c250c83ec141ca2a6d9af4be5550",
+          "provenance.json": "a2462cae5fd6e1658c211ece00bcdba00e296cfd81831ab0ccc8919bea6e2b0d",
+          "raw-first.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+          "raw.npz": "b730f3972284b7aa67f6031cec19dd3e5fb37fb3e3df5292d9ddbd5004450935",
+          "tape.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+          "xla-autotune.textproto": "79f4da75d78cbcec1a146c3592430df83fd4f3aa040875f87f6869f1c75e6017"
+        }
+      },
+      "checks": {
+        "compiler_policy": true,
+        "confidence": true,
+        "config.json": true,
+        "coordinates": true,
+        "effective-config.json": true,
+        "gather_mask": true,
+        "identity.npz": true,
+        "input-metadata.json": true,
+        "input.npz": true,
+        "parameters.json": true,
+        "provenance.attention": true,
+        "provenance.buckets": true,
+        "provenance.cpp_sha256": true,
+        "provenance.fixed_kernel_control_only": true,
+        "provenance.fixed_kernel_entries": true,
+        "provenance.fixed_kernel_manifest_sha256": true,
+        "provenance.fixed_kernel_result_sha256": true,
+        "provenance.input_sha256": true,
+        "provenance.jax_version": true,
+        "provenance.kernel_deviation": true,
+        "provenance.kernel_selection": true,
+        "provenance.matmul_precision": true,
+        "provenance.native_recycles": true,
+        "provenance.neutral_padding": true,
+        "provenance.runtime_versions": true,
+        "provenance.samples": true,
+        "provenance.separate_executable_cache": true,
+        "provenance.shared_generated_assets": true,
+        "provenance.steps": true,
+        "provenance.weights_sha256": true,
+        "provenance.xla_autotune_sha256": true,
+        "raw_confidence": true,
+        "raw_masks": true,
+        "separate_executable_cache": true,
+        "xla_cache_artifacts": true
+      },
+      "confidence_maxima": {
+        "atom_plddt": 0.0,
+        "metadata.iptm": 0.0,
+        "metadata.ptm": 0.0,
+        "metadata.ranking_score": 0.0,
+        "numerical.full_pae": 0.0,
+        "numerical.full_pde": 0.0
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 4.35085119993769e-15,
+          "R": 1.6099534198619772e-14
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "entity_max_rmsd": {
+          "L": 4.35085119993769e-15,
+          "R": 1.6099534198619772e-14
+        },
+        "entity_rmsd": {
+          "L": [
+            4.35085119993769e-15,
+            2.103044963160949e-15,
+            2.038113997584219e-15,
+            9.891870048249342e-16,
+            1.7184334636183103e-15
+          ],
+          "R": [
+            1.6099534198619772e-14,
+            7.383805003873817e-15,
+            7.107685924463209e-15,
+            3.1855397269016476e-15,
+            7.087980863963456e-15
+          ]
+        },
+        "global_max_rmsd": 1.5964048612144945e-14,
+        "global_rmsd": [
+          1.5964048612144945e-14,
+          7.322211077268779e-15,
+          7.048466769076772e-15,
+          3.1594111149090364e-15,
+          7.027410759174829e-15
+        ]
+      },
+      "passed": true,
+      "rdkit_rng_scope": "seed/conformer boundary only; internal PRNG unobserved",
+      "scope": "output-only audit/performance bridge; no RNG admission"
+    }
+  },
+  "reporter_sha256": "2dc0ca7e43c6a738b7a89e29d2304f82903cb70bb2c4b96820cf19b2d44e3cc7",
+  "schema": 1,
+  "scope": "AF3 fixed native precision on the common FoldJAX runtime, not publisher dependency lock reproduction; no optional dtype lowering or crystal-reference scoring",
+  "verification": {
+    "final_affected_tests": {
+      "exit": 0,
+      "passed": 148
+    },
+    "full_cpu": "JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 .venv/bin/pytest -q -m 'not network' --cov=foldjax --cov-report=term-missing --cov-fail-under=80",
+    "full_cpu_result": {
+      "coverage_percent": 87.42,
+      "deselected": 8,
+      "exit": 0,
+      "passed": 3664,
+      "skipped": 399
+    },
+    "scope": "Full CPU gate on the production patch; final affected rerun covers subsequent comparator/reporter hardening. No remote CI, commit, push or release."
+  }
+}

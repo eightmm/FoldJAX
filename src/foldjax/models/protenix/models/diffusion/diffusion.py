@@ -92,15 +92,80 @@ def inference_noise_schedule(
 def centre_random_augmentation(
     x: jnp.ndarray,
     atom_mask: jnp.ndarray | None = None,
+    *,
+    key: jax.Array | None = None,
+    rotations: jnp.ndarray | None = None,
+    translations: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    """Center coordinates over the atom axis, matching inference centering."""
+    """Apply native Algorithm 19 without its singleton augmentation axis.
 
+    A direct call with neither key nor tape retains the historical center-only
+    helper. The sampler requires a key or both rigid tapes at every step.
+    """
     if atom_mask is None:
-        return x - jnp.mean(x, axis=-2, keepdims=True)
-    mask = jnp.asarray(atom_mask, dtype=x.dtype)
-    numerator = jnp.sum(x * mask[..., None], axis=-2, keepdims=True)
-    denominator = jnp.maximum(jnp.sum(mask), 1.0)
-    return (x - numerator / denominator) * mask[..., None]
+        centered = x - jnp.mean(x, axis=-2, keepdims=True)
+    else:
+        mask = jnp.asarray(atom_mask, dtype=x.dtype)
+        numerator = jnp.sum(x * mask[..., None], axis=-2, keepdims=True)
+        denominator = jnp.sum(mask, axis=-1, keepdims=True)[..., None] + 1e-12
+        centered = x - numerator / denominator
+    if rotations is None and translations is None and key is None:
+        return centered if atom_mask is None else centered * mask[..., None]
+    if rotations is None and translations is None:
+        rotation_key, translation_key = jax.random.split(key)
+        rotations = _uniform_random_rotations(rotation_key, x.shape[:-2])
+        translations = jax.random.normal(
+            translation_key, (*x.shape[:-2], 3), dtype=jnp.float32
+        )
+    elif rotations is None or translations is None:
+        raise ValueError("rotations and translations must be provided together")
+    rotations = jnp.asarray(rotations, dtype=jnp.float32)
+    translations = jnp.asarray(translations, dtype=jnp.float32)
+    if rotations.shape != (*x.shape[:-2], 3, 3):
+        raise ValueError("rotations must have shape [..., N_sample, 3, 3]")
+    if translations.shape != (*x.shape[:-2], 3):
+        raise ValueError("translations must have shape [..., N_sample, 3]")
+
+    # Native rot_vec_mul casts to FP32 and uses scalar products to avoid AMP
+    # and TF32 contraction. OpenDDE has the same operation, but importing that
+    # model here would cycle through its model/Protenix package initializers.
+    x_axis, y_axis, z_axis = (
+        centered.astype(jnp.float32)[..., axis] for axis in range(3)
+    )
+    augmented = (
+        jnp.stack(
+            tuple(
+                rotations[..., axis, 0, None] * x_axis
+                + rotations[..., axis, 1, None] * y_axis
+                + rotations[..., axis, 2, None] * z_axis
+                for axis in range(3)
+            ),
+            axis=-1,
+        )
+        + translations[..., None, :]
+    )
+    return augmented if atom_mask is None else augmented * mask[..., None]
+
+
+def _uniform_random_rotations(key: jax.Array, shape: tuple[int, ...]) -> jnp.ndarray:
+    """Uniform SO(3), not SciPy RNG-identical; native matrices can be replayed."""
+    quaternion = jax.random.normal(key, (*shape, 4), dtype=jnp.float32)
+    quaternion /= jnp.linalg.norm(quaternion, axis=-1, keepdims=True)
+    w, x, y, z = jnp.moveaxis(quaternion, -1, 0)
+    return jnp.stack(
+        (
+            1 - 2 * (y * y + z * z),
+            2 * (x * y - w * z),
+            2 * (x * z + w * y),
+            2 * (x * y + w * z),
+            1 - 2 * (x * x + z * z),
+            2 * (y * z - w * x),
+            2 * (x * z - w * y),
+            2 * (y * z + w * x),
+            1 - 2 * (x * x + y * y),
+        ),
+        axis=-1,
+    ).reshape(*shape, 3, 3)
 
 
 def _prefix_atom_normal(
@@ -134,6 +199,8 @@ def sample_diffusion(
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    rotations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    translations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     gamma0: float = 0.8,
     gamma_min: float = 1.0,
     noise_scale_lambda: float = 1.003,
@@ -147,8 +214,25 @@ def sample_diffusion(
     atom_mask: jnp.ndarray | None = None,
     preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
-    """Run Protenix Algorithm 18 diffusion sampling with a JAX denoiser."""
+    """Run Protenix Algorithm 18 with optional complete random-draw replay.
 
+    Rigid tapes have leading step axes and sample axes at -3 (rotations) and
+    -2 (translations). ``centre_each_step=False`` disables all augmentation.
+    """
+
+    if (rotations is None) != (translations is None):
+        raise ValueError("rotations and translations must be provided together")
+    if rotations is not None:
+        if not centre_each_step:
+            raise ValueError("rotations/translations require centre_each_step=True")
+        leading_shape = (num_samples,) if init_noise is None else init_noise.shape[:-2]
+        n_steps = noise_schedule.shape[0] - 1
+        rotations = _rigid_tape_array(
+            rotations, (n_steps, *leading_shape, 3, 3), "rotations"
+        )
+        translations = _rigid_tape_array(
+            translations, (n_steps, *leading_shape, 3), "translations"
+        )
     if diffusion_chunk_size is None or diffusion_chunk_size <= 0:
         return _sample_diffusion_chunk(
             denoise_fn,
@@ -158,6 +242,8 @@ def sample_diffusion(
             key=key,
             init_noise=init_noise,
             step_noises=step_noises,
+            rotations=rotations,
+            translations=translations,
             gamma0=gamma0,
             gamma_min=gamma_min,
             noise_scale_lambda=noise_scale_lambda,
@@ -199,6 +285,10 @@ def sample_diffusion(
                 key=None if keys is None else keys[chunk_index],
                 init_noise=init_chunk,
                 step_noises=step_chunks,
+                rotations=_slice_rigid_tape(rotations, start, chunk_n, sample_axis=-3),
+                translations=_slice_rigid_tape(
+                    translations, start, chunk_n, sample_axis=-2
+                ),
                 gamma0=gamma0,
                 gamma_min=gamma_min,
                 noise_scale_lambda=noise_scale_lambda,
@@ -227,6 +317,8 @@ def sample_diffusion_with_module(
     key: jax.Array | None,
     init_noise: jnp.ndarray | None = None,
     step_noises: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    rotations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    translations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     pair_z: jnp.ndarray | None = None,
     p_lm: jnp.ndarray | None = None,
     c_l: jnp.ndarray | None = None,
@@ -317,6 +409,8 @@ def sample_diffusion_with_module(
         key=key,
         init_noise=init_noise,
         step_noises=step_noises,
+        rotations=rotations,
+        translations=translations,
         gamma0=gamma0,
         gamma_min=gamma_min,
         noise_scale_lambda=noise_scale_lambda,
@@ -624,6 +718,8 @@ def _sample_diffusion_chunk(
     use_scan: bool,
     guidance_config,
     guidance_features,
+    rotations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
+    translations: jnp.ndarray | Sequence[jnp.ndarray] | None = None,
     atom_mask: jnp.ndarray | None = None,
     preserve_prefix_rng: bool = False,
 ) -> jnp.ndarray:
@@ -643,6 +739,12 @@ def _sample_diffusion_chunk(
                 raise ValueError("TFG guidance currently requires use_scan=False")
             guidance_engine = TFGEngine(config)
     n_steps = int(noise_schedule.shape[0]) - 1
+    if (rotations is None) != (translations is None):
+        raise ValueError("rotations and translations must be provided together")
+    if not centre_each_step and rotations is not None:
+        raise ValueError("rotations/translations require centre_each_step=True")
+    if centre_each_step and rotations is None and key is None:
+        raise ValueError("random augmentation requires key or rotations/translations")
     if atom_mask is not None:
         atom_mask = jnp.asarray(atom_mask, dtype=dtype)
         if atom_mask.shape != (n_atom,):
@@ -677,6 +779,13 @@ def _sample_diffusion_chunk(
                 draw_key, (num_samples, n_atom, 3), dtype=dtype
             )
 
+    # Derive this from the incoming chunk key, before optional initial-noise
+    # splitting: replaying initial/churn noise must not change rigid draws.
+    augmentation_key = (
+        jax.random.fold_in(key, 0x415547)
+        if centre_each_step and rotations is None
+        else None
+    )
     if init_noise is None:
         if key is None:
             raise ValueError("key is required when init_noise is not provided")
@@ -685,6 +794,22 @@ def _sample_diffusion_chunk(
     if atom_mask is not None:
         init_noise = init_noise * atom_mask[None, :, None]
     x_l = noise_schedule[0].astype(dtype) * init_noise.astype(dtype)
+
+    if centre_each_step:
+        if rotations is None:
+            rotation_key, translation_key = jax.random.split(augmentation_key)
+            rotations = _uniform_random_rotations(
+                rotation_key, (n_steps, *x_l.shape[:-2])
+            )
+            translations = jax.random.normal(
+                translation_key, (n_steps, *x_l.shape[:-2], 3), dtype=jnp.float32
+            )
+        rotations = _rigid_tape_array(
+            rotations, (n_steps, *x_l.shape[:-2], 3, 3), "rotations"
+        )
+        translations = _rigid_tape_array(
+            translations, (n_steps, *x_l.shape[:-2], 3), "translations"
+        )
 
     step_noise_keys = preserve_prefix_rng and step_noises is None
     packed_step_noises = step_noises is not None and hasattr(step_noises, "shape")
@@ -724,11 +849,15 @@ def _sample_diffusion_chunk(
         )
 
         def body(x_carry, xs):
-            c_tau_last, c_tau, step_noise = xs
+            c_tau_last, c_tau, step_noise = xs[:3]
             if step_noise_keys:
-                step_noise = draw_normal(step_noise)
+                # Match materialized FP32 tapes: otherwise fusion through the
+                # lazy draw changes padded-prefix values after augmentation.
+                step_noise = jax.lax.optimization_barrier(draw_normal(step_noise))
             if centre_each_step:
-                x_carry = centre_random_augmentation(x_carry, atom_mask)
+                x_carry = centre_random_augmentation(
+                    x_carry, atom_mask, rotations=xs[3], translations=xs[4]
+                ).astype(dtype)
             gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
             t_hat_scalar = c_tau_last * (gamma + 1.0)
             delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
@@ -745,6 +874,8 @@ def _sample_diffusion_chunk(
             return x_next, None
 
         xs = (noise_schedule[:-1], noise_schedule[1:], stacked_noises)
+        if centre_each_step:
+            xs += (rotations, translations)
         x_l, _ = jax.lax.scan(body, x_l, xs)
         return x_l
 
@@ -752,7 +883,12 @@ def _sample_diffusion_chunk(
         c_tau_last = noise_schedule[step_i].astype(dtype)
         c_tau = noise_schedule[step_i + 1].astype(dtype)
         if centre_each_step:
-            x_l = centre_random_augmentation(x_l, atom_mask)
+            x_l = centre_random_augmentation(
+                x_l,
+                atom_mask,
+                rotations=rotations[step_i],
+                translations=translations[step_i],
+            ).astype(dtype)
         gamma = jnp.where(c_tau > gamma_min, gamma0, 0.0).astype(dtype)
         t_hat_scalar = c_tau_last * (gamma + 1.0)
         delta_noise_level = c_tau_last * jnp.sqrt(gamma * (gamma + 2.0))
@@ -790,3 +926,29 @@ def _slice_sample_axis(x: jnp.ndarray, start: int, size: int) -> jnp.ndarray:
     if x.ndim < 3:
         raise ValueError("sample noise must have at least sample/atom/coord axes")
     return x[..., start : start + size, :, :] if x.ndim > 3 else x[start : start + size]
+
+
+def _slice_rigid_tape(tape, start: int, size: int, *, sample_axis: int):
+    if tape is None:
+        return None
+    if not hasattr(tape, "shape"):
+        return tuple(
+            _slice_rigid_tape(step, start, size, sample_axis=sample_axis)
+            for step in tape
+        )
+    if tape.ndim < -sample_axis:
+        raise ValueError("rotations/translations are missing the sample axis")
+    indices = [slice(None)] * tape.ndim
+    indices[sample_axis] = slice(start, start + size)
+    return tape[tuple(indices)]
+
+
+def _rigid_tape_array(tape, expected_shape: tuple[int, ...], name: str):
+    if not hasattr(tape, "shape"):
+        if not tape:
+            raise ValueError(f"{name} expected shape {expected_shape}, got empty tape")
+        tape = jnp.stack(tuple(jnp.asarray(step, dtype=jnp.float32) for step in tape))
+    tape = jnp.asarray(tape, dtype=jnp.float32)
+    if tape.shape != expected_shape:
+        raise ValueError(f"{name} expected shape {expected_shape}, got {tape.shape}")
+    return tape

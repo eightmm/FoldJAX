@@ -132,6 +132,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tape-dir", type=Path, required=True)
     parser.add_argument(
+        "--matmul-precision",
+        choices=("high", "highest"),
+        default="highest",
+        help="JAX FP32 matmul policy; high permits TF32, not kernel equivalence.",
+    )
+    parser.add_argument(
         "--trunk-dtype",
         choices=("float32", "bf16"),
         default="float32",
@@ -303,18 +309,14 @@ def build_cycle_msa(
     for cycle in range(num_recycles):
         if source == "upstream":
             selected = {
-                name: _squeeze_batch(
-                    np.asarray(archive[f"selected_{name}"][cycle]), 2
-                )
+                name: _squeeze_batch(np.asarray(archive[f"selected_{name}"][cycle]), 2)
                 for name in fields
             }
         else:
             index = rows[cycle]
             selected = {name: jax_full[name][index] for name in fields}
         cycle_features = {
-            name: jnp.asarray(
-                value.astype(np.int32 if name == "msa" else np.float32)
-            )
+            name: jnp.asarray(value.astype(np.int32 if name == "msa" else np.float32))
             for name, value in selected.items()
         }
         # Upstream's mask is all-ones and is used only to prioritize rows during
@@ -459,9 +461,7 @@ def trunk_stages(
                 msa_stack_first=True,
             )
             stages[f"msa_block{index}_z"] = np.asarray(probe_z)
-            drift = float(
-                np.max(np.abs(np.asarray(split_z) - np.asarray(probe_z)))
-            )
+            drift = float(np.max(np.abs(np.asarray(split_z) - np.asarray(probe_z))))
             if drift > 0:
                 msg = (
                     f"MSA block {index}: the unrolled pieces diverge from "
@@ -512,7 +512,7 @@ def main() -> int:
 
     import jax
 
-    jax.config.update("jax_default_matmul_precision", "highest")
+    jax.config.update("jax_default_matmul_precision", args.matmul_precision)
 
     from foldjax.models.opendde.bridge.weights_io import load_native_weights
     from foldjax.models.opendde.data.featurize_json import (
@@ -588,6 +588,8 @@ def main() -> int:
         stage_metrics[name] = array_metrics(mine, upstream_stages[name])
 
     metrics: dict = {
+        "matmul_precision": args.matmul_precision,
+        "trunk_dtype": args.trunk_dtype,
         "msa_source": args.msa_source,
         "num_recycles": num_recycles,
         "num_steps": num_steps,
@@ -610,6 +612,7 @@ def main() -> int:
             num_samples=num_samples,
             num_recycles=num_recycles,
             run_confidence=False,
+            trunk_dtype=jax.numpy.bfloat16 if args.trunk_dtype == "bf16" else None,
             cycle_msa_features=cycle_msa,
             diffusion_attention_backend="xla",
             trunk_single_attention_backend="xla",
@@ -624,15 +627,11 @@ def main() -> int:
         right = sample_coordinates(upstream_coordinate, num_samples=num_samples)
         if left.shape != right.shape:
             raise RuntimeError(f"coordinate shape {left.shape} != {right.shape}")
-        network_per_sample_rmsd = [
-            rmsd(a, b) for a, b in zip(left, right, strict=True)
-        ]
+        network_per_sample_rmsd = [rmsd(a, b) for a, b in zip(left, right, strict=True)]
         network_max_abs = float(np.max(np.abs(left - right)))
         left, foldjax_oxt_repairs = repair_terminal_oxt_coordinates(left, features)
         right, upstream_oxt_repairs = repair_terminal_oxt_coordinates(right, features)
-        per_sample_rmsd = [
-            rmsd(a, b) for a, b in zip(left, right, strict=True)
-        ]
+        per_sample_rmsd = [rmsd(a, b) for a, b in zip(left, right, strict=True)]
         metrics.update(
             sample_seconds=sample_seconds,
             coordinate_comparison="after mirrored OpenDDE 1.1.1 writer OXT repair",

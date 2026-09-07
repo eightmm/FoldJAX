@@ -102,3 +102,22 @@ def test_random_augmentation_from_key_is_deterministic() -> None:
 
     np.testing.assert_array_equal(first, second)
     assert first.shape == (2, 4, 3)
+
+
+def test_rigid_augmentation_keeps_native_fp32_scalar_rotation() -> None:
+    """Native rot_vec_mul explicitly avoids AMP/TF32 matrix multiplication."""
+    coords = jnp.arange(30, dtype=jnp.float32).reshape(2, 5, 3)
+    rotations = uniform_random_rotations(jax.random.key(7), (2, 1))
+    translations = jnp.zeros((2, 1, 3), dtype=jnp.float32)
+
+    def augment(x, r, t):
+        return centre_random_augmentation(x, rotations=r, translations=t)
+
+    assert "dot_general" not in str(
+        jax.make_jaxpr(augment)(coords, rotations, translations)
+    )
+    results = []
+    for precision in ("high", "highest"):
+        with jax.default_matmul_precision(precision):
+            results.append(jax.jit(augment)(coords, rotations, translations))
+    np.testing.assert_array_equal(*results)

@@ -15,6 +15,7 @@ import jax.numpy as jnp
 from foldjax.models._cp import cp_layout, shard_pair_rows
 from foldjax.models._cp_attention import ring_triangle_attention_2d
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
+from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
 from foldjax.models.boltz2.models.triangle.triangle_attention import (
     resolve_matmul_precision,
     resolve_triangle_attention_chunk,
@@ -146,7 +147,7 @@ def triangle_attention_forward(
     )
     out = jnp.swapaxes(out, -2, -3)
 
-    gate = jax.nn.sigmoid(gate)
+    gate = _sigmoid(gate)
     gate = gate.reshape(gate.shape[:-1] + (no_heads, hidden))
     out = out * gate
     out = out.reshape(out.shape[:-2] + (no_heads * hidden,))

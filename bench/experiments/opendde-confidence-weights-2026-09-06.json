@@ -1,0 +1,67 @@
+{
+  "canonical_contents_sha256": [
+    "1997bd8f62b855bfe2274884cb01e5b6b5ba609447b49d80360d68a75d0218fb",
+    "1997bd8f62b855bfe2274884cb01e5b6b5ba609447b49d80360d68a75d0218fb"
+  ],
+  "checkpoint_sha256": {
+    "managed": "bc3e1400acb3b213ae9c466c518f6f14f4322d2913102aaa11fd56233cf409ee",
+    "native": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc"
+  },
+  "checkpoints_unchanged": true,
+  "consumed_leaves": 248,
+  "counts": {
+    "array_bytes": 124268856,
+    "array_leaves": 248,
+    "elements": 31067214,
+    "none_leaves": 154,
+    "static_leaves": 8
+  },
+  "failures": [],
+  "groups": {
+    "distance_embedding": {
+      "array_leaves": 4,
+      "bytes": 61752,
+      "exact": 4
+    },
+    "input_strunk_ln": {
+      "array_leaves": 2,
+      "bytes": 3072,
+      "exact": 2
+    },
+    "linear_s1": {
+      "array_leaves": 1,
+      "bytes": 689664,
+      "exact": 1
+    },
+    "linear_s2": {
+      "array_leaves": 1,
+      "bytes": 689664,
+      "exact": 1
+    },
+    "output": {
+      "array_leaves": 12,
+      "bytes": 2125824,
+      "exact": 12
+    },
+    "pairformer_stack": {
+      "array_leaves": 228,
+      "bytes": 120698880,
+      "exact": 228
+    }
+  },
+  "jax_version": "0.11.1",
+  "multiply_consumed": {},
+  "native_leaves": 248,
+  "passed": true,
+  "scope": "CPU-only exact confidence-checkpoint mapping evidence; no operator parity claim.",
+  "source_sha256": {
+    "bench/opendde_confidence_weights.py": "b61bf41946e83f03fcab05a4ca305d1b4d26bea597b95071c0c711e95b35b445",
+    "src/foldjax/models/opendde/bridge/torch_mapping.py": "32b8e287a52e24c731fc49a0379b4d02f6449d69e268db8f3c7e8f9ee3198f94",
+    "src/foldjax/models/protenix/bridge/torch_mapping.py": "c53bfd69dc0f227e1cb1a93eaada97e2e967fe80498a3b1c58494e4b8d886f11",
+    "src/foldjax/models/protenix/bridge/weights_io.py": "f7aa114dac2867720e655e0ad2b501e46c081b8fd19063f516fc864585d7338d",
+    "src/foldjax/models/protenix/models/heads/confidence.py": "36057f1d2de211c8674b0817d422daa00f411e42169ddf7d92ae80db59d578f0",
+    "src/foldjax/torch_archive.py": "857a054b696488520b7b82ecc00e8583a71f8d46f51dc7e67a9b6bed832368fc"
+  },
+  "tree_definition_exact": true,
+  "unconsumed": []
+}

@@ -1,0 +1,329 @@
+{
+  "scope": "native CUDA BF16 captures; same input and quantized affine; JIT port operator probe, not whole model parity",
+  "jax_backend": "gpu",
+  "records": [
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        384
+      ],
+      "file": "norm-0.npz",
+      "artifact_sha256": "30155ac02ddb76504863458bfcf43c7b9086eeae8de6076633f74e52fc199e49",
+      "metrics": {
+        "old": {
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal_elements": 0,
+          "total_elements": 812544
+        },
+        "corrected": {
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal_elements": 0,
+          "total_elements": 812544
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        384
+      ],
+      "file": "norm-1.npz",
+      "artifact_sha256": "e5226c3b470b0894d5789ff3044b78ce8cf8950fa2fbb1f0034d4c867e5e6dfe",
+      "metrics": {
+        "old": {
+          "max_abs": 0.03125,
+          "rmse": 0.0010528326476095533,
+          "unequal_elements": 415529,
+          "total_elements": 812544
+        },
+        "corrected": {
+          "max_abs": 0.0009765625,
+          "rmse": 1.863567376449287e-06,
+          "unequal_elements": 52,
+          "total_elements": 812544
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        64
+      ],
+      "file": "norm-2.npz",
+      "artifact_sha256": "002c0c0d8f4fd871f5e1157368cacd21eec572295d3e647e2fe71169200c71ad",
+      "metrics": {
+        "old": {
+          "max_abs": 0.0625,
+          "rmse": 0.004542431392571596,
+          "unequal_elements": 65358,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 0.0009765625,
+          "rmse": 2.658880406567349e-06,
+          "unequal_elements": 2,
+          "total_elements": 135424
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        23,
+        64
+      ],
+      "file": "norm-3.npz",
+      "artifact_sha256": "79d056607f808bb3429dfb4185268133ac071d7b2b68415443cc89b711d212c5",
+      "metrics": {
+        "old": {
+          "max_abs": 0.03125,
+          "rmse": 0.0011969399474503256,
+          "unequal_elements": 29213,
+          "total_elements": 67712
+        },
+        "corrected": {
+          "max_abs": 0.00048828125,
+          "rmse": 1.8764509947904254e-06,
+          "unequal_elements": 2,
+          "total_elements": 67712
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        64
+      ],
+      "file": "norm-4.npz",
+      "artifact_sha256": "6dced71de5c8745cb50d3cea61d2ced26004f52b595b702dec896799ff4305ee",
+      "metrics": {
+        "old": {
+          "max_abs": 0.046875,
+          "rmse": 0.0035287036302756995,
+          "unequal_elements": 68895,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 6.103515625e-05,
+          "rmse": 1.6593863242469271e-07,
+          "unequal_elements": 3,
+          "total_elements": 135424
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        23,
+        64
+      ],
+      "file": "norm-5.npz",
+      "artifact_sha256": "064515b1d4792512c92933f551cc1b8d12a9c2814fef933930d2e9047f84b4c8",
+      "metrics": {
+        "old": {
+          "max_abs": 0.0625,
+          "rmse": 0.0019878748959603126,
+          "unequal_elements": 19526,
+          "total_elements": 67712
+        },
+        "corrected": {
+          "max_abs": 3.725290298461914e-09,
+          "rmse": 1.600598137020123e-11,
+          "unequal_elements": 2,
+          "total_elements": 67712
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        64
+      ],
+      "file": "norm-6.npz",
+      "artifact_sha256": "36deee0235d895be922709ac2b40d0a83bd4854d34081264021dd3e6daf8ca0b",
+      "metrics": {
+        "old": {
+          "max_abs": 0.03125,
+          "rmse": 0.0026461395919397126,
+          "unequal_elements": 64476,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 0.0009765625,
+          "rmse": 2.653702445748715e-06,
+          "unequal_elements": 3,
+          "total_elements": 135424
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        64
+      ],
+      "file": "norm-7.npz",
+      "artifact_sha256": "b78dade9a72cb9d796fe1c69b9400efd19cfe448f61eb82d5c3cc224a12b8917",
+      "metrics": {
+        "old": {
+          "max_abs": 0.03125,
+          "rmse": 0.003052268875059246,
+          "unequal_elements": 64279,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal_elements": 0,
+          "total_elements": 135424
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        2116,
+        64
+      ],
+      "file": "norm-8.npz",
+      "artifact_sha256": "866951413abee55e28e8ce19ec78017c8df082f0a97792d331c8a3c9b138b2a4",
+      "metrics": {
+        "old": {
+          "max_abs": 0.0234375,
+          "rmse": 0.0024677520598105963,
+          "unequal_elements": 64266,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 0.00390625,
+          "rmse": 1.0698702300457938e-05,
+          "unequal_elements": 4,
+          "total_elements": 135424
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        64
+      ],
+      "file": "norm-9.npz",
+      "artifact_sha256": "b66fb91b8d7c4fc924fbf07146b955c5553f638cfaab72bceaf97011e96d1f3b",
+      "metrics": {
+        "old": {
+          "max_abs": 0.046875,
+          "rmse": 0.004521516294784776,
+          "unequal_elements": 64835,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 0.0009765625,
+          "rmse": 2.653783844179591e-06,
+          "unequal_elements": 5,
+          "total_elements": 135424
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        23,
+        64
+      ],
+      "file": "norm-10.npz",
+      "artifact_sha256": "a605cc4ee03b702a75dde49fddd8d7f1bc93a39ad659d49f081cb9b5189832b2",
+      "metrics": {
+        "old": {
+          "max_abs": 0.0625,
+          "rmse": 0.004519168118072326,
+          "unequal_elements": 32474,
+          "total_elements": 67712
+        },
+        "corrected": {
+          "max_abs": 0.0001220703125,
+          "rmse": 4.691163276755806e-07,
+          "unequal_elements": 2,
+          "total_elements": 67712
+        }
+      }
+    },
+    {
+      "class": "opendde.model.triangular.layers.OpenFoldLayerNorm",
+      "eps": 1e-05,
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        46,
+        46,
+        64
+      ],
+      "file": "norm-11.npz",
+      "artifact_sha256": "e1322e27bb18e71d9b9c68eb65f628dd157d658066e6ed8464b428c906851f52",
+      "metrics": {
+        "old": {
+          "max_abs": 0.03125,
+          "rmse": 0.004531102659507384,
+          "unequal_elements": 62655,
+          "total_elements": 135424
+        },
+        "corrected": {
+          "max_abs": 1.9073486328125e-06,
+          "rmse": 5.7947842388043964e-09,
+          "unequal_elements": 2,
+          "total_elements": 135424
+        }
+      }
+    }
+  ]
+}

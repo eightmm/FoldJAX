@@ -79,7 +79,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "diffusion_attention_backend": "xla_jit",
     "trunk_single_attention_backend": "xla_jit",
     "structural_single_attention_backend": "xla_jit",
-    "trunk_dtype": "bf16",
+    "trunk_dtype": "fp32",
     "chunk_policy": "auto",
     "cp_devices": 1,
     "cp_layout": "auto",

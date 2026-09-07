@@ -1330,10 +1330,11 @@ def confidence_head_single_sample(
 
     s_trunk = layer_norm(jnp.clip(s_trunk, -512.0, 512.0), params.input_strunk_ln)
     z_base = z_trunk if use_embedding else jnp.zeros_like(z_trunk)
-    z_init = linear(s_inputs, params.linear_s1)[..., :, None, :] + linear(
+    # Native Protenix/OpenDDE attach s1 to j and s2 to i; weights are not swapped.
+    z_init = linear(s_inputs, params.linear_s1)[..., None, :, :] + linear(
         s_inputs,
         params.linear_s2,
-    )[..., None, :, :]
+    )[..., :, None, :]
     # Born sharded under context parallelism: the distance embedding and the
     # outer-sum init are otherwise materialized whole on every device before
     # the stack's own constraints take over.

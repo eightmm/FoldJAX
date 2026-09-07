@@ -1,0 +1,1642 @@
+{
+  "date": "2026-09-06",
+  "threshold_angstrom": 0.05,
+  "samples": 5,
+  "method": "native FP32 versus native BF16 candidate; exact realized input and sampler/MSA tape; one global proper Kabsch then every entity-instance/sample RMSD",
+  "tf32": "native enabled default retained on both arms",
+  "experimental_coordinates": false,
+  "port_parity": false,
+  "default_dtype_changed": false,
+  "policy": {
+    "opendde": "FP32 required by failed native BF16 screening",
+    "openfold3": "FP32 required by failed native BF16 screening",
+    "alphafold3": "reproduce native BF16 policy; port gate pending",
+    "boltz2": "reproduce native mixed policy; port gate remains failed",
+    "esmfold2": "reproduce native CUDA BF16/mixed policy, not FP32 checkpoint dtype; full port tape missing",
+    "protenix": "reproduce native mixed policy per profile; full port gate pending"
+  },
+  "records": [
+    {
+      "model": "opendde",
+      "case": "protein_ligand_5sak",
+      "entities": {
+        "A": [
+          "protein"
+        ],
+        "L": [
+          "ligand"
+        ]
+      },
+      "provenance": {
+        "model": "opendde",
+        "case": "protein_ligand_5sak",
+        "samples": 5,
+        "steps": 200,
+        "cycles": 10,
+        "seed": 101,
+        "tf32": true,
+        "native_precision_arms": [
+          "fp32",
+          "bf16"
+        ],
+        "source": {
+          "commit": "ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "input": {
+          "sha256": "2f7c65031688c2c7ca110dddf192e9f670baab939ac13dd4da58edcf64fe82b8",
+          "bytes": 1001
+        },
+        "input_assets": {
+          "input[0].sequences[0].proteinChain.unpairedMsaPath": {
+            "sha256": "6c9a6237d84990287f4ddef29f327b9dfe0715f055b70c20ef777c84adf89165",
+            "bytes": 2209671
+          }
+        },
+        "weights": {
+          "sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+          "bytes": 2625249069
+        },
+        "wrapper": {
+          "sha256": "9c983f411c2c51c5b7dafb7219f017ef1d42b8da7f8500e608da415685e06140",
+          "bytes": 5124
+        },
+        "driver": {
+          "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+          "bytes": 19286
+        },
+        "capture": {
+          "sha256": "b62ed70f682d4ee02c0ea94add873ec0313f45c2bcaba8b1f3dcf61df585b736",
+          "bytes": 31372
+        },
+        "scope": "native precision only; default TF32/kernels retained; coordinate-only; not port acceptance",
+        "arms": {
+          "fp32": {
+            "exit_code": 0,
+            "elapsed_seconds": 108.88550721498905,
+            "artifacts": {
+              "native-derived.npz": {
+                "sha256": "7f8a5907ab69a0d09c8eb97b06a63e58e669101535dc61c2d3a0971834d5fb0e",
+                "bytes": 4296453
+              },
+              "native-identity.npz": {
+                "sha256": "1f82664a7a8269998547f8e353a2e724d5818106a9c2a722df180db914e7e05e",
+                "bytes": 6116
+              },
+              "native-input.npz": {
+                "sha256": "5c05c0792fb84cb091610f2b0b2136b76d76a3c2b516b629507851d655ba22a4",
+                "bytes": 1379166
+              },
+              "torch/coordinate.npz": {
+                "sha256": "c944f9a0c1ff951f87ace43668656285773d721a7b1e25f016c7693404e43b68",
+                "bytes": 170269
+              },
+              "torch/msa.npz": {
+                "sha256": "d0dfd2e01eeb12f039f8d27cbb211632af892b54e2b7b8e40a6d4df8e65cb895",
+                "bytes": 3990672
+              },
+              "torch/tape.npz": {
+                "sha256": "796aa82378cf3b86d5e472ecd7d8cce6387169529f25545a5f57ef2165e2d0fe",
+                "bytes": 34381746
+              }
+            }
+          },
+          "bf16": {
+            "exit_code": 0,
+            "elapsed_seconds": 81.77975537299062,
+            "artifacts": {
+              "native-derived.npz": {
+                "sha256": "7f8a5907ab69a0d09c8eb97b06a63e58e669101535dc61c2d3a0971834d5fb0e",
+                "bytes": 4296453
+              },
+              "native-identity.npz": {
+                "sha256": "1f82664a7a8269998547f8e353a2e724d5818106a9c2a722df180db914e7e05e",
+                "bytes": 6116
+              },
+              "native-input.npz": {
+                "sha256": "5c05c0792fb84cb091610f2b0b2136b76d76a3c2b516b629507851d655ba22a4",
+                "bytes": 1379166
+              },
+              "torch/coordinate.npz": {
+                "sha256": "cbd25010d950f682c7d68c5ad7410788bacb1c057273dfbae212b560a97b31e8",
+                "bytes": 170187
+              },
+              "torch/msa.npz": {
+                "sha256": "d0dfd2e01eeb12f039f8d27cbb211632af892b54e2b7b8e40a6d4df8e65cb895",
+                "bytes": 3990672
+              },
+              "torch/tape.npz": {
+                "sha256": "796aa82378cf3b86d5e472ecd7d8cce6387169529f25545a5f57ef2165e2d0fe",
+                "bytes": 34381746
+              }
+            }
+          }
+        }
+      },
+      "comparison": {
+        "status": "measured",
+        "identity": {
+          "native-input.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "asym_id": 0.0,
+              "atom_to_structural_tokatom_idx": 0.0,
+              "atom_to_structural_token_idx": 0.0,
+              "atom_to_tokatom_idx": 0.0,
+              "atom_to_token_idx": 0.0,
+              "bond_mask": 0.0,
+              "deletion_matrix": 0.0,
+              "deletion_mean": 0.0,
+              "deletion_value": 0.0,
+              "distogram_rep_atom_mask": 0.0,
+              "entity_id": 0.0,
+              "entity_mol_id": 0.0,
+              "frame_atom_index": 0.0,
+              "has_deletion": 0.0,
+              "has_frame": 0.0,
+              "inference_seed": 0.0,
+              "is_dna": 0.0,
+              "is_ligand": 0.0,
+              "is_protein": 0.0,
+              "is_rna": 0.0,
+              "modified_res_mask": 0.0,
+              "mol_atom_index": 0.0,
+              "mol_id": 0.0,
+              "msa": 0.0,
+              "next_parent_residue_idx": 0.0,
+              "pae_rep_atom_mask": 0.0,
+              "parent_residue_idx": 0.0,
+              "plddt_m_rep_atom_mask": 0.0,
+              "prev_parent_residue_idx": 0.0,
+              "profile": 0.0,
+              "prot_pair_num_alignments": 0.0,
+              "prot_paired_num_alignments": 0.0,
+              "prot_unpair_num_alignments": 0.0,
+              "prot_unpaired_num_alignments": 0.0,
+              "ref_atom_name_chars": 0.0,
+              "ref_charge": 0.0,
+              "ref_element": 0.0,
+              "ref_mask": 0.0,
+              "ref_pos": 0.0,
+              "ref_space_uid": 0.0,
+              "residue_index": 0.0,
+              "residue_token_group_id": 0.0,
+              "resolution": 0.0,
+              "restype": 0.0,
+              "rna_pair_num_alignments": 0.0,
+              "rna_paired_num_alignments": 0.0,
+              "rna_unpair_num_alignments": 0.0,
+              "rna_unpaired_num_alignments": 0.0,
+              "structural_distogram_rep_atom_mask": 0.0,
+              "structural_frame_atom_index": 0.0,
+              "structural_has_frame": 0.0,
+              "structural_is_polymer": 0.0,
+              "structural_pae_rep_atom_mask": 0.0,
+              "structural_polymer_type": 0.0,
+              "structural_seq_pos": 0.0,
+              "structural_token_index": 0.0,
+              "subtoken_role": 0.0,
+              "subtoken_role_id": 0.0,
+              "sym_id": 0.0,
+              "template_aatype": 0.0,
+              "template_atom_mask": 0.0,
+              "template_atom_positions": 0.0,
+              "template_backbone_frame_mask": 0.0,
+              "template_distogram": 0.0,
+              "template_pseudo_beta_mask": 0.0,
+              "template_unit_vector": 0.0,
+              "token_bonds": 0.0,
+              "token_index": 0.0,
+              "twin_token_idx": 0.0
+            },
+            "equal": true
+          },
+          "native-identity.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "output_atom_res_id": 0.0
+            },
+            "equal": true
+          },
+          "torch/tape.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "init_noise": 0.0,
+              "noise_schedule": 0.0,
+              "rotations": 0.0,
+              "step_noises": 0.0,
+              "translations": 0.0
+            },
+            "equal": true
+          },
+          "torch/msa.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "input_deletion_value": 0.0,
+              "input_has_deletion": 0.0,
+              "input_msa": 0.0,
+              "rows": 0.0,
+              "selected_deletion_value": 0.0,
+              "selected_has_deletion": 0.0,
+              "selected_msa": 0.0
+            },
+            "equal": true
+          }
+        },
+        "entity_parity": {
+          "global_rmsd": [
+            0.578197386846447,
+            0.6779703956511018,
+            0.16836741602146285,
+            0.10950778171364592,
+            0.1471357195733016
+          ],
+          "global_max_rmsd": 0.6779703956511018,
+          "entity_rmsd": {
+            "A": [
+              0.5798837998909072,
+              0.40900400050841845,
+              0.16872012244227133,
+              0.10976591069100207,
+              0.1474957103381854
+            ],
+            "L": [
+              0.052303647059593505,
+              7.077838971168101,
+              0.09034493770256848,
+              0.04880963281387725,
+              0.0603449164051222
+            ]
+          },
+          "entity_max_rmsd": {
+            "A": 0.5798837998909072,
+            "L": 7.077838971168101
+          },
+          "atom_counts": [
+            3074,
+            3074,
+            3074,
+            3074,
+            3074
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "A": 0.5798837998909072,
+            "L": 7.077838971168101
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        },
+        "bf16_admitted": false
+      }
+    },
+    {
+      "model": "opendde",
+      "case": "protein_rna_1urn",
+      "entities": {
+        "P": [
+          "protein"
+        ],
+        "R": [
+          "rna"
+        ]
+      },
+      "provenance": {
+        "model": "opendde",
+        "case": "protein_rna_1urn",
+        "samples": 5,
+        "steps": 200,
+        "cycles": 10,
+        "seed": 101,
+        "tf32": true,
+        "native_precision_arms": [
+          "fp32",
+          "bf16"
+        ],
+        "source": {
+          "commit": "ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "input": {
+          "sha256": "62bf237016fe27f58271f8930e1bb9164672930c2ea4b63d4fbc23f9a6888801",
+          "bytes": 697
+        },
+        "input_assets": {
+          "input[0].sequences[0].proteinChain.unpairedMsaPath": {
+            "sha256": "d5395d055509a0a1e5807a1e534be5f933d59b7da8295ef5ebb97a82d54357aa",
+            "bytes": 1724580
+          }
+        },
+        "weights": {
+          "sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+          "bytes": 2625249069
+        },
+        "wrapper": {
+          "sha256": "9c983f411c2c51c5b7dafb7219f017ef1d42b8da7f8500e608da415685e06140",
+          "bytes": 5124
+        },
+        "driver": {
+          "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+          "bytes": 19286
+        },
+        "capture": {
+          "sha256": "b62ed70f682d4ee02c0ea94add873ec0313f45c2bcaba8b1f3dcf61df585b736",
+          "bytes": 31372
+        },
+        "scope": "native precision only; default TF32/kernels retained; coordinate-only; not port acceptance",
+        "arms": {
+          "fp32": {
+            "exit_code": 0,
+            "elapsed_seconds": 17.0533152789867,
+            "artifacts": {
+              "native-derived.npz": {
+                "sha256": "294488da3193425cfc4785ffe59989c18f5d7723ac5cf6f699ca3e19fac9ce23",
+                "bytes": 1687469
+              },
+              "native-identity.npz": {
+                "sha256": "196e1978ff349e36da4f19fd3e69d84b627f5c6a1d2b0327210be8e6eefb872d",
+                "bytes": 3162
+              },
+              "native-input.npz": {
+                "sha256": "a2d2daf306b443f1cab441b8f05eab13323d488e68b88b98bbe340e5f59a9638",
+                "bytes": 798393
+              },
+              "torch/coordinate.npz": {
+                "sha256": "1e7a3aa8f686a409a4b6ac276dd3908f301856464c77fedc1871c4960e3fd23c",
+                "bytes": 68397
+              },
+              "torch/msa.npz": {
+                "sha256": "7fb822de0ce676ebf7ac2d3ca4651c8c033f975150c3c47f19ec21bd7be6335b",
+                "bytes": 1674603
+              },
+              "torch/tape.npz": {
+                "sha256": "4b39e4665e86b42d9a881f21d6f8a5faf46d0b9708f116e815827ab3fa0b7edc",
+                "bytes": 13751731
+              }
+            }
+          },
+          "bf16": {
+            "exit_code": 0,
+            "elapsed_seconds": 16.400846997014014,
+            "artifacts": {
+              "native-derived.npz": {
+                "sha256": "294488da3193425cfc4785ffe59989c18f5d7723ac5cf6f699ca3e19fac9ce23",
+                "bytes": 1687469
+              },
+              "native-identity.npz": {
+                "sha256": "196e1978ff349e36da4f19fd3e69d84b627f5c6a1d2b0327210be8e6eefb872d",
+                "bytes": 3162
+              },
+              "native-input.npz": {
+                "sha256": "a2d2daf306b443f1cab441b8f05eab13323d488e68b88b98bbe340e5f59a9638",
+                "bytes": 798393
+              },
+              "torch/coordinate.npz": {
+                "sha256": "565e48b10e2b4e2e44674857056177f437e2419aba80c2f177f2e6af8f296762",
+                "bytes": 68352
+              },
+              "torch/msa.npz": {
+                "sha256": "7fb822de0ce676ebf7ac2d3ca4651c8c033f975150c3c47f19ec21bd7be6335b",
+                "bytes": 1674603
+              },
+              "torch/tape.npz": {
+                "sha256": "4b39e4665e86b42d9a881f21d6f8a5faf46d0b9708f116e815827ab3fa0b7edc",
+                "bytes": 13751731
+              }
+            }
+          }
+        }
+      },
+      "comparison": {
+        "status": "measured",
+        "identity": {
+          "native-input.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "asym_id": 0.0,
+              "atom_to_structural_tokatom_idx": 0.0,
+              "atom_to_structural_token_idx": 0.0,
+              "atom_to_tokatom_idx": 0.0,
+              "atom_to_token_idx": 0.0,
+              "bond_mask": 0.0,
+              "deletion_matrix": 0.0,
+              "deletion_mean": 0.0,
+              "deletion_value": 0.0,
+              "distogram_rep_atom_mask": 0.0,
+              "entity_id": 0.0,
+              "entity_mol_id": 0.0,
+              "frame_atom_index": 0.0,
+              "has_deletion": 0.0,
+              "has_frame": 0.0,
+              "inference_seed": 0.0,
+              "is_dna": 0.0,
+              "is_ligand": 0.0,
+              "is_protein": 0.0,
+              "is_rna": 0.0,
+              "modified_res_mask": 0.0,
+              "mol_atom_index": 0.0,
+              "mol_id": 0.0,
+              "msa": 0.0,
+              "next_parent_residue_idx": 0.0,
+              "pae_rep_atom_mask": 0.0,
+              "parent_residue_idx": 0.0,
+              "plddt_m_rep_atom_mask": 0.0,
+              "prev_parent_residue_idx": 0.0,
+              "profile": 0.0,
+              "prot_pair_num_alignments": 0.0,
+              "prot_paired_num_alignments": 0.0,
+              "prot_unpair_num_alignments": 0.0,
+              "prot_unpaired_num_alignments": 0.0,
+              "ref_atom_name_chars": 0.0,
+              "ref_charge": 0.0,
+              "ref_element": 0.0,
+              "ref_mask": 0.0,
+              "ref_pos": 0.0,
+              "ref_space_uid": 0.0,
+              "residue_index": 0.0,
+              "residue_token_group_id": 0.0,
+              "resolution": 0.0,
+              "restype": 0.0,
+              "rna_pair_num_alignments": 0.0,
+              "rna_paired_num_alignments": 0.0,
+              "rna_unpair_num_alignments": 0.0,
+              "rna_unpaired_num_alignments": 0.0,
+              "structural_distogram_rep_atom_mask": 0.0,
+              "structural_frame_atom_index": 0.0,
+              "structural_has_frame": 0.0,
+              "structural_is_polymer": 0.0,
+              "structural_pae_rep_atom_mask": 0.0,
+              "structural_polymer_type": 0.0,
+              "structural_seq_pos": 0.0,
+              "structural_token_index": 0.0,
+              "subtoken_role": 0.0,
+              "subtoken_role_id": 0.0,
+              "sym_id": 0.0,
+              "template_aatype": 0.0,
+              "template_atom_mask": 0.0,
+              "template_atom_positions": 0.0,
+              "template_backbone_frame_mask": 0.0,
+              "template_distogram": 0.0,
+              "template_pseudo_beta_mask": 0.0,
+              "template_unit_vector": 0.0,
+              "token_bonds": 0.0,
+              "token_index": 0.0,
+              "twin_token_idx": 0.0
+            },
+            "equal": true
+          },
+          "native-identity.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "output_atom_res_id": 0.0
+            },
+            "equal": true
+          },
+          "torch/tape.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "init_noise": 0.0,
+              "noise_schedule": 0.0,
+              "rotations": 0.0,
+              "step_noises": 0.0,
+              "translations": 0.0
+            },
+            "equal": true
+          },
+          "torch/msa.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "input_deletion_value": 0.0,
+              "input_has_deletion": 0.0,
+              "input_msa": 0.0,
+              "rows": 0.0,
+              "selected_deletion_value": 0.0,
+              "selected_has_deletion": 0.0,
+              "selected_msa": 0.0
+            },
+            "equal": true
+          }
+        },
+        "entity_parity": {
+          "global_rmsd": [
+            0.02713959302906236,
+            0.032140968277304234,
+            0.1630439130565039,
+            0.11510526294029398,
+            0.07001284489397946
+          ],
+          "global_max_rmsd": 0.1630439130565039,
+          "entity_rmsd": {
+            "P": [
+              0.02048326386799893,
+              0.015803059694224724,
+              0.20186824294309294,
+              0.14092101439640276,
+              0.07938936137338203
+            ],
+            "R": [
+              0.036104618152037866,
+              0.049336496733623045,
+              0.03525430041440369,
+              0.03777843694020265,
+              0.04895045867562795
+            ]
+          },
+          "entity_max_rmsd": {
+            "P": 0.20186824294309294,
+            "R": 0.049336496733623045
+          },
+          "atom_counts": [
+            1227,
+            1227,
+            1227,
+            1227,
+            1227
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "P": 0.20186824294309294,
+            "R": 0.049336496733623045
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        },
+        "bf16_admitted": false
+      }
+    },
+    {
+      "model": "opendde",
+      "case": "rna_ligand_3gca",
+      "entities": {
+        "R": [
+          "rna"
+        ],
+        "L": [
+          "ligand"
+        ]
+      },
+      "provenance": {
+        "model": "opendde",
+        "case": "rna_ligand_3gca",
+        "samples": 5,
+        "steps": 200,
+        "cycles": 10,
+        "seed": 101,
+        "tf32": true,
+        "native_precision_arms": [
+          "fp32",
+          "bf16"
+        ],
+        "source": {
+          "commit": "ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "input": {
+          "sha256": "6efe33e33c008af51e58fab7df4188b5d898f93fe2999cfcc80a059c5a3498db",
+          "bytes": 428
+        },
+        "input_assets": {},
+        "weights": {
+          "sha256": "7b826620390afad877ee2babc6a4d0df81b94d3a0be030959853d6a7da0807cc",
+          "bytes": 2625249069
+        },
+        "wrapper": {
+          "sha256": "9c983f411c2c51c5b7dafb7219f017ef1d42b8da7f8500e608da415685e06140",
+          "bytes": 5124
+        },
+        "driver": {
+          "sha256": "d5513cb41df6786c52888f7877cbddc5eaaa7d54c63e788010886221e5ea6e26",
+          "bytes": 19286
+        },
+        "capture": {
+          "sha256": "b62ed70f682d4ee02c0ea94add873ec0313f45c2bcaba8b1f3dcf61df585b736",
+          "bytes": 31372
+        },
+        "scope": "native precision only; default TF32/kernels retained; coordinate-only; not port acceptance",
+        "arms": {
+          "fp32": {
+            "exit_code": 0,
+            "elapsed_seconds": 11.28855172600015,
+            "artifacts": {
+              "native-derived.npz": {
+                "sha256": "ac1bb68a25dbc6b1704494d9fb139b2aec1c682fcc06b6c2c6ca413d8796073f",
+                "bytes": 969028
+              },
+              "native-identity.npz": {
+                "sha256": "0a9b1cd618a1795bb9dcf42be40e32142fee92665820ca3129ab2efa26488b5a",
+                "bytes": 1986
+              },
+              "native-input.npz": {
+                "sha256": "3c7494ab72db830d485b415576518c748fb02d25ea6582b3c3eaa09b455fa2cd",
+                "bytes": 42996
+              },
+              "torch/coordinate.npz": {
+                "sha256": "eccf98be12174be32568822a5098e3b2f530553be7119906c2a3decd2d1eb5db",
+                "bytes": 40274
+              },
+              "torch/msa.npz": {
+                "sha256": "50364cb28356d8525d141b90705b32853f9fa0f138a916d1999dd44483649d4b",
+                "bytes": 1942
+              },
+              "torch/tape.npz": {
+                "sha256": "6bd6125abfb994d2f6f15b4f06bc39a814e605f3c644a7eea66c1aefc78b9ce1",
+                "bytes": 8077373
+              }
+            }
+          },
+          "bf16": {
+            "exit_code": 0,
+            "elapsed_seconds": 11.895730243995786,
+            "artifacts": {
+              "native-derived.npz": {
+                "sha256": "ac1bb68a25dbc6b1704494d9fb139b2aec1c682fcc06b6c2c6ca413d8796073f",
+                "bytes": 969028
+              },
+              "native-identity.npz": {
+                "sha256": "0a9b1cd618a1795bb9dcf42be40e32142fee92665820ca3129ab2efa26488b5a",
+                "bytes": 1986
+              },
+              "native-input.npz": {
+                "sha256": "3c7494ab72db830d485b415576518c748fb02d25ea6582b3c3eaa09b455fa2cd",
+                "bytes": 42996
+              },
+              "torch/coordinate.npz": {
+                "sha256": "3f473310126d445ceadff66d50fb61c46e90dd1cb6f4d78799ecf5e32067266c",
+                "bytes": 40274
+              },
+              "torch/msa.npz": {
+                "sha256": "50364cb28356d8525d141b90705b32853f9fa0f138a916d1999dd44483649d4b",
+                "bytes": 1942
+              },
+              "torch/tape.npz": {
+                "sha256": "6bd6125abfb994d2f6f15b4f06bc39a814e605f3c644a7eea66c1aefc78b9ce1",
+                "bytes": 8077373
+              }
+            }
+          }
+        }
+      },
+      "comparison": {
+        "status": "measured",
+        "identity": {
+          "native-input.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "asym_id": 0.0,
+              "atom_to_structural_tokatom_idx": 0.0,
+              "atom_to_structural_token_idx": 0.0,
+              "atom_to_tokatom_idx": 0.0,
+              "atom_to_token_idx": 0.0,
+              "bond_mask": 0.0,
+              "deletion_matrix": 0.0,
+              "deletion_mean": 0.0,
+              "deletion_value": 0.0,
+              "distogram_rep_atom_mask": 0.0,
+              "entity_id": 0.0,
+              "entity_mol_id": 0.0,
+              "frame_atom_index": 0.0,
+              "has_deletion": 0.0,
+              "has_frame": 0.0,
+              "inference_seed": 0.0,
+              "is_dna": 0.0,
+              "is_ligand": 0.0,
+              "is_protein": 0.0,
+              "is_rna": 0.0,
+              "modified_res_mask": 0.0,
+              "mol_atom_index": 0.0,
+              "mol_id": 0.0,
+              "msa": 0.0,
+              "next_parent_residue_idx": 0.0,
+              "pae_rep_atom_mask": 0.0,
+              "parent_residue_idx": 0.0,
+              "plddt_m_rep_atom_mask": 0.0,
+              "prev_parent_residue_idx": 0.0,
+              "profile": 0.0,
+              "prot_pair_num_alignments": 0.0,
+              "prot_paired_num_alignments": 0.0,
+              "prot_unpair_num_alignments": 0.0,
+              "prot_unpaired_num_alignments": 0.0,
+              "ref_atom_name_chars": 0.0,
+              "ref_charge": 0.0,
+              "ref_element": 0.0,
+              "ref_mask": 0.0,
+              "ref_pos": 0.0,
+              "ref_space_uid": 0.0,
+              "residue_index": 0.0,
+              "residue_token_group_id": 0.0,
+              "resolution": 0.0,
+              "restype": 0.0,
+              "rna_pair_num_alignments": 0.0,
+              "rna_paired_num_alignments": 0.0,
+              "rna_unpair_num_alignments": 0.0,
+              "rna_unpaired_num_alignments": 0.0,
+              "structural_distogram_rep_atom_mask": 0.0,
+              "structural_frame_atom_index": 0.0,
+              "structural_has_frame": 0.0,
+              "structural_is_polymer": 0.0,
+              "structural_pae_rep_atom_mask": 0.0,
+              "structural_polymer_type": 0.0,
+              "structural_seq_pos": 0.0,
+              "structural_token_index": 0.0,
+              "subtoken_role": 0.0,
+              "subtoken_role_id": 0.0,
+              "sym_id": 0.0,
+              "template_aatype": 0.0,
+              "template_atom_mask": 0.0,
+              "template_atom_positions": 0.0,
+              "template_backbone_frame_mask": 0.0,
+              "template_distogram": 0.0,
+              "template_pseudo_beta_mask": 0.0,
+              "template_unit_vector": 0.0,
+              "token_bonds": 0.0,
+              "token_index": 0.0,
+              "twin_token_idx": 0.0
+            },
+            "equal": true
+          },
+          "native-identity.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "output_atom_res_id": 0.0
+            },
+            "equal": true
+          },
+          "torch/tape.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "init_noise": 0.0,
+              "noise_schedule": 0.0,
+              "rotations": 0.0,
+              "step_noises": 0.0,
+              "translations": 0.0
+            },
+            "equal": true
+          },
+          "torch/msa.npz": {
+            "missing_from_left": [],
+            "missing_from_right": [],
+            "shape_mismatches": {},
+            "dtype_mismatches": {},
+            "value_mismatches": {},
+            "max_absolute_error": {
+              "input_deletion_value": 0.0,
+              "input_has_deletion": 0.0,
+              "input_msa": 0.0,
+              "rows": 0.0,
+              "selected_deletion_value": 0.0,
+              "selected_has_deletion": 0.0,
+              "selected_msa": 0.0
+            },
+            "equal": true
+          }
+        },
+        "entity_parity": {
+          "global_rmsd": [
+            0.01319813340364411,
+            0.012409873875254357,
+            0.01433284787414405,
+            0.018476562844257957,
+            0.01755561143402645
+          ],
+          "global_max_rmsd": 0.018476562844257957,
+          "entity_rmsd": {
+            "R": [
+              0.013129758106743841,
+              0.012381261513270746,
+              0.014345614164600584,
+              0.018521921165191912,
+              0.016608858609878187
+            ],
+            "L": [
+              0.0164910340977344,
+              0.013875417277826615,
+              0.013621583149723844,
+              0.015819127555641736,
+              0.04544005451598772
+            ]
+          },
+          "entity_max_rmsd": {
+            "R": 0.018521921165191912,
+            "L": 0.04544005451598772
+          },
+          "atom_counts": [
+            719,
+            719,
+            719,
+            719,
+            719
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "R": 0.018521921165191912,
+            "L": 0.04544005451598772
+          },
+          "coordinate_gate_passed": true,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        },
+        "bf16_admitted": true
+      }
+    },
+    {
+      "model": "openfold3",
+      "case": "protein_ligand_5sak",
+      "entities": {
+        "1": [
+          "protein"
+        ],
+        "2": [
+          "ligand"
+        ]
+      },
+      "provenance": {
+        "model": "openfold3",
+        "case": "protein_ligand_5sak",
+        "samples": 5,
+        "steps": 200,
+        "recycles": 3,
+        "source": {
+          "commit": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "input": {
+          "sha256": "7b9164b634aa5cabe09e08a1061a27fe03752dc000eb245f0c1ec560560a0eaf",
+          "bytes": 1043
+        },
+        "weights": {
+          "sha256": "bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+          "bytes": 2287872989
+        },
+        "wrapper": {
+          "sha256": "449a2b7600fdfb11d1c99be7c7fcdad6f6b5be83d1063f70bcc867632a88175d",
+          "bytes": 8709
+        },
+        "tf32": "native default true",
+        "scope": "native runner precision-only; no port or confidence acceptance",
+        "arms": {
+          "32-true": {
+            "exit_code": 0,
+            "elapsed_seconds": 30.283976030012127,
+            "artifacts": {
+              "coordinate.npz": {
+                "sha256": "a0d2dc97584a27e72f70109310e5e76db7ce605897633030348490b64de4e6fa",
+                "bytes": 170797
+              },
+              "input.npz": {
+                "sha256": "b615233a158fa9e2b475f13911bd2c8ff00283e8e964ab8a2203bc32f934f941",
+                "bytes": 2787769
+              },
+              "tape.npz": {
+                "sha256": "8e0c0331f17c6453c6cd464120300e514c2cc891c04662f17e6f04635a7b7cc1",
+                "bytes": 34549128
+              }
+            }
+          },
+          "bf16-mixed": {
+            "exit_code": 0,
+            "elapsed_seconds": 29.84308208001312,
+            "artifacts": {
+              "coordinate.npz": {
+                "sha256": "2354ddc22c11f8ce60038f7d6cc43b0af9505744d59a79b1259b64cc0f63e3fe",
+                "bytes": 170872
+              },
+              "input.npz": {
+                "sha256": "9ddea01d53c70183fcd52b96b003c1c974fc0798e1e48683d2e36bd7223683ba",
+                "bytes": 2787769
+              },
+              "tape.npz": {
+                "sha256": "8e0c0331f17c6453c6cd464120300e514c2cc891c04662f17e6f04635a7b7cc1",
+                "bytes": 34549128
+              }
+            }
+          }
+        }
+      },
+      "comparison": {
+        "status": "measured",
+        "input_and_actual_tape_exact": true,
+        "effective_model_exact": true,
+        "entity_parity": {
+          "global_rmsd": [
+            2.8116692784775648,
+            0.9006813788224132,
+            0.3720440947748512,
+            1.321391804420118,
+            0.4484044602349933
+          ],
+          "global_max_rmsd": 2.8116692784775648,
+          "entity_rmsd": {
+            "1": [
+              2.689831830164271,
+              0.903005201600103,
+              0.3563226432222905,
+              1.3245584339009526,
+              0.44941216132370276
+            ],
+            "2": [
+              11.030339907147994,
+              0.3159827276282404,
+              1.4428801007994527,
+              0.5692251265296155,
+              0.21797623786802542
+            ]
+          },
+          "entity_max_rmsd": {
+            "1": 2.689831830164271,
+            "2": 11.030339907147994
+          },
+          "atom_counts": [
+            3073,
+            3073,
+            3073,
+            3073,
+            3073
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "1": 2.689831830164271,
+            "2": 11.030339907147994
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        },
+        "bf16_admitted": false
+      }
+    },
+    {
+      "model": "openfold3",
+      "case": "protein_rna_1urn",
+      "entities": {
+        "1": [
+          "protein"
+        ],
+        "2": [
+          "rna"
+        ]
+      },
+      "provenance": {
+        "model": "openfold3",
+        "case": "protein_rna_1urn",
+        "samples": 5,
+        "steps": 200,
+        "recycles": 3,
+        "source": {
+          "commit": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "input": {
+          "sha256": "b9a5a58783e77fbea6dfbdf7b0ecf97a25f91122babcf2925e66acd0355af295",
+          "bytes": 703
+        },
+        "weights": {
+          "sha256": "bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+          "bytes": 2287872989
+        },
+        "wrapper": {
+          "sha256": "449a2b7600fdfb11d1c99be7c7fcdad6f6b5be83d1063f70bcc867632a88175d",
+          "bytes": 8709
+        },
+        "tf32": "native default true",
+        "scope": "native runner precision-only; no port or confidence acceptance",
+        "arms": {
+          "32-true": {
+            "exit_code": 0,
+            "elapsed_seconds": 16.914324594981736,
+            "artifacts": {
+              "coordinate.npz": {
+                "sha256": "5a04f857b45df50bcbfec6e06284321fe5fcd1f5f818926ca421e4471bb7376d",
+                "bytes": 68468
+              },
+              "input.npz": {
+                "sha256": "7d0225d47be93d9c7e71c8203b815236c6be9cc9538592330967e2a0821f8394",
+                "bytes": 2029712
+              },
+              "tape.npz": {
+                "sha256": "c7154eb7611bb6878ff54b47f10adad77b3457cfc83b3150d6a5adccb1466e7f",
+                "bytes": 13967315
+              }
+            }
+          },
+          "bf16-mixed": {
+            "exit_code": 0,
+            "elapsed_seconds": 17.962274192017503,
+            "artifacts": {
+              "coordinate.npz": {
+                "sha256": "828034db20c994a08a351faf39d8e7c6243fafc77087eb62c1e71b7c619e2f9f",
+                "bytes": 68443
+              },
+              "input.npz": {
+                "sha256": "31a38a38e5021f6d7280351d353e5822fc19eb3fdd869856b0604de9eed3597a",
+                "bytes": 2029712
+              },
+              "tape.npz": {
+                "sha256": "c7154eb7611bb6878ff54b47f10adad77b3457cfc83b3150d6a5adccb1466e7f",
+                "bytes": 13967315
+              }
+            }
+          }
+        }
+      },
+      "comparison": {
+        "status": "measured",
+        "input_and_actual_tape_exact": true,
+        "effective_model_exact": true,
+        "entity_parity": {
+          "global_rmsd": [
+            0.026920125864579366,
+            0.05370126638690094,
+            0.0838032459584292,
+            0.07181701600819634,
+            0.032027081133686845
+          ],
+          "global_max_rmsd": 0.0838032459584292,
+          "entity_rmsd": {
+            "1": [
+              0.026686569695802305,
+              0.06489711330822581,
+              0.10283174180952113,
+              0.08749449571704371,
+              0.031518983620604554
+            ],
+            "2": [
+              0.027333307658593625,
+              0.02250494787333091,
+              0.025777339976419646,
+              0.026189567860021815,
+              0.03291720977759481
+            ]
+          },
+          "entity_max_rmsd": {
+            "1": 0.10283174180952113,
+            "2": 0.03291720977759481
+          },
+          "atom_counts": [
+            1225,
+            1225,
+            1225,
+            1225,
+            1225
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "1": 0.10283174180952113,
+            "2": 0.03291720977759481
+          },
+          "coordinate_gate_passed": false,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        },
+        "bf16_admitted": false
+      }
+    },
+    {
+      "model": "openfold3",
+      "case": "rna_ligand_3gca",
+      "entities": {
+        "1": [
+          "ligand"
+        ],
+        "2": [
+          "rna"
+        ]
+      },
+      "provenance": {
+        "model": "openfold3",
+        "case": "rna_ligand_3gca",
+        "samples": 5,
+        "steps": 200,
+        "recycles": 3,
+        "source": {
+          "commit": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "input": {
+          "sha256": "412513126a7fca93151f82dfe68ccb757534dddf1564df4721e940d40dcb3516",
+          "bytes": 412
+        },
+        "weights": {
+          "sha256": "bd43301c011d5f87580d3e8b548658869433e4488399feb03035ba248f8e29e4",
+          "bytes": 2287872989
+        },
+        "wrapper": {
+          "sha256": "449a2b7600fdfb11d1c99be7c7fcdad6f6b5be83d1063f70bcc867632a88175d",
+          "bytes": 8709
+        },
+        "tf32": "native default true",
+        "scope": "native runner precision-only; no port or confidence acceptance",
+        "arms": {
+          "32-true": {
+            "exit_code": 0,
+            "elapsed_seconds": 15.50592362898169,
+            "artifacts": {
+              "coordinate.npz": {
+                "sha256": "87ea7beb1ad8eede77c76eaf843b693085edcd016975003abf4249311239bd41",
+                "bytes": 40265
+              },
+              "input.npz": {
+                "sha256": "67dbbfe480b2f7f8b374042f6bf09fecd8448cc9d239578213a906d3400004e8",
+                "bytes": 36096
+              },
+              "tape.npz": {
+                "sha256": "144241f27d974d5791f90310f15686b471bb58f68da444827a01b23e43bed999",
+                "bytes": 8195021
+              }
+            }
+          },
+          "bf16-mixed": {
+            "exit_code": 0,
+            "elapsed_seconds": 17.1117650840024,
+            "artifacts": {
+              "coordinate.npz": {
+                "sha256": "2b14fa71b68586865080b9d828f5c0f9a2ea77af7ea504d9618d6f9dc39d7f1c",
+                "bytes": 40239
+              },
+              "input.npz": {
+                "sha256": "8b91280f35b4bd0efc08dafcd159ebe65cd57c586a95d883dac47c36d0b13a77",
+                "bytes": 36096
+              },
+              "tape.npz": {
+                "sha256": "144241f27d974d5791f90310f15686b471bb58f68da444827a01b23e43bed999",
+                "bytes": 8195021
+              }
+            }
+          }
+        }
+      },
+      "comparison": {
+        "status": "measured",
+        "input_and_actual_tape_exact": true,
+        "effective_model_exact": true,
+        "entity_parity": {
+          "global_rmsd": [
+            0.013894665669929376,
+            0.016779741765041847,
+            0.012920710589382576,
+            0.01263053801346109,
+            0.01491292406853784
+          ],
+          "global_max_rmsd": 0.016779741765041847,
+          "entity_rmsd": {
+            "2": [
+              0.013917577064677469,
+              0.01686824370614788,
+              0.012978180741538902,
+              0.012649311216801034,
+              0.014880450146086233
+            ],
+            "1": [
+              0.012589874949529407,
+              0.010957430067946696,
+              0.009285847725662367,
+              0.011566911804038632,
+              0.016579022660377283
+            ]
+          },
+          "entity_max_rmsd": {
+            "2": 0.01686824370614788,
+            "1": 0.016579022660377283
+          },
+          "atom_counts": [
+            718,
+            718,
+            718,
+            718,
+            718
+          ],
+          "coordinates_equal": [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "coordinate_gate": {
+          "threshold_angstrom": 0.05,
+          "entity_max_rmsd": {
+            "2": 0.01686824370614788,
+            "1": 0.016579022660377283
+          },
+          "coordinate_gate_passed": true,
+          "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+        },
+        "bf16_admitted": true
+      }
+    }
+  ],
+  "repeats": {
+    "opendde": {
+      "status": "measured",
+      "identity": {
+        "native-input.npz": {
+          "missing_from_left": [],
+          "missing_from_right": [],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {},
+          "max_absolute_error": {
+            "asym_id": 0.0,
+            "atom_to_structural_tokatom_idx": 0.0,
+            "atom_to_structural_token_idx": 0.0,
+            "atom_to_tokatom_idx": 0.0,
+            "atom_to_token_idx": 0.0,
+            "bond_mask": 0.0,
+            "deletion_matrix": 0.0,
+            "deletion_mean": 0.0,
+            "deletion_value": 0.0,
+            "distogram_rep_atom_mask": 0.0,
+            "entity_id": 0.0,
+            "entity_mol_id": 0.0,
+            "frame_atom_index": 0.0,
+            "has_deletion": 0.0,
+            "has_frame": 0.0,
+            "inference_seed": 0.0,
+            "is_dna": 0.0,
+            "is_ligand": 0.0,
+            "is_protein": 0.0,
+            "is_rna": 0.0,
+            "modified_res_mask": 0.0,
+            "mol_atom_index": 0.0,
+            "mol_id": 0.0,
+            "msa": 0.0,
+            "next_parent_residue_idx": 0.0,
+            "pae_rep_atom_mask": 0.0,
+            "parent_residue_idx": 0.0,
+            "plddt_m_rep_atom_mask": 0.0,
+            "prev_parent_residue_idx": 0.0,
+            "profile": 0.0,
+            "prot_pair_num_alignments": 0.0,
+            "prot_paired_num_alignments": 0.0,
+            "prot_unpair_num_alignments": 0.0,
+            "prot_unpaired_num_alignments": 0.0,
+            "ref_atom_name_chars": 0.0,
+            "ref_charge": 0.0,
+            "ref_element": 0.0,
+            "ref_mask": 0.0,
+            "ref_pos": 0.0,
+            "ref_space_uid": 0.0,
+            "residue_index": 0.0,
+            "residue_token_group_id": 0.0,
+            "resolution": 0.0,
+            "restype": 0.0,
+            "rna_pair_num_alignments": 0.0,
+            "rna_paired_num_alignments": 0.0,
+            "rna_unpair_num_alignments": 0.0,
+            "rna_unpaired_num_alignments": 0.0,
+            "structural_distogram_rep_atom_mask": 0.0,
+            "structural_frame_atom_index": 0.0,
+            "structural_has_frame": 0.0,
+            "structural_is_polymer": 0.0,
+            "structural_pae_rep_atom_mask": 0.0,
+            "structural_polymer_type": 0.0,
+            "structural_seq_pos": 0.0,
+            "structural_token_index": 0.0,
+            "subtoken_role": 0.0,
+            "subtoken_role_id": 0.0,
+            "sym_id": 0.0,
+            "template_aatype": 0.0,
+            "template_atom_mask": 0.0,
+            "template_atom_positions": 0.0,
+            "template_backbone_frame_mask": 0.0,
+            "template_distogram": 0.0,
+            "template_pseudo_beta_mask": 0.0,
+            "template_unit_vector": 0.0,
+            "token_bonds": 0.0,
+            "token_index": 0.0,
+            "twin_token_idx": 0.0
+          },
+          "equal": true
+        },
+        "native-identity.npz": {
+          "missing_from_left": [],
+          "missing_from_right": [],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {},
+          "max_absolute_error": {
+            "output_atom_res_id": 0.0
+          },
+          "equal": true
+        },
+        "torch/tape.npz": {
+          "missing_from_left": [],
+          "missing_from_right": [],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {},
+          "max_absolute_error": {
+            "init_noise": 0.0,
+            "noise_schedule": 0.0,
+            "rotations": 0.0,
+            "step_noises": 0.0,
+            "translations": 0.0
+          },
+          "equal": true
+        },
+        "torch/msa.npz": {
+          "missing_from_left": [],
+          "missing_from_right": [],
+          "shape_mismatches": {},
+          "dtype_mismatches": {},
+          "value_mismatches": {},
+          "max_absolute_error": {
+            "input_deletion_value": 0.0,
+            "input_has_deletion": 0.0,
+            "input_msa": 0.0,
+            "rows": 0.0,
+            "selected_deletion_value": 0.0,
+            "selected_has_deletion": 0.0,
+            "selected_msa": 0.0
+          },
+          "equal": true
+        }
+      },
+      "entity_parity": {
+        "global_rmsd": [
+          0.004820954990700084,
+          0.008501938237542698,
+          0.0037267621931053718,
+          0.0034472527235316266,
+          0.004760367074454753
+        ],
+        "global_max_rmsd": 0.008501938237542698,
+        "entity_rmsd": {
+          "A": [
+            0.004831832370234944,
+            0.008524175958914228,
+            0.00373559262714342,
+            0.0034550374836355225,
+            0.004770284068602952
+          ],
+          "L": [
+            0.002327110721056514,
+            0.0028286666137327127,
+            0.0016435049500081722,
+            0.001661606888179844,
+            0.0025718627750987056
+          ]
+        },
+        "entity_max_rmsd": {
+          "A": 0.008524175958914228,
+          "L": 0.0028286666137327127
+        },
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "coordinate_gate": {
+        "threshold_angstrom": 0.05,
+        "entity_max_rmsd": {
+          "A": 0.008524175958914228,
+          "L": 0.0028286666137327127
+        },
+        "coordinate_gate_passed": true,
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+      },
+      "scope": "FP32 same-mode repeat only, not BF16 admission",
+      "provenance": {
+        "source": {
+          "commit": "ddfa1df8aff1babf1fddac4247b7d2351bd0ce9f",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "wrapper": {
+          "sha256": "31bf1225249a1eef9e81f97761f223eb54148b6cd67a5091076e857da1a754d9",
+          "bytes": 1796
+        },
+        "control": {
+          "sha256": "9c983f411c2c51c5b7dafb7219f017ef1d42b8da7f8500e608da415685e06140",
+          "bytes": 5124
+        },
+        "dtype": "fp32",
+        "tf32": true,
+        "elapsed_seconds": 108.62396694600466,
+        "artifacts": {
+          "native-derived.npz": {
+            "sha256": "7f8a5907ab69a0d09c8eb97b06a63e58e669101535dc61c2d3a0971834d5fb0e",
+            "bytes": 4296453
+          },
+          "native-identity.npz": {
+            "sha256": "1f82664a7a8269998547f8e353a2e724d5818106a9c2a722df180db914e7e05e",
+            "bytes": 6116
+          },
+          "native-input.npz": {
+            "sha256": "5c05c0792fb84cb091610f2b0b2136b76d76a3c2b516b629507851d655ba22a4",
+            "bytes": 1379166
+          },
+          "torch/coordinate.npz": {
+            "sha256": "a1374d837b63753386ac0ee08ddad214b324b2df92a423429c19e10a7c25f50c",
+            "bytes": 170249
+          },
+          "torch/msa.npz": {
+            "sha256": "d0dfd2e01eeb12f039f8d27cbb211632af892b54e2b7b8e40a6d4df8e65cb895",
+            "bytes": 3990672
+          },
+          "torch/tape.npz": {
+            "sha256": "796aa82378cf3b86d5e472ecd7d8cce6387169529f25545a5f57ef2165e2d0fe",
+            "bytes": 34381746
+          }
+        }
+      }
+    },
+    "openfold3": {
+      "status": "measured",
+      "input_and_actual_tape_exact": true,
+      "effective_model_exact": true,
+      "entity_parity": {
+        "global_rmsd": [
+          0.050230021184439845,
+          0.05943050184743095,
+          0.018842093054196648,
+          0.052636043250245776,
+          0.024724408838203697
+        ],
+        "global_max_rmsd": 0.05943050184743095,
+        "entity_rmsd": {
+          "1": [
+            0.050363500326142625,
+            0.059586145396241554,
+            0.01873425498983815,
+            0.0466067333852051,
+            0.024773842367565396
+          ],
+          "2": [
+            0.015625988397117478,
+            0.0196982406567546,
+            0.03229189029879885,
+            0.32299607938455827,
+            0.014000272360818793
+          ]
+        },
+        "entity_max_rmsd": {
+          "1": 0.059586145396241554,
+          "2": 0.32299607938455827
+        },
+        "atom_counts": [
+          3073,
+          3073,
+          3073,
+          3073,
+          3073
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      "coordinate_gate": {
+        "threshold_angstrom": 0.05,
+        "entity_max_rmsd": {
+          "1": 0.059586145396241554,
+          "2": 0.32299607938455827
+        },
+        "coordinate_gate_passed": false,
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance"
+      },
+      "scope": "FP32 same-mode repeat only",
+      "provenance": {
+        "source": {
+          "commit": "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86",
+          "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "wrapper": {
+          "sha256": "d5bc8f3d3610be7af39724a78f62f60bbae818d5729e740b09e2921b1aa4300b",
+          "bytes": 1499
+        },
+        "capture_wrapper": {
+          "sha256": "449a2b7600fdfb11d1c99be7c7fcdad6f6b5be83d1063f70bcc867632a88175d",
+          "bytes": 8709
+        },
+        "precision": "32-true",
+        "scope": "same-mode repeat; not BF16 admission",
+        "elapsed_seconds": 29.562854111019988,
+        "artifacts": {
+          "coordinate.npz": {
+            "sha256": "cb5371dfcff2e02c5ca1c6681c7cfad663f785bf48269669ec29dcf11bc14ba4",
+            "bytes": 170826
+          },
+          "input.npz": {
+            "sha256": "c9cfc899c8fb2c40cec6fdb30d6645a1b71c514474e95bf1f08ed0e66a2c3ea7",
+            "bytes": 2787769
+          },
+          "tape.npz": {
+            "sha256": "8e0c0331f17c6453c6cd464120300e514c2cc891c04662f17e6f04635a7b7cc1",
+            "bytes": 34549128
+          }
+        }
+      }
+    }
+  },
+  "failed_instrumentation_attempts": [
+    "OpenFold3 initial capture rejected AtomArray list before inference; corrected serializer",
+    "OpenFold3 repeat missing main guard failed in DataLoader forkserver before inference; corrected wrapper"
+  ]
+}

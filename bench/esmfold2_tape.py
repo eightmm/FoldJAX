@@ -344,7 +344,17 @@ def _write_metadata(
                 "core_only_shared_features": True,
                 "input_sha256": _sha256(args.input_features),
                 "precision": {
-                    "trunk": "float32",
+                    "trunk": (
+                        "native_cuda_bfloat16_autocast"
+                        if args.command == "capture"
+                        else "float32"
+                    ),
+                    "checkpoint_dtype": config.get("dtype"),
+                    "conditioning": (
+                        "native_mixed_with_bfloat16_z_transitions"
+                        if args.command == "capture"
+                        else "port_policy_not_native_verified"
+                    ),
                     "language_model": "bfloat16",
                     "matmul": "highest",
                 },

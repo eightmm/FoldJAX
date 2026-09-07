@@ -1,0 +1,1320 @@
+{
+  "independent_preflight_inputs": {
+    "protein_1ubq": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "f82507bd57a42c9e6253e8409dd74987b66beb8f01dbc175ff95b70f545acd5f",
+        "foldjax.npz": "7a0948d539d3e5c05d26935016ac0006a8ce41d0d432509e115801308d8d8627",
+        "native.metadata.json": "f82507bd57a42c9e6253e8409dd74987b66beb8f01dbc175ff95b70f545acd5f",
+        "native.npz": "7a0948d539d3e5c05d26935016ac0006a8ce41d0d432509e115801308d8d8627"
+      },
+      "metadata_equal": true
+    },
+    "protein_dna_7r6r": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "738d899d4755623055e3aca2f0e5164ea533f3f70320bd0e0a00701e020f3c88",
+        "foldjax.npz": "a5eb9177c9d49e5c243db1ad4aee4fe586eded64d4ed077f87adacead95074d1",
+        "native.metadata.json": "738d899d4755623055e3aca2f0e5164ea533f3f70320bd0e0a00701e020f3c88",
+        "native.npz": "a5eb9177c9d49e5c243db1ad4aee4fe586eded64d4ed077f87adacead95074d1"
+      },
+      "metadata_equal": true
+    },
+    "protein_ligand_5sak": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "4601feabd65f4be38e755d9192b6b97dd48d09b913147afd44afcd24e80c9618",
+        "foldjax.npz": "20d58bd9a35881c50cb20c45587d25d12183289ab9eb133117fcabdd18bceff9",
+        "native.metadata.json": "4601feabd65f4be38e755d9192b6b97dd48d09b913147afd44afcd24e80c9618",
+        "native.npz": "20d58bd9a35881c50cb20c45587d25d12183289ab9eb133117fcabdd18bceff9"
+      },
+      "metadata_equal": true
+    },
+    "protein_protein_7st3": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "dd7c8cef34c23df744b07e05017bb245f6c4eb42a2080ba5344027b25a96616d",
+        "foldjax.npz": "ce7f949b6f3900fe22481ca98e46f43d5e1a5b36225719458de0beb712a5defb",
+        "native.metadata.json": "dd7c8cef34c23df744b07e05017bb245f6c4eb42a2080ba5344027b25a96616d",
+        "native.npz": "ce7f949b6f3900fe22481ca98e46f43d5e1a5b36225719458de0beb712a5defb"
+      },
+      "metadata_equal": true
+    },
+    "protein_rna_1urn": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "d89edc7971455fb66fa58891b2222e2760d694e34a258a5fe32e60fd7bdc085f",
+        "foldjax.npz": "8117391211f2e5d626df2c63b4d992dd0faa271acafd4b8a6709384a9788257f",
+        "native.metadata.json": "d89edc7971455fb66fa58891b2222e2760d694e34a258a5fe32e60fd7bdc085f",
+        "native.npz": "8117391211f2e5d626df2c63b4d992dd0faa271acafd4b8a6709384a9788257f"
+      },
+      "metadata_equal": true
+    },
+    "protein_rna_ligand_3v7e": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "191b115f056369e4370b5ff35e719525522037bf3f11f898c56a6addc75d4c13",
+        "foldjax.npz": "dcbac03b8dbcbeebe97cb0a2da8ec3ea04552af38d723db918e1f00149ffdb49",
+        "native.metadata.json": "191b115f056369e4370b5ff35e719525522037bf3f11f898c56a6addc75d4c13",
+        "native.npz": "dcbac03b8dbcbeebe97cb0a2da8ec3ea04552af38d723db918e1f00149ffdb49"
+      },
+      "metadata_equal": true
+    },
+    "rna_ligand_3gca": {
+      "array_count": 59,
+      "arrays_equal": true,
+      "artifact_sha256": {
+        "foldjax.metadata.json": "8b85a3628d5c29366a5f4c258a9928ecce1e036eefab858b463a43cf792c80b5",
+        "foldjax.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+        "native.metadata.json": "8b85a3628d5c29366a5f4c258a9928ecce1e036eefab858b463a43cf792c80b5",
+        "native.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe"
+      },
+      "metadata_equal": true
+    }
+  },
+  "pairs": {
+    "completed_native_vs_foldjax": {
+      "actual_jax_tape_equal": true,
+      "artifact_sha256": {
+        "foldjax": {
+          "confidence.npz": "82c3e7054cac630b0e5fa54e44e0ae44a40422dc9e0a558a79fe785689bc116c",
+          "coordinate.npz": "1554364d7a79fe25cc94fef259c094a36a651859d46cf70003b3840759e701ca",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "0316b0c68dc513a6ea53a8ff3dea257fc1c1cd12bcc8f72d7437269a1ac92573",
+          "raw.npz": "a705fe33d6def3a3d344c162293ee397bb7af1882875ff7a33332544da0c9b29",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        },
+        "native-v3": {
+          "confidence.npz": "a4da9d62995291be01edb0190f9967af3e22f08e915f1b093b43c1d4f56d0d04",
+          "coordinate.npz": "a58027c50de92683403b92278f7bb3045c6f15bf73cad08cb2f0263e5be98853",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "e13f07b979adbdfa4e4175221ad1b79fbba31f7d96a02b9ff6a0cb52b549ee8c",
+          "raw.npz": "9a6405467365c8cff055b3779d37bf8e06ae58e29a9a9e143b6d6dd06ee76e40",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        }
+      },
+      "completed_lifecycle": [
+        true,
+        true
+      ],
+      "coordinate_diagnostic": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.011389805063545868,
+          "R": 0.04078223099121179
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.011389805063545868,
+          "R": 0.04078223099121179
+        },
+        "entity_rmsd": {
+          "L": [
+            0.010641878988482005,
+            0.010808929834941262,
+            0.009043263539085104,
+            0.008493574901791088,
+            0.011389805063545868
+          ],
+          "R": [
+            0.02089451583538801,
+            0.013750208078195528,
+            0.04078223099121179,
+            0.025285096714179875,
+            0.013260106974228159
+          ]
+        },
+        "global_max_rmsd": 0.04043015484283794,
+        "global_rmsd": [
+          0.0207541501387179,
+          0.013702633341986138,
+          0.04043015484283794,
+          0.025081484129592962,
+          0.013228638175237551
+        ]
+      },
+      "extracted_confidence": {
+        "compared_leaves": 360,
+        "failed_leaf_count": 83,
+        "max_absolute_error_by_field": {
+          "atom_plddt": 0.8988800048828125,
+          "metadata.iptm": 0.0008824880299750371,
+          "metadata.ptm": 0.0012905973452373987,
+          "metadata.ranking_score": 0.0009640559896966217,
+          "numerical.contact_probs": 0.03580045700073242,
+          "numerical.full_pae": 0.5298805236816406,
+          "numerical.full_pde": 0.06089675426483154
+        },
+        "passed": false
+      },
+      "input_arrays_equal": true,
+      "input_metadata_equal": true,
+      "left": "native-v3",
+      "preprocessing_tape_equal": true,
+      "raw_confidence": {
+        "atol": 0.0001,
+        "leaves": {
+          "__identifier__": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "average_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.004458904266357422,
+            "max_scaled_error": 24.64280564838352,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "diffusion_samples.mask": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.bin_edges": {
+            "dtype_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.contact_probs": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.03580045700073242,
+            "max_scaled_error": 256.33576198456814,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pae": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.5298805236816406,
+            "max_scaled_error": 949.434520681839,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.06089675426483154,
+            "max_scaled_error": 304.62765824065974,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_experimentally_resolved": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.023809924721717834,
+            "max_scaled_error": 204.09283371296124,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_lddt": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.8988800048828125,
+            "max_scaled_error": 99.1017937880575,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_global": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.027055084705352783,
+            "max_scaled_error": 178.5091794136237,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_interface": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.027055084705352783,
+            "max_scaled_error": 178.5091794136237,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "right": "foldjax",
+      "source_provenance": {
+        "foldjax": {
+          "arm": "foldjax",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "ea7cd138f103821e38ecb8e81f75739fcd62c4f29223bdd9874829910c8dd29d",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "47d8896ffce5775bb7385f9ae4974c0b2938f59ade8da24510528f1c9280ef2e"
+        },
+        "native-v3": {
+          "arm": "native",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "runtime_versions": {
+            "dm-haiku": "0.0.17",
+            "jaxlib": "0.11.1",
+            "numpy": "2.1.3",
+            "rdkit": "2026.3.5",
+            "tokamax": "0.0.13"
+          },
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "699207ab8554158d61f8d29fab50315781b04db8029e613d3da8580516389a4f",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "1422f9f73ae7d666c2e13969d2ffc1d5b35be301ebbbf660990b0e6ad46c2686"
+        }
+      },
+      "state": "measured inference artifacts; consult lifecycle and gates",
+      "strict_artifact_gate_passed": false,
+      "strict_error": null,
+      "strict_failed_checks": [
+        "provenance.runtime_versions",
+        "raw_confidence",
+        "confidence"
+      ],
+      "tape_coverage": [
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        },
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        }
+      ]
+    },
+    "first_partial_native_vs_foldjax": {
+      "actual_jax_tape_equal": true,
+      "artifact_sha256": {
+        "foldjax": {
+          "confidence.npz": "82c3e7054cac630b0e5fa54e44e0ae44a40422dc9e0a558a79fe785689bc116c",
+          "coordinate.npz": "1554364d7a79fe25cc94fef259c094a36a651859d46cf70003b3840759e701ca",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "0316b0c68dc513a6ea53a8ff3dea257fc1c1cd12bcc8f72d7437269a1ac92573",
+          "raw.npz": "a705fe33d6def3a3d344c162293ee397bb7af1882875ff7a33332544da0c9b29",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        },
+        "native": {
+          "confidence.npz": "e31ab926535dc6f1c9bf4d807199198965f77481616b4f5e685a780dec4a7331",
+          "coordinate.npz": "ea396278fcffa63afadb9106bb4eb3a96272bc93fa1ca317c5ffe4ad76230ed9",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "bcbdc39a180502714e0a5fc3df14c9ddf068076fa7fb3d950407b1aa1dd23999",
+          "raw.npz": "6eb6d61964d15ad33ad270ca3977b79a5e611d7f28734c96a98b69d3c2887c93",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        }
+      },
+      "completed_lifecycle": [
+        false,
+        true
+      ],
+      "coordinate_diagnostic": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.010741576892012938,
+          "R": 0.04146966984701077
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.010741576892012938,
+          "R": 0.04146966984701077
+        },
+        "entity_rmsd": {
+          "L": [
+            0.008936819099886167,
+            0.009698523272184281,
+            0.00953996998004469,
+            0.007895365737962649,
+            0.010741576892012938
+          ],
+          "R": [
+            0.019420410988544756,
+            0.015200355544751683,
+            0.04146966984701077,
+            0.01472870810606743,
+            0.012840492459873275
+          ]
+        },
+        "global_max_rmsd": 0.04111307732675466,
+        "global_rmsd": [
+          0.01928152588245077,
+          0.015118662238659729,
+          0.04111307732675466,
+          0.014633509717752834,
+          0.01280559689830156
+        ]
+      },
+      "extracted_confidence": {
+        "compared_leaves": 360,
+        "failed_leaf_count": 94,
+        "max_absolute_error_by_field": {
+          "atom_plddt": 1.0215530395507812,
+          "metadata.iptm": 0.0011558257607593436,
+          "metadata.ptm": 0.0014249164122095426,
+          "metadata.ranking_score": 0.0012096438910494944,
+          "numerical.contact_probs": 0.03580045700073242,
+          "numerical.full_pae": 0.4290900230407715,
+          "numerical.full_pde": 0.05932009220123291
+        },
+        "passed": false
+      },
+      "input_arrays_equal": true,
+      "input_metadata_equal": true,
+      "left": "native",
+      "preprocessing_tape_equal": null,
+      "raw_confidence": {
+        "atol": 0.0001,
+        "leaves": {
+          "__identifier__": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "average_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.0038582682609558105,
+            "max_scaled_error": 21.323300347897465,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "diffusion_samples.mask": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.bin_edges": {
+            "dtype_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.contact_probs": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.03580045700073242,
+            "max_scaled_error": 256.33576198456814,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pae": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.4290900230407715,
+            "max_scaled_error": 803.4530594613406,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.05932009220123291,
+            "max_scaled_error": 289.0113157136066,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_experimentally_resolved": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.02351219952106476,
+            "max_scaled_error": 200.3540702543617,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_lddt": {
+            "dtype_equal": true,
+            "max_absolute_error": 1.0215530395507812,
+            "max_scaled_error": 123.160847255236,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_global": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.024659067392349243,
+            "max_scaled_error": 167.0133778276576,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_interface": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.02287191152572632,
+            "max_scaled_error": 156.7625109378396,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "right": "foldjax",
+      "source_provenance": {
+        "foldjax": {
+          "arm": "foldjax",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "ea7cd138f103821e38ecb8e81f75739fcd62c4f29223bdd9874829910c8dd29d",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "47d8896ffce5775bb7385f9ae4974c0b2938f59ade8da24510528f1c9280ef2e"
+        },
+        "native": {
+          "arm": "native",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "699207ab8554158d61f8d29fab50315781b04db8029e613d3da8580516389a4f",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "47d8896ffce5775bb7385f9ae4974c0b2938f59ade8da24510528f1c9280ef2e"
+        }
+      },
+      "state": "measured inference artifacts; consult lifecycle and gates",
+      "strict_artifact_gate_passed": false,
+      "strict_error": "[Errno 2] No such file or directory: '<benchmark-root>/af3-closure-20260906-v2/rna_ligand_3gca/audit/native/finished.json' (local root redacted for publication)",
+      "strict_failed_checks": [],
+      "tape_coverage": [
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        },
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        }
+      ]
+    },
+    "fixed_kernel_control": {
+      "actual_jax_tape_equal": true,
+      "artifact_sha256": {
+        "foldjax": {
+          "confidence.npz": "82c3e7054cac630b0e5fa54e44e0ae44a40422dc9e0a558a79fe785689bc116c",
+          "coordinate.npz": "1554364d7a79fe25cc94fef259c094a36a651859d46cf70003b3840759e701ca",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "0316b0c68dc513a6ea53a8ff3dea257fc1c1cd12bcc8f72d7437269a1ac92573",
+          "raw.npz": "a705fe33d6def3a3d344c162293ee397bb7af1882875ff7a33332544da0c9b29",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        },
+        "native-fixed-kernel": {
+          "confidence.npz": "4bf1b00a2ceba91fe7c708ab117d8bea9b783fcd0265ec1173153ec8fb776190",
+          "coordinate.npz": "4e3c23cbe166ebd2e1b6bfdce4e2774c49c736ad81076873c22925001479417a",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "1c286a49accbf9e9b33e717b14ba7f1770b1da7b33fedd3df5fca2a1276927e5",
+          "raw.npz": "631d18b17f14766ef32ba4e8d7e79edc87c03894f27a3a5cc69d0289b93bc3b4",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        }
+      },
+      "completed_lifecycle": [
+        true,
+        true
+      ],
+      "coordinate_diagnostic": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.012176339175645553,
+          "R": 0.035503245549167985
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.012176339175645553,
+          "R": 0.035503245549167985
+        },
+        "entity_rmsd": {
+          "L": [
+            0.010530248106593258,
+            0.009454459505597075,
+            0.009698962714082684,
+            0.008959959397041433,
+            0.012176339175645553
+          ],
+          "R": [
+            0.01711235650024156,
+            0.008312903540619795,
+            0.035503245549167985,
+            0.009347953106394963,
+            0.010307548735515216
+          ]
+        },
+        "global_max_rmsd": 0.03520498491390531,
+        "global_rmsd": [
+          0.01701596393504747,
+          0.008334931632475142,
+          0.03520498491390531,
+          0.009341080980321456,
+          0.01034433509443129
+        ]
+      },
+      "extracted_confidence": {
+        "compared_leaves": 360,
+        "failed_leaf_count": 101,
+        "max_absolute_error_by_field": {
+          "atom_plddt": 0.5263137817382812,
+          "metadata.iptm": 0.0005568128361453928,
+          "metadata.ptm": 0.0010329433107203467,
+          "metadata.ranking_score": 0.0005882291786101224,
+          "numerical.contact_probs": 0.03532838821411133,
+          "numerical.full_pae": 0.42368030548095703,
+          "numerical.full_pde": 0.05837279558181763
+        },
+        "passed": false
+      },
+      "input_arrays_equal": true,
+      "input_metadata_equal": true,
+      "left": "native-fixed-kernel",
+      "preprocessing_tape_equal": true,
+      "raw_confidence": {
+        "atol": 0.0001,
+        "leaves": {
+          "__identifier__": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "average_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.00341641902923584,
+            "max_scaled_error": 18.88135405510168,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "diffusion_samples.mask": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.bin_edges": {
+            "dtype_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.contact_probs": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.03532838821411133,
+            "max_scaled_error": 249.35223685399828,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pae": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.42368030548095703,
+            "max_scaled_error": 759.1460523246724,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.05837279558181763,
+            "max_scaled_error": 292.00190121329814,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_experimentally_resolved": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.02463458478450775,
+            "max_scaled_error": 211.16161746729136,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_lddt": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.5263137817382812,
+            "max_scaled_error": 63.05721135574412,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_global": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.02291327714920044,
+            "max_scaled_error": 144.05225948465235,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_interface": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.02291327714920044,
+            "max_scaled_error": 144.05225948465235,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "right": "foldjax",
+      "source_provenance": {
+        "foldjax": {
+          "arm": "foldjax",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "ea7cd138f103821e38ecb8e81f75739fcd62c4f29223bdd9874829910c8dd29d",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "47d8896ffce5775bb7385f9ae4974c0b2938f59ade8da24510528f1c9280ef2e"
+        },
+        "native-fixed-kernel": {
+          "arm": "native",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "fixed_kernel_control_only": true,
+          "fixed_kernel_entries": 19,
+          "fixed_kernel_manifest_sha256": "97c38a863d524ff6e32e7d2a6bfe9e4a339f59b3d0988b092ba91e8d1ca844a8",
+          "fixed_kernel_result_sha256": "2691793b780f20fb18da3e05302e9f3818d1fce491491535da8cdf3c8c4979eb",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Native diagnostic reuses FoldJAX kernel configurations; uncovered configurations fail instead of retuning",
+          "kernel_selection": "frozen_foldjax_autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "runtime_versions": {
+            "dm-haiku": "0.0.17",
+            "jaxlib": "0.11.1",
+            "numpy": "2.1.3",
+            "rdkit": "2026.3.5",
+            "tokamax": "0.0.13"
+          },
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "699207ab8554158d61f8d29fab50315781b04db8029e613d3da8580516389a4f",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "1cf4915e359fa0d2a17df737f60b0398fcf3feb2e850b8b34fd2b5e01c370d1d"
+        }
+      },
+      "state": "measured inference artifacts; consult lifecycle and gates",
+      "strict_artifact_gate_passed": false,
+      "strict_error": null,
+      "strict_failed_checks": [
+        "provenance.kernel_selection",
+        "provenance.kernel_deviation",
+        "provenance.runtime_versions",
+        "raw_confidence",
+        "confidence"
+      ],
+      "tape_coverage": [
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        },
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        }
+      ]
+    },
+    "native_repeat": {
+      "actual_jax_tape_equal": true,
+      "artifact_sha256": {
+        "native": {
+          "confidence.npz": "e31ab926535dc6f1c9bf4d807199198965f77481616b4f5e685a780dec4a7331",
+          "coordinate.npz": "ea396278fcffa63afadb9106bb4eb3a96272bc93fa1ca317c5ffe4ad76230ed9",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "bcbdc39a180502714e0a5fc3df14c9ddf068076fa7fb3d950407b1aa1dd23999",
+          "raw.npz": "6eb6d61964d15ad33ad270ca3977b79a5e611d7f28734c96a98b69d3c2887c93",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        },
+        "native-v3": {
+          "confidence.npz": "a4da9d62995291be01edb0190f9967af3e22f08e915f1b093b43c1d4f56d0d04",
+          "coordinate.npz": "a58027c50de92683403b92278f7bb3045c6f15bf73cad08cb2f0263e5be98853",
+          "identity.npz": "6f77c43532b97ed716e008fa8f0ad72c1ff4572cb97e0151b7e5e0cbbebc8467",
+          "input-metadata.json": "a1b564d001c6671514c3e1e515d248ef2ca0f2bed2c8e04a2c401dc06a0eb745",
+          "input.npz": "c3c080461f1cc335afb56dfe406ed10582095dddcca9734deeffe8994149a3fe",
+          "provenance.json": "e13f07b979adbdfa4e4175221ad1b79fbba31f7d96a02b9ff6a0cb52b549ee8c",
+          "raw.npz": "9a6405467365c8cff055b3779d37bf8e06ae58e29a9a9e143b6d6dd06ee76e40",
+          "tape-coverage.json": "2d770bdb029ad3623f5833f2afa7eff1ccf917ebcd401bedf33db7174cd3cf36",
+          "tape.json": "956e43f7900932896104eef0fb864e6c4dd10ea64db7f9fa3159e0417f806e74"
+        }
+      },
+      "completed_lifecycle": [
+        false,
+        true
+      ],
+      "coordinate_diagnostic": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.002802042061398518,
+          "R": 0.020467659170659278
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "entity_parity": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.002802042061398518,
+          "R": 0.020467659170659278
+        },
+        "entity_rmsd": {
+          "L": [
+            0.002802042061398518,
+            0.0016323742251902335,
+            0.002061349807845165,
+            0.0023540467557048024,
+            0.002051895197680972
+          ],
+          "R": [
+            0.020467659170659278,
+            0.00506368223767572,
+            0.011175937514574063,
+            0.018704808577234285,
+            0.007103929844249575
+          ]
+        },
+        "global_max_rmsd": 0.02028528003813679,
+        "global_rmsd": [
+          0.02028528003813679,
+          0.005022494617947297,
+          0.011077910592533081,
+          0.01853764218753769,
+          0.007044819947488994
+        ]
+      },
+      "extracted_confidence": {
+        "compared_leaves": 360,
+        "failed_leaf_count": 79,
+        "max_absolute_error_by_field": {
+          "atom_plddt": 0.6163711547851562,
+          "metadata.iptm": 0.0009964704505882604,
+          "metadata.ptm": 0.0009132863384834211,
+          "metadata.ranking_score": 0.0009281863330559137,
+          "numerical.contact_probs": 0,
+          "numerical.full_pae": 0.2557644844055176,
+          "numerical.full_pde": 0.0428236722946167
+        },
+        "passed": false
+      },
+      "input_arrays_equal": true,
+      "input_metadata_equal": true,
+      "left": "native",
+      "preprocessing_tape_equal": null,
+      "raw_confidence": {
+        "atol": 0.0001,
+        "leaves": {
+          "__identifier__": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "average_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.0022239089012145996,
+            "max_scaled_error": 12.307129021005835,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "diffusion_samples.mask": {
+            "dtype_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.bin_edges": {
+            "dtype_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "distogram.contact_probs": {
+            "dtype_equal": true,
+            "max_absolute_error": 0,
+            "max_scaled_error": 0,
+            "nonfinite_equal": true,
+            "passed": true,
+            "shape_equal": true
+          },
+          "full_pae": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.2557644844055176,
+            "max_scaled_error": 484.3857298003709,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "full_pde": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.0428236722946167,
+            "max_scaled_error": 170.35221501602012,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_experimentally_resolved": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.03004823625087738,
+            "max_scaled_error": 257.4835440934838,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "predicted_lddt": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.6831893920898438,
+            "max_scaled_error": 82.39929764552797,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_global": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.020296722650527954,
+            "max_scaled_error": 139.38637942444228,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          },
+          "tmscore_adjusted_pae_interface": {
+            "dtype_equal": true,
+            "max_absolute_error": 0.01868423819541931,
+            "max_scaled_error": 142.0189649783401,
+            "nonfinite_equal": true,
+            "passed": false,
+            "shape_equal": true
+          }
+        },
+        "missing_from_left": [],
+        "missing_from_right": [],
+        "passed": false,
+        "rtol": 0.0001
+      },
+      "right": "native-v3",
+      "source_provenance": {
+        "native": {
+          "arm": "native",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "699207ab8554158d61f8d29fab50315781b04db8029e613d3da8580516389a4f",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "47d8896ffce5775bb7385f9ae4974c0b2938f59ade8da24510528f1c9280ef2e"
+        },
+        "native-v3": {
+          "arm": "native",
+          "attention": "triton",
+          "buckets": [
+            256,
+            512,
+            768,
+            1024,
+            1280,
+            1536,
+            2048,
+            2560,
+            3072,
+            3584,
+            4096,
+            4608,
+            5120
+          ],
+          "cpp_sha256": "8498552bc0ec5a39cc15970dc5ec6d5c40906b13978c8c9b68ca58b42c77a4fe",
+          "input_sha256": "6e35e368365e94ee6e4cb2badf179e9a703e1b5fa659ff96ea07ecae8bfefe11",
+          "jax_version": "0.11.1",
+          "kernel_deviation": "Both arms use autotune for Blackwell shared-memory compatibility instead of native heuristic fallback",
+          "kernel_selection": "autotune",
+          "matmul_precision": null,
+          "mode": "audit",
+          "native_recycles": 10,
+          "neutral_padding": false,
+          "runner_sha256": "a1dc5033fdd5473de06a1dfa02bdf3f53120ea83294f880198bcb26e64c2d075",
+          "runtime_versions": {
+            "dm-haiku": "0.0.17",
+            "jaxlib": "0.11.1",
+            "numpy": "2.1.3",
+            "rdkit": "2026.3.5",
+            "tokamax": "0.0.13"
+          },
+          "samples": 5,
+          "shared_cpp_and_generated_ccd": true,
+          "shared_generated_assets": {
+            "constants/converters/ccd.pickle": "546bfc38cf423522cde5c6cc94784fe0170d1b981a619e1c31c673810a1d69fe",
+            "constants/converters/chemical_component_sets.pickle": "f2417eaca25a7348440881df0f866129d6e12c04c8fd7fbca7b35d9f0c2c59ce"
+          },
+          "source_files_manifest_sha256": "699207ab8554158d61f8d29fab50315781b04db8029e613d3da8580516389a4f",
+          "steps": 200,
+          "weights_sha256": "9cfa13c7b3f2ece6d28dbf73bcfaec39a8f691b794173003f6c3ef8438a0a55c",
+          "wrapper_sha256": "1422f9f73ae7d666c2e13969d2ffc1d5b35be301ebbbf660990b0e6ad46c2686"
+        }
+      },
+      "state": "measured inference artifacts; consult lifecycle and gates",
+      "strict_artifact_gate_passed": false,
+      "strict_error": "[Errno 2] No such file or directory: '<benchmark-root>/af3-closure-20260906-v2/rna_ligand_3gca/audit/native/finished.json' (local root redacted for publication)",
+      "strict_failed_checks": [],
+      "tape_coverage": [
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        },
+        {
+          "churn": 1000,
+          "initial": 1,
+          "padding_gumbel": 11,
+          "rotation": 1000,
+          "translation": 1000
+        }
+      ]
+    }
+  },
+  "scope": "3GCA n5 native mixed precision; no crystal comparison; no performance or all-input closure",
+  "status": "in_progress_not_closed",
+  "upstream_commit": "85c4d20505fd5cef05eac22b534d4e793971ae69",
+  "upstream_version": "3.0.4",
+  "verification": {
+    "cpu_command": "JAX_PLATFORMS=cpu .venv/bin/pytest -q tests/test_alphafold3_session.py tests/models/alphafold3 tests/test_af3_closure.py tests/test_af3_closure_capture.py tests/test_entity_parity.py tests/test_precision_policy.py",
+    "cpu_result": "121 passed",
+    "gpu_jobs": {
+      "187": "ordered observer native compile failed exit134",
+      "188": "ordered sampler-only reproduction failed exit134",
+      "189": "unordered sampler-only passed exit0, 3001 sampler events",
+      "190": "native n5 inference outputs captured; writer failed exit1",
+      "191": "FoldJAX public API audit finished exit0",
+      "192": "native writer-fixed audit finished exit0",
+      "193": "native fixed-Tokamax-kernel diagnostic finished exit0"
+    },
+    "not_verified": [
+      "full seven-case output/confidence panel",
+      "uninstrumented audit/output bridge",
+      "first versus warm repeat and warm performance/memory tradeoff",
+      "all XLA/cuBLAS compiler kernel choices matched",
+      "optional reduced precision acceptance",
+      "full release gate, commit or push"
+    ]
+  },
+  "conclusion": "Independent inputs match on seven cases. 3GCA coordinate diagnostic passes; confidence diagnostic fails. Native repeats drift and fixing Tokamax configurations does not eliminate the discrepancy. Do not attribute all drift to port arithmetic or declare AF3 closed."
+}

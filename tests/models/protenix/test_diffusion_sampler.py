@@ -127,6 +127,8 @@ def test_sample_diffusion_scan_matches_loop_with_injected_noise() -> None:
         "key": None,
         "init_noise": init_noise,
         "step_noises": step_noises,
+        "rotations": jnp.broadcast_to(jnp.eye(3), (3, 2, 3, 3)),
+        "translations": jnp.zeros((3, 2, 3), dtype=jnp.float32),
         "gamma0": 0.4,
         "gamma_min": 0.5,
         "noise_scale_lambda": 1.003,

@@ -151,6 +151,7 @@ def pairformer_output_from_s_inputs(
     # own scan. The embedder that produced it reads integer features, so it
     # comes back float32 whatever the weights were cast to.
     trunk_dtype = _parameter_dtype(params.trunk) or s_inputs.dtype
+    conditioning_s_inputs = s_inputs
     s_inputs = s_inputs.astype(trunk_dtype)
 
     z_constraint = None
@@ -310,7 +311,9 @@ def pairformer_output_from_s_inputs(
                     else cycle_msa_features[cycle_index]
                 )
             (s, z), _ = one_cycle((s, z), msa_features)
-    return s_inputs, s, z
+    # Autocast narrows the trunk's projection operands, not the raw embedding
+    # returned to the FP32 diffusion/confidence islands.
+    return conditioning_s_inputs, s, z
 
 
 def _materialize_msa_cycle_from_index_tape(

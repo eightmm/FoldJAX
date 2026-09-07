@@ -24,6 +24,15 @@ from foldjax.models.boltz2.models.triangle.triangle_attention import (
 Params = Mapping[str, object]
 
 
+def _amp_dtype(kernel: jnp.ndarray) -> jnp.dtype | None:
+    return kernel.dtype if kernel.dtype in (jnp.bfloat16, jnp.float16) else None
+
+
+# Publisher trunkv2.py uses physical token count. Padding across this boundary
+# changes rounding and needs separate parity admission, not mask-based inference.
+_NATIVE_CHUNK_THRESHOLD = 384
+
+
 def msa_module_forward(
     params: Params,
     z: jnp.ndarray,
@@ -106,7 +115,10 @@ def msa_module_forward(
         num_tokens=num_tokens,
     )
 
-    token_mask = feats["token_pad_mask"].astype(m.dtype)
+    mask_dtype = (
+        jnp.float32 if _amp_dtype(params["msa_proj"]["kernel"]) is not None else m.dtype
+    )
+    token_mask = feats["token_pad_mask"].astype(mask_dtype)
     token_mask = token_mask[:, :, None] * token_mask[:, None, :]
     msa_mask = msa_mask.astype(m.dtype)
 
@@ -131,6 +143,12 @@ def msa_module_forward(
             )
         return z
 
+    # Native eval dropout multiplies the first PWA update by FP32 ones, so
+    # every residual after that addition is FP32. Promote the scan carry early
+    # without changing its BF16-representable values; PWA already normalizes
+    # in FP32, and scan requires a stable carry dtype across all layers.
+    if m.dtype in (jnp.bfloat16, jnp.float16):
+        m = m.astype(jnp.float32)
     stacked = stack_layer_params(layers)
 
     def body(carry, layer):
@@ -190,7 +208,17 @@ def _msa_input_embedding(
         ),
         axis=-1,
     )
-    m = kernel_onehot[msa_idx] + _linear(extra, kernel_extra)
+    if _amp_dtype(kernel) is not None:
+        # Native projects the concatenated one-hot and scalar features in one
+        # Linear. Keep the sparse form, but round only the completed projection.
+        scalar_projection = jnp.matmul(
+            extra, kernel_extra, preferred_element_type=jnp.float32
+        )
+        m = (kernel_onehot[msa_idx].astype(jnp.float32) + scalar_projection).astype(
+            kernel.dtype
+        )
+    else:
+        m = kernel_onehot[msa_idx] + _linear(extra, kernel_extra)
     return m + _linear(emb, params["s_proj"]["kernel"])[:, None]
 
 
@@ -212,7 +240,7 @@ def msa_layer_forward(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Run one Boltz MSALayer in eval mode."""
 
-    m = m + pair_weighted_averaging_forward(
+    msa_update = pair_weighted_averaging_forward(
         params["pair_weighted_averaging"],
         m,
         z,
@@ -220,11 +248,31 @@ def msa_layer_forward(
         eps=eps,
         row_chunk_size=pair_averaging_chunk,
     )
-    m = m + transition_forward(
-        params["msa_transition"], m, eps=eps, glu_backend=glu_backend
-    )
+    if msa_update.dtype in (jnp.bfloat16, jnp.float16):
+        # get_dropout_mask(..., training=False) is still FP32 upstream.
+        msa_update = msa_update.astype(jnp.float32)
+    m = m + msa_update
+    transition_dtype = _amp_dtype(params["msa_transition"]["fc1"]["kernel"])
+    if transition_dtype is not None:
+        m = m + transition_forward(
+            params["msa_transition"],
+            m,
+            eps=eps,
+            glu_backend=glu_backend,
+            compute_dtype=transition_dtype,
+            chunk_size=32 if z.shape[1] > _NATIVE_CHUNK_THRESHOLD else None,
+        )
+    else:
+        m = m + transition_forward(
+            params["msa_transition"], m, eps=eps, glu_backend=glu_backend
+        )
     z = z + outer_product_mean_forward(
-        params["outer_product_mean"], m, msa_mask, eps, chunk_size=chunk_size
+        params["outer_product_mean"],
+        m,
+        msa_mask,
+        eps,
+        chunk_size=chunk_size,
+        preserve_native_amp_shape=True,
     )
     z = pairformer_no_seq_layer_forward(
         params["pairformer_layer"],
@@ -315,7 +363,15 @@ def pair_weighted_averaging_forward(
     a different HLO, which is exactly what the budget is set to avoid. Two
     bodies is the price of leaving the jobs that never needed a chunk on the
     program they already ran.
+
+    The AMP path additionally preserves native head-wise accumulation above
+    384 tokens; MSA-row blocking never replaces that reduction order.
     """
+
+    if _amp_dtype(params["proj_m"]["kernel"]) is not None:
+        return _pair_weighted_averaging_amp(
+            params, m, z, mask, eps, inf, row_chunk_size
+        )
 
     if row_chunk_size is None:
         row_chunk_size = _auto_pair_averaging_chunk(m, params)
@@ -344,6 +400,66 @@ def pair_weighted_averaging_forward(
     o = jnp.transpose(o, (0, 2, 3, 1, 4))
     o = jnp.reshape(o, (*o.shape[:3], num_heads * c_h))
     return _linear(g * o, params["proj_o"]["kernel"])
+
+
+def _pair_weighted_averaging_amp(
+    params: Params,
+    m: jnp.ndarray,
+    z: jnp.ndarray,
+    mask: jnp.ndarray,
+    eps: float,
+    inf: float,
+    row_chunk_size: int | None,
+) -> jnp.ndarray:
+    """Preserve native head-wise BF16 sums while optionally splitting MSA rows."""
+    dtype = params["proj_m"]["kernel"].dtype
+    z = _layer_norm(
+        z.astype(jnp.float32), params["norm_z"]["scale"], params["norm_z"]["bias"], eps
+    )
+    num_heads = params["proj_z"]["kernel"].shape[-1]
+    c_h = params["proj_m"]["kernel"].shape[-1] // num_heads
+    heads_per_group = 1 if z.shape[1] > _NATIVE_CHUNK_THRESHOLD else num_heads
+    weights = []
+    for first in range(0, num_heads, heads_per_group):
+        last = first + heads_per_group
+        logits = _linear(z, params["proj_z"]["kernel"][:, first:last])
+        logits = logits.transpose(0, 3, 1, 2).astype(jnp.float32)
+        logits = logits + (1 - mask[:, None].astype(jnp.float32)) * -inf
+        weights.append(jax.nn.softmax(logits, axis=-1).astype(dtype))
+
+    def block(value):
+        value = _layer_norm(
+            value.astype(jnp.float32),
+            params["norm_m"]["scale"],
+            params["norm_m"]["bias"],
+            eps,
+        )
+        result = None
+        for group, weight in enumerate(weights):
+            start = group * heads_per_group * c_h
+            stop = start + heads_per_group * c_h
+            v = _linear(value, params["proj_m"]["kernel"][:, start:stop])
+            v = v.reshape(*v.shape[:3], heads_per_group, c_h).transpose(0, 3, 1, 2, 4)
+            gate = _linear(value, params["proj_g"]["kernel"][:, start:stop])
+            gate = jax.nn.sigmoid(gate.astype(jnp.float32)).astype(dtype)
+            output = jnp.einsum("bhij,bhsjd->bhsid", weight, v)
+            output = output.transpose(0, 2, 3, 1, 4)
+            output = output.reshape(*output.shape[:3], stop - start)
+            output = _linear(gate * output, params["proj_o"]["kernel"][start:stop])
+            result = output if result is None else result + output
+        return result
+
+    if row_chunk_size is None:
+        row_chunk_size = _auto_pair_averaging_chunk(m, params)
+    if row_chunk_size is None or row_chunk_size <= 0 or row_chunk_size >= m.shape[1]:
+        return block(m)
+    return jnp.concatenate(
+        [
+            block(m[:, start : start + row_chunk_size])
+            for start in range(0, m.shape[1], row_chunk_size)
+        ],
+        axis=1,
+    )
 
 
 def _pair_weighted_averaging_chunked(
@@ -398,7 +514,9 @@ def _pair_weighted_averaging_chunked(
     )
 
 
-#: Byte budget for one block of OuterProductMean's ``[b, i, j, c, d]`` product.
+#: Byte budget for the historical FP32 OuterProductMean product. The memory
+#: measurements below predate faithful native AMP contraction; the separate
+#: AMP path reuses this conservative ceiling with native hidden-axis chunks.
 #:
 #: This block widens 32 channels to 32*32 before the output projection narrows
 #: them to 128, and it computes that product in float32 -- ``a.float(),
@@ -444,6 +562,7 @@ def outer_product_mean_forward(
     mask: jnp.ndarray,
     eps: float = 1e-5,
     chunk_size: int = 128,
+    preserve_native_amp_shape: bool = False,
 ) -> jnp.ndarray:
     """Run Boltz OuterProductMean.
 
@@ -451,7 +570,16 @@ def outer_product_mean_forward(
     [b, i, j, c, d] fp32 intermediate is never materialized at once. Peak
     intermediate goes from [N, N, c*d] to [chunk, N, c*d], where ``chunk`` is
     ``chunk_size`` narrowed by ``_OPM_BUDGET_BYTES``.
+
+    ``preserve_native_amp_shape`` retains the native full-token GEMM when its
+    product fits that same budget. BF16 reduction rounding depends on GEMM
+    tiling, so a gratuitous token split is not numerically inert.
     """
+
+    if _amp_dtype(params["proj_a"]["kernel"]) is not None:
+        return _outer_product_mean_amp(
+            params, m, mask, eps, chunk_size, preserve_native_amp_shape
+        )
 
     mask = mask.astype(m.dtype)
     m = _layer_norm(m, params["norm"]["scale"], params["norm"]["bias"], eps)
@@ -493,6 +621,70 @@ def outer_product_mean_forward(
             _linear(z.astype(out_dtype), proj_o["kernel"], proj_o["bias"])
         )
     return out
+
+
+def _outer_product_mean_amp(
+    params: Params,
+    m: jnp.ndarray,
+    mask: jnp.ndarray,
+    eps: float,
+    token_chunk_size: int,
+    preserve_native_shape: bool = False,
+) -> jnp.ndarray:
+    """CUDA AMP contracts to BF16 before FP32 division, even after ``.float()``."""
+    dtype = params["proj_a"]["kernel"].dtype
+    mask = mask.astype(m.dtype)
+    m = _layer_norm(
+        m.astype(jnp.float32), params["norm"]["scale"], params["norm"]["bias"], eps
+    )
+    a = _linear(m, params["proj_a"]["kernel"]) * mask[..., None]
+    b = _linear(m, params["proj_b"]["kernel"]) * mask[..., None]
+    # Validity masks are binary: this counts the same entries as the native
+    # FP32 sum without materializing its [batch, MSA, token, token] product.
+    count = jnp.einsum(
+        "bsi,bsj->bij",
+        mask.astype(jnp.float32),
+        mask.astype(jnp.float32),
+        preferred_element_type=jnp.float32,
+    )
+    count = jnp.maximum(count, 1)[..., None]
+    n_tokens, hidden = a.shape[2:]
+    native_chunked = n_tokens > _NATIVE_CHUNK_THRESHOLD
+    hidden_chunk = 4 if native_chunked else hidden
+    if preserve_native_shape and (
+        a.shape[0] * n_tokens * n_tokens * hidden_chunk * b.shape[-1] * 4
+        <= _OPM_BUDGET_BYTES
+    ):
+        token_chunk_size = n_tokens
+    token_chunk_size = _auto_outer_product_chunk(
+        n_tokens, hidden_chunk * b.shape[-1], token_chunk_size
+    )
+    proj_o = params["proj_o"]
+    blocks = []
+    for first in range(0, n_tokens, token_chunk_size):
+        last = min(first + token_chunk_size, n_tokens)
+        result = None
+        for start in range(0, hidden, hidden_chunk):
+            stop = min(start + hidden_chunk, hidden)
+            product = jnp.einsum(
+                "bsic,bsjd->bijcd",
+                a[:, :, first:last, start:stop].astype(dtype),
+                b.astype(dtype),
+            )
+            product = product.reshape(*product.shape[:3], -1).astype(jnp.float32)
+            product = product / count[:, first:last]
+            output = _linear(
+                product,
+                proj_o["kernel"][start * b.shape[-1] : stop * b.shape[-1]],
+                None if native_chunked else proj_o["bias"],
+            )
+            result = output if result is None else result + output
+        # Above the threshold native adds the original FP32 bias outside its
+        # AMP matmuls, promoting the accumulated low-precision output to FP32.
+        if native_chunked:
+            result = result + proj_o["bias"]
+        blocks.append(result)
+    return jnp.concatenate(blocks, axis=1)
 
 
 def pairformer_no_seq_layer_forward(
@@ -566,5 +758,6 @@ def pairformer_no_seq_layer_forward(
         eps=eps,
         row_chunk_size=chunk_size,
         glu_backend=glu_backend,
+        native_amp_norm=params["transition_z"]["fc1"]["kernel"].dtype == jnp.bfloat16,
     )
     return z

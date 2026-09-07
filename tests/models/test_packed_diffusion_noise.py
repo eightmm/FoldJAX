@@ -332,8 +332,20 @@ def test_packed_200_step_scan_removes_stack_hlo_and_temporary(model: str) -> Non
     tuple_memory = tuple_executable.memory_analysis()
     packed_memory = packed_executable.memory_analysis()
 
-    assert tuple_hlo.count("stablehlo.concatenate") > 0
-    assert packed_hlo.count("stablehlo.concatenate") == 0
+    # Rotation may assemble xyz with concatenate; only a full step-tape stack
+    # duplicates the allocation this packing contract is intended to remove.
+    tape_type = "tensor<" + "x".join(map(str, packed.shape)) + "xf32>"
+
+    def stacks_tape(hlo: str) -> bool:
+        return any(
+            "stablehlo.concatenate" in line
+            and ", dim = 0 :" in line
+            and line.rstrip().endswith(f"-> {tape_type}")
+            for line in hlo.splitlines()
+        )
+
+    assert stacks_tape(tuple_hlo)
+    assert not stacks_tape(packed_hlo)
     assert len(packed_hlo) < len(tuple_hlo)
     assert packed_memory.temp_size_in_bytes < tuple_memory.temp_size_in_bytes
     np.testing.assert_array_equal(

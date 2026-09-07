@@ -1,0 +1,2340 @@
+{
+  "schema_version": 1,
+  "status": "in_progress_not_admitted",
+  "scope": "OpenDDE released checkpoint, finite n5 raw-coordinate and confidence diagnostics; not all inputs/checkpoints, ordinary RNG, writers or performance admission.",
+  "measurement": "Paired sample indices; one proper unweighted global Kabsch, then per entity instance RMSD; no crystal, entity refit or symmetry matching.",
+  "confidence_gate": {
+    "atol": 0.0001,
+    "rtol": 0.0001,
+    "relaxation": false
+  },
+  "exclusions": [
+    "No independent observer of every JAX RNG consumer",
+    "No uninstrumented/writer/performance closure",
+    "Native deterministic repeat does not close native-vs-FoldJAX"
+  ],
+  "comparisons": [
+    {
+      "source_report": "rna_ligand_3gca/native-axisfix-high-v2-report.json",
+      "arm_provenance_sha256": [
+        "8c826a184c67f659116350777bc9aaed12a07acbade9b3ec495415c15b6d8204",
+        "5957fec986b5423f52413126e6371a2cf805c4f3e39eeca1f8c981f4e5344901"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "L": 0.007327838296466055,
+          "R": 0.018218392648667356
+        },
+        "entity_rmsd": {
+          "L": [
+            0.0062810218526751635,
+            0.0050247166103772525,
+            0.004833465318172088,
+            0.003315349550846519,
+            0.007327838296466055
+          ],
+          "R": [
+            0.018218392648667356,
+            0.015310478369591258,
+            0.012395542639242658,
+            0.010360963618750206,
+            0.012309479459801915
+          ]
+        },
+        "global_max_rmsd": 0.01807268613284874,
+        "global_rmsd": [
+          0.01807268613284874,
+          0.015186472327571367,
+          0.012300154460375036,
+          0.010276543665003078,
+          0.012237423091037718
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 0.007327838296466055,
+          "R": 0.018218392648667356
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00007069110870361328,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.013943672180175781,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.0018340349197387695,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.0010898709297180176,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.019834518432617188,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.006174564361572266,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.0034084320068359375,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.0030901432037353516,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000017851591110229492,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.00001704692840576172,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000026524066925048828,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.00001704692840576172,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0.00001704692840576172,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000006735324859619141,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000009834766387939453,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "max_absolute_error": 0.00005924701690673828,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00001099705696105957,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0.00001704692840576172,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00067138671875,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0.000038504600524902344,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0.000021338462829589844,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "rna_ligand_3gca/deterministic-repeat-v2-report.json",
+      "arm_provenance_sha256": [
+        "45c166068fea7d0cc55917d18f9f42696a0a0906a15296fa69f8bc850cbdcf0f",
+        "898b7b7bd323a9039891def2524a0788ad5083b81bc33a6191602e8c329f0fd5"
+      ],
+      "passed": true,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          719,
+          719,
+          719,
+          719,
+          719
+        ],
+        "coordinates_equal": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "entity_max_rmsd": {
+          "L": 2.1315361871097105e-15,
+          "R": 7.175680941829011e-15
+        },
+        "entity_rmsd": {
+          "L": [
+            1.010288875095797e-15,
+            2.1315361871097105e-15,
+            9.500594688845002e-16,
+            1.8110625567234885e-15,
+            4.4275279631772907e-16
+          ],
+          "R": [
+            3.0443738057062904e-15,
+            7.175680941829011e-15,
+            4.470812495687254e-15,
+            6.036092498783964e-15,
+            1.4847132790256057e-15
+          ]
+        },
+        "global_max_rmsd": 7.116288693770007e-15,
+        "global_rmsd": [
+          3.0197832789740857e-15,
+          7.116288693770007e-15,
+          4.4320519921698396e-15,
+          5.9862306831345295e-15,
+          1.4724338117544523e-15
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "L": 2.1315361871097105e-15,
+          "R": 7.175680941829011e-15
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": true,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pde": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.pae": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.pde": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.plddt": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.resolved": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_rna_1urn/native-high-report.json",
+      "arm_provenance_sha256": [
+        "d567afb3e09ba5c6d91f4f08292b29d101451d92560d6fb392728b0cbb23e20a",
+        "219cab02ef3dc0e2abe0f9d29e7c7f255035485524131975072ab46d71004761"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "P": 0.15073884062838447,
+          "R": 0.020600987092998086
+        },
+        "entity_rmsd": {
+          "P": [
+            0.016130775193043772,
+            0.015614261606722505,
+            0.15073884062838447,
+            0.013223288253383291,
+            0.04380676554653575
+          ],
+          "R": [
+            0.020600987092998086,
+            0.01783141366535456,
+            0.017042629844310857,
+            0.014338077184704158,
+            0.01666014719067043
+          ]
+        },
+        "global_max_rmsd": 0.12115367875709226,
+        "global_rmsd": [
+          0.01786290260770154,
+          0.016443743793917758,
+          0.12115367875709226,
+          0.013633536585902573,
+          0.03647469970697852
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "P": 0.15073884062838447,
+          "R": 0.020600987092998086
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.0003204345703125,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.027307510375976562,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.0061016082763671875,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.001741945743560791,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.04182910919189453,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.015517234802246094,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.006491899490356445,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.003515481948852539,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00008657574653625488,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.00004076957702636719,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00006404519081115723,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.00004076957702636719,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0.00004076957702636719,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00004100799560546875,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00004851818084716797,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": false,
+            "max_absolute_error": 0.00014850497245788574,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000032901763916015625,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0.00004076957702636719,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.0041046142578125,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0.00002276897430419922,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0.00003725290298461914,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_rna_1urn/fp32-control-report.json",
+      "arm_provenance_sha256": [
+        "0c98152b4e0b1000f0b5c3f27def7d0bcdd8501437a7c754e6529e0480ef5621",
+        "dd8868d7087eff1674685fcb44e751a021bf442e53f2b0c27a0c55da12c44bf8"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": false
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "highest",
+          "native_tf32": false
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "P": 0.005665835952717392,
+          "R": 0.003936134062411231
+        },
+        "entity_rmsd": {
+          "P": [
+            0.0013892306177934108,
+            0.0017214161904502458,
+            0.0035327869690715686,
+            0.0033914414961749226,
+            0.005665835952717392
+          ],
+          "R": [
+            0.002714070853441441,
+            0.003936134062411231,
+            0.002212697415573078,
+            0.0029784950169705763,
+            0.0038505529600874663
+          ]
+        },
+        "global_max_rmsd": 0.0050898855499272476,
+        "global_rmsd": [
+          0.001969614189528106,
+          0.0027306529187023166,
+          0.0031242241170595427,
+          0.003249400457042306,
+          0.0050898855499272476
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "P": 0.005665835952717392,
+          "R": 0.003936134062411231
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00012934207916259766,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.009774208068847656,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.0036993026733398438,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.0009562969207763672,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.004218727350234985,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.0031957626342773438,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.002167224884033203,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.0015687346458435059,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00002378225326538086,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000025331974029541016,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000022530555725097656,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000025331974029541016,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0.000025331974029541016,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000017583370208740234,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000025093555450439453,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "max_absolute_error": 0.000011354684829711914,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000004827976226806641,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000025331974029541016,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00177001953125,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0.0000018477439880371094,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0.000020623207092285156,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_rna_1urn/native-repeat-report.json",
+      "arm_provenance_sha256": [
+        "d567afb3e09ba5c6d91f4f08292b29d101451d92560d6fb392728b0cbb23e20a",
+        "9c115a90a3c6ec261faf80afcc5c554078deb15b8e3a13d047498e8dca7a5010"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "P": 0.0161098147948406,
+          "R": 0.0025955361435992144
+        },
+        "entity_rmsd": {
+          "P": [
+            0.0019963014618584406,
+            0.0019020249293171376,
+            0.0022684147288102867,
+            0.0027495652588805796,
+            0.0161098147948406
+          ],
+          "R": [
+            0.0025955361435992144,
+            0.002050475146629443,
+            0.002309027492863426,
+            0.0023124609555820724,
+            0.002210655263841954
+          ]
+        },
+        "global_max_rmsd": 0.01296969525894608,
+        "global_rmsd": [
+          0.0022297834365607298,
+          0.0019565546628413986,
+          0.0022830614783833922,
+          0.002601280978261071,
+          0.01296969525894608
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "P": 0.0161098147948406,
+          "R": 0.0025955361435992144
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.0002161264419555664,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.023218154907226562,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.0027112960815429688,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.040897369384765625,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.01535797119140625,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.004664897918701172,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.00282132625579834,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00004455447196960449,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000011265277862548828,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000009417533874511719,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000011265277862548828,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0.000011265277862548828,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000010788440704345703,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000022232532501220703,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "max_absolute_error": 0.00012058019638061523,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0.000010579824447631836,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000011265277862548828,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.001068115234375,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0.000003635883331298828,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0.000009238719940185547,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_rna_1urn/rotation-fix-high-report.json",
+      "arm_provenance_sha256": [
+        "d567afb3e09ba5c6d91f4f08292b29d101451d92560d6fb392728b0cbb23e20a",
+        "465b94d7d2b7102255eb14cd3016354caff48fa6b4a2303dd0b2df9dc3a3535c"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "P": 0.013791548115788142,
+          "R": 0.004970377044352888
+        },
+        "entity_rmsd": {
+          "P": [
+            0.002961932452666996,
+            0.0035448736210592596,
+            0.005287113416104846,
+            0.007383030296339449,
+            0.013791548115788142
+          ],
+          "R": [
+            0.0037967376148476213,
+            0.0037499376199232855,
+            0.004349842482539322,
+            0.003705611436616462,
+            0.004970377044352888
+          ]
+        },
+        "global_max_rmsd": 0.011439319239267793,
+        "global_rmsd": [
+          0.0032857749244784907,
+          0.0036197454581452905,
+          0.00497137324783437,
+          0.006315565627664746,
+          0.011439319239267793
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": true,
+        "entity_max_rmsd": {
+          "P": 0.013791548115788142,
+          "R": 0.004970377044352888
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.00026148557662963867,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.019280433654785156,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.006440639495849609,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.002084493637084961,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.0418548583984375,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.015477418899536133,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.004261970520019531,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.004195451736450195,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00009953975677490234,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000026404857635498047,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00004443526268005371,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000026404857635498047,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0.000026404857635498047,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.0000324249267578125,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00004273653030395508,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "max_absolute_error": 0.0001353919506072998,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00002104043960571289,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000026404857635498047,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.0032501220703125,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0.000004410743713378906,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0.000020265579223632812,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_rna_1urn/rotation-fix-no-triton-report.json",
+      "arm_provenance_sha256": [
+        "d567afb3e09ba5c6d91f4f08292b29d101451d92560d6fb392728b0cbb23e20a",
+        "9e23fc38a7a795fe6c47f11b7e9f6934b84dbf439576d4eab2ef9481b946dcd6"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          1227,
+          1227,
+          1227,
+          1227,
+          1227
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "P": 0.14927165495732017,
+          "R": 0.004860294812602351
+        },
+        "entity_rmsd": {
+          "P": [
+            0.0029032251784091613,
+            0.005455977238822246,
+            0.14927165495732017,
+            0.00750606797310936,
+            0.0489780293347362
+          ],
+          "R": [
+            0.0038567965444586167,
+            0.004860294812602351,
+            0.004476861880372502,
+            0.003788382340096107,
+            0.004339406450551356
+          ]
+        },
+        "global_max_rmsd": 0.11957808822056695,
+        "global_rmsd": [
+          0.003277239537140289,
+          0.0052501449553489605,
+          0.11957808822056695,
+          0.006425246996557051,
+          0.03931129050583906
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "P": 0.14927165495732017,
+          "R": 0.004860294812602351
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.00026214122772216797,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.022918224334716797,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.0065975189208984375,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.0019298791885375977,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.04251384735107422,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.01572394371032715,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.005496978759765625,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.0026865005493164062,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00009861588478088379,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000026047229766845703,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00002288818359375,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000026047229766845703,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": true,
+            "max_absolute_error": 0.000026047229766845703,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000017821788787841797,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.000027358531951904297,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": true,
+            "max_absolute_error": 0.00011077523231506348,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": true,
+            "max_absolute_error": 0.00001946091651916504,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": true,
+            "max_absolute_error": 0.000026047229766845703,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00179290771484375,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": true,
+            "max_absolute_error": 0.000006854534149169922,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": true,
+            "max_absolute_error": 0.000019431114196777344,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_ligand_5sak/native-high-report.json",
+      "arm_provenance_sha256": [
+        "ad0db5e237db3e7b4e623d447b09a58c77313b61f47c19505bedcb7369180ca5",
+        "3bbbdf51e3ef0d54a27e2b4992484e79886e8801ae095a257bb4c86d6ef09e84"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": true
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "high",
+          "native_tf32": true
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "A": 0.06314461938901396,
+          "L": 0.023782055358932356
+        },
+        "entity_rmsd": {
+          "A": [
+            0.05751317177453939,
+            0.06278819022573885,
+            0.06314461938901396,
+            0.028699670766008115,
+            0.04411100911564423
+          ],
+          "L": [
+            0.02042721644702659,
+            0.02149995102606104,
+            0.023782055358932356,
+            0.008446481874241274,
+            0.01647946853469963
+          ]
+        },
+        "global_max_rmsd": 0.0629857700719734,
+        "global_rmsd": [
+          0.05736583878844618,
+          0.06262570427102163,
+          0.0629857700719734,
+          0.028622819532133963,
+          0.04399974651886943
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "A": 0.06314461938901396,
+          "L": 0.023782055358932356
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.0019251704216003418,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.25148773193359375,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.2883415222167969,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.013193190097808838,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.08983993530273438,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.055881500244140625,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.027309417724609375,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.010548710823059082,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": false,
+            "max_absolute_error": 0.0007311701774597168,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": false,
+            "max_absolute_error": 0.0007703900337219238,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": false,
+            "max_absolute_error": 0.004431962966918945,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": false,
+            "max_absolute_error": 0.0007703900337219238,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": false,
+            "max_absolute_error": 0.0007703900337219238,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00005900859832763672,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.0002085566520690918,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": false,
+            "max_absolute_error": 0.00026744604110717773,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": false,
+            "max_absolute_error": 0.0004942417144775391,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": false,
+            "max_absolute_error": 0.0007703900337219238,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.005889892578125,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": false,
+            "max_absolute_error": 0.00028401613235473633,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": false,
+            "max_absolute_error": 0.0006715059280395508,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    },
+    {
+      "source_report": "protein_ligand_5sak/fp32-control-report.json",
+      "arm_provenance_sha256": [
+        "f713743fe7c8466ca897c92adfbadbc2364249755212ace5215c9335c4838deb",
+        "be86ff2c9b15270ad67f80ce77bb1fad3d82da3a4131565a3ac79f5c313e67a1"
+      ],
+      "passed": false,
+      "precision_policies": [
+        {
+          "arm": "native",
+          "jax_matmul_precision": null,
+          "native_tf32": false
+        },
+        {
+          "arm": "foldjax",
+          "jax_matmul_precision": "highest",
+          "native_tf32": false
+        }
+      ],
+      "coordinates": {
+        "atom_counts": [
+          3074,
+          3074,
+          3074,
+          3074,
+          3074
+        ],
+        "coordinates_equal": [
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "entity_max_rmsd": {
+          "A": 0.06075702446238721,
+          "L": 0.018878959329558794
+        },
+        "entity_rmsd": {
+          "A": [
+            0.03536277421933315,
+            0.06075702446238721,
+            0.04926846051211153,
+            0.02568978761602674,
+            0.034090586337075436
+          ],
+          "L": [
+            0.006456640214436269,
+            0.00998364062534716,
+            0.018878959329558794,
+            0.008778143066380372,
+            0.006857966151970358
+          ]
+        },
+        "global_max_rmsd": 0.06058369702505386,
+        "global_rmsd": [
+          0.03526254919937266,
+          0.06058369702505386,
+          0.049145239130909464,
+          0.025623269214008936,
+          0.03399468084474767
+        ]
+      },
+      "coordinate_gate": {
+        "coordinate_gate_passed": false,
+        "entity_max_rmsd": {
+          "A": 0.06075702446238721,
+          "L": 0.018878959329558794
+        },
+        "scope": "coordinate gate only; not input, RNG, confidence or universal acceptance",
+        "threshold_angstrom": 0.05
+      },
+      "confidence": {
+        "passed": false,
+        "leaves": {
+          "full.atom_is_polymer": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.atom_plddt": {
+            "passed": false,
+            "max_absolute_error": 0.0015669465065002441,
+            "bitwise_equal": false
+          },
+          "full.atom_to_token_idx": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_asym_id": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_has_frame": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "full.token_pair_pae": {
+            "passed": false,
+            "max_absolute_error": 0.2671833038330078,
+            "bitwise_equal": false
+          },
+          "full.token_pair_pde": {
+            "passed": false,
+            "max_absolute_error": 0.23484039306640625,
+            "bitwise_equal": false
+          },
+          "metadata.shape_comp_uses_structural_tokens": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.contact_probs": {
+            "passed": false,
+            "max_absolute_error": 0.013021677732467651,
+            "bitwise_equal": false
+          },
+          "raw.pae": {
+            "passed": false,
+            "max_absolute_error": 0.08597612380981445,
+            "bitwise_equal": false
+          },
+          "raw.pde": {
+            "passed": false,
+            "max_absolute_error": 0.052703857421875,
+            "bitwise_equal": false
+          },
+          "raw.plddt": {
+            "passed": false,
+            "max_absolute_error": 0.027959823608398438,
+            "bitwise_equal": false
+          },
+          "raw.resolved": {
+            "passed": false,
+            "max_absolute_error": 0.010899007320404053,
+            "bitwise_equal": false
+          },
+          "raw.shape_comp_global_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_pair_topk_mean_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_mask": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_token_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "raw.shape_comp_valid_pair_frac_pred": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.chain_gpde": {
+            "passed": false,
+            "max_absolute_error": 0.0006801486015319824,
+            "bitwise_equal": false
+          },
+          "summary.chain_iptm": {
+            "passed": false,
+            "max_absolute_error": 0.0007125139236450195,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_gpde": {
+            "passed": false,
+            "max_absolute_error": 0.003374814987182617,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm": {
+            "passed": false,
+            "max_absolute_error": 0.0007125139236450195,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_iptm_global": {
+            "passed": false,
+            "max_absolute_error": 0.0007125139236450195,
+            "bitwise_equal": false
+          },
+          "summary.chain_pair_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00004380941390991211,
+            "bitwise_equal": false
+          },
+          "summary.chain_plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00004416704177856445,
+            "bitwise_equal": false
+          },
+          "summary.chain_ptm": {
+            "passed": false,
+            "max_absolute_error": 0.00024956464767456055,
+            "bitwise_equal": false
+          },
+          "summary.disorder": {
+            "passed": true,
+            "max_absolute_error": 0,
+            "bitwise_equal": true
+          },
+          "summary.gpde": {
+            "passed": false,
+            "max_absolute_error": 0.0003648996353149414,
+            "bitwise_equal": false
+          },
+          "summary.has_clash": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.iptm": {
+            "passed": false,
+            "max_absolute_error": 0.0007125139236450195,
+            "bitwise_equal": false
+          },
+          "summary.num_recycles": {
+            "passed": true,
+            "max_absolute_error": null,
+            "bitwise_equal": true
+          },
+          "summary.plddt": {
+            "passed": true,
+            "max_absolute_error": 0.00437164306640625,
+            "bitwise_equal": false
+          },
+          "summary.ptm": {
+            "passed": false,
+            "max_absolute_error": 0.00026744604110717773,
+            "bitwise_equal": false
+          },
+          "summary.ranking_score": {
+            "passed": false,
+            "max_absolute_error": 0.0006173849105834961,
+            "bitwise_equal": false
+          }
+        }
+      },
+      "tape_archive_exact": {
+        "msa.npz": true,
+        "tape.npz": true
+      },
+      "native_input_archive_exact": true
+    }
+  ]
+}

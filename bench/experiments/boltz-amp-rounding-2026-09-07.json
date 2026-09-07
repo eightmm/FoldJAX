@@ -1,0 +1,36 @@
+{
+  "scope": "5SAK relative-position operator counterfactual; not model admission",
+  "upstream_commit": "b1ebfc46ecf57f5414e0d1a6f9027bbb122c53bc",
+  "torch_version": "2.12.0+cu130",
+  "jax_version": "0.11.1",
+  "xla_revision": "dcf304bc5dca1932b99f740b911dbd73631a1a69",
+  "shape": [1, 437, 437, 128],
+  "original_weight_exact": true,
+  "production_feature_indices_exact": true,
+  "native_reduction_true_false_equal": true,
+  "native_equals_fp64_sum_of_bf16_weights_then_bf16": true,
+  "baseline_cast_inside_jit": {
+    "rmse": 0.0030328942927614027,
+    "max_abs": 0.0625,
+    "unequal": 8132335,
+    "equals_full_v1_trunk_capture": true
+  },
+  "exact_native_counterfactuals": [
+    "host_cast_before_jit",
+    "dense_shared_linear",
+    "dense_fp32_accum_then_bf16",
+    "optimization_barrier_after_cast",
+    "reduce_precision_before_cast",
+    "compiler_options_xla_allow_excess_precision_false"
+  ],
+  "selected_compiler_options": {"xla_allow_excess_precision": false},
+  "native_checkpoint_sha256": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
+  "native_features_sha256": "bb495fd3c05cba734c5bb3f96c1f84bf116d2f4740a98a6efc7c0c8329e6c151",
+  "native_stage_sha256": "5385b2bbbdc0c52956f45ac05fb2d2a2b9c2ca43ca6ad706b8170b761b637f24",
+  "native_encoder_sha256": "2938af17252607d056106fc04a3afa0ea96b145fa7485764ebf33d646c99e0d4",
+  "foldjax_weights_sha256": "0e71c12cab5b68778220c2db3dd2fcf0726405145227fea8d84c0844c43eace6",
+  "native_probe_report_sha256": "06caa83817d241f84b2910606fbce87e6667a4736e76b039a58dbbd2ace93b82",
+  "foldjax_probe_outputs_sha256": "89e35a17cd0c566c846f31ba1d678913e808168bd21c965140c2ef51603ab737",
+  "queue_jobs": [323, 324, 325, 326, 327],
+  "primary_source": "https://github.com/openxla/xla/blob/dcf304bc5dca1932b99f740b911dbd73631a1a69/xla/hlo/transforms/simplifiers/simplify_fp_conversions.cc"
+}

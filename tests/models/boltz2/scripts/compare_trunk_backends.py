@@ -16,8 +16,7 @@ from benchmark_warm_predict import _load_features
 
 from foldjax.models.boltz2.bridge.native import load_params
 from foldjax.models.boltz2.models.trunk_blocks.trunk import (
-    _cast_float_feats,
-    _cast_params,
+    _cast_trunk_params,
     boltz2_trunk_forward,
 )
 
@@ -84,8 +83,7 @@ def main() -> None:
     feats_np, record_id = _load_features(args.features)
     feats = {key: jnp.asarray(value) for key, value in feats_np.items()}
     params = load_params(args.weights)
-    params = _cast_params(params["trunk"], jnp.bfloat16)
-    feats = _cast_float_feats(feats, jnp.bfloat16)
+    params = _cast_trunk_params(params["trunk"], jnp.bfloat16)
 
     def make_fn(triangle_backend: str, glu_backend: str):
         return jax.jit(

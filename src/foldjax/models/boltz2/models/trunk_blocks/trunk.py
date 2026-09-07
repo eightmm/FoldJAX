@@ -44,6 +44,33 @@ from foldjax.models.boltz2.models.trunk_blocks.template import (
 Params = Mapping[str, object]
 
 
+def _contact_guidance_is_statically_empty(
+    feats: Mapping[str, jnp.ndarray],
+    steering_args: Mapping[str, object] | None,
+) -> bool:
+    """Prove the two contact-only potentials have no coordinate gradient.
+
+    Native ContactPotentital returns zero for an empty pair index;
+    TemplateReferencePotential does so when either required feature is absent.
+    Use only static metadata, never values of possibly traced force/mask arrays.
+    Unknown modes and malformed indices retain the ordinary steering path.
+    """
+    if steering_args is None or not (
+        steering_args.get("fk_steering") is False
+        and steering_args.get("physical_guidance_update") is False
+        and steering_args.get("contact_guidance_update") is True
+    ):
+        return False
+    if "template_force" in feats and "template_mask_cb" in feats:
+        return False
+    index = feats.get("contact_pair_index")
+    return (
+        getattr(index, "shape", None) == (1, 2, 0)
+        and hasattr(index, "dtype")
+        and jnp.issubdtype(index.dtype, jnp.integer)
+    )
+
+
 def _prefix_atom_normal(
     key: jax.Array,
     storage_atoms: jnp.ndarray,
@@ -181,6 +208,46 @@ def _cast_float_feats(
         else:
             out[k] = v
     return out
+
+
+def _cast_trunk_params(params: Params, dtype: jnp.dtype) -> Params:
+    """Select native AMP Linear kernels, preserving original FP32 islands.
+
+    Kernel dtype carries the operator policy through JIT cache signatures.
+    Norm affine, embeddings and biases stay original; Linear narrows its bias
+    at the call, while e.g. chunked OPM adds that same bias outside autocast.
+    """
+
+    def cast(path, value):
+        keys = tuple(getattr(entry, "key", None) for entry in path)
+        if (
+            keys[:2] in {
+                ("input_embedder", "atom_encoder"),
+                ("template_module", "a_proj"),
+            }
+            or keys[:3] == (
+                "input_embedder", "atom_attention_encoder", "atom_to_token_trans"
+            )
+        ):
+            return value
+        if (
+            len(path) >= 4
+            and getattr(path[0], "key", None)
+            in {"pairformer_module", "pairformer_stack"}
+            and getattr(path[1], "key", None) == "layers"
+            and getattr(path[3], "key", None)
+            in {"pre_norm_s", "attention", "transition_s"}
+        ):
+            return value
+        if (
+            keys[-1:] == ("kernel",)
+            and hasattr(value, "dtype")
+            and jnp.issubdtype(value.dtype, jnp.floating)
+        ):
+            return value.astype(dtype)
+        return value
+
+    return jax.tree_util.tree_map_with_path(cast, params)
 
 
 def boltz2_graph_score_forward(
@@ -345,6 +412,10 @@ def boltz2_sample_forward(
         or steering_args["physical_guidance_update"]
         or steering_args["contact_guidance_update"]
     )
+    if steering_on and _contact_guidance_is_statically_empty(feats, steering_args):
+        # Preserve the requested flags, but omit their provably zero update so
+        # an empty contact panel can use the same JIT/scan sampler as no guidance.
+        steering_on = False
     trunk_scan = use_scan if trunk_use_scan is None else trunk_use_scan
     score_scan = use_scan if score_use_scan is None else score_use_scan
     chunks = resolve_long_sequence_chunks(
@@ -365,19 +436,13 @@ def boltz2_sample_forward(
             "trunk compute"
         )
     low_precision = compute_dtype != jnp.float32
-    # Mirror Boltz's precision profile: the trunk/pairformer/MSA run in low
-    # precision (bf16-mixed), but the diffusion structure module is an fp32
-    # island -- Boltz wraps `structure_module.sample` in autocast(enabled=False)
-    # with s/z/s_inputs cast to float. So we cast ONLY the trunk inputs to low
-    # precision, keep the diffusion params + feats in fp32, and cast the trunk
-    # outputs back to fp32 before conditioning/sampling. The default fp32 path
-    # is untouched and bit-identical. (Uniform low precision through the
-    # sampling loop diverges: bf16 coordinate updates accumulate over steps.)
+    # Native sampling disables autocast, but conditioning has mixed-precision
+    # pairwise/bias projections around an FP32 atom encoder. Keep the original
+    # diffusion weights/features and apply that policy at the operation sites.
     trunk_params = params["trunk"]
     trunk_feats = feats
     if low_precision:
-        trunk_params = _cast_params(params["trunk"], compute_dtype)
-        trunk_feats = _cast_float_feats(feats, compute_dtype)
+        trunk_params = _cast_trunk_params(params["trunk"], compute_dtype)
 
     if trunk is None:
         trunk = boltz2_trunk_forward(
@@ -400,9 +465,8 @@ def boltz2_sample_forward(
             shard_tokens=shard_tokens,
         )
     if low_precision:
-        # Enter the fp32 diffusion island: cast trunk outputs back to fp32 so
-        # conditioning + the sampling loop (which derive dtype from these and
-        # from the fp32 diffusion params/feats) run fully in fp32, as Boltz does.
+        # Sampling uses FP32 trunk activations. Conditioning below separately
+        # mirrors native autocast for its pairwise and final bias projections.
         trunk = {
             k: (v.astype(jnp.float32) if hasattr(v, "dtype") else v)
             for k, v in trunk.items()
@@ -418,6 +482,7 @@ def boltz2_sample_forward(
         eps=eps,
         lazy_token_trans_bias=lazy_token_trans_bias,
         atom_context_parallel=atom_context_parallel,
+        compute_dtype=compute_dtype if low_precision else None,
     )
     sigmas = _sample_schedule(
         num_sampling_steps,
@@ -1040,21 +1105,10 @@ def boltz2_trunk_forward(
 
     s_init = _shard_single(s_init, mesh, token_axis, shard_tokens)
     z_init = _shard_pair(z_init, mesh, token_axis, shard_tokens)
-    # The sequence track is Boltz's second fp32 island. `PairformerLayer` runs it
-    # under `autocast(enabled=False)` with `s.float()` and keeps the result in
-    # float32 for the rest of the stack (pairformer.py:105-110); only the pair
-    # track stays in the autocast dtype. Promoting `s` here rather than inside
-    # the block is what makes that expressible at all: the stack carries
-    # `(s, z)` through `lax.scan`, and a body that widened its own carry would
-    # fail the equal-types rule.
-    #
-    # Measured on the matched-tape harness at 1,531 tokens: with the whole trunk
-    # narrowed, all-atom RMSD against upstream was 0.5776 A against 0.0285 A in
-    # float32 -- a 20x loss that is not what upstream's bf16-mixed costs itself.
-    # Under the float32 default both casts are no-ops and the program is
-    # unchanged.
-    s_init = s_init.astype(jnp.float32)
-    s = jnp.zeros_like(s_init)
+    # Pairformer returns its single residual in FP32. Keep that scan carry
+    # dtype, but do not widen s_init: native adds the two BF16 recycle terms
+    # before entering the autocast-disabled single branch.
+    s = jnp.zeros(s_init.shape, dtype=jnp.float32)
     z = jnp.zeros_like(z_init)
     mask = feats["token_pad_mask"].astype(jnp.float32)
     pair_mask = mask[:, :, None] * mask[:, None, :]
@@ -1130,7 +1184,7 @@ def boltz2_trunk_forward(
         )
         s, z = pairformer_module_forward(
             params["pairformer_module"],
-            s,
+            s.astype(jnp.float32),
             z,
             mask,
             pair_mask,
@@ -1224,7 +1278,13 @@ def relative_position_forward(
             feats["cyclic_period"],
             jnp.zeros_like(feats["cyclic_period"]) + 10000,
         )
-        d_residue = d_residue - period * jnp.round(d_residue / period)
+        # Native enters this branch only if any token has a positive period;
+        # the 10000 sentinel must not wrap an entirely noncyclic input.
+        d_residue = jnp.where(
+            jnp.any(feats["cyclic_period"] > 0),
+            d_residue - period * jnp.round(d_residue / period),
+            d_residue,
+        )
     d_residue = jnp.clip(d_residue + r_max, 0, 2 * r_max).astype(jnp.int32)
     d_residue = jnp.where(b_same_chain, d_residue, 2 * r_max + 1)
 
@@ -1245,6 +1305,11 @@ def relative_position_forward(
 
     n_rel = 2 * r_max + 2
     n_chain = 2 * s_max + 2
+    output_dtype = kernel.dtype
+    # This lookup sum replaces one native Linear: accumulate narrowed weights
+    # in FP32 and round once, not after each selected category's contribution.
+    if output_dtype in (jnp.bfloat16, jnp.float16):
+        kernel = kernel.astype(jnp.float32)
     rel_pos_kernel = kernel[:n_rel]
     rel_token_kernel = kernel[n_rel : 2 * n_rel]
     entity_kernel = kernel[2 * n_rel]
@@ -1254,7 +1319,7 @@ def relative_position_forward(
         + rel_token_kernel[d_token]
         + b_same_entity[..., None].astype(kernel.dtype) * entity_kernel
         + rel_chain_kernel[d_chain]
-    )
+    ).astype(output_dtype)
 
 
 def contact_conditioning_forward(
@@ -1289,8 +1354,8 @@ def contact_conditioning_forward(
         params["encoder"]["kernel"],
         params["encoder"]["bias"],
     )
-    flags = feats["contact_conditioning"].astype(encoded.dtype)
-    one = jnp.asarray(1.0, dtype=encoded.dtype)
+    flags = feats["contact_conditioning"]
+    one = jnp.asarray(1.0, dtype=flags.dtype)
     return (
         encoded * (one - jnp.sum(flags[:, :, :, 0:2], axis=-1, keepdims=True))
         + params["encoding_unspecified"] * flags[:, :, :, 0:1]

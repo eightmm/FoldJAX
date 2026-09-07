@@ -1,0 +1,394 @@
+{
+  "status": "diagnostic_not_admission",
+  "case": "5SAK",
+  "scope": "native input operator controls; no tolerance calibration or performance claim",
+  "controls": {
+    "opm-native": {
+      "report_sha256": "daf53e8d75ccb7cbccb9ba5ac48f239787a8f13e77fb434c86d1446a734db8e9",
+      "arms": {
+        "reduction_disabled": {
+          "native_original": {
+            "max_abs": 0.125,
+            "rmse": 0.0016583715341007754,
+            "unequal": 10747559,
+            "values_equal": false
+          },
+          "output_sha256": "46a728ec2ac91eeed56f39dbf20b59fd2fe0351dc927cdb434a91fb0842b3ef6"
+        },
+        "reduction_enabled": {
+          "native_original": {
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "unequal": 0,
+            "values_equal": true
+          },
+          "output_sha256": "b56878e1e78c22c374778951abdb6dac4cb75d80872d559bebc24bac4843ef95"
+        }
+      }
+    },
+    "opm-native-shape-controls": {
+      "report_sha256": "700917c6aae072b16f30fbe3de64a5c081808fb13bd055bcbbbe666618e8273d",
+      "arms": {
+        "cublas": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.1875,
+              "rmse": 0.0016108945128697101,
+              "unequal": 9942667,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.001108026184185041,
+              "unequal": 4270875,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.1875,
+              "rmse": 0.0016108945128697101,
+              "unequal": 9942667,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false,
+            "xla_gpu_enable_cublaslt": false,
+            "xla_gpu_enable_triton_gemm": false
+          },
+          "hlo_sha256": "4846a983ab997b40ce9cd8369bf58ccf55b6f4e92eb6dc5a0675fd961259725c",
+          "output_sha256": "de04a16c26229a74513adcdf8239a72c25244c2c382dd588969a169d7377dae0",
+          "token_chunk_size": 128
+        },
+        "cublas_no_autotune": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.1875,
+              "rmse": 0.0017362847222099278,
+              "unequal": 11350895,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.0625,
+              "rmse": 0.0008774192916359442,
+              "unequal": 2524393,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.1875,
+              "rmse": 0.0017362847222099278,
+              "unequal": 11350895,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false,
+            "xla_gpu_autotune_level": 0,
+            "xla_gpu_enable_cublaslt": false,
+            "xla_gpu_enable_triton_gemm": false
+          },
+          "hlo_sha256": "00a0f6bedf8f7493a8f5b23a07adf30af27f3c3d4660c634be76d8748d4f49b0",
+          "output_sha256": "1243407815b166b3c05b924b36a9ea81e8f1c72897021cb6d6ea51cfacfd11e3",
+          "token_chunk_size": 128
+        },
+        "cublaslt": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.1875,
+              "rmse": 0.0016108945128697101,
+              "unequal": 9942667,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.001108026184185041,
+              "unequal": 4270875,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.1875,
+              "rmse": 0.0016108945128697101,
+              "unequal": 9942667,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false,
+            "xla_gpu_enable_triton_gemm": false
+          },
+          "hlo_sha256": "4846a983ab997b40ce9cd8369bf58ccf55b6f4e92eb6dc5a0675fd961259725c",
+          "output_sha256": "de04a16c26229a74513adcdf8239a72c25244c2c382dd588969a169d7377dae0",
+          "token_chunk_size": 128
+        },
+        "default": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.125,
+              "rmse": 0.001526486829031123,
+              "unequal": 9339485,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.0006929176594064853,
+              "unequal": 1893513,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.125,
+              "rmse": 0.001526486829031123,
+              "unequal": 9339485,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false
+          },
+          "hlo_sha256": "1a6ebce7dbb1c26d1fcf18cdcc0f4210be12926aa6bf5d725ead23f4e1e62591",
+          "output_sha256": "4fd8938412b3f853c3388d5ae8b0f3b1baae7fdd596393e4819942a64874b8b0",
+          "token_chunk_size": 128
+        },
+        "highest": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.125,
+              "rmse": 0.001526486829031123,
+              "unequal": 9339485,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.0006929176594064853,
+              "unequal": 1893513,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.125,
+              "rmse": 0.001526486829031123,
+              "unequal": 9339485,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false
+          },
+          "hlo_sha256": "ea90c73ff90af37cf80c45a2cbe32e3a27a661919245b92b5b824e708a71c82a",
+          "output_sha256": "4fd8938412b3f853c3388d5ae8b0f3b1baae7fdd596393e4819942a64874b8b0",
+          "token_chunk_size": 128
+        },
+        "native_shape": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.03125,
+              "rmse": 0.0001519367744322505,
+              "unequal": 153993,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.0016582539805922872,
+              "unequal": 10747836,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.03125,
+              "rmse": 0.0001519367744322505,
+              "unequal": 153993,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false
+          },
+          "hlo_sha256": "67ebd6ba53ddce604b6ca8bb55ea4d9e45a3cfbdac61f48e66976af1e3d112a1",
+          "output_sha256": "643205ad0348d6a4d5b7aa94ac8f49d182d2754b27511948c307673c118c9897",
+          "token_chunk_size": 437
+        },
+        "native_shape_no_autotune": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.1875,
+              "rmse": 0.0018606968646332274,
+              "unequal": 12823789,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.0014661298607846417,
+              "unequal": 8371410,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.1875,
+              "rmse": 0.0018606968646332274,
+              "unequal": 12823789,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false,
+            "xla_gpu_autotune_level": 0,
+            "xla_gpu_enable_cublaslt": false,
+            "xla_gpu_enable_triton_gemm": false
+          },
+          "hlo_sha256": "ddc40f35c4b1a6b03d0abb168d70af809adc69081a2dc962e1367104a3ffe0e8",
+          "output_sha256": "216b1184206eb7e7a68f6f586b53726f00658f3b9533340aa0ce04821adb7ea2",
+          "token_chunk_size": 437
+        },
+        "native_shape_no_triton": {
+          "comparisons": {
+            "original": {
+              "max_abs": 0.125,
+              "rmse": 0.00146713763998513,
+              "unequal": 8367911,
+              "values_equal": false
+            },
+            "reduction_disabled": {
+              "max_abs": 0.125,
+              "rmse": 0.0018605749379316365,
+              "unequal": 12826536,
+              "values_equal": false
+            },
+            "reduction_enabled": {
+              "max_abs": 0.125,
+              "rmse": 0.00146713763998513,
+              "unequal": 8367911,
+              "values_equal": false
+            }
+          },
+          "compiler_options": {
+            "xla_allow_excess_precision": false,
+            "xla_gpu_enable_triton_gemm": false
+          },
+          "hlo_sha256": "4ce78a3b146a364db9492ffa1581e434b2f3047ec0b1f95ab4d3eb443cbcc104",
+          "output_sha256": "951400da609c7de2f23c77ff7c0c07fc8fbb47feb2c8c6647bed5272e32cbb54",
+          "token_chunk_size": 437
+        }
+      }
+    },
+    "transition-fusion-controls": {
+      "report_sha256": "808780c7f8aaf56fe43d413e3938d44db2dafab6b4528cfc65541ed5518f18f4",
+      "arms": {
+        "barrier": {
+          "native": {
+            "max_abs": 0.5,
+            "rmse": 0.0002676144431362421,
+            "unequal": 20519,
+            "values_equal": false
+          },
+          "output_sha256": "066a9277e39ac71375acae8d440355b9034210514edbe7d3a3cf23f622618acb",
+          "production": {
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "unequal": 0,
+            "values_equal": true
+          }
+        },
+        "manual": {
+          "native": {
+            "max_abs": 0.5,
+            "rmse": 0.0002676144431362421,
+            "unequal": 20519,
+            "values_equal": false
+          },
+          "output_sha256": "066a9277e39ac71375acae8d440355b9034210514edbe7d3a3cf23f622618acb",
+          "production": {
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "unequal": 0,
+            "values_equal": true
+          }
+        },
+        "production": {
+          "native": {
+            "max_abs": 0.5,
+            "rmse": 0.0002676144431362421,
+            "unequal": 20519,
+            "values_equal": false
+          },
+          "output_sha256": "066a9277e39ac71375acae8d440355b9034210514edbe7d3a3cf23f622618acb",
+          "production": {
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "unequal": 0,
+            "values_equal": true
+          }
+        }
+      }
+    },
+    "conditioning-projection-controls": {
+      "report_sha256": "fe5b1a2ae255ea39f2ce15cc5543c3582d3a3192093e6ad876b5b9bed6abbcac",
+      "arms": {
+        "production": {
+          "arrays_sha256": "c36d57c9be33f46d2d34d3cfd698d8705ed40b5137457ba1aa29358617618337",
+          "comparisons": {
+            "atom_dec_bias": {
+              "max_abs": 0.03125,
+              "rmse": 0.00019377599590347,
+              "unequal": 6036,
+              "values_equal": false
+            },
+            "atom_enc_bias": {
+              "max_abs": 0.0625,
+              "rmse": 0.0003215426753735182,
+              "unequal": 7545,
+              "values_equal": false
+            },
+            "c": {
+              "max_abs": 1.1444091796875e-05,
+              "rmse": 3.7422336133533906e-07,
+              "unequal": 316327,
+              "values_equal": false
+            },
+            "q": {
+              "max_abs": 2.384185791015625e-07,
+              "rmse": 1.2127727342271097e-08,
+              "unequal": 60985,
+              "values_equal": false
+            },
+            "token_trans_bias": {
+              "max_abs": 0.125,
+              "rmse": 0.0003003704944284944,
+              "unequal": 130314,
+              "values_equal": false
+            }
+          }
+        },
+        "separate_transition_projections": {
+          "arrays_sha256": "c36d57c9be33f46d2d34d3cfd698d8705ed40b5137457ba1aa29358617618337",
+          "comparisons": {
+            "atom_dec_bias": {
+              "max_abs": 0.03125,
+              "rmse": 0.00019377599590347,
+              "unequal": 6036,
+              "values_equal": false
+            },
+            "atom_enc_bias": {
+              "max_abs": 0.0625,
+              "rmse": 0.0003215426753735182,
+              "unequal": 7545,
+              "values_equal": false
+            },
+            "c": {
+              "max_abs": 1.1444091796875e-05,
+              "rmse": 3.7422336133533906e-07,
+              "unequal": 316327,
+              "values_equal": false
+            },
+            "q": {
+              "max_abs": 2.384185791015625e-07,
+              "rmse": 1.2127727342271097e-08,
+              "unequal": 60985,
+              "values_equal": false
+            },
+            "token_trans_bias": {
+              "max_abs": 0.125,
+              "rmse": 0.0003003704944284944,
+              "unequal": 130314,
+              "values_equal": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

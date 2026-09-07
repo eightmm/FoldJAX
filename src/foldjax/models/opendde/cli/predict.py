@@ -141,10 +141,10 @@ def _preflight_arena(features: Mapping[str, Any], trunk_dtype: Any) -> str | Non
     ]
     if name == "float32":
         lines.append(
-            "The lever is --trunk-dtype bf16, which roughly halves the arena "
-            "and is this CLI's default -- reaching this message means it was "
-            "turned off. It diverges from upstream, which stores float32; the "
-            "structures it produces are not the released configuration's."
+            "The default is native float32. Explicit --trunk-dtype bf16 roughly "
+            "halves the measured arena, but changes upstream compute precision "
+            "and is not validated as structurally/confidence-equivalent. Use a "
+            "larger memory budget to retain the native precision policy."
         )
     else:
         lines.append(
@@ -509,29 +509,14 @@ def main(
     parser.add_argument(
         "--trunk-dtype",
         choices=("bf16", "fp32"),
-        default="bf16",
+        default="fp32",
         help="element width of the embedder and both trunks; the diffusion "
-        "sampler and the output heads stay FP32 either way",
+        "sampler and the output heads stay FP32 either way. Defaults to native "
+        "FP32; BF16 is an opt-in candidate, not validated native equivalence",
     )
-    # This default is FoldJAX's, not upstream's. Upstream OpenDDE ships fp32
-    # (`opendde/config/model_base.py:37`) and this port shipped fp32 with it
-    # until 2026-08-28, on the rule that memory alone does not move a default
-    # away from what upstream runs. It is no longer memory alone. Measured at
-    # 1,003 tokens, five samples, two runs per arm:
-    #
-    #     peak     42.96 -> 19.18 GiB   (-55.4%)
-    #     wall    280.4  -> 174.4 s     (-37.8%)
-    #     best ranking_score  0.1926 -> 0.1926
-    #     CA RMSD  median 0.0301 A, against a 0.0142 A floor from running the
-    #              same arm twice -- about 2x the noise, and one of the five
-    #              samples moved 0.6140 A, so it is a real difference rather
-    #              than none at all.
-    #
-    # Smaller and faster and inside its own sampling spread, at three sizes:
-    # 1,354 (335 s / 34.7 GiB against 529 s / 77.8 GiB) and 1,531, where fp32
-    # asks for 86.7 GiB and dies while bf16 finishes at 44.2 GiB. fp32 stays
-    # one flag away, and `bench/` pins it for the upstream comparison, because
-    # a comparison run at two precisions is not a comparison.
+    # Native OpenDDE defaults to FP32. The five-sample, fixed-tape native
+    # precision panel rejects BF16 on 5SAK/1URN; memory savings and a matched
+    # best-ranked sample cannot authorize lowering every sample's precision.
     parser.add_argument("--include-raw", action="store_true")
     parser.add_argument(
         "--representations-dir",

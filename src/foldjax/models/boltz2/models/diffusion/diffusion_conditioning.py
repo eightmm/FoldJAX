@@ -24,6 +24,10 @@ from foldjax.models.boltz2.models.diffusion.atom import (
 )
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
+from foldjax.models.boltz2.models.primitives.native_amp_norm import (
+    amp_affine,
+    amp_layer_norm,
+)
 from foldjax.models.boltz2.models.trunk_blocks.conditioning import (
     pairwise_conditioning_forward,
 )
@@ -43,6 +47,7 @@ def diffusion_conditioning_forward(
     eps: float = 1e-5,
     lazy_token_trans_bias: bool = False,
     atom_context_parallel: bool = False,
+    compute_dtype: jnp.dtype | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Run diffusion conditioning, optionally retaining CP atom ownership."""
 
@@ -52,6 +57,7 @@ def diffusion_conditioning_forward(
         z_trunk,
         relative_position_encoding,
         eps=eps,
+        compute_dtype=compute_dtype,
     )
     if active:
         z = shard_pair_rows(z)
@@ -65,7 +71,7 @@ def diffusion_conditioning_forward(
         params["atom_encoder"],
         feats,
         s_trunk,
-        z,
+        z.astype(jnp.float32) if compute_dtype is not None else z,
         atoms_per_window_queries=atoms_per_window_queries,
         atoms_per_window_keys=atoms_per_window_keys,
         eps=eps,
@@ -90,14 +96,28 @@ def diffusion_conditioning_forward(
         "c": c,
         "atom_to_token_idx": atom_index,
         "to_keys": to_keys,
-        "atom_enc_bias": _projection_list_forward(params["atom_enc_proj_z"], p, eps),
-        "atom_dec_bias": _projection_list_forward(params["atom_dec_proj_z"], p, eps),
+        "atom_enc_bias": _projection_list_forward(
+            params["atom_enc_proj_z"], p, eps, compute_dtype=compute_dtype
+        ),
+        "atom_dec_bias": _projection_list_forward(
+            params["atom_dec_proj_z"], p, eps, compute_dtype=compute_dtype
+        ),
     }
     if lazy_token_trans_bias:
         out["token_trans_bias_params"] = token_proj
-        out["token_trans_bias_normed_input"] = _projection_input_norm(z, eps)
+        out["token_trans_bias_normed_input"] = _projection_input_norm(
+            z.astype(jnp.float32) if compute_dtype is not None else z,
+            eps,
+            native_amp=compute_dtype == jnp.bfloat16,
+        )
+        if compute_dtype is not None:
+            # Array-valued dtype witness survives jit/scan argument pytrees;
+            # the deferred projection must not inherit the FP32 sampler dtype.
+            out["token_trans_bias_precision"] = jnp.zeros((), compute_dtype)
     else:
-        out["token_trans_bias"] = _projection_list_forward(token_proj, z, eps)
+        out["token_trans_bias"] = _projection_list_forward(
+            token_proj, z, eps, compute_dtype=compute_dtype
+        )
     return out
 
 
@@ -294,6 +314,8 @@ def _projection_list_forward(
     params: list[Params],
     x: jnp.ndarray,
     eps: float,
+    *,
+    compute_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     # boltz-faithful per-layer loop: each layer LayerNorms the same input ``x``
     # then applies a Linear(..., heads). boltz holds the full [N,N,L*heads]
@@ -307,22 +329,42 @@ def _projection_list_forward(
     # [..., heads] block at a time and concatenating along the feature axis. The
     # only large live buffers are ``x_n`` ([..., C]) and the accumulating output
     # ([..., L*heads]) -- never the [..., L, C] product. Concat order over layers
-    # is preserved, so the result is identical to the old path up to fp32
-    # reduce-order (< 1e-5).
-    x_n = _projection_input_norm(x, eps)
+    # is preserved. In native AMP, both the shared reduction and per-layer
+    # affine need CUDA Welford/FMA rounding before each BF16 Linear boundary.
+    x_n = _projection_input_norm(
+        x.astype(jnp.float32) if compute_dtype is not None else x,
+        eps,
+        native_amp=compute_dtype == jnp.bfloat16,
+    )
 
     outs = []
     for layer in params:
-        normed = x_n * layer["norm"]["scale"] + layer["norm"]["bias"]
-        outs.append(normed @ layer["linear"]["kernel"])
+        scale, bias = layer["norm"]["scale"], layer["norm"]["bias"]
+        normed = (
+            amp_affine(x_n, scale, bias)
+            if compute_dtype == jnp.bfloat16
+            else x_n * scale + bias
+        )
+        outs.append(
+            _linear(normed, layer["linear"]["kernel"], compute_dtype=compute_dtype)
+        )
     return jnp.concatenate(outs, axis=-1)
 
 
-def _projection_input_norm(x: jnp.ndarray, eps: float) -> jnp.ndarray:
+def _projection_input_norm(
+    x: jnp.ndarray, eps: float, *, native_amp: bool = False
+) -> jnp.ndarray:
     """LayerNorm input shared by all layers in a ProjectionList."""
 
     in_dtype = x.dtype
     xf = x.astype(jnp.float32)
+    if native_amp:
+        return amp_layer_norm(
+            xf,
+            jnp.ones(x.shape[-1], jnp.float32),
+            jnp.zeros(x.shape[-1], jnp.float32),
+            eps,
+        ).astype(in_dtype)
     mean = jnp.mean(xf, axis=-1, keepdims=True)
     variance = jnp.mean(jnp.square(xf - mean), axis=-1, keepdims=True)
     return ((xf - mean) * jax.lax.rsqrt(variance + eps)).astype(in_dtype)

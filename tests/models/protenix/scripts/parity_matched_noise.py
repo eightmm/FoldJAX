@@ -1,4 +1,9 @@
-"""Measure JAX Protenix against a captured noise-matched torch run."""
+"""Historical center-only control against ``capture_torch_reference.py``.
+
+That capture disables native random rigid augmentation. Identity rotations and
+zero translations preserve its scope; this is not native-default/full-tape
+model closure or the current per-entity acceptance protocol.
+"""
 
 from __future__ import annotations
 
@@ -129,6 +134,13 @@ def main() -> int:
         init = data["init"].astype(np.float32)
         steps = data["steps"].astype(np.float32)
     num_samples = int(init.shape[0])
+    rotations = jnp.broadcast_to(
+        jnp.eye(3, dtype=jnp.float32),
+        (steps.shape[0], *init.shape[:-2], 3, 3),
+    )
+    translations = jnp.zeros(
+        (steps.shape[0], *init.shape[:-2], 3), dtype=jnp.float32
+    )
     torch_coordinate = sample_coordinates(
         np.load(args.torch_dir / "coordinate.npy").astype(np.float32),
         num_samples=num_samples,
@@ -167,6 +179,8 @@ def main() -> int:
             trunk_triangle_attention_backend=args.trunk_triangle_attention_backend,
             init_noise=jnp.asarray(init),
             step_noises=tuple(jnp.asarray(value) for value in steps),
+            rotations=rotations,
+            translations=translations,
             run_confidence=False,
             run_confidence_scores=False,
             centre_each_step=True,
@@ -214,6 +228,9 @@ def main() -> int:
 
     memory = jax.devices()[0].memory_stats() or {}
     metrics = {
+        "comparison_scope": "historical_center_only_noise_match",
+        "augmentation": "identity_rotations_zero_translations",
+        "native_default_full_tape_closure": False,
         "backend": "jax",
         "precision": "bf16_trunk_fp32_diffusion" if args.bf16_trunk else "fp32_highest",
         "tokens": int(features["residue_index"].shape[-1]),
@@ -281,7 +298,7 @@ def main() -> int:
         print("\n".join(["", "PARITY FAILED:", *verdict]))
         return 1
     print(
-        "\nPARITY OK: matched-noise all-atom Kabsch RMSD "
+        "\nHISTORICAL CENTER-ONLY CONTROL OK: matched-noise all-atom Kabsch RMSD "
         f"{metrics['all_atom_kabsch_rmsd']:.4f} A <= {args.max_rmsd:g} A and "
         f"every trunk tensor correlates >= {args.min_correlation:g}."
     )

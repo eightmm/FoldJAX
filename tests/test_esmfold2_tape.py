@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from argparse import Namespace
 from dataclasses import replace
 
 import numpy as np
@@ -7,6 +9,16 @@ import pytest
 
 # ruff: noqa: E501
 from bench import esmfold2_tape as tape
+
+
+def test_capture_metadata_distinguishes_weight_dtype_from_autocast(tmp_path, monkeypatch):
+    monkeypatch.setattr(tape, "_sha256", lambda path: "fixture_hash")
+    args = Namespace(command="capture", output_dir=tmp_path, input_features=tmp_path / "features.npz")
+    tape._write_metadata(args, {"dtype": "float32"}, {})
+    precision = json.loads((tmp_path / "metadata.json").read_text())["precision"]
+    assert precision["checkpoint_dtype"] == "float32"
+    assert precision["trunk"] == "native_cuda_bfloat16_autocast"
+    assert precision["conditioning"] == "native_mixed_with_bfloat16_z_transitions"
 
 
 def _shapes() -> tape.TapeShapes:

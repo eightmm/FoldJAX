@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
+from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 from foldjax.models.boltz2.models.primitives.transition import transition_forward
 
 ConditioningParams = Mapping[str, object]
@@ -56,22 +57,33 @@ def pairwise_conditioning_forward(
     z_trunk: jnp.ndarray,
     token_rel_pos_feats: jnp.ndarray,
     eps: float = 1e-5,
+    compute_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     """Run Boltz PairwiseConditioning with mapped PyTorch parameters."""
 
     # Born sharded under context parallelism: this pair conditioning stays
     # live for the whole diffusion sampling loop. Identity otherwise.
     z = shard_pair_rows(jnp.concatenate((z_trunk, token_rel_pos_feats), axis=-1))
+    if compute_dtype is not None:
+        z = z.astype(jnp.float32)
     init_proj = params["dim_pairwise_init_proj"]
+    norm = amp_layer_norm if compute_dtype == jnp.bfloat16 else _layer_norm
     z = _linear(
-        _layer_norm(
+        norm(
             z,
             init_proj["norm"]["scale"],
             init_proj["norm"]["bias"],
             eps,
         ),
         init_proj["linear"]["kernel"],
+        compute_dtype=compute_dtype,
     )
     for transition_params in params["transitions"]:
-        z = z + transition_forward(transition_params, z, eps=eps)
+        z = z + transition_forward(
+            transition_params,
+            z,
+            eps=eps,
+            compute_dtype=compute_dtype,
+            native_amp_norm=True,
+        )
     return shard_pair_rows(z)

@@ -1,0 +1,456 @@
+{
+  "backend": "gpu",
+  "scope": "same native operator inputs; candidate operand casting only, not full model parity",
+  "records": [
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_ref_pos",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.float32",
+      "shape": [
+        719,
+        3
+      ],
+      "file": "linear-0.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.005321502685546875,
+          "rmse": 0.0004149914843879293,
+          "unequal": 92029,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.010597467422485352,
+          "rmse": 0.0007383446808814831,
+          "unequal": 92030,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_ref_charge",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        719,
+        1
+      ],
+      "file": "linear-1.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_f",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        719,
+        385
+      ],
+      "file": "linear-2.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.013671875,
+          "rmse": 0.001684619185637245,
+          "unequal": 83645,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.015625,
+          "rmse": 0.0018540170355459487,
+          "unequal": 23864,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_d",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.float32",
+      "shape": [
+        23,
+        32,
+        128,
+        3
+      ],
+      "file": "linear-3.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.0006146728992462158,
+          "rmse": 8.715879426766671e-05,
+          "unequal": 1478095,
+          "size": 1507328
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.002077728509902954,
+          "rmse": 0.0001497580387392314,
+          "unequal": 1478122,
+          "size": 1507328
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_invd",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        128,
+        1
+      ],
+      "file": "linear-4.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.0002088509500026703,
+          "rmse": 3.2757209849511165e-06,
+          "unequal": 1478127,
+          "size": 1507328
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_v",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        128,
+        1
+      ],
+      "file": "linear-5.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_cl",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        1,
+        128
+      ],
+      "file": "linear-6.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.0014316737651824951,
+          "rmse": 0.0001843956181287474,
+          "unequal": 11504,
+          "size": 11776
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 11776
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.linear_no_bias_cm",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        1,
+        128,
+        128
+      ],
+      "file": "linear-7.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.0044612884521484375,
+          "rmse": 0.0004028268677723336,
+          "unequal": 44492,
+          "size": 47104
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 47104
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.small_mlp.1",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        128,
+        16
+      ],
+      "file": "linear-8.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 2.855537809944067e-29,
+          "rmse": 2.0571521525356628e-30,
+          "unequal": 1507286,
+          "size": 1507328
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.small_mlp.3",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        128,
+        16
+      ],
+      "file": "linear-9.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.small_mlp.5",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.bfloat16",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        128,
+        16
+      ],
+      "file": "linear-10.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 1507328
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks.0.attention_pair_bias.layernorm_a.linear_s",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        719,
+        128
+      ],
+      "file": "linear-11.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.016634225845336914,
+          "rmse": 0.0012838692789401444,
+          "unequal": 92027,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks.0.attention_pair_bias.layernorm_a.linear_nobias_s",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        719,
+        128
+      ],
+      "file": "linear-12.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.06850719451904297,
+          "rmse": 0.005330433826888078,
+          "unequal": 92031,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks.0.attention_pair_bias.layernorm_kv.linear_s",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        719,
+        128
+      ],
+      "file": "linear-13.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.010959386825561523,
+          "rmse": 0.0009135782000714331,
+          "unequal": 92031,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks.0.attention_pair_bias.layernorm_kv.linear_nobias_s",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        719,
+        128
+      ],
+      "file": "linear-14.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.01134634017944336,
+          "rmse": 0.0009497821968651147,
+          "unequal": 92030,
+          "size": 92032
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 92032
+        }
+      }
+    },
+    {
+      "name": "input_embedder.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks.0.attention_pair_bias.linear_nobias_z",
+      "class": "opendde.model.modules.primitives.Linear",
+      "input_dtype": "torch.float32",
+      "output_dtype": "torch.bfloat16",
+      "shape": [
+        23,
+        32,
+        128,
+        16
+      ],
+      "file": "linear-15.npz",
+      "comparisons": {
+        "current": {
+          "dtype": "float32",
+          "max_abs": 0.000492095947265625,
+          "rmse": 0.00012430357020635902,
+          "unequal": 374704,
+          "size": 376832
+        },
+        "explicit_amp_operands": {
+          "dtype": "bfloat16",
+          "max_abs": 0.0,
+          "rmse": 0.0,
+          "unequal": 0,
+          "size": 376832
+        }
+      }
+    }
+  ]
+}
