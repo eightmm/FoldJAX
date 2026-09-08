@@ -218,11 +218,14 @@ def load_params(path: str | Path, dtype: Any = None, prestack: bool = True) -> A
     arena. The result still reads like the layer list it replaced. Pass
     ``prestack=False`` to get the plain per-layer structure back.
     """
-    from foldjax.models.boltz2.weights import resolve_native_weight_bundle
+    from foldjax.models.boltz2.weights import (
+        resolve_native_weight_bundle,
+        unresolved_bundle_reason,
+    )
 
     bundle = resolve_native_weight_bundle(path)
     if bundle is None:
-        raise FileNotFoundError(f"no native weights found for {path}")
+        raise FileNotFoundError(unresolved_bundle_reason(path))
     weights_path, sidecar = bundle
     meta = json.loads(sidecar.read_text()) if sidecar.exists() else {"scalars": {}}
 
