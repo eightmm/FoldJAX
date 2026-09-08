@@ -72,3 +72,35 @@ amplifies a 0.0065 trunk RMSE into 1.18 Å, an intervention justified by a
 mechanism argument rather than a native comparison is a coin flip. The
 OpenFold3 TF32 operand rounding measured on 2026-09-09 is exactly that shape —
 it moves one sample in five by 3.68 Å — which is why it ships switched off.
+
+## Addendum, 2026-09-09: what "one failing cell" actually means
+
+Enumerating the artifact's own verdicts rather than reading the RMSD column:
+across six models and seven cases, **exactly one matched-tape cell is marked
+failed** -- Boltz-2 on 5SAK. Every other cell, including Protenix-v2's 0.1611 Å
+on the same target, is marked passed against the contract's 0.5 Å threshold.
+
+The failing cell's trunk correlations against upstream are:
+
+| Quantity | Correlation |
+| --- | --- |
+| `s_inputs` | 0.9999999999999977 |
+| `s_trunk` | 0.9999999942363377 |
+| `z_trunk` | 0.9999998726543041 |
+
+The trunk agrees with upstream to between seven and thirteen decimal places, and
+the coordinates differ by 1.18 Å. Protenix-v2's z-trunk correlation on the same
+target is 0.9999994193 and its coordinates differ by 0.1611 Å.
+
+So the standard across models is not "one model is worse than the others". It is
+that every port reproduces its upstream trunk to within about `1e-7` relative,
+and that 5SAK's diffusion trajectory turns that into between a tenth and one
+angstrom depending on how long the trajectory is. The gate is crossed once, at
+the model whose trajectory is longest.
+
+That is worth stating plainly because it bounds what error reduction can mean
+here. A trunk already correct to seven decimal places is not a defect to be
+fixed by better arithmetic; the [Boltz-2
+investigation](boltz2-msa-error-origin-2026-09-09.md) spent thirty controlled
+arms confirming exactly that, and found the residual to be the difference
+between two fused kernel implementations of the same operator.
