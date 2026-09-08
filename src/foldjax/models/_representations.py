@@ -31,7 +31,7 @@ import json
 import math
 import tempfile
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -189,7 +189,9 @@ def restore_logical_dtype(value: np.ndarray, dtype: Any) -> np.ndarray:
 
 def resolve(
     requested: Sequence[str] | str | None,
-    available: Mapping[str, RepresentationSpec],
+    available: Collection[str],
+    *,
+    validate_all: bool = False,
 ) -> tuple[str, ...]:
     """Turn a request into the names to produce, or fail naming the options.
 
@@ -201,21 +203,24 @@ def resolve(
     if isinstance(requested, str):
         requested = (requested,)
     names: list[str] = []
-    for entry in requested:
-        for part in str(entry).split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if part == "all":
+    selected_all = False
+    parts = (part.strip() for entry in requested for part in str(entry).split(","))
+    for part in parts:
+        if not part:
+            continue
+        if part == "all":
+            if not validate_all:
                 return tuple(available)
-            if part not in available:
-                raise ValueError(
-                    f"unknown representation {part!r}; this model produces: "
-                    + ", ".join(available)
-                )
-            if part not in names:
-                names.append(part)
-    return tuple(names)
+            # Input stages still validate names following `all`.
+            selected_all = True
+        elif part not in available:
+            raise ValueError(
+                f"unknown representation {part!r}; this model produces: "
+                + ", ".join(available)
+            )
+        elif part not in names:
+            names.append(part)
+    return tuple(available) if selected_all else tuple(names)
 
 
 def _conform(

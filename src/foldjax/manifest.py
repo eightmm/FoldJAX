@@ -890,6 +890,20 @@ def _input_dependencies(
                 package / "models/opendde/models/model.py",
             )
         )
+    if request.model in {
+        "alphafold3", "boltz2", "esmfold2", "openfold3", "protenix", "opendde",
+    }:
+        package = Path(__file__).parent
+        # Moving policy and kernels out of a model directory must not remove
+        # them from resume provenance when that shared implementation changes.
+        paths.append(package / "sampling.py")
+        if request.model in {"boltz2", "protenix", "opendde"}:
+            paths.append(package / "models/_tokamax_attention.py")
+        if request.representations:
+            paths.extend((
+                package / "backends/_representations.py",
+                package / "models/_representations.py",
+            ))
     if request.model == "boltz2":
         # Native AMP/normalization repairs can change predictions with identical
         # request options. Stat only source files, not mutable __pycache__ trees.

@@ -316,6 +316,12 @@ def test_legacy_ffi_precision_result_is_not_reused(tmp_path: Path, model: str):
 @pytest.mark.parametrize(
     "model,source",
     [
+        ("boltz2", "../../sampling.py"),
+        ("boltz2", "../../backends/_representations.py"),
+        ("boltz2", "../_representations.py"),
+        ("boltz2", "../_tokamax_attention.py"),
+        ("protenix", "../_tokamax_attention.py"),
+        ("opendde", "../_tokamax_attention.py"),
         ("boltz2", "compile_policy.py"),
         ("boltz2", "models/primitives/native_amp_norm.py"),
         ("boltz2", "models/primitives/native_pwa_mma.py"),
@@ -343,6 +349,8 @@ def test_model_repair_invalidates_resume(tmp_path, monkeypatch, model, source):
         request = dataclasses.replace(
             request, weights=weights, options={"no_language_model": True}
         )
+    if source.endswith("_representations.py"):
+        request = dataclasses.replace(request, representations=("single",))
     target = (Path(manifest.__file__).parent / "models" / model / source).resolve()
     with _backends(calls):
         foldjax.predict(request)

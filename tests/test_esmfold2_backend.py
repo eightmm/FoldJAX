@@ -344,7 +344,10 @@ def test_all_biomolecule_job_uses_common_feature_builder(tmp_path, monkeypatch) 
     ]
 
 
-def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("stage", ["full", "inputs", "trunk"])
+def test_padded_split_path_requests_managed_outputs(
+    tmp_path, monkeypatch, stage
+) -> None:
     from foldjax.models.esmfold2 import inference as real_inference
 
     job = _job(
@@ -368,7 +371,7 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
             msa_shape=features["msa_attention_mask"].shape,
             kwargs=kwargs,
         )
-        return {}
+        return {"single_inputs": np.ones((1, 8, 3))}
 
     modules = {
         "foldjax.models.esmfold2.inference": SimpleNamespace(
@@ -397,11 +400,13 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
 
     result = ESMFold2Backend().predict(
         PredictionRequest(
-            model="esmfold2",
+            model="esm-fold2",
             input=job,
             weights=weights,
             output_dir=tmp_path / "out",
             padding=PaddingConfig(tokens=8, atoms=64, msa=4),
+            stop_after=stage,
+            representations=() if stage == "full" else ("single_inputs",),
             options={"no_language_model": True},
         )
     )
@@ -410,7 +415,7 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
     assert seen["token_shape"] == (1, 8)
     assert seen["atom_shape"] == (1, 64)
     assert seen["msa_shape"] == (1, 4, 8)
-    assert seen["kwargs"] == {
+    expected_kwargs = {
         "num_recycles": 9,
         "max_msa_depth": 4,
         "language_model_tokens": None,
@@ -419,6 +424,15 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
         "return_auxiliary_outputs": False,
         "precomputed_lm_states": None,
     }
+    if stage != "full":
+        expected_kwargs["return_representations"] = ("single_inputs",)
+        expected_kwargs[f"stop_after_{stage}"] = True
+        assert result.samples == ()
+        assert result.representations is not None
+    if stage == "inputs":
+        expected_kwargs.pop("precomputed_lm_states")
+    assert seen["kwargs"] == expected_kwargs
+    assert result.model == "esmfold2"
     assert result.shape_profile is not None
     assert result.shape_profile["target"] == {
         "tokens": 8,

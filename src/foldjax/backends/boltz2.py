@@ -16,6 +16,7 @@ from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
 from foldjax.models.boltz2.weights import resolve_native_weight_bundle
+from foldjax.sampling import get_recycle_policy
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -290,6 +291,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
 
 class Boltz2Backend(Backend):
     name = "boltz2"
+    recycle_policy = get_recycle_policy("boltz2")
     session_reuse = True
     padding_axes = ("tokens", "atoms", "msa")
     native_options = frozenset(
@@ -391,13 +393,6 @@ class Boltz2Backend(Backend):
         self._params.clear()
         for role in tuple(self._runners):
             self._drop_runner(role)
-
-    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
-        options = super().apply_sampling(request)
-        # Boltz-2 Appendix D.1 uses five recycling rounds for PDB evaluation.
-        # Keep the effective value in cache identity, including omitted requests.
-        options.setdefault("num_recycles", 5)
-        return options
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Normalize native defaults while retaining the managed recycle count.
@@ -717,14 +712,7 @@ class Boltz2Backend(Backend):
                 "the weights, or pass --option mols=/path/to/mols"
             )
         native = _native_module()
-        wanted = _representations.resolve(
-            request.representations,
-            (
-                {"single_inputs": _representations.specs_for("boltz2")["single_inputs"]}
-                if request.stop_after == "inputs"
-                else _representations.specs_for("boltz2")
-            ),
-        )
+        wanted = self.resolve_representations(request)
         native_options: dict[str, Any] = dict(
             representations=wanted or None,
             representations_dir=request.output_dir,

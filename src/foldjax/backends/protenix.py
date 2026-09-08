@@ -448,18 +448,7 @@ class ProtenixBackend(Backend):
         argv.extend(cli_args)
         if options:
             raise ValueError(f"unsupported Protenix options: {', '.join(options)}")
-        wanted = _representations.resolve(
-            request.representations,
-            (
-                {
-                    "single_inputs": _representations.specs_for("protenix")[
-                        "single_inputs"
-                    ]
-                }
-                if request.stop_after == "inputs"
-                else _representations.specs_for("protenix")
-            ),
-        )
+        wanted = self.resolve_representations(request)
         if wanted:
             argv.extend(("--representations", ",".join(wanted)))
             # Pinned so every backend puts the archive in the same place.

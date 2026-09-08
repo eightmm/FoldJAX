@@ -103,14 +103,7 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
         updates["input_format"] = detected
 
     if request.stop_after == "inputs":
-        from foldjax.models._representations import resolve
-
-        caps = backend.capabilities()
-        backend._validate_representations(request, caps)
-        supported = caps.input_representations
-        if not supported:
-            raise ValueError(f"{backend.name} does not support input-only extraction")
-        updates["representations"] = resolve(request.representations, supported)
+        updates["representations"] = backend.resolve_representations(request)
 
     options = dict(request.options)
     requested_profile = request.profile

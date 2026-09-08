@@ -277,18 +277,7 @@ class OpenDDEBackend(Backend):
                 argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))
         if include_raw:
             argv.append("--include-raw")
-        wanted = _representations.resolve(
-            request.representations,
-            (
-                {
-                    "single_inputs": _representations.specs_for("opendde")[
-                        "single_inputs"
-                    ]
-                }
-                if request.stop_after == "inputs"
-                else _representations.specs_for("opendde")
-            ),
-        )
+        wanted = self.resolve_representations(request)
         if wanted:
             argv.extend(("--representations", ",".join(wanted)))
             # Pinned so that every backend puts the archive in the same place;

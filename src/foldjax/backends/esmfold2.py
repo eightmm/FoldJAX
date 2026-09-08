@@ -40,12 +40,16 @@ from typing import Any
 
 import numpy as np
 
-from foldjax.backends._representations import _representations_result
+from foldjax.backends._representations import (
+    _representations_result,
+    representation_result,
+)
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
+from foldjax.sampling import get_recycle_policy
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -60,7 +64,7 @@ from foldjax.schema import (
 #: Managed defaults: paper inference loop count, with the remaining schedule
 #: inherited from the released checkpoint. See docs/recycling-defaults.md.
 DEFAULTS = {
-    "num_recycles": 9,
+    "num_recycles": get_recycle_policy("esmfold2").default_native,
     "num_sampling_steps": 14,
     "num_diffusion_samples": 32,
     "max_msa_depth": 1024,
@@ -358,6 +362,7 @@ def apply_managed_profile(
 
 class ESMFold2Backend(Backend):
     name = "esmfold2"
+    recycle_policy = get_recycle_policy("esmfold2")
     session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "language_model_tokens")
     native_options = frozenset({"cp_devices", "esmc_weights", "no_language_model"})
@@ -733,13 +738,6 @@ class ESMFold2Backend(Backend):
         self._lm_embedding_key = key
         return embedding
 
-    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
-        options = super().apply_sampling(request)
-        # ESMFold2 Appendix A.2.11 uses ten total loops; this port adds one.
-        # Keep the effective value in cache identity, including omitted requests.
-        options.setdefault("num_recycles", DEFAULTS["num_recycles"])
-        return options
-
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep only proven fixed defaults in the omitted cache namespace.
 
@@ -819,17 +817,7 @@ class ESMFold2Backend(Backend):
             if cp_devices < 1:
                 raise ValueError("cp_devices must be positive")
             overrides["cp_shards"] = cp_devices
-        available = _representations.specs_for("esmfold2")
-        if request.stop_after == "inputs":
-            available = {
-                name: available[name]
-                for name in self.capabilities().input_representations
-            }
-            # Validate each selector even when an earlier "all" expands first.
-            for selector in request.representations or ():
-                for name in selector.split(","):
-                    _representations.resolve((name,), available)
-        wanted = _representations.resolve(request.representations, available)
+        wanted = self.resolve_representations(request)
         if wanted:
             overrides["return_representations"] = wanted
         if request.stop_after == "inputs":
@@ -1085,14 +1073,9 @@ class ESMFold2Backend(Backend):
             # the writer must stay below this line, not above it. It reads
             # `sample_atom_coords`, which the trunk graph never produces, so
             # reaching it at all raised KeyError before the branch was tested.
-            return PredictionResult(
-                model=self.name,
-                samples=(),
-                output_dir=request.output_dir,
-                raw=raw,
-                representations=_representations_result(
-                    self.name, request.output_dir, wanted
-                ),
+            return representation_result(
+                request, wanted, model=self.name,
+                raw=raw, shape_profile=shape_profile,
             )
         written = output_module.write_prediction_outputs(
             prediction, output_features, request.output_dir, name=name

@@ -824,3 +824,16 @@ def test_paper_recycling_defaults_preserve_overrides_and_cache_identity(
     assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
     assert resolve_cache_dir(request, backend) == resolve_cache_dir(native, backend)
     assert resolve_cache_dir(request, backend) != resolve_cache_dir(previous, backend)
+
+
+def test_openfold3_input_cache_selectors_resolve_before_identity(tmp_path):
+    backend = get_backend("openfold3")
+    request = dataclasses.replace(
+        _request(tmp_path), model="openfold3", stop_after="inputs",
+        representations="all",
+    )
+    explicit = dataclasses.replace(request, representations=("single_inputs",))
+    assert backend.cache_profile(request)["representations"] == ("single_inputs",)
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
+    with pytest.raises(ValueError, match="representation"):
+        backend.cache_profile(dataclasses.replace(request, representations="all,pair"))

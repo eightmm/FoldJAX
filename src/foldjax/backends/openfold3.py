@@ -28,11 +28,15 @@ from foldjax._openfold3_compile import (
 from foldjax._openfold3_compile import (
     triangle_backend as _triangle_backend,
 )
-from foldjax.backends._representations import _representations_result
+from foldjax.backends._representations import (
+    _representations_result,
+    representation_result,
+)
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
+from foldjax.sampling import get_recycle_policy
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -175,6 +179,7 @@ def _compile_enabled(options: dict[str, Any]) -> bool:
 
 class OpenFold3Backend(Backend):
     name = "openfold3"
+    recycle_policy = get_recycle_policy("openfold3")
     session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "templates")
     native_options = frozenset(
@@ -285,9 +290,7 @@ class OpenFold3Backend(Backend):
         profile["triangle_kernel"] = resolve_triangle_kernel(
             options.get("triangle_kernel"), cp_shards=cp_shards
         )
-        profile["representations"] = _representations.resolve(
-            request.representations, _representations.specs_for("openfold3")
-        )
+        profile["representations"] = self.resolve_representations(request)
         profile["stop_after"] = request.stop_after
         profile["rng_route"] = "mask" if request.padding is not None else "native"
         return profile
@@ -322,11 +325,6 @@ class OpenFold3Backend(Backend):
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
         """Translate neutral semantics that differ from OpenFold3's literals."""
         options = super().apply_sampling(request)
-        # Upstream exposes ``num_recycles`` but executes recycle + 1 trunk
-        # cycles. A caller using the native ``num_recycles`` option has already
-        # specified the executed count, so only the neutral knob gets +1.
-        if request.num_recycles is not None:
-            options["num_recycles"] = request.num_recycles + 1
         if options.get("max_msa_depth") is not None:
             options["max_msa_depth"] = min(
                 _RELEASED_MSA_DEPTH, int(options["max_msa_depth"])
@@ -468,17 +466,7 @@ class OpenFold3Backend(Backend):
         cp_layout = options.pop("cp_layout", None)
         if cp_layout is not None:
             overrides["cp_layout"] = str(cp_layout)
-        available = _representations.specs_for("openfold3")
-        if request.stop_after == "inputs":
-            available = {
-                name: available[name]
-                for name in self.capabilities().input_representations
-            }
-            # Validate each selector even when an earlier "all" expands first.
-            for selector in request.representations or ():
-                for name in selector.split(","):
-                    _representations.resolve((name,), available)
-        wanted = _representations.resolve(request.representations, available)
+        wanted = self.resolve_representations(request)
         overrides["returned_representations"] = wanted
         overrides["stop_after_inputs"] = request.stop_after == "inputs"
         overrides["stop_after_trunk"] = request.stop_after == "trunk"
@@ -698,15 +686,9 @@ class OpenFold3Backend(Backend):
             # The trunk graph returns before the sampler and the confidence
             # heads, so `prediction` carries no coordinates to write and there
             # are no samples to describe. Reading them raised IndexError.
-            return PredictionResult(
-                model=self.name,
-                samples=(),
-                output_dir=request.output_dir,
-                raw=raw,
-                shape_profile=shape_profile,
-                representations=_representations_result(
-                    self.name, request.output_dir, wanted
-                ),
+            return representation_result(
+                request, wanted, model=self.name,
+                raw=raw, shape_profile=shape_profile,
             )
         written = output.write_prediction_outputs(
             prediction,

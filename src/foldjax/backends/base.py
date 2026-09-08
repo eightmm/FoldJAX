@@ -9,6 +9,7 @@ from contextlib import AbstractContextManager, contextmanager
 from typing import Any
 
 from foldjax import execution
+from foldjax.sampling import RecyclePolicy
 from foldjax.schema import (
     ModelCapabilities,
     PredictionRequest,
@@ -56,6 +57,9 @@ class Backend(ABC):
     #: carries one spelling and the adapter translates it.
     sampling_options: dict[str, str] = {}
 
+    #: Built-ins opt in explicitly; third-party adapters retain identity semantics.
+    recycle_policy: RecyclePolicy = RecyclePolicy()
+
     #: The same idea one level down, for the knobs that were left native:
     #: neutral knob -> (this backend's name, {neutral value: its value}).
     #: See `foldjax.execution` for the vocabulary and why `auto` never falls
@@ -91,7 +95,16 @@ class Backend(ABC):
                     f"{knob} and the native option {native!r} were both set for "
                     f"{self.name}; pass one of them"
                 )
-            options[native] = value
+            options[native] = (
+                self.recycle_policy.to_native(value)
+                if knob == "num_recycles"
+                else value
+            )
+        policy = self.recycle_policy
+        if policy.default_native is not None:
+            options.setdefault(
+                self.sampling_options["num_recycles"], policy.default_native
+            )
         if request.padding is not None and "max_msa_depth" in self.sampling_options:
             from foldjax.padding import MSA_PROFILE_DEPTH, OPENDDE_MSA_PROFILE_DEPTH
 
@@ -154,10 +167,11 @@ class Backend(ABC):
         # fail only after a model starts loading.
         for native in self.sampling_options.values():
             if native in options:
-                minimum = 0 if (
-                    native == self.sampling_options.get("num_recycles")
-                    and self.name in {"alphafold3", "boltz2", "esmfold2"}
-                ) else 1
+                minimum = (
+                    self.recycle_policy.native_minimum
+                    if native == self.sampling_options.get("num_recycles")
+                    else 1
+                )
                 _strict_integer(options[native], name=native, minimum=minimum)
         if self.native_options is None:
             return
@@ -185,56 +199,15 @@ class Backend(ABC):
         cannot capture representations from more than one seed without losing
         every handle but one.
         """
-        if not request.representations:
-            return
-        available = (
-            capabilities.input_representations
-            if request.stop_after == "inputs" else capabilities.representations
-        )
-        if request.stop_after == "inputs":
-            for entry in request.representations:
-                for part in str(entry).split(","):
-                    part = part.strip()
-                    if part and part != "all" and part not in available:
-                        raise ValueError(
-                            f"unknown input representation {part!r} for {self.name}"
-                        )
-        found = False
-        selected_all = False
-        for entry in request.representations:
-            for part in str(entry).split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                if part == "all":
-                    if not available:
-                        raise ValueError(
-                            f"{self.name} does not expose trunk representations"
-                        )
-                    # This matches the native resolver: ``all`` selects the
-                    # complete capability list and supersedes later entries.
-                    found = True
-                    selected_all = True
-                    break
-                if part not in available:
-                    produced = ", ".join(available) or "none"
-                    raise ValueError(
-                        f"unknown representation {part!r} for {self.name}; "
-                        f"this model produces: {produced}"
-                    )
-                found = True
-            if selected_all:
-                break
-        if not found:
-            raise ValueError(
-                "representations must name at least one representation or 'all'"
-            )
-        if len(request.resolved_seeds) > 1:
-            raise ValueError(
-                "representations cannot be combined with multiple seeds: "
-                "PredictionResult carries one representation archive; run one "
-                "seed per request"
-            )
+        from foldjax.backends._representations import resolve_representations
+
+        resolve_representations(request, capabilities)
+
+    def resolve_representations(self, request: PredictionRequest) -> tuple[str, ...]:
+        """Return the validated arrays available at the requested stage."""
+        from foldjax.backends._representations import resolve_representations
+
+        return resolve_representations(request, self.capabilities())
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         """Validate built-in option values without importing a model runtime.

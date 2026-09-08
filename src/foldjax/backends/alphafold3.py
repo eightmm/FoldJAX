@@ -33,6 +33,7 @@ from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.padding import MSA_PROFILE_DEPTH, TOKEN_BUCKETS, PaddingPlan
+from foldjax.sampling import get_recycle_policy
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -575,13 +576,6 @@ def _shape_profile(plans: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {"per_job": plans}
 
 
-def _representation_names(request: PredictionRequest) -> tuple[str, ...]:
-    specs = _representations.specs_for("alphafold3")
-    if request.stop_after == "inputs":
-        specs = {name: spec for name, spec in specs.items() if name == "single_inputs"}
-    return _representations.resolve(request.representations, specs)
-
-
 def _predict_common_representations(
     fold_input: Any,
     examples: Any,
@@ -737,6 +731,7 @@ def _validated_fold_jobs(
 
 class AlphaFold3Backend(Backend):
     name = "alphafold3"
+    recycle_policy = get_recycle_policy("alphafold3")
     session_reuse = True
     padding_axes = ("tokens",)
     native_options = frozenset(
@@ -794,13 +789,6 @@ class AlphaFold3Backend(Backend):
         self._model_runner: Any | None = None
         self._model_runner_key: tuple[Any, ...] | None = None
 
-    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
-        options = super().apply_sampling(request)
-        # AF3 SI Algorithm 1 uses four total passes; the native loop adds one.
-        # Retain the effective count in cache identity instead of aliasing 10.
-        options.setdefault("num_recycles", 3)
-        return options
-
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep exact released-default aliases in one compilation namespace.
 
@@ -824,7 +812,7 @@ class AlphaFold3Backend(Backend):
             if type(value) is type(default) and value == default:
                 profile.pop(name)
         if request.representations or request.stop_after != "full":
-            profile["representations"] = _representation_names(request)
+            profile["representations"] = self.resolve_representations(request)
             profile["stop_after"] = request.stop_after
         buckets = profile.get("buckets")
         if type(buckets) in (list, tuple) and not buckets:
@@ -1029,7 +1017,7 @@ class AlphaFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
-        wanted = _representation_names(request)
+        wanted = self.resolve_representations(request)
         managed_route = not bool(options.get("source"))
         # Out before the leftover-option check: carried by the scope.
         requested_matmul_precision = options.get("matmul_precision")

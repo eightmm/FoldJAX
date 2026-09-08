@@ -13,6 +13,7 @@ from typing import Any
 from foldjax import api
 from foldjax.job import Job
 from foldjax.registry import capabilities, get_backend, normalize_model_name
+from foldjax.sampling import get_recycle_policy
 from foldjax.schema import (
     MSA_POLICIES,
     ModelCapabilities,
@@ -23,10 +24,6 @@ from foldjax.schema import (
     _strict_boolean,
     _strict_integer,
 )
-
-# The old request interface remains compatible. This interface always counts
-# total evaluations; these adapters expose additional recycles on that request.
-_ADDITIONAL_RECYCLES = frozenset({"alphafold3", "boltz2", "esmfold2", "openfold3"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,9 +180,8 @@ class Model:
             if isinstance(job, Job)
             else Path(job)
         )
-        count = self.config.trunk_passes
-        recycles = (
-            None if count is None else count - int(self.name in _ADDITIONAL_RECYCLES)
+        recycles = get_recycle_policy(self.name).from_trunk_passes(
+            self.config.trunk_passes
         )
         request = PredictionRequest(
             model=self.name,
