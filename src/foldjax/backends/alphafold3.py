@@ -299,6 +299,31 @@ def _tokamax_kernel_fallback(strategy: str):
     return tokamax_config.autotuning_cache_miss_fallback(strategy)
 
 
+@contextmanager
+def _context_parallel(devices: tuple[Any, ...], layout: str) -> Iterator[None]:
+    """Activate the pair mesh and the module replacements together.
+
+    Both halves are inert without a mesh, so a one-device request keeps running
+    the publisher's own program through the publisher's own runner.  They are
+    entered as one context because neither is useful alone: the mesh without
+    the replacements gathers everything back, and the replacements without a
+    mesh forward to upstream.
+    """
+
+    if len(devices) <= 1:
+        yield
+        return
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models.alphafold3._cp import context_parallel_modules
+
+    with (
+        context_parallel(len(devices), layout=layout, devices=list(devices)),
+        context_parallel_modules(),
+    ):
+        yield
+
+
 def _model_device(device: Any):
     """Make lazy AlphaFold 3 parameter loads follow the selected device.
 
@@ -647,6 +672,8 @@ class AlphaFold3Backend(Backend):
     native_options = frozenset(
         {
             "buckets",
+            "cp_devices",
+            "cp_layout",
             "device",
             "kernel_autotuning",
             "platform",
@@ -687,6 +714,11 @@ class AlphaFold3Backend(Backend):
         "attention_backend",
         "return_embeddings",
         "return_distogram",
+        # The mesh is part of the program, not of how it is run: a serial
+        # executable and a sharded one are different compilations of the same
+        # request and must not share a cache namespace.
+        "cp_devices",
+        "cp_layout",
     )
 
     def __init__(self) -> None:
@@ -849,6 +881,22 @@ class AlphaFold3Backend(Backend):
             # Never construct generation B while generation A's 1.1 GB tree is
             # still retained by this backend.
             self.invalidate_session()
+        from foldjax.models._cp import cp_mesh
+
+        if cp_mesh() is not None:
+            from foldjax.models.alphafold3._cp import context_parallel_model_runner
+
+            # Upstream's runner commits its jit to one device, which a mesh's
+            # collectives cannot live inside; this is the same runner with that
+            # one commitment lifted.  A retained runner is one class or the
+            # other, and ``config_identity`` is the only thing in ``key`` that
+            # can tell them apart -- so the mesh entries stay inside it.
+            return (
+                context_parallel_model_runner(
+                    runner, config=config, model_dir=request.weights
+                ),
+                key,
+            )
         return (
             runner.ModelRunner(
                 config=config,
@@ -879,6 +927,16 @@ class AlphaFold3Backend(Backend):
             raise ValueError(
                 "kernel_autotuning must be one of 'heuristics', 'autotune', or 'error'"
             )
+        if "cp_devices" in options or "cp_layout" in options:
+            from foldjax.models._cp import resolve_cp_layout
+
+            shards = _strict_integer(
+                options.get("cp_devices", 1), name="cp_devices", minimum=1
+            )
+            # ``resolve_cp_layout`` owns the layout vocabulary and the
+            # perfect-square rule, so a bad pair is rejected here rather than
+            # after featurisation.
+            resolve_cp_layout(str(options.get("cp_layout", "auto")), shards)
 
     def capabilities(self) -> ModelCapabilities:
         requirement = InputRequirement(
@@ -961,7 +1019,22 @@ class AlphaFold3Backend(Backend):
             devices = (
                 jax.local_devices(backend=platform) if platform else jax.local_devices()
             )
-            device = devices[int(options.pop("device", 0))]
+            device_index = int(options.pop("device", 0))
+            device = devices[device_index]
+            cp_devices = _strict_integer(
+                options.pop("cp_devices", 1), name="cp_devices", minimum=1
+            )
+            cp_layout = str(options.pop("cp_layout", "auto"))
+            # The mesh starts at the selected device rather than at zero, so
+            # `device` keeps meaning "the first device this run may use" whether
+            # or not the pair is split.
+            cp_mesh_devices = tuple(devices[device_index : device_index + cp_devices])
+            if len(cp_mesh_devices) != cp_devices:
+                raise ValueError(
+                    f"cp_devices={cp_devices} was requested from device "
+                    f"{device_index}, but only {len(devices) - device_index} "
+                    f"{platform or 'local'} device(s) follow it"
+                )
             attention_backend = options.pop(
                 "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
             )
@@ -1026,6 +1099,15 @@ class AlphaFold3Backend(Backend):
                 ("return_distogram", return_distogram),
                 ("num_steps", identity_num_steps),
                 ("max_msa_depth", identity_max_msa_depth),
+                # Appended only when a mesh is asked for. This identity
+                # namespaces the persistent Tokamax store, so adding an entry
+                # unconditionally would orphan every autotuning result already
+                # measured for the serial route.
+                *(
+                    ()
+                    if cp_devices == 1
+                    else (("cp_devices", cp_devices), ("cp_layout", cp_layout))
+                ),
             )
             source_snapshot = None
             if managed_route and request.cache_dir is not None:
@@ -1043,17 +1125,6 @@ class AlphaFold3Backend(Backend):
                 padding=request.padding is not None,
                 strategy=kernel_fallback,
             )
-            model_runner, model_runner_key = self._select_model_runner(
-                runner=runner,
-                runner_path=runner_path,
-                config=config,
-                config_identity=config_identity,
-                device=device,
-                request=request,
-                buckets=buckets,
-                kernel_fallback=kernel_fallback,
-                anchor=anchor,
-            )
             all_results = []
             samples: list[PredictionSample] = []
             padding_plans: list[dict[str, Any]] = []
@@ -1070,17 +1141,39 @@ class AlphaFold3Backend(Backend):
                     (fold_input, job_name, job_dir, None, None)
                     for fold_input, job_name, job_dir in jobs
                 )
-            with _tokamax_kernel_fallback(kernel_fallback), _model_device(device):
+            with (
+                # The mesh has to be active while the runner is *built*: it
+                # decides how the runner places its parameters, and the module
+                # replacements have to be installed before its jit traces.
+                _context_parallel(cp_mesh_devices, cp_layout),
+                _tokamax_kernel_fallback(kernel_fallback),
+                _model_device(device),
+            ):
+                model_runner, model_runner_key = self._select_model_runner(
+                    runner=runner,
+                    runner_path=runner_path,
+                    config=config,
+                    config_identity=config_identity,
+                    device=device,
+                    request=request,
+                    buckets=buckets,
+                    kernel_fallback=kernel_fallback,
+                    anchor=anchor,
+                )
                 tokamax_store_installed = False
                 if tokamax_store is not None:
                     tokamax_store_installed = _install_tokamax_store(
                         model_runner, tokamax_store
                     )
-                _ensure_safe_tokamax_route(
-                    device=device,
-                    strategy=kernel_fallback,
-                    persistent_installed=tokamax_store_installed,
-                )
+                for mesh_device in cp_mesh_devices:
+                    # Every device of the mesh runs the kernels, so every one of
+                    # them has to be a device this strategy can tune on. With no
+                    # mesh this is the single-device call it replaces.
+                    _ensure_safe_tokamax_route(
+                        device=mesh_device,
+                        strategy=kernel_fallback,
+                        persistent_installed=tokamax_store_installed,
+                    )
                 for (
                     fold_input,
                     job_name,

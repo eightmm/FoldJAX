@@ -29,7 +29,7 @@ expected explicit collectives for the atom-window adapters.
 | OpenDDE | yes | yes | no | Structural-token refinement uses the Protenix pair primitives; diffusion atom streams remain replicated |
 | OpenFold3 | yes | yes | no | Pair stack, template stack, and confidence pair re-embedding |
 | ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
-| AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
+| AlphaFold3 | yes | no | no | Trunk pair path only, installed by Haiku interception; the vendored source is unchanged |
 
 `auto` currently resolves to `1d`. Use `2d` explicitly only with a
 perfect-square device count. This preserves the published one-dimensional
@@ -54,6 +54,50 @@ Precomputed Boltz-2 diffusion noise tapes also enter the compiled program
 already sharded on their atom axis. They are not first copied in full to every
 device. Under a two-dimensional mesh, atom/query data are sharded over CP rows
 and replicated over CP columns.
+
+## AlphaFold 3 path
+
+AlphaFold 3 is the one model FoldJAX does not own the source of. Its network is
+the publisher's Haiku code, vendored verbatim and held bitwise against the
+released runtime, so its context-parallel program is installed at runtime with
+`haiku.intercept_methods` rather than written into the model. Nothing under
+`models/alphafold3/_upstream/` changes, and neither does the vendored runner.
+
+Each replacement is upstream's own `__call__` body with sharding constraints
+spliced between its Haiku calls. That keeps every parameter path identical to
+the checkpoint -- the replacements are handed the serial parameter tree, so a
+renamed or restructured call fails outright rather than quietly.
+
+Five modules are replaced and two carry the seam:
+
+- `GridSelfAttention` gathers only its pair-bias projection, `[heads, N, N]`
+  against a pair of `[N, N, 128]`, and reshards rows to columns around the
+  transposed orientation so the attention batch axis is the sharded one in both;
+- `TriangleMultiplication` moves its gated linear unit onto local rows and
+  places the einsum's operands explicitly;
+- `OuterProductMean` splits the left projection on its token axis, which is
+  where the output's pair rows come from;
+- `MSAAttention` gathers the head projection of the pair, not the pair;
+- `TransitionBlock` shards the pair stream only -- the single and MSA streams
+  move nothing;
+- `PairFormerIteration` and `EvoformerIteration` pin the pair on its rows across
+  each layer and switch off the caller's transition row chunking, which
+  `TransitionBlock` then re-applies at the same width on local rows.
+
+Unlike the other five models, AlphaFold 3 keeps its fused kernels under CP. Both
+Tokamax entry points run inside `shard_map` on whole local shards, measured
+bitwise identical to the serial kernel; the partitioner cannot split those calls,
+but manual sharding never asks it to.
+
+`cp_devices` selects the mesh starting at the `device` option, so `device` keeps
+meaning the first device a run may use. Every device of the mesh runs the
+kernels, so every one of them must be a device the chosen `kernel_autotuning`
+strategy can tune on.
+
+Only the trunk pair path is distributed. The heads, the diffusion sampler and
+the template stack still see a replicated pair, and the one-dimensional layout
+still gathers a full pair tensor inside triangle multiplication -- the square
+Cannon schedule is what removes that, and it is not wired for this model.
 
 ## Boltz-2 atom-window path
 
@@ -118,6 +162,7 @@ uv run pytest -q \
   tests/models/opendde/test_context_parallel.py \
   tests/models/openfold3/test_context_parallel.py \
   tests/models/esmfold2/test_context_parallel.py
+  tests/models/alphafold3/test_context_parallel.py
 ```
 
 On August 20, 2026, the cross-model branch gate passed 66 tests. The subsequent
