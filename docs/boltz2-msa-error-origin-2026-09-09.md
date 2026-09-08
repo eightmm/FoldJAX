@@ -32,3 +32,42 @@ with a control in the same design:
 The port follows upstream closely enough that every difference visible by
 reading is either already matched or does not reach the output on this input.
 The residual survives all of it.
+
+## The kernel choice is also already the better one
+
+The native capture's own settings record `use_kernels: True`, with
+`cuda_autocast_enabled: True` at bfloat16 and `float32_matmul_precision:
+highest`. So both sides run fused kernels -- but different ones: upstream its own
+Triton, the port cuEquivariance.
+
+Measured at the shipped configuration, as an argument rather than a patch:
+
+| Triangle backend | RMSE against native `delta_z` |
+| --- | ---: |
+| `cueq` (shipped) | 3.233621e-02 |
+| `xla` | 3.270342e-02 |
+
+The fused kernel is 1.1% *closer* to upstream's Triton kernel than the unfused
+XLA path. An earlier arm found these equal, but it ran at a float32-parameter
+baseline that is not the shipped configuration; at the right baseline they
+separate, and the port's default is the better of the two.
+
+## Terminus
+
+Every axis reachable from this port is closed, each on an arm that either passed
+through the module's signature or carried a positive control in the same design:
+
+- configuration knobs, parameter dtype, activation dtype, chunk width
+- every explicit divergence found by reading upstream's three operators
+- the choice of fused kernel
+
+None of them reduces the residual, and the two that move it at all -- lower
+matmul precision, blanket bfloat16 -- move it the wrong way.
+
+What is left is not a choice the port exposes. It is the difference between two
+*different fused kernel implementations* computing the same operator, and closing
+it means reproducing upstream's Triton semantics rather than selecting among the
+port's existing paths. That is implementation work of the kind already under way
+elsewhere in this repository, not another arm of this harness.
+
+**The cell stands at 1.1761 Å.**

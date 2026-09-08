@@ -176,3 +176,38 @@ Verification: jobs 867/868 exited 0; both archive/tree hashes and finite-array
 checks passed. The new benchmark tests cover exclusive-output-directory
 preflight and default/overridden matmul policy. Those and existing capture
 tests total 16 passed; scoped Ruff passed. Full release validation is pending.
+
+## CLI-aligned MSA route
+
+The benchmark now defaults to `--msa-cycle-route index_tape` when per-cycle
+sampling is requested; `--msa-cycle-route materialized` preserves the previous
+benchmark route. Full-depth selection is unchanged. MSA selection remains
+outside the timer, as in the public CLI; gather/materialization now occurs
+through the production index-tape route. This aligns that argument, not the
+entire CLI's preprocessing/output timing boundary.
+
+Job 872 exited 0. Result root `protenix-warm-index-20260909-S8xtNo` uses the
+same isolated model source as 868 and replaces only the benchmark script.
+Warm median: 1.129628774 s; lifetime allocator peak: 1,921,323,008 bytes.
+Executed depths are ten rows of depth 2; real selected depths are
+`[1,2,1,1,2,1,2,1,1,2]`. Archive/tree hashes match and numeric outputs are finite.
+
+The saved ordinary-RNG output differs from materialized job 868 after a
+single system Kabsch fit per sample:
+
+| Entity | Per-sample RMSD (angstrom) | Maximum |
+| --- | --- | ---: |
+| RNA R | 0.00843750, 0.00731651, 0.01347840, 0.00829394, 0.00666980 | 0.01347840 |
+| Ligand L | 0.00886800, 0.00984592, 0.00777602, 0.00722922, 0.01016041 | 0.01016041 |
+
+Maximum absolute deltas: atom pLDDT 0.00080382824 (0–1 scale), summary pTM
+0.00006353855, summary ipTM 0.00016474724. Identity/order comes from the same
+shared feature archive (719 atoms); this is not independent preprocessing.
+No actual sampler-draw observer ran in these performance arms. These numbers
+are a route comparison under ordinary RNG, not an attribution of the drift
+solely to MSA gathering, nor upstream parity or a new tolerance admission.
+
+Verification: 28 CPU benchmark/wrapper/MSA tests passed before the final
+parser-only test addition; the final five benchmark parser/preflight tests
+passed separately. Scoped Ruff and diff checks passed. Existing MSA tests
+cover bitwise reconstruction of materialized selections and wrapper routes.
