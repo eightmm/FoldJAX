@@ -71,3 +71,38 @@ port's existing paths. That is implementation work of the kind already under way
 elsewhere in this repository, not another arm of this harness.
 
 **The cell stands at 1.1761 Å.**
+
+## The contraction precision already follows the branch upstream takes
+
+Upstream's `x.float()` before the triangle-multiplication einsum sits in the
+*non-kernel* branch only; with `use_kernels=True` it returns from
+`kernel_triangular_mult` before reaching it. The native capture records
+`use_kernels: True`, so upstream did not upcast.
+
+The port's `contraction_precision` defaults to `"float32"`, which looks like the
+wrong branch -- but it is overridden by `native_amp`, which is
+`x.dtype == float32 and p_in kernel dtype == bfloat16`. That holds in the shipped
+configuration, and the port casts the contraction input to bfloat16 exactly as
+upstream's kernel branch does.
+
+Matched already, like the outer product mean's chunked branch before it. No arm
+needed.
+
+## The port matches upstream everywhere the source can be read
+
+Every operator in this module was read against upstream and every divergence
+resolved:
+
+| Divergence | Outcome |
+| --- | --- |
+| OPM chunked branch: axis, width, dtype, accumulation, bias | already matched |
+| Triangle multiplication contraction dtype | already matched, via `native_amp` |
+| PWA pair-bias softmax dtype | real; inert (control 100x) |
+| OPM validity count dtype | real; inert (control 42x) |
+| Triangle attention kernel bias upcast | real; inert (control 52x) |
+| Fused kernel choice | shipped `cueq` is 1.1% closer than `xla` |
+| OPM chunk width against upstream's fixed 4 | real; bitwise inert |
+
+Nothing readable remains. The residual is the difference between cuEquivariance
+and upstream's Triton implementations of the same operators -- an execution
+difference below the source, and not a choice this port exposes.

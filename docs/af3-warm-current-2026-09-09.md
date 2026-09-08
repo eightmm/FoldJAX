@@ -1,6 +1,7 @@
 # AF3 current-source warm comparison
 
-Status: submitted, measurements pending.
+Status: partial measurements completed; later sections supersede submission
+status below. Seven-case completion and actual-tape admission remain separate.
 
 External immutable source snapshot: `af3-warm-current-20260909-vnStaz`.
 tsp 832 runs pinned native AF3; 833 runs current FoldJAX. Input is 1UBQ,
@@ -147,3 +148,19 @@ Raw/extracted confidence checks and both first/warm comparisons pass.
 No speedup or memory improvement is demonstrated. Current measured warm
 coverage is three cases (1UBQ, 5SAK, 1URN), not the complete seven-case panel.
 Unobserved performance bridges do not replace observed actual RNG-tape audits.
+
+## Remaining four cases submitted
+
+Jobs 874/875 cover RNA-ligand 3GCA. Native 874 exited 0 with warm seconds
+`[4.293022925034165, 4.326547090953682, 4.325514209980611]` and lifetime
+allocator peak 1,820,881,152 bytes; all three outputs equal its first output.
+Candidate 875 was still running when this submission record was written.
+
+Jobs 876/877 cover protein-DNA 7R6R, 878/879 protein-RNA-ligand 3V7E,
+and 880/881 protein-protein 7ST3. These use the same immutable source snapshot,
+five samples and three warm repeats, with no preprocessing or RNG observers.
+The first two use the established 3GCA Tokamax manifest; 7ST3 uses its
+case-specific v4 manifest. Each native arm extends its prior v4 XLA cache,
+and the candidate strictly loads that new native cache without extension.
+No outputs from queued jobs are claimed. Opus jobs remain serialized through
+the shared queue; no collaborator runtime files were edited.
