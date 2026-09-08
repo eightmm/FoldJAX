@@ -154,6 +154,58 @@ def _preflight_arena(features: Mapping[str, Any], trunk_dtype: Any) -> str | Non
     return " ".join(lines)
 
 
+#: What upstream runs, named rather than inherited. OpenDDE ships
+#: ``"dtype": "fp32"`` with ``enable_tf32: True`` (``model_base.py:37``), which
+#: is TF32 matmuls on FP32 tensors -- JAX spells that ``"high"``.
+_MATMUL_PRECISION = "high"
+
+
+def opendde_precision(function):
+    """Run `function` with JAX's matmul precision pinned to upstream's.
+
+    OpenDDE was one of three backends that pinned nothing, which
+    :func:`foldjax.execution.matmul_precision_scope` names in its own
+    docstring. Pinning nothing is not the same as pinning the default: the
+    setting is process-global, so the port ran at whatever JAX's default was on
+    the card in front of it.
+
+    On the card this was measured on (2026-09-09, RTX PRO 6000 Blackwell) that
+    default *is* TF32 -- unset and ``"high"`` are bitwise equal across a
+    square, a thin and a small GEMM, at `rel_rmse` 2.93e-4 against float64
+    where ``"highest"`` gives 2.1e-7. So this pin changes no number here. It
+    changes what happens on a card whose default is not TF32, and it makes the
+    match with upstream a stated contract instead of a coincidence that has to
+    be re-derived.
+
+    Scoped to the port's entry point rather than set at import, for the reason
+    the OpenFold3 pin gives: an import-time `jax.config.update` re-specifies
+    every other model sharing the process.
+    """
+
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        import jax
+
+        from foldjax.execution import resolved_matmul_precision
+
+        requested = resolved_matmul_precision(_MATMUL_PRECISION)
+        if requested == _MATMUL_PRECISION and jax.default_backend() != "gpu":
+            # TF32 is a GPU tensor-core format. Asking a CPU dot for it does
+            # not degrade gracefully -- it raises "precision 'TF32_TF32_F32'
+            # is not supported by dot_general on CPU" -- and there is nothing
+            # to match there anyway, because upstream's `enable_tf32` has no
+            # effect off the GPU either. A precision the *caller* asked for is
+            # still honoured, because that is their choice to debug.
+            return function(*args, **kwargs)
+        with jax.default_matmul_precision(requested):
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+@opendde_precision
 def _predict(
     features: dict[str, Any],
     params: Any,
@@ -586,8 +638,7 @@ def main(
 
     if padding is not None:
         unsupported = sorted(
-            set(padding.explicit_axes)
-            - {"tokens", "atoms", "msa", "structural_tokens"}
+            set(padding.explicit_axes) - {"tokens", "atoms", "msa", "structural_tokens"}
         )
         if unsupported:
             raise ValueError(
