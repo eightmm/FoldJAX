@@ -14,6 +14,8 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax.models.openfold3.models.tf32_rounding import round_operands
+
 
 class LinearParams(NamedTuple):
     """Parameters for ``openfold3.core.model.primitives.Linear``.
@@ -70,9 +72,22 @@ class SwiGLUTransitionParams(NamedTuple):
     linear_out: LinearParams
 
 
-def linear(x: jnp.ndarray, params: LinearParams) -> jnp.ndarray:
-    """Apply a PyTorch-layout linear projection."""
-    y = jnp.matmul(x, jnp.swapaxes(params.weight, -1, -2))
+def linear(
+    x: jnp.ndarray, params: LinearParams, *, match_native_tf32: bool = False
+) -> jnp.ndarray:
+    """Apply a PyTorch-layout linear projection.
+
+    ``match_native_tf32`` opts this projection into the operand rounding
+    upstream's ordinary GEMM performs, which is not the one JAX's ``high``
+    performs even though both are spelled ``high``.  It is off by default and
+    inert unless the policy is also switched on, so an unasked run is
+    unchanged; see :mod:`foldjax.models.openfold3.models.tf32_rounding` for the
+    measurement and for why only some call sites qualify.
+    """
+    weight = jnp.swapaxes(params.weight, -1, -2)
+    if match_native_tf32:
+        x, weight = round_operands(x, weight)
+    y = jnp.matmul(x, weight)
     if params.bias is not None:
         y = y + params.bias
     return y

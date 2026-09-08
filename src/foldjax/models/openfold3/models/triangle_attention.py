@@ -92,13 +92,30 @@ class TriangleAttentionParams(NamedTuple):
     mha: AttentionParams
 
 
+def _proj(x: jnp.ndarray, params: LinearParams) -> jnp.ndarray:
+    """One of the five projections upstream runs through an ordinary GEMM.
+
+    Query, key, value, gate and pair bias are the set a full-shape control
+    measured: prequantizing their operands to the TF32 round-nearest-even grid
+    made all five match native at every token count tested, the largest of them
+    bitwise.  The output projection is deliberately absent -- it was not in that
+    control, and this port does not extend a measured contract by analogy.
+
+    The triangle *multiplication* projections are absent for a stronger reason:
+    upstream dispatches those through a Triton kernel that truncates instead,
+    so rounding them this way would swap one mismatch for another.
+    """
+
+    return linear(x, params, match_native_tf32=True)
+
+
 def _project_triangle_bias(
     x: jnp.ndarray,
     params: TriangleAttentionParams,
     transpose_bias: bool,
 ) -> jnp.ndarray:
     """Project the pair bias with the checkpoint's ending-node orientation."""
-    projected = linear(x, params.linear_z)
+    projected = _proj(x, params.linear_z)
     permutation = (2, 1, 0) if transpose_bias else (2, 0, 1)
     return permute_final_dims(projected, permutation)
 
@@ -232,9 +249,9 @@ def _cueq_attention(
     from foldjax.models._cueq import cueq_attention_core
 
     # [..., I, H, J, D] -- head axis before the attended axis, as the kernel wants.
-    query = jnp.swapaxes(split_heads(linear(x, params.linear_q), no_heads), -2, -3)
-    key = jnp.swapaxes(split_heads(linear(x, params.linear_k), no_heads), -2, -3)
-    value = jnp.swapaxes(split_heads(linear(x, params.linear_v), no_heads), -2, -3)
+    query = jnp.swapaxes(split_heads(_proj(x, params.linear_q), no_heads), -2, -3)
+    key = jnp.swapaxes(split_heads(_proj(x, params.linear_k), no_heads), -2, -3)
+    value = jnp.swapaxes(split_heads(_proj(x, params.linear_v), no_heads), -2, -3)
 
     out = cueq_attention_core(
         query,
@@ -247,7 +264,7 @@ def _cueq_attention(
     # [..., I, J, H, D], which is what the gate and the output projection expect.
     out = jnp.swapaxes(out, -2, -3)
     if params.linear_g is not None:
-        out = out * split_heads(jax_sigmoid(linear(x, params.linear_g)), no_heads)
+        out = out * split_heads(jax_sigmoid(_proj(x, params.linear_g)), no_heads)
     return linear(flatten_heads(out), params.linear_o)
 
 
@@ -325,9 +342,9 @@ def _ring_attention(
 ) -> jnp.ndarray:
     """Exact two-dimensional ring counterpart of dense AF3 attention."""
 
-    query = jnp.swapaxes(split_heads(linear(x, params.linear_q), no_heads), -2, -3)
-    key = jnp.swapaxes(split_heads(linear(x, params.linear_k), no_heads), -2, -3)
-    value = jnp.swapaxes(split_heads(linear(x, params.linear_v), no_heads), -2, -3)
+    query = jnp.swapaxes(split_heads(_proj(x, params.linear_q), no_heads), -2, -3)
+    key = jnp.swapaxes(split_heads(_proj(x, params.linear_k), no_heads), -2, -3)
+    value = jnp.swapaxes(split_heads(_proj(x, params.linear_v), no_heads), -2, -3)
     query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
     out = ring_triangle_attention_2d(
         query,
@@ -338,7 +355,7 @@ def _ring_attention(
     )
     out = jnp.swapaxes(out, -2, -3)
     if params.linear_g is not None:
-        out = out * split_heads(jax_sigmoid(linear(x, params.linear_g)), no_heads)
+        out = out * split_heads(jax_sigmoid(_proj(x, params.linear_g)), no_heads)
     return linear(flatten_heads(out), params.linear_o)
 
 
