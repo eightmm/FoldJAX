@@ -196,3 +196,47 @@ arm of this harness.
 
 That is the honest end of this axis. It is not a reduction of the cell; it is
 the reason the next attempt should not spend itself here.
+
+## The chunk policy diverges from upstream and it does not matter
+
+Upstream's `trunkv2.py:594-600` switches to fixed per-operation chunk widths
+once the token count passes `const.chunk_size_threshold = 384`. At 5SAK's 437
+tokens that is: MSA transition 32, PWA head chunking on, triangle attention 128,
+transition-z 64, **outer product mean 4**.
+
+The port reproduces two of those exactly -- `msa.py:263` uses 32 for the MSA
+transition and `heads_per_group = 1` turns on PWA head chunking above the same
+384 -- but resolves the outer product mean's width from a memory budget
+(`_auto_outer_product_chunk`), capped by the caller's `chunk_size`. At this size
+the budget does not bind, so the run used 128 where upstream uses 4.
+
+That is a real divergence from the released configuration, and it changes
+nothing:
+
+| Arm | RMSE |
+| --- | ---: |
+| shipped `chunk_size=128` | 3.233621e-02 |
+| `chunk_size=4` (upstream's OPM width) | 3.233621e-02 |
+| `chunk_size=32` | 3.233621e-02 |
+| `chunk_size=64` | 3.233621e-02 |
+| `chunk_size=128` + triangle attention 128 | 3.233621e-02 |
+| `chunk_size=4` + triangle attention 128 | 3.233621e-02 |
+
+Six arms, identical to seven significant figures. Both sides chunk the *token*
+axis, so each chunk writes a disjoint set of output rows and nothing accumulates
+across chunks. The width is free.
+
+Worth fixing as a configuration-fidelity matter, and worth knowing that it is
+not this residual.
+
+## Closing position
+
+Twenty arms across four axes -- knobs, parameter dtype, activation dtype, chunk
+width -- and the shipped configuration is the best or equal in every one, with a
+repeated-baseline spread of 6e-6.
+
+The residual is not reachable from configuration. It is in how the operations
+are computed, and separating that needs the port's kernels compared against
+upstream's implementation op by op, with native sub-module boundaries to compare
+against. The upstream source is readable here; the native intermediate captures
+are not part of this branch.
