@@ -268,3 +268,33 @@ result bitwise identical, so the counts that actually occur here are inside
 bfloat16's exact range -- the padded rows are masked out and the surviving
 per-pair counts are small. The comment is still wrong about upstream, and the
 divergence is still real; it just does not reach the output on this input.
+
+## Retraction: the count exclusion above was measured on dead code
+
+The section above reports that round-tripping the outer product mean's validity
+count through the autocast dtype is bitwise identical, and concludes the count
+is not the cause. **That conclusion does not stand.**
+
+A later probe patched the pair-weighted-averaging head loop in
+`_pair_weighted_averaging_amp` and found it inert. Suspecting the harness rather
+than the arithmetic, the same branch was then made to *double* its logits -- a
+change nothing could survive numerically. The result was still bitwise
+identical. The branch never executes.
+
+`msa.py` carries more than one implementation of that head loop --
+`_pair_weighted_averaging_amp` and `_pair_weighted_averaging_chunked` at least,
+selected by a row-chunk decision -- and the patched one is not the one this
+input takes. The count patch sat in `_outer_product_mean_amp`, a different
+function, and was never given the same tripwire, so it inherits the same doubt.
+
+Both are withdrawn. What remains standing from the source reading is the
+comparison itself: upstream masks and softmaxes the pair bias in the autocast
+dtype while the port upcasts to float32, and upstream's count is bfloat16-valued
+while the port's is float32. Those are real divergences in the source. Whether
+they reach the output is unmeasured, because the arms that claimed to measure
+them were pointed at code that does not run.
+
+**Every dtype arm in this document that was applied by patching a named function
+needs a tripwire before it can be read.** The arms that changed *arguments* --
+knobs, chunk widths, parameter and activation dtypes -- are unaffected: those
+reach the module through its signature and their effects were visible.
