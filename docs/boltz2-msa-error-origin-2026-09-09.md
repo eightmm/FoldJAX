@@ -414,3 +414,52 @@ upstream's implementation. The upstream source is readable in this workspace and
 the harness that can measure it now exists: independent snapshots, one job each,
 no shared environment, compilation cache off, and a positive control queued with
 every claim.
+
+## Correction: both sides use cuEquivariance, and the difference is call granularity
+
+Two claims above are wrong and are corrected here.
+
+**"Two different fused kernel implementations" is wrong.** Upstream's
+`kernel_triangular_mult` imports
+`cuequivariance_torch.primitives.triangle.triangle_multiplicative_update`. It is
+the same library the port calls through `cuequivariance_jax`. That was asserted
+without checking.
+
+**The contraction-dtype reading was of dead code.** The port's
+`triangle_multiplication_forward` resolves a backend from
+`BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND`, defaulting to `cueq`, and returns
+from `cueq_triangle_multiplication_forward` before reaching the `native_amp` and
+`contraction_precision` logic that was analysed. That logic is the XLA fallback
+and does not run by default.
+
+### What the difference actually is
+
+| | Upstream | Port, shipped configuration |
+| --- | --- | --- |
+| Call | one fused `triangle_multiplicative_update` | `norm`, `gemm`, `gemm_dual` called separately |
+| Autocast boundaries | left to torch autocast | placed by hand in `_cueq_triangle_native_amp` |
+| `precision` argument | not passed; library default | computed and passed explicitly |
+
+With fp32 activations and bfloat16 kernels -- the shipped configuration --
+`cueq_triangle_multiplication_forward` skips the fused call entirely and
+decomposes the operator into primitives to reproduce torch's autocast placement.
+The same arithmetic through one fused kernel and through three primitive calls
+does not accumulate the same way.
+
+### Measured, with a control
+
+| Arm | RMSE against native `delta_z` |
+| --- | ---: |
+| shipped: decomposed primitives | 3.233621e-02 |
+| **upstream's granularity: the fused call** | **3.212102e-02** |
+| control: decomposed path doubled | 8.536005e-01 |
+
+The control moves the result twenty-six fold. The fused call is **0.67% closer
+to native**, against a repeated-baseline spread of 0.02% -- thirty times the
+noise, and in the direction the source comparison predicts.
+
+This is the first arm in this investigation that reduces the residual rather
+than excluding a candidate. It is small: 0.67% of a 3.2e-2 stage residual will
+not by itself move a 1.18 Å cell. What it establishes is that the remaining
+difference is *reachable* -- it lives in how the port calls a shared library, not
+in a kernel nobody here can change.
