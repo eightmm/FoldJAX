@@ -14,6 +14,34 @@ from foldjax.models.boltz2.models.triangle import triangle_attention
 from foldjax.models.boltz2.models.trunk_blocks import msa, pairformer
 
 
+@pytest.mark.parametrize("affine_dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
+def test_private_cuda_norm_promotes_affine_before_final_fma(affine_dtype):
+    # ESM calls this private helper directly, unlike Boltz's FP32-casting wrapper.
+    traced = jax.make_jaxpr(
+        lambda x, s, b: native_amp_norm._cuda_layer_norm(x, s, b)
+    )(
+        jnp.zeros((1, 256), jnp.float32),
+        jnp.ones(256, affine_dtype),
+        jnp.zeros(256, affine_dtype),
+    )
+    call = next(e for e in traced.jaxpr.eqns if e.primitive.name == "pallas_call")
+    kernel = call.params["jaxpr"]
+    kernel = getattr(kernel, "jaxpr", kernel)
+    affine = [
+        e for e in kernel.eqns if e.params.get("asm") == "fma.rn.f32 $0, $1, $2, $3;"
+    ][-1]
+    assert all(v.aval.shape == (256,) for v in affine.invars)
+    assert all(v.aval.dtype == jnp.float32 for v in affine.invars)
+    assert affine.outvars[0].aval.dtype == jnp.float32
+    if affine_dtype != jnp.float32:
+        producers = {v: e for e in kernel.eqns for v in e.outvars}
+        for operand in (affine.invars[0], affine.invars[2]):
+            convert = producers[operand]
+            assert convert.primitive.name == "convert_element_type"
+            assert convert.invars[0].aval.dtype == affine_dtype
+            assert convert.params["new_dtype"] == jnp.float32
+
+
 @pytest.mark.parametrize("input_dtype", [jnp.float32, jnp.bfloat16])
 @pytest.mark.parametrize("kernel_dtype", [jnp.float32, jnp.bfloat16])
 @pytest.mark.parametrize("starting", [True, False])
@@ -83,7 +111,35 @@ def test_pair_transition_native_norm_does_not_change_single_policy(
     assert calls[0]["native_amp_norm"] == (dtype == jnp.bfloat16)
 
 
-@pytest.mark.parametrize("width", [8, 16, 128, 256])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
+def test_msa_transition_selects_native_norm_only_for_bf16(monkeypatch, dtype):
+    calls = []
+
+    def transition_stub(params, x, **kwargs):
+        calls.append(kwargs)
+        return jnp.zeros_like(x)
+
+    monkeypatch.setattr(msa, "transition_forward", transition_stub)
+    monkeypatch.setattr(
+        msa, "pair_weighted_averaging_forward", lambda p, m, *a, **k: jnp.zeros_like(m)
+    )
+    z = jnp.zeros((1, 2, 2, 128))
+    monkeypatch.setattr(msa, "outer_product_mean_forward", lambda *a, **k: z)
+    monkeypatch.setattr(msa, "pairformer_no_seq_layer_forward", lambda p, z, *a, **k: z)
+    params = {
+        "pair_weighted_averaging": {},
+        "msa_transition": {"fc1": {"kernel": jnp.zeros((64, 256), dtype)}},
+        "outer_product_mean": {},
+        "pairformer_layer": {},
+    }
+    msa.msa_layer_forward(
+        params, z, jnp.ones((1, 3, 2, 64)), jnp.ones((1, 2, 2)), jnp.ones((1, 3, 2))
+    )
+    assert len(calls) == 1
+    assert calls[0].get("native_amp_norm", False) == (dtype == jnp.bfloat16)
+
+
+@pytest.mark.parametrize("width", [8, 16, 64, 128, 256])
 def test_cpu_norm_and_affine_fallback(width):
     rng = np.random.default_rng(width)
     args = [
@@ -97,6 +153,37 @@ def test_cpu_norm_and_affine_fallback(width):
         affine = jax.jit(native_amp_norm.amp_affine)(*args)
         reference = jax.jit(lambda x, s, b: x * s + b)(*args)
         np.testing.assert_array_equal(affine, reference)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
+def test_opm_native_norm_selection_preserves_original_affine(monkeypatch, dtype):
+    calls = []
+    scale, bias = jnp.array([1.0001, 0.9999]), jnp.array([0.0001, -0.0001])
+
+    def native_norm(x, s, b, eps):
+        calls.append((x, s, b))
+        return x
+
+    monkeypatch.setattr(msa, "amp_layer_norm", native_norm)
+    params = {
+        "norm": {"scale": scale, "bias": bias},
+        "proj_a": {"kernel": jnp.ones((2, 2), dtype)},
+        "proj_b": {"kernel": jnp.ones((2, 2), dtype)},
+        "proj_o": {
+            "kernel": jnp.ones((4, 2), dtype),
+            "bias": jnp.zeros(2),
+        },
+    }
+    result = msa.outer_product_mean_forward(
+        params, jnp.ones((1, 3, 2, 2)), jnp.ones((1, 3, 2)),
+        preserve_native_amp_shape=True,
+    )
+    assert result.shape == (1, 2, 2, 2)
+    assert len(calls) == int(dtype == jnp.bfloat16)
+    if calls:
+        assert calls[0][0].dtype == jnp.float32
+        np.testing.assert_array_equal(calls[0][1], scale)
+        np.testing.assert_array_equal(calls[0][2], bias)
 
 
 def test_context_parallel_does_not_enter_cuda_kernel(monkeypatch):

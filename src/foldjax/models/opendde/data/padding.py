@@ -15,7 +15,7 @@ from foldjax.models.protenix.data.padding import (
     pad_protenix_features,
 )
 from foldjax.models.protenix.relative_position import COMPACT_RELP_FIELDS
-from foldjax.padding import PaddingPlan, resolve_axis
+from foldjax.padding import PaddingPlan, resolve_token_axis
 from foldjax.schema import PaddingConfig
 
 _OPENDDE_TOKEN_FIELDS = {
@@ -173,12 +173,6 @@ def pad_opendde_features(
         raise ValueError(
             "structural_token_padding_mask must retain at least one token"
         )
-    target_structural = resolve_axis(
-        actual_structural,
-        config,
-        "structural_tokens",
-        minimum=storage_structural,
-    )
 
     # The raw MSA is not a graph input once sampled cycles are supplied.  Do
     # not duplicate a potentially 16k-row alignment across the padded token
@@ -216,6 +210,15 @@ def pad_opendde_features(
     for name in ("msa", "has_deletion", "deletion_value", "msa_mask"):
         padded.pop(name, None)
     target_token = common_plan.target["tokens"]
+    # Native tokenization emits at most backbone plus sidechain/base per token.
+    target_structural = resolve_token_axis(
+        actual_structural,
+        config,
+        "structural_tokens",
+        token_target=target_token,
+        minimum=storage_structural,
+        fixed_size=2 * target_token,
+    )
     target_atom = common_plan.target["atoms"]
 
     _pad_named_axis(

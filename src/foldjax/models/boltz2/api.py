@@ -612,7 +612,7 @@ def predict(
     if resolved_trunk_atom_attention_backend == "triton":
         _require_triton_attention_device(jax)
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_devices)
-    cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after != "trunk"
+    cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after == "full"
     cp_rows = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else cp_devices
     cp_cols = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else 1
     if cp_devices > 1 and glu_backend != "xla":
@@ -628,6 +628,11 @@ def predict(
             "context parallelism requires trunk_atom_attention_backend='xla' "
             "or null; fused atom attention is not partitioned"
         )
+
+    if padding is not None and max_msa_depth is None:
+        from foldjax.padding import MSA_PROFILE_DEPTH
+
+        max_msa_depth = padding.msa or MSA_PROFILE_DEPTH
 
     feats_np, record_id, struct_dir = featurize(
         input=input,
@@ -676,7 +681,7 @@ def predict(
         parameter_identity=parameter_identity,
     )
     confidence_weights = Path(weights)
-    affinity_requested = stop_after != "trunk" and bool(
+    affinity_requested = stop_after == "full" and bool(
         np.any(feats_np["affinity_token_mask"])
     )
     if _runtime is not None:
@@ -759,7 +764,7 @@ def predict(
         )
 
         padding_plan = (
-            resolve_padding_plan(feats_np, padding)
+            resolve_padding_plan(feats_np, padding, max_msa_depth=max_msa_depth)
             if padding is not None
             else resolve_legacy_padding_plan(feats_np)
         )
@@ -775,7 +780,7 @@ def predict(
             cp_cols=cp_cols,
         )
     if not steering_active:
-        if stop_after == "trunk":
+        if stop_after in {"inputs", "trunk"}:
             feats_np = drop_token_to_rep_atom_storage(feats_np)
             feats_np = compact_atom_to_token_storage(feats_np)
         else:
@@ -805,7 +810,7 @@ def predict(
     padding_noise_mode = "none"
     padding_noise_arg = None
     if (
-        stop_after != "trunk"
+        stop_after == "full"
         and padding_plan is not None
         and padding_plan.target["atoms"] > padding_plan.storage["atoms"]
     ):
@@ -831,7 +836,12 @@ def predict(
                 steps=num_steps,
             )
     wanted_representations = _representations.resolve(
-        representations, _representations.specs_for("boltz2")
+        representations,
+        (
+            {"single_inputs": _representations.specs_for("boltz2")["single_inputs"]}
+            if stop_after == "inputs"
+            else _representations.specs_for("boltz2")
+        ),
     )
     predict_kwargs = {
         "recycling_steps": num_recycles,
@@ -841,6 +851,7 @@ def predict(
         "run_confidence": True,
         "return_representations": wanted_representations,
         "stop_after_trunk": stop_after == "trunk",
+        "stop_after_inputs": stop_after == "inputs",
         "run_distogram": return_confidence_logits,
         "return_confidence_logits": return_confidence_logits,
         "run_bfactor": True,
@@ -1001,7 +1012,7 @@ def predict(
                 )
             model_args = tuple(placed_args)
         out = runner(*model_args)
-    if stop_after == "trunk":
+    if stop_after in {"inputs", "trunk"}:
         # The trunk-only graph intentionally has no sampler or confidence
         # outputs. Crop captured padded representations before touching any
         # coordinate field, persist them, and return immediately.
@@ -1095,7 +1106,9 @@ def predict(
                 resolve_padding_plan,
             )
             affinity_padding_plan = (
-                resolve_padding_plan(affinity_feats_np, padding)
+                resolve_padding_plan(
+                    affinity_feats_np, padding, max_msa_depth=max_msa_depth
+                )
                 if padding is not None
                 else resolve_legacy_padding_plan(affinity_feats_np)
             )

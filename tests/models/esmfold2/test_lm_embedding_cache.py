@@ -57,14 +57,9 @@ def test_compiled_embedding_boundary_preserves_the_language_model_pair(
         del parameters["language_model.base_z_linear.1.bias"]
     compute = jnp.dtype(compute_dtype)
 
-    def cast(params):
-        return structure_model._cast(  # noqa: SLF001
-            params, structure_model.TRUNK_PREFIXES, compute
-        )
-
-    historical = jax.jit(
+    direct = jax.jit(
         lambda states, params: structure_model.language_model_pair(
-            states.astype(compute), cast(params)
+            states, params, compute_dtype=compute
         )
     )(hidden, parameters)
     loaded = inference.LoadedModel(
@@ -74,11 +69,11 @@ def test_compiled_embedding_boundary_preserves_the_language_model_pair(
     embedding = inference._language_model_embedding_from_states(hidden, loaded)
     compact = jax.jit(
         lambda value, params: structure_model.language_model_pair_from_embedding(
-            value.astype(compute), cast(params)
+            value, params, compute_dtype=compute
         )
     )(embedding, parameters)
 
-    np.testing.assert_array_equal(np.asarray(compact), np.asarray(historical))
+    np.testing.assert_array_equal(np.asarray(compact), np.asarray(direct))
     assert embedding.shape == (1, 9, 6)
     assert embedding.size * 5 * 8 == hidden.size * 6
     assert embedding.nbytes < hidden.nbytes

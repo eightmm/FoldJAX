@@ -40,6 +40,7 @@ from foldjax.job import (
     Rna,
     Template,
 )
+from foldjax.model import ExecutionConfig, Model, ModelConfig, get_model
 from foldjax.registry import (
     available_models,
     capabilities,
@@ -75,6 +76,10 @@ __all__ = [
     "Dna",
     "InputRequirement",
     "Job",
+    "ExecutionConfig",
+    "Model",
+    "ModelConfig",
+    "get_model",
     "Ligand",
     "ModelCapabilities",
     "ModelInfo",

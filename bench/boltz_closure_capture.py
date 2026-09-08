@@ -25,6 +25,11 @@ import numpy as np
 from bench.af3_closure_capture import sha
 from bench.protenix_closure_capture import flatten_native, host_array, source_identity
 
+SINGLE_LEAVES = (
+    "pairformer_module.layers.0.pre_norm_s",
+    *(f"pairformer_module.layers.0.attention.proj_{name}" for name in "qkvg"),
+)
+
 
 def save_new(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,11 +122,12 @@ def conditioning_tree(output):
 
 
 class NativeObserver:
-    def __init__(self, out, *, samples, recycles, forward_code):
+    def __init__(self, out, *, samples, recycles, forward_code, input_details=False):
         self.out = out
         self.samples = samples
         self.recycles = recycles
         self.forward_code = forward_code
+        self.input_details = input_details
         self.counts = Counter()
         self.artifacts = {}
         self.module_names = []
@@ -151,7 +157,19 @@ class NativeObserver:
                     return None
                 label = f"trunk-boundaries/cycle-{index:02d}/{name}"
                 if name == "msa_module":
-                    output = {"input_z": args[0], "delta_z": output}
+                    output = {
+                        "input_z": args[0], "input_emb": args[1],
+                        "input_features": {key: args[2][key] for key in (
+                            "msa", "has_deletion", "deletion_value", "msa_paired",
+                            "msa_mask", "token_pad_mask",
+                        )},
+                        "delta_z": output,
+                    }
+                elif name == "msa_module.layers.0":
+                    output = {"input_z": args[0], "input_m": args[1],
+                              "token_mask": args[2], "msa_mask": args[3]}
+                elif name in SINGLE_LEAVES:
+                    output = {"input": args[0], "output": output}
                 elif name == "pairformer_module":
                     output = {
                         "input_s": args[0],
@@ -163,6 +181,18 @@ class NativeObserver:
                 label = f"trunk-boundaries/{name}"
                 if name == "diffusion_conditioning":
                     output = conditioning_tree(output)
+                elif name in {
+                    "input_embedder.atom_encoder",
+                    "input_embedder.atom_attention_encoder",
+                }:
+                    # Only tensor outputs are this diagnostic's scope; the
+                    # native callable is neither serialized nor replaced.
+                    output = output[:3]
+                elif name.startswith((
+                    "input_embedder.atom_encoder.",
+                    "input_embedder.atom_attention_encoder.atom_encoder.",
+                )):
+                    output = {"input": args[0], "output": output}
             self.record(label, output)
             # Returning the captured tensor would replace the publisher output.
             return None
@@ -183,6 +213,28 @@ class NativeObserver:
         ]
         if model.bond_type_feature:
             names.append("token_bonds_type")
+        if self.input_details:
+            names.extend(f"input_embedder.{name}" for name in (
+                "atom_encoder", "atom_enc_proj_z", "atom_attention_encoder",
+                "res_type_encoding", "msa_profile_encoding",
+                "method_conditioning_init", "modified_conditioning_init",
+                "cyclic_conditioning_init", "mol_type_conditioning_init",
+                "atom_encoder.embed_atompair_ref_pos",
+                "atom_encoder.embed_atompair_ref_dist",
+                "atom_encoder.embed_atompair_mask",
+                "atom_encoder.c_to_p_trans_q", "atom_encoder.c_to_p_trans_k",
+                "atom_encoder.p_mlp",
+            ))
+            prefix = (
+                "input_embedder.atom_attention_encoder.atom_encoder."
+                "diffusion_transformer.layers.0."
+            )
+            names.extend(prefix + name for name in (
+                "adaln.a_norm", "adaln.s_norm", "adaln.s_scale", "adaln.s_bias",
+                "pair_bias_attn.proj_q", "pair_bias_attn.proj_k",
+                "pair_bias_attn.proj_v", "pair_bias_attn.proj_g",
+                "pair_bias_attn.proj_o",
+            ))
         cyclic = [
             "s_norm",
             "z_norm",
@@ -192,9 +244,16 @@ class NativeObserver:
             "pairformer_module",
         ]
         self.module_names = names + cyclic
+        if self.input_details:
+            cyclic.append("msa_module.layers.0")
+            self.module_names.append("msa_module.layers.0")
+            cyclic.extend(SINGLE_LEAVES)
+            self.module_names.extend(SINGLE_LEAVES)
         try:
             for name in self.module_names:
-                module = getattr(model, name)
+                module = model
+                for component in name.split("."):
+                    module = getattr(module, component)
                 if name in {"msa_module", "pairformer_module"}:
                     module = getattr(module, "_orig_mod", module)
                 handles.append(
@@ -311,6 +370,8 @@ class NativeObserver:
                     "z_recycle",
                     "msa_module",
                     "pairformer_module",
+                    "msa_module.layers.0",
+                    *SINGLE_LEAVES,
                 }
                 else 1
             )
@@ -342,6 +403,7 @@ def main(argv=None):
         "--precision", choices=("bf16-mixed", "32"), default="bf16-mixed"
     )
     parser.add_argument("--no-kernels", action="store_true")
+    parser.add_argument("--input-details", action="store_true")
     args = parser.parse_args(argv)
     if args.num_samples < 1 or args.num_steps < 1 or args.num_recycles < 0:
         parser.error("sample/step counts must be positive and recycles nonnegative")
@@ -384,6 +446,7 @@ def main(argv=None):
         samples=args.num_samples,
         recycles=args.num_recycles,
         forward_code=Boltz2.forward.__code__,
+        input_details=args.input_details,
     )
     original_install = legacy._install_hooks
     original_augment = featurizerv2.center_random_augmentation

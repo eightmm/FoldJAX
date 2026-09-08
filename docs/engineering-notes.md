@@ -274,6 +274,13 @@ configs, not inference.
 (`opendde/config/model_base.py:37`), FoldJAX ships bfloat16 since 2026-08-28,
 and the rest of this section is the measurement that justified it.
 
+**Historical source scope, superseded for the current pin (2026-09-09):**
+The following August ESMFold2 account does not describe the currently pinned
+native source. It has separate CUDA BF16 autocast regions for confidence,
+language-model execution and diffusion pair conditioning. Do not use the old
+single-autocast claim or rounded-score timings as current precision admission.
+See `esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
+
 **ESMFold2 is the undeclared one, found 2026-08-28.** Upstream has exactly one
 autocast in the whole model — `transformers/models/esmfold2/modeling_esmfold2.py:2021`:
 

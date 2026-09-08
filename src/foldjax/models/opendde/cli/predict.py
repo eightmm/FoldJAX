@@ -16,11 +16,18 @@ from foldjax.models.opendde.data.compact_categories import (
 )
 from foldjax.models.protenix.chunking import ChunkPolicyName
 from foldjax.models.protenix.data.template_features import dedup_templates
+from foldjax.padding import OPENDDE_MSA_PROFILE_DEPTH
 from foldjax.schema import PaddingConfig, PredictionError
 
 # Private backend capability: defer request-scoped reuse until after this CLI
 # has parsed argv and established the native runtime environment.
 PREPARED_PARAMS_LOADER_API = True
+
+
+def _resolve_msa_depth(value: int | None, padding: PaddingConfig | None) -> int:
+    if value is not None:
+        return value
+    return (padding.msa or OPENDDE_MSA_PROFILE_DEPTH) if padding is not None else 16384
 
 
 def _boolean(value: str) -> bool:
@@ -180,6 +187,7 @@ def _predict(
     return_confidence_details: bool = True,
     return_representations: bool = False,
     stop_after_trunk: bool = False,
+    stop_after_inputs: bool = False,
     capture_names: tuple[str, ...] = (),
     n_chain: int | None = None,
     cycle_msa_features: tuple[dict[str, Any], ...] | None = None,
@@ -324,6 +332,7 @@ def _predict(
         return_representations=return_representations,
         capture_names=capture_names,
         stop_after_trunk=stop_after_trunk,
+        stop_after_inputs=stop_after_inputs,
         n_chain=n_chain,
         init_noise=init_noise,
         step_noises=step_noises,
@@ -446,7 +455,7 @@ def main(
         "--max-msa-rows",
         dest="max_msa_depth",
         type=int,
-        default=16384,
+        default=None,
     )
     parser.add_argument(
         "--diffusion-attention-backend",
@@ -530,7 +539,7 @@ def main(
     )
     parser.add_argument(
         "--stop-after",
-        choices=("full", "trunk"),
+        choices=("full", "inputs", "trunk"),
         default="full",
         help=(
             "'trunk' stops once the representations exist, skipping the "
@@ -583,6 +592,7 @@ def main(
         help="Kalign 3.3.5 executable used for exact template realignment",
     )
     args = parser.parse_args(argv)
+    args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth, padding)
 
     if padding is not None:
         unsupported = sorted(
@@ -664,7 +674,12 @@ def main(
     # structure written now from one left by an earlier run into the same
     # directory.
     wanted_representations = _representations.resolve(
-        args.representations, _representations.specs_for("opendde")
+        args.representations,
+        (
+            {"single_inputs": _representations.specs_for("opendde")["single_inputs"]}
+            if args.stop_after == "inputs"
+            else _representations.specs_for("opendde")
+        ),
     )
     written: list[Path] = []
     try:
@@ -703,7 +718,7 @@ def main(
                 features = compact_msa_storage(features)
                 output_features = (
                     None
-                    if args.stop_after == "trunk"
+                    if args.stop_after in {"inputs", "trunk"}
                     else project_generated_output_features(features)
                 )
                 model_features = features
@@ -735,6 +750,7 @@ def main(
                         features,
                         num_recycles=args.num_recycles,
                         seed=seed,
+                        msa_depth=padding.msa or OPENDDE_MSA_PROFILE_DEPTH,
                     )
                     padded_features, cycle_msa_features, padding_plan = (
                         pad_opendde_features(
@@ -834,6 +850,7 @@ def main(
                     n_chain=n_chain,
                     cycle_msa_features=cycle_msa_features,
                     stop_after_trunk=args.stop_after == "trunk",
+                    stop_after_inputs=args.stop_after == "inputs",
                     **random_tapes,
                 )
                 # The remaining host readers consume only ``output_features``;
@@ -841,7 +858,7 @@ def main(
                 # cropped outputs and shape-complementarity postprocessing.
                 model_features = None
                 cycle_msa_features = None
-                if args.stop_after == "trunk":
+                if args.stop_after in {"inputs", "trunk"}:
                     destination = args.representations_dir or (
                         args.out / job_name / f"seed_{seed}" / "predictions"
                     )

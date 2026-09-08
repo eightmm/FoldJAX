@@ -19,6 +19,11 @@ These are fixed implementation targets, not aliases for upstream `latest`.
 commits, checkpoint revisions or hashes, and the support boundary of every
 profile.
 
+Use `foldjax.get_model(name)` for common `embed`, `encode`, and `predict`
+stages, with `ModelConfig` for inference choices and `ExecutionConfig` for
+padding and compilation. Native features remain private. See the
+[common model interface](docs/model-interface.md) for examples and MSA semantics.
+
 Each is vendored at `foldjax.models.<name>`. The full parameter terms per
 model, which are not always the code licence, are in
 [docs/licences.md](docs/licences.md) — publisher summaries, not legal advice.

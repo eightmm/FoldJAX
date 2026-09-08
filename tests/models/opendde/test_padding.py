@@ -95,13 +95,13 @@ def test_opendde_msa_padding_preserves_sampled_prefix_and_masks_suffix() -> None
     assert plan.summary() == {
         "actual": {"msa": 5},
         "storage": {"msa": 5},
-        "target": {"msa": 64},
+        "target": {"msa": 1280},
         "changed": True,
     }
     for before, after in zip(sampled, padded, strict=True):
         for name in ("msa", "has_deletion", "deletion_value", "msa_mask"):
             np.testing.assert_array_equal(after[name][:5], before[name])
-        assert after["msa"].shape == (64, 3)
+        assert after["msa"].shape == (1280, 3)
         np.testing.assert_array_equal(after["msa"][5:], 31)
         np.testing.assert_array_equal(after["has_deletion"][5:], 0)
         np.testing.assert_array_equal(after["deletion_value"][5:], 0)
@@ -156,7 +156,7 @@ def test_opendde_padded_msa_rows_cannot_change_the_pair_update() -> None:
     )
 
 
-def test_opendde_msa_padding_refuses_shrink_nonprefix_and_grid_overflow() -> None:
+def test_opendde_msa_padding_refuses_shrink_nonprefix_and_capacity_overflow() -> None:
     sampled = _sampled_cycles(3, cycles=1)
     with pytest.raises(ValueError, match="smaller than the input size 3"):
         pad_opendde_msa_cycle_features(sampled, PaddingConfig(msa=2))
@@ -172,11 +172,11 @@ def test_opendde_msa_padding_refuses_shrink_nonprefix_and_grid_overflow() -> Non
         seed=17,
         msa_depth=20000,
     )
-    with pytest.raises(ValueError, match="largest standard bucket 16384"):
+    with pytest.raises(ValueError, match="padding.msa=1280 is smaller"):
         pad_opendde_msa_cycle_features(over_grid, PaddingConfig())
     _padded, plan = pad_opendde_msa_cycle_features(
         over_grid,
-        PaddingConfig(overflow="exact"),
+        PaddingConfig(msa=16385),
     )
     assert plan.target == {"msa": 16385}
 
@@ -216,7 +216,7 @@ def test_opendde_backend_forwards_padding_and_returns_concrete_profile(
     expected = {
         "actual": {"msa": 5},
         "storage": {"msa": 5},
-        "target": {"msa": 64},
+        "target": {"msa": 1280},
         "changed": True,
     }
 
@@ -327,9 +327,9 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
             },
             "target": {
                 "tokens": 256,
-                "atoms": 256,
+                "atoms": 6144,
                 "msa": 64,
-                "structural_tokens": 256,
+                "structural_tokens": 512,
             },
             "changed": True,
             "static": {"chains": 1},
@@ -421,7 +421,7 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
         "num_samples": 1,
         "num_steps": 1,
         "actual_atom": 3,
-        "target_atom": 256,
+        "target_atom": 6144,
     }
 
 
@@ -873,3 +873,22 @@ def test_the_multiplication_backend_default_is_keyed_on_the_trunk_dtype(
     monkeypatch.setenv("PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND", "cueq")
     spy(trunk_dtype=jnp.bfloat16)
     assert seen == ["cueq"], seen
+
+
+def test_automatic_token_profile_uses_native_structural_bound_and_fixed_msa():
+    features = _opendde_features(msa_depth=5)
+    sampled = sample_opendde_msa_cycle_features(features, num_recycles=2, seed=7)
+    padded, cycles, plan = pad_opendde_features(
+        features, sampled, PaddingConfig(tokens=4), n_queries=2, n_keys=4
+    )
+    assert plan.target == {
+        "tokens": 4,
+        "atoms": 96,
+        "msa": 1280,
+        "structural_tokens": 8,
+    }
+    np.testing.assert_array_equal(padded["structural_token_padding_mask"][3:], 0)
+    np.testing.assert_array_equal(padded["atom_padding_mask"][3:], 0)
+    for before, after in zip(sampled, cycles, strict=True):
+        np.testing.assert_array_equal(after["msa"][:5, :3], before["msa"])
+        np.testing.assert_array_equal(after["msa_mask"][5:], 0)

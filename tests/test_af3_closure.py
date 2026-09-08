@@ -10,7 +10,48 @@ from bench.af3_closure import (
     TAPE_COVERAGE,
     compare_arms,
     compare_confidence,
+    config_difference_kind,
 )
+
+
+@pytest.mark.parametrize("extra", [
+    {"foldjax_return_representations": []},
+    {"foldjax_stop_after": "full"},
+    {"foldjax_return_representations": [], "foldjax_stop_after": "full"},
+])
+def test_config_extension_direction_and_defaults(extra):
+    native = {"recycles": 10}
+    candidate = dict(native, **extra)
+    assert config_difference_kind(native, candidate) == "allowlisted_extensions_only"
+    assert config_difference_kind(candidate, native) == "other"
+    assert config_difference_kind(native, native) == "none"
+
+
+@pytest.mark.parametrize("candidate", [
+    None, [], {}, {"recycles": 9}, {"recycles": 10.0},
+    {"recycles": 10, "unknown": []},
+    {"recycles": 10, "foldjax_unknown": []},
+    {"recycles": 10, "foldjax_stop_after": "inputs"},
+    {"recycles": 10, "foldjax_stop_after": "full "},
+    {"recycles": 10, "foldjax_return_representations": None},
+    {"recycles": 10, "foldjax_return_representations": ()},
+    {"recycles": 10, "foldjax_return_representations": [None]},
+])
+def test_config_extension_rejects_unrecognized_changes(candidate):
+    assert config_difference_kind({"recycles": 10}, candidate) == "other"
+
+
+@pytest.mark.parametrize("a,b", [(True, 1), (False, 0), (1, 1.0)])
+def test_config_difference_nested_type_identity(a, b):
+    for left, right in ((a, b), (b, a)):
+        assert config_difference_kind({"x": [left]}, {"x": [right]}) == "other"
+
+
+def test_config_extension_wrong_path_is_not_allowlisted():
+    assert config_difference_kind(
+        {"nested": {"x": 1}},
+        {"nested": {"x": 1, "foldjax_stop_after": "full"}},
+    ) == "other"
 
 
 def test_confidence_nonfinite_and_exact_types():
@@ -168,6 +209,23 @@ def test_arm_success_and_missing_evidence(tmp_path):
     assert not compare_arms(left, right)["passed"]
 
 
+def test_default_extension_is_explained_without_waiving_config_gate(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    _arm(left)
+    _arm(right)
+    path = right / "effective-config.json"
+    config = json.loads(path.read_text())
+    config["foldjax_stop_after"] = "full"
+    path.write_text(json.dumps(config))
+    report = compare_arms(left, right)
+    assert not report["passed"]
+    assert not report["checks"]["effective-config.json"]
+    diff = report["config_differences"]["effective-config.json"]
+    assert diff["kind"] == "allowlisted_extensions_only"
+    assert diff["right_only"] == {"foldjax_stop_after": "full"}
+    assert diff["changed"] == diff["left_only"] == {}
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -278,6 +336,21 @@ def test_tape_and_shared_provenance_prerequisites(tmp_path, failure):
             )
     path.write_text(json.dumps(value))
     assert not compare_arms(left, right)["passed"]
+
+
+@pytest.mark.parametrize("enabled", [False, None, 0, 1, "true"])
+def test_disabled_or_malformed_observer_flag_cannot_admit_audit(tmp_path, enabled):
+    left, right = tmp_path / "left", tmp_path / "right"
+    for root in (left, right):
+        _arm(root)
+        path = root / "preprocessing-tape.json"
+        value = json.loads(path.read_text())
+        value["observers_enabled"] = enabled
+        path.write_text(json.dumps(value))
+    report = compare_arms(left, right)
+    assert not report["checks"]["preprocessing_tape"]
+    assert not report["passed"]
+    assert compare_arms(left, right, require_tape=False)["passed"]
 
 
 def test_independent_source_hashes_may_differ(tmp_path):

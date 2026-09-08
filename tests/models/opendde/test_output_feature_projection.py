@@ -13,6 +13,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.cli import predict as predict_impl
@@ -359,8 +360,9 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
     )
 
 
+@pytest.mark.parametrize("msa_capacity", [None, 8, 1536])
 def test_padded_cli_releases_source_intermediates_and_model_before_score(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, msa_capacity
 ) -> None:
     from foldjax.models.opendde.data import padding as padding_impl
     from foldjax.models.opendde.models import msa_sampling as msa_impl
@@ -389,12 +391,14 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
     real_pad = padding_impl.pad_opendde_features
 
     def recording_featurize(job, **kwargs):
+        assert kwargs["max_msa_depth"] == (msa_capacity or 1280)
         features = real_featurize(job, **kwargs)
         actual_atoms.append(len(features["atom_to_token_idx"]))
         source_refs.append(weakref.ref(features["template_distogram"]))
         return features
 
     def recording_sample(features, **kwargs):
+        assert kwargs["msa_depth"] == (msa_capacity or 1280)
         sampled = real_sample(features, **kwargs)
         sampled_refs.extend(weakref.ref(cycle["msa"]) for cycle in sampled)
         return sampled
@@ -456,7 +460,7 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
             "4",
             "--include-raw",
         ],
-        padding=PaddingConfig(msa=8),
+        padding=PaddingConfig(msa=msa_capacity),
         _prepared_params_loader=lambda _path, _dtype, _cacheable: (),
     )
 
@@ -464,8 +468,9 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
     assert set(writes[0]["features"]) <= OPENDDE_GENERATED_OUTPUT_FEATURE_FIELDS
 
 
+@pytest.mark.parametrize("stop_after", ["inputs", "trunk"])
 def test_trunk_only_cli_does_not_build_an_output_projection(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, stop_after
 ) -> None:
     from foldjax.models.opendde import postprocess as postprocess_impl
 
@@ -497,7 +502,7 @@ def test_trunk_only_cli_does_not_build_an_output_projection(
             "--out",
             str(tmp_path / "out"),
             "--stop-after",
-            "trunk",
+            stop_after,
             "--n-sample",
             "1",
             "--n-step",

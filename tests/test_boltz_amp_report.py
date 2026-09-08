@@ -188,6 +188,20 @@ def test_full_report_keeps_sample_order_missing_public_fields_and_portable_ids(
     assert str(tmp_path) not in encoded
 
 
+@pytest.mark.parametrize("score", [1.0, 0.5])
+def test_prediction_score_is_checked_only_as_public_confidence(tmp_path, score):
+    native, candidate = tmp_path / "native", tmp_path / "candidate"
+    raw = _native(native)
+    _foldjax(
+        candidate, native, {**raw, "confidence_score": np.full(5, score, np.float32)}
+    )
+    report = build_report(native, candidate)
+    assert report["raw_confidence"]["strict_pass"]
+    assert "confidence_score" not in report["raw_confidence"]["leaves"]
+    assert report["public_confidence"]["strict_pass"] == (score == 1.0)
+    assert report["public_confidence"]["missing_from_candidate"] == []
+
+
 def test_report_verifies_bound_compiler_options(tmp_path):
     native, candidate = tmp_path / "native", tmp_path / "candidate"
     raw = _native(native)

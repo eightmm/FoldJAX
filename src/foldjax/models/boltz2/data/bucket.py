@@ -17,8 +17,10 @@ from foldjax.padding import (
     ATOM_BUCKETS as STANDARD_ATOM_BUCKETS,
 )
 from foldjax.padding import (
+    MSA_PROFILE_DEPTH,
     PaddingPlan,
     resolve_axis,
+    resolve_token_axis,
 )
 from foldjax.schema import PaddingConfig
 
@@ -318,15 +320,29 @@ def _feature_sizes(
 
 
 def resolve_padding_plan(
-    feats: Mapping[str, object], config: PaddingConfig
+    feats: Mapping[str, object],
+    config: PaddingConfig,
+    *,
+    max_msa_depth: int | None = None,
 ) -> PaddingPlan:
     """Resolve the neutral Boltz shape profile over token, atom and MSA axes."""
 
     actual, storage = _feature_sizes(feats)
-    target = {
-        axis: resolve_axis(actual[axis], config, axis, minimum=storage[axis])
-        for axis in ("tokens", "atoms", "msa")
-    }
+    token_target = resolve_axis(
+        actual["tokens"], config, "tokens", minimum=storage["tokens"]
+    )
+    target = {"tokens": token_target}
+    for axis in ("atoms", "msa"):
+        target[axis] = resolve_token_axis(
+            actual[axis],
+            config,
+            axis,
+            token_target=token_target,
+            minimum=storage[axis],
+            fixed_size=(MSA_PROFILE_DEPTH if max_msa_depth is None else max_msa_depth)
+            if axis == "msa"
+            else None,
+        )
     if target["atoms"] % 32:
         raise ValueError(
             "padding.atoms must be a multiple of 32 for Boltz2 atom windows"
@@ -469,9 +485,7 @@ def pad_feats(
                 axis,
                 target,
                 constant_value=(
-                    -1
-                    if key in {ATOM_TO_TOKEN_INDEX, TOKEN_TO_REP_ATOM_INDEX}
-                    else 0
+                    -1 if key in {ATOM_TO_TOKEN_INDEX, TOKEN_TO_REP_ATOM_INDEX} else 0
                 ),
             )
             if before != new.shape[axis]:

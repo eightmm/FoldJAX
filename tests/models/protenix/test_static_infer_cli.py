@@ -949,6 +949,18 @@ def test_static_infer_pads_mini_esm_language_model_and_reports_profile(
     assert tape_calls[0]["actual_atom"] == 6
     assert tape_calls[0]["target_atom"] == 8
 
+    # Model limits can fall just below a token bucket (ESM: 4094 vs 4096).
+    # Automatic LM capacity stays deterministic without rejecting valid inputs.
+    FakeProvider.max_sequence_length = 6
+    auto_argv = list(argv)
+    pin_index = auto_argv.index("--pad-language-model-tokens")
+    del auto_argv[pin_index : pin_index + 2]
+    predict_main(auto_argv, on_padding_plan=collect_profile)
+    assert language_targets[-1] == 6
+    assert profiles[-1][0].target["language_model_tokens"] == 6
+    with pytest.raises(SystemExit, match="exceeds model limit 6"):
+        predict_main(argv, on_padding_plan=collect_profile)
+
 
 def test_static_esm_features_bypass_language_model_checkpoint(
     tmp_path, monkeypatch

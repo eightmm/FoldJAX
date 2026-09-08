@@ -9,8 +9,22 @@ from bench.opendde_closure_capture import (
     confidence_feature_boundary,
     native_consumer_cycles,
     native_deterministic_policy,
+    observer_policy,
 )
 from bench.opendde_confidence_boundary import validate_representatives
+
+
+def test_observer_policy_binds_every_optional_switch():
+    switches = dict.fromkeys((
+        "capture_confidence_boundary", "capture_linear_policy",
+        "capture_trunk_boundary", "capture_ffi_policy", "capture_consumed_tape",
+    ), False)
+    assert observer_policy(SimpleNamespace(**switches)) == switches
+    for name in switches:
+        changed = {**switches, name: True}
+        assert observer_policy(SimpleNamespace(**changed)) == changed
+    with pytest.raises(ValueError, match="explicit booleans"):
+        observer_policy(SimpleNamespace(**{**switches, "capture_consumed_tape": 1}))
 
 
 def test_audit_request_pins_seed_without_overriding_native_dtype(tmp_path):

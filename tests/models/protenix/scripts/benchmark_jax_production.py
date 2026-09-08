@@ -17,12 +17,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--features", type=Path, required=True)
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--prediction-dir", type=Path)
+    parser.add_argument(
+        "--msa-cycle-route",
+        choices=("index_tape", "materialized"),
+        default="index_tape",
+    )
     parser.add_argument("--cache", type=Path, default=Path("outputs/compile_cache"))
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument("--warm-iters", type=int, default=3)
+    parser.add_argument(
+        "--matmul-precision", choices=("default", "high", "highest"), default="high"
+    )
     parser.add_argument("--diffusion-scan", action="store_true")
     parser.add_argument("--sampler-scan", dest="sampler_scan", action="store_true")
     parser.add_argument("--no-sampler-scan", dest="sampler_scan", action="store_false")
@@ -74,6 +83,8 @@ def main() -> None:
     if args.warm_iters <= 0:
         raise ValueError("warm_iters must be positive")
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.prediction_dir is not None:
+        args.prediction_dir.mkdir(parents=True, exist_ok=False)
     args.cache.mkdir(parents=True, exist_ok=True)
     jax.config.update("jax_compilation_cache_dir", str(args.cache.resolve()))
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
@@ -86,6 +97,7 @@ def main() -> None:
     from foldjax.models.protenix.models.trunk_blocks.msa import (
         pad_msa_features_to_bucket,
         sample_msa_cycle_features,
+        sample_msa_cycle_index_tape,
     )
 
     features = load_static_feature_npz(args.features)
@@ -102,13 +114,21 @@ def main() -> None:
         trunk_dtype = jnp.bfloat16
         params = cast_trunk_params(params, trunk_dtype)
     cycle_msa_features = None
+    cycle_msa_index_tape = None
     if not args.full_depth_msa:
-        sampled = sample_msa_cycle_features(
-            features,
-            num_recycles=args.cycles,
-            seed=args.seed,
-        )
-        cycle_msa_features = sampled or None
+        if args.msa_cycle_route == "index_tape":
+            cycle_msa_index_tape = sample_msa_cycle_index_tape(
+                features,
+                num_recycles=args.cycles,
+                seed=args.seed,
+            )
+        else:
+            sampled = sample_msa_cycle_features(
+                features,
+                num_recycles=args.cycles,
+                seed=args.seed,
+            )
+            cycle_msa_features = sampled or None
     n_token = int(features["restype"].shape[-2])
     chunks = resolve_chunk_config(
         n_token=n_token,
@@ -140,9 +160,10 @@ def main() -> None:
             single_att_q_chunk_size=chunks.single_att_q_chunk_size,
             token_q_chunk_size=chunks.token_q_chunk_size,
             diffusion_chunk_size=chunks.diffusion_chunk_size,
-            matmul_precision="default",
+            matmul_precision=args.matmul_precision,
             trunk_dtype=trunk_dtype,
             cycle_msa_features=cycle_msa_features,
+            cycle_msa_index_tape=cycle_msa_index_tape,
         )
         return jax.block_until_ready(output)
 
@@ -150,7 +171,9 @@ def main() -> None:
     run()
     cold_seconds = time.perf_counter() - started
     warm_samples = []
+    output = None
     for _ in range(args.warm_iters):
+        output = None
         started = time.perf_counter()
         output = run()
         warm_samples.append(time.perf_counter() - started)
@@ -162,7 +185,7 @@ def main() -> None:
         "checkpoint": "protenix_base_default_v1.0.0",
         "dtype": "fp32",
         "trunk_dtype": "bf16" if args.bf16_trunk else "fp32",
-        "matmul_precision": "default_tf32_allowed",
+        "matmul_precision": args.matmul_precision,
         "persistent_compile_cache": str(args.cache.resolve()),
         "diffusion_attention_backend": args.diffusion_attention_backend,
         "trunk_attention_backends": args.trunk_triangle_attention_backend,
@@ -180,10 +203,21 @@ def main() -> None:
         "msa_rows_executed": int(features["msa"].shape[-2]),
         "msa_row_bucket": args.msa_row_bucket,
         "msa_sampling": "full_depth" if args.full_depth_msa else "per_cycle_random",
+        "msa_cycle_route": None if args.full_depth_msa else args.msa_cycle_route,
+        "msa_selection_timing": "before inference timing, matching public CLI",
         "msa_cycle_depths": (
-            None
-            if cycle_msa_features is None
-            else [int(cycle["msa"].shape[-2]) for cycle in cycle_msa_features]
+            [int(cycle_msa_index_tape.row_mask.shape[-1])] * args.cycles
+            if cycle_msa_index_tape is not None
+            else (
+                None
+                if cycle_msa_features is None
+                else [int(cycle["msa"].shape[-2]) for cycle in cycle_msa_features]
+            )
+        ),
+        "msa_cycle_real_depths": (
+            cycle_msa_index_tape.row_mask.sum(axis=-1).tolist()
+            if cycle_msa_index_tape is not None
+            else None
         ),
         "cycles": args.cycles,
         "num_steps": args.steps,
@@ -192,9 +226,24 @@ def main() -> None:
         "warm_seconds": warm_seconds,
         "warm_seconds_samples": warm_samples,
         "peak_vram_gb": memory.get("peak_bytes_in_use", 0) / 1e9,
+        "peak_vram_scope": "process_lifetime_allocator_peak",
+        "lifetime_peak_allocated_bytes": memory.get("peak_bytes_in_use"),
+        "warm_peak_allocated_bytes": None,
+        "previous_output_retained_during_next_run": False,
         "coordinate_checksum": float(output["coordinate"].sum()),
         "coordinate_shape": list(output["coordinate"].shape),
     }
+    if args.prediction_dir is not None:
+        from bench.af3_closure_capture import sha
+        from bench.protenix_foldjax_capture import save_jax_boundary
+
+        path = args.prediction_dir / "prediction.npz"
+        save_jax_boundary(path, output)
+        metrics["prediction_artifacts"] = {
+            "arrays_sha256": sha(path),
+            "tree_sha256": sha(path.with_suffix(".tree.json")),
+            "scope": "last ordinary-RNG warm output; export excluded from timing/peak",
+        }
     args.out.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(metrics, indent=2))
 

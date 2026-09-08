@@ -32,7 +32,7 @@ from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.models import _representations
-from foldjax.padding import PaddingPlan, resolve_axis
+from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -100,12 +100,22 @@ def _real_prefix_size(mask: np.ndarray, *, axis: str) -> int:
     return size
 
 
-def _padding_plan(features: dict[str, Any], config: PaddingConfig) -> PaddingPlan:
-    """Resolve OpenFold3's four independently compiled feature axes."""
+def _padding_plan(
+    features: dict[str, Any],
+    config: PaddingConfig,
+    *,
+    max_msa_depth: int = _RELEASED_MSA_DEPTH,
+) -> PaddingPlan:
+    """Resolve compiled axes from the token bucket and native capacities."""
 
     token_mask = np.asarray(features["token_mask"]) > 0
     atom_mask = np.asarray(features["atom_mask"]) > 0
     msa_mask = np.asarray(features["msa_mask"]) > 0
+    cycle_indices = features.get("_foldjax_msa_cycle_indices")
+    if cycle_indices is not None:
+        # The union stays on the host. Only one native selection crosses the
+        # compiled boundary, so its width determines the serving MSA capacity.
+        msa_mask = msa_mask[:, np.asarray(cycle_indices)[0]]
     if _ZERO_TEMPLATE_PAIR_MARKER in features:
         # Trusted raw preprocessing may compact the four all-zero template
         # geometry tensors before serving padding.  The retained restype still
@@ -133,9 +143,19 @@ def _padding_plan(features: dict[str, Any], config: PaddingConfig) -> PaddingPla
         "templates": int(template_mask.shape[-2]),
     }
     target = {
-        axis: resolve_axis(actual[axis], config, axis, minimum=storage[axis])
-        for axis in ("tokens", "atoms", "msa", "templates")
+        "tokens": resolve_axis(
+            actual["tokens"], config, "tokens", minimum=storage["tokens"]
+        )
     }
+    for axis, fixed_size in (("atoms", None), ("msa", max_msa_depth), ("templates", 4)):
+        target[axis] = resolve_token_axis(
+            actual[axis],
+            config,
+            axis,
+            token_target=target["tokens"],
+            minimum=storage[axis],
+            fixed_size=fixed_size,
+        )
     return PaddingPlan(actual=actual, storage=storage, target=target)
 
 
@@ -233,7 +253,7 @@ class OpenFold3Backend(Backend):
         # raw-array writer, so retaining native pair distributions cannot affect
         # that graph. Do not create an otherwise-identical cache namespace for a
         # no-op output option.
-        if all_arrays and request.stop_after != "trunk":
+        if all_arrays and request.stop_after not in ("trunk", "inputs"):
             profile["all_arrays"] = True
         # ``released_config`` supplies these exact values when the request
         # omits them.  Keeping an explicitly repeated default in the namespace
@@ -324,6 +344,7 @@ class OpenFold3Backend(Backend):
         )
         return ModelCapabilities(
             representations=_representations.available("openfold3"),
+            input_representations=("single_inputs",),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=(
@@ -447,20 +468,32 @@ class OpenFold3Backend(Backend):
         cp_layout = options.pop("cp_layout", None)
         if cp_layout is not None:
             overrides["cp_layout"] = str(cp_layout)
-        wanted = _representations.resolve(
-            request.representations, _representations.specs_for("openfold3")
-        )
+        available = _representations.specs_for("openfold3")
+        if request.stop_after == "inputs":
+            available = {
+                name: available[name]
+                for name in self.capabilities().input_representations
+            }
+            # Validate each selector even when an earlier "all" expands first.
+            for selector in request.representations or ():
+                for name in selector.split(","):
+                    _representations.resolve((name,), available)
+        wanted = _representations.resolve(request.representations, available)
         overrides["returned_representations"] = wanted
+        overrides["stop_after_inputs"] = request.stop_after == "inputs"
         overrides["stop_after_trunk"] = request.stop_after == "trunk"
         overrides["has_atomized_tokens"] = (
-            request.stop_after != "trunk" and data.has_atomized_tokens(features)
+            request.stop_after not in ("trunk", "inputs")
+            and data.has_atomized_tokens(features)
         )
         # PredictionResult exposes structures and normalized scores, so native
         # PAE/PDE/distogram bin distributions are opt-in. Decide this before
         # tracing: XLA can then DCE the unused PDE/distogram heads and keep PAE only
         # as long as pTM/ipTM need it. The raw CLI and direct inference API retain
         # their historical DEFAULT_ARRAY_BUDGET_BYTES / all-arrays behaviour.
-        retain_pair_arrays = all_arrays and request.stop_after != "trunk"
+        retain_pair_arrays = (
+            all_arrays and request.stop_after not in ("trunk", "inputs")
+        )
         array_budget_bytes = None if retain_pair_arrays else _MANAGED_ARRAY_BUDGET_BYTES
         overrides["max_array_bytes"] = array_budget_bytes
         config = inference.released_config(n_token=n_token, n_atom=n_atom, **overrides)
@@ -479,18 +512,23 @@ class OpenFold3Backend(Backend):
         features = data.collapse_identical_templates(features)
         padding_plan = None
         if request.padding is not None:
-            padding_plan = _padding_plan(features, request.padding)
+            padding_plan = _padding_plan(
+                features, request.padding, max_msa_depth=config.msa_depth
+            )
             features = data.pad_features(
                 features,
                 n_token=padding_plan.target["tokens"],
                 n_atom=padding_plan.target["atoms"],
-                n_msa=padding_plan.target["msa"],
+                # Retain the host union; the streamed scheduler pads each
+                # selection after gathering, before device transfer.
+                n_msa=None,
                 n_templates=padding_plan.target["templates"],
             )
             n_token = padding_plan.target["tokens"]
             n_atom = padding_plan.target["atoms"]
             config = inference.released_config(
-                n_token=n_token, n_atom=n_atom, **overrides
+                n_token=n_token, n_atom=n_atom,
+                **{**overrides, "msa_depth": padding_plan.target["msa"]},
             )
         features, n_chain = data.normalize_asym_ids(features)
         # Empty-template geometry is exact +0.  Compact it only after serving
@@ -579,7 +617,18 @@ class OpenFold3Backend(Backend):
         # it set through tracing/execution so it reaches the template stack and
         # confidence head as well as the trunk, then restore the host value.
         with matmul_precision(), _triangle_backend(kernel):
-            if compile_it:
+            if padding_plan is not None:
+                from foldjax.models.openfold3.streaming import compile_streamed_predict
+
+                streamed = compile_streamed_predict(
+                    config, table, n_chain=n_chain, triangle_kernel=kernel,
+                    cache_scope=(
+                        None if request.cache_dir is None else str(request.cache_dir)
+                    ),
+                    compiled=compile_it,
+                )
+                prediction = streamed(key, features, params, noise_mask=noise_mask)
+            elif compile_it:
                 compiled = inference.compile_predict(
                     config,
                     table,
@@ -622,6 +671,8 @@ class OpenFold3Backend(Backend):
             shape_profile = {
                 **padding_plan.summary(),
                 "static": {"chains": 1 if n_chain is None else int(n_chain)},
+                "msa_execution": "host_streamed_cycles",
+                "host_msa_union_rows": int(features["msa_mask"].shape[1]),
             }
         raw = {
             "features": {"n_token": n_token, "n_atom": n_atom},
@@ -643,7 +694,7 @@ class OpenFold3Backend(Backend):
             _representations.specs_for("openfold3"),
             model="openfold3",
         )
-        if request.stop_after == "trunk":
+        if request.stop_after in ("trunk", "inputs"):
             # The trunk graph returns before the sampler and the confidence
             # heads, so `prediction` carries no coordinates to write and there
             # are no samples to describe. Reading them raised IndexError.

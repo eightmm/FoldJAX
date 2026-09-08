@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "model": "esmfold2",
+  "case": "protein_ligand_5sak",
+  "scope": "Two independent native deterministic executions; not FoldJAX admission",
+  "jobs": [436, 440],
+  "samples": 5,
+  "deterministic_algorithms": true,
+  "cublas_workspace_config": ":4096:8",
+  "allow_bf16_reduced_precision_reduction": true,
+  "input_sha256": "8e137f0b589ae894ec16b2c64a2f86801430f42b5dfa2952f39d7b2523875e45",
+  "tape_sha256": "5d03806c1980dc26c7f766b6d885a8587e3894d5442d7c3c55b7393355876d80",
+  "lm_sha256": "569bbeb6d8b4d858651dfbe98e414a30ce80cf5c4de13416c5979aa17bdc54c5",
+  "manifest_sha256": [
+    "c122f12cb7ef3e80a983f8d1ada0787f5b8eb57ce6910aaf618a5f70e0176d21",
+    "c122f12cb7ef3e80a983f8d1ada0787f5b8eb57ce6910aaf618a5f70e0176d21"
+  ],
+  "coordinates_storage_bytes_equal": true,
+  "confidence_leaf_count": 14,
+  "all_confidence_storage_bytes_equal": true,
+  "confidence_max_abs": 0.0,
+  "alignment": "One proper Kabsch over all valid atoms per sample; entity measurement without refit",
+  "valid_atoms_per_sample": 3073,
+  "entity_rmsd_angstrom": {
+    "entity=0|mol_type=0|asym=0": [
+      9.515447275930509e-15,
+      9.691199446139587e-15,
+      1.0416803634426009e-14,
+      7.786533480151278e-15,
+      7.884313696804753e-15
+    ],
+    "entity=1|mol_type=3|asym=1": [
+      6.352817482744693e-15,
+      6.671757814867064e-15,
+      8.264680623638841e-15,
+      5.5565147300919354e-15,
+      5.318833044296851e-15
+    ]
+  },
+  "rmsd_note": "Numerical Kabsch roundoff on byte-identical coordinates",
+  "new_acceptance_tolerance": null,
+  "full_model_admission": null,
+  "performance_admission": null
+}

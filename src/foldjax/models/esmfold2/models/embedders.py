@@ -87,9 +87,7 @@ def relative_position_encoding(
     return linear(features, params, f"{dot}embed")
 
 
-def single_to_pair(
-    x: jnp.ndarray, params: Params, prefix: str = ""
-) -> jnp.ndarray:
+def single_to_pair(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
     """`SingleToPair`: product and difference, in that order.
 
     The difference is antisymmetric, so swapping the two halves would leave
@@ -131,6 +129,7 @@ def msa_encoder_block(
     msa_mask: jnp.ndarray,
     pair_mask: jnp.ndarray,
     is_final: bool,
+    native_opm_params: Params | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """One `MSAEncoderBlock`.
 
@@ -143,25 +142,53 @@ def msa_encoder_block(
     # its own context-parallel row pin.
     pair = shard_pair_rows(pair)
     pair = pair + outer_product_mean(
-        msa, params, f"{dot}outer_product_mean", msa_mask=msa_mask
+        msa,
+        params if native_opm_params is None else native_opm_params,
+        f"{dot}outer_product_mean",
+        msa_mask=msa_mask,
+        native_autocast=native_opm_params is not None,
     )
     if not is_final:
         msa = msa + msa_pair_weighted_averaging(
             msa,
             pair,
-            params,
+            params if native_opm_params is None else native_opm_params,
             f"{dot}msa_pair_weighted_averaging",
             pair_mask=pair_mask,
+            native_autocast=native_opm_params is not None,
         )
-        msa = msa + transition(msa, params, f"{dot}msa_transition", residual=False)
+        msa = msa + transition(
+            msa,
+            params if native_opm_params is None else native_opm_params,
+            f"{dot}msa_transition",
+            residual=False,
+            native_autocast=native_opm_params is not None,
+        )
     pair = pair + triangle_multiplicative(
-        pair, params, f"{dot}tri_mul_out", outgoing=True, mask=pair_mask
+        pair,
+        params if native_opm_params is None else native_opm_params,
+        f"{dot}tri_mul_out",
+        outgoing=True,
+        mask=pair_mask,
+        native_autocast=native_opm_params is not None,
     )
     pair = pair + triangle_multiplicative(
-        pair, params, f"{dot}tri_mul_in", outgoing=False, mask=pair_mask
+        pair,
+        params if native_opm_params is None else native_opm_params,
+        f"{dot}tri_mul_in",
+        outgoing=False,
+        mask=pair_mask,
+        native_autocast=native_opm_params is not None,
     )
     pair = shard_pair_rows(
-        pair + transition(pair, params, f"{dot}pair_transition", residual=False)
+        pair
+        + transition(
+            pair,
+            params if native_opm_params is None else native_opm_params,
+            f"{dot}pair_transition",
+            residual=False,
+            native_autocast=native_opm_params is not None,
+        )
     )
     return msa, pair
 
@@ -177,6 +204,7 @@ def msa_encoder(
     prefix: str = "",
     *,
     n_layers: int,
+    native_opm_params: Params | None = None,
 ) -> jnp.ndarray:
     """`MSAEncoder`, returning the pair representation and discarding the MSA.
 
@@ -189,7 +217,13 @@ def msa_encoder(
         [msa_one_hot, has_deletion[..., None], deletion_value[..., None]], axis=-1
     )
     msa = linear(features, params, f"{dot}embed")
-    msa = msa + linear(inputs, params, f"{dot}project_inputs")[:, :, None, :]
+    projected_inputs = linear(inputs, params, f"{dot}project_inputs")
+    if native_opm_params is not None:
+        # Native stores both BF16 Linear outputs before adding them. Without
+        # these boundaries, the first MSA state changes with graph consumers.
+        msa = jax.lax.optimization_barrier(msa)
+        projected_inputs = jax.lax.optimization_barrier(projected_inputs)
+    msa = msa + projected_inputs[:, :, None, :]
 
     token_mask = msa_mask[:, :, 0].astype(bool)
     pair_mask = (token_mask[:, :, None] & token_mask[:, None, :]).astype(pair.dtype)
@@ -203,6 +237,7 @@ def msa_encoder(
             msa_mask=msa_mask,
             pair_mask=pair_mask,
             is_final=index == n_layers - 1,
+            native_opm_params=native_opm_params,
         )
     return pair
 

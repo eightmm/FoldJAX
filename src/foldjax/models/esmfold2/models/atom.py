@@ -13,10 +13,11 @@ subtly wrong, so each convention is stated where it is used:
 * **The window is measured in packed rank**, so padding atoms cost no window
   budget, and the diagonal is always allowed -- that is what keeps a fully
   padded row's softmax finite.
-* **`qk_norm` is RMS norm with no learnable scale and torch's `eps=None`,
-  which resolves to `finfo(dtype).eps`** -- 7.8e-3 in bfloat16 against 1.2e-7
-  in float32. The dtype changes the arithmetic here, not just the rounding, so
-  the port takes it as an argument rather than hard-coding one.
+* **`qk_norm` is RMS norm with no learnable scale and torch's `eps=None`.**
+  CUDA autocast promotes its BF16 input to FP32 before normalization; the
+  upstream wrapper then casts the result back to the entering dtype. Do not
+  infer the normalization's compute dtype or epsilon from the stored input
+  dtype alone. The explicit epsilon here is also used outside autocast.
 """
 
 from __future__ import annotations
@@ -33,8 +34,30 @@ from foldjax.models.esmfold2.models.primitives import layer_norm, linear
 
 Params = Mapping[str, jnp.ndarray]
 
-#: float32's `finfo.eps`, which is what `F.rms_norm(..., eps=None)` uses when
-#: the tensor is float32. Callers running bfloat16 must pass bfloat16's.
+
+def _atom_linear(x, params, prefix, native_autocast):
+    if native_autocast:
+        from foldjax.models.esmfold2.models.trunk import _autocast_linear
+
+        return _autocast_linear(x, params, prefix)
+    return linear(x, params, prefix)
+
+
+def _stored(value):
+    """Keep an eager upstream storage boundary visible to the compiler."""
+    return jax.lax.optimization_barrier(value)
+
+
+def _adaln(x, scale, shift, eps, native_autocast):
+    if native_autocast:
+        normalized = rms_norm(x.astype(jnp.float32), eps)
+        scaled = _stored(normalized * _stored(1.0 + scale))
+        return scaled + shift
+    return rms_norm(x, eps) * (1.0 + scale) + shift
+
+
+#: Float32's `finfo.eps`; native CUDA autocast normalizes in FP32 even when
+#: q/k arrive in BF16. Non-autocast policies require their own native check.
 FLOAT32_EPS = float(jnp.finfo(jnp.float32).eps)
 
 #: Query rows per block in the windowed attention. The block reads
@@ -148,12 +171,21 @@ def _rotate_half(x: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([-x[..., half:], x[..., :half]], axis=-1)
 
 
-def apply_rotary_3d(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -> jnp.ndarray:
+def apply_rotary_3d(
+    x: jnp.ndarray,
+    cos: jnp.ndarray,
+    sin: jnp.ndarray,
+    *,
+    native_autocast: bool = False,
+) -> jnp.ndarray:
     """Rotate `[B, L, H, D]` by per-position `cos`/`sin` of width `D/2`."""
     width = cos.shape[-1] * 2
     cos = jnp.concatenate([cos, cos], axis=-1)[:, :, None, :]
     sin = jnp.concatenate([sin, sin], axis=-1)[:, :, None, :]
-    rotated = x[..., :width] * cos + _rotate_half(x[..., :width]) * sin
+    left, right = x[..., :width] * cos, _rotate_half(x[..., :width]) * sin
+    if native_autocast:
+        left, right = jax.lax.optimization_barrier((left, right))
+    rotated = left + right
     return jnp.concatenate([rotated, x[..., width:]], axis=-1)
 
 
@@ -166,6 +198,7 @@ def build_3d_rope(
     n_uid_pairs: int = 10,
     spatial_base_frequency: float = 20.0,
     uid_base_frequency: float = 10000.0,
+    native_autocast: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Angles from three Cartesian axes and one discrete axis.
 
@@ -175,21 +208,41 @@ def build_3d_rope(
     never needed: 3*2 + 10 fills 16 exactly.
     """
     half = head_dim // 2
-    spatial_inv = spatial_base_frequency ** (
-        -jnp.arange(n_spatial_per_axis, dtype=jnp.float32) / n_spatial_per_axis
+    spatial_exponent = (
+        jnp.arange(n_spatial_per_axis, dtype=jnp.float32) / n_spatial_per_axis
     )
-    uid_inv = uid_base_frequency ** (
-        -jnp.arange(n_uid_pairs, dtype=jnp.float32) / n_uid_pairs
-    )
-    spatial = jnp.einsum(
-        "bna,k->bnak", ref_pos.astype(jnp.float32), spatial_inv
-    ).reshape(ref_pos.shape[0], ref_pos.shape[1], 3 * n_spatial_per_axis)
-    uid = jnp.einsum("bn,k->bnk", ref_space_uid.astype(jnp.float32), uid_inv)
+    uid_exponent = jnp.arange(n_uid_pairs, dtype=jnp.float32) / n_uid_pairs
+    if native_autocast:
+        spatial_inv = 1.0 / (spatial_base_frequency**spatial_exponent)
+        uid_inv = 1.0 / (uid_base_frequency**uid_exponent)
+        # Torch lowers both outer-product einsums through autocast: operands
+        # and their products are BF16, even though the source calls .float().
+        # Large UIDs make this a phase change, not merely a trig-output cast.
+        position, identity, spatial_inv, uid_inv = jax.lax.optimization_barrier(
+            (
+                ref_pos.astype(jnp.bfloat16),
+                ref_space_uid.astype(jnp.float32).astype(jnp.bfloat16),
+                spatial_inv.astype(jnp.bfloat16),
+                uid_inv.astype(jnp.bfloat16),
+            )
+        )
+        spatial = (position[..., None] * spatial_inv).reshape(
+            ref_pos.shape[0], ref_pos.shape[1], 3 * n_spatial_per_axis
+        )
+        uid = identity[..., None] * uid_inv
+    else:
+        spatial_inv = spatial_base_frequency ** (-spatial_exponent)
+        uid_inv = uid_base_frequency ** (-uid_exponent)
+        spatial = jnp.einsum(
+            "bna,k->bnak", ref_pos.astype(jnp.float32), spatial_inv
+        ).reshape(ref_pos.shape[0], ref_pos.shape[1], 3 * n_spatial_per_axis)
+        uid = jnp.einsum("bn,k->bnk", ref_space_uid.astype(jnp.float32), uid_inv)
     freqs = jnp.concatenate([spatial, uid], axis=-1)
     if freqs.shape[-1] < half:
         freqs = jnp.pad(freqs, ((0, 0), (0, 0), (0, half - freqs.shape[-1])))
-    # Angles in float32, tables in bfloat16, exactly as upstream
-    # (`modeling_esmfold2_common.py:513-514`) -- hardcoded there, not a knob.
+    if native_autocast:
+        freqs = _stored(freqs).astype(jnp.float32)
+    # Tables are always BF16; under autocast the phases were already BF16.
     # Returning float32 tables here promoted `q` and `k` inside the rotary, so
     # a bfloat16 caller got float32 back out of the attention block. That is a
     # separate defect from the missing q/k/v cast below: this one decides the
@@ -221,6 +274,7 @@ def _windowed_attention(
     half_window: int,
     rows_per_block: int,
     scale: float,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """Sliding-window attention that never materialises the full score matrix.
 
@@ -275,7 +329,10 @@ def _windowed_attention(
         def take_k(t):
             return jax.lax.dynamic_slice_in_dim(t, start, keys_per_block, 1)
 
-        logits = jnp.einsum("bihd,bjhd->bhij", take_q(q_padded), take_k(k)) * scale
+        query, key, value = take_q(q_padded), take_k(k), take_k(v)
+        if native_autocast:
+            query, key, value = (a.astype(jnp.float32) for a in (query, key, value))
+        logits = jnp.einsum("bihd,bjhd->bhij", query, key) * scale
         rank_q, rank_k = take_q(rank_padded), take_k(rank)
         within = jnp.abs(rank_q[:, :, None] - rank_k[:, None, :]) <= half_window
         allowed = (
@@ -291,7 +348,8 @@ def _windowed_attention(
             (allowed | diagonal)[:, None], logits, jnp.finfo(logits.dtype).min
         )
         attention = jax.nn.softmax(logits, axis=-1)
-        return None, jnp.einsum("bhij,bjhd->bihd", attention, take_k(v))
+        context = jnp.einsum("bhij,bjhd->bihd", attention, value)
+        return None, context.astype(v.dtype) if native_autocast else context
 
     _, blocks = jax.lax.scan(one_block, None, jnp.arange(n_blocks))
     context = blocks.swapaxes(0, 1).reshape(batch, padded, n_heads, head_dim)
@@ -310,6 +368,7 @@ def swa_attention(
     half_window: int,
     rows_per_block: int | None = None,
     eps: float = FLOAT32_EPS,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`SWA3DRoPEAttention`.
 
@@ -321,10 +380,17 @@ def swa_attention(
     batch, length, width = x.shape
     head_dim = width // n_heads
 
-    qkv = linear(x, params, f"{dot}Wqkv").reshape(batch, length, 3, n_heads, head_dim)
+    qkv = _atom_linear(x, params, f"{dot}Wqkv", native_autocast).reshape(
+        batch, length, 3, n_heads, head_dim
+    )
     q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
-    q = apply_rotary_3d(rms_norm(q, eps), cos, sin)
-    k = apply_rotary_3d(rms_norm(k, eps), cos, sin)
+    if native_autocast:
+        q = _stored(rms_norm(q.astype(jnp.float32), eps).astype(q.dtype))
+        k = _stored(rms_norm(k.astype(jnp.float32), eps).astype(k.dtype))
+    else:
+        q, k = rms_norm(q, eps), rms_norm(k, eps)
+    q = apply_rotary_3d(q, cos, sin, native_autocast=native_autocast)
+    k = apply_rotary_3d(k, cos, sin, native_autocast=native_autocast)
 
     # Upstream casts the attention inputs to bfloat16 here unconditionally
     # (`modeling_esmfold2_common.py:573-575`) and restores the entering dtype
@@ -338,10 +404,10 @@ def swa_attention(
     # released 32 samples and 7776 atoms, and the softmax of it is another,
     # together 90% of the whole temp arena.
     #
-    # The softmax still accumulates at the narrowed dtype, where upstream's
-    # `scaled_dot_product_attention` accumulates in float32 without ever
-    # materialising the scores. Matching that needs a fused kernel rather than
-    # a cast; the window is +-`half_window`, so at most 129 terms are summed.
+    # The legacy path below retains its narrowed scores/softmax. Native
+    # autocast uses FP32 mathematical scores, softmax and context accumulation
+    # with BF16 context storage. This does not promise the same reduction order
+    # as Torch's selected fused SDPA kernel. At most 129 keys are allowed.
     input_dtype = q.dtype
     if input_dtype not in (jnp.float16, jnp.bfloat16):
         q = q.astype(jnp.bfloat16)
@@ -363,19 +429,33 @@ def swa_attention(
             half_window=half_window,
             rows_per_block=rows_per_block,
             scale=head_dim**-0.5,
+            native_autocast=native_autocast,
         )
     else:
-        logits = jnp.einsum("bihd,bjhd->bhij", q, k) * (head_dim**-0.5)
+        query, key, value = q, k, v
+        if native_autocast:
+            query, key, value = (a.astype(jnp.float32) for a in (q, k, v))
+        logits = jnp.einsum("bihd,bjhd->bhij", query, key) * (head_dim**-0.5)
         allowed = sliding_window_mask(valid, half_window)[:, None]
         logits = jnp.where(allowed, logits, jnp.finfo(logits.dtype).min)
         attention = jax.nn.softmax(logits, axis=-1)
-        context = jnp.einsum("bhij,bjhd->bihd", attention, v)
+        context = jnp.einsum("bhij,bjhd->bihd", attention, value)
+        if native_autocast:
+            context = context.astype(v.dtype)
     context = context.reshape(batch, length, width)
     context = context * valid[..., None].astype(context.dtype)
     context = context.astype(input_dtype)
 
-    gate = jax.nn.sigmoid(linear(x, params, f"{dot}gate_proj"))
-    return linear(context * gate, params, f"{dot}out_proj")
+    projected = _atom_linear(x, params, f"{dot}gate_proj", native_autocast)
+    gate = (
+        _stored(jax.nn.sigmoid(projected.astype(jnp.float32)).astype(projected.dtype))
+        if native_autocast
+        else jax.nn.sigmoid(projected)
+    )
+    gated = context * gate
+    if native_autocast:
+        gated = _stored(gated)
+    return _atom_linear(gated, params, f"{dot}out_proj", native_autocast)
 
 
 def swa_block(
@@ -390,6 +470,7 @@ def swa_block(
     n_heads: int,
     half_window: int,
     eps: float = FLOAT32_EPS,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`SWAAtomBlock`: adaLN-modulated attention and feed-forward.
 
@@ -398,14 +479,16 @@ def swa_block(
     and the shapes do not distinguish them.
     """
     dot = f"{prefix}." if prefix else ""
-    modulation = linear(jax.nn.silu(conditioning), params, f"{dot}adaln_modulation.1")
+    modulation = _atom_linear(
+        jax.nn.silu(conditioning), params, f"{dot}adaln_modulation.1", native_autocast
+    )
     if modulation.ndim == 2:
         modulation = modulation[:, None, :]
     chunks = jnp.split(modulation, 6, axis=-1)
     shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = chunks
 
-    normed = rms_norm(x, eps) * (1.0 + scale_a) + shift_a
-    x = x + gate_a * swa_attention(
+    normed = _adaln(x, scale_a, shift_a, eps, native_autocast)
+    attention_update = gate_a * swa_attention(
         normed,
         params,
         f"{dot}attn",
@@ -415,19 +498,38 @@ def swa_block(
         n_heads=n_heads,
         half_window=half_window,
         eps=eps,
+        native_autocast=native_autocast,
     )
-    normed = rms_norm(x, eps) * (1.0 + scale_f) + shift_f
-    return x + gate_f * swiglu_ffn(normed, params, f"{dot}ffn")
+    x = x + (_stored(attention_update) if native_autocast else attention_update)
+    normed = _adaln(x, scale_f, shift_f, eps, native_autocast)
+    update = gate_f * swiglu_ffn(
+        normed, params, f"{dot}ffn", native_autocast=native_autocast
+    )
+    return x + (_stored(update) if native_autocast else update)
 
 
-def swiglu_ffn(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
+def swiglu_ffn(
+    x: jnp.ndarray,
+    params: Params,
+    prefix: str = "",
+    *,
+    native_autocast: bool = False,
+) -> jnp.ndarray:
     """`SwiGLUFFN`: one packed up-projection, silu-gated, projected down."""
     dot = f"{prefix}." if prefix else ""
-    packed = linear(x, params, f"{dot}w_up")
+    packed = _atom_linear(x, params, f"{dot}w_up", native_autocast)
     half = packed.shape[-1] // 2
-    return linear(
-        jax.nn.silu(packed[..., :half]) * packed[..., half:], params, f"{dot}w_down"
+    activated = jax.nn.silu(
+        packed[..., :half].astype(jnp.float32)
+        if native_autocast
+        else packed[..., :half]
     )
+    if native_autocast:
+        activated = _stored(activated.astype(packed.dtype))
+    gated = activated * packed[..., half:]
+    if native_autocast:
+        gated = _stored(gated)
+    return _atom_linear(gated, params, f"{dot}w_down", native_autocast)
 
 
 def atom_transformer(
@@ -443,6 +545,7 @@ def atom_transformer(
     n_heads: int,
     half_window: int,
     eps: float = FLOAT32_EPS,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`SWAAtomTransformer`: the blocks in sequence, nothing else."""
     dot = f"{prefix}." if prefix else ""
@@ -458,6 +561,7 @@ def atom_transformer(
             n_heads=n_heads,
             half_window=half_window,
             eps=eps,
+            native_autocast=native_autocast,
         )
     return x
 
@@ -535,6 +639,7 @@ def atom_conditioning(
     prefix: str = "",
     *,
     n_heads: int,
+    native_autocast: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """The step-invariant half of the atom encoder: conditioning and rotary tables.
 
@@ -552,13 +657,17 @@ def atom_conditioning(
         ref_element_one_hot,
         ref_atom_name_chars_one_hot,
     )
+    projected = _atom_linear(features, params, f"{dot}atom_linear", native_autocast)
     conditioning = layer_norm(
-        linear(features, params, f"{dot}atom_linear"),
+        projected.astype(jnp.float32) if native_autocast else projected,
         params[f"{dot}atom_norm.weight"],
         params[f"{dot}atom_norm.bias"],
     )
     cos, sin = build_3d_rope(
-        ref_pos, ref_space_uid, head_dim=conditioning.shape[-1] // n_heads
+        ref_pos,
+        ref_space_uid,
+        head_dim=conditioning.shape[-1] // n_heads,
+        native_autocast=native_autocast,
     )
     return conditioning, cos, sin
 
@@ -581,6 +690,7 @@ def atom_encoder(
     precomputed: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
     n_tokens: int | None = None,
     eps: float = FLOAT32_EPS,
+    native_autocast: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...]]:
     """`ESMFold2AtomEncoder`.
 
@@ -610,6 +720,7 @@ def atom_encoder(
             params,
             prefix,
             n_heads=n_heads,
+            native_autocast=native_autocast,
         )
     else:
         conditioning, cos, sin = precomputed
@@ -617,7 +728,9 @@ def atom_encoder(
     queries = conditioning
     if coords is not None:
         padded = jnp.concatenate([coords, jnp.zeros_like(coords)], axis=-1)
-        queries = queries + linear(padded, params, f"{dot}coords_linear")
+        queries = queries + _atom_linear(
+            padded, params, f"{dot}coords_linear", native_autocast
+        )
 
     queries = atom_transformer(
         queries,
@@ -631,10 +744,13 @@ def atom_encoder(
         n_heads=n_heads,
         half_window=half_window,
         eps=eps,
+        native_autocast=native_autocast,
     )
     if n_tokens is None:
         n_tokens = int(atom_to_token.max()) + 1
-    projected = jax.nn.relu(linear(queries, params, f"{dot}atom_to_token_linear"))
+    projected = jax.nn.relu(
+        _atom_linear(queries, params, f"{dot}atom_to_token_linear", native_autocast)
+    )
     tokens = scatter_atom_to_token(projected, atom_to_token, n_tokens, atom_mask)
     return tokens, queries, conditioning, (cos, sin)
 

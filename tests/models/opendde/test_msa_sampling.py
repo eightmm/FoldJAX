@@ -180,3 +180,27 @@ def test_opendde_msa_sampling_uses_mask_only_for_row_priority() -> None:
 
     assert {tuple(row) for row in cycle["msa"]} == {(1, 2), (5, 6)}
     np.testing.assert_array_equal(cycle["msa_mask"], 1.0)
+
+
+@pytest.mark.parametrize("target_depth", [1280, 512, 1536])
+def test_padded_msa_depth_samples_before_padding(target_depth: int) -> None:
+    from foldjax.models.opendde.models.msa_sampling import (
+        pad_opendde_msa_cycle_features,
+    )
+    from foldjax.schema import PaddingConfig
+
+    msa = np.arange(1600, dtype=np.int64)[:, None] % 30
+    source = _features(msa)
+    config = PaddingConfig(msa=None if target_depth == 1280 else target_depth)
+    cycles = sample_opendde_msa_cycle_features(
+        source, num_recycles=2, seed=17, msa_depth=target_depth
+    )
+    padded, plan = pad_opendde_msa_cycle_features(cycles, config)
+
+    assert plan.target["msa"] == target_depth
+    for sampled, result in zip(cycles, padded, strict=True):
+        assert sampled["msa"].shape == (target_depth, 1)
+        np.testing.assert_array_equal(result["msa"], sampled["msa"])
+        np.testing.assert_array_equal(result["msa_mask"], 1)
+    (native,) = sample_opendde_msa_cycle_features(source, num_recycles=1, seed=17)
+    assert native["msa"].shape == (1280, 1)

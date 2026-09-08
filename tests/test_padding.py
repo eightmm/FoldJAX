@@ -83,9 +83,7 @@ def test_resolve_axis_selects_standard_pinned_and_overflow_targets() -> None:
     automatic = PaddingConfig()
     assert resolve_axis(300, automatic, "tokens") == 512
     assert resolve_axis(300, PaddingConfig(tokens=768), "tokens") == 768
-    assert (
-        resolve_axis(5000, PaddingConfig(overflow="exact"), "tokens") == 5000
-    )
+    assert resolve_axis(5000, PaddingConfig(overflow="exact"), "tokens") == 5000
     with pytest.raises(ValueError, match="largest standard bucket 4096"):
         resolve_axis(5000, automatic, "tokens")
     with pytest.raises(ValueError, match="smaller than the input size 600"):
@@ -267,3 +265,72 @@ def test_host_padding_policy_does_not_fragment_cache_namespace(tmp_path: Path) -
 
     assert backend.cache_profile(exact) == backend.cache_profile(automatic)
     assert backend.cache_profile(exact) == backend.cache_profile(pinned)
+
+
+@pytest.mark.parametrize(
+    "axis,expected",
+    [("atoms", 6144), ("structural_tokens", 512), ("language_model_tokens", 256)],
+)
+def test_token_profile_capacity_is_independent_of_real_size(axis, expected):
+    from foldjax.padding import resolve_token_axis
+
+    for actual in (1, 17, 100):
+        assert (
+            resolve_token_axis(actual, PaddingConfig(), axis, token_target=256)
+            == expected
+        )
+
+
+def test_token_profile_preserves_pins_and_rejects_storage_overflow():
+    from foldjax.padding import resolve_token_axis
+
+    assert (
+        resolve_token_axis(3, PaddingConfig(atoms=32), "atoms", token_target=256) == 32
+    )
+    assert (
+        resolve_token_axis(3, PaddingConfig(), "msa", token_target=256, fixed_size=1280)
+        == 1280
+    )
+    assert resolve_token_axis(3, PaddingConfig(), "atoms", token_target=3) == 96
+    with pytest.raises(ValueError, match="smaller than"):
+        resolve_token_axis(
+            3, PaddingConfig(overflow="exact"), "atoms", token_target=256, minimum=6145
+        )
+    with pytest.raises(ValueError, match="fixed_size"):
+        resolve_token_axis(3, PaddingConfig(), "msa", token_target=256)
+
+
+@pytest.mark.parametrize(
+    "model", ["alphafold3", "boltz2", "protenix", "opendde", "openfold3", "esmfold2"]
+)
+def test_padded_backends_resolve_model_msa_depth_and_preserve_overrides(
+    model, tmp_path
+):
+    from foldjax.registry import get_backend
+
+    path = _input(tmp_path)
+    backend = get_backend(model)
+    request = PredictionRequest(model=model, input=path, padding=True)
+    default_depth = 1280 if model == "opendde" else 1024
+    assert backend.apply_sampling(request)["max_msa_depth"] == default_depth
+    explicit_default = PredictionRequest(
+        model=model, input=path, padding=True, max_msa_depth=default_depth
+    )
+    assert backend.cache_profile(request) == backend.cache_profile(explicit_default)
+    pinned = PredictionRequest(
+        model=model, input=path, padding=PaddingConfig(msa=64)
+    )
+    assert backend.apply_sampling(pinned)["max_msa_depth"] == 64
+    overridden = PredictionRequest(
+        model=model, input=path, padding=True, max_msa_depth=128
+    )
+    assert backend.apply_sampling(overridden)["max_msa_depth"] == 128
+    native = PredictionRequest(
+        model=model,
+        input=path,
+        padding=True,
+        options={"max_msa_depth": 128},
+    )
+    assert backend.apply_sampling(native)["max_msa_depth"] == 128
+    unpadded = PredictionRequest(model=model, input=path)
+    assert "max_msa_depth" not in backend.apply_sampling(unpadded)

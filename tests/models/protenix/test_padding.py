@@ -722,3 +722,17 @@ def test_padding_pads_exactly_the_fields_that_carry_a_template_axis() -> None:
     assert set(_TEMPLATE_FIELDS) == set(TEMPLATE_FIELDS)
     for name, value in produced.items():
         assert value.shape[0] == num_templates, name
+
+
+@pytest.mark.parametrize("depth", [2, 5])
+def test_token_profile_fixes_atom_and_active_msa_capacity(depth):
+    features = _features()
+    for name in ("msa", "has_deletion", "deletion_value"):
+        features[name] = np.repeat(features[name][:1], depth, axis=0)
+    padded, plan = pad_protenix_features(
+        features, PaddingConfig(tokens=8), n_queries=2, n_keys=4, msa_depth=8
+    )
+    assert plan.target == {"tokens": 8, "atoms": 192, "msa": 8, "templates": 4}
+    np.testing.assert_array_equal(padded["ref_pos"][:5], features["ref_pos"])
+    np.testing.assert_array_equal(padded["atom_padding_mask"][5:], 0)
+    np.testing.assert_array_equal(padded["msa_mask"][depth:], 0)

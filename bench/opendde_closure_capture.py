@@ -26,6 +26,18 @@ import numpy as np
 from bench.af3_closure_capture import flatten, save, sha
 
 
+def observer_policy(args):
+    """Bind optional observation boundaries separately from always-on capture."""
+    names = (
+        "capture_confidence_boundary", "capture_linear_policy",
+        "capture_trunk_boundary", "capture_ffi_policy", "capture_consumed_tape",
+    )
+    result = {name: getattr(args, name) for name in names}
+    if any(type(value) is not bool for value in result.values()):
+        raise ValueError("observer switches must be explicit booleans")
+    return result
+
+
 def numpy_tree(value):
     if isinstance(value, dict):
         return {key: numpy_tree(child) for key, child in value.items()}
@@ -183,6 +195,7 @@ def main():
         "native_tf32": not args.disable_native_tf32,
         "native_deterministic": args.native_deterministic,
         "instrumented": True,
+        "observer_policy": observer_policy(args),
         "xla_flags": os.environ.get("XLA_FLAGS", ""),
         "jax_persistent_cache_enable_xla_caches": os.environ.get(
             "JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES"

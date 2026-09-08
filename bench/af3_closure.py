@@ -150,6 +150,38 @@ def compare_confidence(left, right):
     return report
 
 
+def config_difference_kind(native, candidate):
+    """Describe exact top-level default extensions; never grant parity admission."""
+    defaults = {
+        "foldjax_return_representations": [],
+        "foldjax_stop_after": "full",
+    }
+
+    def exact(a, b):
+        if type(a) is not type(b):
+            return False
+        if type(a) is dict:
+            return a.keys() == b.keys() and all(exact(a[k], b[k]) for k in a)
+        if type(a) is list:
+            return len(a) == len(b) and all(exact(x, y) for x, y in zip(a, b))
+        return type(a) in (str, int, float, bool, type(None)) and a == b
+
+    if type(native) is not dict or type(candidate) is not dict or not native:
+        return "other"
+    if exact(native, candidate):
+        return "none"
+    extras = candidate.keys() - native.keys()
+    if (
+        not extras
+        or native.keys() - candidate.keys()
+        or not extras <= defaults.keys()
+        or not all(exact(native[k], candidate[k]) for k in native)
+        or not all(exact(candidate[k], defaults[k]) for k in extras)
+    ):
+        return "other"
+    return "allowlisted_extensions_only"
+
+
 def _json(path):
     def invalid(value):
         raise ValueError(f"nonstandard JSON constant {value}")
@@ -215,6 +247,22 @@ def compare_arms(left, right, *, require_tape=True):
         ):
             a, b = _json(left / name), _json(right / name)
             checks[name] = bool(a) and a == b
+            if (
+                name in ("config.json", "effective-config.json")
+                and isinstance(a, dict)
+                and isinstance(b, dict)
+            ):
+                report.setdefault("config_differences", {})[name] = {
+                    "kind": config_difference_kind(a, b),
+                    "left_only": {k: a[k] for k in sorted(a.keys() - b.keys())},
+                    "right_only": {k: b[k] for k in sorted(b.keys() - a.keys())},
+                    "changed": {
+                        k: {"left": a[k], "right": b[k]}
+                        for k in sorted(a.keys() & b.keys())
+                        if a[k] != b[k]
+                    },
+                    "scope": "top-level explanation only; exact config gate unchanged",
+                }
         provenance = [_json(root / "provenance.json") for root in (left, right)]
         checks["xla_cache_artifacts"] = all(
             hashlib.sha256((root / "xla-autotune.textproto").read_bytes()).hexdigest()
@@ -269,6 +317,7 @@ def compare_arms(left, right, *, require_tape=True):
             ]
             checks["preprocessing_tape"] = preprocessing[0] == preprocessing[1] and all(
                 isinstance(value, dict)
+                and value.get("observers_enabled", True) is True
                 and value.get("rdkit_internal_rng_observed") is False
                 and all(
                     isinstance(value.get(name), list) and bool(value[name])

@@ -79,7 +79,14 @@ class StageObserver:
         def observed(*args, **kwargs):
             output = original(*args, **kwargs)
             if name == "msa_module":
-                value = {"input_z": args[1], "delta_z": output}
+                value = {
+                    "input_z": args[1], "input_emb": args[2],
+                    "input_features": {key: args[3][key] for key in (
+                        "msa", "has_deletion", "deletion_value", "msa_paired",
+                        "msa_mask", "token_pad_mask",
+                    )},
+                    "delta_z": output,
+                }
             elif name == "pairformer_module":
                 value = {
                     "input_s": args[1],
@@ -124,6 +131,14 @@ class StageObserver:
             raise RuntimeError(
                 f"incomplete stage observation: {dict(self.counts)} != {expected}"
             )
+
+
+def compiler_environment():
+    """Record only compiler/cache controls, never the whole process environment."""
+    return {
+        name: os.environ.get(name)
+        for name in ("XLA_FLAGS", "JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES")
+    }
 
 
 def native_settings(root):
@@ -326,6 +341,7 @@ def main(argv=None):
         {
             "arm": "foldjax-core-only",
             "instrumented": True,
+            "compiler_environment": compiler_environment(),
             "source_files": {
                 str(path.relative_to(source)): sha(path)
                 for directory in ("src", "bench")

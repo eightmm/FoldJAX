@@ -292,6 +292,7 @@ def protenix_infer_static(
     #: actually consumes.
     return_trunk: bool = True,
     stop_after_trunk: bool = False,
+    stop_after_inputs: bool = False,
     capture_names: tuple[str, ...] = (),
     return_confidence_logits: bool = True,
     #: Return the three quadratic expected-score/contact maps. Managed
@@ -390,6 +391,9 @@ def protenix_infer_static(
         n_keys=n_keys,
         use_scan=use_diffusion_scan,
     )
+    if stop_after_inputs:
+        return {"single_inputs": _capture.capture("single_inputs", s_inputs)}
+
     s_inputs, s_trunk, z_trunk = pairformer_output_from_s_inputs(
         trunk_features,
         s_inputs,
@@ -628,6 +632,7 @@ GRAPH_STATIC_ARGNAMES = (
     "confidence_sample_sequential",
     "return_trunk",
     "stop_after_trunk",
+    "stop_after_inputs",
     "capture_names",
     "return_confidence_logits",
     "return_confidence_details",

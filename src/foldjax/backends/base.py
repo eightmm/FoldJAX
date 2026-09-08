@@ -92,6 +92,16 @@ class Backend(ABC):
                     f"{self.name}; pass one of them"
                 )
             options[native] = value
+        if request.padding is not None and "max_msa_depth" in self.sampling_options:
+            from foldjax.padding import MSA_PROFILE_DEPTH, OPENDDE_MSA_PROFILE_DEPTH
+
+            native = self.sampling_options["max_msa_depth"]
+            if options.get(native) is None:
+                options[native] = request.padding.msa or (
+                    OPENDDE_MSA_PROFILE_DEPTH
+                    if self.name == "opendde"
+                    else MSA_PROFILE_DEPTH
+                )
         return options
 
     def matmul_precision(
@@ -144,7 +154,11 @@ class Backend(ABC):
         # fail only after a model starts loading.
         for native in self.sampling_options.values():
             if native in options:
-                _strict_integer(options[native], name=native, minimum=1)
+                minimum = 0 if (
+                    native == self.sampling_options.get("num_recycles")
+                    and self.name in {"alphafold3", "boltz2", "esmfold2"}
+                ) else 1
+                _strict_integer(options[native], name=native, minimum=minimum)
         if self.native_options is None:
             return
         generated = set(self.sampling_options.values())
@@ -173,7 +187,18 @@ class Backend(ABC):
         """
         if not request.representations:
             return
-        available = capabilities.representations
+        available = (
+            capabilities.input_representations
+            if request.stop_after == "inputs" else capabilities.representations
+        )
+        if request.stop_after == "inputs":
+            for entry in request.representations:
+                for part in str(entry).split(","):
+                    part = part.strip()
+                    if part and part != "all" and part not in available:
+                        raise ValueError(
+                            f"unknown input representation {part!r} for {self.name}"
+                        )
         found = False
         selected_all = False
         for entry in request.representations:

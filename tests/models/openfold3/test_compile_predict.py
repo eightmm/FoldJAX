@@ -105,3 +105,39 @@ def test_weights_can_be_swapped_without_recompiling(case, randomized) -> None:
     assert not np.allclose(
         np.asarray(first.coordinates), np.asarray(second.coordinates)
     )
+
+
+@pytest.mark.parametrize("rows", [1, 3, 11])
+@pytest.mark.parametrize("cp_shards", [1, 2])
+def test_streamed_recycles_match_fused_prediction(case, rows, cp_shards):
+    from foldjax.models.openfold3.data import pad_features, prepare_msa_cycle_features
+    from foldjax.models.openfold3.streaming import compile_streamed_predict
+
+    batch, params, config, table = case
+    batch = {name: np.asarray(value) for name, value in batch.items()}
+    for name in ("msa", "msa_mask", "has_deletion", "deletion_value"):
+        batch[name] = np.take(batch[name], np.arange(rows) % 3, axis=1)
+    if jax.device_count() < cp_shards:
+        pytest.skip("streamed CP comparison requires two devices")
+    tokens = ((config.n_token + cp_shards - 1) // cp_shards) * cp_shards
+    # This synthetic fixture carries a legacy flattened slot mask, outside
+    # the public featurizer schema handled by pad_features.
+    batch["max_atom_per_token_mask"] = np.pad(
+        batch["max_atom_per_token_mask"],
+        ((0, 0), (0, (tokens - config.n_token) * config.max_atoms_per_token)),
+    )
+    batch = pad_features(batch, n_token=tokens, n_atom=config.n_atom)
+    config = config._replace(
+        num_recycles=4, msa_depth=8, n_token=tokens, cp_shards=cp_shards,
+        stop_after_trunk=cp_shards > 1,
+        returned_representations=("single_inputs", "single", "pair"),
+    )
+    batch = prepare_msa_cycle_features(
+        batch, 8, num_recycles=4, rng=np.random.default_rng(2),
+    )
+    key = jax.random.key(17)
+    fused = compile_predict(config, table)(key, batch, params)
+    streamed = compile_streamed_predict(config, table)(key, batch, params)
+    _compare(fused, streamed)
+    for value in jax.tree.leaves(streamed):
+        assert np.isfinite(np.asarray(value)).all()

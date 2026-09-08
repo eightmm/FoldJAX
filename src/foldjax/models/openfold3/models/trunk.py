@@ -66,6 +66,112 @@ class TrunkParams(NamedTuple):
     template_embedder: TemplateEmbedderParams | None = None
 
 
+def initialize_trunk(
+    batch,
+    params,
+    *,
+    n_query,
+    n_key,
+    atom_heads,
+    n_token,
+    max_relative_idx,
+    max_relative_chain,
+    inf=1e9,
+    eps=1e-5,
+):
+    """Compute the invariant embeddings once, without retaining MSA rows."""
+    s_input, s_init, z_init = input_embedder(
+        batch,
+        params.input_embedder,
+        n_query=n_query,
+        n_key=n_key,
+        atom_heads=atom_heads,
+        n_token=n_token,
+        max_relative_idx=max_relative_idx,
+        max_relative_chain=max_relative_chain,
+        inf=inf,
+        eps=eps,
+    )
+
+    # Shard the pair state from its first materialization: `z_init` stays live
+    # across every recycle as the recycling residual, so its layout decides
+    # whether the carry ever exists whole on one device.
+    z_init = shard_pair_rows(z_init)
+
+    return s_input, s_init, z_init
+
+
+def trunk_cycle(
+    batch,
+    msa_batch,
+    params,
+    initial,
+    carry,
+    *,
+    no_heads_msa,
+    no_heads_pair,
+    no_heads_pair_bias,
+    opm_first=True,
+    inf=1e9,
+    eps=1e-5,
+    chunk_size=None,
+    scan_blocks=True,
+):
+    """One native recycle; the caller owns row selection and carry lifetime."""
+    s_input, s_init, z_init = initial
+    s, z = carry
+    token_mask = batch["token_mask"]
+    pair_mask = token_mask[..., :, None] * token_mask[..., None, :]
+    m, msa_mask = msa_embedder(msa_batch, s_input, params.msa_module_embedder)
+    # Initial embedding plus a projection of the previous cycle, not a sum.
+    z = shard_pair_rows(
+        z_init + linear(layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z)
+    )
+
+    # Templates fold into z between the recycling projection and the MSA
+    # module, matching upstream's run_trunk ordering.
+    if params.template_embedder is not None:
+        z = z + template_embedder(
+            batch,
+            z,
+            params.template_embedder,
+            pair_mask=pair_mask,
+            no_heads=no_heads_pair,
+            inf=inf,
+            eps=eps,
+            chunk_size=chunk_size,
+        )
+
+    z = msa_module_stack(
+        m,
+        z,
+        params.msa_module,
+        msa_mask=msa_mask,
+        pair_mask=pair_mask,
+        no_heads_msa=no_heads_msa,
+        no_heads_pair=no_heads_pair,
+        opm_first=opm_first,
+        inf=inf,
+        eps=eps,
+        chunk_size=chunk_size,
+    )
+
+    s = s_init + linear(layer_norm(s, params.layer_norm_s, eps=eps), params.linear_s)
+    return pairformer_stack(
+        s,
+        z,
+        params.pairformer_stack,
+        single_mask=token_mask,
+        pair_mask=pair_mask,
+        no_heads_pair=no_heads_pair,
+        no_heads_pair_bias=no_heads_pair_bias,
+        inf=inf,
+        eps=eps,
+        chunk_size=chunk_size,
+        scan_blocks=scan_blocks,
+    )
+
+
 def trunk(
     batch: Mapping[str, jnp.ndarray],
     params: TrunkParams,
@@ -119,9 +225,9 @@ def trunk(
     if num_recycles < 1:
         raise ValueError("num_recycles must be at least 1")
 
-    s_input, s_init, z_init = input_embedder(
+    initial = initialize_trunk(
         batch,
-        params.input_embedder,
+        params,
         n_query=n_query,
         n_key=n_key,
         atom_heads=atom_heads,
@@ -131,17 +237,8 @@ def trunk(
         inf=inf,
         eps=eps,
     )
-
-    # Shard the pair state from its first materialization: `z_init` stays live
-    # across every recycle as the recycling residual, so its layout decides
-    # whether the carry ever exists whole on one device.
-    z_init = shard_pair_rows(z_init)
-
-    s = jnp.zeros_like(s_init)
-    z = jnp.zeros_like(z_init)
-
-    token_mask = batch["token_mask"]
-    pair_mask = token_mask[..., :, None] * token_mask[..., None, :]
+    s_input, s_init, z_init = initial
+    s, z = jnp.zeros_like(s_init), jnp.zeros_like(z_init)
 
     cycle_indices = batch.get(_MSA_CYCLE_INDICES)
     if cycle_indices is not None:
@@ -152,7 +249,6 @@ def trunk(
         cycle_index: int,
         carry: tuple[jnp.ndarray, jnp.ndarray],
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        s, z = carry
         if cycle_indices is None:
             msa_batch = batch
         else:
@@ -167,52 +263,16 @@ def trunk(
             ):
                 if name in msa_batch:
                     msa_batch[name] = jnp.take(msa_batch[name], indices, axis=1)
-        m, msa_mask = msa_embedder(msa_batch, s_input, params.msa_module_embedder)
-        # Initial embedding plus a projection of the previous cycle, not a sum.
-        z = shard_pair_rows(
-            z_init
-            + linear(layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z)
-        )
-
-        # Templates fold into z between the recycling projection and the MSA
-        # module, matching upstream's run_trunk ordering.
-        if params.template_embedder is not None:
-            z = z + template_embedder(
-                batch,
-                z,
-                params.template_embedder,
-                pair_mask=pair_mask,
-                no_heads=no_heads_pair,
-                inf=inf,
-                eps=eps,
-                chunk_size=chunk_size,
-            )
-
-        z = msa_module_stack(
-            m,
-            z,
-            params.msa_module,
-            msa_mask=msa_mask,
-            pair_mask=pair_mask,
+        return trunk_cycle(
+            batch,
+            msa_batch,
+            params,
+            initial,
+            carry,
             no_heads_msa=no_heads_msa,
             no_heads_pair=no_heads_pair,
-            opm_first=opm_first,
-            inf=inf,
-            eps=eps,
-            chunk_size=chunk_size,
-        )
-
-        s = s_init + linear(
-            layer_norm(s, params.layer_norm_s, eps=eps), params.linear_s
-        )
-        return pairformer_stack(
-            s,
-            z,
-            params.pairformer_stack,
-            single_mask=token_mask,
-            pair_mask=pair_mask,
-            no_heads_pair=no_heads_pair,
             no_heads_pair_bias=no_heads_pair_bias,
+            opm_first=opm_first,
             inf=inf,
             eps=eps,
             chunk_size=chunk_size,

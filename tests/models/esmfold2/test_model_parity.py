@@ -141,9 +141,7 @@ def test_the_inputs_embedder_matches() -> None:
         settings=settings,
         n_tokens=N_TOKENS,
     )
-    np.testing.assert_allclose(
-        np.asarray(got), expected.numpy(), atol=2e-4, rtol=2e-4
-    )
+    np.testing.assert_allclose(np.asarray(got), expected.numpy(), atol=2e-4, rtol=2e-4)
 
 
 def test_the_language_model_shim_matches() -> None:
@@ -206,9 +204,83 @@ def test_the_trunk_and_distogram_match(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         initial_pair_state=state,
     )["distogram_logits"]
-    np.testing.assert_allclose(
-        np.asarray(got), expected.numpy(), atol=2e-3, rtol=2e-3
+    np.testing.assert_allclose(np.asarray(got), expected.numpy(), atol=2e-3, rtol=2e-3)
+
+
+@pytest.mark.parametrize("with_msa", [False, True])
+def test_native_bf16_trunk_and_distogram_replay_lm_dropout_tape(with_msa):
+    """Actual tiny trunk, fixed features/LM/pair; no sampler or MSA randomness."""
+    import jax.numpy as jnp
+
+    config = _config()
+    if with_msa:
+        config.msa_encoder.enabled = True
+        config.msa_encoder.n_layers = 1
+    native = modeling.ESMFold2Model(config).eval()
+    params = torch_state_to_numpy(native)
+    params["confidence_head.boundaries"] = native.confidence_head.boundaries.numpy()
+    features = {k: jnp.asarray(v) for k, v in _features(3).items()}
+    if with_msa:
+        features.update(
+            msa=jnp.arange(24).reshape(1, 4, 6) % 20,
+            msa_attention_mask=jnp.ones((1, 4, 6)),
+            has_deletion=jnp.zeros((1, 4, 6)),
+            deletion_value=jnp.zeros((1, 4, 6)),
+        )
+    settings = dataclasses.replace(
+        jax_model.settings_from_config(config.to_dict()),
+        num_recycles=1,
+        per_loop_lm_dropout=True,
+        lm_dropout=0.25,
+        max_msa_depth=2,
+        msa_column_mask_rate=0.2,
     )
+    assert settings.trunk_dtype == "bfloat16"
+    rng = np.random.default_rng(72)
+    initial = jnp.asarray(rng.normal(size=(1, N_TOKENS, N_TOKENS, D_PAIR)), jnp.float32)
+    hidden = jnp.asarray(
+        rng.normal(size=(1, N_TOKENS, LM_LAYERS + 1, LM_WIDTH)), jnp.float32
+    )
+    masks = jnp.asarray(rng.random((2, 1, N_TOKENS, N_TOKENS, D_PAIR)) > 0.25)
+
+    def run(key, tape, column_override=None):
+        column = (
+            jnp.array([[True, False, True, False, True, False]])
+            if column_override is None
+            else column_override
+        )
+        output = jax_model.predict(
+            key,
+            features,
+            params,
+            settings=settings,
+            lm_hidden_states=hidden,
+            initial_pair_state=initial,
+            lm_dropout_masks=tape,
+            msa_column_keep=column if with_msa else None,
+            msa_row_choices=jnp.array([[0, 1], [0, 3]], jnp.int32)
+            if with_msa
+            else None,
+            n_chains=2,
+            stop_after_trunk=True,
+            return_representations=("pair",),
+        )
+        return output["pair"], jax_model._distogram_logits(output["pair"], params)
+
+    # This gate is tape/key independence in each execution mode, not a
+    # BF16 eager-versus-fused arithmetic parity claim.
+    for fn in (run, jax.jit(run)):
+        first = fn(jax.random.key(0), masks)
+        other_key = fn(jax.random.key(99), masks)
+        for left, right in zip(first, other_key, strict=True):
+            np.testing.assert_array_equal(left, right)
+        changed = fn(jax.random.key(0), ~masks)
+        assert not np.array_equal(first[0], changed[0])
+        assert not np.array_equal(first[1], changed[1])
+        if with_msa:
+            changed_columns = fn(jax.random.key(0), masks, jnp.ones((1, 6), bool))
+            assert not np.array_equal(first[0], changed_columns[0])
+            assert not np.array_equal(first[1], changed_columns[1])
 
 
 def test_the_released_trunk_is_bfloat16() -> None:

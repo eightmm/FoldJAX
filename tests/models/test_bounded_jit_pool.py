@@ -372,11 +372,12 @@ def test_esmfold2_static_choices_create_distinct_bounded_owners(
         pool(*compact_bonds)
         pool(*no_distogram)
         pool(*dense_atom_attention)
-        assert pool._entry_count() == 4
-        assert len(created) == 4
+        pool(*base, stop_after_inputs=True)
+        assert pool._entry_count() == 5
+        assert len(created) == 5
 
         pool(*base)
-        assert pool._entry_count() == 4
-        assert len(created) == 4
+        assert pool._entry_count() == 5
+        assert len(created) == 5
     finally:
         pool.clear_cache()

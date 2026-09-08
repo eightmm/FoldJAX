@@ -392,8 +392,15 @@ class Boltz2Backend(Backend):
         for role in tuple(self._runners):
             self._drop_runner(role)
 
+    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
+        options = super().apply_sampling(request)
+        # Boltz-2 Appendix D.1 uses five recycling rounds for PDB evaluation.
+        # Keep the effective value in cache identity, including omitted requests.
+        options.setdefault("num_recycles", 5)
+        return options
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
-        """Keep explicit released defaults in the omitted cache namespace.
+        """Normalize native defaults while retaining the managed recycle count.
 
         The native API resolves omitted options to these exact values before it
         builds either retained runner identity.  Naming them explicitly must
@@ -460,7 +467,7 @@ class Boltz2Backend(Backend):
         assert request.weights is not None
         primary = Path(request.weights)
         affinity = None
-        if request.stop_after != "trunk" and document_uses_key(request, "affinity"):
+        if request.stop_after == "full" and document_uses_key(request, "affinity"):
             configured = self.apply_sampling(request).get("affinity_weights")
             affinity = (
                 Path(configured)
@@ -670,6 +677,7 @@ class Boltz2Backend(Backend):
         )
         return ModelCapabilities(
             representations=_representations.available("boltz2"),
+            input_representations=("single_inputs",),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "boltz", "foldjax"),
@@ -710,7 +718,12 @@ class Boltz2Backend(Backend):
             )
         native = _native_module()
         wanted = _representations.resolve(
-            request.representations, _representations.specs_for("boltz2")
+            request.representations,
+            (
+                {"single_inputs": _representations.specs_for("boltz2")["single_inputs"]}
+                if request.stop_after == "inputs"
+                else _representations.specs_for("boltz2")
+            ),
         )
         native_options: dict[str, Any] = dict(
             representations=wanted or None,
@@ -730,7 +743,7 @@ class Boltz2Backend(Backend):
             native_options["_runtime"] = self
         with matmul_precision():
             output = native.predict(**native_options)
-        if request.stop_after == "trunk":
+        if request.stop_after in {"inputs", "trunk"}:
             # Nothing was folded, so there are no samples to describe.
             representations = _representations_result(
                 self.name, request.output_dir, wanted

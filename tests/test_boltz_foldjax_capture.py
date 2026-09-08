@@ -8,11 +8,27 @@ import pytest
 
 from bench.boltz_foldjax_capture import (
     StageObserver,
+    compiler_environment,
     load_inputs,
     make_prediction,
     native_settings,
     prediction_options,
 )
+
+
+def test_compiler_environment_records_only_explicit_controls(monkeypatch):
+    monkeypatch.setenv("XLA_FLAGS", "--xla_gpu_enable_triton_gemm=false")
+    monkeypatch.setenv("JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES", "none")
+    monkeypatch.setenv("UNRELATED_PRIVATE_VALUE", "must not be recorded")
+    assert compiler_environment() == {
+        "XLA_FLAGS": "--xla_gpu_enable_triton_gemm=false",
+        "JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES": "none",
+    }
+    monkeypatch.delenv("XLA_FLAGS")
+    monkeypatch.delenv("JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES")
+    assert compiler_environment() == {
+        "XLA_FLAGS": None, "JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES": None,
+    }
 
 
 def _meta():
@@ -103,7 +119,10 @@ def test_runtime_callbacks_keep_scan_and_save_only_first_last_cycles(tmp_path):
 
     @jax.jit
     def run(value):
-        feats = {"x": value}
+        feats = {key: value for key in (
+            "x", "msa", "has_deletion", "deletion_value", "msa_paired",
+            "msa_mask", "token_pad_mask",
+        )}
         s = trunk.input_embedder_forward(None, feats)
         z = trunk.relative_position_forward(None, feats)
 
@@ -124,6 +143,11 @@ def test_runtime_callbacks_keep_scan_and_save_only_first_last_cycles(tmp_path):
     assert observer.counts["msa_module"] == observer.counts["pairformer_module"] == 4
     np.testing.assert_array_equal(output[0], [7, 7])
     assert (tmp_path / "trunk-boundaries/cycle-00/msa_module.npz").exists()
+    with np.load(tmp_path / "trunk-boundaries/cycle-00/msa_module.npz") as values:
+        assert "input_emb" in values.files
+        for key in ("msa", "has_deletion", "deletion_value", "msa_paired",
+                    "msa_mask", "token_pad_mask"):
+            np.testing.assert_array_equal(values[f"input_features.{key}"], [1, 1])
     assert (tmp_path / "trunk-boundaries/cycle-03/pairformer_module.npz").exists()
     assert not (tmp_path / "trunk-boundaries/cycle-01").exists()
     metadata = json.loads(

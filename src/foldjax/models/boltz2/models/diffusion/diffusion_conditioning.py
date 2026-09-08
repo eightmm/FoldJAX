@@ -28,6 +28,9 @@ from foldjax.models.boltz2.models.primitives.native_amp_norm import (
     amp_affine,
     amp_layer_norm,
 )
+from foldjax.models.boltz2.models.primitives.native_atom_geometry import (
+    inverse_squared_distance,
+)
 from foldjax.models.boltz2.models.trunk_blocks.conditioning import (
     pairwise_conditioning_forward,
 )
@@ -193,7 +196,7 @@ def atom_encoder_forward(
         (batch, num_windows, 1, h_keys, 3),
     )
     d = atom_ref_pos_keys - atom_ref_pos_queries
-    d_norm = 1.0 / (1.0 + jnp.sum(d * d, axis=-1, keepdims=True))
+    d_norm = inverse_squared_distance(d)
 
     atom_mask_queries = jnp.reshape(atom_mask, (batch, num_windows, w, 1))
     atom_mask_keys = jnp.reshape(

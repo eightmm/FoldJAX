@@ -184,6 +184,7 @@ def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_overr
     )
 
     assert seen == {
+        "num_recycles": 9,
         "return_distogram_logits": False,
         **({"return_auxiliary_outputs": False} if managed_auxiliary_api else {}),
     }
@@ -410,6 +411,8 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
     assert seen["atom_shape"] == (1, 64)
     assert seen["msa_shape"] == (1, 4, 8)
     assert seen["kwargs"] == {
+        "num_recycles": 9,
+        "max_msa_depth": 4,
         "language_model_tokens": None,
         "preserve_prefix_rng": True,
         "return_distogram_logits": False,
@@ -1606,27 +1609,14 @@ def test_multi_seed_session_keeps_predict_job_only_wrappers_compatible(
     assert calls == {"load": 1, "predict_job": 2}
 
 
-def test_the_defaults_are_the_released_config_not_what_fits_on_a_card() -> None:
-    """`DEFAULTS` must stay upstream's released values, especially the hard one.
+def test_managed_recycling_uses_paper_loops_without_changing_sample_budget() -> None:
+    """Ten total paper loops override the release's three additional recycles.
 
-    ESMFold2's release ships `num_diffusion_samples = 32`. The confidence head
-    builds a `bf16[num_samples, N, N, 2048]` arena, linear in that number, so a
-    card that cannot hold it invites one obvious and wrong fix: lower the
-    default. That would be a silent divergence -- the port would keep the name
-    and stop being the configuration upstream released, and every benchmark
-    taken afterwards would be at a sample count nobody chose. The lever for the
-    memory is `confidence_sample_sequential`; it is not the sample count.
-
-    The first three assertions hold in any clone. The rest run only where the
-    weight store is present, and they are the ones that matter: they compare
-    against the release artifact instead of against a restatement of it, which
-    is the difference between pinning a value and pinning the *source* of a
-    value. `max_msa_depth` is deliberately not among them -- it appears nowhere
-    in the released config, so it is the port's own choice and this test would
-    be asserting our opinion back to ourselves.
+    Steps and samples still come from the checkpoint: matching recurrence does
+    not silently opt into the paper's full diffusion and multi-seed protocol.
     """
     assert DEFAULTS["num_diffusion_samples"] == 32
-    assert DEFAULTS["num_recycles"] == 3
+    assert DEFAULTS["num_recycles"] + 1 == 10
     assert DEFAULTS["num_sampling_steps"] == 14
 
     config = weights_dir("esmfold2") / "config.json"
@@ -1641,7 +1631,7 @@ def test_the_defaults_are_the_released_config_not_what_fits_on_a_card() -> None:
     # key, and asserting the internal spelling against the release artifact is
     # how this test read a KeyError as a missing default for three weeks --
     # invisible in CI, which has no weight store and returns above.
-    assert document["num_loops"] == DEFAULTS["num_recycles"]
+    assert document["num_loops"] == 3
     assert (
         document["structure_head"]["inference_num_steps"]
         == DEFAULTS["num_sampling_steps"]

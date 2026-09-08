@@ -287,16 +287,8 @@ def condition_pair(
     # Upstream reopens a bfloat16 autocast around these two transitions alone.
     # The residual is float32 either way: `z + block(z)` promotes.
     for index in range(2):
-        block = {
-            name: (
-                value.astype(trunk_dtype)
-                if name.startswith(f"{dot}z_transitions") and value.dtype == jnp.float32
-                else value
-            )
-            for name, value in params.items()
-        }
         z = z + transition_layer(
-            z.astype(trunk_dtype), block, f"{dot}z_transitions.{index}"
+            z, params, f"{dot}z_transitions.{index}", linear_dtype=trunk_dtype
         ).astype(jnp.float32)
     return z
 
@@ -577,6 +569,9 @@ def center_random_augmentation(
     x: jnp.ndarray,
     atom_mask: jnp.ndarray,
     second: jnp.ndarray | None = None,
+    *,
+    quaternion: jnp.ndarray | None = None,
+    translation: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray | None]:
     """Centre on the masked centroid, then rotate and translate at random.
 
@@ -594,13 +589,19 @@ def center_random_augmentation(
     rotation_key, translation_key = jax.random.split(key)
     rotation = quaternion_to_rotation(
         jax.random.normal(rotation_key, (x.shape[0], 4), dtype=x.dtype)
+        if quaternion is None
+        else quaternion
     )
     x = jnp.einsum("bmd,bds->bms", x, rotation)
     if second is not None:
         second = jnp.einsum("bmd,bds->bms", second, rotation)
 
-    shift = jax.random.normal(
-        translation_key, (x.shape[0], 1, x.shape[2]), dtype=x.dtype
+    shift = (
+        translation
+        if translation is not None
+        else jax.random.normal(
+            translation_key, (x.shape[0], 1, x.shape[2]), dtype=x.dtype
+        )
     )
     x = x + shift
     if second is not None:
@@ -683,6 +684,7 @@ def _step(
     atom_mask: jnp.ndarray,
     settings: DiffusionSettings,
     preserve_prefix_rng: bool = False,
+    draws: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] | None = None,
 ) -> tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], None]:
     """One denoise-align-step, shared by the scanned and the eager driver.
 
@@ -692,23 +694,38 @@ def _step(
     coming out as a scanned output: only the last step's is wanted, and
     stacking all forty-eight would cost `steps * L * c_token` for nothing.
     """
+    if preserve_prefix_rng and draws is not None:
+        raise ValueError("native diffusion tape does not support prefix RNG padding")
     x, previous, key, _ = carry
     sigma_from, sigma_to, gamma = step[0], step[1], step[2]
 
     key, augmentation_key, churn_key = jax.random.split(key, 3)
-    x, previous = center_random_augmentation(augmentation_key, x, atom_mask, previous)
+    quaternion, translation, normal = (None, None, None) if draws is None else draws
+    x, previous = center_random_augmentation(
+        augmentation_key,
+        x,
+        atom_mask,
+        previous,
+        quaternion=quaternion,
+        translation=translation,
+    )
 
     t_hat = sigma_from * (1.0 + gamma)
     # sigma * sqrt(g^2 + 2g) == sqrt(t_hat^2 - sigma^2) without the
     # cancellation. This is zero only under the bare dataclass default; the
     # released config sets noise_scale to 1.003.
     churn = settings.noise_scale * sigma_from * jnp.sqrt(gamma * gamma + 2.0 * gamma)
-    x_noisy = x + churn * _atom_normal(
-        churn_key,
-        atom_mask,
-        dtype=x.dtype,
-        preserve_prefix_rng=preserve_prefix_rng,
+    normal = (
+        normal
+        if normal is not None
+        else _atom_normal(
+            churn_key,
+            atom_mask,
+            dtype=x.dtype,
+            preserve_prefix_rng=preserve_prefix_rng,
+        )
     )
+    x_noisy = x + churn * normal
 
     x_denoised, token_repr = denoise(
         x_noisy, jnp.broadcast_to(jnp.asarray(t_hat, jnp.float32), (x.shape[0],))
@@ -720,6 +737,55 @@ def _step(
     slope = (x_noisy - x_denoised) / t_hat
     x = x_noisy + settings.step_scale * (sigma_to - t_hat) * slope
     return (x, x_denoised, key, token_repr), None
+
+
+def validate_diffusion_tape(
+    initial, quaternions, translations, churn, *, steps, batch, atoms, check_values=True
+):
+    """Validate native FP32 draws before JIT.
+
+    Call this on concrete arrays before passing a tape as dynamic JIT inputs.
+    Internal callers set ``check_values=False`` to permit tracing, but still
+    check finite values whenever their inputs are concrete.
+    The sampler regenerates its unchanged schedule; this is not a sigma tape.
+    """
+    values = (initial, quaternions, translations, churn)
+    if all(value is None for value in values):
+        return
+    if any(value is None for value in values):
+        raise ValueError("diffusion tape requires all four draw arrays")
+    shapes = (
+        (batch, atoms, 3),
+        (steps, batch, 4),
+        (steps, batch, 1, 3),
+        (steps, batch, atoms, 3),
+    )
+    for value, shape in zip(values, shapes, strict=True):
+        if value.shape != shape or value.dtype != jnp.float32:
+            raise ValueError(f"diffusion tape requires FP32 shape {shape}")
+        if check_values and isinstance(value, jax.core.Tracer):
+            raise ValueError("diffusion tape value preflight requires concrete arrays")
+        if (
+            not isinstance(value, jax.core.Tracer)
+            and not np.isfinite(np.asarray(value)).all()
+        ):
+            raise ValueError("diffusion tape must be finite")
+    if not isinstance(quaternions, jax.core.Tracer):
+        q = np.asarray(quaternions)
+        limits = np.finfo(np.float32)
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            norm2 = np.sum(q**2, axis=-1)
+        # A sum of subnormal squares can look normal on the host while every
+        # product flushes to zero on device. Require one normal-square component
+        # and overflow margin; do not change native quaternion normalization.
+        if (
+            not np.isfinite(norm2).all()
+            or np.any(np.max(np.abs(q), axis=-1) < np.sqrt(limits.tiny))
+            or np.any(norm2 >= limits.max / 2)
+        ):
+            raise ValueError(
+                "diffusion tape quaternion norms must remain in the normal FP32 range"
+            )
 
 
 def sample(
@@ -734,6 +800,10 @@ def sample(
     num_samples: int = 1,
     early_exit_rmsd: float | None = None,
     preserve_prefix_rng: bool = False,
+    diffusion_initial_normal: jnp.ndarray | None = None,
+    diffusion_rotation_quaternions: jnp.ndarray | None = None,
+    diffusion_translations: jnp.ndarray | None = None,
+    diffusion_churn_normals: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Algorithm 18, returning `(sample_atom_coords, token_repr)`.
 
@@ -743,20 +813,46 @@ def sample(
     branch on a traced value; asking for it runs the same step function in a
     Python loop instead, and the result cannot be jitted.
     """
+    if preserve_prefix_rng and any(
+        value is not None
+        for value in (
+            diffusion_initial_normal,
+            diffusion_rotation_quaternions,
+            diffusion_translations,
+            diffusion_churn_normals,
+        )
+    ):
+        raise ValueError("native diffusion tape does not support prefix RNG padding")
     schedule = noise_schedule(settings)
     gammas = np.where(schedule > settings.gamma_min, settings.gamma_0, 0.0)
     steps = np.stack([schedule[:-1], schedule[1:], gammas[1:]], axis=-1)
 
     atom_mask = cache.atom_mask.astype(jnp.float32)
     batch, _ = atom_mask.shape
+    validate_diffusion_tape(
+        diffusion_initial_normal,
+        diffusion_rotation_quaternions,
+        diffusion_translations,
+        diffusion_churn_normals,
+        steps=len(steps),
+        batch=batch,
+        atoms=atom_mask.shape[1],
+        check_values=False,
+    )
+    taped = diffusion_initial_normal is not None
 
     key, initial_key = jax.random.split(key)
-    x = float(schedule[0]) * _atom_normal(
-        initial_key,
-        atom_mask,
-        dtype=jnp.float32,
-        preserve_prefix_rng=preserve_prefix_rng,
+    initial = (
+        diffusion_initial_normal
+        if taped
+        else _atom_normal(
+            initial_key,
+            atom_mask,
+            dtype=jnp.float32,
+            preserve_prefix_rng=preserve_prefix_rng,
+        )
     )
+    x = float(schedule[0]) * initial
 
     def denoise(
         x_noisy: jnp.ndarray, t_hat: jnp.ndarray
@@ -774,6 +870,9 @@ def sample(
         )
 
     def run(carry, step):
+        draws = None
+        if taped:
+            step, *draws = step
         return _step(
             carry,
             step,
@@ -781,6 +880,7 @@ def sample(
             atom_mask=atom_mask,
             settings=settings,
             preserve_prefix_rng=preserve_prefix_rng,
+            draws=draws,
         )
 
     # `lax.scan` needs a fixed carry structure, so the previous prediction and
@@ -796,12 +896,28 @@ def sample(
     )
 
     if early_exit_rmsd is None:
-        carry, _ = jax.lax.scan(run, carry, jnp.asarray(steps, dtype=jnp.float32))
+        scan_steps = jnp.asarray(steps, dtype=jnp.float32)
+        if taped:
+            scan_steps = (
+                scan_steps,
+                diffusion_rotation_quaternions,
+                diffusion_translations,
+                diffusion_churn_normals,
+            )
+        carry, _ = jax.lax.scan(run, carry, scan_steps)
         return carry[0], carry[3]
 
     for index in range(steps.shape[0]):
         previous = carry[1]
-        carry, _ = run(carry, jnp.asarray(steps[index], dtype=jnp.float32))
+        step = jnp.asarray(steps[index], dtype=jnp.float32)
+        if taped:
+            step = (
+                step,
+                diffusion_rotation_quaternions[index],
+                diffusion_translations[index],
+                diffusion_churn_normals[index],
+            )
+        carry, _ = run(carry, step)
         x_denoised, token_repr = carry[1], carry[3]
         if index >= 1:
             aligned = weighted_rigid_align(previous, x_denoised, atom_mask, atom_mask)

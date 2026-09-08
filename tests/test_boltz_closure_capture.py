@@ -148,7 +148,11 @@ class Model:
         for i in range(4):
             s = s_init + self.s_recycle(self.s_norm(s))
             z = z_init + self.z_recycle(self.z_norm(z))
-            z = z + self.msa_module(z, s_inputs, feats)
+            msa_feats = {key: feats for key in (
+                "msa", "has_deletion", "deletion_value", "msa_paired",
+                "msa_mask", "token_pad_mask",
+            )}
+            z = z + self.msa_module(z, s_inputs, msa_feats)
             s, z = self.pairformer_module(s, z)
         self.diffusion_conditioning(s, z)
         return {
@@ -218,6 +222,11 @@ def test_observer_preserves_native_calls_outputs_and_first_last_boundaries(tmp_p
         )
         assert values["to_keys.function"].item().endswith(".single_to_keys")
     assert (tmp_path / "trunk-boundaries/cycle-00/msa_module.npz").is_file()
+    with np.load(tmp_path / "trunk-boundaries/cycle-00/msa_module.npz") as values:
+        assert "input_emb" in values.files
+        for key in ("msa", "has_deletion", "deletion_value", "msa_paired",
+                    "msa_mask", "token_pad_mask"):
+            np.testing.assert_array_equal(values[f"input_features.{key}"], [1, 1])
     assert (tmp_path / "trunk-boundaries/cycle-03/pairformer_module.npz").is_file()
     assert not (tmp_path / "trunk-boundaries/cycle-01").exists()
     with np.load(tmp_path / "trunk-boundaries/initial.npz") as values:
@@ -267,3 +276,77 @@ def test_main_refuses_existing_output_before_importing_native_runtime(tmp_path):
             ]
         )
     assert marker.read_text() == "existing evidence"
+def test_input_detail_hook_does_not_replace_native_output(tmp_path):
+    import numpy as np
+
+    observer = NativeObserver(
+        tmp_path, samples=5, recycles=3, forward_code=None, input_details=True
+    )
+    values = tuple(np.array([i], dtype=np.float32) for i in range(3))
+    def callback(x):
+        return x
+    output = (*values, callback)
+    hook = observer.module_hook("input_embedder.atom_encoder")
+    assert hook(None, (), {}, output) is None
+    assert output[3] is callback
+    assert observer.counts["input_embedder.atom_encoder"] == 1
+    with np.load(tmp_path / "trunk-boundaries/input_embedder.atom_encoder.npz") as a:
+        assert len(a.files) == 3
+
+
+@pytest.mark.parametrize("name", [
+    "input_embedder.atom_encoder.embed_atompair_ref_dist",
+    "input_embedder.atom_attention_encoder.atom_encoder."
+    "diffusion_transformer.layers.0.adaln.s_norm",
+])
+def test_atom_pair_detail_records_both_operands_without_replacement(tmp_path, name):
+    import numpy as np
+
+    observer = NativeObserver(
+        tmp_path, samples=5, recycles=3, forward_code=None, input_details=True
+    )
+    value = np.array([1], dtype=np.float32)
+    output = np.array([2], dtype=np.float32)
+    assert observer.module_hook(name)(None, (value,), {}, output) is None
+    with np.load(tmp_path / f"trunk-boundaries/{name}.npz") as archive:
+        np.testing.assert_array_equal(archive["input"], value)
+        np.testing.assert_array_equal(archive["output"], output)
+def test_msa_first_layer_observer_records_inputs_without_replacing_output(
+    tmp_path, monkeypatch,
+):
+    import bench.boltz_closure_capture as capture
+
+    observer = capture.NativeObserver(
+        tmp_path, samples=5, recycles=3, forward_code=None, input_details=True
+    )
+    monkeypatch.setattr(capture, "native_locals", lambda code: {"i": 0})
+    recorded = []
+    observer.record = lambda name, value: recorded.append((name, value))
+    inputs = tuple(np.full((2,), i) for i in range(4))
+    hook = observer.module_hook("msa_module.layers.0", True)
+    assert hook(None, inputs, {}, object()) is None
+    assert recorded[0][0] == "trunk-boundaries/cycle-00/msa_module.layers.0"
+    for key, value in zip(
+        ("input_z", "input_m", "token_mask", "msa_mask"), inputs, strict=True
+    ):
+        assert recorded[0][1][key] is value
+@pytest.mark.parametrize("leaf", [
+    "pre_norm_s", "attention.proj_q", "attention.proj_k",
+    "attention.proj_v", "attention.proj_g",
+])
+def test_single_norm_observer_preserves_input_and_output(tmp_path, monkeypatch, leaf):
+    import bench.boltz_closure_capture as capture
+
+    observer = capture.NativeObserver(
+        tmp_path, samples=5, recycles=3, forward_code=None, input_details=True
+    )
+    monkeypatch.setattr(capture, "native_locals", lambda code: {"i": 0})
+    recorded = []
+    observer.record = lambda name, value: recorded.append((name, value))
+    x, output = np.ones((1, 437, 384)), np.zeros((1, 437, 384))
+    name = "pairformer_module.layers.0." + leaf
+    hook = observer.module_hook(name, True)
+    assert hook(None, (x,), {}, output) is None
+    assert recorded[0][1]["input"] is x
+    assert recorded[0][1]["output"] is output
+    assert recorded[0][0] == "trunk-boundaries/cycle-00/" + name

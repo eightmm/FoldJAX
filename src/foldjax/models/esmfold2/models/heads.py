@@ -27,7 +27,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._cp import shard_pair_rows
+from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models.esmfold2.models.embedders import row_attention_pooling
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear
 from foldjax.models.esmfold2.models.segments import (
@@ -42,6 +42,8 @@ Params = Mapping[str, jnp.ndarray]
 #: rather than an inferred one.
 NONPOLYMER_ID = 4
 EPS = 1e-6
+
+
 def gather_token_to_atom(
     token_features: jnp.ndarray, atom_to_token: jnp.ndarray
 ) -> jnp.ndarray:
@@ -49,9 +51,7 @@ def gather_token_to_atom(
     return jnp.take_along_axis(token_features, atom_to_token[..., None], axis=1)
 
 
-def categorical_mean(
-    logits: jnp.ndarray, start: float, end: float
-) -> jnp.ndarray:
+def categorical_mean(logits: jnp.ndarray, start: float, end: float) -> jnp.ndarray:
     """Expected value over evenly spaced bins, using bin *centres*.
 
     The edges are `n_bins + 1` points from `start` to `end`; using the edges
@@ -176,9 +176,7 @@ def confidence_head(
         params[f"{dot}s_inputs_norm.weight"],
         params[f"{dot}s_inputs_norm.bias"],
     )
-    pair = layer_norm(
-        z, params[f"{dot}z_norm.weight"], params[f"{dot}z_norm.bias"]
-    )
+    pair = layer_norm(z, params[f"{dot}z_norm.weight"], params[f"{dot}z_norm.bias"])
     if relative_position_encoding is not None:
         pair = pair + relative_position_encoding
     if token_bonds_encoding is not None:
@@ -208,33 +206,37 @@ def confidence_head(
     bins = jnp.sum(rep_distances[..., None] > boundaries, axis=-1)
     # Born sharded under context parallelism, before the head's own trunk:
     # `spread` just repeated it once per sample.
-    pair = shard_pair_rows(
-        pair + params[f"{dot}dist_bin_pairwise_embed.weight"][bins]
-    )
+    pair = shard_pair_rows(pair + params[f"{dot}dist_bin_pairwise_embed.weight"][bins])
 
     pair_mask = mask[:, :, None] * mask[:, None, :]
     # The trunk's own output already contains `pair`; adding it again is
     # upstream's arithmetic, not a missing assignment. The trunk itself runs
     # under its own bfloat16 autocast there, and the delta comes back to
     # float32 before the add -- `pair.add_(pair_delta.float())`.
-    trunk_params = {
-        name: (
-            value.astype(trunk_dtype)
-            if name.startswith(f"{dot}folding_trunk") and value.dtype == jnp.float32
-            else value
-        )
-        for name, value in params.items()
-    }
+    # The non-fused native trunk retains FP32 residuals and norm affine
+    # parameters; CUDA autocast narrows Linear operands, not the whole block.
+    native_autocast = jnp.dtype(trunk_dtype) == jnp.bfloat16 and cp_mesh() is None
+    trunk_params = (
+        params
+        if native_autocast
+        else {
+            name: (
+                value.astype(trunk_dtype)
+                if name.startswith(f"{dot}folding_trunk") and value.dtype == jnp.float32
+                else value
+            )
+            for name, value in params.items()
+        }
+    )
     pair = pair + folding_trunk(
-        pair.astype(trunk_dtype),
+        pair if native_autocast else pair.astype(trunk_dtype),
         trunk_params,
         f"{dot}folding_trunk",
         n_layers=n_layers,
         mask=pair_mask,
+        native_autocast=native_autocast,
     ).astype(jnp.float32)
-    single = row_attention_pooling(
-        pair, mask, params, f"{dot}row_attention_pooling"
-    )
+    single = row_attention_pooling(pair, mask, params, f"{dot}row_attention_pooling")
 
     at_atoms = gather_token_to_atom(single, atom_to_token)
     intra = jnp.clip(intra_token_index(atom_to_token), max=MAX_ATOMS_PER_TOKEN - 1)
@@ -277,25 +279,22 @@ def confidence_head(
         near_contact * inter_chain * (1.0 - is_ligand)[..., None], axis=-1
     )
     interface_weight = jnp.where(is_ligand > 0, 2.0, interface)
-    atom_interface = atom_mask * gather_token_to_atom(
-        interface_weight[..., None], atom_to_token
-    )[..., 0]
+    atom_interface = (
+        atom_mask
+        * gather_token_to_atom(interface_weight[..., None], atom_to_token)[..., 0]
+    )
     complex_iplddt = jnp.sum(plddt_per_atom * atom_interface, axis=-1) / (
         jnp.sum(atom_interface, axis=-1) + EPS
     )
     plddt_ca = jnp.take_along_axis(plddt_per_atom, rep_idx, axis=1)
 
     pae_logits = linear(
-        layer_norm(
-            pair, params[f"{dot}pae_ln.weight"], params[f"{dot}pae_ln.bias"]
-        ),
+        layer_norm(pair, params[f"{dot}pae_ln.weight"], params[f"{dot}pae_ln.bias"]),
         params,
         f"{dot}pae_head",
     )
     pde_logits = linear(
-        layer_norm(
-            pair, params[f"{dot}pde_ln.weight"], params[f"{dot}pde_ln.bias"]
-        ),
+        layer_norm(pair, params[f"{dot}pde_ln.weight"], params[f"{dot}pde_ln.bias"]),
         params,
         f"{dot}pde_head",
     )
@@ -321,8 +320,7 @@ def confidence_head(
     )
 
     ptm = jnp.max(
-        jnp.sum(tm_expected * pair_mask, axis=-1)
-        / (jnp.sum(pair_mask, axis=-1) + EPS),
+        jnp.sum(tm_expected * pair_mask, axis=-1) / (jnp.sum(pair_mask, axis=-1) + EPS),
         axis=-1,
     )
     inter_chain_mask = inter_chain * pair_mask

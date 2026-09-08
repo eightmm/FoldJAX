@@ -16,6 +16,7 @@ from foldjax.models.boltz2.models.diffusion.diffusion_conditioning import (
 )
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
+from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 
 Params = Mapping[str, object]
 
@@ -37,8 +38,13 @@ def input_embedder_forward(
         eps=eps,
     )
     atom_enc_proj = params["atom_enc_proj_z"]
+    norm = (
+        amp_layer_norm
+        if atom_enc_proj["linear"]["kernel"].dtype == jnp.bfloat16
+        else _layer_norm
+    )
     atom_enc_bias = _linear(
-        _layer_norm(
+        norm(
             p,
             atom_enc_proj["norm"]["scale"],
             atom_enc_proj["norm"]["bias"],

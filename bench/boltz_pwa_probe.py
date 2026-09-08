@@ -1,4 +1,4 @@
-"""First-layer PWA diagnostic on matched native MSA rows, not model parity.
+"""Selected-layer PWA diagnostic on matched native MSA rows, not model parity.
 
 The native decomposition must exactly reproduce its actual module. The row
 slice is also compared to the full native capture; it is not assumed bitwise
@@ -22,26 +22,41 @@ from bench.boltz_msa_probe import source_hashes, verify_bound_file
 from bench.boltz_relpos_probe import arrays, bf16_round, comparison, torch_policy
 
 
-def load_reference(root, rows):
+def load_reference(root, rows, layer=0):
+    if type(layer) is not int or not 0 <= layer < 4:
+        raise ValueError("layer must be an integer in [0, 3]")
     report = json.loads((root / "report.json").read_text())
     if report.get("arm") != "native" or report.get("passed") is not True:
         raise ValueError("native MSA reproduction must have passed")
     for name in ("operands.npz", "native-weights.npz"):
         verify_bound_file(root / name, report["artifacts"][name])
     for stage in ("input_m", "pwa"):
-        name = f"layers/00/{stage}"
+        name = f"layers/{layer:02d}/{stage}"
         identity = report["stages"][name]
         verify_bound_file(root / f"{name}.npz", identity["arrays_sha256"])
         verify_bound_file(root / f"{name}.tree.json", identity["tree_sha256"])
-    with np.load(root / "layers/00/input_m.npz", allow_pickle=False) as archive:
+    input_name = f"layers/{layer:02d}/input_m"
+    tree = json.loads((root / f"{input_name}.tree.json").read_text())
+    m_dtype = tree[""]["native_dtype"]
+    if m_dtype not in ("torch.float32", "torch.bfloat16"):
+        raise ValueError("unsupported native MSA dtype")
+    report = {**report, "selected_layer": layer, "selected_m_dtype": m_dtype}
+    with np.load(root / f"{input_name}.npz", allow_pickle=False) as archive:
         m = archive[""]
     if not 0 < rows <= m.shape[1]:
         raise ValueError("row slice must be nonempty and within the captured MSA")
     with np.load(root / "operands.npz", allow_pickle=False) as archive:
         z, mask = archive["input_z"], archive["token_pad_mask"]
-    with np.load(root / "layers/00/pwa.npz", allow_pickle=False) as archive:
+    if layer:
+        previous = f"layers/{layer - 1:02d}/layer_output"
+        identity = report["stages"][previous]
+        verify_bound_file(root / f"{previous}.npz", identity["arrays_sha256"])
+        verify_bound_file(root / f"{previous}.tree.json", identity["tree_sha256"])
+        with np.load(root / f"{previous}.npz", allow_pickle=False) as archive:
+            z = archive["z"]
+    with np.load(root / f"layers/{layer:02d}/pwa.npz", allow_pickle=False) as archive:
         expected = archive[""][:, :rows]
-    prefix = "msa_module.layers.0.pair_weighted_averaging."
+    prefix = f"msa_module.layers.{layer}.pair_weighted_averaging."
     weights = {
         k.removeprefix(prefix): v
         for k, v in arrays(root / "native-weights.npz").items()
@@ -56,7 +71,7 @@ def native(args):
     import torch
 
     root, upstream = args.reference.resolve(), args.upstream.resolve()
-    report, inputs, weights, expected = load_reference(root, args.rows)
+    report, inputs, weights, expected = load_reference(root, args.rows, args.layer)
     if source_hashes(upstream, "src") != report["native_source"]:
         raise ValueError("native source differs from the reproduced MSA")
     sys.path.insert(0, str(upstream / "src"))
@@ -71,7 +86,9 @@ def native(args):
     model = PairWeightedAveraging(64, 128, hidden, heads).eval()
     model.load_state_dict({k: torch.from_numpy(v.copy()) for k, v in weights.items()})
     model.cuda()
-    m = torch.from_numpy(inputs["m"].copy()).cuda().bfloat16()
+    m = torch.from_numpy(inputs["m"].copy()).cuda()
+    if report["selected_m_dtype"] == "torch.bfloat16":
+        m = m.bfloat16()
     z = torch.from_numpy(inputs["z"].copy()).cuda()
     mask = torch.from_numpy(inputs["mask"].copy()).cuda().float()
     mask = mask[:, :, None] * mask[:, None, :]
@@ -127,6 +144,8 @@ def native(args):
             "arm": "native",
             "passed": True,
             "rows": args.rows,
+            "layer": report["selected_layer"],
+            "input_m_native_dtype": report["selected_m_dtype"],
             "native_msa_report_sha256": sha(root / "report.json"),
             "native_decomposition": reproduction,
             "row_slice_vs_full": comparison(stages["actual"], expected),
@@ -156,9 +175,17 @@ def foldjax(args):
 
     from foldjax.models.boltz2.compile_policy import compiler_options
     from foldjax.models.boltz2.models.primitives._common import (
-        layer_norm,
         linear,
-        sigmoid,
+    )
+    from foldjax.models.boltz2.models.primitives.native_amp_norm import (
+        amp_layer_norm as layer_norm,
+    )
+    from foldjax.models.boltz2.models.primitives.native_pwa_mma import (
+        pair_weighted_contraction,
+    )
+    from foldjax.models.boltz2.models.primitives.native_pwa_weights import (
+        pwa_logits,
+        pwa_softmax,
     )
     from foldjax.models.boltz2.models.trunk_blocks.msa import (
         pair_weighted_averaging_forward,
@@ -187,8 +214,13 @@ def foldjax(args):
             value.T if key == "kernel" else value,
             dtype=jnp.bfloat16 if key == "kernel" else jnp.float32,
         )
+    m_dtype = (
+        jnp.bfloat16
+        if report.get("input_m_native_dtype", "torch.bfloat16") == "torch.bfloat16"
+        else jnp.float32
+    )
     operands = {
-        k: jnp.asarray(v, dtype=jnp.bfloat16 if k == "m" else jnp.float32)
+        k: jnp.asarray(v, dtype=m_dtype if k == "m" else jnp.float32)
         for k, v in inputs.items()
     }
     norm_control = getattr(args, "native_norm_control", False)
@@ -222,15 +254,17 @@ def foldjax(args):
                 m, params["proj_m"]["kernel"][:, start:stop]
             )
             v = v.reshape(*v.shape[:3], group_size, hidden).transpose(0, 3, 1, 2, 4)
-            b = stages[f"{label}/logits"] = linear(
+            b = stages[f"{label}/logits"] = pwa_logits(
                 z, params["proj_z"]["kernel"][:, first : first + group_size]
             )
             b = b.transpose(0, 3, 1, 2).astype(jnp.float32) + (1 - mask[:, None]) * -1e6
-            w = stages[f"{label}/weights"] = jax.nn.softmax(b, -1)
-            g = stages[f"{label}/gate"] = sigmoid(
-                linear(m, params["proj_g"]["kernel"][:, start:stop])
+            w = stages[f"{label}/weights"] = pwa_softmax(b)
+            g = stages[f"{label}/gate"] = jax.nn.sigmoid(
+                linear(m, params["proj_g"]["kernel"][:, start:stop]).astype(jnp.float32)
+            ).astype(v.dtype)
+            o = pair_weighted_contraction(
+                w.astype(v.dtype), v, original_msa_rows=m.shape[1]
             )
-            o = jnp.einsum("bhij,bhsjd->bhsid", w.astype(v.dtype), v)
             o = stages[f"{label}/averaged"] = o.transpose(0, 2, 3, 1, 4).reshape(
                 *m.shape[:3], stop - start
             )
@@ -334,6 +368,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--upstream", type=Path)
     parser.add_argument("--rows", type=int, default=32)
+    parser.add_argument("--layer", type=int, choices=range(4), default=0)
     parser.add_argument("--native-norm-control", action="store_true")
     args = parser.parse_args()
     if args.arm == "native" and args.upstream is None:

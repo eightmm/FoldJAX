@@ -32,6 +32,41 @@ def linear(x: jnp.ndarray, params: Params, prefix: str) -> jnp.ndarray:
     return out if bias is None else out + bias
 
 
+def _cuda_profile_divide(numerator, denominator):
+    """Native masked-MSA count division, without reciprocal approximation."""
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as pt
+
+    if numerator.dtype != jnp.float32 or denominator.dtype != jnp.float32:
+        raise ValueError("native profile division requires FP32 operands")
+    if numerator.size == 0:
+        return numerator / denominator
+    denominator = jnp.broadcast_to(denominator, numerator.shape)
+    size = numerator.size
+    padding = (-size) % 256
+    left = jnp.pad(numerator.reshape(-1), (0, padding))
+    right = jnp.pad(denominator.reshape(-1), (0, padding), constant_values=1)
+
+    def kernel(a, b, out):
+        out[:] = pt.elementwise_inline_asm(
+            "div.rn.f32 $0, $1, $2;",
+            args=(a[:], b[:]),
+            constraints="=f,f,f",
+            pack=1,
+            result_shape_dtypes=[jax.ShapeDtypeStruct((256,), jnp.float32)],
+        )[0]
+
+    result = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(left.shape, jnp.float32),
+        grid=(left.size // 256,),
+        in_specs=(pl.BlockSpec((256,), lambda i: (i,)),) * 2,
+        out_specs=pl.BlockSpec((256,), lambda i: (i,)),
+        compiler_params=pt.CompilerParams(num_warps=4),
+    )(left, right)
+    return result[:size].reshape(numerator.shape)
+
+
 def layer_norm(
     x: jnp.ndarray,
     weight: jnp.ndarray | None = None,
@@ -44,10 +79,11 @@ def layer_norm(
     (`AdaptiveLayerNorm`'s conditioning path), and with neither (its activation
     path) -- so both are optional rather than there being three functions.
 
-    The statistics are always taken in float32 and the result cast back. That
-    is what torch's autocast does -- layer norm is on its float32 list -- and a
-    bfloat16 trunk that computed the variance in bfloat16 would differ from
-    upstream everywhere at once, in a way no shape or key check can see.
+    Statistics and affine arithmetic use float32; this helper returns the
+    input dtype. Native CUDA autocast instead returns float32 from LayerNorm,
+    so callers implementing that policy must pass a float32 input and retain
+    the original affine parameters. FP32 statistics alone do not establish
+    native mixed-precision equivalence.
     """
     dtype = x.dtype
     x = x.astype(jnp.float32)
@@ -140,7 +176,12 @@ def swiglu(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
 
 
 def transition_layer(
-    x: jnp.ndarray, params: Params, prefix: str = "", eps: float = 1e-5
+    x: jnp.ndarray,
+    params: Params,
+    prefix: str = "",
+    eps: float = 1e-5,
+    *,
+    linear_dtype: object | None = None,
 ) -> jnp.ndarray:
     """`TransitionLayer`: norm, two projections, silu gate, project back.
 
@@ -149,9 +190,17 @@ def transition_layer(
     rather than unifying them and having to un-unify them at load time.
     """
     dot = f"{prefix}." if prefix else ""
-    x = layer_norm(
-        x, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps
-    )
+    x = layer_norm(x, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps)
+    if linear_dtype is not None:
+        # Autocast narrows Linear operands, not the preceding FP32 LayerNorm.
+        x = x.astype(linear_dtype)
+        params = {
+            key: value.astype(linear_dtype)
+            for key, value in params.items()
+            if key.startswith(
+                tuple(f"{dot}{name}." for name in ("a_proj", "b_proj", "out_proj"))
+            )
+        }
     a = linear(x, params, f"{dot}a_proj")
     b = linear(x, params, f"{dot}b_proj")
     return linear(jax.nn.silu(a) * b, params, f"{dot}out_proj")

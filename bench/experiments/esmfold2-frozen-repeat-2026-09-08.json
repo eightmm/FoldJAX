@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "scope": "Same-input native-LM downstream core, fresh-process frozen-autotune repeatability only",
+  "model": "esmfold2",
+  "case": "protein_ligand_5sak",
+  "samples_per_forward": 5,
+  "processes": 3,
+  "forwards_per_process": 3,
+  "artifact_label": "esmfold2-frozen-autotune-20260908-TAAo9a",
+  "queue_jobs": [461, 462, 463],
+  "identity": {
+    "input_sha256": "8e137f0b589ae894ec16b2c64a2f86801430f42b5dfa2952f39d7b2523875e45",
+    "tape_sha256": "5d03806c1980dc26c7f766b6d885a8587e3894d5442d7c3c55b7393355876d80",
+    "native_lm_sha256": "569bbeb6d8b4d858651dfbe98e414a30ce80cf5c4de13416c5979aa17bdc54c5",
+    "autotune_sha256": "48eecea26b9581215fd4b251abcc9bc7442f2096ad8689b03bf329871b4db4bc",
+    "compiled_hlo_sha256": "d52f93ac13a88b38c891a536a7042b08bda473719bd3ba1cc925ec687ba868df",
+    "producer_manifest_sha256": "a4dd1a2dc214ab1298cd1ddf4e3aa4050cc109e4df78f1daec0b1b9e5dba591d",
+    "frozen_a_manifest_sha256": "99dc6a939a10434b12a4cc00d81ed1aac65eeffbf069bfed77f338e81f0a5584",
+    "frozen_b_manifest_sha256": "1a8347261c13c9c06fb9efdd013a8ec4d31a52c7b52c721e9277c3843e3d05da"
+  },
+  "policy": {
+    "separate_executable_caches": true,
+    "persistent_xla_kernel_caches": "none",
+    "strict_complete_autotune_load_for_consumers": true,
+    "consumer_load_and_dump_hashes_equal_producer": true,
+    "precision_or_production_default_changed_by_control": false
+  },
+  "repeatability": {
+    "all_coordinates_bitwise_equal": true,
+    "all_14_confidence_leaves_bitwise_equal": true,
+    "all_compared_values_finite": true,
+    "all_compiled_hlo_hashes_equal": true,
+    "compiled_binary_identity_established": false
+  },
+  "upstream_comparison": {
+    "alignment": "one proper Kabsch fit on all valid system atoms per sample; entity measurement without refit",
+    "valid_atoms_per_sample": 3073,
+    "protein_rmsd_angstrom": [1.2756193150117263, 0.13934886873571684, 0.08029340352307678, 0.3139345173368853, 0.2309499966289849],
+    "ligand_rmsd_angstrom": [0.32184101868287524, 0.04633235333963732, 0.03305047724655234, 0.05935906514236376, 0.05063937223714259],
+    "coordinate_diagnostic_threshold_angstrom": 0.05,
+    "coordinate_diagnostic_passed": false,
+    "strict_confidence_passed": false,
+    "raw_head_retention_complete": true
+  },
+  "full_model_admission": false,
+  "not_established": [
+    "Independent preprocessing or language-model parity",
+    "Independent-autotuning or cross-hardware repeatability",
+    "Cause of older incompletely bound fresh-process differences",
+    "Uninstrumented latency or memory benefit"
+  ]
+}

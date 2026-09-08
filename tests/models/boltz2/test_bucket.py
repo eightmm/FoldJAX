@@ -69,8 +69,9 @@ def test_pad_feats_truncates_msa_before_padding() -> None:
     np.testing.assert_array_equal(np.asarray(padded["msa"][:, :, :6]), 1)
 
 
-def test_resolve_bucket_shape_normalizes_msa_without_overpadding_shallow_inputs(
-) -> None:
+def test_resolve_bucket_shape_normalizes_msa_without_overpadding_shallow_inputs() -> (
+    None
+):
     assert resolve_bucket_shape(_features(msa=1)) == (256, 256, 1)
     assert resolve_bucket_shape(_features(msa=77)) == (256, 256, 128)
     assert resolve_bucket_shape(_features(msa=249)) == (256, 256, 256)
@@ -84,7 +85,7 @@ def test_neutral_padding_resolves_all_three_compile_shape_axes() -> None:
 
     assert plan.actual == {"tokens": 3, "atoms": 4, "msa": 2}
     assert plan.storage == {"tokens": 3, "atoms": 4, "msa": 2}
-    assert plan.target == {"tokens": 256, "atoms": 256, "msa": 64}
+    assert plan.target == {"tokens": 256, "atoms": 6144, "msa": 1024}
 
 
 def test_neutral_padding_honours_exact_axis_targets() -> None:
@@ -98,9 +99,7 @@ def test_neutral_padding_honours_exact_axis_targets() -> None:
 
 def test_neutral_padding_rejects_unaligned_exact_atom_target() -> None:
     with pytest.raises(ValueError, match="multiple of 32"):
-        resolve_padding_plan(
-            _features(), PaddingConfig(tokens=8, atoms=33, msa=2)
-        )
+        resolve_padding_plan(_features(), PaddingConfig(tokens=8, atoms=33, msa=2))
 
 
 def test_neutral_padding_never_shrinks_materialized_features() -> None:
@@ -156,9 +155,7 @@ def test_neutral_padding_drops_features_unused_by_the_jitted_graph() -> None:
 def test_generic_model_feature_filter_drops_training_and_writer_arrays() -> None:
     feats = _features()
     feats["disto_target"] = np.full((1, 3, 3, 1, 64), np.nan, dtype=np.float32)
-    feats["host_only_variable_archive"] = np.full(
-        (1, 37), np.inf, dtype=np.float32
-    )
+    feats["host_only_variable_archive"] = np.full((1, 37), np.inf, dtype=np.float32)
 
     selected = select_model_features(feats)
 
@@ -182,9 +179,7 @@ def test_filtering_dead_nonfinite_features_does_not_change_the_executable() -> N
     filtered = select_model_features(feats)
 
     def graph(model_feats):
-        return model_feats["token_pad_mask"] + jnp.sum(
-            model_feats["atom_pad_mask"]
-        )
+        return model_feats["token_pad_mask"] + jnp.sum(model_feats["atom_pad_mask"])
 
     raw_lowered = jax.jit(graph).lower(feats)
     filtered_lowered = jax.jit(graph).lower(filtered)
@@ -223,3 +218,15 @@ def test_filtering_dead_nonfinite_features_does_not_change_the_executable() -> N
 def test_pad_feats_preserves_jax_compatible_arrays() -> None:
     padded, _ = pad_feats(_features(), 8, 32, target_msa=128)
     assert isinstance(padded["msa"], jnp.ndarray)
+
+
+def test_token_profile_reuses_atom_and_msa_shapes_for_different_inputs():
+    first = resolve_padding_plan(_features(tokens=3, atoms=33, msa=2), PaddingConfig())
+    second = resolve_padding_plan(
+        _features(tokens=7, atoms=200, msa=100), PaddingConfig()
+    )
+    assert first.target == second.target == {"tokens": 256, "atoms": 6144, "msa": 1024}
+    capped = resolve_padding_plan(_features(msa=2), PaddingConfig(), max_msa_depth=128)
+    assert capped.target["msa"] == 128
+    with pytest.raises(ValueError, match="smaller than"):
+        resolve_padding_plan(_features(msa=129), PaddingConfig(), max_msa_depth=128)

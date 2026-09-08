@@ -367,7 +367,8 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
 def test_released_default_cache_aliases_reuse_one_native_runner(
     tmp_path: Path, monkeypatch
 ) -> None:
-    request = _request(tmp_path)
+    # Exercise publisher-native defaults; the common adapter now defaults to 5.
+    request = dataclasses.replace(_request(tmp_path), num_recycles=3)
     explicit = dataclasses.replace(
         request,
         num_steps=200,

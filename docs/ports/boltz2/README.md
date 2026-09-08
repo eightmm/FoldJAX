@@ -39,12 +39,15 @@ low-precision inference — selectable per backend without changing weights.
   limits, run the separate `boltz2_aff` trunk/diffusion checkpoint, and average
   both affinity ensemble members. The value, binary probability, and individual
   member outputs are returned.
-- **Numerically faithful to torch Boltz-2.** With matched precision, seed, and
-  injected diffusion noise (init + per-step churn + augmentation), boltz-jax fp32
-  reproduces torch fp32 coordinates to **1.9e-4 Å RAW RMSD** — the XLA/cuBLAS
-  floor. The trunk is bit-exact (corr 1.0) and a single denoiser step matches to
-  1e-4 Å. A normal jax run differs from a torch run only by framework RNG (each
-  draws its own diffusion noise), not by any model error.
+- **Historical FP32 parity evidence, not general equivalence.** Earlier
+  noise-matched FP32 runs reported **1.9e-4 Å raw RMSD** on a limited control.
+  That value does not establish a universal XLA/cuBLAS error floor, bitwise
+  trunk equality, or native mixed-precision parity. Correlation 1.0 is not
+  evidence of bitwise equality, and framework RNG is not the only possible
+  source of drift. See the [current matched-input investigation](
+  ../../boltz-trunk-pair-norm-2026-09-07.md) and
+  [historical comparison scope](../../boltz-msa-transition-2026-09-07.md)
+  for the unresolved native-policy structure and confidence differences.
 - Performance depends strongly on sample count and kernel policy. In the
   production-size cached benchmark below (five samples), the Torch-compatible
   cuEquivariance JAX profile is **1.41× faster** and uses **2.25 GiB less peak

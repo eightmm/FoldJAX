@@ -11,14 +11,93 @@ historical strict failures.
 
 ## Current order and evidence
 
+Current Boltz CPU regression check (2026-09-08):
+`JAX_PLATFORMS=cpu .venv-ci/bin/python -m pytest -q tests/models/boltz2`
+finishes **650 passed, 6 skipped in 121.48 s**. Skip details were not emitted
+by this invocation and are not classified as GPU-only; test sources also have
+optional Torch/upstream and checkpoint/feature availability gates. Those six
+are not verified by this run. The existing full-MSA diagnostic still records
+6,239 initial-embedding differences and final pair RMSE 0.03226996; a locally
+improved exact-input PWA cannot close the propagated full-model discrepancy.
+Current CPU regression health does not change Boltz's not-admitted status.
+
+Boltz targeted skip follow-up confirms three skips require optional Torch:
+template parity, micro-modules and import parity (6 passed, 3 skipped in the
+targeted rerun). Explicitly selecting the native-only potentials parity module
+instead causes collection failure because it directly imports Torch. No Torch
+dependency was added to the JAX-only CI environment; that check requires its
+separate native environment. The other three full-suite skips remain unresolved.
+Source/history inspection also narrows the first-MSA issue: the sparse input
+projection is not established as the cause. Native `s_proj` versus XLA split-K
+rounding reproduced the embedding mismatch, and the historical split-K=1
+control closed it while leaving PWA/full-MSA differences. The next numerical
+probe should therefore reuse that controlled boundary, not repeat a dense
+embedding rewrite or claim the embedding cause is entirely unknown.
+
+Current Protenix CPU regression check (2026-09-08):
+`JAX_PLATFORMS=cpu .venv-ci/bin/python -m pytest -q tests/models/protenix`
+completed with **781 passed, 4 skipped in 129.75 s**. Targeted `-rs` rerun
+(57 passed, 4 skipped) identifies two GPU-only tests (cuEq triangle and relative
+position storage) and two pinned-Kalign-3.3.5 tests as skipped. This does not
+admit GPU kernels, external alignment execution, or current-source native
+parity. Current prediction/padding/representation changes remain preserved;
+released-model gray-zone status and other checkpoint/profile gaps are unchanged.
+
+### 2026-09-08 smaller-change reassessment
+
+Pinned-Kalign skip follow-up: no `kalign` command is on PATH, and no binary
+was found in the managed FoldJAX asset tree or the inspected OpenDDE/Protenix
+checkouts. More importantly, the integration tests also require the legacy
+`opendde_jax/weights/template_mmcif` directory, which is absent. The official
+example directory and Protenix release-date/obsolete maps do exist. Merely
+setting the environment variable cannot close these tests: exact Kalign 3.3.5
+and the expected template fixture database must be resolved first. No dependency
+replacement, fixture substitution, or new pass claim was made. This is a bounded
+external-fixture gap, not a blocker for other model work.
+
+Protenix GPU follow-up job 617 runs `test_triangle_cueq.py` and
+`test_relative_position_storage.py` with `JAX_PLATFORMS=cuda` through tsp.
+All **32 tests pass in 17.76 s**, with no skips. This exercises the real BF16
+cuEq nonzero-triangle regression and production-high relative-position
+projection envelope previously skipped on CPU. It is operator regression
+coverage, not a real-weight model/profile parity or speed benchmark. The two
+pinned-Kalign tests remain unverified.
+
+ESMFold2 remains not admitted (latest job 591); further PWA investigation is
+temporarily deprioritized while checking smaller remaining model gaps. This
+does not relax its RMSD or confidence gates or discard its reproducible state.
+AF3's existing nine-case panel was checked against current disk artifacts:
+all 594 listed files match their recorded SHA256 values. Current AF3 model and
+session tests pass: 65 passed. These are artifact-integrity and CPU regression
+checks, not a new current-tree real-weight parity run.
+
+Current AF3 changes include configurable preprocessing MSA crop, optional
+representation returns/early stops and backend/padding integration. Preserve
+these changes; the historical fixed-kernel panel cannot by itself admit their
+current public paths. Next verify default-path equivalence on the current
+source before expanding optional-path claims. Publisher-locked dependencies
+and independent-autotuning strict confidence remain separate unresolved scope.
+
+Subsequent current-source verification now covers nine audited cases (45
+sample pairs), nine uninstrumented-inference pairs and 36 audit/performance
+bridge plus first/warm checks. Coordinates and raw/public confidence pass;
+current cross-arm overall verdicts remain false solely for raw config equality:
+the two default-only FoldJAX interface fields are additional keys. The new
+diagnostic labels these `allowlisted_extensions_only`, without overriding
+`passed`. Native/FoldJAX 1UBQ controls with preprocessing observers disabled
+(jobs 613/614) also bridge successfully to their earlier results. This does not
+cover a completely unwrapped CLI run or optional serving paths. Details and
+timing limitations are in the AF3 record. Current AF3 model plus capture/closure
+CPU checks: 95 passed; this is not the repository-wide release gate.
+
 | Model | Status | Why / next discriminating boundary |
 | --- | --- | --- |
-| AlphaFold 3 | Finite common-runtime, fixed-kernel panel complete | [54/54 gates, 9 cases × 5 samples](af3-closure-2026-09-06.md); publisher dependency lock and independent-autotuning exactness remain excluded |
+| AlphaFold 3 | Current numerical panel passes; strict raw config admission open | [9 cases × 5 samples; 36 bridge/repeat checks](af3-closure-2026-09-06.md). Two default-only extension keys keep current overall verdicts false; historical 54/54 is a different source record. Publisher dependency lock, unwrapped CLI, optional paths and release remain open |
 | OpenDDE | Known cuEq residuals accepted by user for continuation, 2026-09-07 | Historical strict native-default failures remain; this is not full release or BF16 admission |
 | Protenix | Released 3GCA structural gray zone deferred; not closed | BF16/cuEq TF32 regression fixed; n5 RNA/ligand 0.070145/0.020094 Å; confidence and expanded profiles remain open |
-| OpenFold3 / OpenBind | Pending | Quaternion/translation tape adapter missing; native FP32 same-tape repeat already fails on 5SAK |
-| Boltz-2 | Active priority; not admitted | Conditioning and [pair-block normalization](boltz-trunk-pair-norm-2026-09-07.md) repaired on native operands; full 5SAK structure/confidence remains a separate gate |
-| ESMFold2 | Pending, largest identified tape gap | Seven missing sampler/MSA/LM-dropout tape routes; native CUDA BF16 policy and confidence adapters must also match |
+| OpenFold3 / OpenBind | Active; private operator repairs, not admitted | [Custom norm 38/38 and ordinary attention norm 3/3 bitwise; integrated full triangle panel still only 6/52 strict](openbind-tf32-tie-rounding-2026-09-08.md). Actual fused projection boundaries remain open; private triangle wrappers are not wired into production |
+| Boltz-2 | Active priority; not admitted | [Exact-input PWA improves with native norm, but default full MSA still differs](boltz-msa-transition-2026-09-07.md). A split-K control closes initial embedding only; 25 logits differences persist between native GEMV and XLA reduction. Full native BF16 5SAK remains open |
+| ESMFold2 | Active; native dtype/rounding repairs carried, not admitted | [Native input atom autocast, BF16 RoPE and MSA OPM audit](esmfold2-native-tape-2026-09-07.md). First captured OPM is numerically exact after runtime width128 CUDA Welford correction. Latest full-core job 591 has max protein/ligand RMSD 0.738681/0.286840 Å, versus 585's 0.923487/0.305537 and 576's 0.314695/0.125691; strict confidence fails, repeats are bitwise. Remaining MSA/PWA/conditioning/confidence paths remain open. Controls reuse native shim/LM/features and development FFI/compiler policy; independent inputs/LM/shim, production defaults, ordinary runs, review and performance are not admitted |
 
 The remaining order may change after a cheaper diagnostic demonstrates a
 smaller fix. Protenix profiles are separate targets: released, base-20250630,
@@ -26,12 +105,88 @@ v2, mini-esm-v0.5.0 and mini-ism-v0.5.0. Passing one cannot close all five.
 Other separately managed checkpoints, such as OpenDDE ABAG, also need their
 own recorded boundary. Missing local weights do not authorize downloads.
 
-The latest user direction prioritizes Boltz trunk; OpenBind work is deferred
-until that priority is handled. A local operator repair is not model closure.
+The user's subsequent all-model autonomous-work direction permits concurrent
+OpenBind implementation while Boltz trunk remains the main diagnostic priority.
+A local operator repair is not model closure. The table above reflects the
+2026-09-08 continuation; dated investigation records below retain their original
+scope and do not supersede later user decisions.
+
+### 2026-09-08 CPU regression check
+
+`JAX_PLATFORMS=cpu .venv-ci/bin/python -m pytest -q` completed with
+5,419 passed, 404 skipped and 67 warnings in 691.68 seconds. Installable runtime
+sources remained unchanged during this run. The subsequently added full ESM
+projection-capture/schema checks were run separately: 30 passed. The three
+source/dependency/public-import tests excluding external tensor runtimes also
+passed; Ruff and `git diff --check` passed. The 404 skipped tests are not
+validated by this CPU run. Coverage was not collected, and these checks do not
+replace the full release/install/wheel, real-weight all-model parity or
+uninstrumented performance gates. No new commit or push accompanies this check.
+Subsequent independent review exposed two ESM resume-source omissions, both
+reproduced by failing tests and repaired; their focused verification is recorded
+in the [ESM investigation](esmfold2-native-tape-2026-09-07.md). The earlier
+5,419-test result therefore predates that manifest repair, rather than serving
+as a final-tree release gate.
 
 ## OpenDDE work underway
 
+### 2026-09-08 current-tree regression check
+
+After preserving the AF3 current-panel evidence, the current OpenDDE CPU suite
+was executed: `JAX_PLATFORMS=cpu .venv-ci/bin/python -m pytest -q
+tests/models/opendde` yields **267 passed, 2 warnings in 48.80 s**. Warnings
+are JAX int64-to-int32 conversion with x64 disabled in compact-category and
+trunk tests; no test failed. Current edits include prediction/representation,
+padding and MSA-sampling paths, so historical numerical artifacts cannot alone
+admit this current tree. This check establishes local regression health only;
+fresh full native-policy/tape comparisons and uninstrumented performance remain
+required. The accepted-residual status below is unchanged.
+
 ### 2026-09-07 continuation decision
+
+Current-source 5SAK job 615 completed with actual tape-consumption observation:
+source `opendde-current-source-20260908-jIpKaP`, results
+`opendde-current-5sak-20260908-d0Itrj`. The consumer audit reports passed; the
+native-reference structural comparison has maximum entity RMSD A 0.0543033864 Å
+and L 0.0221946049 Å. Overall strict comparison remains false, and the protein
+remains in the 0.05–0.1 Å gray zone. No tolerance change or improvement claim
+is made relative to the earlier non-observed result: this is an observed arm
+requiring an output bridge to a matching non-observed run. Verification: job
+615 exits 0 and completed raw/scored outputs and consumer audit are present;
+the current comparator generated `comparison.json`. Comparator process exit 0
+does not mean parity passed; its JSON verdict is false.
+
+Job 616 completed the same snapshot/tape 5SAK arm without consumer observers,
+at `opendde-current-5sak-20260908-d0Itrj/foldjax-unobserved`. Native comparison
+maxima are A 0.0557621268 Å and L 0.0208235781 Å; overall strict verdict remains
+false. The observer-versus-unobserved bridge has A 0.0112169714 Å and
+L 0.0048286094 Å, passing the coordinate gate but not overall strict comparison.
+Thus tape-consumption proof does not yet transfer through a strict output bridge.
+These runs share compiler options, not frozen autotuning choices, so differences
+cannot be attributed solely to observation. Verification: job 616 exits 0;
+`unobserved-comparison.json` and `observer-bridge.json` generated and inspected.
+
+The 615/616 bridge failure is localized to eight confidence leaves. Maximum
+public atom pLDDT difference is 0.000729978 on the stored 0–1 scale (0.072998
+points); public PAE/PDE differences are 0.0320873 / 0.0243406 Å. Raw-head
+differences are separate logit/probability quantities, not pLDDT points.
+Direct byte comparison of all 87 actual FoldJAX input leaves finds no mismatch;
+saved provenance dictionaries are identical, and supplied MSA/diffusion tapes
+are exact. Identical provenance does not bind unrecorded autotuning choices or
+observer status. Thus the remaining difference is not explained by these saved
+inputs/configurations, but no unique numerical cause has been established.
+
+Current replay-harness inspection confirms OpenDDE injects the native diffusion
+tape and reconstructs per-cycle MSA from native indices, after requiring
+independent alignment-row identity and exact selected MSA/deletion arrays.
+This differs from AF3's observed independent JAX draws. Actual consumption
+observation is opt-in (`--capture-consumed-tape`); the historical panel explicitly
+limits its byte-exact consumption claim to the specified 3GCA control, not all
+seven cases. The next 5SAK current-source comparison therefore needs that option
+and a bridge to the corresponding non-observed output, rather than assuming
+copied tape files establish consumption. Harness regression checks pass 49 tests
+across `test_opendde_closure_capture.py`, `test_opendde_closure_report.py`, and
+`test_opendde_consumed_tape.py`. No fresh GPU parity result is claimed here.
 
 The user accepts cuEq for OpenDDE and requests moving to the next model with
 native-repeat-informed practical tolerance. Shipping cuEq/high on 5SAK had

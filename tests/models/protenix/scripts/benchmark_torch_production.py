@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--features", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--prediction-dir", type=Path)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--samples", type=int, default=5)
@@ -78,6 +79,8 @@ def main() -> None:
     if args.warm_iters <= 0:
         raise ValueError("warm_iters must be positive")
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.prediction_dir is not None:
+        args.prediction_dir.mkdir(parents=True, exist_ok=False)
     os.environ.setdefault(
         "PROTENIX_ROOT_DIR", str(Path(__file__).resolve().parents[2] / "protenix")
     )
@@ -122,13 +125,15 @@ def main() -> None:
     checkpoint_path = (
         Path(os.environ["PROTENIX_ROOT_DIR"]) / "checkpoint" / f"{model_name}.pt"
     )
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Avoid retaining a second GPU copy of every parameter during measurement.
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint["model"]
     if next(iter(state_dict)).startswith("module."):
         state_dict = {
             key.removeprefix("module."): value for key, value in state_dict.items()
         }
     model.load_state_dict(state_dict, strict=configs.load_strict)
+    del checkpoint, state_dict
     model.eval()
     if args.full_depth_msa:
         msa_rows = int(features["msa"].shape[-2])
@@ -150,13 +155,17 @@ def main() -> None:
         return prediction, log
 
     run()
+    prewarm_peak_bytes = torch.cuda.max_memory_allocated(device)
     torch.cuda.reset_peak_memory_stats(device)
     warm_samples = []
+    prediction, log = None, None
     for _ in range(args.warm_iters):
+        prediction, log = None, None
         started = time.perf_counter()
         prediction, log = run()
         warm_samples.append(time.perf_counter() - started)
     warm_seconds = statistics.median(warm_samples)
+    warm_peak_bytes = torch.cuda.max_memory_allocated(device)
     time_tracker = log.get("time", {})
     metrics = {
         "backend": "torch",
@@ -182,11 +191,30 @@ def main() -> None:
         "samples": args.samples,
         "warm_seconds": warm_seconds,
         "warm_seconds_samples": warm_samples,
-        "peak_vram_gb": torch.cuda.max_memory_allocated(device) / 1e9,
+        "peak_vram_gb": warm_peak_bytes / 1e9,
+        "peak_vram_scope": "warm_region_allocator_peak",
+        "lifetime_peak_allocated_bytes": max(prewarm_peak_bytes, warm_peak_bytes),
+        "warm_peak_allocated_bytes": warm_peak_bytes,
+        "checkpoint_loading": "cpu_then_copy_and_release",
+        "previous_output_retained_during_next_run": False,
         "model_time_tracker": time_tracker,
         "coordinate_checksum": float(prediction["coordinate"].float().sum().item()),
         "coordinate_shape": list(prediction["coordinate"].shape),
     }
+    if args.prediction_dir is not None:
+        from bench.af3_closure_capture import save, sha
+        from bench.protenix_closure_capture import flatten_native
+
+        arrays, tree = flatten_native(prediction)
+        path = args.prediction_dir / "prediction.npz"
+        with path.open("xb") as stream:
+            np.savez_compressed(stream, **arrays)
+        tree_path = args.prediction_dir / "prediction.tree.json"
+        save(tree_path, tree)
+        metrics["prediction_artifacts"] = {
+            "arrays_sha256": sha(path), "tree_sha256": sha(tree_path),
+            "scope": "last ordinary-RNG warm output; export excluded from timing/peak",
+        }
     args.out.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(metrics, indent=2))
 

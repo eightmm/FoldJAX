@@ -11,6 +11,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from foldjax.models.openfold3.models.augmentation import (
+    AugmentationTape,
+    centre_random_augmentation,
+)
 from foldjax.models.openfold3.models.diffusion_schedule import noise_schedule
 from foldjax.models.openfold3.models.sampler import sample_diffusion
 
@@ -279,3 +283,175 @@ def test_a_noise_tape_is_narrowed_rather_than_reused() -> None:
     )
     # And the samples genuinely differ, so the agreement above is not vacuous.
     assert not np.allclose(np.asarray(whole)[0], np.asarray(whole)[1])
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 3])
+@pytest.mark.parametrize("noise_route", ["native", "tape", "mask"])
+def test_chunking_preserves_full_width_random_augmentation(
+    chunk: int, noise_route: str
+) -> None:
+    """Unequal sample tails must not reuse the first chunk's rigid transforms."""
+    shape = (5, 7, 3)
+    schedule = jnp.asarray([8.0, 4.0, 2.0, 1.0, 0.0])
+    key = jax.random.key(13)
+    mask = jnp.ones(shape[:-1]).at[:, -1].set(0)
+    options = {}
+    if noise_route == "tape":
+        options["noise_tape"] = jnp.asarray(
+            np.random.default_rng(4)
+            .normal(size=(schedule.shape[0], *shape))
+            .astype(np.float32)
+        )
+    elif noise_route == "mask":
+        options["noise_mask"] = mask
+
+    def augment(draw_key, xl):
+        assert xl.shape == shape
+        return centre_random_augmentation(draw_key, xl, mask)
+
+    def denoise(xl, _t):
+        return 0.3 * xl
+
+    whole = sample_diffusion(
+        key, schedule, shape, denoise, augment_fn=augment, **options, **KW
+    )
+    chunked = jax.jit(
+        lambda sampler_key: sample_diffusion(
+            sampler_key,
+            schedule,
+            shape,
+            denoise,
+            augment_fn=augment,
+            diffusion_chunk_size=chunk,
+            **options,
+            **KW,
+        )
+    )(key)
+    np.testing.assert_allclose(chunked, whole, rtol=1e-5, atol=1e-5)
+    assert not np.allclose(np.asarray(whole)[0], np.asarray(whole)[1])
+
+
+def test_chunking_only_narrows_the_denoiser_callback() -> None:
+    shape = (5, 7, 3)
+    seen = []
+
+    def denoise(xl, _t):
+        seen.append(xl.shape[0])
+        return 0.3 * xl
+
+    def augment(_key, xl):
+        assert xl.shape == shape
+        return xl + jnp.arange(shape[0])[:, None, None]
+
+    actual = sample_diffusion(
+        jax.random.key(0),
+        _schedule(2),
+        shape,
+        denoise,
+        augment_fn=augment,
+        diffusion_chunk_size=2,
+        **KW,
+    )
+    assert set(seen) == {1, 2}
+    assert np.isfinite(np.asarray(actual)).all()
+
+
+@pytest.mark.parametrize("chunk", [0, -1])
+def test_nonpositive_sample_chunk_is_rejected(chunk: int) -> None:
+    with pytest.raises(ValueError, match="diffusion_chunk_size must be positive"):
+        sample_diffusion(
+            jax.random.key(0),
+            _schedule(2),
+            SHAPE,
+            _identity_denoise,
+            diffusion_chunk_size=chunk,
+            **KW,
+        )
+
+
+@pytest.mark.parametrize("chunk", [None, 1, 2, 3])
+@pytest.mark.parametrize("native_layout", [False, True])
+def test_full_native_augmentation_tape_matches_numpy_rollout(chunk, native_layout):
+    shape = (5, 7, 3)
+    schedule = jnp.asarray([8.0, 4.0, 2.0, 1.0, 0.0])
+    rng = np.random.default_rng(14)
+    noise = rng.normal(size=(5, *shape)).astype(np.float32)
+    quaternions = rng.normal(size=(4, shape[0], 4)).astype(np.float32)
+    translations = rng.normal(size=(4, shape[0], 3)).astype(np.float32)
+    mask = np.ones((1, shape[1]), dtype=np.float32)
+    mask[:, -1] = 0
+
+    # Independent NumPy recurrence applies each recorded transform before that
+    # step's churn draw. Nontrivial masks and per-sample transforms catch both
+    # sample-axis reuse and an off-by-one tape entry.
+    expected = np.asarray(schedule[0]) * noise[0]
+    for i, (previous, current) in enumerate(zip(schedule[:-1], schedule[1:])):
+        previous, current = float(previous), float(current)
+        q = quaternions[i] / np.linalg.norm(quaternions[i], axis=-1, keepdims=True)
+        a, b, c, d = q.T
+        rotations = np.stack(
+            [
+                a * a + b * b - c * c - d * d,
+                2 * (b * c - a * d),
+                2 * (b * d + a * c),
+                2 * (b * c + a * d),
+                a * a - b * b + c * c - d * d,
+                2 * (c * d - a * b),
+                2 * (b * d - a * c),
+                2 * (c * d + a * b),
+                a * a - b * b - c * c + d * d,
+            ],
+            axis=-1,
+        ).reshape(-1, 3, 3)
+        centre = (expected * mask[..., None]).sum(-2, keepdims=True) / mask.sum()
+        expected = (
+            (expected - centre) @ rotations.swapaxes(-1, -2) + translations[i, :, None]
+        ) * mask[..., None]
+        gamma = KW["gamma_0"] if current > KW["gamma_min"] else 0.0
+        t = previous * (1 + gamma)
+        noisy = (
+            expected
+            + KW["noise_scale"] * np.sqrt(t * t - previous * previous) * noise[i + 1]
+        )
+        expected = noisy + KW["step_scale"] * (current - t) * (noisy - 0.3 * noisy) / t
+
+    tape = AugmentationTape(
+        jnp.asarray(quaternions[:, None] if native_layout else quaternions),
+        jnp.asarray(translations[:, None] if native_layout else translations),
+    )
+    options = dict(
+        augmentation_tape=tape,
+        atom_mask=jnp.asarray(mask),
+        noise_tape=jnp.asarray(noise),
+        diffusion_chunk_size=chunk,
+        **KW,
+    )
+
+    def run(key):
+        return sample_diffusion(key, schedule, shape, lambda x, _t: 0.3 * x, **options)
+
+    actual = jax.jit(run)(jax.random.key(0))
+    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-6)
+    np.testing.assert_array_equal(actual, jax.jit(run)(jax.random.key(999)))
+
+
+@pytest.mark.parametrize(
+    "bad", ["callback", "mask_missing", "tape_missing", "mask_shape"]
+)
+def test_augmentation_tape_rejects_ambiguous_or_incomplete_arguments(bad):
+    tape = AugmentationTape(jnp.ones((2, 2, 4)), jnp.ones((2, 2, 3)))
+    options = {"augmentation_tape": tape, "atom_mask": jnp.ones(SHAPE[:-1])}
+    if bad == "callback":
+        options["augment_fn"] = lambda _key, xl: xl
+    elif bad == "mask_missing":
+        options.pop("atom_mask")
+    elif bad == "tape_missing":
+        options.pop("augmentation_tape")
+    else:
+        options["atom_mask"] = jnp.ones((2, 4))
+    with pytest.raises(
+        ValueError, match="mutually exclusive|supplied together|atom_mask expected"
+    ):
+        sample_diffusion(
+            jax.random.key(0), _schedule(2), SHAPE, _identity_denoise, **options, **KW
+        )

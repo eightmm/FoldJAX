@@ -47,7 +47,11 @@ from foldjax.models.openfold3.data.compact_categories import (
     validate_compact_ref_atom_categories,
 )
 from foldjax.models.openfold3.data.featurize import _MSA_CYCLE_INDICES
-from foldjax.models.openfold3.models.augmentation import centre_random_augmentation
+from foldjax.models.openfold3.models.augmentation import (
+    AugmentationTape,
+    centre_random_augmentation,
+    validate_augmentation_tape,
+)
 from foldjax.models.openfold3.models.confidence import (
     bin_centers,
     compute_chain_pair_iptm,
@@ -77,7 +81,7 @@ from foldjax.models.openfold3.models.representative_atoms import (
     token_representative_atoms,
 )
 from foldjax.models.openfold3.models.sampler import sample_diffusion
-from foldjax.models.openfold3.models.trunk import TrunkParams, trunk
+from foldjax.models.openfold3.models.trunk import TrunkParams, initialize_trunk, trunk
 from foldjax.models.openfold3.output import (
     DEFAULT_ARRAY_BUDGET_BYTES,
     plan_returned_pair_logits,
@@ -174,6 +178,7 @@ class InferenceConfig(NamedTuple):
     #: confidence heads. The Prediction that comes back carries the trunk
     #: arrays and nothing else.
     stop_after_trunk: bool = False
+    stop_after_inputs: bool = False
     #: Context-parallel shard count. More than one shards the pair
     #: representations row-wise across that many devices (the JAX form of
     #: OpenDDE's Fold-CP) and requires the mesh :func:`compile_predict`
@@ -668,6 +673,7 @@ def predict(
     noise_fn: Callable[[int, tuple[int, ...]], jnp.ndarray] | None = None,
     noise_tape: jnp.ndarray | None = None,
     noise_mask: jnp.ndarray | None = None,
+    augmentation_tape: AugmentationTape | None = None,
     augment: bool = True,
     use_trunk_pair_embedding: bool = True,
 ) -> Prediction:
@@ -688,6 +694,11 @@ def predict(
             real atom prefix for a fixed seed.
         noise_mask: runtime sample/atom mask used to preserve that prefix
             without materializing all rollout draws at once.
+        augmentation_tape: native raw quaternion/translation draws in step and
+            sample order. Requires ``augment=True``; initial/churn noise is
+            controlled independently by ``noise_tape``. Concrete public calls
+            validate draw values; callers directly tracing ``predict`` must
+            validate tape values before tracing, or use ``compile_predict``.
         augment: apply centred random augmentation each rollout step. Turning it
             off is for the same comparison, not for production.
         use_trunk_pair_embedding: feed the trunk pair embedding into the confidence
@@ -698,11 +709,24 @@ def predict(
     Returns:
         A :class:`Prediction`.
     """
+    augmentation_tape = _prediction_augmentation_tape(
+        augmentation_tape,
+        config=config,
+        augment=augment,
+        check_values=not any(
+            isinstance(value, jax.core.Tracer)
+            for value in jax.tree.leaves(augmentation_tape)
+        ),
+    )
     if config.cp_shards != _active_cp_shards():
         raise RuntimeError(
             f"cp_shards={config.cp_shards} but the active context-parallel "
             f"mesh has {_active_cp_shards()} shard(s); run through "
             "compile_predict or activate context_parallel() yourself"
+        )
+    if config.stop_after_inputs:
+        return _predict_inputs(
+            _restore_ref_atom_category_one_hot(batch), params.trunk, config
         )
     if (
         config.msa_depth is not None
@@ -730,6 +754,41 @@ def predict(
         opm_first=config.opm_first,
         chunk_size=config.pair_chunk_size,
     )
+    return _predict_from_trunk(
+        key, batch, params, config, representative_atoms,
+        trunk_output=(s_input, s_trunk, z), n_chain=n_chain,
+        noise_fn=noise_fn, noise_tape=noise_tape, noise_mask=noise_mask,
+        augmentation_tape=augmentation_tape, augment=augment,
+        use_trunk_pair_embedding=use_trunk_pair_embedding,
+    )
+
+
+def _predict_inputs(batch, params, config):
+    """Expose the native input embedding before MSA/template recycling."""
+    s_input, _, _ = initialize_trunk(
+        batch, params,
+        n_query=config.n_query, n_key=config.n_key,
+        atom_heads=config.atom_heads, n_token=config.n_token,
+        max_relative_idx=config.max_relative_idx,
+        max_relative_chain=config.max_relative_chain,
+    )
+    return Prediction(
+        coordinates=None, plddt=None, ptm=None, iptm=None,
+        chain_pair_iptm=None, pae_logits=None, pde_logits=None,
+        distogram_logits=None,
+        single_inputs=(
+            s_input if "single_inputs" in config.returned_representations else None
+        ),
+    )
+
+
+def _predict_from_trunk(
+    key, batch, params, config, representative_atoms, *, trunk_output,
+    n_chain=None, noise_fn=None, noise_tape=None, noise_mask=None,
+    augmentation_tape=None, augment=True, use_trunk_pair_embedding=True,
+):
+    """Shared diffusion/confidence tail for fused and host-streamed recycling."""
+    s_input, s_trunk, z = trunk_output
     # This axis indexes recycling, not batch: it must not reach sample expansion.
     batch = {name: value for name, value in batch.items() if name != _MSA_CYCLE_INDICES}
 
@@ -839,18 +898,24 @@ def predict(
             step_scale=config.step_scale,
             augment_fn=(
                 (
-                    # Widened to whatever `xl` carries, not to the config: the
-                    # rollout may be running a chunk of the samples.
+                    # The sampler preserves this full-width augmentation call
+                    # even when denoiser activations are sample-chunked.
                     lambda k, xl: centre_random_augmentation(
                         k, xl, _expand_samples(batch["atom_mask"], xl.shape[0])
                     )
                 )
-                if augment
+                if augment and augmentation_tape is None
                 else None
             ),
             noise_fn=noise_fn,
             noise_tape=noise_tape,
             noise_mask=noise_mask,
+            augmentation_tape=augmentation_tape,
+            atom_mask=(
+                _expand_samples(batch["atom_mask"], config.num_samples)
+                if augmentation_tape is not None
+                else None
+            ),
             diffusion_chunk_size=config.diffusion_chunk_size,
         )
 
@@ -1074,6 +1139,7 @@ def released_config(
     cp_layout: str = "auto",
     returned_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    stop_after_inputs: bool = False,
     has_atomized_tokens: bool = True,
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
 ) -> InferenceConfig:
@@ -1144,6 +1210,7 @@ def released_config(
         cp_layout=cp_layout,
         returned_representations=returned_representations,
         stop_after_trunk=stop_after_trunk,
+        stop_after_inputs=stop_after_inputs,
         has_atomized_tokens=has_atomized_tokens,
     )
 
@@ -1187,6 +1254,7 @@ class _PredictGraphIdentity:
     triangle_kernel: str
     cp_topology: tuple[object, ...]
     cache_scope: str | None
+    augmentation_taped: bool = False
 
 
 def _validated_representative_atoms(
@@ -1228,6 +1296,25 @@ def _rng_route(
     return "native"
 
 
+def _prediction_augmentation_tape(
+    tape: AugmentationTape | None,
+    *,
+    config: InferenceConfig,
+    augment: bool,
+    check_values: bool = True,
+) -> AugmentationTape | None:
+    if tape is None:
+        return None
+    if not augment:
+        raise ValueError("augmentation_tape requires augment=True")
+    return validate_augmentation_tape(
+        tape,
+        steps=config.num_steps,
+        samples=config.num_samples,
+        check_values=check_values,
+    )
+
+
 def _cp_topology_identity(mesh, *, layout: str) -> tuple[object, ...]:
     """Return topology plus ordered physical devices captured by sharding ops."""
 
@@ -1260,11 +1347,17 @@ def _predict_for_identity(
     representative_atoms: RepresentativeAtomTable,
     noise_tape: jnp.ndarray | None,
     noise_mask: jnp.ndarray | None,
+    augmentation_tape: AugmentationTape | None = None,
     *,
     identity: _PredictGraphIdentity,
 ) -> Prediction:
     """Prediction body for one fully resolved compile-time identity."""
 
+    if (augmentation_tape is not None) != identity.augmentation_taped:
+        raise ValueError("augmentation_tape does not match the compiled graph identity")
+    augmentation_options = (
+        {"augmentation_tape": augmentation_tape} if identity.augmentation_taped else {}
+    )
     return predict(
         key,
         batch,
@@ -1276,6 +1369,7 @@ def _predict_for_identity(
         noise_mask=noise_mask if identity.rng_route == "mask" else None,
         augment=identity.augment,
         use_trunk_pair_embedding=identity.use_trunk_pair_embedding,
+        **augmentation_options,
     )
 
 
@@ -1338,6 +1432,7 @@ class _CompiledPredictPool:
         representative_atoms: RepresentativeAtomTable,
         noise_tape: jnp.ndarray | None,
         noise_mask: jnp.ndarray | None,
+        augmentation_tape: AugmentationTape | None = None,
         *,
         identity: _PredictGraphIdentity,
     ) -> Prediction:
@@ -1350,6 +1445,7 @@ class _CompiledPredictPool:
                 representative_atoms,
                 noise_tape,
                 noise_mask,
+                augmentation_tape,
             )
             self._trim()
             return result
@@ -1362,6 +1458,7 @@ class _CompiledPredictPool:
         representative_atoms: RepresentativeAtomTable,
         noise_tape: jnp.ndarray | None,
         noise_mask: jnp.ndarray | None,
+        augmentation_tape: AugmentationTape | None = None,
         *,
         identity: _PredictGraphIdentity,
     ):
@@ -1374,6 +1471,7 @@ class _CompiledPredictPool:
                 representative_atoms,
                 noise_tape,
                 noise_mask,
+                augmentation_tape,
             )
             self._trim()
             return lowered
@@ -1448,7 +1546,7 @@ def _persistent_cache_is_bounded(scope: str | None) -> bool:
 
 
 class _BoundCompiledPredict:
-    """Public three-argument view over a six-argument JAX executable."""
+    """Public three-argument view over the dynamic-data JAX executable."""
 
     def __init__(
         self,
@@ -1469,14 +1567,25 @@ class _BoundCompiledPredict:
         *,
         noise_tape=None,
         noise_mask=None,
+        augmentation_tape=None,
     ):
         batch = _prepare_ref_atom_category_graph_input(batch)
+        augmentation_tape = _prediction_augmentation_tape(
+            augmentation_tape,
+            config=self._identity.config,
+            augment=self._identity.augment,
+        )
         route = _rng_route(noise_tape, noise_mask)
         if route != self._identity.rng_route:
             raise ValueError(
                 "compiled OpenFold3 RNG route does not match the route used "
                 f"during lowering: expected {self._identity.rng_route!r}, "
                 f"got {route!r}"
+            )
+        if (augmentation_tape is not None) != self._identity.augmentation_taped:
+            raise ValueError(
+                "compiled OpenFold3 augmentation tape route does not match "
+                "the route used during lowering"
             )
         with (
             triangle_backend(self._identity.triangle_kernel),
@@ -1493,6 +1602,7 @@ class _BoundCompiledPredict:
                 replicate_tree(self._table),
                 replicate_tree(noise_tape),
                 replicate_tree(noise_mask),
+                replicate_tree(augmentation_tape),
             )
 
     def __getattr__(self, name: str) -> Any:
@@ -1579,7 +1689,9 @@ def compile_predict(
 
     ``noise_fn`` is deliberately not used by production callers: baking a
     Python callback into a compiled function would defeat the scan. A concrete
-    ``noise_tape`` and ``noise_mask`` remain normal runtime keyword arguments.
+    ``noise_tape``, ``noise_mask`` and ``augmentation_tape`` remain normal runtime
+    keyword arguments. Replay arrays are dynamic data, never cache-key values;
+    the presence of an augmentation tape selects a separate graph identity.
     Padding uses the mask so the compact random stream is preserved without
     retaining every rollout draw at once.
     """
@@ -1596,10 +1708,14 @@ def compile_predict(
         *,
         noise_tape=None,
         noise_mask=None,
+        augmentation_tape=None,
     ):
         # Reject malformed private provenance while values are still concrete,
         # before tracing or consulting the compiled-executable cache.
         batch = _prepare_ref_atom_category_graph_input(batch)
+        augmentation_tape = _prediction_augmentation_tape(
+            augmentation_tape, config=compiled_config, augment=augment
+        )
 
         # Tracing happens on the first call, so the mesh has to be active
         # here, not at factory time. A checkpoint committed to one device
@@ -1624,6 +1740,7 @@ def compile_predict(
                 triangle_kernel=effective_kernel,
                 cp_topology=_cp_topology_identity(mesh, layout=layout),
                 cache_scope=scope,
+                augmentation_taped=augmentation_tape is not None,
             )
             bounded_cache = _persistent_cache_is_bounded(scope)
             cache_token = inspect_cache_scope(scope, repair_atime=bounded_cache)
@@ -1638,6 +1755,7 @@ def compile_predict(
                 replicate_tree(table),
                 replicate_tree(noise_tape),
                 replicate_tree(noise_mask),
+                replicate_tree(augmentation_tape),
                 identity=identity,
             )
             observe_cache_scope(
@@ -1655,6 +1773,7 @@ def compile_predict(
         *,
         noise_tape=None,
         noise_mask=None,
+        augmentation_tape=None,
     ):
         value, _identity = invoke(
             _compiled_predict,
@@ -1663,6 +1782,7 @@ def compile_predict(
             params,
             noise_tape=noise_tape,
             noise_mask=noise_mask,
+            augmentation_tape=augmentation_tape,
         )
         return value
 
@@ -1673,6 +1793,7 @@ def compile_predict(
         *,
         noise_tape=None,
         noise_mask=None,
+        augmentation_tape=None,
     ):
         """Lower with the same mesh and static identity as an ordinary call."""
 
@@ -1683,6 +1804,7 @@ def compile_predict(
             params,
             noise_tape=noise_tape,
             noise_mask=noise_mask,
+            augmentation_tape=augmentation_tape,
         )
         return _BoundLoweredPredict(
             lowered,

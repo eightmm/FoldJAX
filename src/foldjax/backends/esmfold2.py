@@ -45,7 +45,7 @@ from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
-from foldjax.padding import PaddingPlan, resolve_axis
+from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -57,20 +57,18 @@ from foldjax.schema import (
     _strict_boolean,
 )
 
-#: Upstream's released `config.json`, which is what the port reads at load
-#: time. These are named here because `capabilities()` reports them and the
-#: README table quotes them -- and because they are *not* the dataclass
-#: defaults in upstream's source, which say 20 loops and 68 steps.
+#: Managed defaults: paper inference loop count, with the remaining schedule
+#: inherited from the released checkpoint. See docs/recycling-defaults.md.
 DEFAULTS = {
-    "num_recycles": 3,
+    "num_recycles": 9,
     "num_sampling_steps": 14,
     "num_diffusion_samples": 32,
     "max_msa_depth": 1024,
 }
 
 # These are the only ESMFold2 compile defaults whose omitted resolution is
-# independent of checkpoint configuration. Sampling defaults intentionally do
-# not appear here even when the released checkpoint happens to match DEFAULTS.
+# independent of checkpoint configuration. The managed recycle value is
+# injected into every effective request and retained in its compile identity.
 _FIXED_COMPILE_DEFAULTS = {
     "cp_devices": 1,
     "no_language_model": False,
@@ -237,9 +235,17 @@ def _padding_plan(
         "msa": int(msa_mask.shape[-2]),
     }
     target = {
-        axis: resolve_axis(actual[axis], config, axis, minimum=storage[axis])
-        for axis in ("tokens", "atoms")
+        "tokens": resolve_axis(
+            actual["tokens"], config, "tokens", minimum=storage["tokens"]
+        )
     }
+    target["atoms"] = resolve_token_axis(
+        actual["atoms"],
+        config,
+        "atoms",
+        token_target=target["tokens"],
+        minimum=storage["atoms"],
+    )
 
     if max_msa_depth is not None and max_msa_depth < 1:
         raise ValueError(
@@ -258,11 +264,15 @@ def _padding_plan(
                 f"max_msa_depth={max_msa_depth}; padded rows could be sampled"
             )
     else:
-        target_msa = resolve_axis(selected_msa, config, "msa")
-        # A non-standard user cap (for example 100) can sit between the shared
-        # 64 and 128 buckets. Use that stable cap rather than crossing it.
-        if max_msa_depth is not None:
-            target_msa = min(target_msa, max_msa_depth)
+        target_msa = resolve_token_axis(
+            selected_msa,
+            config,
+            "msa",
+            token_target=target["tokens"],
+            fixed_size=max_msa_depth
+            if max_msa_depth is not None
+            else DEFAULTS["max_msa_depth"],
+        )
     if target_msa < selected_msa:
         raise ValueError(
             f"padding.msa={target_msa} would discard rows from ESMFold2's "
@@ -274,13 +284,17 @@ def _padding_plan(
     target["msa"] = target_msa
 
     if language_model_tokens is not None:
+        # ESMC inserts BOS/EOS for each protein chain. At most T residues
+        # and T chains fit the token bucket, so 3*T also covers multimers.
         actual["language_model_tokens"] = language_model_tokens
         storage["language_model_tokens"] = language_model_tokens
-        target["language_model_tokens"] = resolve_axis(
+        target["language_model_tokens"] = resolve_token_axis(
             language_model_tokens,
             config,
             "language_model_tokens",
             minimum=language_model_tokens,
+            token_target=target["tokens"],
+            fixed_size=3 * target["tokens"],
         )
     return PaddingPlan(actual=actual, storage=storage, target=target)
 
@@ -471,7 +485,10 @@ class ESMFold2Backend(Backend):
         )
         esmc = options.get("esmc_weights")
         assert request.weights is not None
-        return request.weights, esmc, not without_lm
+        return (
+            request.weights, esmc,
+            not without_lm and request.stop_after != "inputs",
+        )
 
     def _anchor_assets(
         self,
@@ -716,15 +733,22 @@ class ESMFold2Backend(Backend):
         self._lm_embedding_key = key
         return embedding
 
+    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
+        options = super().apply_sampling(request)
+        # ESMFold2 Appendix A.2.11 uses ten total loops; this port adds one.
+        # Keep the effective value in cache identity, including omitted requests.
+        options.setdefault("num_recycles", DEFAULTS["num_recycles"])
+        return options
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep only proven fixed defaults in the omitted cache namespace.
 
-        Sampling defaults are checkpoint configuration and deliberately remain
-        distinct when written explicitly. These three values resolve without
-        reading a checkpoint: serial context parallelism, the enabled language
-        model, and FoldJAX's fixed MSA storage cap. Exact types matter because
-        ``bool`` is an ``int`` subclass and malformed lookalikes have no alias
-        proof.
+        Step/sample defaults are checkpoint configuration and remain distinct when
+        written explicitly. The managed recycle count is always explicit. These
+        three values resolve without reading a checkpoint: serial context
+        parallelism, the enabled language model, and FoldJAX's fixed MSA storage
+        cap. Exact types matter because ``bool`` is an ``int`` subclass and
+        malformed lookalikes have no alias proof.
         """
 
         profile = super().cache_profile(request)
@@ -742,6 +766,7 @@ class ESMFold2Backend(Backend):
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
             representations=_representations.available("esmfold2"),
+            input_representations=("single_inputs",),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("foldjax",),
@@ -794,11 +819,21 @@ class ESMFold2Backend(Backend):
             if cp_devices < 1:
                 raise ValueError("cp_devices must be positive")
             overrides["cp_shards"] = cp_devices
-        wanted = _representations.resolve(
-            request.representations, _representations.specs_for("esmfold2")
-        )
+        available = _representations.specs_for("esmfold2")
+        if request.stop_after == "inputs":
+            available = {
+                name: available[name]
+                for name in self.capabilities().input_representations
+            }
+            # Validate each selector even when an earlier "all" expands first.
+            for selector in request.representations or ():
+                for name in selector.split(","):
+                    _representations.resolve((name,), available)
+        wanted = _representations.resolve(request.representations, available)
         if wanted:
             overrides["return_representations"] = wanted
+        if request.stop_after == "inputs":
+            overrides["stop_after_inputs"] = True
         if request.stop_after == "trunk":
             overrides["stop_after_trunk"] = True
         # The managed download profile answers *where* ESMC comes from, not
@@ -823,7 +858,7 @@ class ESMFold2Backend(Backend):
             inference,
             request.weights,
             esmc=esmc,
-            language_model=not without_lm,
+            language_model=not without_lm and request.stop_after != "inputs",
         )
         padding_plan = None
         lm_target = None
@@ -942,7 +977,9 @@ class ESMFold2Backend(Backend):
                         n_msa=padding_plan.target["msa"],
                     )
                     lm_target = padding_plan.target.get("language_model_tokens")
-                if managed_compact_lm and compact_lm_api:
+                if request.stop_after == "inputs":
+                    lm_input = {}
+                elif managed_compact_lm and compact_lm_api:
                     with matmul_precision():
                         embedding = self._language_model_embedding(
                             inference,
@@ -1043,7 +1080,7 @@ class ESMFold2Backend(Backend):
         }
         if shape_profile is not None:
             raw["padding"] = shape_profile
-        if request.stop_after == "trunk":
+        if request.stop_after in ("inputs", "trunk"):
             # Nothing was folded, so there are no samples to describe -- and
             # the writer must stay below this line, not above it. It reads
             # `sample_atom_coords`, which the trunk graph never produces, so

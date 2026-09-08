@@ -64,7 +64,10 @@ def main():
     parser.add_argument("arm", choices=("native", "foldjax"))
     parser.add_argument("--mode", choices=("audit", "performance"), default="audit")
     parser.add_argument("--warm-repeats", type=int, default=1)
+    parser.add_argument("--no-preprocessing-observers", action="store_true")
     args = parser.parse_args()
+    if args.no_preprocessing_observers and args.mode != "performance":
+        parser.error("disabling preprocessing observers requires performance mode")
     if args.warm_repeats < 1:
         parser.error("--warm-repeats must be positive")
     if args.xla_autotune_extend and (
@@ -282,6 +285,7 @@ def main():
                 "numpy_draws": preprocessing_draws,
                 "rdkit_seed_and_conformer_boundary": conformers,
                 "rdkit_internal_rng_observed": False,
+                "observers_enabled": not args.no_preprocessing_observers,
             },
         )
         save(out / "effective-config.json", self._model_config.as_dict())
@@ -487,10 +491,16 @@ def main():
     with (
         patch.object(runner.ModelRunner, "run_inference", infer),
         patch.object(runner.ModelRunner, "extract_inference_results", extract),
-        patch.object(np.random, "RandomState", ObservedRandomState),
-        patch.object(rdkit_utils, "get_random_conformer", conformer),
+        ExitStack() as preprocessing_stack,
         ExitStack() as kernel_stack,
     ):
+        if not args.no_preprocessing_observers:
+            preprocessing_stack.enter_context(
+                patch.object(np.random, "RandomState", ObservedRandomState)
+            )
+            preprocessing_stack.enter_context(
+                patch.object(rdkit_utils, "get_random_conformer", conformer)
+            )
         if kernel_overlay is not None:
             kernel_stack.enter_context(kernel_overlay)
         if args.arm == "native":
@@ -542,13 +552,15 @@ def main():
         else out / "xla-autotune.textproto"
     )
     save(out / "provenance.json", provenance)
-    assert preprocessing_draws and conformers
+    if not args.no_preprocessing_observers:
+        assert preprocessing_draws and conformers
     save(
         out / "preprocessing-tape.json",
         {
             "numpy_draws": preprocessing_draws,
             "rdkit_seed_and_conformer_boundary": conformers,
             "rdkit_internal_rng_observed": False,
+            "observers_enabled": not args.no_preprocessing_observers,
         },
     )
     timings["device_memory_stats"] = jax.devices()[0].memory_stats()
@@ -556,6 +568,7 @@ def main():
         resource.RUSAGE_SELF
     ).ru_maxrss
     timings["instrumented"] = args.mode == "audit"
+    timings["preprocessing_observers_enabled"] = not args.no_preprocessing_observers
     save(out / "finished.json", timings)
     print(source.stem, args.arm, "completed", timings, flush=True)
 

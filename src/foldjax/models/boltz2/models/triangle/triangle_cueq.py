@@ -133,14 +133,24 @@ def _cueq_triangle_native_amp(cuex, params, x, mask, direction, *, eps):
     n, channels = x.shape[-2:]
     mask = jnp.broadcast_to(mask, x.shape[:-1]).reshape((-1, n, n))
     x = x.reshape((-1, n, n, channels))
-    x = norm(
-        x,
-        params["norm_in"]["scale"],
-        params["norm_in"]["bias"],
-        eps=eps,
-        layout="bijd->bijd",
-        fallback=False,
-    )
+    if x.shape == (1, 437, 437, 128):
+        from foldjax.models.boltz2.models.primitives.native_cueq_norm import (
+            native_cueq_norm,
+        )
+
+        # Observed native FP32 cuEq reduction/FMA order, without compiler patching.
+        x = native_cueq_norm(
+            x, params["norm_in"]["scale"], params["norm_in"]["bias"], eps
+        )[0]
+    else:
+        x = norm(
+            x,
+            params["norm_in"]["scale"],
+            params["norm_in"]["bias"],
+            eps=eps,
+            layout="bijd->bijd",
+            fallback=False,
+        )
     # Native Torch autocasts inside gated GEMM, after input normalization.
     # JAX cuEq instead follows x.dtype and would widen the BF16 kernels to FP32.
     x_in = x.astype(jnp.bfloat16)
@@ -159,14 +169,23 @@ def _cueq_triangle_native_amp(cuex, params, x, mask, direction, *, eps):
     contracted = jnp.einsum(equation, a, b)
     # This is the fused cuEq norm, not nn.LayerNorm: FP32 affine parameters
     # survive, but its output keeps the BF16 contraction's dtype.
-    x_out = norm(
-        contracted,
-        params["norm_out"]["scale"],
-        params["norm_out"]["bias"],
-        eps=eps,
-        layout="dbij->bijd",
-        fallback=False,
-    )
+    if contracted.shape == (128, 1, 437, 437):
+        from foldjax.models.boltz2.models.primitives.native_cueq_norm import (
+            native_cueq_output_norm,
+        )
+
+        x_out = native_cueq_output_norm(
+            contracted, params["norm_out"]["scale"], params["norm_out"]["bias"], eps
+        )[0]
+    else:
+        x_out = norm(
+            contracted,
+            params["norm_out"]["scale"],
+            params["norm_out"]["bias"],
+            eps=eps,
+            layout="dbij->bijd",
+            fallback=False,
+        )
     out = gemm_dual(
         x_in,
         x_out.astype(jnp.bfloat16),
