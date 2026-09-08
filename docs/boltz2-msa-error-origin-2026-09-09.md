@@ -69,3 +69,58 @@ change rather than an analysis one.
 It also does not establish that closing this closes the cell. The decomposition
 says the trunk residual is what the trajectory amplifies; it does not say this
 stage is the whole trunk residual.
+
+## Teacher-forcing the module: the input contributes nothing
+
+Feeding the JAX MSA module native's own `input_z`, with the bitwise-identical
+features, and comparing its `delta_z` against native's:
+
+| Arm | RMSE against native `delta_z` |
+| --- | ---: |
+| in-run captured `delta_z` | 3.238075e-02 |
+| JAX `input_z` -> JAX module | 3.375386e-02 |
+| **native `input_z` -> JAX module** | **3.375255e-02** |
+
+The two teacher-forced arms agree to five significant figures. The 6.2e-4
+difference in the pair entering the module contributes essentially nothing to
+the 3.2e-2 leaving it. The residual is the module's arithmetic, on identical
+inputs.
+
+(The standalone arms sit 4% above the in-run capture, because a module run
+outside the whole graph does not get the same chunking and autotuning context.
+Read the arms against each other, not against the in-run absolute.)
+
+## Every exposed knob is excluded, and two make it worse
+
+Same teacher-forced setup, one knob at a time:
+
+| Arm | RMSE | |
+| --- | ---: | --- |
+| shipped (cueq triangle, xla glu, `highest`) | 3.375651e-02 | |
+| `triangle_backend=xla` | 3.375084e-02 | unchanged |
+| `use_scan=False` | 3.374830e-02 | unchanged |
+| `matmul_precision=tensorfloat32` | 4.059741e-02 | **20% worse** |
+| parameters cast to bfloat16 | 4.308405e-02 | **28% worse** |
+| parameters cast to float32 | 3.375281e-02 | unchanged; they already are |
+
+The fused cuEquivariance triangle kernel was the obvious suspect and moves the
+result by 0.02%. The scan lowering moves it by 0.02%. The two knobs that do
+move it both move it the wrong way, which is itself a result: `highest` is the
+right precision for this module, and a blanket bfloat16 is not what native
+does.
+
+The parameters load as 58 float32 leaves and the module already runs fp32.
+
+## What that leaves
+
+Not a knob. The port is at its best available configuration and still 3.375e-2
+from native, so closing this is an implementation difference rather than a
+setting.
+
+The shape of it is constrained by the two failed arms. A blanket bfloat16 cast
+is *worse* than fp32, but upstream runs this trunk under autocast -- so native
+is materialising bfloat16 roundings at particular points while keeping others
+in fp32, and the port is in fp32 throughout. Matching means reproducing where
+those boundaries fall, not choosing a dtype. That is per-operation work inside
+the MSA module and it is what the native AMP boundary investigation already
+underway is about.
