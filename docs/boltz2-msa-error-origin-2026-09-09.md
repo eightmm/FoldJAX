@@ -370,3 +370,47 @@ module, on bitwise-identical inputs, with the pair input contributing nothing.
 
 The one divergence still unmeasured is the validity count's dtype, which needs
 the same two-snapshot treatment and the same positive control.
+
+## The validity count dtype is excluded, control in the same run
+
+Three snapshots this time, the control queued alongside rather than cited from
+an earlier job:
+
+| Arm | RMSE against native `delta_z` |
+| --- | ---: |
+| shipped: count kept in float32 | 3.227007e-02 |
+| upstream's placement: count round-tripped through the autocast dtype | 3.227007e-02 |
+| **control: count doubled** | **1.371935e+00** |
+
+The control moves the result forty-two fold, so the code executes and changes to
+it reach the output. Against that, the two real arms are identical.
+
+Upstream's count really is bfloat16-valued where the port's is float32, and on
+this input it does not matter: the surviving per-pair counts sit inside
+bfloat16's exact range once the padded alignment rows are masked out.
+
+## Final position on this cell
+
+**Still 1.1761 Å. This document does not reduce it.**
+
+Excluded, each on an arm whose effect was demonstrable -- either because it was
+passed as an argument and moved the result, or because a control in the same
+design moved it:
+
+- every configuration knob: triangle backend, scan, matmul precision
+- every parameter dtype placement: kernels, bias, norms, and combinations
+- every activation dtype placement: pair carry, single embedding
+- every chunk width, at four values, and the port's divergence from upstream's
+  fixed widths
+- the pair-bias softmax dtype
+- the validity count dtype
+
+Ruled in: the residual is born inside the MSA module, on bitwise-identical MSA
+features, with the pair entering it contributing essentially nothing, and it is
+not reachable from dtype, boundary placement or configuration.
+
+What is left is the arithmetic of the triangle operations themselves, against
+upstream's implementation. The upstream source is readable in this workspace and
+the harness that can measure it now exists: independent snapshots, one job each,
+no shared environment, compilation cache off, and a positive control queued with
+every claim.
