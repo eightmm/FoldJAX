@@ -298,3 +298,36 @@ them were pointed at code that does not run.
 needs a tripwire before it can be read.** The arms that changed *arguments* --
 knobs, chunk widths, parameter and activation dtypes -- are unaffected: those
 reach the module through its signature and their effects were visible.
+
+## The probe harness stopped being trustworthy, and that ends this line
+
+The retraction above blamed a dead branch. That reason was itself unreliable.
+A later arm that patched the same head loop *unconditionally* did move the
+result -- by a hundredfold -- so the branch is live. Two arms after that,
+intended to differ only in whether JAX's compilation cache was enabled,
+returned different numbers *and* reported different environment labels, which
+means they did not differ only in the cache.
+
+So the harness was leaking environment between arms, its label printed a
+different variable than the one under test, and the job identifiers used to
+read results back were computed by arithmetic on a shared queue. Any one of
+those is enough to void an arm.
+
+What stands and what does not:
+
+| Arms | Status |
+| --- | --- |
+| Knobs, chunk widths, parameter dtype, activation dtype -- passed as **arguments** | stand; several moved the result, and each was read from its own labelled run |
+| PWA logit dtype, OPM count dtype -- applied by **patching a function** | void; unmeasured |
+| "The AMP head loop never executes" | withdrawn; it does execute |
+
+The two source divergences found by reading upstream remain real and remain
+open: upstream masks and softmaxes the pair bias in the autocast dtype where
+the port upcasts to float32, and upstream's validity count is bfloat16-valued
+where the port's is float32.
+
+Measuring them needs a harness that runs one arm per process with an explicit
+environment, prints the variable actually under test, reads results by job id
+rather than by arithmetic, and proves each patched branch fires. Building that
+is the first task of whoever continues, before any further exclusion is
+recorded.
