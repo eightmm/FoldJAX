@@ -155,3 +155,44 @@ rounded input, whereas casting only the kernel leaves JAX promoting the product
 back to fp32. Reproducing that is a source change per operation inside the
 module, not a dtype choice, and it is what the native AMP boundary
 investigation already underway is about.
+
+## The activation boundary is excluded too, and the scan pins it
+
+Same teacher-forced setup, `use_scan=False` in every arm because a bfloat16
+pair carry does not type-check against the scan (`scan body function carry
+input and carry output must have equal types`) -- the module's layer scan
+holds `z` in fp32 by construction.
+
+| Arm | RMSE | |
+| --- | ---: | --- |
+| shipped equivalent (kernels bf16, fp32 `z`) | 3.240702e-02 | |
+| kernels bf16, `z` -> bf16 | 3.427809e-02 | **6% worse** |
+| kernels bf16, `z` + `emb` -> bf16 | 3.427809e-02 | same as above |
+| kernels bf16, `emb` -> bf16 only | 3.240702e-02 | no effect at all |
+
+Rounding the pair activation the way autocast would makes it worse, so the
+port's fp32 pair carry is closer to native than a bfloat16 one. The single
+embedding's dtype changes nothing in either direction.
+
+## The dtype and configuration axis is now closed
+
+Fourteen arms, all teacher-forced on native's own `input_z` with bitwise
+identical features:
+
+| Axis | Arms | Result |
+| --- | ---: | --- |
+| Knobs (triangle backend, scan, matmul precision, chunking) | 5 | shipped best; two alternatives worse |
+| Parameter dtype placement | 5 | shipped best; four alternatives worse |
+| Activation dtype placement | 4 | shipped best; one worse, two inert |
+
+The shipped configuration is optimal in every one, and the repeated-baseline
+spread is 6e-6, so none of this is noise.
+
+The residual of 3.23e-2 is therefore not a dtype, not a boundary placement and
+not a setting. It is in how the operations themselves are carried out --
+accumulation order and algorithm detail inside the module's own kernels --
+which needs a comparison against upstream's implementation rather than another
+arm of this harness.
+
+That is the honest end of this axis. It is not a reduction of the cell; it is
+the reason the next attempt should not spend itself here.
