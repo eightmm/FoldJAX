@@ -109,7 +109,38 @@ move it both move it the wrong way, which is itself a result: `highest` is the
 right precision for this module, and a blanket bfloat16 is not what native
 does.
 
-The parameters load as 58 float32 leaves and the module already runs fp32.
+The parameters load as 58 float32 leaves **through this standalone loader**,
+which is not what the run does -- see the correction below.
+
+## Correction: the shipped configuration was not the baseline
+
+`_amp_dtype(kernel)` (`msa.py:27`) returns the kernel dtype when it is bfloat16,
+and that is what switches the module's autocast emulation on. Placing the
+boundary by leaf name:
+
+| Boundary | RMSE against native `delta_z` |
+| --- | ---: |
+| fp32 throughout | 3.375415e-02 |
+| **`kernel` only -> bf16** | **3.233621e-02** |
+| `kernel` + `bias` -> bf16 | 3.693807e-02 |
+| everything -> bf16 | 4.308405e-02 |
+| `scale` only -> bf16 (control) | 3.789293e-02 |
+
+The direction is exactly autocast's: matmul kernels low, bias and normalisation
+high. The control moves the wrong way, so this is not "any bfloat16 helps", and
+the spread between repeated baseline evaluations is 6e-6, so 4% is two hundred
+times the noise.
+
+**But the in-run captured `delta_z` is 3.238075e-02, within 0.14% of the
+`kernel`-only arm.** The run already casts parameters to the trunk dtype, so the
+shipped configuration *is* that arm. The fp32 row above is the artificial one,
+introduced by loading parameters through a standalone loader that does not.
+
+So this is not a reduction of the shipped error. It establishes something else,
+and something more useful: **parameter dtype placement is already optimal in the
+shipped port**, in the same direction native uses, and every alternative
+placement is worse. Together with the excluded knobs, the whole
+parameter-and-configuration search space around this residual is now closed.
 
 ## What that leaves
 
@@ -117,10 +148,10 @@ Not a knob. The port is at its best available configuration and still 3.375e-2
 from native, so closing this is an implementation difference rather than a
 setting.
 
-The shape of it is constrained by the two failed arms. A blanket bfloat16 cast
-is *worse* than fp32, but upstream runs this trunk under autocast -- so native
-is materialising bfloat16 roundings at particular points while keeping others
-in fp32, and the port is in fp32 throughout. Matching means reproducing where
-those boundaries fall, not choosing a dtype. That is per-operation work inside
-the MSA module and it is what the native AMP boundary investigation already
-underway is about.
+The port already places the parameter-side boundary where native does, and no
+other placement is closer. What is left is the boundary on the *activation*
+path: under autocast a linear returns bfloat16, so the next operation sees a
+rounded input, whereas casting only the kernel leaves JAX promoting the product
+back to fp32. Reproducing that is a source change per operation inside the
+module, not a dtype choice, and it is what the native AMP boundary
+investigation already underway is about.
