@@ -240,3 +240,31 @@ are computed, and separating that needs the port's kernels compared against
 upstream's implementation op by op, with native sub-module boundaries to compare
 against. The upstream source is readable here; the native intermediate captures
 are not part of this branch.
+
+## The outer product mean is faithfully ported, including the branch upstream takes
+
+Read against `boltz/src/boltz/model/layers/outer_product_mean.py`. Above 384
+tokens upstream takes its *chunked* branch, which differs from its unchunked one
+in more than width: it splits the **hidden channel** axis rather than the token
+axis, accumulates the projected result across those splits, keeps the outer
+product in the input dtype instead of upcasting to float32, and adds the output
+bias once at the end.
+
+The port reproduces all of that in `_outer_product_mean_amp`: the same 384
+threshold, `hidden_chunk = 4` matching upstream's `chunk_size_outer_product`, the
+hidden-axis accumulation, the AMP-dtype einsum, and the deferred bias. The token
+tiling around it is an extra the port adds for memory and, as the width sweep
+above shows, is numerically free.
+
+One difference survived that reading. The port computes the validity count in
+float32 throughout, and its comment says this "counts the same entries as the
+native FP32 sum" -- but upstream has no FP32 sum here. Both of its branches cast
+the mask to the MSA tensor's dtype first, which under autocast is bfloat16, and
+this target has 4,436 alignment rows while bfloat16 cannot represent integers
+above 256 exactly. Every output element is divided by that count.
+
+It is not the cause. Round-tripping the count through the AMP dtype leaves the
+result bitwise identical, so the counts that actually occur here are inside
+bfloat16's exact range -- the padded rows are masked out and the surviving
+per-pair counts are small. The comment is still wrong about upstream, and the
+divergence is still real; it just does not reach the output on this input.
