@@ -331,3 +331,42 @@ environment, prints the variable actually under test, reads results by job id
 rather than by arithmetic, and proves each patched branch fires. Building that
 is the first task of whoever continues, before any further exclusion is
 recorded.
+
+## Remeasured on a harness that cannot leak: the PWA logit dtype is excluded
+
+The previous arms were voided for good reason, so they were rebuilt without the
+mechanisms that voided them. No environment variable and no branch: two complete
+source snapshots, differing only in the three lines under test, each run in its
+own job with the compilation cache off and its identifier captured from the
+queue rather than computed.
+
+**Positive control first.** Under the same conditions, doubling the logits in
+this exact loop moves the result from 3.233621e-02 to 3.126505e+00 -- a hundred
+fold. The loop executes and source changes to it reach the output. Without this,
+an identical pair of arms would mean nothing.
+
+| Arm | RMSE against native `delta_z` |
+| --- | ---: |
+| shipped: logits upcast to float32, masked and softmaxed there | 3.233621e-02 |
+| upstream's placement: logits masked in the autocast dtype | 3.233621e-02 |
+
+Identical to seven significant figures. The divergence is real in the source --
+upstream keeps the pair bias in bfloat16 through the mask and the softmax where
+the port upcasts first -- and it does not reach the output. The softmax weights
+are cast to the autocast dtype either way, and on this input they round to the
+same bfloat16 values whether the exponential saw a rounded logit or not.
+
+This exclusion stands where the earlier ones did not, because the control proves
+the arm could have moved.
+
+## Where this leaves the cell
+
+Still 1.1761 Å. Nothing in this document reduces it.
+
+What it now rules out, with the arms that survive scrutiny: every configuration
+knob, every parameter and activation dtype placement, every chunk width, and the
+pair-bias softmax dtype. What it rules in: the residual is born in the MSA
+module, on bitwise-identical inputs, with the pair input contributing nothing.
+
+The one divergence still unmeasured is the validity count's dtype, which needs
+the same two-snapshot treatment and the same positive control.
