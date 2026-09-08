@@ -51,6 +51,7 @@ class _ResumeBackend(Backend):
             input_formats=("foldjax", "native", "alternate-native"),
             padding_axes=self.padding_axes,
             representations=("single", "pair"),
+            input_representations=("single",),
         )
 
     def _representations(self, request: PredictionRequest) -> Representations | None:
@@ -97,7 +98,7 @@ class _ResumeBackend(Backend):
             if request.padding is not None
             else None
         )
-        if request.stop_after == "trunk":
+        if request.stop_after in {"trunk", "inputs"}:
             return PredictionResult(
                 model=self.name,
                 output_dir=request.output_dir,
@@ -313,18 +314,36 @@ def test_legacy_ffi_precision_result_is_not_reused(tmp_path: Path, model: str):
 
 
 @pytest.mark.parametrize(
-    "source",
+    "model,source",
     [
-        "compile_policy.py",
-        "models/primitives/native_amp_norm.py",
-        "models/trunk_blocks/msa.py",
+        ("boltz2", "compile_policy.py"),
+        ("boltz2", "models/primitives/native_amp_norm.py"),
+        ("boltz2", "models/primitives/native_pwa_mma.py"),
+        ("boltz2", "models/trunk_blocks/msa.py"),
+        ("openfold3", "inference.py"),
+        ("openfold3", "models/augmentation.py"),
+        ("openfold3", "models/sampler.py"),
+        ("esmfold2", "models/model.py"),
+        ("esmfold2", "models/diffusion.py"),
+        ("esmfold2", "models/esmc.py"),
+        ("esmfold2", "models/trunk.py"),
+        ("esmfold2", "models/primitives.py"),
+        ("esmfold2", "../_cp.py"),
+        ("esmfold2", "../boltz2/models/primitives/native_amp_norm.py"),
+        ("esmfold2", "inference.py"),
     ],
 )
-def test_boltz_model_repair_invalidates_resume(tmp_path, monkeypatch, source):
+def test_model_repair_invalidates_resume(tmp_path, monkeypatch, model, source):
     from foldjax import manifest
 
-    request, calls = _request(tmp_path, model="boltz2"), []
-    target = (Path(manifest.__file__).parent / "models/boltz2" / source).resolve()
+    request, calls = _request(tmp_path, model=model), []
+    if model == "esmfold2":
+        weights = _file(tmp_path / "model.safetensors", b"structure-weights")
+        _file(tmp_path / "config.json", b"{}")
+        request = dataclasses.replace(
+            request, weights=weights, options={"no_language_model": True}
+        )
+    target = (Path(manifest.__file__).parent / "models" / model / source).resolve()
     with _backends(calls):
         foldjax.predict(request)
         assert foldjax.predict_batch(
@@ -335,7 +354,7 @@ def test_boltz_model_repair_invalidates_resume(tmp_path, monkeypatch, source):
         def changed_identity(path):
             identity = original(path)
             return (
-                {**identity, "stat_signature": "repaired-boltz-source"}
+                {**identity, "stat_signature": "repaired-model-source"}
                 if Path(path).resolve() == target
                 else identity
             )
@@ -471,16 +490,19 @@ def test_missing_or_empty_structure_is_not_reused(tmp_path: Path, damage: str) -
     assert resumed.results[0].samples[0].structure_path.stat().st_size > 0
 
 
-def test_trunk_archive_is_recorded_and_restored_on_resume(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stage", ["trunk", "inputs"])
+def test_trunk_archive_is_recorded_and_restored_on_resume(
+    tmp_path: Path, stage
+) -> None:
     calls: list[tuple[str, str, int]] = []
-    request = _request(tmp_path, stop_after="trunk")
+    request = _request(tmp_path, stop_after=stage)
     with _backends(calls):
         first = foldjax.predict(request)
         resumed = foldjax.predict_batch(dataclasses.replace(request, resume=True))
 
     document = json.loads((request.output_dir / MANIFEST_NAME).read_text())
     assert document["schema"] == 1
-    assert document["stop_after"] == "trunk"
+    assert document["stop_after"] == stage
     assert document["requested_representations"] == ["single"]
     assert document["representations"]["path"] == "representations.npz"
     assert document["representations"]["names"] == ["single"]

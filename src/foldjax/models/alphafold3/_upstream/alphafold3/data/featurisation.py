@@ -53,6 +53,7 @@ def featurise_input(
     resolve_msa_overlaps: bool = True,
     fix_standalone_glycans: bool = False,
     verbose: bool = False,
+    msa_crop_size: int = 16384,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
 
@@ -83,6 +84,7 @@ def featurise_input(
       trained and evaluated. This has only an effect if filter_leaving_atoms is
       True in the WholePdbPipeline.Config.
     verbose: Whether to print progress messages.
+    msa_crop_size: Total MSA rows after native pairing, cropping and padding.
 
   Returns:
     A featurised batch for each rng_seed in the input.
@@ -93,6 +95,7 @@ def featurise_input(
   data_pipeline = pipeline.WholePdbPipeline(
       config=pipeline.WholePdbPipeline.Config(
           buckets=buckets,  # pyrefly: ignore[bad-argument-type]
+          msa_crop_size=msa_crop_size,
           ref_max_modified_date=ref_max_modified_date,
           conformer_max_iterations=conformer_max_iterations,
           resolve_msa_overlaps=resolve_msa_overlaps,

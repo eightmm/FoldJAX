@@ -19,7 +19,12 @@ from foldjax.models.protenix.relative_position import (
     normalize_relative_position_storage,
     pad_compact_relative_position_storage,
 )
-from foldjax.padding import PaddingPlan, resolve_axis
+from foldjax.padding import (
+    MSA_PROFILE_DEPTH,
+    PaddingPlan,
+    resolve_axis,
+    resolve_token_axis,
+)
 from foldjax.schema import PaddingConfig
 
 _TOKEN_FIELDS = {
@@ -76,6 +81,7 @@ def pad_protenix_features(
     *,
     n_queries: int,
     n_keys: int,
+    msa_depth: int = MSA_PROFILE_DEPTH,
 ) -> tuple[dict[str, Any], PaddingPlan]:
     """Pad one generated, unbatched Protenix feature dictionary.
 
@@ -189,8 +195,17 @@ def pad_protenix_features(
     actual_template = int(np.count_nonzero(template_row_mask))
 
     target_token = resolve_axis(actual_token, config, "tokens", minimum=storage_token)
-    target_atom = resolve_axis(actual_atom, config, "atoms", minimum=storage_atom)
-    target_msa = resolve_axis(actual_msa, config, "msa", minimum=storage_msa)
+    target_atom = resolve_token_axis(
+        actual_atom, config, "atoms", token_target=target_token, minimum=storage_atom
+    )
+    target_msa = resolve_token_axis(
+        actual_msa,
+        config,
+        "msa",
+        token_target=target_token,
+        minimum=storage_msa,
+        fixed_size=msa_depth,
+    )
     target_template = resolve_axis(
         actual_template, config, "templates", minimum=storage_template
     )

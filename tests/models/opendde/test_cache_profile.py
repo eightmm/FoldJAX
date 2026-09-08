@@ -19,7 +19,7 @@ from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.opendde.cli import predict as predict_cli
 from foldjax.models.opendde.models import model as model_impl
 from foldjax.models.protenix.chunking import resolve_chunk_config
-from foldjax.schema import PredictionRequest
+from foldjax.schema import PaddingConfig, PredictionRequest
 
 
 class _DefaultsCapturedError(Exception):
@@ -46,6 +46,11 @@ def test_cache_defaults_track_the_native_parser_and_cp_resolver(monkeypatch) -> 
         predict_cli.main([])
 
     actual = {name: captured[name] for name in backend_impl._RELEASED_COMPILE_DEFAULTS}
+    assert actual["max_msa_depth"] is None
+    actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None, None)
+    assert predict_cli._resolve_msa_depth(None, PaddingConfig()) == 1280
+    assert predict_cli._resolve_msa_depth(None, PaddingConfig(msa=64)) == 64
+    assert predict_cli._resolve_msa_depth(128, PaddingConfig()) == 128
     for name, expected in backend_impl._RELEASED_COMPILE_DEFAULTS.items():
         assert type(actual[name]) is type(expected)
     assert actual == backend_impl._RELEASED_COMPILE_DEFAULTS

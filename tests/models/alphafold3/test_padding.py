@@ -7,6 +7,7 @@ import pytest
 from foldjax.backends.alphafold3 import (
     _PREFIX_STABLE_NOISE_FEATURE,
     AlphaFold3Backend,
+    _featurize_padded_structure,
     _predict_featurized_structure,
     _prediction_buckets,
     _prepare_padded_jobs,
@@ -146,7 +147,9 @@ def test_af3_preflights_every_neutral_job_before_returning_work(
 ) -> None:
     calls = []
 
-    def fake_featurize(fold_input, *, buckets, overflow, fixed_target=False):
+    def fake_featurize(
+        fold_input, *, buckets, overflow, fixed_target=False, msa_crop_size=1024
+    ):
         calls.append(fold_input)
         if fold_input == "late-overflow":
             raise ValueError("late overflow")
@@ -226,3 +229,72 @@ def test_af3_capability_and_cache_identity_separate_policy_from_legacy(
     assert backend.capabilities().padding_axes == ("tokens",)
     assert "buckets" not in backend.cache_profile(neutral)
     assert backend.cache_profile(legacy)["buckets"] == [512]
+
+
+@pytest.mark.parametrize("msa_depth", (None, 32))
+def test_af3_padded_featurizer_routes_msa_depth_to_pipeline(
+    msa_depth, monkeypatch
+) -> None:
+    import ast
+    import sys
+    import time
+    from types import ModuleType
+
+    from foldjax.models.alphafold3 import build
+
+    source = build.source_package() / "data" / "featurisation.py"
+    tree = ast.parse(source.read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "featurise_input"
+    )
+    config_seen = []
+    example = {"seq_length": np.asarray(4), "seq_mask": np.ones(8)}
+
+    class Pipeline:
+        Config = SimpleNamespace
+
+        def __init__(self, *, config):
+            config_seen.append(config)
+
+        def process_item(self, **kwargs):
+            assert kwargs["random_seed"] == 0
+            return example
+
+    namespace = {
+        "pipeline": SimpleNamespace(WholePdbPipeline=Pipeline),
+        "validate_fold_input": lambda value: None,
+        "np": np,
+        "time": time,
+    }
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__", names=[ast.alias(name="annotations")], level=0
+            ),
+            function,
+        ],
+        type_ignores=[],
+    )
+    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+    data = ModuleType("alphafold3.data")
+    data.featurisation = SimpleNamespace(featurise_input=namespace["featurise_input"])
+    constants = ModuleType("alphafold3.constants")
+    constants.chemical_components = SimpleNamespace(Ccd=lambda **kwargs: {})
+    monkeypatch.setitem(sys.modules, "alphafold3", ModuleType("alphafold3"))
+    monkeypatch.setitem(sys.modules, "alphafold3.data", data)
+    monkeypatch.setitem(sys.modules, "alphafold3.constants", constants)
+    fold_input = SimpleNamespace(rng_seeds=[0], user_ccd=None)
+    kwargs = {} if msa_depth is None else {"msa_crop_size": msa_depth}
+    examples, plan = _featurize_padded_structure(
+        fold_input, buckets=(8,), overflow="error", **kwargs
+    )
+    assert config_seen[0].msa_crop_size == (1024 if msa_depth is None else msa_depth)
+    assert config_seen[0].buckets == (8,)
+    assert examples == [example]
+    assert plan.summary()["target"]["tokens"] == 8
+
+    # Native callers that omit the new override retain upstream featurization.
+    namespace["featurise_input"](fold_input=fold_input, ccd={}, buckets=(8,))
+    assert config_seen[-1].msa_crop_size == 16384

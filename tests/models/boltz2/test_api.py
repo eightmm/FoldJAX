@@ -939,8 +939,9 @@ def test_api_rejects_nonpositive_diffusion_samples(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize("stop_after", ["inputs", "trunk"])
 def test_stop_after_trunk_crops_and_saves_representations(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, stop_after
 ) -> None:
     monkeypatch.setattr(
         api,
@@ -953,7 +954,8 @@ def test_stop_after_trunk_crops_and_saves_representations(
     )
 
     def fake_predict(params, model_feats, key, **kwargs):
-        assert kwargs["stop_after_trunk"] is True
+        assert kwargs["stop_after_trunk"] is (stop_after == "trunk")
+        assert kwargs["stop_after_inputs"] is (stop_after == "inputs")
         assert "token_to_rep_atom" not in model_feats
         assert "atom_to_token" not in model_feats
         assert COMPACT_TOKEN_TO_REP_ATOM not in model_feats
@@ -961,6 +963,8 @@ def test_stop_after_trunk_crops_and_saves_representations(
         assert COMPACT_ATOM_TO_TOKEN in model_feats
         assert ATOM_TO_TOKEN_INDEX in model_feats
         tokens = model_feats["token_pad_mask"].shape[-1]
+        if stop_after == "inputs":
+            return {"single_inputs": jnp.ones((1, tokens, 4), dtype=jnp.float32)}
         return {
             "single": jnp.ones((1, tokens, 4), dtype=jnp.float32),
             "pair": jnp.ones((1, tokens, tokens, 2), dtype=jnp.float32),
@@ -976,8 +980,8 @@ def test_stop_after_trunk_crops_and_saves_representations(
         weights=tmp_path / "boltz2_conf",
         mols=tmp_path,
         out_dir=tmp_path,
-        stop_after="trunk",
-        representations=("single", "pair"),
+        stop_after=stop_after,
+        representations="all" if stop_after == "inputs" else ("single", "pair"),
         representations_dir=destination,
         padding=PaddingConfig(tokens=8, atoms=32, msa=1),
         write_fmt=None,
@@ -985,6 +989,12 @@ def test_stop_after_trunk_crops_and_saves_representations(
 
     assert "coords" not in result
     assert "plddt" not in result
+    if stop_after == "inputs":
+        assert result["raw"]["single_inputs"].shape == (1, 2, 4)
+        with np.load(result["representations"]) as archive:
+            assert archive.files == ["single_inputs"]
+            assert archive["single_inputs"].shape == (2, 4)
+        return
     assert result["raw"]["single"].shape == (1, 2, 4)
     assert result["raw"]["pair"].shape == (1, 2, 2, 2)
     assert result["representations"] == destination / "representations.npz"

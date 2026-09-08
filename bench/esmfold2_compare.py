@@ -17,17 +17,14 @@ Three things make the comparison mean something:
   all-biomolecule input contract, because the publisher exposes the model
   tensors but no equivalent public end-to-end preprocessing entry point. Such
   rows are model-core comparisons and report that boundary explicitly.
-* **a precision difference the default run does NOT control, and says so.** Upstream's
-  only autocast (`modeling_esmfold2.py:2021`) wraps the ESM-C call alone and is
-  gated on ESM-C's parameters already being bfloat16, so loading it at
-  `precision="bf16"` puts the language model in bfloat16 on both sides. Nothing
-  else is autocast: the torch trunk runs at the checkpoint's `float32` while
-  this port casts every `TRUNK_PREFIXES` sub-tree to bfloat16. Both rows report
-  the dtype they actually loaded, read off the parameters rather than asserted,
-  so the difference shows up in the output instead of hiding in a docstring.
+* **native precision, distinct from checkpoint storage.** The pinned native
+  CUDA forward wraps the input/trunk region in BF16 autocast
+  (`modeling_esmfold2.py:936`); ESMC also runs BF16. FP32 parameter storage is
+  not evidence of FP32 trunk arithmetic. This probe records the observed
+  trunk-input/autocast policy separately from the parameter dtype.
   An experiment may add ``--foldjax-trunk-dtype=float32`` as an explicitly
   labelled parity control; that does not change the shipped model default.
-  This file used to claim the two default sides matched here; they never did.
+  Matching this boundary alone does not prove all mixed-precision operators match.
 * **one process per row.** Both peak figures are process-lifetime high-water
   marks, so two runs in one process report the larger and the second row's
   number is unknowable.
@@ -204,10 +201,7 @@ def run_torch(
     model = ESMFold2Model.from_pretrained(str(weights), load_esmc=False)
     model.load_esmc(str(weights / "esmc"), precision="bf16")
     model = model.to("cuda").eval()
-    # Read, never assumed: `from_pretrained` takes no dtype here, so the trunk
-    # arrives at whatever `config.json` says -- float32 for the release. The
-    # row used to hardcode "bfloat16 (autocast)" and was wrong for every run.
-    trunk_dtype = _torch_trunk_dtype(model)
+    trunk_weight_dtype = _torch_trunk_dtype(model)
 
     document, _base, chains, alignments, all_atom = _job(case)
     if all_atom:
@@ -234,7 +228,33 @@ def run_torch(
         with torch.no_grad():
             return model(**built, num_diffusion_samples=num_samples)
 
-    once()
+    observed_policy = []
+
+    def observe_trunk(_module, inputs):
+        observed_policy.append(
+            {
+                "input_dtype": str(inputs[0].dtype).removeprefix("torch."),
+                "cuda_autocast": torch.is_autocast_enabled("cuda"),
+                "autocast_dtype": str(torch.get_autocast_dtype("cuda")).removeprefix(
+                    "torch."
+                ),
+            }
+        )
+
+    handle = model.folding_trunk.register_forward_pre_hook(observe_trunk)
+    try:
+        once()
+    finally:
+        handle.remove()
+    if not observed_policy:
+        raise RuntimeError("native trunk precision boundary was not observed")
+    if any(
+        not row["cuda_autocast"] or row["autocast_dtype"] != "bfloat16"
+        for row in observed_policy
+    ):
+        raise RuntimeError(
+            "native trunk did not use the expected CUDA BF16 autocast policy"
+        )
     if warmup:
         return {}
     torch.cuda.synchronize()
@@ -248,7 +268,10 @@ def run_torch(
         "impl": "upstream",
         "wall_s": round(elapsed, 2),
         "peak_mib": round(torch.cuda.max_memory_allocated() / 2**20, 1),
-        "trunk_dtype": trunk_dtype,
+        "trunk_dtype": "native_cuda_bfloat16_autocast",
+        "trunk_input_dtype": observed_policy[0]["input_dtype"],
+        "trunk_weight_dtype": trunk_weight_dtype,
+        "native_trunk_precision_observations": observed_policy,
         "coords": output["sample_atom_coords"].float().cpu().numpy(),
         "plddt": [float(v) for v in output["complex_plddt"]],
         "ptm": [float(v) for v in output["ptm"]],

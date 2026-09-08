@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax.padding import PaddingPlan, resolve_axis
+from foldjax.padding import OPENDDE_MSA_PROFILE_DEPTH, PaddingPlan, resolve_token_axis
 from foldjax.schema import PaddingConfig
 
 _MSA_VALUE_FIELDS = ("msa", "has_deletion", "deletion_value")
@@ -231,11 +231,13 @@ def pad_opendde_msa_cycle_features(
             "OpenDDE sampled MSA token target is smaller than its storage width "
             f"{storage_tokens}: {token_target}"
         )
-    target_depth = resolve_axis(
+    target_depth = resolve_token_axis(
         actual_depth,
         config,
         "msa",
         minimum=storage_depth,
+        token_target=token_target,
+        fixed_size=OPENDDE_MSA_PROFILE_DEPTH,
     )
     padding_rows = target_depth - storage_depth
     padding_tokens = token_target - storage_tokens

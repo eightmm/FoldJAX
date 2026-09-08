@@ -1,15 +1,18 @@
-"""Single Boltz2.forward-equivalent JAX inference wrapper.
+"""Boltz2.forward-equivalent JAX graph with the native prediction score.
 
 Mirrors ``boltz.model.models.boltz2.Boltz2.forward`` (trunk -> structure
 sampling -> distogram -> (bfactor) -> confidence -> (affinity)) and returns
 ONE result dict. The individual head functions are reused unchanged so the
 wrapper does not alter numerics.
+The public confidence score follows ``Boltz2.predict_step`` after all samples
+have been collected, without changing the raw head outputs or sample order.
 
 Key mapping (foldjax.models.boltz2 key -> Boltz2.forward key):
     sample_atom_coords -> sample_atom_coords  (structure sampler)
     pdistogram         -> pdistogram          (distogram head)
     pbfactor           -> pbfactor            (bfactor head, optional)
     plddt/pae/pde/ptm/iptm/complex_*/... -> confidence_module outputs
+    confidence_score   -> Boltz2.predict_step confidence summary
     affinity_*         -> affinity_module outputs (only if affinity_params given)
 
 Training-only branches and miniformer are outside this inference wrapper. The
@@ -95,6 +98,7 @@ def boltz2_predict(
     run_confidence: bool = True,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    stop_after_inputs: bool = False,
     run_distogram: bool = True,
     run_bfactor: bool = False,
     #: Whether the confidence head's full-bin logits stay in the result. The
@@ -218,6 +222,7 @@ def boltz2_predict(
         trunk_feats,
         msa_key=msa_key if subsample_msa else None,
         recycling_steps=recycling_steps,
+        stop_after_inputs=stop_after_inputs,
         eps=eps,
         use_scan=bool(trunk_use_scan),
         chunk_size=int(sample_kwargs.get("chunk_size", 128)),
@@ -237,6 +242,12 @@ def boltz2_predict(
         num_subsampled_msa=num_subsampled_msa,
         use_template=use_template,
     )
+    if stop_after_inputs:
+        s_inputs = _capture.capture("single_inputs", trunk["s_inputs"])
+        return (
+            {"single_inputs": s_inputs}
+            if "single_inputs" in return_representations else {}
+        )
     s_inputs, s, z = trunk["s_inputs"], trunk["s"], trunk["z"]
     s_inputs = _capture.capture("single_inputs", s_inputs)
     s = _capture.capture("single", s)
@@ -395,6 +406,14 @@ def boltz2_predict(
             conf = jax.tree.map(lambda value: jnp.squeeze(value, axis=1), conf)
         else:
             conf = confidence_call(sample_atom_coords, multiplicity)
+        # Native predict_step selects pTM only when the ENTIRE ipTM batch is
+        # close to zero. Selecting inside the sequential map changes scores
+        # for a zero-ipTM sample whenever another sample has nonzero ipTM.
+        all_iptm_zero = jnp.allclose(
+            conf["iptm"], jnp.zeros_like(conf["iptm"]), rtol=1e-5, atol=1e-8
+        )
+        tm = jnp.where(all_iptm_zero, conf["ptm"], conf["iptm"])
+        out["confidence_score"] = (4 * conf["complex_plddt"] + tm) / 5
         if not return_confidence_logits:
             conf = {
                 key: value for key, value in conf.items() if not key.endswith("_logits")

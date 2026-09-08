@@ -269,7 +269,6 @@ def main() -> int:
 
     from foldjax.models.boltz2.bridge.native import load_params
     from foldjax.models.boltz2.models.trunk_blocks.trunk import (
-        _cast_trunk_params,
         _sample_schedule,
         boltz2_sample_forward,
         boltz2_trunk_forward,
@@ -325,6 +324,8 @@ def main() -> int:
     trunk_params = params["trunk"]
     trunk_features = features
     if compute_dtype != jnp.float32:
+        from foldjax.models.boltz2.models.trunk_blocks.trunk import _cast_trunk_params
+
         trunk_params = _cast_trunk_params(trunk_params, compute_dtype)
 
     started = time.perf_counter()

@@ -37,6 +37,12 @@ The right-hand column is upstream's own config path, which is a different
 thing and stays upstream's. What changed is FoldJAX's vocabulary, not the
 checkpoints or the configs it writes into.
 
+Omit `--num-recycles` to use the selected model's managed default, including
+with `--padding` and `cache warm`. Padding does not impose a shared recycle count.
+See [recycling defaults](token-padding-profiles.md#recycling-defaults) for the
+model-specific settings, paper evidence and actual trunk pass counts. OpenFold3 translates the
+common additional-recycle count to its internal total count (3 to 4).
+
 Protenix's and OpenDDE's native CLIs kept their old flags as aliases:
 `--n-sample`, `--n-step`, `--n-cycle` and `--max-msa-rows` still work and mean
 what they always meant.
@@ -130,11 +136,38 @@ uv run foldjax predict --model boltz2 --input job.yaml --padding
 ```
 
 With no padding flag, the exact historical model path and shapes are unchanged.
-With `--padding`, each backend selects the smallest conservative *complete*
-shape profile: tokens plus the atom, MSA, template, structural-token, and/or
-language-model axes that actually enter that model. Masks keep padded entries
-out of the structure and confidence output, and the run summary and
-`foldjax_run.json` report the concrete profile that ran.
+With `--padding`, each backend selects a token bucket and derives a complete
+shape profile from it. Atom storage is `24 * tokens`, rounded up to a multiple
+of 32. MSA capacity is fixed by the backend's active inference limit rather
+than the observed alignment depth; template storage retains the native depth.
+OpenDDE structural tokens use `2 * tokens`. ESMFold2 language-model storage
+reserves `3 * tokens` to include BOS/EOS for every possible protein chain;
+Protenix ESM/ISM uses `min(tokens, provider maximum length)` so its terminal
+native sequence length remains supported even when the token bucket is larger.
+AlphaFold 3 retains its native token-derived atom and fixed-MSA profile.
+
+With the common padded defaults, OpenDDE uses 1,280 MSA rows and the other
+five models use 1,024. AF3's input featurizer and trunk both use 1,024; OpenDDE
+selects 1,280 rows before
+padding sampled cycles. Deeper alignments use the existing native crop/selection
+rules, and shallow inputs receive masked rows. This changes the inference input
+relative to a deeper native MSA. Explicit `--max-msa-depth` and `--pad-msa`
+overrides retain backend-specific semantics; padding OFF retains native defaults.
+MSA capacity stays at the model's fixed default unless explicitly overridden;
+`cache warm` compiles only the requested profile, not all MSA sizes.
+Protenix padding continues to require its full-depth MSA path. ESMFold2
+variants without active MSA selection require an explicit `--pad-msa` for inputs
+above the automatic capacity; padding does not silently sample those inputs.
+
+Explicit `--pad-*` targets take precedence. Inputs exceeding a derived capacity
+fail rather than being truncated; use a larger token profile or an explicit
+axis target. `--padding-overflow exact` only changes token-grid overflow and
+does not bypass capacity validation. Padding can increase memory and computation,
+particularly for shallow MSAs and language-model inputs. Masks keep padded
+entries out of the structure and confidence output, and the run summary and
+`foldjax_run.json` report the concrete profile that ran. Matching this profile
+is necessary for executable reuse; dtype, static options and runtime must also
+match.
 
 For a deployment profile or an exact cache warm, pin only the axes you need;
 the remaining model axes still use safe automatic buckets:
@@ -202,7 +235,7 @@ the device with another process.
 
 Design notes: [docs/engineering-notes.md](engineering-notes.md).
 
-### Trunk arrays without a structure
+### Input and trunk arrays without a structure
 
 `--representations` hands back the trunk's own arrays alongside the prediction:
 a comma-separated list, or `all`. `foldjax capabilities --model MODEL` lists
@@ -213,6 +246,12 @@ ask.
 `--stop-after trunk` stops once those representations exist, skipping the
 diffusion sampler and the confidence heads. It writes no structure, so it only
 makes sense together with `--representations`; the default is `full`.
+
+`--stop-after inputs --representations single_inputs` stops before trunk
+recycling. All six carried models support this stage. Here `all` selects only
+input-stage arrays; requesting a trunk array is an error. The Python
+[`get_model` interface](model-interface.md) exposes these stages as `embed`,
+`encode` and `predict`.
 
 ### A bfloat16 trunk (`--option trunk_dtype=bf16`)
 
@@ -226,13 +265,12 @@ Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
 ### `--max-msa-depth`
 
-Caps the `[depth, tokens, channels]` MSA representation, the dominant memory
-term after the pair stack. What the cap costs in accuracy differs by model --
-free on Protenix (its upstream subsamples anyway), pointless on OpenDDE, and
-potentially harmful when a model embeds the complete alignment before recycling
--- so FoldJAX translates the knob but never imposes it. Per-model semantics and
-the measurements:
-[docs/engineering-notes.md](engineering-notes.md).
+Selects the model's native MSA depth control. Candidate assembly, profile
+statistics and per-cycle subsampling differ by model, so this is not a guarantee
+of identical rows or an exact common tensor size. See the
+[model-specific semantics](model-interface.md#msa-selection-and-execution-capacity).
+The legacy request/CLI padding presets supply a serving depth when omitted;
+the new model handle requires an explicit depth when enabling padding.
 
 ### `--option diffusion_chunk_size=N`
 

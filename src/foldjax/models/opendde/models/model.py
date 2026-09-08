@@ -651,6 +651,7 @@ def opendde_infer_static(
     validate_feature_values: bool = True,
     return_representations: bool = False,
     stop_after_trunk: bool = False,
+    stop_after_inputs: bool = False,
     capture_names: tuple[str, ...] = (),
     trunk_dtype: jnp.dtype | None = None,
     #: Context-parallel shard count. More than one requires an active
@@ -750,6 +751,9 @@ def opendde_infer_static(
         n_keys=n_keys,
         use_scan=use_diffusion_scan,
     )
+    if stop_after_inputs:
+        return {"single_inputs": _capture.capture("single_inputs", s_inputs_residue)}
+
     s_inputs_residue, s_residue, z_residue = pairformer_output_from_s_inputs(
         trunk_features,
         s_inputs_residue,
@@ -1123,6 +1127,7 @@ GRAPH_STATIC_ARGNAMES = (
     "preserve_prefix_rng",
     "return_representations",
     "stop_after_trunk",
+    "stop_after_inputs",
     "capture_names",
     "run_confidence",
     "sigma_data",

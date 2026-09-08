@@ -62,6 +62,10 @@ class _MockRuntime:
         (self.source_dir / "model.py").write_text("# immutable managed source\n")
         self.runtime_asset = tmp_path / "managed-runtime.bin"
         self.runtime_asset.write_bytes(b"immutable managed runtime")
+        # The mock runtime must not require a built installation on this host.
+        libcifpp = tmp_path / "mock-libcifpp"
+        libcifpp.mkdir()
+        monkeypatch.setenv("LIBCIFPP_DATA_DIR", str(libcifpp))
         monkeypatch.setattr(af3_backend, "VENDORED_RUNNER", self.runner_file)
         monkeypatch.setattr(af3_build, "source_package", lambda: self.source_dir)
         monkeypatch.setattr(
@@ -372,7 +376,7 @@ def test_tokamax_identity_uses_effective_matmul_precision(
     ]
 
 
-def test_released_default_aliases_reuse_one_managed_model_runner(
+def test_managed_default_aliases_reuse_one_managed_model_runner(
     tmp_path: Path, mock_runtime: _MockRuntime
 ) -> None:
     weights = _weights(tmp_path)
@@ -390,7 +394,7 @@ def test_released_default_aliases_reuse_one_managed_model_runner(
         options={
             "num_samples": 5,
             "num_steps": 200,
-            "num_recycles": 10,
+            "num_recycles": 3,
             "max_msa_depth": 1024,
             "buckets": [],
             "attention_backend": "triton",
@@ -418,7 +422,7 @@ def test_released_default_aliases_reuse_one_managed_model_runner(
             {
                 "flash_attention_implementation": "triton",
                 "num_diffusion_samples": 5,
-                "num_recycles": 10,
+                "num_recycles": 3,
                 "return_embeddings": False,
                 "return_distogram": False,
             }
@@ -920,3 +924,78 @@ def test_asset_recheck_does_not_mask_keyboard_interrupt(
         with pytest.raises(KeyboardInterrupt):
             backend.predict(requests[0])
         assert backend._model_runner is None
+
+
+@pytest.mark.parametrize("stop_after", ["inputs", "trunk", "full"])
+def test_common_representation_stage_uses_native_model_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_runtime: _MockRuntime,
+    stop_after: str,
+) -> None:
+    import numpy as np
+
+    original_config = mock_runtime.runner.make_model_config
+
+    def make_config(**kwargs):
+        config = original_config(**kwargs)
+        config.foldjax_return_representations = ()
+        config.foldjax_stop_after = "full"
+        return config
+
+    def run_inference(self, batch, key):
+        assert self.config.foldjax_stop_after == stop_after
+        wanted = self.config.foldjax_return_representations
+        assert wanted == (
+            ("single_inputs",) if stop_after == "inputs" else ("single", "pair")
+        )
+        return {
+            "representations": {
+                name: np.ones((8, 8, 2) if name == "pair" else (8, 4))
+                for name in wanted
+            }
+        }
+
+    monkeypatch.setattr(mock_runtime.runner, "make_model_config", make_config)
+    monkeypatch.setattr(mock_runtime.runner.ModelRunner, "run_inference", run_inference)
+    monkeypatch.setattr(
+        mock_runtime.runner, "ResultsForSeed", SimpleNamespace, raising=False
+    )
+    monkeypatch.setattr(
+        mock_runtime.runner.ModelRunner,
+        "extract_inference_results",
+        lambda self, **kw: (),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mock_runtime.runner.ModelRunner,
+        "extract_embeddings",
+        lambda self, **kw: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mock_runtime.runner.ModelRunner,
+        "extract_distogram",
+        lambda self, **kw: None,
+        raising=False,
+    )
+    native_helper = af3_backend._predict_common_representations
+
+    def with_examples(fold_input, examples, model_runner, runner, **kwargs):
+        return native_helper(
+            fold_input, [{"seq_length": np.asarray(3)}], model_runner, runner, **kwargs
+        )
+
+    monkeypatch.setattr(af3_backend, "_predict_common_representations", with_examples)
+    request = dataclasses.replace(
+        _request(tmp_path, weights=_weights(tmp_path), output="result"),
+        stop_after=stop_after,
+        representations=("all",) if stop_after == "inputs" else ("single", "pair"),
+    )
+    result = AlphaFold3Backend().predict(request)
+    assert result.representations is not None
+    assert result.samples == ()
+    with np.load(result.representations.path) as arrays:
+        assert arrays[
+            "single_inputs" if stop_after == "inputs" else "single"
+        ].shape == (3, 4)

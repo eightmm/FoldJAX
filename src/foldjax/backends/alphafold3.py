@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax.backends._representations import _representations_result
 from foldjax.backends._tokamax_autotune import create_store as _create_tokamax_store
 from foldjax.backends._tokamax_autotune import (
     ensure_safe_autotuning_route as _ensure_safe_tokamax_route,
@@ -30,7 +31,8 @@ from foldjax.backends._tokamax_autotune import (
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
-from foldjax.padding import TOKEN_BUCKETS, PaddingPlan
+from foldjax.models import _representations
+from foldjax.padding import MSA_PROFILE_DEPTH, TOKEN_BUCKETS, PaddingPlan
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -453,6 +455,7 @@ def _featurize_padded_structure(
     buckets: tuple[int, ...],
     overflow: str,
     fixed_target: bool = False,
+    msa_crop_size: int = MSA_PROFILE_DEPTH,
 ) -> tuple[Any, PaddingPlan]:
     """Featurize one job and validate its resolved bucket without inference.
 
@@ -472,6 +475,7 @@ def _featurize_padded_structure(
         buckets=buckets,
         ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
         verbose=True,
+        msa_crop_size=msa_crop_size,
     )
     plans: list[PaddingPlan] = []
     for example in examples:
@@ -503,6 +507,7 @@ def _prepare_padded_jobs(
     buckets: tuple[int, ...],
     overflow: str,
     fixed_target: bool = False,
+    msa_crop_size: int = MSA_PROFILE_DEPTH,
 ) -> tuple[tuple[Any, str, Path, Any, PaddingPlan], ...]:
     """Resolve every neutral job before the first model invocation."""
 
@@ -513,6 +518,7 @@ def _prepare_padded_jobs(
             buckets=buckets,
             overflow=overflow,
             fixed_target=fixed_target,
+            msa_crop_size=msa_crop_size,
         )
         prepared.append((fold_input, job_name, job_dir, examples, plan))
     return tuple(prepared)
@@ -567,6 +573,95 @@ def _shape_profile(plans: list[dict[str, Any]]) -> dict[str, Any] | None:
     if all(plan == plans[0] for plan in plans[1:]):
         return plans[0]
     return {"per_job": plans}
+
+
+def _representation_names(request: PredictionRequest) -> tuple[str, ...]:
+    specs = _representations.specs_for("alphafold3")
+    if request.stop_after == "inputs":
+        specs = {name: spec for name, spec in specs.items() if name == "single_inputs"}
+    return _representations.resolve(request.representations, specs)
+
+
+def _predict_common_representations(
+    fold_input: Any,
+    examples: Any,
+    model_runner: Any,
+    runner: Any,
+    *,
+    request: PredictionRequest,
+    wanted: tuple[str, ...],
+    buckets: tuple[int, ...] | None,
+) -> tuple[Any, ...]:
+    """Persist real-token model states without invoking downstream early-stop stages."""
+    import jax
+
+    if examples is None:
+        from alphafold3.constants import chemical_components
+        from alphafold3.data import featurisation
+
+        # Match predict_structure's native preprocessing defaults. Neutral
+        # padding already supplied its preflighted examples above.
+        examples = featurisation.featurise_input(
+            fold_input=fold_input,
+            buckets=buckets,
+            ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
+            verbose=True,
+        )
+    if len(examples) != 1 or len(fold_input.rng_seeds) != 1:
+        raise ValueError("AlphaFold3 representations require exactly one seed")
+    example = examples[0]
+    seed = fold_input.rng_seeds[0]
+    model_example = dict(example)
+    if request.padding is not None:
+        model_example[_PREFIX_STABLE_NOISE_FEATURE] = np.asarray(True)
+    result = model_runner.run_inference(model_example, jax.random.PRNGKey(seed))
+    native = result.get("representations", {})
+    num_tokens = int(np.asarray(example["seq_length"]).item())
+    arrays = {}
+    for name in wanted:
+        if name not in native:
+            raise ValueError(
+                f"AlphaFold3 did not return requested representation {name!r}"
+            )
+        value = np.asarray(native[name])
+        expected_rank = 3 if name == "pair" else 2
+        if value.ndim != expected_rank or value.shape[0] < num_tokens:
+            raise ValueError(
+                f"invalid AlphaFold3 {name} representation shape {value.shape}"
+            )
+        if name == "pair":
+            if value.shape[1] < num_tokens:
+                raise ValueError(
+                    "AlphaFold3 pair representation is smaller than the input"
+                )
+            arrays[name] = value[:num_tokens, :num_tokens]
+        else:
+            arrays[name] = value[:num_tokens]
+    _representations.save(
+        request.output_dir,
+        arrays,
+        _representations.specs_for("alphafold3"),
+        model="alphafold3",
+    )
+    if request.stop_after != "full":
+        return ()
+    return (
+        runner.ResultsForSeed(
+            seed=seed,
+            inference_results=model_runner.extract_inference_results(
+                batch=example,
+                result=result,
+                target_name=fold_input.name,
+            ),
+            full_fold_input=fold_input,
+            embeddings=model_runner.extract_embeddings(
+                result=result, num_tokens=num_tokens
+            ),
+            distogram=model_runner.extract_distogram(
+                result=result, num_tokens=num_tokens
+            ),
+        ),
+    )
 
 
 def _public_shape_profile(
@@ -699,6 +794,13 @@ class AlphaFold3Backend(Backend):
         self._model_runner: Any | None = None
         self._model_runner_key: tuple[Any, ...] | None = None
 
+    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
+        options = super().apply_sampling(request)
+        # AF3 SI Algorithm 1 uses four total passes; the native loop adds one.
+        # Retain the effective count in cache identity instead of aliasing 10.
+        options.setdefault("num_recycles", 3)
+        return options
+
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep exact released-default aliases in one compilation namespace.
 
@@ -721,6 +823,9 @@ class AlphaFold3Backend(Backend):
             # or future type variants rather than aliasing equal spellings.
             if type(value) is type(default) and value == default:
                 profile.pop(name)
+        if request.representations or request.stop_after != "full":
+            profile["representations"] = _representation_names(request)
+            profile["stop_after"] = request.stop_after
         buckets = profile.get("buckets")
         if type(buckets) in (list, tuple) and not buckets:
             profile.pop("buckets")
@@ -898,9 +1003,18 @@ class AlphaFold3Backend(Backend):
                 name: requirement for name in ("native", "alphafold3", "foldjax")
             },
             padding_axes=self.padding_axes,
+            representations=_representations.available(self.name),
+            input_representations=("single_inputs",),
         )
 
     def validate_request(self, request: PredictionRequest) -> None:
+        if request.options.get("source") is not None and (
+            request.representations or request.stop_after != "full"
+        ):
+            raise ValueError(
+                "common AlphaFold3 representations and early stops require "
+                "FoldJAX's managed runtime; external sources are unsupported"
+            )
         if request.padding is not None and "buckets" in request.options:
             raise ValueError(
                 "padding and the native AlphaFold3 option 'buckets' were both "
@@ -915,6 +1029,7 @@ class AlphaFold3Backend(Backend):
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
         options = self.apply_sampling(request)
+        wanted = _representation_names(request)
         managed_route = not bool(options.get("source"))
         # Out before the leftover-option check: carried by the scope.
         requested_matmul_precision = options.get("matmul_precision")
@@ -951,6 +1066,11 @@ class AlphaFold3Backend(Backend):
                 output_dir=request.output_dir,
                 seed=request.seed,
             )
+            if wanted and len(jobs) != 1:
+                raise ValueError(
+                    "AlphaFold3 common representations require one native job "
+                    "per request; split multi-job inputs into separate requests"
+                )
             if request.cache_dir is not None:
                 request.cache_dir.mkdir(parents=True, exist_ok=True)
                 jax.config.update("jax_compilation_cache_dir", str(request.cache_dir))
@@ -1004,6 +1124,13 @@ class AlphaFold3Backend(Backend):
                 return_embeddings=return_embeddings,
                 return_distogram=return_distogram,
             )
+            if wanted or request.stop_after != "full":
+                if not hasattr(config, "foldjax_return_representations"):
+                    raise ValueError(
+                        "this AlphaFold3 runtime lacks common representation stages"
+                    )
+                config.foldjax_return_representations = wanted
+                config.foldjax_stop_after = request.stop_after
             _set_nested(config, _DIFFUSION_STEPS, num_steps)
             _set_nested(config, _MSA_DEPTH, max_msa_depth)
             identity_num_steps = None if num_steps is None else int(num_steps)
@@ -1027,6 +1154,11 @@ class AlphaFold3Backend(Backend):
                 ("num_steps", identity_num_steps),
                 ("max_msa_depth", identity_max_msa_depth),
             )
+            if wanted or request.stop_after != "full":
+                config_identity += (
+                    ("representations", wanted),
+                    ("stop_after", request.stop_after),
+                )
             source_snapshot = None
             if managed_route and request.cache_dir is not None:
                 if anchor is not None:
@@ -1064,6 +1196,7 @@ class AlphaFold3Backend(Backend):
                     buckets=buckets,
                     overflow=request.padding.overflow,
                     fixed_target=request.padding.tokens is not None,
+                    msa_crop_size=int(identity_max_msa_depth),
                 )
             else:
                 run_jobs = tuple(
@@ -1088,7 +1221,18 @@ class AlphaFold3Backend(Backend):
                     examples,
                     resolved_plan,
                 ) in run_jobs:
-                    if examples is not None:
+                    if wanted:
+                        with matmul_precision():
+                            results = _predict_common_representations(
+                                fold_input,
+                                examples,
+                                model_runner,
+                                runner,
+                                request=request,
+                                wanted=wanted,
+                                buckets=buckets,
+                            )
+                    elif examples is not None:
                         with matmul_precision():
                             results = _predict_featurized_structure(
                                 fold_input,
@@ -1101,7 +1245,8 @@ class AlphaFold3Backend(Backend):
                             results = runner.predict_structure(
                                 fold_input, model_runner, buckets=buckets
                             )
-                    runner.write_outputs(results, job_dir, job_name)
+                    if request.stop_after == "full":
+                        runner.write_outputs(results, job_dir, job_name)
                     all_results.extend(results)
                     if request.padding is not None:
                         assert resolved_plan is not None
@@ -1126,6 +1271,9 @@ class AlphaFold3Backend(Backend):
                     else native_raw
                 ),
                 shape_profile=shape_profile,
+                representations=_representations_result(
+                    self.name, request.output_dir, wanted
+                ),
             )
         except BaseException as error:
             # Never let a provenance recheck replace user cancellation.  A

@@ -17,10 +17,18 @@ from foldjax.models.protenix.data.compact_categories import (
     compact_ref_atom_category_storage,
     drop_dense_categories_from_writer_snapshot,
 )
+from foldjax.padding import MSA_PROFILE_DEPTH
+from foldjax.schema import PaddingConfig
 
 # Private backend capability: defer request-scoped reuse until after this CLI
 # has parsed argv, selected its platform and materialised ESM conditioning.
 PREPARED_PARAMS_LOADER_API = True
+
+
+def _resolve_msa_depth(value: int | None, padding: PaddingConfig | None) -> int:
+    if value is not None:
+        return value
+    return (padding.msa or MSA_PROFILE_DEPTH) if padding is not None else 16384
 
 
 def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
@@ -104,7 +112,7 @@ def main(
         "--max-msa-rows",
         dest="max_msa_depth",
         type=int,
-        default=16384,
+        default=None,
     )
     parser.add_argument(
         "--msa-search",
@@ -293,7 +301,7 @@ def main(
     )
     parser.add_argument(
         "--stop-after",
-        choices=("full", "trunk"),
+        choices=("full", "inputs", "trunk"),
         default="full",
         help=(
             "'trunk' stops once the representations exist, skipping the "
@@ -400,6 +408,8 @@ def main(
                 "padding currently requires --full-depth-msa so random cycle "
                 "sampling cannot select padded rows"
             )
+
+    args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth, padding_config)
 
     guidance_config = None
     if args.guidance_config is not None:
@@ -671,8 +681,8 @@ def main(
                 language_model_profile = None
                 if esm_provider is not None and padding_config is not None:
                     from foldjax.padding import (
-                        LANGUAGE_MODEL_TOKEN_BUCKETS,
                         resolve_axis,
+                        resolve_token_axis,
                     )
 
                     protein_lengths = []
@@ -689,17 +699,23 @@ def main(
                             "ESM/ISM padding requires at least one protein sequence"
                         )
                     language_model_actual = max(protein_lengths)
-                    language_model_target = resolve_axis(
+                    token_target = resolve_axis(
+                        int(features["restype"].shape[0]), padding_config, "tokens"
+                    )
+                    language_model_target = resolve_token_axis(
                         language_model_actual,
                         padding_config,
                         "language_model_tokens",
-                        buckets=tuple(
-                            target
-                            for target in LANGUAGE_MODEL_TOKEN_BUCKETS
-                            if target <= esm_provider.max_sequence_length
-                        )
-                        + (esm_provider.max_sequence_length,),
+                        token_target=token_target,
+                        fixed_size=min(token_target, esm_provider.max_sequence_length),
                     )
+                    if language_model_target > esm_provider.max_sequence_length:
+                        raise ValueError(
+                            f"language model padding target {language_model_target} "
+                            "exceeds "
+                            f"model limit {esm_provider.max_sequence_length}; "
+                            "set --pad-language-model-tokens explicitly"
+                        )
                     language_model_profile = (
                         language_model_actual,
                         language_model_target,
@@ -747,7 +763,12 @@ def main(
                 n_token=n_token,
                 strict_token_limit=args.strict_token_limit,
             )
-            if args.full_depth_msa and args.msa_row_alignment > 0 and "msa" in features:
+            if (
+                padding_config is None
+                and args.full_depth_msa
+                and args.msa_row_alignment > 0
+                and "msa" in features
+            ):
                 original_msa_rows = int(features["msa"].shape[-2])
                 features = pad_msa_features_to_bucket(
                     features,
@@ -768,7 +789,7 @@ def main(
             features = compact_msa_storage(features)
             keep_output_features = (
                 args.output_format in ("protenix", "both")
-                and args.stop_after != "trunk"
+                and args.stop_after == "full"
                 and not args.prewarm_only
             )
             output_features = features if keep_output_features else None
@@ -794,6 +815,7 @@ def main(
                     padding_config,
                     n_queries=args.n_queries,
                     n_keys=args.n_keys,
+                    msa_depth=args.max_msa_depth,
                 )
                 language_model_profile = job.get("language_model_profile")
                 if language_model_profile is not None:
@@ -894,7 +916,12 @@ def main(
     # structure written now from one left by an earlier run into the same
     # directory.
     wanted_representations = _representations.resolve(
-        args.representations, _representations.specs_for("protenix")
+        args.representations,
+        (
+            {"single_inputs": _representations.specs_for("protenix")["single_inputs"]}
+            if args.stop_after == "inputs"
+            else _representations.specs_for("protenix")
+        ),
     )
     written: list[Path] = []
     # Only the raw-npz path reads the trunk representations or the full-bin
@@ -980,6 +1007,7 @@ def main(
                 run_confidence=not args.no_confidence,
                 run_confidence_scores=not args.no_confidence_scores,
                 stop_after_trunk=args.stop_after == "trunk",
+                stop_after_inputs=args.stop_after == "inputs",
                 capture_names=wanted_representations,
                 return_trunk=(
                     (wants_raw and args.include_trunk)
@@ -1024,7 +1052,7 @@ def main(
                 )
 
                 output = crop_protenix_outputs(output, padding_plan)
-            if args.stop_after == "trunk":
+            if args.stop_after in {"inputs", "trunk"}:
                 destination = args.representations_dir or (
                     args.out
                     if legacy_npz

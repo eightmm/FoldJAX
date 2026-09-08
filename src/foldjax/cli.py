@@ -193,7 +193,8 @@ def _add_predict_arguments(
         choices=STOP_POINTS,
         default="full",
         help=(
-            "'trunk' stops once the representations exist, skipping the "
+            "'inputs' stops after the native input representation; "
+            "'trunk' stops once the trunk representations exist, skipping the "
             "diffusion sampler and the confidence heads. It writes no "
             "structure, so it only makes sense with --representations."
         ),
@@ -202,7 +203,12 @@ def _add_predict_arguments(
         "--num-samples", type=int, help="how many structures to generate"
     )
     sampling.add_argument("--num-steps", type=int, help="diffusion steps per structure")
-    sampling.add_argument("--num-recycles", type=int, help="trunk recycling iterations")
+    sampling.add_argument(
+        "--num-recycles",
+        type=int,
+        help="trunk recycling iterations; omit to keep the selected model's default "
+        "(also with --padding and cache warm)",
+    )
     sampling.add_argument(
         "--max-msa-depth",
         type=int,
@@ -214,8 +220,8 @@ def _add_predict_arguments(
     shapes.add_argument(
         "--padding",
         action="store_true",
-        help="normalize every model-relevant dynamic axis to FoldJAX's standard "
-        "shape buckets. Disabled by default so existing scientific results and "
+        help="select a token bucket with derived atom capacity and fixed native "
+        "MSA/template limits. Disabled by default so existing scientific results and "
         "exact-shape execution are unchanged",
     )
     shapes.add_argument(

@@ -4,9 +4,8 @@ Written against `docs/ports/esmfold2/trunk-spec.md`, which records what the
 torch source does and where it is easy to read it wrongly. The three places
 that matter here, all checked by the parity tests beside this file:
 
-* the triangular contraction runs in float32 whatever the surrounding dtype,
-  because upstream calls `.float()` on its operands -- a bfloat16 trunk that
-  skipped this would drift in a way no shape check catches;
+* native explicit `.float()` contraction operands are narrowed again by CUDA
+  BF16 autocast; the opt-in native path preserves that BF16 output boundary;
 * `proj_bundle` packs `[left | right | gate_left | gate_right]`, the input
   gate multiplies before the mask, and the output gate is computed from the
   same normalised input rather than from the contraction;
@@ -17,6 +16,7 @@ that matter here, all checked by the parity tests beside this file:
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import prod
 
 import jax
 import jax.numpy as jnp
@@ -27,6 +27,143 @@ from foldjax.models.esmfold2.models.primitives import layer_norm, linear, swiglu
 Params = Mapping[str, jnp.ndarray]
 
 
+def _native_bf16_linear(x, weight):
+    # Native autocast materializes this BF16 output before residual addition.
+    # The barrier prevents GEMM beta=1 fusion across that rounding boundary;
+    # native cuBLAS algorithm selection remains a separate compiler control.
+    # A vector-shaped dot may become elementwise BF16 multiply + FP32 reduce,
+    # rounding each product before summation. Native linear retains the product
+    # in FP32. Keep the measured BF16 GEMM destination for non-vector shapes.
+    vector = prod(x.shape[:-1]) == 1 or weight.shape[0] == 1
+    lhs, rhs = x.astype(jnp.bfloat16), weight.astype(jnp.bfloat16)
+    if vector:
+        # Otherwise excess-precision simplification can erase the input casts
+        # after it rewrites the vector dot to FP32 elementwise operations.
+        lhs, rhs = jax.lax.optimization_barrier((lhs, rhs))
+    result = jnp.matmul(
+        lhs,
+        rhs.T,
+        precision="default",
+        preferred_element_type=jnp.float32 if vector else None,
+    )
+    return jax.lax.optimization_barrier(result.astype(jnp.bfloat16))
+
+
+def _autocast_linear_fallback(x, params, prefix):
+    result = jnp.matmul(
+        x.astype(jnp.bfloat16),
+        params[f"{prefix}.weight"].astype(jnp.bfloat16).T,
+        preferred_element_type=jnp.float32,
+    )
+    if f"{prefix}.bias" in params:
+        result = result + params[f"{prefix}.bias"].astype(jnp.bfloat16).astype(
+            jnp.float32
+        )
+    return result.astype(jnp.bfloat16)
+
+
+def _autocast_linear(x, params, prefix):
+    if f"{prefix}.bias" not in params and cp_mesh() is None:
+        return jax.lax.platform_dependent(
+            x,
+            params[f"{prefix}.weight"],
+            cuda=_native_bf16_linear,
+            default=lambda a, w: _autocast_linear_fallback(
+                a, {f"{prefix}.weight": w}, prefix
+            ),
+        )
+    # Bias-bearing linears, CPU/TPU and CP retain the existing implementation
+    # until their native output/accumulation policies are independently checked.
+    return _autocast_linear_fallback(x, params, prefix)
+
+
+def _autocast_norm(x, params, prefix, eps=1e-5):
+    from foldjax.models._cp import cp_mesh
+    from foldjax.models.boltz2.models.primitives.native_amp_norm import _cuda_layer_norm
+
+    x = x.astype(jnp.float32)
+    weight, bias = params[f"{prefix}.weight"], params[f"{prefix}.bias"]
+    # The shared vector-4 CUDA Welford/FMA implementation matched the captured
+    # first width256 LM norm bitwise, including effective BF16 rounding ties.
+    # Later norm sites and full-block parity require separate evidence.
+    # Preserve the ESM formula on other devices, widths and CP layouts.
+    opm_norm = (
+        x.shape[-1] == 128
+        and prefix.startswith("msa_encoder.blocks.")
+        and prefix.endswith(".outer_product_mean.norm")
+    )
+    # The first released MSA OPM width128 capture also matches this reduction.
+    if (x.shape[-1] == 256 or opm_norm) and cp_mesh() is None:
+        return jax.lax.platform_dependent(
+            x,
+            weight,
+            bias,
+            cuda=lambda a, w, b: _cuda_layer_norm(a, w, b, eps)[0],
+            default=lambda a, w, b: layer_norm(a, w, b, eps=eps),
+        )
+    return layer_norm(
+        x,
+        weight,
+        bias,
+        eps=eps,
+    )
+
+
+def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
+    engine = f"{prefix}._engine" if prefix else "_engine"
+    normalized = _autocast_norm(pair, params, f"{engine}.norm_start", eps)
+    bundled = _autocast_linear(normalized, params, f"{engine}.proj_bundle")
+    signal, logits = jnp.split(bundled, 2, axis=-1)
+    gate = jax.nn.sigmoid(logits.astype(jnp.float32)).astype(jnp.bfloat16)
+    routed = signal * gate
+    if mask is not None:
+        routed = routed * mask[..., None]
+    left, right = jnp.split(routed.astype(jnp.float32), 2, axis=-1)
+    equation = "bikd,bjkd->bijd" if outgoing else "bkid,bkjd->bijd"
+    # Pinned native default chunks the output i dimension at 64; autocast
+    # narrows these explicit float() operands and stores the contraction BF16.
+    chunks = []
+    for start in range(0, pair.shape[1], 64):
+        operand = (
+            left[:, start : start + 64] if outgoing else left[:, :, start : start + 64]
+        )
+        chunks.append(
+            jnp.einsum(
+                equation,
+                operand.astype(jnp.bfloat16),
+                right.astype(jnp.bfloat16),
+                preferred_element_type=jnp.float32,
+            ).astype(jnp.bfloat16)
+        )
+    contracted = jnp.concatenate(chunks, axis=1)
+    mixed = _autocast_linear(
+        _autocast_norm(contracted, params, f"{engine}.norm_mix", eps),
+        params,
+        f"{engine}.proj_emit",
+    )
+    output_gate = jax.nn.sigmoid(
+        _autocast_linear(normalized, params, f"{engine}.proj_gate").astype(jnp.float32)
+    ).astype(jnp.bfloat16)
+    return mixed * output_gate
+
+
+def _autocast_transition(x, params, prefix, residual, eps):
+    dot = f"{prefix}." if prefix else ""
+    outputs = []
+    for start in range(0, x.shape[1], 64):
+        part = x[:, start : start + 64]
+        packed = _autocast_linear(
+            _autocast_norm(part, params, f"{dot}norm", eps),
+            params,
+            f"{dot}ffn.w12",
+        )
+        gate, value = jnp.split(packed, 2, axis=-1)
+        hidden = jax.nn.silu(gate.astype(jnp.float32)).astype(jnp.bfloat16) * value
+        update = _autocast_linear(hidden, params, f"{dot}ffn.w3")
+        outputs.append(part + update if residual else update)
+    return jnp.concatenate(outputs, axis=1)
+
+
 def triangle_multiplicative(
     pair: jnp.ndarray,
     params: Params,
@@ -35,6 +172,7 @@ def triangle_multiplicative(
     outgoing: bool,
     mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`TriangleMultiplicativeBlock`, reference path.
 
@@ -42,6 +180,8 @@ def triangle_multiplicative(
     `_engine` level upstream inserts is added here so callers spell the module
     the way the checkpoint does.
     """
+    if native_autocast:
+        return _autocast_triangle(pair, params, prefix, outgoing, mask, eps)
     engine = f"{prefix}._engine" if prefix else "_engine"
     normalised = layer_norm(
         pair,
@@ -95,7 +235,13 @@ def triangle_multiplicative(
 
 
 def transition(
-    x: jnp.ndarray, params: Params, prefix: str, *, residual: bool, eps: float = 1e-5
+    x: jnp.ndarray,
+    params: Params,
+    prefix: str,
+    *,
+    residual: bool,
+    eps: float = 1e-5,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """Norm, SwiGLU, and upstream's two different opinions about the residual.
 
@@ -103,6 +249,8 @@ def transition(
     update alone and lets its caller add it. Same parameters, same shapes --
     only the caller can tell them apart, so it is a flag rather than a guess.
     """
+    if native_autocast:
+        return _autocast_transition(x, params, prefix, residual, eps)
     dot = f"{prefix}." if prefix else ""
     normalised = layer_norm(
         x, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps
@@ -117,6 +265,7 @@ def pair_update_block(
     prefix: str,
     *,
     mask: jnp.ndarray | None = None,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """One `PairUpdateBlock`: two triangle updates then a transition.
 
@@ -132,13 +281,29 @@ def pair_update_block(
     # -- on one layout without the partitioner re-deriving it per consumer.
     pair = shard_pair_rows(pair)
     pair = pair + triangle_multiplicative(
-        pair, params, f"{dot}tri_mul_out", outgoing=True, mask=mask
+        pair,
+        params,
+        f"{dot}tri_mul_out",
+        outgoing=True,
+        mask=mask,
+        native_autocast=native_autocast,
     )
     pair = pair + triangle_multiplicative(
-        pair, params, f"{dot}tri_mul_in", outgoing=False, mask=mask
+        pair,
+        params,
+        f"{dot}tri_mul_in",
+        outgoing=False,
+        mask=mask,
+        native_autocast=native_autocast,
     )
     return shard_pair_rows(
-        transition(pair, params, f"{dot}pair_transition", residual=True)
+        transition(
+            pair,
+            params,
+            f"{dot}pair_transition",
+            residual=True,
+            native_autocast=native_autocast,
+        )
     )
 
 
@@ -149,6 +314,7 @@ def folding_trunk(
     *,
     n_layers: int,
     mask: jnp.ndarray | None = None,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`FoldingTrunk`: `n_layers` blocks in sequence, no output norm.
 
@@ -158,7 +324,13 @@ def folding_trunk(
     """
     dot = f"{prefix}." if prefix else ""
     for index in range(n_layers):
-        pair = pair_update_block(pair, params, f"{dot}blocks.{index}", mask=mask)
+        pair = pair_update_block(
+            pair,
+            params,
+            f"{dot}blocks.{index}",
+            mask=mask,
+            native_autocast=native_autocast,
+        )
     return pair
 
 
@@ -173,6 +345,7 @@ def outer_product_mean(
     *,
     msa_mask: jnp.ndarray,
     eps: float = 1e-5,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`OuterProductMean`, in the released arrangement.
 
@@ -181,14 +354,24 @@ def outer_product_mean(
     reproducing the release means this order.
     """
     dot = f"{prefix}." if prefix else ""
-    normalised = layer_norm(
-        msa, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps
-    )
-    projected = linear(normalised, params, f"{dot}W")
-    projected = projected * msa_mask[..., None].astype(projected.dtype)
+    if native_autocast:
+        normalised = _autocast_norm(msa, params, f"{dot}norm", eps)
+        projected = _autocast_linear(normalised, params, f"{dot}W")
+    else:
+        normalised = layer_norm(
+            msa, params[f"{dot}norm.weight"], params[f"{dot}norm.bias"], eps=eps
+        )
+        projected = linear(normalised, params, f"{dot}W")
+    # Native uses m_norm.dtype for masking: autocast Linear emits BF16 but
+    # LayerNorm emits FP32, so this intermediate is promoted back to FP32.
+    mask_dtype = normalised.dtype if native_autocast else projected.dtype
+    projected = projected * msa_mask[..., None].astype(mask_dtype)
     half = projected.shape[-1] // 2
     a, b = projected[..., :half], projected[..., half:]
 
+    if native_autocast:
+        # Both the count matmul and outer einsum are autocast operations.
+        a, b = a.astype(jnp.bfloat16), b.astype(jnp.bfloat16)
     mask = msa_mask.astype(a.dtype)
     valid = jnp.maximum(jnp.einsum("bim,bjm->bij", mask, mask)[..., None], 1.0)
 
@@ -206,6 +389,8 @@ def outer_product_mean(
     def project(rows: jnp.ndarray) -> jnp.ndarray:
         block = jnp.einsum("bimc,bjmd->bijcd", rows, b)
         block = block.reshape(block.shape[:-2] + (half * half,))
+        if native_autocast:
+            return _autocast_linear(block, params, f"{dot}Wout")
         return linear(block, params, f"{dot}Wout")
 
     tokens = a.shape[1]

@@ -14,7 +14,7 @@ Nothing here imports torch.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -97,8 +97,13 @@ def load(
     language_model: bool = True,
     dtype: str | None = None,
     esmc_dtype: str | None = "bfloat16",
+    esmc_autocast_bfloat16: bool | None = None,
 ) -> LoadedModel:
     """Read the checkpoint, and the language model beside it.
+
+    The default BF16 ESMC load targets native CUDA autocast: FP32 norm outputs
+    and BF16 linear operations. Explicit FP32 loads retain non-autocast
+    execution unless ``esmc_autocast_bfloat16`` overrides that policy.
 
     `weights` is the *directory* holding `model.safetensors`, `config.json` and
     `esmc/` -- the configuration is not optional here, since the released one
@@ -137,7 +142,14 @@ def load(
         parameters=parameters,
         settings=settings,
         esmc_parameters=esmc_checkpoint.load_parameters(directory, dtype=esmc_dtype),
-        esmc_settings=esmc_checkpoint.load_settings(directory),
+        esmc_settings=replace(
+            esmc_checkpoint.load_settings(directory),
+            autocast_bfloat16=(
+                esmc_dtype == "bfloat16"
+                if esmc_autocast_bfloat16 is None
+                else esmc_autocast_bfloat16
+            ),
+        ),
     )
 
 
@@ -193,8 +205,11 @@ def load_language_model_stage(
     esmc: str | Path | None = None,
     dtype: str | None = None,
     esmc_dtype: str | None = "bfloat16",
+    esmc_autocast_bfloat16: bool | None = None,
 ) -> LoadedModel:
     """Load ESMC plus only the structure leaves that compact its output.
+
+    ESMC autocast policy is identical to :func:`load`, including overrides.
 
     This is a managed-memory building block, not a different model. The public
     :func:`load` result remains complete. A single-input backend session can
@@ -239,7 +254,14 @@ def load_language_model_stage(
         parameters=parameters,
         settings=structure_checkpoint.load_settings(weights),
         esmc_parameters=esmc_checkpoint.load_parameters(directory, dtype=esmc_dtype),
-        esmc_settings=esmc_checkpoint.load_settings(directory),
+        esmc_settings=replace(
+            esmc_checkpoint.load_settings(directory),
+            autocast_bfloat16=(
+                esmc_dtype == "bfloat16"
+                if esmc_autocast_bfloat16 is None
+                else esmc_autocast_bfloat16
+            ),
+        ),
     )
 
 
@@ -273,11 +295,8 @@ def _compiled_language_model_embedding(
     def run(
         hidden_states: jnp.ndarray, parameters: Mapping[str, jnp.ndarray]
     ) -> jnp.ndarray:
-        trunk_params = structure_model._cast(  # noqa: SLF001
-            parameters, structure_model.TRUNK_PREFIXES, compute
-        )
         return structure_model.language_model_embedding(
-            hidden_states.astype(compute), trunk_params
+            hidden_states, parameters, compute_dtype=compute
         )
 
     return jax.jit(run)
@@ -483,6 +502,7 @@ def predict(
     stop_after_trunk: bool = False,
     return_distogram_logits: bool = True,
     return_auxiliary_outputs: bool = True,
+    stop_after_inputs: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -529,7 +549,7 @@ def predict(
         if compact_lm_input
         else precomputed_lm_states
     )
-    if hidden is None:
+    if hidden is None and not stop_after_inputs:
         hidden = language_model_states(
             features, model, packed_length=language_model_tokens
         )
@@ -537,7 +557,9 @@ def predict(
     # traced maximum cannot size anything.
     n_chains = int(np.asarray(features["asym_id"]).max()) + 1
     contiguous_atom_groups = (
-        False if stop_after_trunk else _has_contiguous_atom_groups(features)
+        False
+        if stop_after_trunk or stop_after_inputs
+        else _has_contiguous_atom_groups(features)
     )
     if cp_shards > 1 and not compile_it:
         raise ValueError(
@@ -547,6 +569,8 @@ def predict(
     auxiliary_output_kwargs = (
         {} if return_auxiliary_outputs else {"return_auxiliary_outputs": False}
     )
+    if stop_after_inputs:
+        auxiliary_output_kwargs["stop_after_inputs"] = True
     runner = (
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
@@ -609,6 +633,7 @@ def _run(
     atom_rows_per_block: int | None = None,
     *,
     return_auxiliary_outputs: bool = True,
+    stop_after_inputs: bool = False,
 ) -> dict[str, jnp.ndarray]:
     if cp_shards != _active_cp_shards():
         raise RuntimeError(
@@ -629,6 +654,7 @@ def _run(
             preserve_prefix_rng=preserve_prefix_rng,
             return_representations=return_representations,
             stop_after_trunk=stop_after_trunk,
+            stop_after_inputs=stop_after_inputs,
             contiguous_atom_groups=contiguous_atom_groups,
             compact_token_bond_encoding=compact_token_bond_encoding,
             return_distogram_logits=return_distogram_logits,
@@ -649,6 +675,7 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "compact_lm_input",
     "atom_rows_per_block",
     "return_auxiliary_outputs",
+    "stop_after_inputs",
 )
 _compiled_predict_pool = BoundedJitPool(
     _run,
@@ -688,6 +715,7 @@ def _compiled_predict_factory(
     atom_rows_per_block: int = atom_model.ATOM_ROWS_PER_BLOCK,
     *,
     return_auxiliary_outputs: bool = True,
+    stop_after_inputs: bool = False,
 ) -> _CompiledPredictFacade:
     del (
         settings,
@@ -702,6 +730,7 @@ def _compiled_predict_factory(
         compact_lm_input,
         atom_rows_per_block,
         return_auxiliary_outputs,
+        stop_after_inputs,
     )
     return _CompiledPredictFacade()
 
@@ -720,6 +749,7 @@ def compiled_predict(
     atom_rows_per_block: int | None = None,
     *,
     return_auxiliary_outputs: bool = True,
+    stop_after_inputs: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -754,6 +784,11 @@ def compiled_predict(
         compact_lm_input,
         atom_rows_per_block,
     )
+    if stop_after_inputs:
+        return _compiled_predict_factory(
+            *identity, return_auxiliary_outputs=return_auxiliary_outputs,
+            stop_after_inputs=True,
+        )
     if return_auxiliary_outputs:
         return _compiled_predict_factory(*identity)
     return _compiled_predict_factory(

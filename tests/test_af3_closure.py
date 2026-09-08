@@ -168,6 +168,22 @@ def test_arm_success_and_missing_evidence(tmp_path):
     assert not compare_arms(left, right)["passed"]
 
 
+def test_default_extension_is_explained_without_waiving_config_gate(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    _arm(left)
+    _arm(right)
+    path = right / "effective-config.json"
+    config = json.loads(path.read_text())
+    config["foldjax_stop_after"] = "full"
+    path.write_text(json.dumps(config))
+    report = compare_arms(left, right)
+    assert not report["passed"]
+    assert not report["checks"]["effective-config.json"]
+    diff = report["config_differences"]["effective-config.json"]
+    assert diff["right_only"] == {"foldjax_stop_after": "full"}
+    assert diff["changed"] == diff["left_only"] == {}
+
+
 @pytest.mark.parametrize(
     "failure",
     [

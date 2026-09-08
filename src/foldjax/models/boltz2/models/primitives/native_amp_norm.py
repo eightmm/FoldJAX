@@ -1,8 +1,10 @@
-"""Native CUDA AMP normalization boundaries for Boltz conditioning/pair blocks.
+"""Native CUDA AMP normalization boundaries shared by Boltz and ESMFold2.
 
-The vector-4 Welford/FMA path matches the pinned publisher CUDA arithmetic.
+The vector-4 Welford/FMA path matches the observed pinned CUDA norm panels.
 It is limited to the observed widths; CPU, TPU, context parallelism and other
 widths retain the ordinary JAX path. FP32 model inference does not select it.
+ESMFold2 reuses the private CUDA helper at width256 with its own fallback;
+its captured first norm is bitwise exact, but full-block parity remains open.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from foldjax.models.boltz2.models.primitives._common import layer_norm
 
 def amp_layer_norm(x, scale, bias, eps):
     x, scale, bias = (a.astype(jnp.float32) for a in (x, scale, bias))
-    if x.shape[-1] not in (16, 128, 256) or cp_mesh() is not None:
+    if x.shape[-1] not in (16, 64, 128, 256) or cp_mesh() is not None:
         return layer_norm(x, scale, bias, eps)
     return jax.lax.platform_dependent(
         x,
@@ -79,8 +81,8 @@ def _cuda_layer_norm(x, scale, bias, eps=1e-5):
     from jax.experimental.pallas import triton as pt
 
     width = x.shape[-1]
-    if width not in (16, 128, 256) or x.dtype != jnp.float32:
-        raise ValueError("native CUDA norm requires FP32 and width 16, 128 or 256")
+    if width not in (16, 64, 128, 256) or x.dtype != jnp.float32:
+        raise ValueError("native CUDA norm requires FP32 and width 16, 64, 128 or 256")
     shape = x.shape
     rows = math.prod(shape[:-1])
 

@@ -58,6 +58,13 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     actual = {
         name: captured[name] for name in backend_impl._RELEASED_COMPILE_DEFAULTS
     }
+    assert actual["max_msa_depth"] is None
+    actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None, None)
+    from foldjax.schema import PaddingConfig
+
+    assert predict_cli._resolve_msa_depth(None, PaddingConfig()) == 1024
+    assert predict_cli._resolve_msa_depth(None, PaddingConfig(msa=64)) == 64
+    assert predict_cli._resolve_msa_depth(128, PaddingConfig()) == 128
     for name, expected in backend_impl._RELEASED_COMPILE_DEFAULTS.items():
         assert type(actual[name]) is type(expected)
     assert actual == backend_impl._RELEASED_COMPILE_DEFAULTS

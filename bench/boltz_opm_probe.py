@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -15,7 +17,7 @@ from bench.boltz_msa_probe import source_hashes, verify_bound_file
 from bench.boltz_relpos_probe import arrays, comparison, torch_policy
 
 
-def execution_profiles(backend_controls=False):
+def execution_profiles(backend_controls=False, native_norm_control=False):
     profiles = [("highest", "highest", {}), ("default", "default", {})]
     if backend_controls:
         no_triton = {"xla_gpu_enable_triton_gemm": False}
@@ -32,6 +34,14 @@ def execution_profiles(backend_controls=False):
                 {**no_lt, "xla_gpu_autotune_level": 0},
             ),
         ]
+    if native_norm_control:
+        if not backend_controls:
+            profiles.append(("native_shape", "highest", {}))
+        profiles += [
+            ("highest_native_norm", "highest", {}),
+            ("native_shape_native_norm", "highest", {}),
+            ("production_policy", "highest", {}),
+        ]
     return profiles
 
 
@@ -44,6 +54,9 @@ def load_inputs(root):
     for label in ("layer_output", "opm"):
         name = f"layers/00/{label}"
         verify_bound_file(root / f"{name}.npz", report["stages"][name]["arrays_sha256"])
+        verify_bound_file(
+            root / f"{name}.tree.json", report["stages"][name]["tree_sha256"]
+        )
     with np.load(root / "layers/00/layer_output.npz") as archive:
         m = archive["m"]
     with np.load(root / "operands.npz") as archive:
@@ -117,6 +130,7 @@ def foldjax(args):
     import jax.numpy as jnp
 
     from foldjax.models.boltz2.compile_policy import compiler_options
+    from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
     from foldjax.models.boltz2.models.trunk_blocks.msa import outer_product_mean_forward
 
     root = args.reference.resolve()
@@ -141,13 +155,29 @@ def foldjax(args):
     m, mask = jnp.asarray(m), jnp.asarray(mask)
     args.out.mkdir(parents=True, exist_ok=False)
     arms = {}
-    for label, precision, extra_options in execution_profiles(args.backend_controls):
+    for label, precision, extra_options in execution_profiles(
+        args.backend_controls, args.native_norm_control
+    ):
         token_chunk = m.shape[2] if label.startswith("native_shape") else 128
 
         def run(p, m, mask):
-            return outer_product_mean_forward(p, m, mask, chunk_size=token_chunk)
+            return outer_product_mean_forward(
+                p,
+                m,
+                mask,
+                chunk_size=token_chunk,
+                preserve_native_amp_shape=label == "production_policy",
+            )
 
-        with jax.default_matmul_precision(precision):
+        norm_context = (
+            patch(
+                "foldjax.models.boltz2.models.trunk_blocks.msa._layer_norm",
+                amp_layer_norm,
+            )
+            if label.endswith("_native_norm")
+            else nullcontext()
+        )
+        with jax.default_matmul_precision(precision), norm_context:
             options = {**compiler_options("bfloat16"), **extra_options}
             executable = (
                 jax.jit(run, compiler_options=options).lower(params, m, mask).compile()
@@ -165,6 +195,8 @@ def foldjax(args):
             "hlo_sha256": sha(args.out / f"{label}.hlo.txt"),
             "compiler_options": options,
             "token_chunk_size": token_chunk,
+            "native_norm_control": label.endswith("_native_norm"),
+            "preserve_native_amp_shape": label == "production_policy",
         }
     save_new(
         args.out / "report.json",
@@ -191,9 +223,12 @@ def main():
     parser.add_argument("--upstream", type=Path)
     parser.add_argument("--native-control", type=Path)
     parser.add_argument("--backend-controls", action="store_true")
+    parser.add_argument("--native-norm-control", action="store_true")
     args = parser.parse_args()
     if args.arm == "native" and args.upstream is None:
         parser.error("native arm requires --upstream")
+    if args.arm == "native" and args.native_norm_control:
+        parser.error("native norm control applies to FoldJAX only")
     if args.arm == "foldjax" and args.native_control is None:
         parser.error("FoldJAX arm requires --native-control")
     (native if args.arm == "native" else foldjax)(args)

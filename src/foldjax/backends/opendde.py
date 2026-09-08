@@ -228,6 +228,7 @@ class OpenDDEBackend(Backend):
         )
         return ModelCapabilities(
             representations=_representations.available("opendde"),
+            input_representations=("single_inputs",),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "opendde", "foldjax"),
@@ -277,15 +278,24 @@ class OpenDDEBackend(Backend):
         if include_raw:
             argv.append("--include-raw")
         wanted = _representations.resolve(
-            request.representations, _representations.specs_for("opendde")
+            request.representations,
+            (
+                {
+                    "single_inputs": _representations.specs_for("opendde")[
+                        "single_inputs"
+                    ]
+                }
+                if request.stop_after == "inputs"
+                else _representations.specs_for("opendde")
+            ),
         )
         if wanted:
             argv.extend(("--representations", ",".join(wanted)))
             # Pinned so that every backend puts the archive in the same place;
             # each model's own output tree is shaped differently.
             argv.extend(("--representations-dir", str(request.output_dir)))
-        if request.stop_after == "trunk":
-            argv.extend(("--stop-after", "trunk"))
+        if request.stop_after in {"inputs", "trunk"}:
+            argv.extend(("--stop-after", request.stop_after))
         if options:
             raise ValueError(f"unsupported OpenDDE options: {', '.join(options)}")
 

@@ -18,6 +18,7 @@ UPSTREAM_PATCHES = frozenset(
     {
         "constants/chemical_components.py",
         "data/pipeline.py",
+        "data/featurisation.py",
         "model/confidences.py",
         "model/features.py",
         "model/model.py",

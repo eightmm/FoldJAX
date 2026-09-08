@@ -8,10 +8,13 @@ sizes in one consistent way.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from foldjax.schema import PaddingConfig
+
+MSA_PROFILE_DEPTH = 1024
+OPENDDE_MSA_PROFILE_DEPTH = 1280
 
 TOKEN_BUCKETS = (256, 512, 768, 1024, 1536, 2048, 3072, 4096)
 ATOM_BUCKETS = (
@@ -107,6 +110,37 @@ def resolve_axis(
             f"{largest}; pin padding.{axis} or use overflow='exact'"
         )
     return floor
+
+
+def resolve_token_axis(
+    actual: int,
+    config: PaddingConfig,
+    axis: str,
+    *,
+    token_target: int,
+    minimum: int | None = None,
+    fixed_size: int | None = None,
+) -> int:
+    """Tie automatic capacity to the token profile without truncating storage.
+
+    Explicit pins retain their meaning. Model-specific MSA limits and LM
+    special-token overhead belong to callers, not to a shared bucket grid.
+    """
+    if token_target < 1:
+        raise ValueError("token_target must be positive")
+    if getattr(config, axis) is None:
+        target = fixed_size
+        if target is None:
+            if axis == "atoms":
+                target = ((24 * token_target + 31) // 32) * 32
+            elif axis == "structural_tokens":
+                target = 2 * token_target
+            elif axis == "language_model_tokens":
+                target = token_target
+            else:
+                raise ValueError(f"fixed_size is required for {axis}")
+        config = replace(config, **{axis: target})
+    return resolve_axis(actual, config, axis, minimum=minimum)
 
 
 @dataclass(frozen=True, slots=True)

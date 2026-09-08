@@ -215,6 +215,21 @@ def compare_arms(left, right, *, require_tape=True):
         ):
             a, b = _json(left / name), _json(right / name)
             checks[name] = bool(a) and a == b
+            if (
+                name in ("config.json", "effective-config.json")
+                and isinstance(a, dict)
+                and isinstance(b, dict)
+            ):
+                report.setdefault("config_differences", {})[name] = {
+                    "left_only": {k: a[k] for k in sorted(a.keys() - b.keys())},
+                    "right_only": {k: b[k] for k in sorted(b.keys() - a.keys())},
+                    "changed": {
+                        k: {"left": a[k], "right": b[k]}
+                        for k in sorted(a.keys() & b.keys())
+                        if a[k] != b[k]
+                    },
+                    "scope": "top-level explanation only; exact config gate unchanged",
+                }
         provenance = [_json(root / "provenance.json") for root in (left, right)]
         checks["xla_cache_artifacts"] = all(
             hashlib.sha256((root / "xla-autotune.textproto").read_bytes()).hexdigest()

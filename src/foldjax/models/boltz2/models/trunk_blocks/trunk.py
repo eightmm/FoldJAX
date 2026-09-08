@@ -969,6 +969,7 @@ def boltz2_trunk_forward(
     feats: Mapping[str, jnp.ndarray],
     *,
     recycling_steps: int = 0,
+    stop_after_inputs: bool = False,
     use_bond_type_feature: bool = True,
     # Boltz-2 conf checkpoint hyper_parameters set fix_sym_check=True and
     # cyclic_pos_enc=True (the nn.Module constructor defaults are False, but
@@ -1077,6 +1078,8 @@ def boltz2_trunk_forward(
             else atom_attention_backend
         ),
     )
+    if stop_after_inputs:
+        return {"s_inputs": s_inputs}
     s_init = _linear(s_inputs, params["s_init"]["kernel"])
     z_init = (
         _linear(s_inputs, params["z_init_1"]["kernel"])[:, :, None, :]

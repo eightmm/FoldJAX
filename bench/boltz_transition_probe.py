@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--native-norm-control", action="store_true")
     args = parser.parse_args()
     source, root = args.source_root.resolve(), args.reference.resolve()
     if Path(__file__).resolve() != source / "bench/boltz_transition_probe.py":
@@ -50,6 +51,9 @@ def main():
     for stage in ("input_m", "pwa", "msa_transition"):
         name = f"layers/00/{stage}"
         verify_bound_file(root / f"{name}.npz", report["stages"][name]["arrays_sha256"])
+        verify_bound_file(
+            root / f"{name}.tree.json", report["stages"][name]["tree_sha256"]
+        )
         values[stage] = arrays(root / f"{name}.npz")[""]
     prefix = "msa_module.layers.0.msa_transition."
     weights = {
@@ -78,11 +82,11 @@ def main():
     if chunk is None:
         raise ValueError("this control requires native hidden-chunked transition")
 
-    def manual(params, x, *, barrier):
+    def manual(params, x, *, barrier, normalizer=layer_norm):
         row_chunk = _auto_row_chunk(x, params) or x.shape[1]
         blocks = []
         for start_row in range(0, x.shape[1], row_chunk):
-            block = layer_norm(
+            block = normalizer(
                 x[:, start_row : start_row + row_chunk], **params["norm"], eps=1e-5
             ).astype(jnp.bfloat16)
             out = jnp.zeros(
@@ -103,13 +107,27 @@ def main():
     sources = source_identity(source)
     args.out.mkdir(parents=True, exist_ok=False)
     arms, reference_output = {}, None
-    for name in ("production", "manual", "barrier"):
+    names = ["production", "manual", "barrier"]
+    if args.native_norm_control:
+        names.extend(("native_norm", "native_norm_production"))
+    for name in names:
 
         def run(params, x):
-            if name == "production":
+            if name in ("production", "native_norm_production"):
                 return transition_forward(
-                    params, x, chunk_size=chunk, compute_dtype=jnp.bfloat16
+                    params,
+                    x,
+                    chunk_size=chunk,
+                    compute_dtype=jnp.bfloat16,
+                    native_amp_norm=name == "native_norm_production",
                 )
+            if name == "native_norm":
+                from bench.boltz_native_layer_norm import native_layer_norm
+
+                def norm(x, scale, bias, eps):
+                    return native_layer_norm(x, scale, bias, eps)[0]
+
+                return manual(params, x, barrier=False, normalizer=norm)
             return manual(params, x, barrier=name == "barrier")
 
         with jax.default_matmul_precision("highest"):
@@ -135,6 +153,7 @@ def main():
             "capture_complete": True,
             "not_model_parity_admission": True,
             "manual_reproduction": arms["manual"]["production"]["values_equal"],
+            "native_norm_control": args.native_norm_control,
             "arms": arms,
             "reference_sha256": sha(root / "report.json"),
             "source": sources,
@@ -142,6 +161,10 @@ def main():
         },
     )
     print(json.dumps(arms))
+    if not arms["manual"]["production"]["values_equal"]:
+        raise RuntimeError(
+            "manual baseline differs from production; control inadmissible"
+        )
 
 
 if __name__ == "__main__":

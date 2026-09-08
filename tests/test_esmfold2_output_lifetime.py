@@ -241,6 +241,7 @@ def test_scalar_predict_job_graph_is_preserved_and_full_features_are_released(
             {
                 "return_distogram_logits": False,
                 "return_auxiliary_outputs": False,
+                "num_recycles": 9,
             },
         )
     ]

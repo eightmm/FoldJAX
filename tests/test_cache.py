@@ -195,7 +195,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
         },
     )
 
-    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(omitted) == {"num_recycles": 9}
     assert backend.cache_profile(explicit) == backend.cache_profile(omitted)
     assert resolve_cache_dir(explicit, backend) == resolve_cache_dir(omitted, backend)
 
@@ -227,7 +227,7 @@ def test_esmfold2_unproven_defaults_and_lookalikes_stay_distinct(
     assert resolve_cache_dir(changed, backend) != resolve_cache_dir(omitted, backend)
 
 
-def test_alphafold3_released_defaults_share_the_omitted_cache_namespace(
+def test_alphafold3_managed_defaults_share_the_omitted_cache_namespace(
     tmp_path: Path,
 ) -> None:
     backend = AlphaFold3Backend()
@@ -239,7 +239,7 @@ def test_alphafold3_released_defaults_share_the_omitted_cache_namespace(
         options={
             "num_samples": 5,
             "num_steps": 200,
-            "num_recycles": 10,
+            "num_recycles": 3,
             "max_msa_depth": 1024,
             "buckets": [],
             "attention_backend": "triton",
@@ -252,7 +252,7 @@ def test_alphafold3_released_defaults_share_the_omitted_cache_namespace(
         omitted,
         num_samples=5,
         num_steps=200,
-        num_recycles=10,
+        num_recycles=3,
         max_msa_depth=1024,
         options={
             "buckets": (),
@@ -263,7 +263,7 @@ def test_alphafold3_released_defaults_share_the_omitted_cache_namespace(
         },
     )
 
-    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(omitted) == {"num_recycles": 3}
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
@@ -285,7 +285,7 @@ def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
             "source": source,
             "num_samples": 5,
             "num_steps": 200,
-            "num_recycles": 10,
+            "num_recycles": 3,
             "max_msa_depth": 1024,
             "attention_backend": "triton",
             "return_embeddings": False,
@@ -294,8 +294,9 @@ def test_alphafold3_external_source_keeps_nested_config_defaults_explicit(
         },
     )
 
-    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(omitted) == {"num_recycles": 3}
     assert backend.cache_profile(explicit) == {
+        "num_recycles": 3,
         "num_steps": 200,
         "max_msa_depth": 1024,
     }
@@ -345,7 +346,7 @@ def test_alphafold3_autotuning_miss_policies_share_one_cache_namespace(
     assert resolve_cache_dir(selected, backend) == resolve_cache_dir(omitted, backend)
 
 
-def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
+def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     tmp_path: Path,
 ) -> None:
     backend = Boltz2Backend()
@@ -354,7 +355,7 @@ def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
         omitted,
         options={
             "num_steps": 200,
-            "num_recycles": 3,
+            "num_recycles": 5,
             "num_samples": 1,
             "cp_atom_windows": True,
             "cp_devices": 1,
@@ -372,7 +373,7 @@ def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
     neutral = dataclasses.replace(
         omitted,
         num_steps=200,
-        num_recycles=3,
+        num_recycles=5,
         num_samples=1,
         options={
             "cp_atom_windows": True,
@@ -388,7 +389,7 @@ def test_boltz2_released_defaults_share_the_omitted_cache_namespace(
         },
     )
 
-    assert backend.cache_profile(omitted) == {}
+    assert backend.cache_profile(omitted) == {"num_recycles": 5}
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
@@ -446,7 +447,7 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         },
     )
 
-    assert backend.cache_profile(cp_omitted) == {"cp_devices": 4}
+    assert backend.cache_profile(cp_omitted) == {"cp_devices": 4, "num_recycles": 5}
     assert backend.cache_profile(cp_auto) == backend.cache_profile(cp_omitted)
     assert backend.cache_profile(cp_rows) == backend.cache_profile(cp_omitted)
     assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_rows, backend)
@@ -803,3 +804,23 @@ def test_resolve_cache_dir_requires_a_cache_root(tmp_path: Path) -> None:
     request = dataclasses.replace(_request(tmp_path), cache_dir=None)
     with pytest.raises(ValueError, match="cache_dir is required"):
         resolve_cache_dir(request, ProfiledBackend())
+
+
+@pytest.mark.parametrize(
+    ("model", "recycles"), [("alphafold3", 3), ("boltz2", 5), ("esmfold2", 9)]
+)
+@pytest.mark.parametrize("padding", [False, True])
+def test_paper_recycling_defaults_preserve_overrides_and_cache_identity(
+    tmp_path: Path, model: str, recycles: int, padding: bool
+) -> None:
+    backend = get_backend(model)
+    request = dataclasses.replace(_request(tmp_path), model=model, padding=padding)
+    explicit = dataclasses.replace(request, num_recycles=recycles)
+    native = dataclasses.replace(request, options={"num_recycles": recycles})
+    previous_count = 10 if model == "alphafold3" else 3
+    previous = dataclasses.replace(request, num_recycles=previous_count)
+    assert backend.apply_sampling(request)["num_recycles"] == recycles
+    assert backend.apply_sampling(previous)["num_recycles"] == previous_count
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(explicit, backend)
+    assert resolve_cache_dir(request, backend) == resolve_cache_dir(native, backend)
+    assert resolve_cache_dir(request, backend) != resolve_cache_dir(previous, backend)

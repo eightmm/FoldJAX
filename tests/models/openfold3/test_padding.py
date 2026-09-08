@@ -92,9 +92,9 @@ def test_padding_plan_reports_real_storage_and_standard_targets() -> None:
     assert plan.storage == plan.actual
     assert plan.target == {
         "tokens": 256,
-        "atoms": 256,
-        "msa": 64,
-        "templates": 1,
+        "atoms": 6144,
+        "msa": 1024,
+        "templates": 4,
     }
 
 
@@ -110,7 +110,7 @@ def test_padding_plan_accepts_compacted_empty_template_geometry() -> None:
 
     assert plan.actual["templates"] == 0
     assert plan.storage["templates"] == 1
-    assert plan.target["templates"] == 1
+    assert plan.target["templates"] == 4
 
 
 def test_existing_archive_padding_is_never_shrunk() -> None:
@@ -360,3 +360,26 @@ def test_template_reduction_without_padding_mask_keeps_legacy_average(
     )
 
     np.testing.assert_array_equal(np.asarray(result), np.asarray([[[[35.0]]]]))
+
+
+def test_native_msa_cap_and_token_profile_are_stable() -> None:
+    plans = [
+        _padding_plan(
+            minimal_features(
+                tokens=tokens, atoms=atoms, msa_rows=rows, templates=templates
+            ),
+            PaddingConfig(),
+            max_msa_depth=100,
+        )
+        for tokens, atoms, rows, templates in ((4, 7, 2, 1), (8, 20, 80, 4))
+    ]
+    assert plans[0].target == plans[1].target
+    assert plans[0].target["msa"] == 100
+
+
+def test_native_template_capacity_does_not_truncate_archive() -> None:
+    with pytest.raises(ValueError):
+        _padding_plan(
+            minimal_features(tokens=4, atoms=7, msa_rows=2, templates=5),
+            PaddingConfig(),
+        )

@@ -724,7 +724,7 @@ def _implicit_weight_assets(
             if recorded_weight is None or path.resolve() != recorded_weight
         )
         missing.extend(primary_missing)
-        affinity_requested = request.stop_after != "trunk" and document_uses_key(
+        affinity_requested = request.stop_after == "full" and document_uses_key(
             request, "affinity"
         )
         if affinity_requested:
@@ -896,6 +896,37 @@ def _input_dependencies(
         package = Path(__file__).parent / "models/boltz2"
         paths.extend((package / "api.py", package / "compile_policy.py"))
         paths.extend(sorted((package / "models").rglob("*.py")))
+    if request.model == "openfold3":
+        # Sample-chunk/augmentation repairs change ordinary predictions without
+        # changing request options; a pre-repair result must not satisfy resume.
+        package = Path(__file__).parent / "models/openfold3"
+        paths.extend(
+            package / name
+            for name in ("inference.py", "models/augmentation.py", "models/sampler.py")
+        )
+    if request.model == "esmfold2":
+        # Native autocast routing and dropout opmath change ordinary predictions
+        # as well as fixed-tape replay, without changing request options.
+        package = Path(__file__).parent / "models/esmfold2"
+        paths.extend(
+            package / name
+            for name in (
+                "inference.py",
+                "models/esmc.py",
+                "models/model.py",
+                "models/diffusion.py",
+                "models/trunk.py",
+                "models/primitives.py",
+            )
+        )
+        # Both the CUDA norm implementation and its CP routing affect ESM
+        # outputs even though they live outside this model's source directory.
+        paths.extend(
+            (
+                package.parent / "boltz2/models/primitives/native_amp_norm.py",
+                package.parent / "_cp.py",
+            )
+        )
     if request.model in {"opendde", "protenix"}:
         # Both ports use this head. Old results predate the corrected directed
         # pair initialization and must not survive an otherwise identical resume.

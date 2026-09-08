@@ -29,7 +29,11 @@ _STAGES = (
         for stage in ("msa_module", "pairformer_module")
     ),
 )
-_RAW_EXCLUDE = {"s", "z", "sample_atom_coords", "single", "pair", "single_inputs"}
+# confidence_score belongs to native predict_step, not forward's raw heads.
+_RAW_EXCLUDE = {
+    "s", "z", "sample_atom_coords", "single", "pair", "single_inputs",
+    "confidence_score",
+}
 _PUBLIC_EXCLUDE = {"s", "z", "coords", "masks", "token_masks", "exception"}
 
 

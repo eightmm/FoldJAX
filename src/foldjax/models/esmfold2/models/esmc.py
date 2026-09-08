@@ -52,6 +52,8 @@ class ESMCSettings:
     rope_base: float = 10000.0
     #: ESM3's depth scaling, `sqrt(n_layers / 36)`, applied as a divisor.
     scale_residue: bool = True
+    #: Explicit native CUDA BF16-autocast target, independent of stored weights.
+    autocast_bfloat16: bool = False
 
     @property
     def residual_scale(self) -> float:
@@ -83,16 +85,12 @@ def rotary_tables(
     float32 for exactly this reason, since a bfloat16 frequency table drifts
     measurably across eighty layers.
     """
-    inverse = 1.0 / (
-        base ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim)
-    )
+    inverse = 1.0 / (base ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim))
     angles = jnp.outer(jnp.arange(length, dtype=jnp.float32), inverse)
     return jnp.cos(angles), jnp.sin(angles)
 
 
-def apply_rotary(
-    x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray
-) -> jnp.ndarray:
+def apply_rotary(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -> jnp.ndarray:
     """Rotate `[B, L, H, D]`, half-split rather than interleaved."""
     width = cos.shape[-1] * 2
     cos = jnp.concatenate([cos, cos], axis=-1)[None, :, None, :]
@@ -101,6 +99,20 @@ def apply_rotary(
     half = width // 2
     rotated = jnp.concatenate([-head[..., half:], head[..., :half]], axis=-1)
     return jnp.concatenate([head * cos + rotated * sin, x[..., width:]], axis=-1)
+
+
+def _norm(x, weight=None, bias=None, *, eps=1e-5, autocast_bfloat16=False):
+    # CUDA autocast LayerNorm returns FP32, even with BF16 weights/input.
+    return layer_norm(
+        x.astype(jnp.float32) if autocast_bfloat16 else x, weight, bias, eps=eps
+    )
+
+
+def _matmul(x, weight, *, autocast_bfloat16=False):
+    # Linear is the narrowing boundary after FP32 LayerNorm, not the norm input.
+    if autocast_bfloat16:
+        x, weight = x.astype(jnp.bfloat16), weight.astype(jnp.bfloat16)
+    return jnp.matmul(x, weight.T)
 
 
 def attention(
@@ -112,53 +124,96 @@ def attention(
     sequence_id: jnp.ndarray | None,
     rope: tuple[jnp.ndarray, jnp.ndarray],
     eps: float = 1e-5,
+    autocast_bfloat16: bool = False,
 ) -> jnp.ndarray:
     """`MultiHeadAttention`: fused LN+QKV, whole-width QK norm, RoPE, SDPA."""
     dot = f"{prefix}." if prefix else ""
     batch, length, width = x.shape
     head_dim = width // n_heads
 
-    normed = layer_norm(
+    normed = _norm(
         x,
         params[f"{dot}layernorm_qkv.layer_norm_weight"],
         params[f"{dot}layernorm_qkv.layer_norm_bias"],
         eps=eps,
+        autocast_bfloat16=autocast_bfloat16,
     )
-    packed = jnp.matmul(normed, params[f"{dot}layernorm_qkv.weight"].T)
+    packed = _matmul(
+        normed,
+        params[f"{dot}layernorm_qkv.weight"],
+        autocast_bfloat16=autocast_bfloat16,
+    )
     query, key, value = jnp.split(packed, 3, axis=-1)
 
     # Across the full d_model, before the head split.
-    query = layer_norm(query, params[f"{dot}q_ln.weight"], eps=eps)
-    key = layer_norm(key, params[f"{dot}k_ln.weight"], eps=eps)
+    query = _norm(
+        query, params[f"{dot}q_ln.weight"], eps=eps, autocast_bfloat16=autocast_bfloat16
+    ).astype(packed.dtype)
+    key = _norm(
+        key, params[f"{dot}k_ln.weight"], eps=eps, autocast_bfloat16=autocast_bfloat16
+    ).astype(packed.dtype)
+    if autocast_bfloat16:
+        # Native RotaryEmbedding generates FP32 frequencies then caches in q.dtype.
+        rope = tuple(table.astype(packed.dtype) for table in rope)
 
     query = apply_rotary(query.reshape(batch, length, n_heads, head_dim), *rope)
     key = apply_rotary(key.reshape(batch, length, n_heads, head_dim), *rope)
     value = value.reshape(batch, length, n_heads, head_dim)
 
+    if autocast_bfloat16:
+        # Same BF16 SDPA boundaries, FP32 math; not a claim of fused-kernel parity.
+        query, key = query.astype(jnp.float32), key.astype(jnp.float32)
     logits = jnp.einsum("bihd,bjhd->bhij", query, key) * (head_dim**-0.5)
     if sequence_id is not None:
         same = sequence_id[:, None, :, None] == sequence_id[:, None, None, :]
         logits = jnp.where(same, logits, jnp.finfo(logits.dtype).min)
-    weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+    weights = jax.nn.softmax(logits, axis=-1)
+    if autocast_bfloat16:
+        context = jnp.einsum(
+            "bhij,bjhd->bihd", weights, value.astype(jnp.float32)
+        ).astype(value.dtype)
+        result = _matmul(
+            context.reshape(batch, length, width),
+            params[f"{dot}out_proj.weight"],
+            autocast_bfloat16=True,
+        )
+        bias = params.get(f"{dot}out_proj.bias")
+        return result if bias is None else result + bias.astype(result.dtype)
+    weights = weights.astype(value.dtype)
     context = jnp.einsum("bhij,bjhd->bihd", weights, value)
     return linear(context.reshape(batch, length, width), params, f"{dot}out_proj")
 
 
 def feed_forward(
-    x: jnp.ndarray, params: Params, prefix: str, *, eps: float = 1e-5
+    x: jnp.ndarray,
+    params: Params,
+    prefix: str,
+    *,
+    eps: float = 1e-5,
+    autocast_bfloat16: bool = False,
 ) -> jnp.ndarray:
     """The fused LayerNorm + SwiGLU MLP, with upstream's flat parameter names."""
     dot = f"{prefix}." if prefix else ""
-    normed = layer_norm(
+    normed = _norm(
         x,
         params[f"{dot}layer_norm_weight"],
         params[f"{dot}layer_norm_bias"],
         eps=eps,
+        autocast_bfloat16=autocast_bfloat16,
     )
-    packed = jnp.matmul(normed, params[f"{dot}fc1_weight"].T)
+    packed = _matmul(
+        normed, params[f"{dot}fc1_weight"], autocast_bfloat16=autocast_bfloat16
+    )
     half = packed.shape[-1] // 2
-    gated = jax.nn.silu(packed[..., :half]) * packed[..., half:]
-    return jnp.matmul(gated, params[f"{dot}fc2_weight"].T)
+    activated = (
+        jax.nn.silu(packed[..., :half].astype(jnp.float32)).astype(packed.dtype)
+        if autocast_bfloat16
+        else jax.nn.silu(packed[..., :half])
+    )
+    gated = activated * packed[..., half:]
+    return _matmul(
+        gated, params[f"{dot}fc2_weight"], autocast_bfloat16=autocast_bfloat16
+    )
 
 
 def block(
@@ -170,18 +225,28 @@ def block(
     sequence_id: jnp.ndarray | None,
     rope: tuple[jnp.ndarray, jnp.ndarray],
     residual_scale: float,
+    autocast_bfloat16: bool = False,
 ) -> jnp.ndarray:
     """`UnifiedTransformerBlock`, residuals divided by the depth scale."""
     dot = f"{prefix}." if prefix else ""
-    x = x + attention(
-        x,
-        params,
-        f"{dot}attn",
-        n_heads=n_heads,
-        sequence_id=sequence_id,
-        rope=rope,
-    ) / residual_scale
-    return x + feed_forward(x, params, f"{dot}ffn") / residual_scale
+    x = (
+        x
+        + attention(
+            x,
+            params,
+            f"{dot}attn",
+            n_heads=n_heads,
+            sequence_id=sequence_id,
+            rope=rope,
+            autocast_bfloat16=autocast_bfloat16,
+        )
+        / residual_scale
+    )
+    return (
+        x
+        + feed_forward(x, params, f"{dot}ffn", autocast_bfloat16=autocast_bfloat16)
+        / residual_scale
+    )
 
 
 def encode(
@@ -216,11 +281,16 @@ def encode(
             sequence_id=sequence_id,
             rope=rope,
             residual_scale=scale,
+            autocast_bfloat16=settings.autocast_bfloat16,
         )
         if index + 1 < settings.n_layers:
             collected.append(x)
     collected.append(
-        layer_norm(x, params[f"{dot}transformer.norm.weight"])
+        _norm(
+            x,
+            params[f"{dot}transformer.norm.weight"],
+            autocast_bfloat16=settings.autocast_bfloat16,
+        )
     )
     return jnp.stack(collected, axis=0)
 

@@ -390,6 +390,7 @@ class ProtenixBackend(Backend):
         )
         return ModelCapabilities(
             representations=_representations.available("protenix"),
+            input_representations=("single_inputs",),
             model=self.name,
             sampling=dict(self.sampling_options),
             input_formats=("native", "protenix", "foldjax"),
@@ -448,14 +449,23 @@ class ProtenixBackend(Backend):
         if options:
             raise ValueError(f"unsupported Protenix options: {', '.join(options)}")
         wanted = _representations.resolve(
-            request.representations, _representations.specs_for("protenix")
+            request.representations,
+            (
+                {
+                    "single_inputs": _representations.specs_for("protenix")[
+                        "single_inputs"
+                    ]
+                }
+                if request.stop_after == "inputs"
+                else _representations.specs_for("protenix")
+            ),
         )
         if wanted:
             argv.extend(("--representations", ",".join(wanted)))
             # Pinned so every backend puts the archive in the same place.
             argv.extend(("--representations-dir", str(request.output_dir)))
-        if request.stop_after == "trunk":
-            argv.extend(("--stop-after", "trunk"))
+        if request.stop_after in {"inputs", "trunk"}:
+            argv.extend(("--stop-after", request.stop_after))
         padding_plans: list[dict[str, Any]] = []
         module = import_module("foldjax.models.protenix.cli.predict")
         use_session_loader = self._weights.active and bool(

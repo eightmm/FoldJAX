@@ -102,6 +102,16 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
             detected = "openfold3-features"
         updates["input_format"] = detected
 
+    if request.stop_after == "inputs":
+        from foldjax.models._representations import resolve
+
+        caps = backend.capabilities()
+        backend._validate_representations(request, caps)
+        supported = caps.input_representations
+        if not supported:
+            raise ValueError(f"{backend.name} does not support input-only extraction")
+        updates["representations"] = resolve(request.representations, supported)
+
     options = dict(request.options)
     requested_profile = request.profile
     if requested_profile is not None:
@@ -515,7 +525,7 @@ def _result_from_manifest(
     sample_records = document["samples"]
     if not isinstance(sample_records, list):
         return None
-    if request.stop_after == "trunk":
+    if request.stop_after in {"trunk", "inputs"}:
         if sample_records or representations is None:
             return None
     elif not sample_records:
@@ -1193,9 +1203,9 @@ def _validate_result(
             "PredictionResult.samples must be a tuple"
         )
     if result.representations is None:
-        if stop_after == "trunk":
+        if stop_after in {"trunk", "inputs"}:
             raise PredictionOutputError(
-                f"{backend.name} stopped after the trunk but returned no "
+                f"{backend.name} stopped after {stop_after} but returned no "
                 f"representations in {output_dir}"
             )
         if requested_representations:
@@ -1219,10 +1229,15 @@ def _validate_result(
                 f"{backend.name} returned invalid representations: "
                 f"{representation_error}"
             )
-    if stop_after == "trunk":
-        # A run that stopped at the trunk predicted no structure on purpose,
+    if stop_after in {"trunk", "inputs"}:
+        # A run stopped before sampling predicts no structure on purpose,
         # so "no samples" is the expected shape and the representations are
         # what has to be there instead.
+        if result.samples:
+            raise PredictionOutputError(
+                f"{backend.name} returned structure samples "
+                f"after {stop_after} extraction"
+            )
         return result
     if not result.samples:
         raise PredictionOutputError(

@@ -329,7 +329,10 @@ def test_compiled_boundary_strips_stale_private_keys_before_jit(monkeypatch) -> 
     seen: dict[str, object] = {}
 
     class CaptureGraph:
-        def __call__(self, key, batch, params, table, tape, mask, *, identity):
+        def __call__(
+            self, key, batch, params, table, tape, mask, augmentation_tape, *, identity
+        ):
+            assert augmentation_tape is None
             seen["features"] = batch
             return np.asarray(7, np.int32)
 

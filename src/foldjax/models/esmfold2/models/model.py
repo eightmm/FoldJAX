@@ -29,11 +29,13 @@ from dataclasses import dataclass, field, replace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from foldjax.models import _capture
-from foldjax.models._cp import shard_pair_rows
+from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models import diffusion
+from foldjax.models.esmfold2.models import trunk as trunk_ops
 from foldjax.models.esmfold2.models.atom import atom_encoder, one_hot_atom_features
 from foldjax.models.esmfold2.models.embedders import (
     inputs_embedder_tail,
@@ -42,7 +44,11 @@ from foldjax.models.esmfold2.models.embedders import (
     single_to_pair,
 )
 from foldjax.models.esmfold2.models.heads import confidence_head
-from foldjax.models.esmfold2.models.primitives import layer_norm, linear
+from foldjax.models.esmfold2.models.primitives import (
+    _cuda_profile_divide,
+    layer_norm,
+    linear,
+)
 from foldjax.models.esmfold2.models.trunk import folding_trunk
 
 Params = Mapping[str, jnp.ndarray]
@@ -379,7 +385,6 @@ TRUNK_PREFIXES = (
     "z_init_2.",
     "rel_pos.",
     "token_bonds.",
-    "language_model.",
     "lm_encoder.",
     "msa_encoder.",
     "folding_trunk.",
@@ -390,10 +395,10 @@ TRUNK_PREFIXES = (
 def _cast(params: Params, prefixes: tuple[str, ...], dtype) -> dict:
     """The named sub-trees at `dtype`, everything else untouched.
 
-    Casting weights is how a bfloat16 region is expressed here, rather than
-    wrapping ops the way torch's autocast does. For matmuls the two agree; for
-    normalisations they agree because `layer_norm` takes its statistics in
-    float32 whatever dtype it is handed, which is also torch's rule.
+    This is a storage conversion, not a general autocast implementation.
+    In particular FP32 statistics cannot recover rounded affine parameters.
+    The LM shim therefore receives original parameters and uses explicit
+    per-operation boundaries instead of this converted subtree.
     """
     if jnp.dtype(dtype) == jnp.float32:
         return dict(params)
@@ -451,6 +456,7 @@ def inputs_embedding(
     *,
     settings: ModelSettings,
     n_tokens: int,
+    native_autocast: bool = False,
 ) -> jnp.ndarray:
     """`InputsEmbedder`: the atom encoder, then three sequence features.
 
@@ -473,12 +479,30 @@ def inputs_embedding(
         n_heads=settings.inputs_atom_n_heads,
         half_window=settings.inputs_half_window,
         n_tokens=n_tokens,
+        native_autocast=native_autocast,
     )
     return inputs_embedder_tail(tokens, res_type_one_hot, profile, deletion_mean)
 
 
+def _lm_autocast_linear(x, params, prefix):
+    """Native BF16 Linear boundary with its bias applied before output storage."""
+    out = jnp.matmul(
+        x.astype(jnp.bfloat16),
+        params[f"{prefix}.weight"].astype(jnp.bfloat16).T,
+        preferred_element_type=jnp.float32,
+    )
+    bias = params.get(f"{prefix}.bias")
+    if bias is not None:
+        out = out + bias.astype(jnp.bfloat16).astype(jnp.float32)
+    return out.astype(jnp.bfloat16)
+
+
 def language_model_embedding(
-    hidden_states: jnp.ndarray, params: Params, prefix: str = "language_model"
+    hidden_states: jnp.ndarray,
+    params: Params,
+    prefix: str = "language_model",
+    *,
+    compute_dtype=None,
 ) -> jnp.ndarray:
     """Project and combine ESMC's layer stack into one token embedding.
 
@@ -486,8 +510,24 @@ def language_model_embedding(
     hidden states including the embedding -- so the shim reads the whole stack
     rather than its last layer. Keeping this prefix separate lets a multi-seed
     session retain the small combined result instead of the complete stack.
+    ``compute_dtype=bfloat16`` selects the native autocast boundaries while
+    retaining original FP32 affine and softmax parameters. None is the direct
+    historical helper contract, not an inferred policy from stored weights.
     """
     dot = f"{prefix}." if prefix else ""
+    if compute_dtype is not None and jnp.dtype(compute_dtype) == jnp.bfloat16:
+        normalized = layer_norm(
+            hidden_states.astype(jnp.float32),
+            params[f"{dot}base_z_linear.0.weight"],
+            params[f"{dot}base_z_linear.0.bias"],
+        )
+        projected = _lm_autocast_linear(normalized, params, f"{dot}base_z_linear.1")
+        weights = jax.nn.softmax(
+            params[f"{dot}base_z_combine"].astype(jnp.float32), axis=0
+        )
+        return jnp.matmul(weights.astype(jnp.bfloat16), projected)
+    if compute_dtype is not None:
+        hidden_states = hidden_states.astype(compute_dtype)
     projected = linear(
         layer_norm(
             hidden_states,
@@ -502,10 +542,33 @@ def language_model_embedding(
 
 
 def language_model_pair_from_embedding(
-    combined: jnp.ndarray, params: Params, prefix: str = "language_model"
+    combined: jnp.ndarray,
+    params: Params,
+    prefix: str = "language_model",
+    *,
+    compute_dtype=None,
 ) -> jnp.ndarray:
-    """Lift one already-combined language-model embedding to a pair."""
+    """Lift a combined embedding; native BF16 autocast ends in FP32 LayerNorm."""
     dot = f"{prefix}." if prefix else ""
+    if compute_dtype is not None and jnp.dtype(compute_dtype) == jnp.bfloat16:
+        name = f"{dot}base_z_mlp.0"
+        x = _lm_autocast_linear(combined, params, f"{name}.downproject")
+        pair = jnp.concatenate(
+            [x[:, :, None, :] * x[:, None, :, :], x[:, :, None, :] - x[:, None, :, :]],
+            axis=3,
+        )
+        pair = _lm_autocast_linear(pair, params, f"{name}.output_mlp.0")
+        pair = jax.nn.gelu(pair.astype(jnp.float32), approximate=False).astype(
+            jnp.bfloat16
+        )
+        pair = _lm_autocast_linear(pair, params, f"{name}.output_mlp.2")
+        return layer_norm(
+            pair.astype(jnp.float32),
+            params[f"{dot}base_z_mlp.1.weight"],
+            params[f"{dot}base_z_mlp.1.bias"],
+        )
+    if compute_dtype is not None:
+        combined = combined.astype(compute_dtype)
     pair = single_to_pair(combined, params, f"{dot}base_z_mlp.0")
     return layer_norm(
         pair,
@@ -515,11 +578,20 @@ def language_model_pair_from_embedding(
 
 
 def language_model_pair(
-    hidden_states: jnp.ndarray, params: Params, prefix: str = "language_model"
+    hidden_states: jnp.ndarray,
+    params: Params,
+    prefix: str = "language_model",
+    *,
+    compute_dtype=None,
 ) -> jnp.ndarray:
     """`LanguageModelShim`: combine the PLM's layers, then lift to a pair."""
     return language_model_pair_from_embedding(
-        language_model_embedding(hidden_states, params, prefix), params, prefix
+        language_model_embedding(
+            hidden_states, params, prefix, compute_dtype=compute_dtype
+        ),
+        params,
+        prefix,
+        compute_dtype=compute_dtype,
     )
 
 
@@ -530,8 +602,20 @@ def _dropout(
     *,
     valid_mask: jnp.ndarray | None = None,
     preserve_prefix_rng: bool = False,
+    keep_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """`F.dropout(..., training=True)`, which upstream leaves on at inference."""
+    if keep_mask is not None:
+        if preserve_prefix_rng:
+            raise ValueError("native dropout tape does not support prefix RNG padding")
+        if not 0.0 < rate < 1.0:
+            raise ValueError(
+                "dropout keep mask requires a rate strictly between 0 and 1"
+            )
+        keep_mask = jnp.asarray(keep_mask)
+        if keep_mask.dtype != jnp.bool_ or keep_mask.shape != x.shape:
+            raise ValueError("dropout keep mask must be boolean and match input shape")
+        return _dropout_scale(x, keep_mask, rate)
     if rate <= 0.0:
         return x
     if preserve_prefix_rng:
@@ -546,6 +630,19 @@ def _dropout(
     else:
         # Keep the exact historical call for default, unpadded inference.
         keep = jax.random.bernoulli(key, 1.0 - rate, x.shape)
+    return _dropout_scale(x, keep, rate)
+
+
+def _dropout_scale(x, keep, rate):
+    # PyTorch CUDA Dropout.cu (cf30153): BF16/FP16 use float acc_type,
+    # float keep probability, then float scale multiplication before storage.
+    # Preserve the historical FP32 path and all random draws/key splits.
+    if x.dtype in (jnp.bfloat16, jnp.float16):
+        probability = jnp.asarray(1.0 - rate, jnp.float32)
+        scale = jnp.asarray(1.0, jnp.float32) / probability
+        return (x.astype(jnp.float32) * keep.astype(jnp.float32) * scale).astype(
+            x.dtype
+        )
     return jnp.where(keep, x / (1.0 - rate), 0.0)
 
 
@@ -577,9 +674,14 @@ def _msa_column_keep(
     rate: float,
     *,
     preserve_prefix_rng: bool,
+    keep_tape: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Draw one column decision per token without exposing the real length."""
 
+    if keep_tape is not None:
+        if preserve_prefix_rng:
+            raise ValueError("native MSA tape does not support prefix RNG padding")
+        return keep_tape
     if preserve_prefix_rng:
         values = masked_prefix_draw(
             lambda draw_key, shape: jax.random.uniform(draw_key, shape),
@@ -607,6 +709,16 @@ def _subsample_msa(
     return jnp.sort(jnp.concatenate([jnp.zeros(1, dtype=chosen.dtype), chosen]))
 
 
+def _recurrence_update(z, decay, injected, b_matrix, *, native_rounding=False):
+    carried = decay * z
+    update = jnp.matmul(injected.astype(z.dtype), b_matrix.T)
+    if native_rounding:
+        # Torch materializes both BF16 terms before their addition. Without
+        # this boundary XLA can fold the sum into GEMM beta=1 and round once.
+        carried, update = jax.lax.optimization_barrier((carried, update))
+    return carried + update
+
+
 def run_loops(
     key: jnp.ndarray,
     z: jnp.ndarray,
@@ -619,6 +731,13 @@ def run_loops(
     settings: ModelSettings,
     total_steps: int,
     preserve_prefix_rng: bool = False,
+    lm_dropout_masks: jnp.ndarray | None = None,
+    msa_row_choices: jnp.ndarray | None = None,
+    lm_encoder_params: Params | None = None,
+    pair_trunk_params: Params | None = None,
+    recurrence_params: Params | None = None,
+    injection_norm_params: Params | None = None,
+    msa_opm_params: Params | None = None,
 ) -> jnp.ndarray:
     """The parcae recurrence, `total_steps` times.
 
@@ -627,10 +746,29 @@ def run_loops(
     `B = delta * B_cont`. Reading `log_a` as the decay directly -- the obvious
     misreading -- gives a stable-looking recurrence with the wrong timescale.
     """
-    delta = jax.nn.softplus(params["parcae_log_delta"])
-    decay = jnp.exp(-delta * jnp.exp(params["parcae_log_a"]))
+    if preserve_prefix_rng and (
+        lm_dropout_masks is not None or msa_row_choices is not None
+    ):
+        raise ValueError("native loop tapes do not support prefix RNG padding")
+    if lm_dropout_masks is not None:
+        if (
+            lm_pair is None
+            or not settings.per_loop_lm_dropout
+            or not 0.0 < settings.lm_dropout < 1.0
+        ):
+            raise ValueError("LM dropout tape requires an active per-loop LM dropout")
+        lm_dropout_masks = jnp.asarray(lm_dropout_masks)
+        if lm_dropout_masks.dtype != jnp.bool_:
+            raise ValueError("LM dropout tape must have boolean dtype")
+        if lm_dropout_masks.shape != (total_steps, *lm_pair.shape):
+            raise ValueError("LM dropout tape must have shape [loops, *lm_pair.shape]")
+    # Native discretizes original FP32 parameters, then narrows the resulting
+    # coefficients once. Casting the parameters first changes both dynamics.
+    dynamics = params if recurrence_params is None else recurrence_params
+    delta = jax.nn.softplus(dynamics["parcae_log_delta"])
+    decay = jnp.exp(-delta * jnp.exp(dynamics["parcae_log_a"]))
     decay = decay.reshape(1, 1, 1, -1).astype(z.dtype)
-    b_matrix = (delta[:, None] * params["parcae_b_cont"]).astype(z.dtype)
+    b_matrix = (delta[:, None] * dynamics["parcae_b_cont"]).astype(z.dtype)
 
     dropout_on = (
         lm_pair is not None
@@ -643,8 +781,22 @@ def run_loops(
         if msa_inputs is None or loop_tape is not None
         else int(msa_inputs["msa_one_hot"].shape[2])
     )
+    _, msa_row_choices = validate_msa_tape(
+        None,
+        msa_row_choices,
+        batch=z.shape[0],
+        tokens=z.shape[1],
+        depth=depth,
+        loops=total_steps,
+        settings=settings,
+        check_values=False,
+    )
 
     def body(carry, loop_inputs):
+        dropout_mask = None
+        rows_tape = None
+        if lm_dropout_masks is not None or msa_row_choices is not None:
+            loop_inputs, dropout_mask, rows_tape = loop_inputs
         z, key = carry
         key, dropout_key, msa_key = jax.random.split(key, 3)
 
@@ -656,25 +808,33 @@ def run_loops(
                 settings.lm_dropout,
                 valid_mask=pair_mask,
                 preserve_prefix_rng=preserve_prefix_rng,
+                keep_mask=dropout_mask,
             )
 
         refined = None
         if loop_lm is not None and settings.lm_encoder_n_layers is not None:
+            # Native operator policy applies throughout the LM encoder; a
+            # teacher-forced first-block parity check is not whole-stack evidence.
             refined = folding_trunk(
-                loop_lm,
-                params,
+                loop_lm.astype(z_init.dtype),
+                params if lm_encoder_params is None else lm_encoder_params,
                 "lm_encoder",
                 n_layers=settings.lm_encoder_n_layers,
                 mask=pair_mask,
+                native_autocast=lm_encoder_params is not None,
             )
 
         injected = z_init
         if loop_lm is not None and settings.lm_encoder_n_layers is None:
-            injected = injected + loop_lm
+            injected = injected + loop_lm.astype(injected.dtype)
 
         if msa_inputs is not None and settings.msa_n_layers is not None:
             if loop_inputs is None:
-                rows = _subsample_msa(msa_key, depth, settings.max_msa_depth)
+                rows = (
+                    rows_tape
+                    if rows_tape is not None
+                    else _subsample_msa(msa_key, depth, settings.max_msa_depth)
+                )
                 one_hot = msa_inputs["msa_one_hot"]
                 msa_mask = msa_inputs["msa_mask"]
                 has_deletion = msa_inputs["has_deletion"]
@@ -711,28 +871,115 @@ def run_loops(
                 params,
                 "msa_encoder",
                 n_layers=settings.msa_n_layers,
-            )
+                native_opm_params=msa_opm_params,
+            ).astype(injected.dtype)
             if settings.msa_encoder_overwrite:
                 injected = msa_pair
             else:
                 injected = injected + msa_pair
 
         if refined is not None:
-            injected = injected + refined
+            injected = injected + refined.astype(injected.dtype)
 
-        injected = layer_norm(
+        if injection_norm_params is not None:
+            injected = trunk_ops._autocast_norm(
+                injected, injection_norm_params, "parcae_input_norm"
+            )
+        else:
+            injected = layer_norm(
+                injected,
+                params["parcae_input_norm.weight"],
+                params["parcae_input_norm.bias"],
+            )
+        z = _recurrence_update(
+            z,
+            decay,
             injected,
-            params["parcae_input_norm.weight"],
-            params["parcae_input_norm.bias"],
+            b_matrix,
+            native_rounding=pair_trunk_params is not None,
         )
-        z = decay * z + jnp.matmul(injected.astype(z.dtype), b_matrix.T)
         z = folding_trunk(
-            z, params, "folding_trunk", n_layers=settings.trunk_n_layers, mask=pair_mask
+            z,
+            params if pair_trunk_params is None else pair_trunk_params,
+            "folding_trunk",
+            n_layers=settings.trunk_n_layers,
+            mask=pair_mask,
+            native_autocast=pair_trunk_params is not None,
         )
         return (z, key), None
 
-    (z, _), _ = jax.lax.scan(body, (z, key), loop_tape, length=total_steps)
+    scan_inputs = (
+        (loop_tape, lm_dropout_masks, msa_row_choices)
+        if lm_dropout_masks is not None or msa_row_choices is not None
+        else loop_tape
+    )
+    (z, _), _ = jax.lax.scan(body, (z, key), scan_inputs, length=total_steps)
     return z
+
+
+def validate_msa_tape(
+    column, rows, *, batch, tokens, depth, loops, settings, check_values=True
+):
+    """Native column decisions and sorted query-preserving row indices.
+
+    Inactive native consumers have empty recorder arrays; normalize those to
+    None. Preflight concrete arrays before passing dynamic tapes through JIT.
+    """
+    active = settings.msa_n_layers is not None and depth is not None
+    column_active = active and depth > 1 and settings.msa_column_mask_rate > 0
+    rows_active = (
+        active and settings.max_msa_depth is not None and depth > settings.max_msa_depth
+    )
+    for value, enabled, dtype, shape in (
+        (column, column_active, "bool", (batch, tokens)),
+        (rows, rows_active, "integer", (loops, settings.max_msa_depth)),
+    ):
+        if value is None:
+            continue
+        kind_ok = (
+            value.dtype == jnp.bool_
+            if dtype == "bool"
+            else jnp.issubdtype(value.dtype, jnp.integer)
+        )
+        if not kind_ok or value.shape != (shape if enabled else (0,)):
+            raise ValueError("MSA tape has wrong dtype/shape or inactive consumer")
+    if rows is not None and rows_active:
+        if settings.max_msa_depth < 1:
+            raise ValueError("MSA tape requires a positive row cap")
+        if isinstance(rows, jax.core.Tracer):
+            if check_values:
+                raise ValueError("MSA tape value preflight requires concrete arrays")
+        else:
+            array = np.asarray(rows)
+            if (
+                np.any(array < 0)
+                or np.any(array >= depth)
+                or np.any(array[:, 0] != 0)
+                or np.any(array[:, 1:] <= array[:, :-1])
+            ):
+                raise ValueError(
+                    "MSA tape rows must be sorted unique in-range indices "
+                    "retaining query row"
+                )
+    return (column if column_active else None), (rows if rows_active else None)
+
+
+def validate_initial_pair_state(value, *, batch, tokens, width, check_values=True):
+    """Validate an exact floating pair-state override; preflight before JIT."""
+    if value is None:
+        return
+    if value.shape != (batch, tokens, tokens, width) or not jnp.issubdtype(
+        value.dtype, jnp.floating
+    ):
+        raise ValueError(
+            "initial pair state requires exact [batch,tokens,tokens,width] "
+            "floating array"
+        )
+    if isinstance(value, jax.core.Tracer):
+        if check_values:
+            raise ValueError("initial pair state preflight requires concrete arrays")
+    elif not np.isfinite(np.asarray(value)).all():
+        raise ValueError("initial pair state must be finite")
 
 
 def predict(
@@ -744,10 +991,18 @@ def predict(
     lm_hidden_states: jnp.ndarray | None = None,
     lm_embedding: jnp.ndarray | None = None,
     initial_pair_state: jnp.ndarray | None = None,
+    lm_dropout_masks: jnp.ndarray | None = None,
+    msa_column_keep: jnp.ndarray | None = None,
+    msa_row_choices: jnp.ndarray | None = None,
     n_chains: int | None = None,
+    diffusion_initial_normal: jnp.ndarray | None = None,
+    diffusion_rotation_quaternions: jnp.ndarray | None = None,
+    diffusion_translations: jnp.ndarray | None = None,
+    diffusion_churn_normals: jnp.ndarray | None = None,
     preserve_prefix_rng: bool = False,
     return_representations: tuple[str, ...] = (),
     stop_after_trunk: bool = False,
+    stop_after_inputs: bool = False,
     contiguous_atom_groups: bool = False,
     compact_token_bond_encoding: bool = False,
     return_distogram_logits: bool = True,
@@ -765,6 +1020,17 @@ def predict(
     from. Supplying it makes the trunk -- and so the distogram -- reproducible,
     which is the only way to compare this path against torch's at all; the
     diffusion sampler stays stochastic either way.
+
+    ``lm_dropout_masks`` supplies native boolean keep decisions in loop order,
+    with shape ``[loops, batch, tokens, tokens, pair_width]``. It requires an
+    active LM/dropout branch and does not control MSA or diffusion randomness.
+
+    Native tape inputs cannot be combined with ``preserve_prefix_rng`` padding.
+    Before dynamic JIT replay, call ``validate_initial_pair_state``,
+    ``validate_msa_tape`` and ``diffusion.validate_diffusion_tape`` on concrete
+    arrays: this function checks shapes while tracing, not dynamic values.
+    Partial MSA/LM overrides are diagnostic controls, not full native replay;
+    inactive LM dropout masks are rejected, not treated as an empty tape.
 
     `n_chains` sizes the confidence head's per-chain ipTM matrix. It is read
     off `asym_id` when omitted, which is a host read of a traced value and so
@@ -785,6 +1051,53 @@ def predict(
     atom_mask = features["atom_attention_mask"]
     batch, n_tokens = token_mask.shape
     n_samples = settings.num_samples
+    if preserve_prefix_rng and any(
+        value is not None
+        for value in (
+            initial_pair_state,
+            lm_dropout_masks,
+            msa_column_keep,
+            msa_row_choices,
+            diffusion_initial_normal,
+            diffusion_rotation_quaternions,
+            diffusion_translations,
+            diffusion_churn_normals,
+        )
+    ):
+        raise ValueError("native tapes do not support prefix RNG padding")
+    validate_initial_pair_state(
+        initial_pair_state,
+        batch=batch,
+        tokens=n_tokens,
+        width=settings.d_pair,
+        check_values=False,
+    )
+    msa_column_keep, msa_row_choices = validate_msa_tape(
+        msa_column_keep,
+        msa_row_choices,
+        batch=batch,
+        tokens=n_tokens,
+        depth=features["msa"].shape[1] if "msa" in features else None,
+        loops=max(1, settings.num_recycles + 1),
+        settings=settings,
+        check_values=False,
+    )
+    if msa_row_choices is not None and features.get("msa_loop_tape") is not None:
+        raise ValueError(
+            "MSA row index tape cannot be combined with preselected loop features"
+        )
+    if msa_column_keep is not None and features.get("msa_attention_mask") is None:
+        raise ValueError("MSA column tape requires native msa_attention_mask")
+    diffusion.validate_diffusion_tape(
+        diffusion_initial_normal,
+        diffusion_rotation_quaternions,
+        diffusion_translations,
+        diffusion_churn_normals,
+        steps=len(diffusion.noise_schedule(settings.diffusion)) - 1,
+        batch=batch * n_samples,
+        atoms=atom_mask.shape[-1],
+        check_values=False,
+    )
 
     res_type = features["res_type"]
     if res_type.ndim == 2:
@@ -802,7 +1115,16 @@ def predict(
         if msa_mask is not None:
             msa_one_hot = msa_one_hot * msa_mask[..., None].astype(jnp.float32)
             counts = jnp.clip(jnp.sum(msa_mask.astype(jnp.float32), axis=1), min=1.0)
-            profile = jnp.sum(msa_one_hot, axis=1) / counts[..., None]
+            totals = jnp.sum(msa_one_hot, axis=1)
+            if settings.trunk_dtype == "bfloat16" and cp_mesh() is None:
+                profile = jax.lax.platform_dependent(
+                    totals,
+                    counts[..., None],
+                    cuda=_cuda_profile_divide,
+                    default=lambda a, b: a / b,
+                )
+            else:
+                profile = totals / counts[..., None]
         else:
             profile = jnp.mean(msa_one_hot, axis=1)
     if profile is None:
@@ -824,28 +1146,51 @@ def predict(
     )
 
     # Upstream opens its bfloat16 autocast here and closes it after the coda;
-    # `trunk_dtype` is that region and nothing else. Weights are cast rather
-    # than ops wrapped, which is the same arithmetic for matmuls and -- because
-    # `layer_norm` takes its statistics in float32 whatever it is handed -- the
-    # same for normalisations too.
+    # `trunk_dtype` targets that region, but blanket parameter conversion is
+    # not autocast: FP32 norm statistics cannot restore rounded affine weights.
+    # Pair trunks use original weights with per-operation boundaries on the
+    # single-device BF16 path. Other consumers still need their own audit.
     compute = jnp.dtype(settings.trunk_dtype)
     trunk_params = _cast(params, TRUNK_PREFIXES, compute)
+    native_pair_autocast = compute == jnp.bfloat16 and cp_mesh() is None
+    native_pair_params = (
+        {
+            key: value
+            for key, value in params.items()
+            if key.startswith(("folding_trunk.", "parcae_coda."))
+        }
+        if native_pair_autocast
+        else None
+    )
 
+    # These three features bypass the atom encoder and are concatenated onto
+    # its result. Native retains them in FP32; autocast does not narrow cat.
+    sequence_dtype = jnp.float32 if native_pair_autocast else compute
     x_inputs = inputs_embedding(
-        res_type_one_hot.astype(compute),
-        profile.astype(compute),
-        deletion_mean.astype(compute),
-        features["ref_pos"].astype(compute),
+        res_type_one_hot.astype(sequence_dtype),
+        profile.astype(sequence_dtype),
+        deletion_mean.astype(sequence_dtype),
+        features["ref_pos"].astype(sequence_dtype),
         atom_mask,
         features["ref_space_uid"],
-        features["ref_charge"].astype(compute),
-        element_one_hot.astype(compute),
-        chars_one_hot.astype(compute),
+        features["ref_charge"]
+        if native_pair_autocast
+        else features["ref_charge"].astype(compute),
+        element_one_hot.astype(sequence_dtype),
+        chars_one_hot.astype(sequence_dtype),
         atom_to_token,
-        trunk_params,
+        params if native_pair_autocast else trunk_params,
         settings=settings,
         n_tokens=n_tokens,
+        native_autocast=native_pair_autocast,
     )
+
+    if stop_after_inputs:
+        return (
+            {"single_inputs": x_inputs}
+            if "single_inputs" in return_representations
+            else {}
+        )
 
     # What crosses into the pair path is narrowed here, at the two linears
     # upstream's autocast region covers, because that is the tensor whose width
@@ -855,20 +1200,10 @@ def predict(
     # layers -- which is what this port did, while its settings and its
     # released config.json both said bfloat16.
     #
-    # The atom encoder upstream of here is deliberately NOT narrowed, but not
-    # for the reason it is tempting to give: `rms_norm`'s eps is the Python
-    # default `FLOAT32_EPS` (atom.py:38) and `atom_encoder` is called without
-    # one, so eps is 1.19e-7 whatever the tensors are. Narrowing it would
-    # change rounding only. It is left alone because it buys almost nothing --
-    # atom tensors are linear in atom count, not quadratic -- and because
-    # upstream at bfloat16 derives a different eps there, so matching it is an
-    # upstream-parity question that no test in this tree can currently settle
-    # (the torch parity tests skip without torch, and `test_model_parity` pins
-    # float32 on purpose). Separately and pre-existing: `atom_features`
-    # (atom.py:265) hard-casts its inputs to float32 while its weights are
-    # already bfloat16, so that module runs float32 activations against
-    # bfloat16 weights. That is the same kind of leak this cast fixes, and it
-    # has not been measured.
+    # The native atom path instead preserves FP32 reference features, norms
+    # and residuals, with BF16 boundaries at its Linear and attention outputs.
+    # Its FP32 sequence tail makes the concatenation FP32, so this pair-input
+    # cast is still necessary even when the atom's token output is BF16.
     pair_inputs = x_inputs.astype(compute)
     z_init = (
         linear(pair_inputs, trunk_params, "z_init_1")[:, :, None, :]
@@ -904,12 +1239,12 @@ def predict(
     if lm_embedding is not None:
         lm_pair = shard_pair_rows(
             language_model_pair_from_embedding(
-                lm_embedding.astype(compute), trunk_params
+                lm_embedding, params, compute_dtype=compute
             )
         )
     elif lm_hidden_states is not None:
         lm_pair = shard_pair_rows(
-            language_model_pair(lm_hidden_states.astype(compute), trunk_params)
+            language_model_pair(lm_hidden_states, params, compute_dtype=compute)
         )
 
     pair_mask = token_mask[:, :, None].astype(jnp.float32) * token_mask[
@@ -965,6 +1300,7 @@ def predict(
                     token_mask,
                     settings.msa_column_mask_rate,
                     preserve_prefix_rng=preserve_prefix_rng,
+                    keep_tape=msa_column_keep,
                 )
                 keep = jnp.broadcast_to(keep[None, :, None, :], tape_mask.shape)
                 keep = keep.at[:, :, 0, :].set(True)
@@ -994,6 +1330,7 @@ def predict(
                     token_mask,
                     settings.msa_column_mask_rate,
                     preserve_prefix_rng=preserve_prefix_rng,
+                    keep_tape=msa_column_keep,
                 )
                 keep = jnp.broadcast_to(keep[:, None, :], mask.shape)
                 keep = keep.at[:, 0, :].set(True)
@@ -1039,10 +1376,55 @@ def predict(
         settings=settings,
         total_steps=max(1, settings.num_recycles + 1),
         preserve_prefix_rng=preserve_prefix_rng,
+        lm_dropout_masks=lm_dropout_masks,
+        msa_row_choices=msa_row_choices,
+        lm_encoder_params=(
+            {
+                key: value
+                for key, value in params.items()
+                if key.startswith("lm_encoder.")
+            }
+            if jnp.dtype(compute) == jnp.bfloat16
+            else None
+        ),
+        pair_trunk_params=native_pair_params,
+        msa_opm_params=(
+            {
+                key: value
+                for key, value in params.items()
+                if key.startswith("msa_encoder.blocks.")
+                and ".outer_product_mean." in key
+            }
+            if native_pair_autocast
+            else None
+        ),
+        recurrence_params=(
+            {
+                key: value
+                for key, value in params.items()
+                if key in {"parcae_log_delta", "parcae_log_a", "parcae_b_cont"}
+            }
+            if native_pair_autocast
+            else None
+        ),
+        injection_norm_params=(
+            {
+                key: value
+                for key, value in params.items()
+                if key.startswith("parcae_input_norm.")
+            }
+            if native_pair_autocast
+            else None
+        ),
     )
     z = linear(z, trunk_params, "parcae_readout")
     z = folding_trunk(
-        z, trunk_params, "parcae_coda", n_layers=settings.coda_n_layers, mask=pair_mask
+        z,
+        trunk_params if native_pair_params is None else native_pair_params,
+        "parcae_coda",
+        n_layers=settings.coda_n_layers,
+        mask=pair_mask,
+        native_autocast=native_pair_autocast,
     )
     # Upstream's `z = z.float()`, which closes the autocast region. Everything
     # after this -- the distogram head, the sampler, the confidence head -- is
@@ -1052,11 +1434,7 @@ def predict(
     rel_pos = rel_pos.astype(jnp.float32)
     token_bonds_encoding = token_bonds_encoding.astype(jnp.float32)
 
-    distogram_logits = (
-        _distogram_logits(z, params)
-        if return_distogram_logits
-        else None
-    )
+    distogram_logits = _distogram_logits(z, params) if return_distogram_logits else None
 
     cache = diffusion.build_cache(
         features["ref_pos"],
@@ -1087,6 +1465,10 @@ def predict(
             token_mask=token_mask,
             num_samples=n_samples,
             preserve_prefix_rng=preserve_prefix_rng,
+            diffusion_initial_normal=diffusion_initial_normal,
+            diffusion_rotation_quaternions=diffusion_rotation_quaternions,
+            diffusion_translations=diffusion_translations,
+            diffusion_churn_normals=diffusion_churn_normals,
         )
 
     x_inputs = _capture.capture("single", x_inputs)
@@ -1097,7 +1479,11 @@ def predict(
         # the rest of the run.
         return {
             name: value
-            for name, value in (("single", x_inputs), ("pair", z))
+            for name, value in (
+                ("single_inputs", x_inputs),
+                ("single", x_inputs),
+                ("pair", z),
+            )
             if name in return_representations
         }
 
@@ -1113,7 +1499,11 @@ def predict(
     # by default: the pair state is quadratic in token count.
     representations = {
         name: value
-        for name, value in (("single", x_inputs), ("pair", z))
+        for name, value in (
+            ("single_inputs", x_inputs),
+            ("single", x_inputs),
+            ("pair", z),
+        )
         if name in return_representations
     }
     output = dict(representations)

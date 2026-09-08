@@ -345,6 +345,20 @@ def _spec(
 #: not its residue space, and ESMFold2 carries one single stream rather than
 #: an input embedding and a trunk output.
 SPECS: dict[str, dict[str, RepresentationSpec]] = {
+    "alphafold3": {
+        "single_inputs": _spec(
+            "single_inputs", ("token", "channel"), "token",
+            "native assembled target input representation, before recycling",
+        ),
+        "single": _spec(
+            "single", ("token", "channel"), "token",
+            "per-token single representation after the trunk",
+        ),
+        "pair": _spec(
+            "pair", ("token", "token", "channel"), "token",
+            "token-pair representation after the trunk",
+        ),
+    },
     "opendde": {
         "single_inputs": _spec(
             "single_inputs", ("residue", "channel"), "residue",
@@ -419,6 +433,11 @@ SPECS: dict[str, dict[str, RepresentationSpec]] = {
         ),
     },
     "esmfold2": {
+        "single_inputs": _spec(
+            "single_inputs", ("token", "channel"), "token",
+            "native x_inputs before the folding trunk; the same single stream "
+            "is exposed as single after the trunk",
+        ),
         # One single stream, not two: the inputs embedding is what the heads
         # read, and the trunk updates the pair state around it.
         "single": _spec(

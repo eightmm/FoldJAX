@@ -87,9 +87,7 @@ def relative_position_encoding(
     return linear(features, params, f"{dot}embed")
 
 
-def single_to_pair(
-    x: jnp.ndarray, params: Params, prefix: str = ""
-) -> jnp.ndarray:
+def single_to_pair(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
     """`SingleToPair`: product and difference, in that order.
 
     The difference is antisymmetric, so swapping the two halves would leave
@@ -131,6 +129,7 @@ def msa_encoder_block(
     msa_mask: jnp.ndarray,
     pair_mask: jnp.ndarray,
     is_final: bool,
+    native_opm_params: Params | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """One `MSAEncoderBlock`.
 
@@ -143,7 +142,11 @@ def msa_encoder_block(
     # its own context-parallel row pin.
     pair = shard_pair_rows(pair)
     pair = pair + outer_product_mean(
-        msa, params, f"{dot}outer_product_mean", msa_mask=msa_mask
+        msa,
+        params if native_opm_params is None else native_opm_params,
+        f"{dot}outer_product_mean",
+        msa_mask=msa_mask,
+        native_autocast=native_opm_params is not None,
     )
     if not is_final:
         msa = msa + msa_pair_weighted_averaging(
@@ -177,6 +180,7 @@ def msa_encoder(
     prefix: str = "",
     *,
     n_layers: int,
+    native_opm_params: Params | None = None,
 ) -> jnp.ndarray:
     """`MSAEncoder`, returning the pair representation and discarding the MSA.
 
@@ -203,6 +207,7 @@ def msa_encoder(
             msa_mask=msa_mask,
             pair_mask=pair_mask,
             is_final=index == n_layers - 1,
+            native_opm_params=native_opm_params,
         )
     return pair
 

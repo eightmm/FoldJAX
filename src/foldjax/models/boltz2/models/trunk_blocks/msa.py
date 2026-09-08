@@ -11,6 +11,10 @@ from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
 from foldjax.models.boltz2.models.primitives._scan_utils import stack_layer_params
+from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
+from foldjax.models.boltz2.models.primitives.native_pwa_mma import (
+    pair_weighted_contraction,
+)
 from foldjax.models.boltz2.models.primitives.transition import transition_forward
 from foldjax.models.boltz2.models.triangle.triangle import (
     triangle_multiplication_forward,
@@ -260,6 +264,7 @@ def msa_layer_forward(
             eps=eps,
             glu_backend=glu_backend,
             compute_dtype=transition_dtype,
+            native_amp_norm=transition_dtype == jnp.bfloat16,
             chunk_size=32 if z.shape[1] > _NATIVE_CHUNK_THRESHOLD else None,
         )
     else:
@@ -412,8 +417,14 @@ def _pair_weighted_averaging_amp(
     row_chunk_size: int | None,
 ) -> jnp.ndarray:
     """Preserve native head-wise BF16 sums while optionally splitting MSA rows."""
+    # Row-slice evidence binds the native full-MSA operands, not arbitrary native
+    # GEMMs with the smaller S. Preserve explicit custom chunk profiles unchanged.
+    native_row_profile = (
+        row_chunk_size is None or row_chunk_size <= 0 or row_chunk_size >= m.shape[1]
+    )
     dtype = params["proj_m"]["kernel"].dtype
-    z = _layer_norm(
+    norm = amp_layer_norm if dtype == jnp.bfloat16 else _layer_norm
+    z = norm(
         z.astype(jnp.float32), params["norm_z"]["scale"], params["norm_z"]["bias"], eps
     )
     num_heads = params["proj_z"]["kernel"].shape[-1]
@@ -428,7 +439,7 @@ def _pair_weighted_averaging_amp(
         weights.append(jax.nn.softmax(logits, axis=-1).astype(dtype))
 
     def block(value):
-        value = _layer_norm(
+        value = norm(
             value.astype(jnp.float32),
             params["norm_m"]["scale"],
             params["norm_m"]["bias"],
@@ -442,7 +453,11 @@ def _pair_weighted_averaging_amp(
             v = v.reshape(*v.shape[:3], heads_per_group, c_h).transpose(0, 3, 1, 2, 4)
             gate = _linear(value, params["proj_g"]["kernel"][:, start:stop])
             gate = jax.nn.sigmoid(gate.astype(jnp.float32)).astype(dtype)
-            output = jnp.einsum("bhij,bhsjd->bhsid", weight, v)
+            output = (
+                pair_weighted_contraction(weight, v, original_msa_rows=m.shape[1])
+                if native_row_profile
+                else jnp.einsum("bhij,bhsjd->bhsid", weight, v)
+            )
             output = output.transpose(0, 2, 3, 1, 4)
             output = output.reshape(*output.shape[:3], stop - start)
             output = _linear(gate * output, params["proj_o"]["kernel"][start:stop])
@@ -634,7 +649,8 @@ def _outer_product_mean_amp(
     """CUDA AMP contracts to BF16 before FP32 division, even after ``.float()``."""
     dtype = params["proj_a"]["kernel"].dtype
     mask = mask.astype(m.dtype)
-    m = _layer_norm(
+    norm = amp_layer_norm if dtype == jnp.bfloat16 else _layer_norm
+    m = norm(
         m.astype(jnp.float32), params["norm"]["scale"], params["norm"]["bias"], eps
     )
     a = _linear(m, params["proj_a"]["kernel"]) * mask[..., None]

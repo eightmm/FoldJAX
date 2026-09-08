@@ -297,7 +297,7 @@ def test_backend_rejects_an_unsupported_comma_separated_representation_early(
 
 
 def test_backend_rejects_all_when_it_exposes_no_representations(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     request = dataclasses.replace(
         _request(tmp_path, "alphafold3"),
@@ -305,8 +305,11 @@ def test_backend_rejects_all_when_it_exposes_no_representations(
         representations=("all",),
     )
 
+    backend = AlphaFold3Backend()
+    caps = dataclasses.replace(backend.capabilities(), representations=())
+    monkeypatch.setattr(backend, "capabilities", lambda: caps)
     with pytest.raises(ValueError, match="does not expose trunk representations"):
-        AlphaFold3Backend().validate_request(request)
+        backend.validate_request(request)
 
 
 @pytest.mark.parametrize(
@@ -1173,8 +1176,11 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
         def extract_distogram(self, *, result, num_tokens):
             return None
 
-    def fake_featurize(fold_input, *, buckets, overflow, fixed_target):
+    def fake_featurize(
+        fold_input, *, buckets, overflow, fixed_target, msa_crop_size
+    ):
         seen["preflight"] = (buckets, overflow, fixed_target)
+        seen["msa_crop_size"] = msa_crop_size
         return (example,), SimpleNamespace(summary=lambda: plan_summary)
 
     def write_outputs(results, output_dir, job_name):
@@ -1187,7 +1193,9 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
     runner = SimpleNamespace(
         ModelRunner=FakeModelRunner,
         ResultsForSeed=lambda **kwargs: SimpleNamespace(**kwargs),
-        make_model_config=lambda **kwargs: SimpleNamespace(),
+        make_model_config=lambda **kwargs: SimpleNamespace(
+            evoformer=SimpleNamespace(num_msa=1024)
+        ),
         write_outputs=write_outputs,
     )
     folding = ModuleType("alphafold3.common.folding_input")
@@ -1227,6 +1235,7 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
     result = AlphaFold3Backend().predict(request)
 
     assert seen["preflight"] == ((512,), "exact", True)
+    assert seen["msa_crop_size"] == 1024
     assert bool(seen["model_batch"][_PREFIX_STABLE_NOISE_FEATURE])
     assert _PREFIX_STABLE_NOISE_FEATURE not in seen["extraction_batch"]
     assert result.shape_profile == plan_summary
@@ -2045,6 +2054,9 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
     monkeypatch.setattr(
         "foldjax.backends.openfold3.import_module", lambda name: modules[name]
     )
+    monkeypatch.setattr(
+        "foldjax.models.openfold3.streaming.compile_streamed_predict", fake_compile
+    )
     request = dataclasses.replace(
         _request(tmp_path, "openfold3"),
         padding=PaddingConfig(tokens=4, atoms=4, msa=2, templates=2),
@@ -2052,11 +2064,12 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
 
     result = OpenFold3Backend().predict(request)
 
-    assert seen["targets"] == (4, 4, 2, 2)
+    assert seen["targets"] == (4, 4, None, 2)
     assert seen["compact_shape"] == (1, 4)
     assert seen["compile_options"] == {
         "triangle_kernel": None,
         "cache_scope": str(tmp_path / "cache"),
+        "compiled": True,
     }
     np.testing.assert_array_equal(
         seen["noise_mask"],

@@ -282,6 +282,8 @@ class Model(hk.Module):
     num_recycles: int = 10
     return_embeddings: bool = False
     return_distogram: bool = False
+    foldjax_return_representations: tuple[str, ...] = ()
+    foldjax_stop_after: str = 'full'
 
   def __init__(self, config: Config, name: str = 'diffuser'):
     super().__init__(name=name)
@@ -341,6 +343,12 @@ class Model(hk.Module):
         global_config=self.global_config,
     )
 
+    representations = {}
+    if 'single_inputs' in self.config.foldjax_return_representations:
+      representations['single_inputs'] = target_feat
+    if self.config.foldjax_stop_after == 'inputs':
+      return {'representations': representations}
+
     def recycle_body(_, args):
       prev, key = args
       key, subkey = jax.random.split(key)
@@ -373,6 +381,12 @@ class Model(hk.Module):
       num_iter = self.config.num_recycles + 1
       embeddings, _ = hk.fori_loop(0, num_iter, recycle_body, (embeddings, key))
 
+    for name in ('single', 'pair'):
+      if name in self.config.foldjax_return_representations:
+        representations[name] = embeddings[name]
+    if self.config.foldjax_stop_after == 'trunk':
+      return {'representations': representations}
+
     samples = self._sample_diffusion(
         batch,  # pyrefly: ignore[bad-argument-type]
         embeddings,
@@ -403,6 +417,8 @@ class Model(hk.Module):
         'distogram': distogram,
         **confidence_output,
     }
+    if representations:
+      output['representations'] = representations
     if self.config.return_embeddings:
       output['single_embeddings'] = embeddings['single']
       output['pair_embeddings'] = embeddings['pair']

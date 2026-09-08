@@ -59,7 +59,7 @@ def test_predict_applies_compute_dtype_to_precomputed_trunk(monkeypatch) -> None
     monkeypatch.setattr(predict_module, "boltz2_trunk_forward", fake_trunk)
     monkeypatch.setattr(predict_module, "boltz2_sample_forward", fake_sample)
 
-    predict_module.boltz2_predict(
+    out = predict_module.boltz2_predict(
         {"trunk": {"kernel": jnp.ones((1,), dtype=jnp.float32)}},
         {
             "float_feat": jnp.ones((1,), dtype=jnp.float32),
@@ -77,6 +77,7 @@ def test_predict_applies_compute_dtype_to_precomputed_trunk(monkeypatch) -> None
         "int_feat_dtype": jnp.dtype(jnp.int32),
         "sample_trunk_dtype": jnp.dtype(jnp.bfloat16),
     }
+    assert "confidence_score" not in out
 
 
 def test_predict_scopes_triton_to_trunk_atom_attention(monkeypatch) -> None:
@@ -176,7 +177,12 @@ def test_predict_can_map_confidence_sequentially(monkeypatch) -> None:
     monkeypatch.setattr(
         predict_module,
         "confidence_module_forward",
-        lambda *args, x_pred, **kwargs: {"plddt": x_pred[:, 0, 0]},
+        lambda *args, x_pred, **kwargs: {
+            "plddt": x_pred[:, 0, 0],
+            "complex_plddt": x_pred[:, 0, 0],
+            "ptm": jnp.zeros(x_pred.shape[0]),
+            "iptm": jnp.zeros(x_pred.shape[0]),
+        },
     )
 
     out = predict_module.boltz2_predict(
@@ -190,6 +196,73 @@ def test_predict_can_map_confidence_sequentially(monkeypatch) -> None:
     )
 
     np.testing.assert_array_equal(np.asarray(out["plddt"]), np.asarray(coords[:, 0, 0]))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("sequential", [False, True])
+@pytest.mark.parametrize(
+    "iptm,use_ptm",
+    [
+        ([0.0, 0.0], True),
+        ([-1e-8, 1e-8], True),
+        ([0.0, np.nextafter(np.float32(1e-8), np.float32(np.inf))], False),
+        ([0.0, 0.25], False),
+        ([0.2, 0.25], False),
+    ],
+)
+def test_predict_confidence_score_uses_native_whole_sample_fallback(
+    monkeypatch, compiled, sequential, iptm, use_ptm
+):
+    trunk = {
+        "s_inputs": jnp.zeros((1, 1, 1)),
+        "s": jnp.zeros((1, 1, 1)),
+        "z": jnp.zeros((1, 1, 1, 1)),
+    }
+    coords = jnp.broadcast_to(
+        jnp.arange(2, dtype=jnp.float32)[:, None, None], (2, 1, 3)
+    )
+    raw = {
+        "complex_plddt": jnp.asarray([0.75, 0.5]),
+        "ptm": jnp.asarray([0.8, 0.4]),
+        "plddt": jnp.asarray([[0.3], [0.9]]),
+        "plddt_logits": jnp.asarray([[[1.0, 2.0]], [[3.0, 4.0]]]),
+    }
+    monkeypatch.setattr(predict_module, "boltz2_trunk_forward", lambda *a, **k: trunk)
+    monkeypatch.setattr(
+        predict_module,
+        "boltz2_sample_forward",
+        lambda *a, **k: {"sample_atom_coords": coords},
+    )
+    monkeypatch.setattr(
+        predict_module, "distogram_forward", lambda *a, **k: jnp.zeros((1, 1, 1, 1, 1))
+    )
+
+    def confidence(*args, x_pred, feats, **kwargs):
+        indices = x_pred[:, 0, 0].astype(jnp.int32)
+        return {
+            name: value[indices]
+            for name, value in {**raw, "iptm": feats["iptm"]}.items()
+        }
+
+    monkeypatch.setattr(predict_module, "confidence_module_forward", confidence)
+
+    def run(values):
+        return boltz2_predict(
+            {"trunk": {}, "confidence": {}},
+            {"iptm": values},
+            jax.random.PRNGKey(0),
+            multiplicity=2,
+            run_distogram=False,
+            confidence_sequentially=sequential,
+        )
+
+    values = jnp.asarray(iptm, jnp.float32)
+    out = (jax.jit(run) if compiled else run)(values)
+    tm = np.asarray(raw["ptm"] if use_ptm else values)
+    expected = (4 * np.asarray(raw["complex_plddt"]) + tm) / 5
+    np.testing.assert_allclose(out["confidence_score"], expected, rtol=1e-7, atol=0)
+    for name, value in {**raw, "iptm": values, "sample_atom_coords": coords}.items():
+        np.testing.assert_array_equal(out[name], value)
 
 
 @pytest.mark.parametrize(
@@ -512,7 +585,11 @@ def test_predict_runs_complete_affinity_ensemble_on_best_sample(monkeypatch) -> 
     monkeypatch.setattr(
         predict_module,
         "confidence_module_forward",
-        lambda *args, **kwargs: {"iptm": jnp.asarray([0.1, 0.9])},
+        lambda *args, **kwargs: {
+            "iptm": jnp.asarray([0.1, 0.9]),
+            "ptm": jnp.asarray([0.2, 0.8]),
+            "complex_plddt": jnp.asarray([0.4, 0.6]),
+        },
     )
 
     def fake_input_embedder(params, feats, *, affinity, **kwargs):

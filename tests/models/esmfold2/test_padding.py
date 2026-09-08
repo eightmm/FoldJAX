@@ -93,9 +93,9 @@ def test_padding_plan_carries_real_storage_and_target_dimensions() -> None:
     assert plan.storage["atoms"] == built["atom_attention_mask"].shape[-1]
     assert plan.target == {
         "tokens": 256,
-        "atoms": 256,
-        "msa": 1,
-        "language_model_tokens": 128,
+        "atoms": 6144,
+        "msa": 1024,
+        "language_model_tokens": 768,
     }
 
 
@@ -308,8 +308,10 @@ def test_deep_msa_tape_matches_default_loop_subsampling(
         _prefix,
         *,
         n_layers,
+        native_opm_params=None,
     ):
         del n_layers
+        assert native_opm_params is None
         per_token = jnp.sum(deletion_value, axis=-1)
         return per_token[:, :, None, None] + per_token[:, None, :, None]
 
@@ -572,6 +574,51 @@ def test_public_crop_and_score_drop_masked_suffixes() -> None:
     assert cropped["pae"].shape == (1, tokens, tokens)
     assert cropped["pde"].shape == (1, tokens, tokens)
     assert output.sample_scores(cropped)[0]["plddt"] == pytest.approx(0.8)
-    assert output.sample_scores(
-        prediction, token_mask=padded["token_attention_mask"]
-    )[0]["plddt"] == pytest.approx(0.8)
+    assert output.sample_scores(prediction, token_mask=padded["token_attention_mask"])[
+        0
+    ]["plddt"] == pytest.approx(0.8)
+
+
+def test_token_profile_is_independent_of_msa_depth_and_lm_chain_overhead() -> None:
+    plans = [
+        _padding_plan(
+            _alignment_rows(_features(), rows),
+            PaddingConfig(),
+            max_msa_depth=1024,
+            language_model_tokens=lm_length,
+        )
+        for rows, lm_length in ((1, 11), (80, 27))
+    ]
+    assert plans[0].target == plans[1].target
+
+
+def test_uncapped_msa_profile_rejects_overflow_without_sampling() -> None:
+    with pytest.raises(ValueError):
+        _padding_plan(
+            _alignment_rows(_features(), 1025),
+            PaddingConfig(),
+            max_msa_depth=None,
+            language_model_tokens=None,
+        )
+
+
+def test_explicit_language_model_capacity_is_preserved() -> None:
+    plan = _padding_plan(
+        _features(),
+        PaddingConfig(language_model_tokens=32),
+        max_msa_depth=1024,
+        language_model_tokens=11,
+    )
+    assert plan.target["language_model_tokens"] == 32
+
+
+def test_lm_token_profile_covers_one_residue_per_chain() -> None:
+    built = features.build_features([("A", str(i), i, i) for i in range(9)])
+    natural = inference.language_model_length(built)
+    assert natural == 27
+    plan = _padding_plan(
+        built, PaddingConfig(tokens=9),
+        max_msa_depth=1024, language_model_tokens=natural,
+    )
+    assert plan.target["language_model_tokens"] == natural
+    assert plan.target["atoms"] == 224

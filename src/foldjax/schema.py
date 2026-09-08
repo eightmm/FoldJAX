@@ -38,7 +38,8 @@ MSA_POLICIES = ("none", "auto", "required")
 #: What a failing run does to the rest of the request.
 #: Where a run may stop. ``trunk`` exists so that downstream work can take
 #: the representations without paying for a structure it will discard.
-STOP_POINTS: tuple[str, ...] = ("full", "trunk")
+#: ``inputs`` stops before the main trunk.
+STOP_POINTS: tuple[str, ...] = ("full", "trunk", "inputs")
 
 ERROR_POLICIES = ("stop", "continue")
 
@@ -132,9 +133,10 @@ class ModelCapabilities:
     native_only_features: tuple[str, ...] = ()
     # Trunk arrays this model can hand back, in the order it builds them.
     # The tables differ by model: OpenDDE folds in a structural-token
-    # space its residue space does not cover, and ESMFold2 carries one
-    # single stream rather than an input embedding and a trunk output.
+    # space its residue space does not cover. Names retain native semantics.
     representations: tuple[str, ...] = ()
+    # Arrays available before any trunk recycling. Feature ABI stays private.
+    input_representations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +203,7 @@ class ModelInfo:
             "common_schema_features": list(capabilities.common_schema_features),
             "native_only_features": list(capabilities.native_only_features),
             "representations": list(capabilities.representations),
+            "input_representations": list(capabilities.input_representations),
             "sampling": dict(capabilities.sampling),
             "input_requirements": {
                 name: requirement.summary()
@@ -238,11 +241,13 @@ _PADDING_AXES = (
 class PaddingConfig:
     """Optional shape normalization for reusable JAX executables.
 
-    ``None`` targets ask each backend for its conservative standard bucket.
+    ``None`` targets use a token bucket with derived atom/LM capacity and
+    fixed native MSA/template limits. Explicit axis targets override this policy.
     Setting an integer pins that axis to an exact padded size, which is useful
     for warming one known serving profile. The default ``overflow='error'``
     refuses inputs beyond the standard grid before an unplanned large compile;
-    ``'exact'`` deliberately keeps such an input runnable at its natural size.
+    ``'exact'`` permits an exact token size beyond that grid; derived capacity
+    checks still reject oversized axes without truncation.
 
     Not every model owns every axis.  Backend capabilities advertise the axes
     they understand and reject an explicitly pinned unsupported axis before
@@ -325,6 +330,28 @@ def expand_input_directories(
             )
         expanded.extend(found)
     return tuple(expanded)
+
+
+def _normalize_padding(padding):
+    """Normalize the shared execution setting without inspecting any input files."""
+    if padding is True:
+        padding = PaddingConfig()
+    elif padding is False or padding is None:
+        padding = None
+    elif isinstance(padding, Mapping):
+        supported = {*_PADDING_AXES, "overflow"}
+        unknown = [key for key in padding if key not in supported]
+        if unknown:
+            raise ValueError(
+                "unsupported padding fields: "
+                + ", ".join(sorted(map(repr, unknown)))
+            )
+        padding = PaddingConfig(**dict(padding))
+    elif not isinstance(padding, PaddingConfig):
+        raise ValueError(
+            "padding must be a boolean, mapping, PaddingConfig, or None"
+        )
+    return padding
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,24 +443,7 @@ class PredictionRequest:
     stop_after: str = "full"
 
     def __post_init__(self) -> None:
-        padding = self.padding
-        if padding is True:
-            padding = PaddingConfig()
-        elif padding is False or padding is None:
-            padding = None
-        elif isinstance(padding, Mapping):
-            supported = {*_PADDING_AXES, "overflow"}
-            unknown = [key for key in padding if key not in supported]
-            if unknown:
-                raise ValueError(
-                    "unsupported padding fields: "
-                    + ", ".join(sorted(map(repr, unknown)))
-                )
-            padding = PaddingConfig(**dict(padding))
-        elif not isinstance(padding, PaddingConfig):
-            raise ValueError(
-                "padding must be a boolean, mapping, PaddingConfig, or None"
-            )
+        padding = _normalize_padding(self.padding)
         object.__setattr__(self, "padding", padding)
         object.__setattr__(
             self,
@@ -449,11 +459,11 @@ class PredictionRequest:
                 f"stop_after must be one of {', '.join(STOP_POINTS)}; "
                 f"got {self.stop_after!r}"
             )
-        if self.stop_after == "trunk" and not self.representations:
+        if self.stop_after in {"trunk", "inputs"} and not self.representations:
             raise ValueError(
-                "stop_after='trunk' stops before any structure is predicted, "
+                f"stop_after={self.stop_after!r} stops before structure prediction, "
                 "so it produces nothing unless representations are requested; "
-                "pass representations=('single', 'pair') or 'all'"
+                "pass representations='all' or supported names for the selected stage"
             )
         if isinstance(self.representations, str):
             object.__setattr__(self, "representations", (self.representations,))
@@ -571,7 +581,9 @@ class PredictionRequest:
                 object.__setattr__(
                     self,
                     name,
-                    _strict_integer(value, name=name, minimum=1),
+                    _strict_integer(
+                        value, name=name, minimum=0 if name == "num_recycles" else 1
+                    ),
                 )
 
     @property
@@ -721,6 +733,8 @@ class PredictionResult:
     # not the requested policy, so cache warm can report exactly one executable
     # shape without pretending that it populated an entire grid.
     shape_profile: dict[str, Any] | None = None
+    # Populated by the model facade; unresolved checkpoint defaults are labelled.
+    configuration: Mapping[str, Any] | None = None
 
     def summary(self) -> dict[str, Any]:
         summary = {
@@ -728,6 +742,8 @@ class PredictionResult:
             "output_dir": str(self.output_dir) if self.output_dir is not None else None,
             "samples": [sample.summary() for sample in self.samples],
         }
+        if self.configuration is not None:
+            summary["configuration"] = dict(self.configuration)
         if self.shape_profile is not None:
             summary["shape_profile"] = dict(self.shape_profile)
         if self.representations is not None:

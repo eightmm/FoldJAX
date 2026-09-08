@@ -38,3 +38,15 @@ def test_backend_variants_are_opt_in_and_keep_highest_precision():
         "xla_gpu_enable_cublaslt": False,
         "xla_gpu_autotune_level": 0,
     }
+
+
+def test_native_norm_control_preserves_baseline_and_selects_two_chunk_shapes():
+    baseline = execution_profiles()
+    profiles = execution_profiles(native_norm_control=True)
+    assert profiles[:2] == baseline
+    assert profiles[2:] == [
+        ("native_shape", "highest", {}),
+        ("highest_native_norm", "highest", {}),
+        ("native_shape_native_norm", "highest", {}),
+        ("production_policy", "highest", {}),
+    ]
