@@ -356,3 +356,56 @@ stochasticity is quotiented out. What separates ESMFold2 from the rest is the
 estimator its noise demands, not its accuracy.
 
 Detail on branch `fix/esmfold2-rerun-floor`.
+
+## Why the standard is matched-tape, measured
+
+The table's numbers are matched-tape: the native tape is injected and the port
+replays it. A natural question is what the ports look like *free-running*, each
+side sampling its own diffusion noise. The same artifact holds both sides'
+released CIFs, so this costs nothing to check.
+
+Free-running whole-system Kabsch, max over five samples, port against upstream:
+
+| model | 1ubq | dna 7r6r | lig 5sak | 7st3 | rna 1urn | rna-lig 3v7e | rna-lig 3gca |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| OpenFold3 | 1.89 | 20.14 | 22.47 | 27.80 | 1.55 | 15.97 | 0.33 |
+| Boltz-2 | 1.71 | 14.23 | 15.88 | 3.10 | 0.88 | 1.24 | 0.92 |
+| Protenix-v2 | 2.05 | 4.81 | 17.69 | 1.40 | 2.24 | 1.40 | 0.26 |
+| OpenDDE | 0.60 | 5.31 | 15.21 | 0.90 | 0.75 | 1.01 | 0.31 |
+| AlphaFold 3 | 0.0023 | 0.081 | 0.497 | 4.01 | 0.93 | 1.01 | 0.0024 |
+
+Read naively this inverts the matched-tape table -- OpenFold3, the closest model
+there, is the worst here by an order of magnitude.
+
+### The control that voids it
+
+Each side's own five samples, compared against each other:
+
+| model / case | upstream vs itself | port vs itself | port vs upstream |
+| --- | ---: | ---: | ---: |
+| OpenFold3 / 5sak | **26.29** | 11.79 | 22.47 |
+| Boltz-2 / 5sak | **18.04** | 12.19 | 15.88 |
+| OpenFold3 / 7st3 | **28.25** | 28.22 | 27.80 |
+
+**In every case the cross-implementation distance is smaller than upstream's
+distance from itself.** On 7st3 all three numbers agree to within 2%. The
+free-running "differences" are ensemble width and nothing else; the comparison
+has no power at all.
+
+That is the measured answer to why this standard injects the tape. Without it,
+two implementations of the *same* model are no further apart than one
+implementation is from itself, and the table above ranks sampling luck.
+
+### Two cautions this leaves
+
+First, a whole-system fit on a multi-entity target mixes fold accuracy with
+inter-entity placement, and the second term can dominate. OpenFold3 on 7st3 is
+27.80 A whole-system but 3.90 A on chain A and 1.70 A on chain B -- the chains
+fold, the complex docks differently. On 5SAK the decomposition says the opposite
+for both OpenFold3 and Boltz-2: the protein itself carries the number. Read
+per entity before attributing.
+
+Second, this is the same shape as the ESMFold2 result recorded above. Two of the
+six models have been shown to need their own sampling spread quotiented out
+before a port-versus-native number means anything; the difference is that
+ESMFold2's stochasticity survives the tape and these models' does not.
