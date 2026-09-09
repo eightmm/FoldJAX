@@ -33,13 +33,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from foldjax.backends._ccd_session import ManagedCcdMemory
 from foldjax.backends._representations import _representations_result
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
@@ -356,7 +357,7 @@ def apply_managed_profile(
     return merged
 
 
-class ESMFold2Backend(Backend):
+class ESMFold2Backend(ManagedCcdMemory, Backend):
     name = "esmfold2"
     session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "language_model_tokens")
@@ -445,23 +446,12 @@ class ESMFold2Backend(Backend):
                 # prediction, poison, or KeyboardInterrupt already in flight.
                 pass
 
-    @contextmanager
-    def _ccd_memory_scope(self) -> Iterator[None]:
+    def _ccd_lease(self) -> AbstractContextManager[None]:
         """Lease Biohub chemistry once per backend session, lazily."""
 
         from foldjax.models.esmfold2.data.ccd import _release_ccd_cache
 
-        memory = self._managed_memory
-        if memory is not None:
-            if not self._ccd_memory_leased:
-                memory.enter_context(
-                    managed_memory_lease("esmfold2_ccd", _release_ccd_cache)
-                )
-                self._ccd_memory_leased = True
-            yield
-        else:
-            with managed_memory_lease("esmfold2_ccd", _release_ccd_cache):
-                yield
+        return managed_memory_lease("esmfold2_ccd", _release_ccd_cache)
 
     def invalidate_session(self) -> None:
         self._lm_embedding = None

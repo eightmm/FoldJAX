@@ -28,6 +28,7 @@ from foldjax._openfold3_compile import (
 from foldjax._openfold3_compile import (
     triangle_backend as _triangle_backend,
 )
+from foldjax.backends._ccd_session import WeightSessionHooks
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
@@ -173,7 +174,7 @@ def _compile_enabled(options: dict[str, Any]) -> bool:
     return not _strict_boolean(options.pop("no_compile", False), name="no_compile")
 
 
-class OpenFold3Backend(Backend):
+class OpenFold3Backend(WeightSessionHooks, Backend):
     name = "openfold3"
     session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "templates")
@@ -233,17 +234,6 @@ class OpenFold3Backend(Backend):
     def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
         with self._weights.session(requests):
             yield self
-
-    def invalidate_session(self) -> None:
-        self._weights.invalidate()
-
-    def validate_session(self, request: PredictionRequest) -> None:
-        if self._weights.active and request.weights is not None:
-            self._weights.validate(Path(request.weights))
-
-    def observe_resumed(self, request: PredictionRequest) -> None:
-        if self._weights.active and request.weights is not None:
-            self._weights.validate(Path(request.weights), resumed=True)
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Name static choices without splitting released-default aliases."""

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from collections.abc import Sequence
+from contextlib import AbstractContextManager, ExitStack
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
@@ -209,7 +210,7 @@ def _extra_cli_args(value: Any) -> tuple[str, ...]:
     return arguments
 
 
-class ProtenixBackend(Backend):
+class ProtenixBackend(ManagedCcdSession, Backend):
     name = "protenix"
     session_reuse = True
     padding_axes = (
@@ -268,57 +269,16 @@ class ProtenixBackend(Backend):
         self._managed_memory: ExitStack | None = None
         self._ccd_memory_leased = False
 
-    @contextmanager
-    def session(self, requests: Sequence[PredictionRequest]) -> Iterator[Backend]:
-        memory = ExitStack()
-        try:
-            with self._weights.session(requests):
-                self._managed_memory = memory
-                try:
-                    yield self
-                finally:
-                    self._managed_memory = None
-                    self._ccd_memory_leased = False
-        finally:
-            try:
-                memory.close()
-            except BaseException:
-                pass
-
-    @contextmanager
-    def _ccd_memory_scope(self) -> Iterator[None]:
+    def _ccd_lease(self) -> AbstractContextManager[None]:
         """Lease shared Protenix/OpenDDE chemistry lazily."""
 
         from foldjax.models.protenix.data.featurize_json import (
             _release_external_ccd_cache,
         )
 
-        memory = self._managed_memory
-        if memory is not None:
-            if not self._ccd_memory_leased:
-                memory.enter_context(
-                    managed_memory_lease(
-                        "protenix_external_ccd", _release_external_ccd_cache
-                    )
-                )
-                self._ccd_memory_leased = True
-            yield
-        else:
-            with managed_memory_lease(
-                "protenix_external_ccd", _release_external_ccd_cache
-            ):
-                yield
-
-    def invalidate_session(self) -> None:
-        self._weights.invalidate()
-
-    def validate_session(self, request: PredictionRequest) -> None:
-        if self._weights.active and request.weights is not None:
-            self._weights.validate(Path(request.weights))
-
-    def observe_resumed(self, request: PredictionRequest) -> None:
-        if self._weights.active and request.weights is not None:
-            self._weights.validate(Path(request.weights), resumed=True)
+        return managed_memory_lease(
+            "protenix_external_ccd", _release_external_ccd_cache
+        )
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _extra_cli_args(options.get("cli_args", ()))
