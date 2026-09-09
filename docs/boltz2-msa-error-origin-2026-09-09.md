@@ -961,3 +961,48 @@ a hypothesis until someone runs the matched-tape construction and this driver's
 construction against the *same* native capture. This document has been wrong
 often enough today that naming the last suspect is not the same as convicting
 it.
+
+## The last difference, named to a line
+
+Two candidates were left. Both are now resolved.
+
+**Code version is excluded.** This driver's arm records
+`foldjax_commit 3312e1da3df8`; the pre-existing FP32 arm from 2026-09-05 records
+`83eb4eb19adc`, with two commits touching `models/boltz2` between them. Both give
+the same order: 0.001305 A today, 0.002405-0.029911 A then. The port has not
+changed materially, and neither reproduces 1.1761 A.
+
+**Augmentation is the remaining difference, and it is not identity here.** The
+`COMBINED_DIAGNOSTICS` contract states matched-tape runs use "captured upstream
+noise, and identity augmentation". This driver does something else:
+
+```python
+def augment(*args, **kwargs):
+    with patch.object(torch, "randn", ...), patch.object(torch, "randn_like", ...):
+        return original(*args, **kwargs)
+```
+
+It calls upstream's real `center_random_augmentation` and records the draws, then
+replays them. So the two harnesses differ in exactly this: one runs the actual
+augmentation with its draws matched across both sides, the other substitutes
+identity.
+
+## The state of the failing cell
+
+Two independent harnesses, four days apart, on different commits, both with both
+sides at FP32, agree that the port tracks native on 5SAK to between 0.001 and
+0.03 A. The panel's `matched RMSD` column reports 1.1761 A for the same target
+and the same nominal precision.
+
+Everything that could explain a 400-900x gap between them has been measured and
+excluded except the augmentation handling. That is a difference between two
+measurement constructions, not a property of the port.
+
+I am not going to call it the cause. The mechanism by which identity
+augmentation would cost three orders is not obvious, this document has been
+wrong six times today, and the experiment that would settle it -- the same
+native capture scored both ways -- has not been run. What is established is
+narrower and still worth having: **on this target, at matched precision, the
+Boltz-2 port is not carrying an angstrom-scale error, and the panel's one
+failing cell is not reproduced by the harness that replays the actual
+augmentation draws.**
