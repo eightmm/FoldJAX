@@ -468,3 +468,76 @@ change to upstream, not to the port.
   established. Worth a matched-tape reading before anything else.
 - OpenDDE: the `highest` default remains a product decision, documented with
   both numbers.
+
+---
+
+# Provenance correction: what the source artifact actually contains
+
+Everything above cites `upstream-default-multimodal-n5-20260904`. Reading that
+artifact's own `COMBINED_DIAGNOSTICS.md` rather than the inherited table shows
+this document has been describing it imprecisely, and in one place has been
+claiming credit for work the artifact already did.
+
+## The artifact's real column structure
+
+Per case, per model:
+
+| column | meaning |
+| --- | --- |
+| ordinary cross / within marker RMSD | free-running, port-vs-upstream against pooled within-arm |
+| ratio | cross over within |
+| exact p / Holm | exact test on that ratio, Holm-corrected across the panel |
+| reference-resolved ratio / p / Holm | the same restricted to experimentally resolved markers |
+| **matched RMSD** | the tape-injected number — this is the column this document has been quoting |
+| minimum trunk r | lowest trunk correlation |
+| result | PASS / FAIL / N/A² |
+
+The header states the contract: ordinary runs use released inference defaults
+and "equal integer seed 101 does not make their JAX and PyTorch random streams
+equal"; matched-tape runs force both frameworks to FP32 with identical feature
+tensors, captured upstream noise and identity augmentation, "so these isolate
+model-core parity rather than released mixed-precision timing."
+
+## Three corrections to this document
+
+**1. ESMFold2 was never absent from the panel.** It appears twice -- `ESMFold2
+FP32` and `ESMFold2 shipped BF16` -- with ordinary diagnostics on all seven
+cases. On 1ubq: ratio 1.14, exact p 0.2143, Holm 1.0000. It is `N/A²` only in
+the *matched RMSD* column, for want of a tape. The sections above describing it
+as unmeasured are wrong.
+
+**2. The permutation test recorded above re-derives the panel's method.** The
+artifact already compares cross against pooled within-arm spread with an exact
+p and a Holm correction across the panel. My six-run test on ESMFold2 reached
+the same conclusion -- not distinguishable -- with less power and no multiplicity
+control. It is corroboration, not a new estimator.
+
+**3. The "why matched-tape is measured to be necessary" section re-derives the
+ordinary columns.** Ratios sit near 1.0 with Holm-corrected p of 1.0000 nearly
+everywhere -- Boltz-2 on 5SAK is 10.452 / 10.846, ratio 0.96, p 0.7222. The
+artifact had already established that free-running has no power. My independent
+check agrees with it and adds nothing.
+
+## The verdict table, quoted rather than paraphrased
+
+Matched RMSD Å / result:
+
+| model | 1ubq | rna 1urn | rna-lig 3gca | rna-lig 3v7e | dna 7r6r | lig 5sak | 7st3 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AlphaFold3 3.0.4 | N/A² | N/A² | N/A² | N/A² | N/A² | N/A² | N/A² |
+| Boltz-2 2.2.1 | 0.0015 | 0.0032 | 0.0007 | 0.0009 | 0.0422 | **1.1761 FAIL** | 0.0066 |
+| OpenDDE 1.1.1 | 0.0039 | 0.0728 | 0.0071 | 0.0147 | 0.0725 | 0.0173 | 0.0957 |
+| OpenFold3 0.5.0 | 0.0000 | 0.0000 | 0.0000 | 0.0007 | 0.0002 | 0.0010 | 0.0001 |
+| Protenix-v2 2.0.0 | 0.0024 | 0.0072 | 0.0005 | 0.0187 | 0.0100 | 0.1611 | 0.0335 |
+| ESMFold2 FP32 | N/A² | N/A² | N/A² | N/A² | N/A² | N/A² | N/A² |
+| ESMFold2 BF16 | N/A² | N/A² | N/A² | N/A² | N/A² | N/A² | N/A² |
+
+Every non-`N/A²` cell passes except one. That part of this document was right.
+
+## What still stands from this session
+
+The AlphaFold 3 work is unaffected and remains the session's substantive change:
+its `N/A²` was for want of a passing audit panel, and that panel now passes
+38/38 on all six cases. The Boltz-2 closure stands on its own measurements. The
+OpenDDE lever and its price stand. The per-entity caution stands, and is not in
+the artifact.
