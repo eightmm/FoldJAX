@@ -169,3 +169,95 @@ def test_session_refuses_a_weight_changed_by_the_loader(tmp_path) -> None:
     with session.session(_requests(2)):
         with pytest.raises(PredictionError, match="changed while they were loading"):
             session.load(path, changing_loader)
+
+
+def test_poison_is_sticky_rather_than_recomputed_on_every_anchor(tmp_path) -> None:
+    """Once poisoned, a session refuses on the stored message.
+
+    Restoring the original target would make a fresh comparison succeed. The
+    guarantee is that a batch which has already seen its weights move is over,
+    not that every later call re-decides.
+    """
+
+    first = tmp_path / "first.jax"
+    second = tmp_path / "second.jax"
+    link = tmp_path / "weights.jax"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    link.symlink_to(first)
+    session = PreparedWeightSession("toy")
+    loads = []
+
+    def loader(source):
+        loads.append(source)
+        return object()
+
+    with session.session(_requests(2)):
+        session.load(link, loader)
+        link.unlink()
+        link.symlink_to(second)
+        with pytest.raises(PredictionError) as poisoned:
+            session.validate(link)
+        assert str(poisoned.value) == (
+            "toy weights changed while a prediction batch was active"
+        )
+
+        link.unlink()
+        link.symlink_to(first)
+        with pytest.raises(PredictionError) as revalidated:
+            session.validate(link)
+        assert str(revalidated.value) == str(poisoned.value)
+        with pytest.raises(PredictionError) as reloaded:
+            session.load(link, loader)
+        assert str(reloaded.value) == str(poisoned.value)
+
+    # The poisoned calls never reached the loader, and the retained tree was
+    # dropped when the poison was recorded.
+    assert len(loads) == 1
+
+
+def test_an_unverifiable_source_stays_uncached_for_the_rest_of_the_session(
+    tmp_path,
+) -> None:
+    """A source that could not be proven immutable degrades, it does not raise.
+
+    It also stays degraded: a later stat that would now succeed must not
+    silently promote the session onto the retaining path, because nothing
+    observed the file in between.
+    """
+
+    path = tmp_path / "weights.jax"
+    session = PreparedWeightSession("toy")
+    loads = []
+
+    def loader(source):
+        loads.append(source)
+        return object()
+
+    with session.session(_requests(2)):
+        session.validate(path)
+        path.write_bytes(b"weights")
+        assert session.load(path, loader) is not session.load(path, loader)
+        assert len(loads) == 2
+        # A mutation of the now-present file is not a poison either: this
+        # source was never anchored to an identity to contradict.
+        path.write_bytes(b"other")
+        session.validate(path)
+
+
+def test_a_resumed_seed_refuses_a_source_already_anchored_as_unverifiable(
+    tmp_path,
+) -> None:
+    """The anchor decides, not the current stat."""
+
+    path = tmp_path / "weights.jax"
+    session = PreparedWeightSession("toy")
+
+    with session.session(_requests(2)):
+        session.validate(path)
+        path.write_bytes(b"weights")
+        with pytest.raises(PredictionError) as unverifiable:
+            session.validate(path, resumed=True)
+        assert str(unverifiable.value) == (
+            "toy cannot verify weights used by a resumed prediction"
+        )
