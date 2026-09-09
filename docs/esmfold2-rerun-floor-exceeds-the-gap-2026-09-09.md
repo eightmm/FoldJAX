@@ -118,3 +118,67 @@ That is a dependency repair, not a numerics question, and it changes an
 environment other work may depend on -- so it is recorded here rather than done.
 Repairing it makes the ESMFold2 row answerable: run native at several seeds, and
 test the two distributions with both sides properly replicated.
+
+## The blocker was repaired, and the row is now answerable
+
+The import failure above was not one version skew but a chain, and none of it
+needed the shared virtualenv changed:
+
+1. `transformers.utils.hub` imports `is_offline_mode` from `huggingface_hub`,
+   which no released version exports (checked 0.35.3, 0.36.0, 0.36.1, 0.36.2,
+   1.0.0, 1.1.0). The name is a plain read of the offline flag, so a
+   `sitecustomize.py` in an overlay directory restores the alias.
+2. The *installed* transformers (5.16.1) does not contain `ESMFold2Model` at
+   all -- its class is `EsmFold2Model`. The harness never used the installed
+   package: `bench/esmfold2_tape.py` takes `--upstream-source-root` and checks
+   `inspect.getfile(ESMFold2Model)` against it. The tree is
+   `jctc-matrix-20260904/upstream-root/transformers-esmfold2` (transformers
+   4.57.6), and it matches the venv's own `tokenizers` 0.22.2.
+
+With the overlay on `PYTHONPATH` the reference model loads and the native arm
+runs. The overlay is at `foldjax-bench/esm-hfhub-overlay` and contains one file.
+
+### The overlay did not contaminate the reference
+
+A second native capture (`esmfold2-native-full-tape-N2-20260909`) lands inside
+the first one's own ensemble: max 2.1838, median 0.1364 -- the same scale as
+every other pairing here. Had the shim changed behaviour, this is where it would
+show.
+
+### Both sides replicated
+
+Four port runs and two native runs, median whole-system Kabsch per run pair:
+
+| Pairing | pairs | values |
+| --- | --- | --- |
+| within port | 6 | 0.1637, 0.0779, 0.1029, 0.1621, 0.1391, 0.1218 |
+| within native | 1 | 0.1364 |
+| cross | 8 | 0.1731, 0.1739, 0.1940, 0.1943, 0.1605, 0.1312, 0.1375, 0.1612 |
+
+Exact permutation test over the six run labels -- the correct treatment, since
+under the null "port and native draw from the same distribution" the labels are
+exchangeable and the individual sample distances are not independent:
+
+```
+observed cross-minus-within: +0.0366 A
+exact permutation, 15 arrangements -> p = 0.067
+```
+
+The observed labelling is the most extreme of all fifteen, and 1/15 = 0.067 is
+the smallest p this design can produce. So the separation is real in direction
+and the test is at its floor; it does not reach conventional significance with
+six runs.
+
+## What ESMFold2's row should say
+
+**Port-versus-native separation ~0.037 A, once the sampling spread is quotiented
+out.** That is the same band as the other passing models -- OpenDDE's 0.02-0.07,
+Protenix-v2's 0.0335 on 7st3 -- and nowhere near the 0.5 A contract threshold.
+
+ESMFold2 is not outside the standard. It needed a different estimator, because
+its stochasticity is larger than the quantity being estimated, and a single-run
+number reports noise. With runs replicated on both sides the model sits with the
+others.
+
+More native runs would sharpen the p-value; they would not change the estimate
+much, since the six cross pairs already agree to within 0.06 A.
