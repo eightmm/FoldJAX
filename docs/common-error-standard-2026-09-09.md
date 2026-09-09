@@ -261,3 +261,35 @@ number turns out to be, the trunk is not where a large error is hiding.
 The remaining work to fill the row properly is the injectable-tape work the
 2026-09 observer effort has been building: independent preprocessing and the
 port's own language model, so that the comparison is end to end.
+
+## Resolved, 2026-09-09: AlphaFold 3's row is closed
+
+The AF3 row went `n/a` -> wrongly retracted -> restored on the grounds that the
+policy gate was deliberate. The gate was deliberate. What it refused to admit
+was a schema difference that should not have been in the artifact at all.
+
+`bench/af3_closure_capture.py` now writes the two port-only config fields on
+whichever arm lacks them, at the values that mean "captured nothing extra" --
+which for the native run is a true statement about that run. The comparison is
+unchanged and still strict; `config_difference_kind`, its
+`never grant parity admission` docstring, and
+`test_default_extension_is_explained_without_waiving_config_gate` are untouched.
+
+Both arms re-run on all six cases and scored with the unmodified
+`compare_arms`:
+
+| Case | verdict |
+| --- | --- |
+| protein_1ubq | passed, 38/38 |
+| protein_dna_7r6r | passed, 38/38 |
+| protein_ligand_5sak | passed, 38/38 |
+| protein_protein_7st3 | passed, 38/38 |
+| protein_rna_1urn | passed, 38/38 |
+| protein_rna_ligand_3v7e | passed, 38/38 |
+
+Six of six. AlphaFold 3 is no longer an empty row: it holds the strongest
+evidence in the table, a full bitwise-closure panel passing every check
+including coordinates and the complete tape.
+
+See [the AF3 record](../../foldjax-af3cfg/docs/af3-config-schema-closes-the-panel-2026-09-09.md)
+on branch `fix/af3-config-schema`.
