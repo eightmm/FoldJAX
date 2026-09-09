@@ -42,10 +42,17 @@ def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
     if trunk_dtype == "bf16":
         import jax.numpy as jnp
 
-        return _load_native_weights_with_field_dtype(
+        from foldjax.models.protenix.models.input_precision import (
+            native_input_autocast_params,
+        )
+
+        params = _load_native_weights_with_field_dtype(
             path,
             jnp.bfloat16,
-            frozenset({"input_embedder", "pairformer_output"}),
+            frozenset({"pairformer_output"}),
+        )
+        return params._replace(
+            input_embedder=native_input_autocast_params(params.input_embedder)
         )
     return load_native_weights(path)
 

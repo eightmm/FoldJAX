@@ -626,7 +626,6 @@ def native_record(root):
         "rotations": 200,
         "translations": 200,
         "msa_calls": 10,
-        "mc_dropout_applied": False,
     }
     for name, value in required.items():
         if completion.get(name) != value or type(completion.get(name)) is not type(
@@ -696,6 +695,9 @@ def native_record(root):
         for name in ("msa", "has_deletion", "deletion_value"):
             _exact(msa[f"{cycle}.selected.{name}"], features[name][rows], name)
     config = json.loads((root / "effective-config.json").read_text())
+    from bench.protenix_dropout_tape import load_dropout_tape
+
+    dropout_masks, dropout_rate = load_dropout_tape(root, completion, config)
     policy = {
         name: value
         for name, value in config.items()
@@ -755,6 +757,14 @@ def native_record(root):
                 "sampler": _bundle_digest(tape),
                 "msa": _bundle_digest(msa),
                 "mc_dropout": decisions,
+                **(
+                    {
+                        "dropout_masks": _array_digest(dropout_masks),
+                        "dropout_rate": dropout_rate,
+                    }
+                    if dropout_masks is not None
+                    else {}
+                ),
             }
         ),
     }
@@ -771,6 +781,8 @@ def native_record(root):
         "sampler-tape.npz",
         "msa-tape.npz",
     )
+    if dropout_masks is not None:
+        artifact_names += ("dropout-tape.npz",)
     report = {
         "schema": 1,
         "run_id": root.name,

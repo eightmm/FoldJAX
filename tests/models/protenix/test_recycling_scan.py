@@ -190,8 +190,10 @@ def test_the_scan_body_gets_the_feature_dict_not_none(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("use_cycle_scan", [False, True])
+@pytest.mark.parametrize("with_dropout", [False, True])
 def test_cycle_msa_index_tape_matches_materialized_trunk_cycles(
     use_cycle_scan: bool,
+    with_dropout: bool,
 ) -> None:
     """Gathering inside recycling preserves the complete MSA/trunk result."""
     from foldjax.models.protenix.models.trunk_blocks.trunk import (
@@ -219,6 +221,15 @@ def test_cycle_msa_index_tape_matches_materialized_trunk_cycles(
     assert tape is not None
     params = map_pairformer_output_state_dict(_pairformer_output_state())
     s_inputs = rng.normal(size=(n_token, 2)).astype(np.float32)
+    channels = params.trunk.initial.linear_zinit1.weight.shape[-2]
+    dropout_masks = (
+        jnp.asarray(
+            rng.integers(0, 2, size=(num_recycles, n_token, n_token, channels)),
+            dtype=bool,
+        )
+        if with_dropout
+        else None
+    )
 
     def run(**cycle_kwargs):
         return pairformer_output_from_s_inputs(
@@ -229,6 +240,7 @@ def test_cycle_msa_index_tape_matches_materialized_trunk_cycles(
             use_cycle_scan=use_cycle_scan,
             single_attention_backend="xla",
             triangle_attention_backend="xla",
+            cycle_pair_dropout_keep_masks=dropout_masks,
             **cycle_kwargs,
         )
 

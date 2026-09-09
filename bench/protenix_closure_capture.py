@@ -190,7 +190,10 @@ class NativeRecorder:
         self.schedule = None
         self.random_decisions = []
         self.mc_dropout = None
+        self.dropout_masks = []
+        self.dropout_rate = None
         self.completed = 0
+        self.fp32_atom_aggregation = False
 
     def bundle(self, name, values):
         if name in self.bundles:
@@ -223,10 +226,31 @@ class NativeRecorder:
             raise ValueError(
                 "native runner did not capture exactly one completed prediction"
             )
-        if self.mc_dropout is not False or len(self.random_decisions) != 1:
+        if type(self.mc_dropout) is not bool or len(self.random_decisions) != 1:
             raise ValueError(
                 "MC dropout decision is missing or its mask tape is unsupported"
             )
+        if self.mc_dropout:
+            if (
+                len(self.dropout_masks) != self.cycles
+                or self.dropout_rate is None
+                or not 0 < self.dropout_rate < 1
+            ):
+                raise ValueError("MC dropout mask tape is incomplete")
+            shapes = {mask.shape for mask in self.dropout_masks}
+            if len(shapes) != 1 or any(
+                mask.dtype != np.bool_
+                or mask.ndim != 3
+                or mask.shape[0] != mask.shape[1]
+                or 0 in mask.shape
+                for mask in self.dropout_masks
+            ):
+                raise ValueError("MC dropout mask tape has invalid shape/dtype")
+            np.savez_compressed(
+                self.out / "dropout-tape.npz", keep_masks=np.stack(self.dropout_masks)
+            )
+        elif self.dropout_masks or self.dropout_rate is not None:
+            raise ValueError("unexpected dropout tape on non-dropout branch")
         if self.in_sampler or self.in_msa:
             raise ValueError("unclosed capture context")
         for name, values in self.draws.items():
@@ -277,6 +301,8 @@ class NativeRecorder:
                 "msa_calls": len(self.msa),
                 "mc_dropout_applied": self.mc_dropout,
                 "mc_dropout_random_draws": self.random_decisions,
+                "mc_dropout_mask_calls": len(self.dropout_masks),
+                "mc_dropout_rate": self.dropout_rate,
                 "bf16_storage_mapping": (
                     "exact numeric widening to FP32; see tree metadata"
                 ),
@@ -361,6 +387,11 @@ def install_observers(stack, recorder, runner, torch, generator, model_module, u
                 "layernorm_type": os.environ.get("LAYERNORM_TYPE", "fast_layernorm"),
                 "confidence_skip_amp": self.model.configs.skip_amp.confidence_head,
                 "diffusion_skip_amp": self.model.configs.skip_amp.sample_diffusion,
+                **(
+                    {"fp32_atom_aggregation": True}
+                    if recorder.fp32_atom_aggregation
+                    else {}
+                ),
             },
         )
         try:
@@ -377,14 +408,22 @@ def install_observers(stack, recorder, runner, torch, generator, model_module, u
         bound = inspect.signature(original_pair).bind(self, *args, **kwargs)
         bound.apply_defaults()
         recorder.mc_dropout = bool(bound.arguments["mc_dropout"])
-        if recorder.mc_dropout:
-            raise ValueError("native selected MC dropout; mask tape is not captured")
         features = bound.arguments["input_feature_dict"]
         recorder.bundle(
             "native-derived",
             {key: features[key] for key in ("relp", "d_lm", "v_lm", "pad_info")},
         )
-        result = original_pair(self, *args, **kwargs)
+        if recorder.mc_dropout:
+            from bench.protenix_dropout_tape import capture_native_dropout
+
+            recorder.dropout_rate = float(self.configs.mc_dropout_rate)
+            with capture_native_dropout(
+                expected_calls=recorder.cycles, rate=recorder.dropout_rate
+            ) as masks:
+                result = original_pair(self, *args, **kwargs)
+            recorder.dropout_masks = masks
+        else:
+            result = original_pair(self, *args, **kwargs)
         recorder.bundle("trunk", dict(zip(("s_inputs", "s", "z"), result, strict=True)))
         return result
 
@@ -505,6 +544,7 @@ def main():
     parser.add_argument("--assets-root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--model-name", choices=MODELS, default=MODELS[0])
+    parser.add_argument("--fp32-atom-aggregation", action="store_true")
     args = parser.parse_args()
     for name in ("input", "native_source", "weights", "assets_root"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
@@ -529,6 +569,7 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("native closure capture requires its CUDA publisher runtime")
     recorder = NativeRecorder(out)
+    recorder.fp32_atom_aggregation = args.fp32_atom_aggregation
     snapshot = Path(__file__).resolve().parents[1]
     provenance = {
         "schema": 1,
@@ -615,6 +656,10 @@ def main():
     save(out / "native-argv.json", argv)
     start = time.monotonic()
     with ExitStack() as stack:
+        if args.fp32_atom_aggregation:
+            from bench.protenix_atom_reduction_control import fp32_atom_aggregation
+
+            stack.enter_context(fp32_atom_aggregation("native"))
         stack.enter_context(patch.object(sys, "argv", argv))
         stack.enter_context(
             patch.object(runner, "download_inference_cache", local_only)

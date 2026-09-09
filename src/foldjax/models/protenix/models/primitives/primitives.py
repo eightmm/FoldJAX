@@ -30,6 +30,18 @@ class LayerNormParams(NamedTuple):
     bias: jnp.ndarray | None = None
 
 
+class AutocastLinearParams(NamedTuple):
+    """Explicit projection autocast; residual input dtype is not compute dtype.
+
+    The weight dtype selects projection arithmetic. Unlike ordinary LinearParams,
+    FP32 residual inputs are narrowed before matmul, matching native autocast.
+    Keep FP32-exempt projections as ordinary LinearParams with original weights.
+    """
+
+    weight: jnp.ndarray
+    bias: jnp.ndarray | None = None
+
+
 class TransitionParams(NamedTuple):
     """Parameters for ``protenix.model.modules.primitives.Transition``."""
 
@@ -48,12 +60,19 @@ class AdaptiveLayerNormParams(NamedTuple):
     linear_no_bias_s: LinearParams
 
 
-def linear(x: jnp.ndarray, params: LinearParams) -> jnp.ndarray:
+def linear(x: jnp.ndarray, params: LinearParams | AutocastLinearParams) -> jnp.ndarray:
     """Apply a PyTorch-layout linear projection."""
 
+    if isinstance(params, AutocastLinearParams):
+        x = x.astype(params.weight.dtype)
     y = jnp.matmul(x, jnp.swapaxes(params.weight, -1, -2))
     if params.bias is not None:
-        y = y + params.bias
+        bias = (
+            params.bias.astype(params.weight.dtype)
+            if isinstance(params, AutocastLinearParams)
+            else params.bias
+        )
+        y = y + bias
     return y
 
 

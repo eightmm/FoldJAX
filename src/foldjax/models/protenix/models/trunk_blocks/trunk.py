@@ -103,10 +103,29 @@ def recycle_embeddings(
     s: jnp.ndarray,
     z: jnp.ndarray,
     params: RecyclingProjectionParams,
+    *,
+    pair_dropout_keep_mask: jnp.ndarray | None = None,
+    pair_dropout_rate: float = 0.4,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Apply Protenix root-level recycling projections without dropout."""
+    """Apply recycling, optionally replaying the native pair-dropout mask.
 
-    z_out = z_init + linear(layer_norm(z, params.layernorm_z), params.linear_z)
+    Dropout affects only the projected pair update, before the residual add.
+    Omitting the mask preserves the no-dropout path shared with OpenDDE.
+    The rate is static; random-mask generation belongs to the caller.
+    """
+
+    z_update = linear(layer_norm(z, params.layernorm_z), params.linear_z)
+    if pair_dropout_keep_mask is not None:
+        if pair_dropout_keep_mask.shape != z_update.shape:
+            raise ValueError("pair dropout mask must match the projected pair shape")
+        if pair_dropout_keep_mask.dtype != jnp.bool_:
+            raise ValueError("pair dropout keep mask must be boolean")
+        if not 0 <= pair_dropout_rate < 1:
+            raise ValueError("pair dropout rate must be in [0, 1)")
+        # BF16 intermediates must not round the reciprocal before scaling.
+        scaled = z_update.astype(jnp.float32) * (1.0 / (1.0 - pair_dropout_rate))
+        z_update = jnp.where(pair_dropout_keep_mask, scaled, 0).astype(z_update.dtype)
+    z_out = z_init + z_update
     s_out = s_init + linear(layer_norm(s, params.layernorm_s), params.linear_s)
     return s_out, z_out
 
@@ -136,6 +155,9 @@ def pairformer_output_from_s_inputs(
     triangle_attention_backend: str | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
+    cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
+    cycle_pair_dropout_keys: jnp.ndarray | None = None,
+    pair_dropout_rate: float = 0.4,
     use_cycle_scan: bool = True,
     msa_stack_first: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -192,6 +214,25 @@ def pairformer_output_from_s_inputs(
 
     s = jnp.zeros_like(s_init)
     z = jnp.zeros_like(z_init)
+    if cycle_pair_dropout_keys is not None:
+        if cycle_pair_dropout_keep_masks is not None:
+            raise ValueError("dropout masks and keys are mutually exclusive")
+        if (
+            cycle_pair_dropout_keys.shape != (num_recycles, 2)
+            or cycle_pair_dropout_keys.dtype != jnp.uint32
+        ):
+            raise ValueError("dropout keys must be uint32 [cycle, 2] PRNG keys")
+        if not 0 <= pair_dropout_rate < 1:
+            raise ValueError("pair dropout rate must be in [0, 1)")
+    if cycle_pair_dropout_keep_masks is not None:
+        if cycle_pair_dropout_keep_masks.shape != (num_recycles, *z_init.shape):
+            raise ValueError(
+                "cycle pair dropout masks must match cycles and pair shape"
+            )
+        if cycle_pair_dropout_keep_masks.dtype != jnp.bool_:
+            raise ValueError("cycle pair dropout masks must be boolean")
+        if not 0 <= pair_dropout_rate < 1:
+            raise ValueError("pair dropout rate must be in [0, 1)")
     if cycle_msa_features is not None and cycle_msa_index_tape is not None:
         raise ValueError(
             "cycle_msa_features and cycle_msa_index_tape are mutually exclusive"
@@ -209,8 +250,14 @@ def pairformer_output_from_s_inputs(
         if cycle_msa_index_tape.row_indices.shape[0] != num_recycles:
             raise ValueError("cycle MSA index tape length must equal num_recycles")
 
-    def one_cycle(carry, msa_features):
+    def one_cycle(carry, msa_features, pair_keep_mask=None):
         s, z = carry
+        if cycle_pair_dropout_keys is not None:
+            # Only one cycle's mask is materialized; never retain T*T*C*cycles
+            # stochastic inputs for ordinary generation. Tape replay bypasses RNG.
+            pair_keep_mask = jax.random.bernoulli(
+                pair_keep_mask, p=1.0 - pair_dropout_rate, shape=z_init.shape
+            )
         # ``lax.scan`` with ``xs=None`` hands the body ``None``, which is the right
         # signal that the alignment is not resampled per cycle -- every cycle then
         # reads the same MSA features out of the feature dict. Forwarding the
@@ -229,11 +276,18 @@ def pairformer_output_from_s_inputs(
         msa_features = jax.tree.map(
             lambda value: (
                 value.astype(trunk_dtype)
-                if hasattr(value, "dtype")
-                and jnp.issubdtype(value.dtype, jnp.floating)
+                if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating)
                 else value
             ),
             msa_features,
+        )
+        dropout_kwargs = (
+            {}
+            if pair_keep_mask is None
+            else {
+                "pair_dropout_keep_mask": pair_keep_mask,
+                "pair_dropout_rate": pair_dropout_rate,
+            }
         )
         s, z = recycle_embeddings(
             s_init,
@@ -241,6 +295,7 @@ def pairformer_output_from_s_inputs(
             s,
             z,
             params.trunk.recycling,
+            **dropout_kwargs,
         )
         z = z + template_embedder(
             input_feature_dict,
@@ -289,12 +344,34 @@ def pairformer_output_from_s_inputs(
     # matters at Protenix's released depth: ten cycles over a 48-block Pairformer
     # unroll into a graph ten times larger, and compile time tracks graph size.
     stacked_msa = _stacked_cycle_msa(cycle_msa_features) if use_cycle_scan else None
-    if use_cycle_scan and cycle_msa_index_tape is not None and num_recycles > 1:
+    dropout_xs = (
+        cycle_pair_dropout_keys
+        if cycle_pair_dropout_keys is not None
+        else cycle_pair_dropout_keep_masks
+    )
+    if (
+        dropout_xs is not None
+        and use_cycle_scan
+        and num_recycles > 1
+        and (
+            cycle_msa_index_tape is not None
+            or cycle_msa_features is None
+            or stacked_msa is not None
+        )
+    ):
+        msa_xs = (
+            cycle_msa_index_tape if cycle_msa_index_tape is not None else stacked_msa
+        )
+
+        def masked_cycle(carry, values):
+            msa_value, keep = values
+            return one_cycle(carry, msa_value, keep)
+
+        (s, z), _ = jax.lax.scan(masked_cycle, (s, z), (msa_xs, dropout_xs))
+    elif use_cycle_scan and cycle_msa_index_tape is not None and num_recycles > 1:
         (s, z), _ = jax.lax.scan(one_cycle, (s, z), cycle_msa_index_tape)
     elif use_cycle_scan and cycle_msa_features is None and num_recycles > 1:
-        (s, z), _ = jax.lax.scan(
-            one_cycle, (s, z), xs=None, length=num_recycles
-        )
+        (s, z), _ = jax.lax.scan(one_cycle, (s, z), xs=None, length=num_recycles)
     elif stacked_msa is not None and num_recycles > 1:
         (s, z), _ = jax.lax.scan(one_cycle, (s, z), stacked_msa)
     else:
@@ -310,7 +387,8 @@ def pairformer_output_from_s_inputs(
                     if cycle_msa_features is None
                     else cycle_msa_features[cycle_index]
                 )
-            (s, z), _ = one_cycle((s, z), msa_features)
+            pair_keep = None if dropout_xs is None else dropout_xs[cycle_index]
+            (s, z), _ = one_cycle((s, z), msa_features, pair_keep)
     # Autocast narrows the trunk's projection operands, not the raw embedding
     # returned to the FP32 diffusion/confidence islands.
     return conditioning_s_inputs, s, z

@@ -203,7 +203,7 @@ def test_cast_trunk_params_preserves_fp32_diffusion_island() -> None:
 
     trunk_float_leaves = [
         leaf
-        for leaf in jax.tree.leaves((mixed.input_embedder, mixed.pairformer_output))
+        for leaf in jax.tree.leaves(mixed.pairformer_output)
         if hasattr(leaf, "dtype") and jnp.issubdtype(leaf.dtype, jnp.floating)
     ]
     diffusion_float_leaves = [
@@ -213,6 +213,14 @@ def test_cast_trunk_params_preserves_fp32_diffusion_island() -> None:
     ]
     assert trunk_float_leaves
     assert all(leaf.dtype == jnp.bfloat16 for leaf in trunk_float_leaves)
+    cache = mixed.input_embedder.atom_encoder.cache
+    assert (
+        cache.linear_ref_pos is params.input_embedder.atom_encoder.cache.linear_ref_pos
+    )
+    assert cache.linear_d is params.input_embedder.atom_encoder.cache.linear_d
+    assert cache.linear_ref_pos.weight.dtype == jnp.float32
+    assert cache.linear_d.weight.dtype == jnp.float32
+    assert mixed.input_embedder.atom_encoder.linear_q.weight.dtype == jnp.bfloat16
     assert diffusion_float_leaves
     assert all(leaf.dtype == jnp.float32 for leaf in diffusion_float_leaves)
 

@@ -158,6 +158,41 @@ def test_capture_fails_closed_on_missing_extra_or_unsupported_events(tmp_path, d
     assert not (tmp_path / "capture-complete.json").exists()
 
 
+def test_capture_records_complete_native_dropout_masks(tmp_path):
+    recorder = _complete_recorder(tmp_path)
+    recorder.mc_dropout = True
+    recorder.dropout_rate = 0.4
+    recorder.dropout_masks = [np.full((2, 2, 3), i == 0, bool) for i in range(2)]
+    recorder.finish()
+    report = json.loads((tmp_path / "capture-complete.json").read_text())
+    assert report["mc_dropout_applied"] is True
+    assert report["mc_dropout_mask_calls"] == 2
+    assert report["mc_dropout_rate"] == 0.4
+    with np.load(tmp_path / "dropout-tape.npz") as tape:
+        np.testing.assert_array_equal(tape["keep_masks"], recorder.dropout_masks)
+
+
+@pytest.mark.parametrize("defect", ["count", "dtype", "shape", "rate", "branch"])
+def test_capture_rejects_invalid_dropout_tape(tmp_path, defect):
+    recorder = _complete_recorder(tmp_path)
+    recorder.mc_dropout = True
+    recorder.dropout_rate = 0.4
+    recorder.dropout_masks = [np.ones((2, 2, 3), bool)] * 2
+    if defect == "count":
+        recorder.dropout_masks.pop()
+    elif defect == "dtype":
+        recorder.dropout_masks[0] = np.ones((2, 2, 3), np.float32)
+    elif defect == "shape":
+        recorder.dropout_masks[0] = np.ones((2, 3, 3), bool)
+    elif defect == "rate":
+        recorder.dropout_rate = float("nan")
+    else:
+        recorder.mc_dropout = False
+    with pytest.raises(ValueError, match="dropout"):
+        recorder.finish()
+    assert not (tmp_path / "capture-complete.json").exists()
+
+
 def test_capture_duplicate_nonfinite_and_dtype_draws_are_rejected(tmp_path):
     recorder = NativeRecorder(tmp_path)
     recorder.draw("init", 0, np.ones(1, np.float32))

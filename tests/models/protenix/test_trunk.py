@@ -3,6 +3,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from foldjax.models.protenix.bridge.torch_mapping import (
     map_pairformer_output_state_dict,
@@ -72,17 +73,16 @@ def test_trunk_initial_embeddings_match_protenix_formula() -> None:
     s_init, z_init = trunk_initial_embeddings(s_inputs, relp, token_bonds, params)
 
     expected_s = np.asarray(s_inputs) @ np.asarray(params.linear_sinit.weight).T
-    expected_z = (
-        expected_s @ np.asarray(params.linear_zinit1.weight).T
-    )[:, None, :] + (
-        expected_s @ np.asarray(params.linear_zinit2.weight).T
-    )[None, :, :]
-    expected_z += np.asarray(relp) @ np.asarray(
-        params.relative_position.linear_no_bias.weight
-    ).T
-    expected_z += np.asarray(token_bonds)[..., None] @ np.asarray(
-        params.linear_token_bond.weight
-    ).T
+    expected_z = (expected_s @ np.asarray(params.linear_zinit1.weight).T)[
+        :, None, :
+    ] + (expected_s @ np.asarray(params.linear_zinit2.weight).T)[None, :, :]
+    expected_z += (
+        np.asarray(relp) @ np.asarray(params.relative_position.linear_no_bias.weight).T
+    )
+    expected_z += (
+        np.asarray(token_bonds)[..., None]
+        @ np.asarray(params.linear_token_bond.weight).T
+    )
 
     np.testing.assert_allclose(np.asarray(s_init), expected_s, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(np.asarray(z_init), expected_z, rtol=1e-6, atol=1e-6)
@@ -160,6 +160,95 @@ def test_recycle_embeddings_match_protenix_projection_formula() -> None:
     assert z_out.shape == z_init.shape
     np.testing.assert_allclose(np.asarray(s_out[0]), [-1.0, 4.0], atol=1e-4)
     np.testing.assert_allclose(np.asarray(z_out[0, 0]), [0.0, 3.0], atol=1e-4)
+
+    mask = jnp.asarray([[[True, False], [False, True]]] * 2)
+    masked_s, masked_z = jax.jit(
+        lambda keep: recycle_embeddings(
+            s_init, z_init, s, z, params, pair_dropout_keep_mask=keep
+        )
+    )(mask)
+    np.testing.assert_array_equal(masked_s, s_out)
+    np.testing.assert_allclose(
+        masked_z, z_init + jnp.where(mask, (z_out - z_init) / 0.6, 0), atol=1e-6
+    )
+    _, all_dropped = recycle_embeddings(
+        s_init,
+        z_init,
+        s,
+        z,
+        params,
+        pair_dropout_keep_mask=jnp.zeros_like(mask),
+    )
+    np.testing.assert_array_equal(all_dropped, z_init)
+    for bad in (jnp.ones_like(z), jnp.ones((2,), dtype=bool)):
+        with pytest.raises(ValueError, match="mask"):
+            recycle_embeddings(s_init, z_init, s, z, params, pair_dropout_keep_mask=bad)
+    for rate in (-0.1, 1.0, float("nan")):
+        with pytest.raises(ValueError, match="rate"):
+            recycle_embeddings(
+                s_init,
+                z_init,
+                s,
+                z,
+                params,
+                pair_dropout_keep_mask=mask,
+                pair_dropout_rate=rate,
+            )
+
+
+@pytest.mark.parametrize("cycles", [1, 3])
+def test_dropout_cycle_tape_scan_matches_unrolled(cycles) -> None:
+    params = _pairformer_output_params()
+    features = {
+        "relp": jnp.zeros((2, 2, 2), dtype=jnp.float32),
+        "token_bonds": jnp.zeros((2, 2), dtype=jnp.float32),
+    }
+    inputs = jnp.asarray([[1.0, 2.0], [3.0, 4.0]])
+    masks = (jnp.arange(cycles * 8).reshape(cycles, 2, 2, 2) % 3) == 0
+
+    def run(scan, tape):
+        return pairformer_output_from_s_inputs(
+            features,
+            inputs,
+            params,
+            num_recycles=cycles,
+            cycle_pair_dropout_keep_masks=tape,
+            use_cycle_scan=scan,
+        )
+
+    scanned = jax.jit(lambda tape: run(True, tape))(masks)
+    unrolled = run(False, masks)
+    for a, b in zip(scanned, unrolled, strict=True):
+        np.testing.assert_allclose(a, b, atol=1e-6)
+    for bad in (masks.astype(jnp.float32), masks[:-1]):
+        with pytest.raises(ValueError, match="dropout masks"):
+            run(True, bad)
+
+    keys = jax.random.split(jax.random.PRNGKey(93), cycles)
+    generated_masks = jax.vmap(
+        lambda key: jax.random.bernoulli(key, p=0.6, shape=(2, 2, 2))
+    )(keys)
+    expected = run(True, generated_masks)
+    for scan in (True, False):
+        actual = pairformer_output_from_s_inputs(
+            features,
+            inputs,
+            params,
+            num_recycles=cycles,
+            cycle_pair_dropout_keys=keys,
+            use_cycle_scan=scan,
+        )
+        for a, b in zip(actual, expected, strict=True):
+            np.testing.assert_allclose(a, b, atol=1e-6)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        pairformer_output_from_s_inputs(
+            features,
+            inputs,
+            params,
+            num_recycles=cycles,
+            cycle_pair_dropout_keys=keys,
+            cycle_pair_dropout_keep_masks=masks,
+        )
 
 
 def test_map_trunk_initialization_state_dict_shapes() -> None:

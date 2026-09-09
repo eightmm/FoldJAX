@@ -9,6 +9,7 @@ import importlib.metadata
 import json
 import os
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ _TAPE_ARGUMENTS = (
     "translations",
     "cycle_msa_features",
     "cycle_msa_index_tape",
+    "cycle_pair_dropout_keep_masks",
 )
 _OTHER_DYNAMIC_ARGUMENTS = ("key", "pair_mask", "guidance_features")
 
@@ -203,13 +205,27 @@ def replay(args):
         evaluate_candidate(calibrated, record, record)
         evidence["calibration_sha256"] = calibrated["calibration_sha256"]
         evidence["calibration_file_sha256"] = sha(args.calibration)
-    if not completion["passed"] or completion["mc_dropout_applied"]:
+    if not completion["passed"]:
         raise ValueError("native tape capture did not complete on supported path")
     if native["model_name"] != "protenix_base_default_v1.0.0":
         raise ValueError("this replay currently audits the small released profile only")
     if native["input_sha256"] != sha(args.input):
         raise ValueError("native and FoldJAX input documents differ")
     native_config = json.loads((reference / "effective-config.json").read_text())
+    fp32_aggregation = getattr(args, "fp32_atom_aggregation", False)
+    policy_file = reference / "operator-policy.json"
+    native_aggregation = (
+        json.loads(policy_file.read_text()).get("fp32_atom_aggregation", False)
+        if policy_file.exists()
+        else False
+    )
+    if type(native_aggregation) is not bool or native_aggregation != fp32_aggregation:
+        raise ValueError("native/candidate atom aggregation policies differ")
+    from bench.protenix_dropout_tape import load_dropout_tape
+
+    dropout_masks, dropout_rate = load_dropout_tape(
+        reference, completion, native_config
+    )
     with np.load(reference / "sampler-tape.npz", allow_pickle=False) as archive:
         tape = dict(archive)
     with np.load(reference / "msa-tape.npz", allow_pickle=False) as archive:
@@ -309,6 +325,9 @@ def replay(args):
         )
         kwargs["cycle_msa_index_tape"] = None
         kwargs["cycle_msa_features"] = jax.tree.map(jnp.asarray, selected["cycles"])
+        if dropout_masks is not None:
+            kwargs["cycle_pair_dropout_keep_masks"] = jnp.asarray(dropout_masks)
+            kwargs["pair_dropout_rate"] = dropout_rate
         output = original_predict(params, features, key, **kwargs)
         jax.block_until_ready(output)
         save_jax_boundary(args.out / "prediction.npz", output)
@@ -334,7 +353,10 @@ def replay(args):
     ]
     save(args.out / "foldjax-argv.json", argv)
     started = time.monotonic()
+    from bench.protenix_atom_reduction_control import fp32_atom_aggregation
+
     with (
+        fp32_atom_aggregation("foldjax") if fp32_aggregation else nullcontext(),
         patch.object(feature_module, "featurize_protein_json", capture_features),
         patch.object(prediction_module, "protenix_predict_static", capture_predict),
         patch.object(prediction_module, "inference_noise_schedule", schedule),
@@ -357,6 +379,7 @@ def replay(args):
         args.out / "provenance.json",
         {
             "arm": "foldjax",
+            "fp32_atom_aggregation": fp32_aggregation,
             "instrumented": True,
             "preflight_evidence": evidence,
             "input_sha256": sha(args.input),
@@ -398,6 +421,7 @@ def main():
     parser.add_argument("--weights", type=Path)
     parser.add_argument("--weight-audit", type=Path)
     parser.add_argument("--calibration", type=Path)
+    parser.add_argument("--fp32-atom-aggregation", action="store_true")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)
     if args.reference is not None:

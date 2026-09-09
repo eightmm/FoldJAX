@@ -48,6 +48,8 @@ from foldjax.models.protenix.models.heads.confidence import (
     confidence_scores_from_logits,
 )
 from foldjax.models.protenix.models.heads.head import DistogramParams, distogram_head
+from foldjax.models.protenix.models.input_precision import native_input_autocast_params
+from foldjax.models.protenix.models.primitives.primitives import AutocastLinearParams
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
@@ -197,7 +199,13 @@ def cast_trunk_params(
     params: ProtenixInferenceParams,
     dtype: jnp.dtype,
 ) -> ProtenixInferenceParams:
-    """Cast input/trunk parameters while preserving FP32 output-head islands."""
+    """Cast input/trunk parameters while preserving FP32 output-head islands.
+
+    BF16 prepares a mixed input encoder from original FP32 parameters; it must
+    precede blanket narrowing and cannot be reapplied to prepared parameters.
+    Other dtypes retain the uniform input/trunk cast.
+    """
+    dtype = jnp.dtype(dtype)
 
     def cast_leaf(value):
         if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating):
@@ -205,7 +213,12 @@ def cast_trunk_params(
         return value
 
     return params._replace(
-        input_embedder=jax.tree.map(cast_leaf, params.input_embedder),
+        input_embedder=(
+            native_input_autocast_params(params.input_embedder)
+            if dtype == jnp.bfloat16
+            and isinstance(params.input_embedder, InputFeatureEmbedderParams)
+            else jax.tree.map(cast_leaf, params.input_embedder)
+        ),
         pairformer_output=jax.tree.map(cast_leaf, params.pairformer_output),
     )
 
@@ -318,6 +331,9 @@ def protenix_infer_static(
     trunk_dtype: jnp.dtype | None = None,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
+    cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
+    cycle_pair_dropout_keys: jnp.ndarray | None = None,
+    pair_dropout_rate: float = 0.4,
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     n_chain: int | None = None,
@@ -383,7 +399,13 @@ def protenix_infer_static(
         if pair_mask is not None:
             trunk_pair_mask = pair_mask.astype(trunk_dtype)
     s_inputs = input_feature_embedder(
-        trunk_features,
+        # Native autocast narrows projections, not geometry or residual inputs.
+        input_feature_dict
+        if isinstance(params.input_embedder, InputFeatureEmbedderParams)
+        and isinstance(
+            params.input_embedder.atom_encoder.linear_q, AutocastLinearParams
+        )
+        else trunk_features,
         params.input_embedder,
         n_token=n_token,
         n_heads=input_atom_heads,
@@ -409,6 +431,9 @@ def protenix_infer_static(
         triangle_attention_backend=trunk_triangle_attention_backend,
         cycle_msa_features=cycle_msa_features,
         cycle_msa_index_tape=cycle_msa_index_tape,
+        cycle_pair_dropout_keep_masks=cycle_pair_dropout_keep_masks,
+        cycle_pair_dropout_keys=cycle_pair_dropout_keys,
+        pair_dropout_rate=pair_dropout_rate,
     )
     s_inputs = _capture.capture("single_inputs", s_inputs)
     s_trunk = _capture.capture("single", s_trunk)
@@ -639,6 +664,7 @@ GRAPH_STATIC_ARGNAMES = (
     "sigma_data",
     "opm_chunk_size",
     "preserve_prefix_rng",
+    "pair_dropout_rate",
     "single_att_q_chunk_size",
     "step_scale_eta",
     "token_heads",

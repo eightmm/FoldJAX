@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from foldjax.models.protenix.models.diffusion.diffusion import inference_noise_schedule
 from foldjax.models.protenix.models.model import protenix_infer_static
@@ -87,7 +89,8 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
         )
 
 
-def test_compiled_predict_accepts_the_compact_cycle_msa_tape() -> None:
+@pytest.mark.parametrize("with_dropout", [False, True])
+def test_compiled_predict_accepts_the_compact_cycle_msa_tape(with_dropout) -> None:
     features = dict(_toy_features())
     features.update(
         {
@@ -104,7 +107,16 @@ def test_compiled_predict_accepts_the_compact_cycle_msa_tape() -> None:
     tape = sample_msa_cycle_index_tape(features, num_recycles=2, seed=5)
     assert tape is not None
 
-    def run(**cycle_kwargs):
+    pair_channels = (
+        _toy_params().pairformer_output.trunk.initial.linear_zinit1.weight.shape[-2]
+    )
+    dropout_masks = (
+        (jnp.arange(2 * 2 * 2 * pair_channels).reshape(2, 2, 2, pair_channels) % 3) == 0
+        if with_dropout
+        else None
+    )
+
+    def run(dropout=dropout_masks, **cycle_kwargs):
         return protenix_predict_static(
             _toy_params(),
             features,
@@ -122,11 +134,25 @@ def test_compiled_predict_accepts_the_compact_cycle_msa_tape() -> None:
             stop_after_trunk=True,
             capture_names=("single", "pair"),
             graph_jit=True,
+            cycle_pair_dropout_keep_masks=dropout,
+            pair_dropout_rate=0.25,
             **cycle_kwargs,
         )
 
     expected = run(cycle_msa_features=cycles)
     actual = run(cycle_msa_index_tape=tape)
+
+    if with_dropout:
+        keys = jax.random.split(jax.random.PRNGKey(49), 2)
+        generated_masks = jax.vmap(
+            lambda key: jax.random.bernoulli(key, p=0.75, shape=(2, 2, pair_channels))
+        )(keys)
+        masked = run(dropout=generated_masks, cycle_msa_index_tape=tape)
+        generated = run(
+            dropout=None, cycle_pair_dropout_keys=keys, cycle_msa_index_tape=tape
+        )
+        for name in masked:
+            np.testing.assert_allclose(generated[name], masked[name], atol=1e-6)
 
     assert actual.keys() == expected.keys() == {"single", "pair"}
     for name in expected:
@@ -134,7 +160,6 @@ def test_compiled_predict_accepts_the_compact_cycle_msa_tape() -> None:
             np.asarray(actual[name]).reshape(-1).view(np.uint8),
             np.asarray(expected[name]).reshape(-1).view(np.uint8),
         )
-
 
 
 def test_the_matmul_precision_pin_is_a_scope_not_a_latch() -> None:

@@ -71,8 +71,9 @@ def test_bf16_output_storage_retains_dtype_and_all_numeric_bits(tmp_path):
 
 
 @pytest.mark.parametrize("graph_jit", [True, False])
+@pytest.mark.parametrize("aggregation_control", [False, True, "mismatch"])
 def test_replay_wires_complete_tape_through_public_prediction(
-    monkeypatch, tmp_path, graph_jit
+    monkeypatch, tmp_path, graph_jit, aggregation_control
 ):
     from bench import protenix_closure_report as report
     from bench import protenix_foldjax_capture as capture
@@ -107,6 +108,9 @@ def test_replay_wires_complete_tape_through_public_prediction(
     )
     (reference / "effective-config.json").write_text(
         json.dumps({"enable_efficient_fusion": True})
+    )
+    (reference / "operator-policy.json").write_text(
+        json.dumps({"fp32_atom_aggregation": aggregation_control is not False})
     )
     features, msa = _msa()
     np.savez(reference / "msa-tape.npz", **msa)
@@ -149,9 +153,18 @@ def test_replay_wires_complete_tape_through_public_prediction(
     monkeypatch.setattr(predict, "protenix_infer_compiled", inference)
     monkeypatch.setattr(predict, "protenix_infer_static", inference)
     monkeypatch.setattr(cli, "main", fake_cli)
-    capture.replay(
-        SimpleNamespace(reference=reference, out=out, input=input_path, weights=weights)
+    options = SimpleNamespace(
+        reference=reference,
+        out=out,
+        input=input_path,
+        weights=weights,
+        fp32_atom_aggregation=aggregation_control is True,
     )
+    if aggregation_control == "mismatch":
+        with pytest.raises(ValueError, match="aggregation policies differ"):
+            capture.replay(options)
+        return
+    capture.replay(options)
     for name, expected in tape.items():
         np.testing.assert_array_equal(observed[name], expected)
     assert len(observed["cycle_msa_features"]) == 10
