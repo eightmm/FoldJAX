@@ -72,8 +72,38 @@ below-source rounding difference in the MSA module (the 3e-2 relative 2e-3
 band both arms share) is amplified to ångströms by the diffusion sampler on
 three of five samples, in the same direction of sensitivity for both.
 
-A same-machine port replay on this tape (jobs 488/489, two processes for the
-port's own floor) is appended below when it lands.
+## Same-machine port replay on this tape (jobs 490/491)
+
+FoldJAX Boltz-2 (`boltz2-master-port-20260909-IcGOFo`, HEAD `e324ad0`)
+replayed `native-A`'s tape and features on master.
+
+Trunk boundaries, port versus `native-A`, beside upstream's own toggle:
+
+| boundary | port RMSE / relative / corr | kernels-off RMSE / relative / corr |
+| --- | --- | --- |
+| cycle-00 `msa_module.input_z` | 6.16e-4 / 9.8e-5 / 0.99999999 | 0 / 0 / 1 |
+| cycle-00 `msa_module.delta_z` | 3.262e-2 / 2.088e-3 / 0.9999978 | 3.334e-2 / 2.134e-3 / 0.9999977 |
+| cycle-03 `pairformer_module.output_s` | 5.383e-2 / 8.94e-4 / 0.9999996 | 5.999e-2 / 9.96e-4 / 0.9999995 |
+| cycle-03 `pairformer_module.output_z` | 7.056e-2 / 2.840e-3 / 0.9999960 | 9.341e-2 / 3.760e-3 / 0.9999929 |
+
+The port is closer to `native-A` than upstream's own unfused path at every
+boundary, including the one where the residual is born (the port's `input_z`
+already differs by 1e-4 relative because its input embedder is its own; the
+toggle arm shares upstream's embedder bitwise).
+
+Coordinates, three-way, entity RMSD per sample (protein chain; ligand in
+parentheses as the maximum):
+
+| pair | samples 1-5 | max |
+| --- | --- | ---: |
+| `native-A` vs kernels-off | 2.809, 0.272, 0.137, 2.912, 2.760 | 2.912 (0.397) |
+| `native-A` vs port | 2.421, 0.166, 0.019, 2.273, 0.345 | 2.421 (0.141) |
+| kernels-off vs port | 0.875, 0.211, 0.127, 1.860, 2.773 | 2.773 (0.296) |
+
+The three implementations are mutually equidistant at 2.4-2.9 Å on samples
+1 and 4, and samples 2 and 3 agree to 0.2 Å in every pair: a common chaotic
+floor, not a port-specific offset. Port-versus-port (second process, job
+491) is appended when it lands.
 
 ## Reading
 
