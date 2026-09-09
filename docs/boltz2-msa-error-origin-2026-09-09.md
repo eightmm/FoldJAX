@@ -672,3 +672,33 @@ The pairformer amplifies rather than originates: it takes `input_z` at
 1.516e-03 to `output_z` at 3.295e-03, roughly doubling, and takes `input_s` at
 2.153e-04 to `output_s` at 8.608e-04. Both outputs land where a deep bf16
 residual stack puts them.
+
+## Per-entity check: the 5SAK cell is not a placement artifact
+
+The Protenix work on 2026-09-09 found that a whole-system Kabsch fit on a
+multi-chain target can be dominated by inter-chain placement rather than fold
+accuracy -- there, chains folded identically while the complex assembled
+differently, turning 3.4 A into 26 A. That is a confound this cell had never
+been checked for.
+
+5SAK has two entities: a 3086-atom protein (`asym_id` 0, `mol_type` 0) and an
+18-atom ligand (`asym_id` 1, `mol_type` 3). Fitting each separately, maximum
+across five samples:
+
+| Arm | whole-system | protein (3086) | ligand (18) |
+| --- | ---: | ---: | ---: |
+| shipped | 1.8971 | **1.9025** | 0.0156 |
+| rerun control | 1.8970 | **1.9025** | 0.0155 |
+
+The answer is the opposite of Protenix's. The protein chain carries the entire
+error at 1.90 A, and the ligand is placed to 0.016 A -- two orders of magnitude
+better. There is no placement term hiding in this number.
+
+That removes the confound and strengthens the closure rather than weakening it.
+Accumulated bf16 rounding driven through a long diffusion trajectory should
+express itself as a diffuse difference across the fold, which is what 1.90 A
+spread over 3086 protein atoms with a correctly placed ligand looks like. A
+placement artifact would have looked like the reverse.
+
+It also scopes the Protenix caution correctly: read multi-entity targets per
+entity before attributing, and expect the answer to differ by target.
