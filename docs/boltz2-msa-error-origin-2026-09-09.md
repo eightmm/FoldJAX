@@ -637,3 +637,38 @@ remaining named lever has now been measured and moves the wrong way by an
 order of magnitude. Reducing this cell further would require native itself to
 run in higher precision, which is a change to upstream, not to the port.
 
+
+## The whole trunk in bf16 units, 2026-09-09
+
+The closure above was argued from one boundary, the MSA module's `delta_z`.
+The capture holds a second boundary that this investigation never read, and
+putting both in units of one bf16 rounding settles where the residual lives.
+
+| Cycle | Boundary | port-native rel | one bf16 rounding | ratio |
+| --- | --- | ---: | ---: | ---: |
+| 00 | `msa_module.delta_z` | 2.073e-03 | 1.788e-03 | 1.16x |
+| 00 | `pairformer_module.output_z` | 3.295e-03 | 1.664e-03 | 1.98x |
+| 00 | `pairformer_module.output_s` | 8.608e-04 | 1.624e-03 | **0.53x** |
+| 03 | `msa_module.delta_z` | 2.035e-03 | 1.684e-03 | 1.21x |
+| 03 | `pairformer_module.output_z` | 3.050e-03 | 1.656e-03 | 1.84x |
+| 03 | `pairformer_module.output_s` | 8.840e-04 | 1.600e-03 | **0.55x** |
+
+Every boundary sits between half a rounding and two roundings. The single-token
+pathway is *below* one bf16 rounding -- the port tracks native there more
+closely than bf16 can represent a difference.
+
+### This corrects the localization
+
+Earlier sections here localize the residual to the MSA module. In bf16 units
+that is not what the numbers say: the MSA module is at 1.2 roundings and the
+pairformer at 2. The pairformer carries slightly more, and neither is anomalous.
+
+The correction does not change the verdict, it strengthens it. There is no
+module to blame. The trunk accumulates between one and two bf16 roundings across
+its two large blocks, which is what a bf16 trunk does, and 5SAK's diffusion
+trajectory turns that into 1.18 A.
+
+The pairformer amplifies rather than originates: it takes `input_z` at
+1.516e-03 to `output_z` at 3.295e-03, roughly doubling, and takes `input_s` at
+2.153e-04 to `output_s` at 8.608e-04. Both outputs land where a deep bf16
+residual stack puts them.
