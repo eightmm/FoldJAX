@@ -169,3 +169,53 @@ more than an unverified edit.
 Six cells move from "no evidence" to "passing on coordinates and tape, failing
 one harness-config check". That leaves ESMFold2 as the only genuine `n/a`, and
 its reason -- no complete injectable tape on either side -- still stands.
+
+## Correction to the correction: the AF3 gate is deliberate, not a defect
+
+The section above calls the AF3 config failure "the same shape of defect as the
+Boltz-2 weight-path error message" and proposes normalizing the absent-versus-
+default case. Both claims are wrong, and the repository says so in two places I
+had not read before writing them.
+
+First, the difference is two keys, not one. A flatten-and-diff misses the second
+because an empty list emits no leaves:
+
+| Key | native | foldjax |
+| --- | --- | --- |
+| `foldjax_stop_after` | *(absent)* | `'full'` |
+| `foldjax_return_representations` | *(absent)* | `[]` |
+
+Second, `bench/af3_closure.py` already contains `config_difference_kind`, which
+enumerates exactly these two keys with exactly these defaults and classifies
+them as `allowlisted_extensions_only`. Its docstring states the policy outright:
+
+> Describe exact top-level default extensions; never grant parity admission.
+
+And `tests/test_af3_closure.py::test_default_extension_is_explained_without_waiving_config_gate`
+enforces it: it adds `foldjax_stop_after = "full"` to one arm and asserts the
+report does **not** pass.
+
+I implemented the normalization anyway, on a branch, before running the suite.
+All twelve config comparisons flipped to equal and both tripwires still fired,
+so the change did what I intended -- and the pre-existing guard failed, which is
+the guard doing its job. The change is reverted; the suite is green at 66
+passed.
+
+### What this means for the AF3 row
+
+`n/a` was the right entry, for a reason I had not established when I first
+wrote it and then wrongly retracted. The AF3 panel does not withhold parity
+because of an oversight in the comparison. It withholds parity because the port
+and native serialize configs with different schemas, and the harness's stated
+policy is that a schema difference is described but never admitted.
+
+Filling the AF3 row therefore requires the two arms to record schema-identical
+configs -- a capture-side change in `bench/af3_closure_capture.py`, where one
+`main()` serves both arms and the two `make_model_config` calls return different
+dataclasses. That is real work with a real design question behind it (where the
+port-only capture fields should live so that a truncated run is still caught).
+It is not a one-line waiver, and the guard is correct to refuse one.
+
+What does hold from the previous section: 36 of 38 checks pass in all six cases,
+`coordinates` among them. AF3's numerics are not implicated. The row is empty
+for a bookkeeping-policy reason, not a numerical one.
