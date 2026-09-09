@@ -310,3 +310,26 @@ coordinates 2.18 A apart. That difference is native's own kernel selection and
 nothing else, which is what makes the port's position inside it meaningful.
 
 Both sides therefore have the same defect and only the port's has been removed.
+
+## The harness fix
+
+The cause was a gap between this harness and the shipped path.
+`src/foldjax/api.py:184` sets `cache_dir` to `paths.compile_cache_dir()`, so a
+normal FoldJAX run always has a persistent compilation cache. This harness calls
+the model modules directly and never goes through `api.predict`, so it had none,
+and XLA re-autotuned on every invocation.
+
+`bench/esmfold2_tape.py` now takes `--compile-cache` and defaults it to
+FoldJAX's own compile-cache root, wrapping both subcommands in
+`compilation_cache_scope`. Two runs of the fixed harness with **no flag passed**:
+
+```
+fixed harness, no flag passed: bitwise=True  max|diff| 0.000000
+```
+
+Reproducible by default, and two arms are now comparable without the caller
+having to know this. The other bench harnesses already create a cache per output
+directory, which is why boltz-2's rerun control reproduced to 0.0001-0.0015 A
+and OpenDDE's to 0.005 A; this one was the outlier.
+
+The shipped product was never affected -- `api.predict` has always pinned it.

@@ -1455,12 +1455,33 @@ def main() -> int:
                 action="store_true",
                 help="Reuse this native capture's exact LM output; downstream-core-only diagnostic",
             )
+    parser.add_argument(
+        "--compile-cache",
+        type=Path,
+        help="XLA persistent-compilation cache root shared by arms "
+        "(default: FoldJAX's own compile cache, as the shipped path uses)",
+    )
     args = parser.parse_args()
     if args.capture_msa_inputs and not args.capture_injection:
         parser.error("--capture-msa-inputs requires --capture-injection")
     if args.capture_coda and not args.capture_injection:
         parser.error("--capture-coda requires --capture-injection")
-    (_capture if args.command == "capture" else _replay)(args)
+
+    # This harness calls the model modules directly rather than going through
+    # ``api.predict``, which is where the shipped path installs FoldJAX's
+    # persistent compilation cache. Without one, XLA re-autotunes on every run
+    # and picks different kernels; measured on 5SAK, four replays of a single
+    # tape differed on every coordinate by up to 20.1 A, and the same replays
+    # sharing one cache are bitwise identical. Defaulting to the shipped cache
+    # root makes a replay reproducible and makes two arms comparable, which is
+    # the whole point of replaying a tape.
+    from foldjax import paths
+    from foldjax.cache import compilation_cache_scope
+
+    cache = args.compile_cache or paths.compile_cache_dir()
+    cache.mkdir(parents=True, exist_ok=True)
+    with compilation_cache_scope(cache):
+        (_capture if args.command == "capture" else _replay)(args)
     return 0
 
 
