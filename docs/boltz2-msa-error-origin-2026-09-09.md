@@ -760,3 +760,46 @@ relative difference should localise sharply rather than sit at a floor.
 
 That is a real, unblocked experiment, and it is the first one in this
 investigation aimed at the configuration the failing cell actually uses.
+
+## The FP32 residual, sized against the right tensors
+
+The section above estimated the reported z RMSE at "roughly 8.7e-4 relative"
+using an RMS of 15.6 carried over from the bf16 boundary captures. That is the
+wrong tensor. The FP32 matched arm's own trunk is on disk --
+`entity-parity-20260905/fresh-n5-20260905/fp32/protein_ligand_5sak/boltz2/torch/trunk.npz`,
+recorded with `precision: '32'`, `kernels: False`, 200 steps, 5 samples, seed
+101 -- and it holds `s`, `z` and `s_inputs` as float32.
+
+Sizing the artifact's reported RMSEs against it:
+
+| quantity | RMS | reported RMSE | relative | vs one bf16 rounding |
+| --- | ---: | ---: | ---: | ---: |
+| `s` | 60.2373 | 0.006470 | 1.074e-04 | **0.07x** |
+| `z` | 24.8386 | 0.013546 | 5.454e-04 | **0.33x** |
+
+An fp32 round-trip of these tensors is exactly zero, as it must be.
+
+## What that settles
+
+The FP32 trunk residual is **below one bf16 rounding** -- 7% of it on the single
+representation and 33% on the pair. So the two arms are not separated by
+anything bf16-scale, and the bf16 floor argument genuinely cannot reach this
+cell, in either direction.
+
+It is also three to four orders of magnitude above FP32's own resolution of
+about `1e-7`. There is a real, well-conditioned difference here, and unlike the
+bf16 path there is no floor for it to hide under. A boundary decomposition at
+FP32 should localise it rather than return the same number at every boundary,
+which is exactly what the bf16 decomposition did.
+
+## What is still missing to run it
+
+The FP32 native trunk exists. The FP32 port arm on disk
+(`jax-patched-cueq/`) stores coordinates and metrics only, no trunk tensors, and
+`bench/boltz_foldjax_capture.py` has no precision flag -- the port's
+`compute_dtype` is `bfloat16` in every capture checked, including the one whose
+directory is named `fp32-ffi` (that fp32 refers to the FFI linear kernel).
+
+So the experiment needs a port source snapshot at `compute_dtype=float32`
+replaying this tape with `--trunk-only` boundary capture. That is a bounded
+change against an existing native reference, not a research problem.
