@@ -219,3 +219,45 @@ It is not a one-line waiver, and the guard is correct to refuse one.
 What does hold from the previous section: 36 of 38 checks pass in all six cases,
 `coordinates` among them. AF3's numerics are not implicated. The row is empty
 for a bookkeeping-policy reason, not a numerical one.
+
+## The ESMFold2 row: a number exists, with a scope that must travel with it
+
+The table's second `n/a` is also not quite right. `esmfold2-pwa-core-fixed-SgiPCo`
+carries a coordinate comparison on the same alignment convention the table uses
+-- "one whole-system Kabsch per original-order sample; entity measurement
+without refit" -- over five samples and 3073 atoms:
+
+| Entity | max RMSD | per sample |
+| --- | ---: | --- |
+| `entity=0 mol_type=0 asym=0` | 0.2234 | 0.2234, 0.0904, 0.0792, 0.1795, ... |
+| `entity=1 mol_type=3 asym=1` | 0.0847 | |
+
+So ESMFold2's port and native agree to about 0.22 A at worst on this artifact.
+
+### Why this still is not a table row
+
+The artifact states its own scope, and it is narrower than every other row:
+
+> shared-native-feature/native-LM downstream-only diagnostic; native shim pair
+> substituted; independent preprocessing not proved; no crystal
+
+and it records `full_model_admission: None`. Native features and the native
+language model are shared into the port, and a native shim pair is substituted.
+The measurement is of the downstream trunk given native inputs, not of the model
+end to end -- which is exactly the "no complete injectable tape" reason the
+table gave, now stated with the artifact that demonstrates it.
+
+Putting 0.2234 in the same column as OpenFold3's 0.0010 would compare a
+trunk-only diagnostic against end-to-end numbers. The honest entry is the number
+with its scope attached, which is what this section is.
+
+### What it does establish
+
+ESMFold2 is not unmeasured, and its downstream trunk is in the same band as the
+other ports' end-to-end figures -- between Protenix-v2's 0.1611 and Boltz-2's
+1.1761 on their worst cases, and above OpenDDE's 0.0957. Whatever the full-model
+number turns out to be, the trunk is not where a large error is hiding.
+
+The remaining work to fill the row properly is the injectable-tape work the
+2026-09 observer effort has been building: independent preprocessing and the
+port's own language model, so that the comparison is end to end.
