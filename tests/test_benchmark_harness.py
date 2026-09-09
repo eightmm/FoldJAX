@@ -1478,6 +1478,30 @@ def test_openfold3_upstream_keeps_the_runner_yaml_seed() -> None:
     assert "seeds:\n    - 101" in runner_yaml.read_text()
 
 
+def test_openfold3_native_runner_preserves_publisher_model_settings() -> None:
+    import yaml
+
+    runner = Path(__file__).resolve().parents[1] / "bench/openfold3_native_runner.yml"
+    config = yaml.safe_load(runner.read_text())
+    assert config == {
+        "model_update": {"presets": ["predict"]},
+        "experiment_settings": {"seeds": [101]},
+    }
+    argv, _, _ = command(
+        "openfold3", Path("query.json"), Path("output"),
+        {"num_samples": 5, "num_steps": 200, "num_recycles": 3},
+        101, runner,
+    )
+    assert Path(argv[argv.index("--runner_yaml") + 1]) == runner
+    assert argv[argv.index("--num_diffusion_samples") + 1] == "5"
+    with pytest.raises(ValueError, match="runner seed/recycles/steps"):
+        command(
+            "openfold3", Path("query.json"), Path("output"),
+            {"num_samples": 5, "num_steps": 200, "num_recycles": 10},
+            101, runner,
+        )
+
+
 def test_openfold3_upstream_accepts_an_explicit_runner_yaml(tmp_path: Path) -> None:
     runner_yaml = tmp_path / "native-defaults.yml"
     runner_yaml.write_text("experiment_settings:\n  seeds: [101]\n")

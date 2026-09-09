@@ -1,0 +1,8 @@
+# Native-default parity arm. Do not reuse the equal-workload runner here:
+# it overrides recycles and confidence offload. Keep publisher predict policy.
+model_update:
+  presets:
+    - predict
+experiment_settings:
+  seeds:
+    - 101

@@ -106,3 +106,40 @@ resolved:
 Nothing readable remains. The residual is the difference between cuEquivariance
 and upstream's Triton implementations of the same operators -- an execution
 difference below the source, and not a choice this port exposes.
+
+## The rerun floor: 0.0032 Å, so everything above is real
+
+Two runs of the identical arm -- same snapshot, same weights, same native
+reference, nothing changed:
+
+| | Per sample | Max |
+| --- | --- | ---: |
+| Run against run | 0.0001, 0.0001, 0.0001, 0.0018, 0.0032 | **0.0032 Å** |
+| Run 1 against native | 1.897, 0.082, 0.049, 1.477, 0.636 | 1.8971 Å |
+| Run 2 against native | 1.897, 0.082, 0.049, 1.477, 0.638 | 1.8970 Å |
+
+Not bitwise, but deterministic to three decimal places. Three things follow.
+
+**The cell is a real difference, not trajectory chaos.** The residual against
+native is 590 times the floor. Whatever else is true, there is something here to
+find.
+
+**The fused-granularity inversion was real.** Its 0.93 Å degradation is 290
+times the floor, so the earlier caveat about not separating it from chaos with
+one pair of runs is now resolved: it is genuinely worse.
+
+**Every arm in this investigation was admissible.** Boltz-2 at this target is
+deterministic to 0.003 Å, unlike OpenDDE, whose 0.52 Å floor made single-arm
+comparisons meaningless. The thirty arms above were reading signal.
+
+### What that leaves, stated exactly
+
+A trunk that correlates with upstream at 0.9999998727 on `z_trunk` produces
+coordinates 1.9 Å apart, reproducibly, on a target whose own rerun spread is
+0.003 Å. The amplification is deterministic and it is roughly seven orders of
+magnitude.
+
+Nothing reachable from this port reduces it: not configuration, not dtype, not
+boundary placement, not chunk width, not the kernel choice, and not matching
+upstream's call granularity -- which is measurably worse at the output while
+being better at the stage. That is the complete finding.
