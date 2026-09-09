@@ -51,12 +51,28 @@ def native_floor(capture_root):
 
 
 def port_floor(snapshot, case, backend):
-    """Entity max RMSD between a frozen and an unfrozen-autotune port process."""
-    path = snapshot / f"{case}-{backend}-port-floor.json"
-    if not path.exists():
-        return None
-    report = json.loads(path.read_text())
-    return max(report["coordinates"]["entity_max_rmsd"].values())
+    """Entity max RMSD between a frozen and an unfrozen-autotune port process.
+
+    Every ``<case>-<backend>-port-floor*.json`` is one sample of that floor
+    (each unfrozen process picks its own kernels); the largest sample is the
+    floor. Returns ``(floor, samples)`` or ``(None, 0)``.
+    """
+    samples = [
+        max(json.loads(path.read_text())["coordinates"]["entity_max_rmsd"].values())
+        for path in sorted(snapshot.glob(f"{case}-{backend}-port-floor*.json"))
+    ]
+    return (max(samples), len(samples)) if samples else (None, 0)
+
+
+def residual_draws(snapshot, case, backend):
+    """Worst entity RMSD of every port process replayed against native cuEq."""
+    draws = {}
+    for path in sorted(
+        snapshot.glob(f"{case}-{backend}-vs-native-cueq*-comparison.json")
+    ):
+        report = json.loads(path.read_text())
+        draws[path.name] = max(report["coordinates"]["entity_max_rmsd"].values())
+    return draws
 
 
 def cross_process(snapshot, case, backend):
@@ -81,7 +97,7 @@ def evaluate(snapshot, native, cases, backend="cueq"):
         entities = report["coordinates"]["entity_max_rmsd"]
         worst = max(entities.values())
         floor = native_floor(native / case)
-        own = port_floor(snapshot, case, backend)
+        own, own_samples = port_floor(snapshot, case, backend)
         noise = max(x for x in (floor, own) if x is not None) if (
             floor is not None or own is not None
         ) else None
@@ -98,6 +114,8 @@ def evaluate(snapshot, native, cases, backend="cueq"):
             census=census_class(capture),
             native_floor=floor,
             port_floor=own,
+            port_floor_samples=own_samples,
+            draws=residual_draws(snapshot, case, backend),
             structure=structure,
             repeat_bitwise=cross_process(snapshot, case, backend),
         )
@@ -128,7 +146,10 @@ def render(result):
             continue
         ents = "; ".join(f"{k} {v:.6f}" for k, v in r["entities"].items())
         floor = "-" if r["native_floor"] is None else f"{r['native_floor']:.4f}"
-        own = "-" if r["port_floor"] is None else f"{r['port_floor']:.4f}"
+        own = (
+            "-" if r["port_floor"] is None
+            else f"{r['port_floor']:.4f} (n={r['port_floor_samples']})"
+        )
         lines.append(
             f"| {r['case']} | {r['census']} | {ents} | {floor} | {own} | "
             f"{r['structure']} | {r['repeat_bitwise']} | {r['status']} |"

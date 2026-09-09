@@ -101,3 +101,21 @@ def test_port_floor_counts_too(tmp_path):
     assert result["rows"][0]["structure"] == "at-floor"
     assert result["rows"][0]["port_floor"] == 0.12
     assert result["accepted"]
+
+
+def test_port_floor_is_the_largest_sample(tmp_path):
+    snap, nat = tmp_path / "snap", tmp_path / "nat"
+    snap.mkdir()
+    _case(snap, nat, "two", {"A": 0.18}, calls=CUEQ, floor=0.06, own=0.08)
+    (snap / "two-cueq-port-floor-2.json").write_text(json.dumps({
+        "coordinates": {"entity_max_rmsd": {"A": 0.22}},
+    }))
+    (snap / "two-cueq-vs-native-cueq-U-comparison.json").write_text(json.dumps({
+        "coordinates": {"entity_max_rmsd": {"A": 0.07}},
+        "public_confidence": {"plddt": {"max_absolute_error": 1.0}},
+    }))
+    row = evaluate(snap, nat, ["two"])["rows"][0]
+    assert row["port_floor"] == 0.22 and row["port_floor_samples"] == 2
+    assert row["worst"] == 0.18  # the frozen draw stays the counted residual
+    assert sorted(row["draws"].values()) == [0.07, 0.18]
+    assert row["status"] == "at-floor"
