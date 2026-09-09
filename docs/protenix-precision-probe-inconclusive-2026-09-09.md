@@ -46,3 +46,56 @@ substituted one of my own without first validating it.
 The underlying question stays open and stays worth asking: Protenix-v2's 0.1611
 A on 5SAK is the second-largest cell in the panel, its port defaults to `high`,
 and on OpenDDE that exact default was the reducible error.
+
+---
+
+# Correction: the baseline was fine; the `highest` run is incoherent
+
+The section above invalidates the probe because my `high` baseline read 0.262 A
+where the cross-model standard records 0.0335 A. That reasoning is wrong, and
+the control that shows it was available without running anything.
+
+The panel's **own** unmodified foldjax arm, produced by the other session on
+`protein_1ubq`, scores against the panel's own native capture at:
+
+```
+astra panel 1ubq foldjax vs native: max 0.11022  median 0.01995
+standard table protenix 1ubq      : 0.0024
+```
+
+So the panel's untouched arm is off the standard table by the same kind of
+factor my arm was. The gap is not a broken baseline; it is that this panel
+measures against a different native capture than the matched-tape artifact the
+standard table was built from. Comparing a panel number to a table number was
+never a positive control, and I should not have treated it as one.
+
+## What actually disqualifies the `highest` arm
+
+A property of the run itself, measured after the fact. Within-arm spread of the
+five diffusion samples, each against sample 0:
+
+| Arm | sample spread | coordinate range | NaN |
+| --- | --- | --- | --- |
+| `high` | 3.57, 0.91, 1.39, 0.81 | -47.0 .. 44.9 | none |
+| `highest` | 15.44, 17.01, 16.58, 16.60 | -55.5 .. 52.0 | none |
+
+The baseline's five samples agree with each other to about 1-3.6 A, which is a
+normal diffusion ensemble. The `highest` arm's samples are 15-17 A apart. The
+coordinates are finite and in range, so nothing crashed -- the model simply is
+not producing a converged ensemble.
+
+## The finding, stated at the strength the evidence supports
+
+**Protenix-v2's port does not run correctly with the global matmul default
+forced to `highest`.** That is a behavioural claim about the port, evidenced by
+the ensemble incoherence, and it is independent of any comparison to native.
+
+It also means the OpenDDE lever does not transfer. On OpenDDE, `highest`
+produced a coherent ensemble that landed closer to native. Here it produces an
+ensemble that does not hold together, so the question of whether fp32 would
+reduce Protenix's error against native remains genuinely unanswered -- the
+experiment that would answer it needs a narrower intervention than the global
+default, and finding out why the global one breaks inference is the prerequisite.
+
+That is consistent with this port's known accidental fp32 island in the
+diffusion module: a global precision change is not a small perturbation here.
