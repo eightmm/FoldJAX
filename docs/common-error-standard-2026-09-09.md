@@ -293,3 +293,33 @@ including coordinates and the complete tape.
 
 See [the AF3 record](../../foldjax-af3cfg/docs/af3-config-schema-closes-the-panel-2026-09-09.md)
 on branch `fix/af3-config-schema`.
+
+## Correction, 2026-09-09: ESMFold2's `n/a` has the wrong reason
+
+The table attributes ESMFold2's empty row to "neither side exposes a complete
+injectable tape". Measured, that is not the blocker.
+
+An end-to-end pair already existed -- `esmfold2-{native,jax}-full-tape-20260907-5sak-a`,
+same input hash, same seed, `core_only_shared_features: true`, with no
+interchange, shim or injection artifacts on the port side. Both sides ran their
+own language model, trunk and diffusion. Port versus native is max 1.8991 A,
+median 0.1731 A.
+
+Rerunning the port with the identical command and seed voids that number:
+
+| Comparison | max | median |
+| --- | ---: | ---: |
+| **port rerun vs port (floor)** | **2.8295** | **0.1637** |
+| port vs native | 1.8991 | 0.1731 |
+| port rerun vs native | 1.3095 | 0.1940 |
+
+The port's own rerun floor is larger than its distance to native on the max and
+indistinguishable on the median, and two runs of the same code at the same seed
+land at different distances from native.
+
+So ESMFold2 is out of this table for a reason no other row shares: its
+deliberate stochasticity is larger than the quantity the table measures. Filling
+the row needs a distribution comparison over many seeds with the single-side
+spread as the null, not a tape.
+
+Detail on branch `fix/esmfold2-rerun-floor`.
