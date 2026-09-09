@@ -104,3 +104,68 @@ fixed by better arithmetic; the [Boltz-2
 investigation](boltz2-msa-error-origin-2026-09-09.md) spent thirty controlled
 arms confirming exactly that, and found the residual to be the difference
 between two fused kernel implementations of the same operator.
+
+## Correction, 2026-09-09: the AlphaFold 3 row is not `n/a`
+
+The table above records AlphaFold 3 as `n/a` and calls that "structural, not
+missing work". That was my judgement and it was wrong. A six-case AF3 audit
+panel exists -- `foldjax-bench/af3-audit-panel-20260909-IIR5zw` -- covering
+1ubq, rna-1urn, rna-lig-3v7e, dna-7r6r, lig-5sak and 7st3, and every one of
+the six is marked `"passed": false`.
+
+Reading the verdicts rather than the summary flag changes what that means. Each
+case runs 38 checks; in all six cases **36 pass and the same two fail**:
+
+```
+protein_1ubq             failed=['config.json', 'effective-config.json']
+protein_dna_7r6r         failed=['config.json', 'effective-config.json']
+protein_ligand_5sak      failed=['config.json', 'effective-config.json']
+protein_protein_7st3     failed=['config.json', 'effective-config.json']
+protein_rna_1urn         failed=['config.json', 'effective-config.json']
+protein_rna_ligand_3v7e  failed=['config.json', 'effective-config.json']
+```
+
+`coordinates` passes in all six. So do `tape`, `preprocessing_tape`,
+`tape_coverage`, `identity.npz`, and every provenance check.
+
+Flattening the two configs and diffing key by key, **125 of 126 keys are
+identical** and the single difference is the same one in every case:
+
+| Key | native | foldjax |
+| --- | --- | --- |
+| `foldjax_stop_after` | *(absent)* | `'full'` |
+
+`foldjax_stop_after` is a port-only diagnostic that selects an early-exit point
+for tape capture; `'full'` is its no-op value, meaning the run went all the way.
+Native upstream has no counterpart, so this key can never match, and the panel
+fails all six cases on a field that describes the harness rather than the model.
+
+### What this is
+
+The same shape of defect as the Boltz-2 weight-path error message fixed earlier
+today: a bookkeeping mismatch that voids otherwise-passing arms. It is worth
+being explicit that this is not an AF3 numerical finding. On the evidence in
+this panel AF3's coordinates and full tape agree; what fails is the config
+comparison.
+
+### The fix, and why it is not applied here
+
+Normalize the absent-versus-`'full'` case: treat a key that is absent on the
+native side and holds its no-op value on the port side as matching, or keep
+`foldjax_stop_after` out of the config record that is compared. The field
+should not simply be deleted -- a run with `stop_after` set to anything but
+`'full'` genuinely is a different run, and the check should still catch that.
+
+It is not applied in this session because the writer is
+`src/foldjax/models/alphafold3/_upstream/alphafold3/model/model.py`, inside the
+tree the AF3 port keeps byte-verbatim against upstream, with
+`src/foldjax/backends/alphafold3.py` setting it. Touching `_upstream/` needs the
+AF3 panel re-run to verify, and there was not enough context left in this
+session to do that honestly. Recording the diagnosis with its evidence is worth
+more than an unverified edit.
+
+### Effect on the standard
+
+Six cells move from "no evidence" to "passing on coordinates and tape, failing
+one harness-config check". That leaves ESMFold2 as the only genuine `n/a`, and
+its reason -- no complete injectable tape on either side -- still stands.
