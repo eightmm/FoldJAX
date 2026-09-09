@@ -100,3 +100,17 @@ difference; samples 1, 3-5 are at 0.015-0.044 Å.
 Jobs 528, 537-549 (native A/B), 550-563 (port A/B); ledger rows in
 `docs/EXPERIMENTS.jsonl`. Assets under `~/common` (CCD components, PDB
 cluster file, obsolete-release CSV) copied from the workstation.
+
+## Where the frozen pair's 0.17 Å comes from (1UBQ, port-C vs port-D)
+
+With XLA autotune frozen and loaded (`--xla_gpu_require_complete_aot_autotune_results=true`)
+the two port processes share `foldjax-input.npz` bitwise (64 arrays, 0
+differing), `infer-boundary.json` and `schedule-audit.json` byte-equal, yet
+`prediction.npz` already differs at `s_trunk` and `z_trunk` (max abs 16 / 32
+on bf16-scale trunk activations), `distogram_logits` (8), and only then at
+`coordinate` (2.29 max abs, 0.17 Å entity RMSD). The nondeterminism is in the
+trunk, not in the diffusion sampler's atom scatter; it survives autotune
+freezing, so the remaining candidates are XLA's non-deterministic reductions
+(atomics in the cuEq/Triton triangle kernels or `xla_gpu_deterministic_ops`
+off). One sentence of status, not a defect: native's own floor on this case
+is the same size.
