@@ -1,10 +1,15 @@
 # Boltz-2 on master: upstream's own kernel toggle is the scale for the 5SAK residual
 
-Status: structure closed at the user's tolerance. The port's 5SAK residual sits
-inside the movement upstream shows against itself when only its fused-kernel
-choice changes, on the same tape, at every recorded trunk boundary and at the
-coordinates. Bitwise agreement is unreachable without matching torch's fusion
-order and is not claimed.
+Status: 5SAK closed at the user's tolerance -- the port's residual sits inside
+the movement upstream shows against itself when only its fused-kernel choice
+changes, on the same tape, at every recorded trunk boundary and at the
+coordinates. **This scale is 5SAK-specific.** On the ion case 1AAY
+(`docs/ion-case-1aay-master-2026-09-09.md`) upstream's own toggle moves the
+protein by 0.020 Å while the port sits 0.175 Å away on one sample (stable
+across port processes, 0.018 Å), so there the difference is a genuine route
+difference about 9x upstream's implementation scatter, and Boltz-2 stays
+open on that case. Bitwise agreement is unreachable without matching torch's
+fusion order and is not claimed.
 
 ## Question
 
