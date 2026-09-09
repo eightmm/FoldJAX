@@ -182,3 +182,68 @@ others.
 
 More native runs would sharpen the p-value; they would not change the estimate
 much, since the six cross pairs already agree to within 0.06 A.
+
+---
+
+# Retraction: the "rerun floor" was XLA autotuning, not the model
+
+Everything above rests on the port's replay being irreproducible -- a measured
+"floor" of 2.8295 A max that swamped the 1.8991 A distance to native, from which
+this document concluded ESMFold2 needs a distribution comparison rather than a
+matched one. That conclusion is wrong.
+
+## What the tape actually contains
+
+Eight arrays, and they cover every stochasticity source this model has:
+
+```
+initial_pair_state          lm_dropout_masks
+msa_column_keep             msa_row_choices
+diffusion_initial_normal    diffusion_rotation_quaternions
+diffusion_translations      diffusion_churn_normals
+```
+
+LM dropout, MSA sampling and all four diffusion draws are captured. The tape is
+complete, which is the opposite of the "no complete injectable tape" the
+cross-model standard gives as the reason for ESMFold2's `N/A`.
+
+## The probe
+
+Four replays of that tape had differed on **every element**, with max diffs of
+1.67, 4.04 and 20.10 A. `--xla_gpu_deterministic_ops=true` is not usable here --
+it disables autotuning and a Triton gemm fusion then has no default config
+(`INTERNAL: No supported config found for HLO ... __triton_gemm`).
+
+Pinning the compiled executable instead: one warm run populating a shared
+`JAX_COMPILATION_CACHE_DIR`, then two measured runs reusing it.
+
+```
+shared-cache replays: bitwise=True  max|diff| 0.000000  mean|diff| 0.000000
+```
+
+**Bitwise identical.** The port's replay is fully deterministic given the same
+compiled program. The entire 1.67-20.10 A spread was XLA picking different
+kernels between runs, amplified by 5SAK's trajectory into angstroms.
+
+## What this changes
+
+- ESMFold2's tape is complete and is consumed. A matched comparison is available
+  now, not blocked on infrastructure.
+- The `~0.037 A` permutation estimate above is measuring autotune variance in
+  both the cross and within distributions, not model stochasticity. It should
+  not be quoted.
+- The port-versus-native numbers (1.8991 max, 0.1731 median) were taken without
+  a pinned cache on either side and inherit the same variance.
+
+## The general point, which is larger than this model
+
+Any comparison in this project run without a pinned compilation cache carries
+kernel-selection variance, and on an amplifying target that variance reaches
+tens of angstroms. Several of this session's own measurements -- the OpenDDE
+precision arms, the Protenix precision arms, the free-running cross-model table
+-- were run without pinning it. Their conclusions rest on effects far larger
+than the variance seen here, and the OpenDDE and Boltz-2 arms carried explicit
+rerun controls that would have exposed it, but the caveat belongs on record.
+
+The correct next measurement for this row is both arms replayed with pinned
+kernels, which is now a small job rather than a research problem.
