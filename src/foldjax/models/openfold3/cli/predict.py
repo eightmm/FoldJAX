@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import time
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +151,20 @@ def _report_peak_memory(jax: Any, config: Any) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Enter the shared compilation-cache scope, then run the prediction.
+
+    The scope belongs here rather than at the point the flag is read: it must
+    cover the compile it is there for, and it restores the process' previous
+    JAX cache config when the run ends. That matters because this CLI's
+    ``main`` is also importable, and a raw ``jax.config.update`` left a
+    caller's setting overwritten.
+    """
+
+    with ExitStack() as cache_scope:
+        return _run(argv, cache_scope=cache_scope)
+
+
+def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.no_cache and args.cache_dir is not None:
@@ -281,21 +296,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         jax.block_until_ready(prediction.coordinates)
         print(f"predicted in {time.perf_counter() - started:.1f}s (eager)")
     else:
-        cache_scope = None
+        cache_name = None
         if not args.no_cache:
-            from foldjax.models.openfold3.compilation import (
-                enable_compilation_cache,
-            )
+            from foldjax.cache import compilation_cache_scope
+            from foldjax.models.openfold3.compilation import default_cache_dir
 
-            cache = enable_compilation_cache(args.cache_dir)
-            cache_scope = str(cache)
+            cache = (
+                Path(args.cache_dir)
+                if args.cache_dir is not None
+                else default_cache_dir()
+            )
+            # ``-1`` lifts XLA's entry-size floor, which otherwise skips exactly
+            # the small-but-slow-to-compile graphs this port produces.
+            cache_scope.enter_context(
+                compilation_cache_scope(cache, min_entry_size_bytes=-1)
+            )
+            cache_name = str(cache)
             print(f"persistent compilation cache {cache}")
         print("compiling (one-time, minutes at long sequences) ...")
         compiled = compile_predict(
             config,
             table,
             n_chain=n_chain,
-            cache_scope=cache_scope,
+            cache_scope=cache_name,
         )
         elapsed = []
         for _ in range(max(1, args.repeats)):

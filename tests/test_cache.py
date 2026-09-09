@@ -800,6 +800,45 @@ def test_compilation_cache_scope_disables_and_restores_host_config(
             jax.config.update(name, value)
 
 
+def test_compilation_cache_scope_lifts_the_entry_floor_only_when_asked(
+    tmp_path: Path,
+) -> None:
+    """OpenFold3 needs the floor lifted; nothing else may inherit that.
+
+    Its slowest graphs to compile are small enough that XLA's default entry-size
+    floor skips exactly them. Every other backend keeps the host's floor, so
+    the argument that carries this must be off by default and restored on exit.
+    """
+
+    import jax
+
+    names = (
+        "jax_compilation_cache_dir",
+        "jax_persistent_cache_min_compile_time_secs",
+        "jax_persistent_cache_min_entry_size_bytes",
+    )
+    original = {name: getattr(jax.config, name) for name in names}
+    try:
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", 2048)
+        configured = {name: getattr(jax.config, name) for name in names}
+
+        with compilation_cache_scope(tmp_path / "default"):
+            assert jax.config.jax_persistent_cache_min_entry_size_bytes == 2048
+        assert {name: getattr(jax.config, name) for name in names} == configured
+
+        with compilation_cache_scope(tmp_path / "lifted", min_entry_size_bytes=-1):
+            assert jax.config.jax_persistent_cache_min_entry_size_bytes == -1
+        assert {name: getattr(jax.config, name) for name in names} == configured
+
+        # A disabled cache has no directory to size entries for.
+        with compilation_cache_scope(None, min_entry_size_bytes=-1):
+            assert jax.config.jax_persistent_cache_min_entry_size_bytes == 2048
+        assert {name: getattr(jax.config, name) for name in names} == configured
+    finally:
+        for name, value in original.items():
+            jax.config.update(name, value)
+
+
 def test_resolve_cache_dir_requires_a_cache_root(tmp_path: Path) -> None:
     request = dataclasses.replace(_request(tmp_path), cache_dir=None)
     with pytest.raises(ValueError, match="cache_dir is required"):

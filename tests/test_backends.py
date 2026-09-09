@@ -1879,9 +1879,6 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             prune_sample_diffusion_aliases=prune_sample_diffusion_aliases,
             map_inference_params=map_inference_params,
         ),
-        "foldjax.models.openfold3.compilation": SimpleNamespace(
-            enable_compilation_cache=lambda path: path
-        ),
         "jax": SimpleNamespace(random=SimpleNamespace(key=lambda seed: seed)),
     }
     monkeypatch.setattr(
@@ -2041,9 +2038,6 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             resolve_model_prefix=lambda state, prefix=None: "",
             prune_sample_diffusion_aliases=lambda state, *, prefix: 0,
             map_inference_params=lambda state, prefix: object()
-        ),
-        "foldjax.models.openfold3.compilation": SimpleNamespace(
-            enable_compilation_cache=lambda path: path
         ),
         "jax": SimpleNamespace(random=SimpleNamespace(key=lambda seed: seed)),
         "jax.numpy": SimpleNamespace(

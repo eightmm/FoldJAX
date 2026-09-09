@@ -696,9 +696,6 @@ def test_managed_raw_and_archive_paths_compact_only_the_model_copy(
             prune_sample_diffusion_aliases=lambda state, *, prefix: 0,
             map_inference_params=lambda state, prefix: object(),
         ),
-        "foldjax.models.openfold3.compilation": SimpleNamespace(
-            enable_compilation_cache=lambda path: path
-        ),
         "jax": SimpleNamespace(random=SimpleNamespace(key=lambda seed: seed)),
     }
     monkeypatch.setattr(

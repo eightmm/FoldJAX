@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,30 @@ def _collect_representations(output, wanted):
 def main(
     argv: Sequence[str] | None = None,
     *,
+    on_padding_plan: Callable[..., None] | None = None,
+    _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
+) -> list[Path]:
+    """Enter the shared compilation-cache scope, then run the prediction.
+
+    The scope covers the whole run, and restores the process' previous JAX
+    cache config when it ends. That matters because this ``main`` is also
+    called in-process -- by the FoldJAX backend, and by tests -- where a raw
+    ``jax.config.update`` left the caller's setting overwritten.
+    """
+
+    with ExitStack() as cache_scope:
+        return _run(
+            argv,
+            cache_scope=cache_scope,
+            on_padding_plan=on_padding_plan,
+            _prepared_params_loader=_prepared_params_loader,
+        )
+
+
+def _run(
+    argv: Sequence[str] | None,
+    *,
+    cache_scope: ExitStack,
     on_padding_plan: Callable[..., None] | None = None,
     _prepared_params_loader: Callable[[Path, str, bool], Any] | None = None,
 ) -> list[Path]:
@@ -449,10 +474,10 @@ def main(
     import jax.numpy as jnp
 
     if not args.no_compile_cache:
+        from foldjax.cache import compilation_cache_scope
+
         cache = args.compile_cache.expanduser().resolve()
-        cache.mkdir(parents=True, exist_ok=True)
-        jax.config.update("jax_compilation_cache_dir", str(cache))
-        jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+        cache_scope.enter_context(compilation_cache_scope(cache))
         print(f"compile cache: {cache}")
 
     from foldjax.models.protenix.chunking import resolve_chunk_config

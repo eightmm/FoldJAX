@@ -192,7 +192,11 @@ def runtime_profile() -> dict[str, str]:
 
 
 @contextmanager
-def compilation_cache_scope(directory: Path | None):
+def compilation_cache_scope(
+    directory: Path | None,
+    *,
+    min_entry_size_bytes: int | None = None,
+):
     """Apply one request's JAX cache setting and restore the host's afterwards.
 
     JAX exposes the persistent cache through process-wide config. FoldJAX
@@ -200,6 +204,11 @@ def compilation_cache_scope(directory: Path | None):
     application gets its original config back even when prediction raises.
     Unrelated JAX compilation in another thread cannot be isolated from a
     process-global setting; mixed workloads must use a separate process.
+
+    ``min_entry_size_bytes`` overrides XLA's size floor for what is worth
+    writing. Only OpenFold3 passes it, as ``-1``: that port's slowest graphs to
+    compile are small enough that the default floor skips exactly them. Left
+    unset the floor is the host's, so no other backend's cache policy moves.
     """
     import jax
     from jax.experimental.compilation_cache import compilation_cache
@@ -223,6 +232,11 @@ def compilation_cache_scope(directory: Path | None):
                 Path(directory).mkdir(parents=True, exist_ok=True)
                 jax.config.update("jax_compilation_cache_dir", str(directory))
                 jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+                if min_entry_size_bytes is not None:
+                    jax.config.update(
+                        "jax_persistent_cache_min_entry_size_bytes",
+                        min_entry_size_bytes,
+                    )
             yield
         finally:
             # Drop the request-scoped file-cache object before restoring the

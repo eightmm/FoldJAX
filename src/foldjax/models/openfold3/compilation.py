@@ -7,9 +7,12 @@ cost is paid again in every new process, which is most of the wall clock of a
 one-off prediction.
 
 Importing the library never enables it: writing hundreds of megabytes is not an
-acceptable import side effect. The FoldJAX backend and standalone prediction CLI
-do enable it at execution time by default, with explicit opt-outs; direct library
-callers choose by calling :func:`enable_compilation_cache`.
+acceptable import side effect. The FoldJAX backend and the standalone prediction
+CLI do enable it at execution time by default, with explicit opt-outs, but both
+now do so through `foldjax.cache.compilation_cache_scope`, which resets JAX's
+file-cache object before it selects a directory and restores the caller's config
+afterwards. :func:`enable_compilation_cache` remains for direct library callers
+who want the setting to stay in force for the rest of the process.
 """
 
 from __future__ import annotations

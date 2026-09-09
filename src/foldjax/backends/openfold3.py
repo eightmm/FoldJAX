@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from foldjax.backends._ccd_session import WeightSessionHooks
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.cache import compilation_cache_scope
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
 from foldjax.schema import (
@@ -376,7 +377,6 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         chemistry = import_module("foldjax.models.openfold3.bridge.chemistry")
         checkpoint = import_module("foldjax.models.openfold3.bridge.checkpoint")
         mapping = import_module("foldjax.models.openfold3.bridge.torch_mapping")
-        compilation = import_module("foldjax.models.openfold3.compilation")
         jax = import_module("jax")
 
         query_id = options.pop("query_id", None)
@@ -586,13 +586,15 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # released architecture takes minutes and grows with token count, so
         # without a persistent cache every process pays it again. `api.predict`
         # has already namespaced the directory per model, weight identity and
-        # compile-relevant options.
-        #
-        # `enable_compilation_cache` rather than a bare `jax.config.update`,
-        # because it also lifts the minimum entry size -- XLA otherwise skips
-        # exactly the small-but-slow-to-compile graphs this port produces.
-        if compile_it and request.cache_dir is not None:
-            compilation.enable_compilation_cache(request.cache_dir)
+        # compile-relevant options, and opened that same scope; re-entering it
+        # is what carries the one setting this port needs on top -- XLA's
+        # default entry-size floor skips exactly the small-but-slow-to-compile
+        # graphs it produces -- and restores it afterwards.
+        compile_cache = (
+            compilation_cache_scope(request.cache_dir, min_entry_size_bytes=-1)
+            if compile_it and request.cache_dir is not None
+            else nullcontext()
+        )
 
         key = jax.random.key(request.seed)
         noise_mask = None
@@ -611,7 +613,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # `_default_backend()` reads this environment variable per call. Keep
         # it set through tracing/execution so it reaches the template stack and
         # confidence head as well as the trunk, then restore the host value.
-        with matmul_precision(), _triangle_backend(kernel):
+        with matmul_precision(), _triangle_backend(kernel), compile_cache:
             if padding_plan is not None:
                 from foldjax.models.openfold3.streaming import compile_streamed_predict
 
