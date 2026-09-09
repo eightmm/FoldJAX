@@ -4,9 +4,14 @@ from bench.openbind_acceptance import classify, evaluate
 
 
 def _case(
-    snapshot, native, case, entities, *, calls, bitwise=True, backend="cueq", floor=None
+    snapshot, native, case, entities, *, calls, bitwise=True, backend="cueq",
+    floor=None, own=None,
 ):
     (native / case / "native-cueq").mkdir(parents=True)
+    if own is not None:
+        (snapshot / f"{case}-{backend}-port-floor.json").write_text(json.dumps({
+            "coordinates": {"entity_max_rmsd": {"A": own}},
+        }))
     if floor is not None:
         (native / case / "native-cueq-vs-repeat.json").write_text(json.dumps({
             "same_tape": True, "coordinates": {"entity_max_rmsd": {"A": floor}},
@@ -86,3 +91,13 @@ def test_residual_within_twice_the_native_floor_is_at_floor(tmp_path):
     assert [r["structure"] for r in result["rows"]] == ["at-floor", "investigate"]
     assert [r["status"] for r in result["rows"]] == ["at-floor", "fail"]
     assert evaluate(snap, nat, ["noisy"])["accepted"]
+
+
+def test_port_floor_counts_too(tmp_path):
+    snap, nat = tmp_path / "snap", tmp_path / "nat"
+    snap.mkdir()
+    _case(snap, nat, "port-noisy", {"A": 0.13}, calls=CUEQ, floor=0.05, own=0.12)
+    result = evaluate(snap, nat, ["port-noisy"])
+    assert result["rows"][0]["structure"] == "at-floor"
+    assert result["rows"][0]["port_floor"] == 0.12
+    assert result["accepted"]

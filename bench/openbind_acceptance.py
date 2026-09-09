@@ -3,7 +3,8 @@
 Exit 0 only when every case that is a genuine cuEq-versus-cuEq comparison
 (native census: cuEq attention ran, never fell back) has every entity below
 0.1 A against the native cuEq capture -- or, above that, within twice the
-distance two native processes of the same tape put between themselves -- and
+larger of the two process floors (native cuEq versus its own repeat; the
+port frozen versus unfrozen autotune, same tape) -- and
 the second-process FoldJAX repeat is bitwise equal to the first. 0.05-0.1 A is
 the user's deferred band, not a failure; above 0.1 A and above the native
 floor is. Cases whose native cuEq attention fell back (at or
@@ -49,6 +50,15 @@ def native_floor(capture_root):
     return max(report["coordinates"]["entity_max_rmsd"].values())
 
 
+def port_floor(snapshot, case, backend):
+    """Entity max RMSD between a frozen and an unfrozen-autotune port process."""
+    path = snapshot / f"{case}-{backend}-port-floor.json"
+    if not path.exists():
+        return None
+    report = json.loads(path.read_text())
+    return max(report["coordinates"]["entity_max_rmsd"].values())
+
+
 def cross_process(snapshot, case, backend):
     path = snapshot / f"{case}-{backend}-cross-process.json"
     if not path.exists():
@@ -71,11 +81,15 @@ def evaluate(snapshot, native, cases, backend="cueq"):
         entities = report["coordinates"]["entity_max_rmsd"]
         worst = max(entities.values())
         floor = native_floor(native / case)
+        own = port_floor(snapshot, case, backend)
+        noise = max(x for x in (floor, own) if x is not None) if (
+            floor is not None or own is not None
+        ) else None
         structure = classify(worst)
-        if structure == "investigate" and floor is not None and worst <= 2 * floor:
-            # Two native processes of the same tape already differ by `floor`;
-            # a port residual within twice that is process noise, not a route
-            # difference (three mutually equidistant runs share one floor).
+        if structure == "investigate" and noise is not None and worst <= 2 * noise:
+            # Each side already moves by its own floor between two processes
+            # of the same tape (kernel selection); a residual within twice the
+            # larger floor is that noise, not a route difference.
             structure = "at-floor"
         row.update(
             entities=entities,
@@ -83,6 +97,7 @@ def evaluate(snapshot, native, cases, backend="cueq"):
             plddt_max=report["public_confidence"]["plddt"]["max_absolute_error"],
             census=census_class(capture),
             native_floor=floor,
+            port_floor=own,
             structure=structure,
             repeat_bitwise=cross_process(snapshot, case, backend),
         )
@@ -103,19 +118,20 @@ def evaluate(snapshot, native, cases, backend="cueq"):
 
 def render(result):
     lines = [
-        "| case | census | entity max RMSD (A) | native floor (A) | structure "
-        "| repeat bitwise | status |",
-        "| --- | --- | --- | ---: | --- | --- | --- |",
+        "| case | census | entity max RMSD (A) | native floor (A) | port floor (A) "
+        "| structure | repeat bitwise | status |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | --- |",
     ]
     for r in result["rows"]:
         if r["status"] == "missing":
-            lines.append(f"| {r['case']} | - | - | - | - | - | missing |")
+            lines.append(f"| {r['case']} | - | - | - | - | - | - | missing |")
             continue
         ents = "; ".join(f"{k} {v:.6f}" for k, v in r["entities"].items())
         floor = "-" if r["native_floor"] is None else f"{r['native_floor']:.4f}"
+        own = "-" if r["port_floor"] is None else f"{r['port_floor']:.4f}"
         lines.append(
-            f"| {r['case']} | {r['census']} | {ents} | {floor} | {r['structure']} | "
-            f"{r['repeat_bitwise']} | {r['status']} |"
+            f"| {r['case']} | {r['census']} | {ents} | {floor} | {own} | "
+            f"{r['structure']} | {r['repeat_bitwise']} | {r['status']} |"
         )
     lines.append(f"\naccepted: {result['accepted']}")
     return "\n".join(lines)
