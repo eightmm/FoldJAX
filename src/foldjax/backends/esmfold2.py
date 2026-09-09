@@ -446,6 +446,39 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 # prediction, poison, or KeyboardInterrupt already in flight.
                 pass
 
+    def managed_asset_profile(
+        self,
+        options: Mapping[str, Any],
+        *,
+        weights: Path | None = None,
+        requested: str | None = None,
+    ) -> str | None:
+        """Decide whether the 25 GB ESMC half is owed, for any weight source.
+
+        The variant is validated even for explicitly supplied weights: that
+        catches an ambiguous ``no_language_model=true`` + ``esmc_weights``
+        request during ``plan``, before a large checkpoint is loaded.
+        """
+        del weights, requested
+        return managed_asset_profile(options)
+
+    def apply_managed_profile(
+        self,
+        options: dict[str, Any],
+        profile: str,
+        *,
+        weights: Path | None = None,
+    ) -> dict[str, Any]:
+        """Turn the profile into a variant, before weights are resolved.
+
+        ESMFold2's variant is fully determined by the options, so the
+        post-resolution call site has nothing left to add and the resolved
+        ``weights`` path is not consulted.
+        """
+        if weights is not None:
+            return options
+        return apply_managed_profile(options, profile)
+
     def _ccd_lease(self) -> AbstractContextManager[None]:
         """Lease Biohub chemistry once per backend session, lazily."""
 

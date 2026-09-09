@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack
 from importlib import import_module
 from pathlib import Path
@@ -268,6 +268,40 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         self._weights = PreparedWeightSession(self.name)
         self._managed_memory: ExitStack | None = None
         self._ccd_memory_leased = False
+
+    def managed_asset_profile(
+        self,
+        options: Mapping[str, Any],
+        *,
+        weights: Path | None = None,
+        requested: str | None = None,
+    ) -> str | None:
+        """Read the managed variant out of the model name, when one is owed.
+
+        Managed mini ESM/ISM checkpoints live with their matching encoder, so a
+        request that lets FoldJAX resolve weights, or that names a first-class
+        profile, gets one derived from ``model_name``. The legacy options-only
+        external-weight path -- explicit weights and no profile -- stays
+        untouched.
+        """
+        if weights is not None and requested is None:
+            return requested
+        return managed_asset_profile(options)
+
+    def apply_managed_profile(
+        self,
+        options: dict[str, Any],
+        profile: str,
+        *,
+        weights: Path | None = None,
+    ) -> dict[str, Any]:
+        """Apply the profile twice: the architecture first, its encoder after.
+
+        The profile owns the architecture name, which is knowable before any
+        weight path is; the matching ESM/ISM directory is added on the second
+        call, once the structure-weight path is known.
+        """
+        return apply_managed_profile(options, profile, weights=weights)
 
     def _ccd_lease(self) -> AbstractContextManager[None]:
         """Lease shared Protenix/OpenDDE chemistry lazily."""

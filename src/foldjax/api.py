@@ -124,34 +124,11 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
                 f"unsupported asset profile {requested_profile!r} for "
                 f"{backend.name}; choose one of {choices}"
             )
-        if backend.name == "esmfold2":
-            from foldjax.backends.esmfold2 import apply_managed_profile
+        options = backend.apply_managed_profile(options, requested_profile)
 
-            options = apply_managed_profile(options, requested_profile)
-        elif backend.name == "protenix":
-            from foldjax.backends.protenix import apply_managed_profile
-
-            # The profile owns the architecture name. The matching ESM/ISM
-            # directory is added once the structure-weight path is known.
-            options = apply_managed_profile(options, requested_profile)
-
-    asset_profile: str | None = requested_profile
-    if backend.name == "esmfold2":
-        from foldjax.backends.esmfold2 import managed_asset_profile
-
-        # Validate the model variant even for explicitly supplied weights. This
-        # catches ambiguous `no_language_model=true` + `esmc_weights` requests
-        # during `plan`, before a large checkpoint is loaded.
-        asset_profile = managed_asset_profile(options)
-    elif backend.name == "protenix" and (
-        request.weights is None or requested_profile is not None
-    ):
-        from foldjax.backends.protenix import managed_asset_profile
-
-        # Managed mini ESM/ISM checkpoints live with their matching encoder.
-        # A first-class profile also configures explicitly supplied weights,
-        # while the legacy options-only external-weight path stays untouched.
-        asset_profile = managed_asset_profile(options)
+    asset_profile = backend.managed_asset_profile(
+        options, weights=request.weights, requested=requested_profile
+    )
     resolved_weights = request.weights
     if request.weights is None:
         from foldjax.assets import resolve_weights
@@ -164,11 +141,9 @@ def resolve_request(request: PredictionRequest) -> PredictionRequest:
         # ``plan`` and run manifests should expose the bundle that was actually
         # selected, including a model's ordinary released default.
         updates["profile"] = asset_profile or "released"
-    if backend.name == "protenix" and asset_profile is not None:
-        from foldjax.backends.protenix import apply_managed_profile
-
+    if asset_profile is not None:
         assert resolved_weights is not None
-        options = apply_managed_profile(
+        options = backend.apply_managed_profile(
             options,
             asset_profile,
             weights=resolved_weights,

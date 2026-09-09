@@ -6,6 +6,7 @@ import functools
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Container, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
+from pathlib import Path
 from typing import Any
 
 from foldjax import execution
@@ -281,6 +282,43 @@ class Backend(ABC):
 
     def validate_session(self, request: PredictionRequest) -> None:
         """Refuse when resources used by this session changed on disk."""
+
+    def managed_asset_profile(
+        self,
+        options: Mapping[str, Any],
+        *,
+        weights: Path | None = None,
+        requested: str | None = None,
+    ) -> str | None:
+        """Name the managed asset bundle this request's options actually select.
+
+        Request resolution asks every backend before it consults the weight
+        store, so a model whose options change which files are required answers
+        here instead of having the shared layer special-case its name. The
+        default keeps whatever profile the request asked for. ``weights`` is the
+        explicitly supplied path, if any, and is what lets a backend decline to
+        infer a profile for weights the caller placed itself.
+        """
+        del options, weights
+        return requested
+
+    def apply_managed_profile(
+        self,
+        options: dict[str, Any],
+        profile: str,
+        *,
+        weights: Path | None = None,
+    ) -> dict[str, Any]:
+        """Fold one public asset profile into this backend's native options.
+
+        Called twice per resolution: once with the requested profile before any
+        weight path is known, and once with the resolved profile and its
+        ``weights`` afterwards, for backends that stage companion checkpoints
+        beside the structure weights. The default owns no options and returns
+        ``options`` unchanged.
+        """
+        del profile, weights
+        return options
 
     @staticmethod
     def _strip_released_defaults(
