@@ -35,10 +35,13 @@ above 0.1 Å but within upstream's own process movement (or basin sharing).
    The port's distribution of outcomes is upstream's.
 3. **The port's own floor is mostly XLA kernel selection.** Freezing autotune
    makes OpenFold3 and ESMFold2 bitwise repeatable across processes and
-   removed the one 1UBQ "residual" on ESMFold2 (0.122 → 0.02 Å). Protenix is
-   the exception: its frozen pair still differs by 0.17 Å on 1UBQ sample 2,
-   a port-side nondeterminism beyond autotune (same size as native's own
-   floor there).
+   removed the one 1UBQ "residual" on ESMFold2 (0.122 → 0.02 Å), and
+   collapses Boltz-2's 5SAK port floor from 0.83 Å to 0.0008 Å (jobs
+   631/632) without moving the native residual. Protenix is the exception:
+   its frozen pair still differs by 0.17 Å on 1UBQ sample 2, and the
+   difference is already present in `s_trunk`/`z_trunk` with bitwise-equal
+   inputs, so it is trunk-level nondeterminism beyond autotune (same size as
+   native's own floor there).
 4. **Precision policy decisions**: OpenDDE keeps `high` (matches native's
    torch TF32; `highest` is worse everywhere). OpenFold3 keeps `cueq` as the
    default triangle kernel; `cueq-full` is 4-9% faster with higher peak and one
