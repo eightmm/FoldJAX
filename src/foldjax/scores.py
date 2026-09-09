@@ -11,6 +11,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+#: Protenix and OpenDDE both write "<name>_sample_<rank>.cif" next to
+#: "<name>_summary_confidence_sample_<rank>.json" in one predictions directory.
+_CONFIDENCE_INFIX = "_summary_confidence_sample_"
+
+
+def sample_summary_scores(structure_path: Path) -> dict[str, float]:
+    """Read the summary confidence JSON written beside ``structure_path``.
+
+    A structure whose name does not carry the sample suffix has no matching
+    summary and yields no scores.
+    """
+    name, separator, rank = structure_path.stem.rpartition("_sample_")
+    if not separator:
+        return {}
+    return scalar_scores(
+        structure_path.with_name(f"{name}{_CONFIDENCE_INFIX}{rank}.json")
+    )
+
 
 def scalar_scores(path: Path) -> dict[str, float]:
     """Return the scalar fields of a summary confidence JSON, or ``{}``.

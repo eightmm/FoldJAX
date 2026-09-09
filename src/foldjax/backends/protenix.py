@@ -22,7 +22,7 @@ from foldjax.schema import (
     PredictionResult,
     PredictionSample,
 )
-from foldjax.scores import scalar_scores
+from foldjax.scores import sample_summary_scores
 
 _CLI_OPTIONS = {
     "cp_devices",
@@ -72,10 +72,6 @@ _RESERVED_CLI_FLAGS = frozenset(
     }
     | {f"--{name.replace('_', '-')}" for name in _CLI_OPTIONS}
 )
-# Protenix writes "<name>_sample_<rank>.cif" next to
-# "<name>_summary_confidence_sample_<rank>.json" in one predictions directory.
-_CONFIDENCE_INFIX = "_summary_confidence_sample_"
-
 _PROFILE_MODEL_NAMES = {
     "released": "protenix_base_default_v1.0.0",
     "v2": "protenix-v2",
@@ -502,7 +498,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             PredictionSample(
                 seed=request.seed,
                 structure_path=path,
-                scores=_scores(path),
+                scores=sample_summary_scores(path),
             )
             for path in written
             if path.suffix == ".cif"
@@ -527,13 +523,3 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 self.name, request.output_dir, wanted
             ),
         )
-
-
-def _scores(structure_path: Path) -> dict[str, float]:
-    """Read the summary confidence JSON Protenix writes beside ``structure_path``."""
-    name, separator, rank = structure_path.stem.rpartition("_sample_")
-    if not separator:
-        return {}
-    return scalar_scores(
-        structure_path.with_name(f"{name}{_CONFIDENCE_INFIX}{rank}.json")
-    )

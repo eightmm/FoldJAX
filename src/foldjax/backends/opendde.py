@@ -22,7 +22,7 @@ from foldjax.schema import (
     PredictionSample,
     _strict_boolean,
 )
-from foldjax.scores import scalar_scores
+from foldjax.scores import sample_summary_scores
 
 # Every environment variable the native CLI assigns. Asserted against its
 # source in tests/test_native_contracts.py so a new export cannot escape.
@@ -87,7 +87,6 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "use_template": False,
     "use_rna_msa": False,
 }
-_CONFIDENCE_INFIX = "_summary_confidence_sample_"
 
 
 class OpenDDEBackend(ManagedCcdSession, Backend):
@@ -309,7 +308,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             PredictionSample(
                 seed=request.seed,
                 structure_path=path,
-                scores=_scores(path),
+                scores=sample_summary_scores(path),
             )
             for path in written
             if path.suffix == ".cif"
@@ -352,15 +351,6 @@ def _restored_environment() -> Iterator[None]:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-
-
-def _scores(structure_path: Path) -> dict[str, float]:
-    name, separator, rank = structure_path.stem.rpartition("_sample_")
-    if not separator:
-        return {}
-    return scalar_scores(
-        structure_path.with_name(f"{name}{_CONFIDENCE_INFIX}{rank}.json")
-    )
 
 
 def _shape_profile(
