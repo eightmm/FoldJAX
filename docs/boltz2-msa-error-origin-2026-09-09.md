@@ -859,3 +859,48 @@ kernels. The harness ran `kernels=False` with FP32 and `kernels=True` with
 bf16, so nothing here says which one carries the 16 A. Two more arms --
 FP32-with-kernels and bf16-without-kernels -- would separate them, and they are
 the same shape of run as the three that already exist.
+
+## The 2x2: precision carries the failing cell, kernels do not
+
+The previous section noted that the existing arms move precision and fused
+kernels together, so neither could be attributed. Four arms with the two
+separated, same driver, same case, shared sampler draws, entity RMSD maximum
+over five samples:
+
+| native precision | native kernels | global max | protein | ligand |
+| --- | --- | ---: | ---: | ---: |
+| 32 | off | **0.001305** | 0.001308 | 0.000142 |
+| 32 | **on** | **0.002837** | 0.002846 | 0.000171 |
+| **bf16-mixed** | off | **3.596264** | 3.606615 | 0.088017 |
+| bf16-mixed | on | (queued; the pre-existing arm measured 16.193149) |
+
+Turning the fused kernels **on** at FP32 moves the disagreement from 0.0013 to
+0.0028 A. That is the entire kernel term, and it is nothing. Switching to bf16
+with kernels **off** moves it to 3.60 A -- a factor of 2,750.
+
+So the failing cell is a **precision** effect. The fused kernels contribute
+essentially zero at FP32; what they do is amplify what bf16 has already
+introduced, which is how bf16-off-kernels at 3.60 A becomes bf16-with-kernels at
+16.19 A in the pre-existing arm.
+
+### Why the FP32 arms are so much tighter than anything measured before
+
+0.0013 A is three orders below the matched-tape cell's 1.1761 A and below this
+document's own bf16 arms. With both sides at FP32 the two implementations agree
+to about a thousandth of an angstrom on the target that fails every other way.
+There is no residual to explain at FP32 -- the trunk RMSEs the artifact reports
+for the matched cell (s 1.074e-04, z 5.454e-04 relative) evidently do not
+survive into coordinates at this configuration.
+
+### What this settles and what it leaves
+
+Settled: the shipped bf16 path is where 5SAK's divergence comes from, the fused
+kernels are not the cause, and the port is not carrying an algorithmic error --
+at matched precision it tracks native to 1e-3 A.
+
+Left open: the matched-tape row reports 1.1761 A under a contract that also
+forces FP32 on both sides, and these arms give 0.0013 A at FP32. Those two
+numbers disagree by three orders and the difference is not precision. The
+remaining variables between them are the tape (captured upstream noise and
+identity augmentation versus this driver's actual reference draws) and the
+cueq triangle patch this driver applies. Naming them is not measuring them.
