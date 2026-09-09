@@ -1,6 +1,134 @@
 # OpenDDE current-source panel expansion
 
-Status: submitted, no new GPU result claimed.
+## Highest precision artifacts: independent output recheck
+
+Completed collaborator jobs 933/938/939 were read-only rechecked with the
+existing closure reporter against original native captures. These use the
+`highest` directories under `opendde-current-panel-20260909-Nf5tvz`.
+
+| Case | Entity maximum RMSD (angstrom) | Strict confidence |
+| --- | --- | --- |
+| 1URN | P 0.05396252; R 0.00254606 | fail |
+| 7R6R | A 0.03115811; B 0.02318989; D 0.02212658 | fail |
+| 7ST3 | A 0.02342866; B 0.01387774 | fail |
+
+All three load successfully through the independent input gate; sampler and
+MSA tape archive comparisons are exact. 7R6R/7ST3 are below 0.05 A for all
+entities; 1URN protein remains gray. In particular, 7ST3's earlier high-path
+B residual around 0.118 A is not present in this highest artifact. This is not
+a universal precision recommendation: native OpenDDE's observed forward TF32
+policy differs from Protenix, and each model retains its own policy evidence.
+No collaborator source or jobs were changed. Full policy provenance, repeated
+highest variability, device consumption and performance admission are not
+established by this read-only output recheck. Strict confidence failures remain.
+
+Verification: reporter completed without errors on all three pairs; n5 entity
+RMSD and exact tape comparisons inspected. No default or release claim changed.
+
+7ST3 provenance was additionally compared between unobserved/high and highest:
+the only changed recorded field is `jax_matmul_precision`. Source, checkpoint,
+runtime versions, native capture, input assets and observer policy match.
+Highest maximum confidence errors are atom pLDDT 0.00052344799 on 0–1 scale
+(0.052344799 on 0–100), pTM 0.00001400709 and ipTM 0.00000464916.
+pTM/ipTM pass their frozen leaf gates; atom pLDDT does not. This distinguishes
+the remaining strict confidence failure from a large score discrepancy without
+waiving that gate. The single-variable recorded comparison supports the
+precision-policy explanation for these artifacts, not repeatability proof.
+
+Status: seven unobserved cases completed; strict confidence remains failed.
+The dated progression below retains earlier results and pending-state history.
+
+## 7ST3 repeat: residual reproduced
+
+Job 916 exited 0. Both comparison reports have no schema error.
+
+| Comparison | A maximum RMSD (angstrom) | B maximum RMSD (angstrom) |
+| --- | ---: | ---: |
+| Native vs repeated candidate | 0.05418689036 | 0.11823763007 |
+| First vs repeated candidate | 0.00554700324 | 0.00508927670 |
+
+The native/B residual again occurs in sample 2. Candidate repeat variability
+in these two runs is much smaller than the native/candidate residual, so it
+does not explain that residual alone. Native execution variability and a
+reproducible arithmetic/path difference remain unseparated; native repeat
+control is still needed before assigning a port defect. No thresholds changed.
+
+Strict confidence fails in both comparisons. Native/repeat maximum atom pLDDT
+delta is 0.00224280357 (0–1), pTM 0.00001937151, ipTM 0.00012922287.
+Candidate/repeat atom pLDDT delta is 0.00033330917, pTM 0.00000458956,
+ipTM 0.00000232458. Within-route confidence failure is retained explicitly.
+
+Verification: completed `repeat-native-report.json` and
+`unobserved-repeat-comparison.json` inspected; structure fails native/repeat
+and passes candidate/repeat. No actual consumer or warm-performance claim.
+
+Native repeat control 921 was subsequently submitted with the same raw 7ST3
+input, seed101/n5/200-step/10-cycle profile, native FP32 TF32-on policy and
+legacy capture driver, into `protein_protein_7st3/native-repeat` under the
+current panel snapshot. Its captured sampler and MSA arrays must match the
+original native arrays exactly before the output difference can be treated as
+a fixed-tape native repeat. Seed equality alone is insufficient. At the time
+of this entry the process is live; no native repeat result is claimed.
+
+### Native repeat 921 completed
+
+Native input arrays, sampler tape and MSA tape are all bitwise equal to the
+original native capture. Checkpoint and legacy-driver hashes match, as do the
+recorded forward-entry policies: deterministic algorithms false, cuDNN TF32
+true, **matmul TF32 false**. Earlier "TF32-on" shorthand describes the requested
+native flag, not all executed operators; the observed entry policy takes
+precedence. No policy override was introduced for this repeat.
+
+Native/native maximum system-fit entity RMSDs are A 0.00512907082 and
+B 0.00552693211 angstrom. Strict confidence fails even within native:
+atom pLDDT maximum delta 0.00038939714 (0–1), pTM 0.00000315905 and
+ipTM 0.00000530481. The original/repeated FoldJAX B residuals of 0.118108/
+0.118238 angstrom are much larger than the observed approximately 0.0055
+native repeat and 0.0051 candidate repeat variations. This supports a
+reproducible cross-route difference, not attribution to ordinary repeat
+variation alone. It does not yet locate the responsible operator or rule out
+rare variation; two runs are not a frozen repeat calibration.
+
+Verification: 921 exited 0; `native-repeat-comparison.json` has no schema
+error, exact input/tape checks pass and the structural gate passes. Strict
+confidence fails and is retained; no relaxed tolerance or full admission.
+
+## Completed unobserved panel summary
+
+All seven independent input gates pass. These are native FP32, n5 tape
+replays with whole-system alignment and entity-only measurement, not crystal
+comparisons or warm benchmarks. Maxima are over five samples in angstrom.
+
+| Case | Entity maximum RMSD | Structural triage |
+| --- | --- | --- |
+| 1UBQ | A 0.019998 | below 0.05 |
+| 5SAK | A 0.054387; L 0.020908 | gray |
+| 1URN | P 0.050100; R 0.004782 | gray; original run retained |
+| 3GCA | R 0.003103; L 0.002747 | below 0.05 |
+| 7R6R | A 0.063369; B 0.044255; D 0.042753 | gray |
+| 3V7E | P 0.012840; R 0.010848; L 0.007256 | below 0.05 |
+| 7ST3 | A 0.053511; B 0.118108 | above 0.1; investigate |
+
+Every case fails strict whole-confidence comparison. Actual consumer
+observation covers only 1URN/3GCA, whose strict observer bridges still fail;
+copied tapes in the other cases do not establish actual consumption equality.
+
+7ST3 job 913 exited 0. Chain A per-sample RMSDs are
+`[0.00971206,0.00749004,0.00875781,0.05351113,0.01905790]`; B is
+`[0.00827061,0.11810792,0.00986160,0.02764890,0.01363757]`.
+Maximum atom pLDDT delta is 0.00224793 (0–1), full PAE 0.25246763
+angstrom, pTM 0.00001811981 and ipTM 0.00012689829.
+
+The above-0.1 residual could be reproducible port arithmetic or execution
+variation; a single capture cannot distinguish them. Job 916 repeats 7ST3
+without observers, using the identical immutable source and tape reference,
+into a separate `unobserved-repeat` directory. No model math changed.
+It must be compared both against the first candidate and native before a
+cause is assigned. This is not a threshold relaxation or full admission.
+
+Verification: all seven completed `unobserved-report.json` files and input
+gates were inspected. 913 has no report schema error; strict parity fails.
+916 was submitted through the single-slot GPU queue; its result is pending.
 
 The completed AF3 finite panel does not establish any OpenDDE result. This
 next batch uses a fresh source snapshot and the existing pinned native FP32
@@ -212,3 +340,86 @@ select the better run as a replacement. No model arithmetic was changed.
 
 Verification: 908 exited 0, both completed reports inspected, no schema errors.
 The outstanding observer bridge and strict confidence failures remain.
+
+## 1UBQ current-source unobserved result
+
+909 exited 0. Root:
+`opendde-current-panel-20260909-Nf5tvz/protein_1ubq/unobserved`.
+Independent input gate passes. Native comparison has no schema error and
+passes the 0.05 angstrom structural diagnostic: protein A per-sample RMSDs
+are `[0.00219691228,0.01999775624,0.00212992739,0.00217622429,
+0.00237044639]`, maximum 0.01999775624 angstrom.
+
+Strict confidence fails. Maximum public deltas are atom pLDDT 0.00029563904
+(0–1), token-pair PAE 0.01656055450 angstrom and pTM 0.00000256300;
+ipTM delta is zero. Passing or tiny summary scores do not override the full
+confidence gate. Actual tape consumption was not observed in this run.
+
+Verification: 909 exited 0; independent input audit and completed
+`unobserved-report.json` inspected. This adds a third current unobserved case
+to 1URN and 3GCA; remaining jobs 910–913 are running/queued.
+
+## 5SAK current-source unobserved result
+
+910 exited 0. Root:
+`opendde-current-panel-20260909-Nf5tvz/protein_ligand_5sak/unobserved`.
+Independent input gate passes; the report has no schema error but fails
+the strict coordinate and confidence diagnostics.
+
+| Entity | Per-sample system-fit RMSD (angstrom) | Maximum |
+| --- | --- | ---: |
+| Protein A | 0.02967468, 0.05438664, 0.04948935, 0.02249928, 0.03482242 | 0.05438664 |
+| Ligand L | 0.00614845, 0.00863408, 0.02090792, 0.00594415, 0.01121110 | 0.02090792 |
+
+The protein maximum is in the user's deferred structural gray zone, not a
+pass at the frozen 0.05 threshold. Maximum public confidence deltas are
+atom pLDDT 0.00201267004 (0–1), token-pair PAE 0.29221630096 angstrom,
+pTM 0.00026673079 and ipTM 0.00071674585. Confidence and structure remain
+separate gates. This observation does not explain or resolve Boltz 5SAK.
+
+Verification: job 910 exited 0, independent input audit and completed output
+report inspected. No actual consumer observer or warm-performance evidence
+is claimed for this arm; earlier 5SAK measurements remain preserved.
+
+## 7R6R current-source unobserved result
+
+911 exited 0. Root:
+`opendde-current-panel-20260909-Nf5tvz/protein_dna_7r6r/unobserved`.
+Independent input gate passes; native comparison has no schema error.
+
+| Entity | Per-sample system-fit RMSD (angstrom) | Maximum |
+| --- | --- | ---: |
+| Protein A | 0.02231075, 0.01744387, 0.01081217, 0.05173694, 0.06336865 | 0.06336865 |
+| DNA B | 0.01816206, 0.01294553, 0.01002201, 0.03481784, 0.04425548 | 0.04425548 |
+| DNA D | 0.01438456, 0.01121942, 0.00818963, 0.03238572, 0.04275253 | 0.04275253 |
+
+Protein A lies in the user's deferred structural gray zone; the original
+0.05 angstrom gate fails. Strict confidence also fails. Maximum public deltas:
+atom pLDDT 0.00104165077 (0–1), PAE 0.08931350708 angstrom, pTM
+0.00019663572 and ipTM 0.00006717443. Entity chemistry was checked against
+the executed raw input, not inferred from chain letters.
+
+Verification: 911 exited 0, input audit and completed comparison report
+inspected. Five current unobserved cases are measured; 3V7E and 7ST3 remain.
+Actual consumer observation and warm performance remain separate gaps.
+
+## 3V7E current-source unobserved result
+
+912 exited 0. Root:
+`opendde-current-panel-20260909-Nf5tvz/protein_rna_ligand_3v7e/unobserved`.
+Independent input gate passes. Native comparison has no schema error and
+passes the original coordinate diagnostic, but strict confidence fails.
+
+| Entity | Per-sample system-fit RMSD (angstrom) | Maximum |
+| --- | --- | ---: |
+| Protein P | 0.01137438, 0.00982121, 0.01284016, 0.01054897, 0.01003654 | 0.01284016 |
+| RNA R | 0.00928042, 0.00930597, 0.01084820, 0.00979656, 0.00817935 | 0.01084820 |
+| Ligand L | 0.00581525, 0.00630852, 0.00626292, 0.00725579, 0.00420434 | 0.00725579 |
+
+Maximum public confidence differences: atom pLDDT 0.00055587292 (0–1),
+token-pair PAE 0.06482267380 angstrom, pTM 0.00008696318 and ipTM
+0.00003874302. These are reported independently of the structural pass.
+
+Verification: GPU 912 exited 0; independent input audit and completed native
+comparison inspected. Current unobserved panel coverage is 6/7, with 7ST3
+remaining. No actual consumer observation or warm measurement is claimed here.

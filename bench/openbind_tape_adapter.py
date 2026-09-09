@@ -20,6 +20,36 @@ from bench.boltz_historical_replay import digest, save_new, source_hashes
 UPSTREAM_COMMIT = "c4771653c5d0a3ebb0b3af71b05efd64bc44ee86"
 
 
+def prepare_core_features(features, *, max_atoms_per_token):
+    """Add the head-derived mask to a native capture, not a public archive.
+
+    Native head_modules constructs this after the forward input capture using
+    broadcast_token_feat_to_atoms. Reuse the port's existing equivalent builder.
+    This does not supply writer identity or independent preprocessing evidence.
+    """
+    from foldjax.models.openfold3.data.featurize import _max_atom_per_token_mask
+
+    mask = np.asarray(features["token_mask"])
+    counts = np.asarray(features["num_atoms_per_token"])
+    if (
+        max_atoms_per_token < 1
+        or mask.ndim != 2
+        or mask.shape[0] != 1
+        or counts.shape != mask.shape
+        or not np.isin(mask, (0, 1)).all()
+        or not np.issubdtype(counts.dtype, np.integer)
+        or np.any(counts < 0)
+        or np.any(counts > max_atoms_per_token)
+    ):
+        raise ValueError("invalid native token counts or mask")
+    derived = _max_atom_per_token_mask(features, max_atoms_per_token)
+    if "max_atom_per_token_mask" in features and not np.array_equal(
+        features["max_atom_per_token_mask"], derived
+    ):
+        raise ValueError("captured head mask disagrees with token counts")
+    return {**features, "max_atom_per_token_mask": derived}
+
+
 @dataclass(frozen=True)
 class ForwardTape:
     msa_indices: np.ndarray

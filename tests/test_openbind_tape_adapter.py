@@ -7,9 +7,27 @@ from bench.openbind_tape_adapter import (
     UPSTREAM_COMMIT,
     capture_provenance,
     parse_forward_tape,
+    prepare_core_features,
     required_triangle_kernel,
     validate_native_config,
 )
+
+
+def test_core_head_mask_uses_token_counts_without_mutating_capture():
+    features = {
+        "token_mask": np.array([[1, 0, 1]], np.float32),
+        "num_atoms_per_token": np.array([[2, 3, 1]], np.int64),
+    }
+    result = prepare_core_features(features, max_atoms_per_token=3)
+    np.testing.assert_array_equal(
+        result["max_atom_per_token_mask"], [[1, 1, 0, 0, 0, 0, 1, 0, 0]]
+    )
+    assert "max_atom_per_token_mask" not in features
+    result["max_atom_per_token_mask"][0, 0] = 0
+    with pytest.raises(ValueError, match="disagrees"):
+        prepare_core_features(result, max_atoms_per_token=3)
+    with pytest.raises(ValueError, match="invalid native"):
+        prepare_core_features(features, max_atoms_per_token=1)
 
 
 def capture(mask=None):
