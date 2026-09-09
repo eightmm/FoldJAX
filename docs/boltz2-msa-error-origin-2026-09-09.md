@@ -599,3 +599,41 @@ whether an fp32 *activation* trunk (not fp32 accumulation) closes the 1.1761 A
 cell, measured end-to-end against native with the 0.0032 A rerun floor as the
 control. That is a large arm, upstream does not run it, and it would not ship;
 it would establish the cause, not the fix.
+
+## The fp32-activation arm, measured: 8.5x worse
+
+The previous section named an experiment and did not run it. It has now been
+run. Source snapshot `boltz-e2e-fp32act-20260909`, identical to the shipped
+`boltz-e2e-source-20260909` except that `_amp_dtype` in
+`models/boltz2/models/trunk_blocks/msa.py` returns `None` unconditionally, so
+the MSA module's activations stay fp32 while the weights are untouched. Same
+harness, same weights, same reference, same queue.
+
+Whole-system Kabsch RMSD against the native capture, five samples:
+
+| Arm | max | median | per sample |
+| --- | ---: | ---: | --- |
+| shipped (bf16 activations) | 1.8971 | 0.6362 | 1.8971, 0.0815, 0.0491, 1.4773, 0.6362 |
+| shipped, rerun control | 1.8970 | 0.6377 | 1.8970, 0.0815, 0.0491, 1.4767, 0.6377 |
+| **fp32 MSA activations** | **16.1595** | **1.3322** | 16.1595, 0.2690, 0.0952, 5.9294, 1.3322 |
+
+The rerun control reproduces the shipped arm to 0.0001-0.0006 A, so the
+comparison resolves far below the effect. The arm fired -- an 8.5x move is not
+a dead patch.
+
+Raising the port's activation precision above native's makes agreement with
+native **worse by 8.5x**. That is the correct sign, and it is worth stating as
+a rule rather than a surprise: under a matched-tape contract the target is
+native's arithmetic, not more accurate arithmetic. Native runs this module in
+bf16 autocast. A port that rounds where native rounds tracks it; a port that
+declines to round diverges, and on this target the divergence compounds through
+the diffusion trajectory into sixteen angstroms.
+
+### Status of the Boltz-2 / 5SAK cell
+
+Closed as far as this investigation can take it. The residual is the bf16
+floor established above, the port already sits on that floor, and the one
+remaining named lever has now been measured and moves the wrong way by an
+order of magnitude. Reducing this cell further would require native itself to
+run in higher precision, which is a change to upstream, not to the port.
+
