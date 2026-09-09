@@ -133,9 +133,11 @@ loaded it with `--xla_gpu_require_complete_aot_autotune_results=true`;
 | `native-A` vs `port-C` | 2.219, 0.166, 0.020, 2.277, 0.338 | 0.150 |
 | `native-A` vs `port-D` | 2.219, 0.166, 0.020, 2.277, 0.338 | 0.151 |
 
-With kernel selection pinned the port is repeatable to 1e-3 Å (not bitwise:
-the remaining 1e-4 band is the same trunk-level nondeterminism Protenix
-shows, `docs/protenix-master-panel-2026-09-09.md`). The 0.83 Å "port floor"
+With kernel selection pinned the port is repeatable to 1e-3 Å, not bitwise:
+the two runs' trunk boundaries agree bitwise at every recorded array except
+`msa_module.input_emb`, which differs by one f32 ulp (2.4e-7), so the
+remaining 1e-3 Å arises downstream of the trunk (sampler or that one ulp;
+not separated). The 0.83 Å "port floor"
 of jobs 490/491 was therefore autotune choosing different kernels per
 process, and the frozen port sits at the same 2.2-2.3 Å from `native-A` on
 samples 1 and 4 as the unfrozen `port-B` did. Nothing about the native

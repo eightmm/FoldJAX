@@ -317,7 +317,7 @@ no verdict column because its panel reports gates rather than a verdict.
 | model | reference | worst residual | worst entity | native floor | port floor | verdict |
 | --- | --- | ---: | --- | ---: | ---: | --- |
 | OpenFold3 / OpenBind | native cuEq, same tape | 0.0337 | F (Zn) | 0.0640 | 0.0369 | pass |
-| Boltz-2 | native A, same tape | 0.1746 | A (protein) | 0 (bitwise); kernels-off 0.0196 | 0.0181 | coordinate gate 0.05 Å not passed |
+| Boltz-2 | native A, same tape | 0.1746 | A (protein) | 0 (bitwise); kernels-off 0.0196 | 0.0181 | coordinate gate 0.05 Å not passed; placed in the trunk, see `boltz2-master-kernel-toggle-2026-09-09.md` "1AAY" |
 | Protenix | native A, same tape | 0.063 | A (protein) | 0.054 | 0.055 | deferred |
 | OpenDDE | native A, same tape, `high` | 0.0696 | A (protein) | 0.0696 | 0.0360 | deferred |
 
