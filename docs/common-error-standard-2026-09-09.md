@@ -541,3 +541,41 @@ its `N/A²` was for want of a passing audit panel, and that panel now passes
 38/38 on all six cases. The Boltz-2 closure stands on its own measurements. The
 OpenDDE lever and its price stand. The per-entity caution stands, and is not in
 the artifact.
+
+## AlphaFold 3's cell is now a number, and the number is zero
+
+The `N/A²` in the matched-RMSD column was for want of a passing panel. That
+panel now passes, so the cell can be filled. Comparing the two arms'
+`coordinate.npz` directly, same convention as the rest of the column:
+
+| Case | max | median | bitwise identical |
+| --- | ---: | ---: | --- |
+| protein_1ubq | 0.000000 | 0.000000 | **yes** |
+| protein_dna_7r6r | 0.000000 | 0.000000 | **yes** |
+| protein_ligand_5sak | 0.000000 | 0.000000 | **yes** |
+| protein_protein_7st3 | 0.000000 | 0.000000 | **yes** |
+| protein_rna_1urn | 0.000000 | 0.000000 | **yes** |
+| protein_rna_ligand_3v7e | 0.000000 | 0.000000 | **yes** |
+
+Not "below the gate" -- `np.array_equal` on the raw arrays is true for all six.
+The port and native produce the same coordinates bit for bit.
+
+That is a stronger result than any other row can state. OpenFold3's 0.0000
+entries are rounded matched RMSDs; these are exact equality. It is also the
+expected result rather than a surprise: AlphaFold 3's port runs an audited
+vendored upstream JAX path, so bitwise agreement is what a correct vendoring
+should produce, and the panel's 36 other checks say the tape and provenance
+agree too.
+
+### The row, filled
+
+| model | 1ubq | rna 1urn | rna-lig 3gca | rna-lig 3v7e | dna 7r6r | lig 5sak | 7st3 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **AlphaFold3 3.0.4** | **0.000000** | **0.000000** | not in panel | **0.000000** | **0.000000** | **0.000000** | **0.000000** |
+
+`rna_ligand_3gca` is the one case the audit panel does not cover; the other six
+are exact.
+
+So of the two structural `N/A²` rows this document opened with, AlphaFold 3 is
+now the strongest row in the table, and ESMFold2 is the only one left -- and it
+was never absent, only absent from this column.
