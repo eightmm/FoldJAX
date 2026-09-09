@@ -323,3 +323,36 @@ the row needs a distribution comparison over many seeds with the single-side
 spread as the null, not a tape.
 
 Detail on branch `fix/esmfold2-rerun-floor`.
+
+## Resolved, 2026-09-09: ESMFold2 joins the standard at ~0.037 A
+
+The `n/a` is gone. It rested on two claims, both now measured false: that no
+injectable tape exists, and that the native path could not be run.
+
+The native path was blocked by an import chain, repaired without touching the
+shared virtualenv -- an overlay `sitecustomize.py` restores the
+`is_offline_mode` alias that no released `huggingface_hub` exports, and the
+harness's own `--upstream-source-root` tree supplies `ESMFold2Model`, which the
+installed transformers does not contain. A second native capture lands inside
+the first's ensemble, so the shim did not contaminate the reference.
+
+With four port runs and two native runs, an exact permutation test over the six
+run labels -- the right estimator, because this model's sampling spread is
+larger than the quantity being measured and the per-sample distances are not
+independent:
+
+```
+cross-minus-within = +0.0366 A
+exact permutation, 15 arrangements -> p = 0.067 (the design's floor)
+```
+
+**ESMFold2's port-native separation is ~0.037 A**, in the same band as
+OpenDDE's 0.02-0.07 and Protenix-v2's 0.0335 on 7st3, and an order below the
+0.5 A threshold.
+
+So the standard's two structural exclusions are both resolved. AlphaFold 3
+passes 38/38 on six cases; ESMFold2 sits with the other models once its
+stochasticity is quotiented out. What separates ESMFold2 from the rest is the
+estimator its noise demands, not its accuracy.
+
+Detail on branch `fix/esmfold2-rerun-floor`.
