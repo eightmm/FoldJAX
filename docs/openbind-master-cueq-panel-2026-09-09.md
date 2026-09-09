@@ -1,0 +1,79 @@
+# OpenBind cuEq-versus-cuEq panel on the Slurm server (2026-09-09)
+
+## Question
+
+The seven-case OpenBind ledgers compared the port's cuEquivariance path against
+upstream's released `predict` preset, which runs upstream's own Triton triangle
+kernels (`use_triton_triangle_kernels: True`, `use_cueq_triangle_kernels:
+False`). Five cases exceeded 0.1 Å there, 5SAK's ligand by 6.9 Å. This panel
+asks the question that comparison cannot: does the port match upstream when
+upstream is switched to the cuEq kernels the port uses? That is the fair
+reference for a cuEq port, and the user's stated tolerance -- a small drift
+from choosing cuEq -- applies to the residual against it, not against Triton.
+
+## Environment
+
+- Server `master`, 4× RTX PRO 6000 Blackwell Server (97,887 MiB), Slurm
+  partition `batch`. QOS `normal` caps one user at `gres/gpu=2`, so two jobs
+  run at a time regardless of the four cards.
+- Native side: git worktree `openfold3-v050` at `c4771653` with a fresh
+  `.venv` -- torch 2.12.1+cu130, Lightning 2.6.1, triton 3.7.1,
+  cuequivariance / cuequivariance-torch / cuequivariance-ops-torch-cu13 0.11.1.
+  The mirrored `upstream-root/openfold3-v050` copy lacks `core/config` and
+  cannot run.
+- Port side: FoldJAX `1d1cfea` archived to
+  `foldjax-bench/openbind-cueq-master-20260909-Ieldnw` (`git archive HEAD`),
+  cuequivariance-jax 0.11.1 with the cu13 ops package. The two sides ship the
+  same cuEquivariance release.
+- The mirror carried no `input.npz`/`tape.npz` and no panel MSA; the pinned
+  MSAs were copied from the workstation and verified against
+  `panel-manifest.json` digests before any native run.
+
+## Native capture, rebuilt
+
+`bench/openbind_native_capture.py` is the `--native-wrapper` for
+`openbind_native_outputs.py`. It records the forward batch (`input.npz`,
+including atom-array annotations), every `torch.randint/randperm/randn/
+randn_like` draw in call order (`tape.npz`, spelled the way
+`parse_forward_tape` reads it), the effective config, the public coordinates,
+and a kernel census (`kernel-calls.json`): how many calls reached
+`_cueq_triangle_attn`, `_triton_evo_attn`, plain `_attention`,
+`_cueq_triangle_mult`, and the Triton trimul helpers, plus how often
+`cueq_would_fall_back` returned true. The census matters because upstream's
+cuEq attention silently falls back to plain torch attention at or below
+`CUEQ_TRIATTN_FALLBACK_THRESHOLD = 100` tokens; the JAX kernel has no such
+threshold, so 1UBQ (76 tokens) and 3GCA (46 tokens) are not cuEq-versus-cuEq
+comparisons for attention whatever the flag says.
+
+Smoke (GB1, 56 residues, no MSA): the tape parsed as 605 draws (4 `randint`,
+no `randperm` with a query-only MSA, 1 + 200×3 diffusion draws) and the port
+replayed it. FoldJAX cuEq versus native Triton: 0.021 Å; versus native cuEq
+(attention fell back, trimul fused): 0.017 Å. Both arms' three calls were
+bitwise equal.
+
+## 5SAK: the discriminating result
+
+Native captures (437 tokens, 3,073 atoms, n=5, 200 steps, four trunk passes,
+FP32, seed 101) took 70 s each. Census, Triton arm: `attention.triton` 500,
+Triton trimul helpers 4,000/5,000. Census, cuEq arm: `attention.cueq` 500,
+`attention.cueq_fallback_false` 500, `trimul.cueq` 428, no fallback.
+
+| FoldJAX cuEq versus | A max RMSD (Å) | L max RMSD (Å) | pLDDT max | pTM max | ipTM max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| native Triton (jobs 260/261) | 1.114963 | 6.881971 | 10.560 | 0.000742 | 0.023954 |
+| native cuEq (jobs 263/264) | 0.047650 | 0.049454 | 2.721 | 0.000453 | 0.002881 |
+
+The Triton row reproduces the workstation ledger (1.109/6.886 Å) on different
+hardware, so the discrepancy is deterministic. Against upstream's own cuEq
+path both entities sit below the 0.05 Å pass line. The residual the earlier
+ledgers were chasing was the kernel choice, not the port. Confidence is not
+admitted by this (the strict gate is separate), and this port arm still runs
+the multiplication in XLA; the `cueq-full` arm below measures whether fusing
+it as upstream does tightens the remaining 0.05 Å.
+
+## Still running
+
+Jobs 265–294 complete the seven cases with the same three arms per case
+(native Triton, native cuEq, FoldJAX cuEq replay against each, plus a
+second-process FoldJAX repeat for the cross-process floor). Results are
+appended below as they land; the ledger rows are in `docs/EXPERIMENTS.jsonl`.
