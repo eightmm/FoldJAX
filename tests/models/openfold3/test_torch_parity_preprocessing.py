@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import random
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +27,32 @@ from foldjax.models.openfold3.data import MODEL_FEATURES, featurize_query
 
 pytestmark = pytest.mark.torch_parity
 
+_PANEL_CASES = (
+    "protein_1ubq",
+    "protein_ligand_5sak",
+    "protein_rna_1urn",
+    "rna_ligand_3gca",
+    "protein_dna_7r6r",
+    "protein_rna_ligand_3v7e",
+    "protein_protein_7st3",
+)
+
+
+@pytest.mark.parametrize("case", _PANEL_CASES)
+def test_independent_seven_case_panel(
+    openfold3_source: Path, tmp_path: Path, monkeypatch, case: str
+) -> None:
+    root = os.environ.get("FOLDJAX_OPENBIND_INPUT_PANEL")
+    if root is None:
+        pytest.skip(
+            "set FOLDJAX_OPENBIND_INPUT_PANEL to the native panel work directory"
+        )
+    path = Path(root) / case / "foldjax/openfold3/inputs/openfold3_input.json"
+    assert path.is_file(), f"requested panel input missing: {case}"
+    _assert_independent_augmentation(
+        json.loads(path.read_text()), tmp_path, monkeypatch, seed=101
+    )
+
 
 def _spec() -> dict:
     return {
@@ -42,8 +71,13 @@ def _spec() -> dict:
 
 
 def _torch_reference(
-    tmp_path: Path, spec: dict | None = None
+    tmp_path: Path,
+    spec: dict | None = None,
+    *,
+    seed: int = 0,
+    atom_arrays: list | None = None,
 ) -> dict[str, np.ndarray]:
+    import torch
     from openfold3.core.data.framework.single_datasets.inference import (
         InferenceDataset,
     )
@@ -61,13 +95,14 @@ def _torch_reference(
 
     native_spec = _spec() if spec is None else spec
     native_spec = {
+        **native_spec,
         "queries": {
             name: {
                 **query,
                 "chains": [dict(chain) for chain in query["chains"]],
             }
             for name, query in native_spec["queries"].items()
-        }
+        },
     }
     for query_index, query in enumerate(native_spec["queries"].values()):
         for chain_index, chain in enumerate(query["chains"]):
@@ -77,19 +112,32 @@ def _torch_reference(
             ):
                 directory = tmp_path / f"query_{query_index}" / f"chain_{chain_index}"
                 directory.mkdir(parents=True)
-                dummy = directory / "dummy.a3m"
+                # The native parser ignores basenames outside max_seq_counts.
+                dummy = directory / "uniref90_hits.a3m"
                 dummy.write_text(f">query\n{chain['sequence']}\n")
                 chain["main_msa_file_paths"] = [str(dummy)]
     query_set = InferenceQuerySet.model_validate(native_spec)
-    raw = InferenceDataset(
+    dataset = InferenceDataset(
         InferenceJobConfig(
             query_set=query_set,
-            seeds=[0],
+            seeds=[seed],
             msa=MSASettings(subsample_main=False),
             template=TemplateSettings(take_top_k=True),
             template_preprocessor_settings=TemplatePreprocessorSettings(),
         )
-    )[0]
+    )
+    # This comparison aligns RDKit's Python stream with the candidate seed scope.
+    # Native dataloader worker RNG is not generally initialized by the query seed.
+    state = random.getstate()
+    try:
+        random.seed(seed)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(seed)
+            raw = dataset[0]
+    finally:
+        random.setstate(state)
+    if atom_arrays is not None:
+        atom_arrays.append(raw["atom_array"])
     return {
         name: np.asarray(value.detach().cpu())[None, ...]
         for name, value in raw.items()
@@ -119,10 +167,138 @@ def test_numpy_preprocessing_matches_torch_reference(
             np.testing.assert_array_equal(actual[name], expected[name], err_msg=name)
 
 
+@pytest.mark.parametrize("rna_ligand", [False, True], ids=["protein", "3gca"])
+def test_independent_preprocessing_with_native_augmentation_draws(
+    openfold3_source: Path, tmp_path: Path, monkeypatch, rna_ligand
+) -> None:
+    spec = _spec()
+    if rna_ligand:
+        spec["queries"]["query"]["chains"] = [
+            {
+                "molecule_type": "rna",
+                "chain_ids": ["R"],
+                "sequence": "CUGGGUCGCAGUAACCCCAGUUAACAAAACAAG",
+            },
+            {"molecule_type": "ligand", "chain_ids": ["L"], "ccd_codes": ["PQ0"]},
+        ]
+    _assert_independent_augmentation(spec, tmp_path, monkeypatch)
+
+
+def _assert_independent_augmentation(spec, tmp_path, monkeypatch, *, seed=0):
+    import torch
+    from openfold3.core.data.pipelines.featurization import conformer
+
+    from foldjax.models.openfold3.data import _numpy_featurization as numpy_features
+
+    native_augment = conformer.centre_random_augmentation
+    native_randn = torch.randn
+    events = []
+
+    def capture(positions, mask, *args, **kwargs):
+        draws = []
+
+        def randn(*shape, **options):
+            value = native_randn(*shape, **options)
+            draws.append(value.detach().cpu().numpy().copy())
+            return value
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(torch, "randn", randn)
+            result = native_augment(positions, mask, *args, **kwargs)
+        assert [value.shape for value in draws] == [(4,), (3,)]
+        events.append((positions.numpy().copy(), mask.numpy().copy(), draws))
+        return result
+
+    monkeypatch.setattr(conformer, "centre_random_augmentation", capture)
+    atom_arrays = []
+    expected = _torch_reference(tmp_path, spec, seed=seed, atom_arrays=atom_arrays)
+    numpy_augment = numpy_features._augment_reference_positions
+    consumed = []
+
+    def replay(positions, mask, rng):
+        index = len(consumed)
+        assert index < len(events), "unexpected candidate augmentation"
+        native_positions, native_mask, draws = events[index]
+        np.testing.assert_array_equal(positions, native_positions)
+        np.testing.assert_array_equal(mask, native_mask)
+
+        class Draws:
+            cursor = 0
+
+            def standard_normal(self, size, dtype):
+                value = draws[self.cursor]
+                self.cursor += 1
+                assert value.shape == (size,) and value.dtype == dtype
+                return value.copy()
+
+        tape = Draws()
+        result = numpy_augment(positions, mask, tape)
+        assert tape.cursor == 2
+        consumed.append(index)
+        return result
+
+    monkeypatch.setattr(numpy_features, "_augment_reference_positions", replay)
+    from foldjax.models.openfold3.data.featurize import featurize_query_with_metadata
+
+    actual, metadata = featurize_query_with_metadata(spec, seed=seed)
+    from openfold3.core.utils.atomize_utils import broadcast_token_feat_to_atoms
+
+    # Native dataset bookkeeping is excluded by the portable feature ABI.
+    # Assert the complete key difference so a new/missing feature cannot hide
+    # behind the smaller MODEL_FEATURES list.
+    assert expected.keys() - actual.keys() == {
+        "num_paired_seqs",
+        "repeated_sample",
+        "seed",
+        "valid_sample",
+    }
+    assert actual.keys() - expected.keys() == {"max_atom_per_token_mask"}
+    np.testing.assert_array_equal(expected["seed"], [[seed]])
+    assert expected["valid_sample"].all()
+    assert not expected["repeated_sample"].any()
+    native_token_mask = torch.from_numpy(expected["token_mask"])
+    expected["max_atom_per_token_mask"] = broadcast_token_feat_to_atoms(
+        token_mask=native_token_mask,
+        num_atoms_per_token=torch.from_numpy(expected["num_atoms_per_token"]),
+        token_feat=native_token_mask,
+        max_num_atoms_per_token=23,
+    ).numpy()
+    native_atoms = atom_arrays[0]
+    assert len(native_atoms) > 0
+    for field, annotation in (
+        ("atom_name", "atom_name"),
+        ("element", "element"),
+        ("residue_name", "res_name"),
+        ("residue_id", "res_id"),
+        ("chain_id", "chain_id"),
+        ("entity_id", "entity_id"),
+        ("molecule_type_id", "molecule_type_id"),
+    ):
+        np.testing.assert_array_equal(
+            getattr(metadata, field), getattr(native_atoms, annotation), err_msg=field
+        )
+    from biotite.structure import BondType
+
+    native_bonds = native_atoms.bonds.as_array()
+    np.testing.assert_array_equal(metadata.bonds, native_bonds[:, :2])
+    np.testing.assert_array_equal(
+        metadata.bond_type, [BondType(int(code)).name for code in native_bonds[:, 2]]
+    )
+    assert events and len(consumed) == len(events)
+    for name in actual:
+        assert actual[name].shape == expected[name].shape, name
+        assert actual[name].dtype == expected[name].dtype, name
+        if np.issubdtype(actual[name].dtype, np.floating):
+            np.testing.assert_allclose(
+                actual[name], expected[name], rtol=1e-6, atol=1e-6, err_msg=name
+            )
+        else:
+            np.testing.assert_array_equal(actual[name], expected[name], err_msg=name)
+
+
 def _direct_template_spec(cif: Path) -> dict:
     sequence = (
-        "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHL"
-        "VLRLRGG"
+        "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
     )
     return {
         "queries": {
@@ -182,22 +358,14 @@ def _torch_template_reference(spec: dict) -> dict[str, np.ndarray]:
         n_bins=39,
     )
     return {
-        name: np.asarray(value.detach().cpu())[None, ...]
-        for name, value in raw.items()
+        name: np.asarray(value.detach().cpu())[None, ...] for name, value in raw.items()
     }
 
 
 def test_numpy_direct_template_geometry_matches_torch_reference(
     openfold3_source: Path,
 ) -> None:
-    cif = (
-        openfold3_source
-        / "openfold3"
-        / "tests"
-        / "test_data"
-        / "mmcifs"
-        / "1ubq.cif"
-    )
+    cif = openfold3_source / "openfold3" / "tests" / "test_data" / "mmcifs" / "1ubq.cif"
     if not cif.is_file():
         pytest.skip(f"no local template fixture at {cif}")
 
