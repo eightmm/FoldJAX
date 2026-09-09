@@ -872,7 +872,7 @@ over five samples:
 | 32 | off | **0.001305** | 0.001308 | 0.000142 |
 | 32 | **on** | **0.002837** | 0.002846 | 0.000171 |
 | **bf16-mixed** | off | **3.596264** | 3.606615 | 0.088017 |
-| bf16-mixed | on | (queued; the pre-existing arm measured 16.193149) |
+| bf16-mixed | on | **16.043514** | 16.085801 | |
 
 Turning the fused kernels **on** at FP32 moves the disagreement from 0.0013 to
 0.0028 A. That is the entire kernel term, and it is nothing. Switching to bf16
@@ -904,3 +904,22 @@ numbers disagree by three orders and the difference is not precision. The
 remaining variables between them are the tape (captured upstream noise and
 identity augmentation versus this driver's actual reference draws) and the
 cueq triangle patch this driver applies. Naming them is not measuring them.
+
+### The fourth cell landed, and it is the control
+
+`bf16-mixed` with kernels on gives **16.043514 A** against the pre-existing
+artifact's 16.193149 A for the same configuration. The two agree to 1%, so this
+driver reproduces the arm it was derived from and the three new cells can be
+read.
+
+The factorial, complete:
+
+| | kernels off | kernels on | kernels cost |
+| --- | ---: | ---: | ---: |
+| **FP32** | 0.001305 | 0.002837 | 2.2x |
+| **bf16-mixed** | 3.596264 | 16.043514 | 4.5x |
+| **precision cost** | **2,750x** | **5,650x** | |
+
+Precision dominates by three orders in both columns. The kernels cost a factor
+of two at FP32 and four and a half at bf16 -- they amplify what bf16 introduces
+rather than introducing anything themselves.
