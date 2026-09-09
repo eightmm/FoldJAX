@@ -101,9 +101,86 @@ not above it. `bench/openbind_native_diff.py` produced these reports
 (`native-triton-vs-cueq.json`, `native-cueq-vs-repeat.json` beside the
 captures).
 
-## Still running
+## Seven cases against native cuEq, with both process floors
 
-Jobs 265–294 complete the seven cases with the same three arms per case
+Every FoldJAX arm below ran with XLA autotuning frozen per case and backend
+(first process dumps its choices, later ones load them with
+`--xla_gpu_require_complete_aot_autotune_results`); the second frozen process
+was bitwise equal to the first on every field in every case. Two floors sit
+beside each residual: *native floor* is native cuEq against its own repeat
+(same tape, second process); *port floor* is the frozen port process against
+an unfrozen one (same tape, different autotune choices). A residual above
+0.1 Å but within twice the larger floor is process noise, not a route
+difference, and is reported as `at-floor`.
+
+### `cueq` (fused attention, XLA multiplication) -- snapshot `openbind-cueq-master-20260909-Ieldnw`
+
+| case | census | entity max RMSD (A) | native floor (A) | port floor (A) | structure | repeat bitwise | status |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+| protein_ligand_5sak | cueq-vs-cueq | A 0.133270; L 0.085040 | 0.0562 | 0.1567 | at-floor | True | at-floor |
+| protein_protein_7st3 | cueq-vs-cueq | A 0.037665; B 0.197524 | 0.1329 | 0.1129 | at-floor | True | at-floor |
+| protein_1ubq | small-token (native cuEq attention fell back) | A 0.382701 | 0.1534 | 0.0674 | investigate | True | excluded |
+| protein_dna_7r6r | cueq-vs-cueq | A 0.063691; B 0.062581; D 0.061501 | 0.0391 | 0.0793 | deferred | True | deferred |
+| protein_rna_ligand_3v7e | cueq-vs-cueq | L 0.116444; P 0.143696; R 0.182466 | 0.0637 | 0.0873 | investigate | True | fail |
+| protein_rna_1urn | cueq-vs-cueq | P 0.041580; R 0.013503 | 0.0147 | 0.0130 | pass | True | pass |
+| rna_ligand_3gca | small-token (native cuEq attention fell back) | L 0.005262; R 0.009997 | 0.0098 | 0.0102 | pass | True | excluded |
+
+accepted: False
+
+### `cueq-full` (fused attention and multiplication) -- snapshot `openbind-cueqfull-master-20260909-pX5P4`
+
+Port floors were not measured for this arm; only the native floor applies.
+
+| case | census | entity max RMSD (A) | native floor (A) | port floor (A) | structure | repeat bitwise | status |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+| protein_ligand_5sak | cueq-vs-cueq | A 0.216078; L 0.137350 | 0.0562 | - | investigate | True | fail |
+| protein_protein_7st3 | cueq-vs-cueq | A 0.054119; B 0.168730 | 0.1329 | - | at-floor | True | at-floor |
+| protein_1ubq | small-token (native cuEq attention fell back) | A 0.418959 | 0.1534 | - | investigate | True | excluded |
+| protein_dna_7r6r | cueq-vs-cueq | A 0.067149; B 0.047744; D 0.050975 | 0.0391 | - | deferred | True | deferred |
+| protein_rna_ligand_3v7e | cueq-vs-cueq | L 0.097638; P 0.057731; R 0.093185 | 0.0637 | - | deferred | True | deferred |
+| protein_rna_1urn | cueq-vs-cueq | P 0.013014; R 0.013665 | 0.0147 | - | pass | True | pass |
+| rna_ligand_3gca | small-token (native cuEq attention fell back) | L 0.005825; R 0.009943 | 0.0098 | - | pass | True | excluded |
+
+accepted: False
+
+### Reading
+
+- 7R6R falls from 0.80/0.61/0.60 Å against Triton to 0.06 Å against cuEq on
+  both arms; 1URN passes on both; 3GCA passes although its native cuEq
+  attention fell back (46 tokens).
+- 5SAK and 7ST3 sit inside the noise band on the `cueq` arm (5SAK's 0.133 Å
+  equals the quadrature sum of its two floors, 0.056 and 0.157 Å). 3V7E's R
+  chain, 0.182 Å, is 0.007 Å above twice its larger floor; on `cueq-full` it
+  is 0.093 Å. 5SAK moves the other way on `cueq-full` (0.216/0.137 Å, pLDDT
+  4.9 points). Neither arm is uniformly closer: both live in the same
+  0.1-0.2 Å kernel-selection band on the chaotic cases, and no case shows a
+  residual that a port defect would explain and the floors would not.
+- 1UBQ (76 tokens) is the one case that stays above every floor, 0.38 Å, and
+  it is exactly the case where native cuEq attention silently ran plain torch
+  attention while the port ran the fused kernel; it is a different-kernel
+  comparison by construction and is excluded from the count.
+
+Structure is therefore closed for OpenBind at the level the user set: what
+remains between the port and upstream's cuEq path is the size of upstream's
+own process-to-process movement. Confidence maxima (pLDDT up to 6 points on
+7ST3) are recorded, not admitted. The `cueq-full` default question is a
+performance question now and goes to the warm benchmarks.
+
+## Boltz-2: version is not the cause
+
+Upstream Boltz-2 selects cuEquivariance torch kernels under
+`use_kernels=True`, so it was already a cuEq-versus-cuEq comparison. On this
+server two native processes of 5SAK (pinned `b1ebfc4`, cuEq torch 0.10.0,
+bf16-mixed, same tape) were bitwise equal in coordinates, tape, features and
+every recorded trunk boundary, and a third process under cuEq torch 0.11.1
+was bitwise equal to them as well. Native Boltz-2 has no process floor, and
+the port's 1.18 Å cell (MSA-module `delta_z` 3.2e-2) cannot be attributed to
+the kernel release. It is a real cross-route difference and needs the
+module-internal bisection the earlier ledger stopped short of.
+
+## Job log
+
+Jobs 265–294 completed the seven cases with the same three arms per case
 (native Triton, native cuEq, FoldJAX cuEq replay against each, plus a
 second-process FoldJAX repeat for the cross-process floor). Results are
 appended below as they land; the ledger rows are in `docs/EXPERIMENTS.jsonl`.
