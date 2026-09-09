@@ -1006,3 +1006,48 @@ narrower and still worth having: **on this target, at matched precision, the
 Boltz-2 port is not carrying an angstrom-scale error, and the panel's one
 failing cell is not reproduced by the harness that replays the actual
 augmentation draws.**
+
+## The identity-augmentation arm cannot be made by flipping one flag
+
+`center_random_augmentation` takes `augmentation=True|False`, so forcing it False
+looked like a one-line way to reproduce the contract's "identity augmentation"
+and settle whether it explains the 400-900x gap. It is not.
+
+The native capture succeeds; the port's replay dies:
+
+```
+ValueError: preprocessing replay exhausted
+RuntimeError: featurizing boltz2_input failed
+```
+
+The replay consumes the preprocessing draws the capture recorded. Skipping the
+augmentation on the native side removes draws the port still expects, so the two
+sides desynchronise. The tape contract couples them: an identity-augmentation
+arm needs the consumption side changed to match, not just the production side.
+
+That is itself informative about the two harnesses. The panel's matched-tape
+construction is not this driver with a flag flipped -- it handles identity
+augmentation consistently on both sides, which is a different tape contract, not
+a different setting.
+
+## Final state of this investigation
+
+Established by measurement:
+
+- The Boltz-2 port carries no angstrom-scale error on 5SAK. With both sides at
+  FP32 it tracks native to 0.0013 A (0.0055 A without the cueq patch), confirmed
+  independently by a 2026-09-05 arm on a different commit at 0.0024-0.0299 A.
+- The shipped divergence is a precision effect: 2,750x from bf16 with kernels
+  off, 5,650x with them on. The fused kernels cost 2.2x at FP32 and amplify
+  rather than originate.
+- The sampler, the scan lowering, the cueq patch, the code version, and an
+  algorithmic port error are each excluded by their own arm.
+
+Not established, and now known to need more than a flag: whether the panel's
+1.1761 A comes from its identity-augmentation tape contract. That experiment
+requires matching changes on the replay side.
+
+This document opened by attributing the cell to the MSA module, then to a bf16
+floor, and both were measurements of the shipped path rather than the failing
+one. What survives is narrower and better supported: at matched precision there
+is nothing wrong with this port on this target.
