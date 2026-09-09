@@ -3,8 +3,14 @@ import json
 from bench.openbind_acceptance import classify, evaluate
 
 
-def _case(snapshot, native, case, entities, *, calls, bitwise=True, backend="cueq"):
+def _case(
+    snapshot, native, case, entities, *, calls, bitwise=True, backend="cueq", floor=None
+):
     (native / case / "native-cueq").mkdir(parents=True)
+    if floor is not None:
+        (native / case / "native-cueq-vs-repeat.json").write_text(json.dumps({
+            "same_tape": True, "coordinates": {"entity_max_rmsd": {"A": floor}},
+        }))
     (native / case / "native-cueq" / "kernel-calls.json").write_text(
         json.dumps({"calls": calls})
     )
@@ -69,3 +75,14 @@ def test_missing_reports_are_reported_and_block(tmp_path):
     nat.mkdir()
     result = evaluate(snap, nat, ["x"])
     assert result["rows"][0]["status"] == "missing" and not result["accepted"]
+
+
+def test_residual_within_twice_the_native_floor_is_at_floor(tmp_path):
+    snap, nat = tmp_path / "snap", tmp_path / "nat"
+    snap.mkdir()
+    _case(snap, nat, "noisy", {"A": 0.13}, calls=CUEQ, floor=0.07)
+    _case(snap, nat, "far", {"A": 0.3}, calls=CUEQ, floor=0.07)
+    result = evaluate(snap, nat, ["noisy", "far"])
+    assert [r["structure"] for r in result["rows"]] == ["at-floor", "investigate"]
+    assert [r["status"] for r in result["rows"]] == ["at-floor", "fail"]
+    assert evaluate(snap, nat, ["noisy"])["accepted"]
