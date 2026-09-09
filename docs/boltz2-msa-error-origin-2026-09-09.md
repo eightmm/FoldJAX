@@ -1051,3 +1051,39 @@ This document opened by attributing the cell to the MSA module, then to a bf16
 floor, and both were measurements of the shipped path rather than the failing
 one. What survives is narrower and better supported: at matched precision there
 is nothing wrong with this port on this target.
+
+## The reducible error, located
+
+One reading of the factorial is "bf16 is lossy, nothing to do". That reading is
+wrong, and the table says why.
+
+In the bf16 arms **both sides are bf16**. Upstream runs `bf16-mixed` autocast and
+the port runs `compute_dtype=bfloat16`. They still disagree by 3.596264 A with
+kernels off. Two bf16 implementations of the same model, given the same tape,
+diverging by three and a half angstroms is not the precision's fault -- it is the
+two implementations rounding in different places.
+
+The FP32 arms prove there is nothing else wrong: strip the differing rounding and
+the same two implementations agree to 0.001305 A.
+
+So the reducible error is **where the port places its bf16 casts relative to
+torch's autocast**, and it is worth the whole 3.6 A on this target. Torch's
+autocast keeps matmuls in bf16 and promotes reductions, normalisations and
+softmax to FP32 by op-level policy; a port that casts activations at module
+boundaries instead will round in a different set of places even with the same
+nominal dtype.
+
+This is the shipped configuration, so unlike the FP32 arms it is a defect a user
+actually meets. It is also consistent with the earlier note recorded for this
+target, that the residual survived every knob and what remained was autocast
+boundary placement.
+
+### The next arm, stated concretely
+
+Enumerate torch's autocast policy for the ops this trunk uses -- which stay bf16,
+which promote -- and compare against the port's cast sites in
+`models/boltz2/models/trunk_blocks/`. The boundary decomposition already in this
+document gives the per-module residual in units of one bf16 rounding, so a
+corrected cast placement should show up there before it shows up in coordinates.
+
+That is a source-reading task with a measurement attached, not another sweep.
