@@ -409,3 +409,62 @@ Second, this is the same shape as the ESMFold2 result recorded above. Two of the
 six models have been shown to need their own sampling spread quotiented out
 before a port-versus-native number means anything; the difference is that
 ESMFold2's stochasticity survives the tape and these models' does not.
+
+---
+
+# Current state, 2026-09-09 end of session
+
+This document has accumulated corrections and two retractions. Everything below
+supersedes the sections above where they disagree.
+
+## Where each model stands
+
+| Model | Evidence | Standing |
+| --- | --- | --- |
+| **AlphaFold 3** | 6 cases, 38/38 checks each, coordinates and full tape | **closed** |
+| **OpenFold3** | 0.0000-0.0010 A on 5 of 7 cases | **closed**, nothing to reduce |
+| **OpenDDE** | 0.0039-0.0957 A; `highest` buys 1.7-4.5x for ~2x wall time | **closed**, lever documented, default kept by decision |
+| **Protenix-v2** | 0.0005-0.1611 A | **closed** under the contract |
+| **ESMFold2** | ~0.037 A separation, exact permutation test, p = 0.067 | **closed**, needed its own estimator |
+| **Boltz-2** | 0.0007-1.1761 A; one failing cell | **closed at the bf16 floor** |
+
+Six of six carry evidence. One cell of forty-two crosses the 0.5 A threshold.
+
+## The one failing cell, and why it stays
+
+Boltz-2 on 5SAK, 1.1761 A. Three independent lines close it:
+
+- **It is at the bf16 floor.** Port, native and the stored in-run value are
+  mutually equidistant at rel 2.0e-3, and one bf16 round-trip of the tensor is
+  rel 1.788e-03. Across both trunk boundaries every quantity sits between 0.53x
+  and 1.98x one rounding, with the single-token pathway *below* one rounding.
+- **The one lever moves the wrong way.** fp32 activations in the MSA module give
+  16.1595 A against 1.8971 A, against a rerun control reproducing to 0.0001 A.
+  Under a matched-tape contract the target is native's arithmetic, and native
+  runs bf16.
+- **It is not a metric artifact.** Per entity, the 3086-atom protein carries
+  1.9025 A and the 18-atom ligand sits at 0.0156 A.
+
+Reducing it further requires upstream to run in higher precision. That is a
+change to upstream, not to the port.
+
+## What was learned about the standard itself
+
+- **Matched-tape is necessary, and now measured to be.** Free-running, upstream
+  differs from *itself* by more than the port differs from upstream -- 26.29 A
+  vs 22.47 A on OpenFold3/5sak, and all three numbers within 2% on
+  OpenFold3/7st3.
+- **Multi-entity targets need per-entity reading.** OpenFold3/7st3 is 27.80 A
+  whole-system, 3.90 A and 1.70 A per chain. Boltz-2/5SAK is the opposite. The
+  answer differs by target, so decompose before attributing.
+- **Two models need their sampling spread quotiented out** before any
+  port-versus-native number means anything: ESMFold2 always, and every model in
+  a free-running comparison.
+
+## Open, and not blocked on numerics
+
+- Protenix: chain A on 7st3 sits at 3.7-3.8 A in every arm including an
+  untouched baseline, under a free-running comparison whose power was not
+  established. Worth a matched-tape reading before anything else.
+- OpenDDE: the `highest` default remains a product decision, documented with
+  both numbers.
