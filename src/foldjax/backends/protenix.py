@@ -307,14 +307,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
         self.validate_native_options(options)
-        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
-            if name not in profile:
-                continue
-            value = profile[name]
-            # ``bool`` is an ``int`` subclass. A merely equal lookalike must
-            # not inherit a released-default alias without parser proof.
-            if type(value) is type(default) and value == default:
-                profile.pop(name)
+        self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
 
         model_name = options.get("model_name")
         schedule = (
@@ -323,19 +316,14 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             else None
         )
         if schedule is not None:
-            for name in ("num_steps", "num_recycles"):
-                default = schedule[name]
-                if name not in profile:
-                    continue
-                value = profile[name]
-                if type(value) is type(default) and value == default:
-                    profile.pop(name)
+            self._strip_released_defaults(
+                profile,
+                {name: schedule[name] for name in ("num_steps", "num_recycles")},
+            )
 
         if not _extra_cli_args(options.get("cli_args", ())):
             profile.pop("cli_args", None)
-        layout = profile.get("cp_layout")
-        if type(layout) is str and layout == "1d":
-            profile.pop("cp_layout")
+        self._strip_released_defaults(profile, {"cp_layout": "1d"})
         profile["return_confidence_details"] = (
             options.get("output_format", "protenix") != "protenix"
         )

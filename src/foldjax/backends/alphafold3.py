@@ -813,16 +813,11 @@ class AlphaFold3Backend(Backend):
 
         profile = super().cache_profile(request)
         managed_route = not bool(request.options.get("source"))
-        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
-            if not managed_route and name in _MANAGED_CONFIG_DEFAULTS:
-                continue
-            if name not in profile:
-                continue
-            value = profile[name]
-            # ``bool`` is an ``int`` subclass. Preserve malformed, extended,
-            # or future type variants rather than aliasing equal spellings.
-            if type(value) is type(default) and value == default:
-                profile.pop(name)
+        self._strip_released_defaults(
+            profile,
+            _RELEASED_COMPILE_DEFAULTS,
+            skip=() if managed_route else _MANAGED_CONFIG_DEFAULTS,
+        )
         if request.representations or request.stop_after != "full":
             profile["representations"] = _representation_names(request)
             profile["stop_after"] = request.stop_after

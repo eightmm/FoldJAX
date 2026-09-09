@@ -742,12 +742,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         """
 
         profile = super().cache_profile(request)
-        for name, default in _FIXED_COMPILE_DEFAULTS.items():
-            if name not in profile:
-                continue
-            value = profile[name]
-            if type(value) is type(default) and value == default:
-                profile.pop(name)
+        self._strip_released_defaults(profile, _FIXED_COMPILE_DEFAULTS)
         return profile
 
     def validate_native_options(self, options: dict[str, Any]) -> None:

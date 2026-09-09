@@ -420,14 +420,7 @@ class Boltz2Backend(Backend):
             and atom_attention == resolved_attention
         ):
             profile.pop("trunk_atom_attention_backend", None)
-        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
-            if name not in profile:
-                continue
-            value = profile[name]
-            # ``bool`` is an ``int`` subclass. Preserve malformed or future
-            # type variants rather than allowing True to alias integer 1.
-            if type(value) is type(default) and value == default:
-                profile.pop(name)
+        self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
         if profile.get("cp_layout") == "1d":
             profile.pop("cp_layout")
         return profile

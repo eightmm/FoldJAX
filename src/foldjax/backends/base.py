@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from typing import Any
 
@@ -281,6 +281,32 @@ class Backend(ABC):
 
     def validate_session(self, request: PredictionRequest) -> None:
         """Refuse when resources used by this session changed on disk."""
+
+    @staticmethod
+    def _strip_released_defaults(
+        profile: dict[str, Any],
+        defaults: Mapping[str, Any],
+        *,
+        skip: Container[str] = (),
+    ) -> None:
+        """Drop explicitly spelled released defaults from ``profile`` in place.
+
+        Naming a value the native runner would have resolved anyway must not
+        select a second compilation namespace. ``skip`` names defaults this
+        request does not inherit, for the routes where a backend only supplies
+        some of them.
+
+        The match is on exact type as well as value because ``bool`` is an
+        ``int`` subclass: a merely equal lookalike, and any malformed, extended
+        or future type variant, keeps its own namespace rather than inheriting
+        a released-default alias without parser proof.
+        """
+        for name, default in defaults.items():
+            if name in skip or name not in profile:
+                continue
+            value = profile[name]
+            if type(value) is type(default) and value == default:
+                profile.pop(name)
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Return the compile-relevant identity of ``request`` for this backend.

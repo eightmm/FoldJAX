@@ -151,17 +151,8 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         profile = super().cache_profile(request)
         options = self.apply_sampling(request)
         self.validate_native_options(options)
-        for name, default in _RELEASED_COMPILE_DEFAULTS.items():
-            if name not in profile:
-                continue
-            value = profile[name]
-            # ``bool`` is an ``int`` subclass. A merely equal lookalike must
-            # not inherit the released-default alias without parser proof.
-            if type(value) is type(default) and value == default:
-                profile.pop(name)
-        layout = profile.get("cp_layout")
-        if type(layout) is str and layout == "1d":
-            profile.pop("cp_layout")
+        self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
+        self._strip_released_defaults(profile, {"cp_layout": "1d"})
         profile["return_confidence_details"] = _strict_boolean(
             options.get("include_raw", False), name="include_raw"
         )
