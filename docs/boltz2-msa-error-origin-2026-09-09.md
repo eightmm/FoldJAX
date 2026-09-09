@@ -1087,3 +1087,48 @@ document gives the per-module residual in units of one bf16 rounding, so a
 corrected cast placement should show up there before it shows up in coordinates.
 
 That is a source-reading task with a measurement attached, not another sweep.
+
+## The pairformer attention core is not the cast-placement site
+
+The section above located a concrete divergence and predicted it carried the
+3.6 A. Upstream's `attentionv2.py` runs the whole attention block with autocast
+explicitly disabled:
+
+```python
+with torch.autocast("cuda", enabled=False):
+    attn = torch.einsum("bihd,bjhd->bhij", q.float(), k.float())
+    attn = attn / (self.head_dim**0.5) + bias.float()
+    attn = attn + (1 - mask[:, None, None].float()) * -self.inf
+    attn = attn.softmax(dim=-1)
+    o = torch.einsum("bhij,bjhd->bihd", attn, v.float()).to(v.dtype)
+```
+
+while the port's `_jax_attention` (`primitives/micro_modules.py`), reached from
+`_jax_pairformer_layer`, ran all of it at the incoming dtype. Under
+`compute_dtype=bfloat16` that is a bf16 softmax where upstream has an FP32 one.
+
+Promoting the port's block to match, one variable, `bf16-nokernels`:
+
+| arm | global max | protein |
+| --- | ---: | ---: |
+| bf16 baseline | 3.596264 | 3.606615 |
+| bf16 + FP32 attention core | **3.596316** | 3.606667 |
+
+A change of 5e-05 A. The divergence is real and the fix is correct on its own
+terms -- the port now rounds where upstream rounds at this site -- but it is not
+where the 3.6 A lives. Note also that this driver's own rerun spread is an order
+of magnitude larger than the move (0.0024 vs 0.0299 on the two FP32 arms), so
+5e-05 is not even resolvable here.
+
+## Standing
+
+The cast-placement hypothesis survives; this particular site does not carry it.
+The trunk has other bf16 boundaries, and the per-module decomposition recorded
+earlier in this document is the tool for finding which one -- but it was taken on
+the bf16 path against a bf16 native, so it already contains whatever this
+mismatch is, distributed across the modules at roughly one bf16 rounding each.
+
+What that means practically: the next attempt should not guess a site. It should
+diff the port's realised dtypes against a torch autocast trace of the same trunk,
+op by op, and only then patch. That is a different kind of work from the arms in
+this document and is where I would start.
