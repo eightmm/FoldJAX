@@ -286,3 +286,27 @@ is complete and consumed, and the port replays it bitwise. What is true is that
 neither this document nor the panel can yet quote a matched RMSD with a
 controlled reference, because the reference is the noisy side. That is a
 narrower and more actionable statement than the one the table carries.
+
+### The objection this survives
+
+A reader could say the two native captures simply drew different noise, in which
+case the port replaying N1's tape has no reason to match N2 and the comparison
+above is meaningless. Checked, key by key:
+
+```
+initial_pair_state              identical=True
+lm_dropout_masks                identical=True
+msa_column_keep                 identical=True
+msa_row_choices                 identical=True
+diffusion_initial_normal        identical=True
+diffusion_rotation_quaternions  identical=True
+diffusion_translations          identical=True
+diffusion_churn_normals         identical=True
+```
+
+The two native tapes are bitwise identical. Native's RNG is seeded and
+reproducible, so N1 and N2 consumed exactly the same noise and still produced
+coordinates 2.18 A apart. That difference is native's own kernel selection and
+nothing else, which is what makes the port's position inside it meaningful.
+
+Both sides therefore have the same defect and only the port's has been removed.
