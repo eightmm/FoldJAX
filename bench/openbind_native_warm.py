@@ -1,6 +1,13 @@
-"""Native prediction-step warm timing with shared inputs and ordinary native RNG."""
+"""Native prediction-step warm timing with shared inputs and ordinary native RNG.
+
+``--triangle-backend`` selects upstream's own Triton kernels or the
+cuEquivariance torch kernels the same way the parity captures do, and the
+kernel census proves which one executed (cuEq attention silently falls back
+to plain torch at or below 100 tokens).
+"""
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +16,8 @@ import numpy as np
 
 from bench.boltz_historical_replay import digest, save_new
 from bench.openbind_core_replay import positive_count
+from bench.openbind_native_capture import KernelCensus
+from bench.openbind_native_outputs import configured_backend
 from bench.openbind_warm import measure_calls
 
 
@@ -40,12 +49,26 @@ def main(argv=None):
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--warm-repeats", type=positive_count, default=3)
+    parser.add_argument("--triangle-backend", choices=("cueq", "triton", "xla"))
     args = parser.parse_args(argv)
     sys.path.insert(0, str(args.upstream_root))
 
     import torch
+    from openfold3.projects.of3_all_atom.project_entry import OF3ProjectEntry
     from openfold3.projects.of3_all_atom.runner import OpenFold3AllAtom
     from openfold3.run_openfold import cli
+
+    original_config = OF3ProjectEntry.get_model_config_with_update
+    config_calls = []
+
+    def model_config(self, update):
+        config = configured_backend(
+            lambda value: original_config(self, value), update, args.triangle_backend
+        )
+        config_calls.append(True)
+        return config
+
+    census = KernelCensus()
 
     args.out_dir.mkdir(parents=True, exist_ok=False)
     runner = args.out_dir / "runner.yaml"
@@ -100,6 +123,7 @@ def main(argv=None):
                 **identity,
                 "shared_feature_keys": sorted(replaced),
                 "config": self.config.to_dict(),
+                "requested_triangle_backend": args.triangle_backend,
                 "scope": "native predict_step includes confidence; excludes writer",
                 "rng": "native reseed 101 per call; no tape or internal observers",
                 "memory_scope": "allocator lifetime peak; not reset warm-only peak",
@@ -171,11 +195,20 @@ def main(argv=None):
                     np.median([r["seconds"] for r in rows[1:]])
                 ),
                 "shared_inputs_unchanged_after_every_call": True,
+                "kernel_calls": dict(census.calls),
             },
         )
         return last[0]
 
-    with patch.object(OpenFold3AllAtom, "predict_step", predict_step):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch.object(OpenFold3AllAtom, "predict_step", predict_step)
+        )
+        stack.enter_context(
+            patch.object(OF3ProjectEntry, "get_model_config_with_update", model_config)
+        )
+        for active in census.patches():
+            stack.enter_context(active)
         cli.main(
             args=[
                 "predict",
@@ -198,6 +231,8 @@ def main(argv=None):
         )
     if not completed or not (args.out_dir / "measurements.json").exists():
         raise RuntimeError("native warm measurement did not complete")
+    if args.triangle_backend is not None and not config_calls:
+        raise RuntimeError("native triangle backend configuration hook was not called")
     for relative, expected in sources.items():
         if digest(args.upstream_root / relative) != expected:
             raise RuntimeError("native source changed")

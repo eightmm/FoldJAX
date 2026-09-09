@@ -19,6 +19,41 @@ from bench.boltz_historical_replay import digest, save_new
 from bench.entity_parity import compare_entity_parity
 
 
+def public_confidence(root):
+    """Per-sample public pLDDT (0-100), pTM and ipTM as upstream wrote them."""
+    values = {}
+    for name in ("plddt", "ptm", "iptm"):
+        suffix = (
+            "confidences.json" if name == "plddt" else "confidences_aggregated.json"
+        )
+        rows = []
+        for sample in range(1, 6):
+            paths = list((root / "predictions").rglob(f"*sample_{sample}_{suffix}"))
+            if len(paths) != 1:
+                raise ValueError("expected one confidence file per sample")
+            rows.append(json.loads(paths[0].read_text())[name])
+        values[name] = np.asarray(rows, dtype=np.float64)
+    return values
+
+
+def compare_confidence(left, right):
+    """Same metric as the port report: max |delta| and RMSE over five samples."""
+    a, b = public_confidence(left), public_confidence(right)
+    result = {}
+    for name in a:
+        if a[name].shape != b[name].shape:
+            raise ValueError(f"confidence shape mismatch: {name}")
+        delta = a[name] - b[name]
+        if not np.isfinite(delta).all():
+            raise ValueError(f"nonfinite confidence: {name}")
+        result[name] = {
+            "max_absolute_error": float(np.abs(delta).max()),
+            "rmse": float(np.sqrt(np.mean(delta**2))),
+            "scale": "0-100" if name == "plddt" else "0-1",
+        }
+    return result
+
+
 def compare(left, right):
     left, right = Path(left), Path(right)
     identity = {}
@@ -66,6 +101,7 @@ def compare(left, right):
         ),
         "coordinates_bitwise_equal": bool(np.array_equal(ca, cb)),
         "coordinates": geometry,
+        "public_confidence": compare_confidence(left, right),
     }
 
 
