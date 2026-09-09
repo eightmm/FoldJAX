@@ -183,3 +183,32 @@ coverage or performance admission. Each completed case still needs its input
 audit, native output comparison and provenance checked. Failed cases remain
 failures; queue submission is not scientific success. Existing collaborator
 jobs and the pending 1URN repeat retain their place ahead of this batch.
+
+## 1URN unobserved repeat completed
+
+908 exited 0 using the same source/settings/tape as 904. Reports:
+`unobserved-repeat-comparison.json` (904 vs 908) and
+`repeat-native-report.json` (native vs 908).
+
+| Comparison | Protein max RMSD (angstrom) | RNA max RMSD (angstrom) | Strict confidence |
+| --- | ---: | ---: | --- |
+| Unobserved vs unobserved repeat | 0.00791440683 | 0.00347503086 | fail |
+| Native vs unobserved repeat | 0.04691825559 | 0.00470491907 | fail |
+
+Both comparisons pass the original structural gate. Native/repeat protein
+per-sample RMSDs are `[0.00281581976,0.00360143797,0.00476977587,
+0.00840670237,0.04691825559]`. Maximum atom pLDDT differences (0–1) are
+0.00026392937 between unobserved repeats and 0.00028389692 native/repeat.
+Thus the strict confidence test also fails within the same FoldJAX route,
+not only between frameworks. It cannot by itself identify a port defect.
+
+The observed run's 0.1483 angstrom deviation did not recur in either
+unobserved run; ordinary unobserved repeat variation is much smaller here.
+This strengthens, but does not conclusively isolate, the observer/compiler
+hypothesis. Rare execution variability remains possible. Two repeats do not
+constitute native-repeat calibration or justify changing thresholds. Preserve
+the original 904 gray-zone result as well as 908's coordinate pass; do not
+select the better run as a replacement. No model arithmetic was changed.
+
+Verification: 908 exited 0, both completed reports inspected, no schema errors.
+The outstanding observer bridge and strict confidence failures remain.

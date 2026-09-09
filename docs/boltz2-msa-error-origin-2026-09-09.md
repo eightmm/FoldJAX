@@ -143,3 +143,31 @@ Nothing reachable from this port reduces it: not configuration, not dtype, not
 boundary placement, not chunk width, not the kernel choice, and not matching
 upstream's call granularity -- which is measurably worse at the output while
 being better at the stage. That is the complete finding.
+
+## The open question, stated precisely
+
+The MSA block count matches (`msa_blocks: int = 4` upstream, four in the port's
+capture). So does everything else this investigation could reach: the operator
+structure, the chunk policy, the parameter and activation dtypes, the autocast
+boundary placement, the kernel library, and the number of layers.
+
+That leaves a paradox worth writing down rather than papering over. **The source
+matches and the output does not.** The first MSA module's `delta_z` differs from
+native by 3.2e-2 relative 2.07e-3, on bitwise-identical features, with native's
+own pair input substituted, at a rerun floor of 0.003 Å.
+
+Two readings remain, and this investigation cannot separate them:
+
+1. Something in the module diverges below the level the source shows -- inside
+   `cuequivariance_jax` versus `cuequivariance_torch`, or in how XLA and
+   PyTorch schedule the same library call.
+2. Something in the module diverges above it, in a place the reading missed.
+
+Separating them needs what this investigation never had: a native capture at
+sub-module boundaries inside the MSA block, so the 3.2e-2 can be attributed to
+one operator rather than to the module as a whole. Every arm here treated the
+module as a unit because that is the only boundary the native artifact stores.
+
+That capture is the next step, and it is a capture change rather than an
+analysis one -- the same conclusion this document reached early, now with the
+whole configuration space eliminated behind it rather than assumed.
