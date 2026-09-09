@@ -75,10 +75,12 @@ for managed asset profiles, one summary-score reader (`70946af..4902a7a`),
 then one `WeightAnchors` implementation behind the shared weight session and
 the three backends that hand-rolled it (Boltz-2, ESMFold2, AlphaFold3), and
 both port compile-cache paths routed through `cache.compilation_cache_scope`
-(`cb3e632..9a4c70d`, 14 files, +388/-174). The CI gate on main after the
-first wave: 6048 passed, 28 failed, coverage 87.72% (gate 80%); 26 of the
-failures are the pre-existing AlphaFold3 data-cache/small-input set, one is
-the mtime-resolution flake in `test_stable_compile.py`, and one was real:
+(`cb3e632..9a4c70d`, 14 files, +388/-174). The CI gate on main
+(`pytest -m 'not network' --cov`, CPU): after the first wave 6048 passed /
+28 failed / 87.72% coverage; after the second wave 6053 passed / 27 failed /
+87.73% (gate 80%). 26 of the failures are the pre-existing AlphaFold3
+data-cache/small-input set and one is the mtime-resolution flake in
+`test_stable_compile.py`; the 28th in the first run was real and is fixed:
 `cueq-full` had never been registered in the shared execution vocabulary
 (`7a757a2`). Left out on purpose: `enable_compilation_cache` stays exported
 (documented direct-library entry), and the Protenix backend's
