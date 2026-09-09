@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -82,6 +83,41 @@ def cueq_attention_core(
     return output
 
 
+def triangle_amp_granularity() -> str:
+    """How to reach cuEquivariance when autocast boundaries are in play.
+
+    Upstream makes a single fused ``triangle_multiplicative_update`` call and
+    lets ``torch.autocast`` place the boundaries. This port instead decomposes
+    the operator into ``norm``, ``gemm`` and ``gemm_dual`` and places them by
+    hand, which is what ``"decomposed"`` selects and what ships.
+
+    ``"fused"`` takes upstream's own granularity. Measured 2026-09-09 against a
+    native 5SAK capture, teacher-forced on native's own pair input with
+    bitwise-identical MSA features: the fused call gives a first-cycle
+    ``delta_z`` RMSE of 3.212102e-02 against the decomposed path's 3.233621e-02
+    -- 0.67% closer to native, against a repeated-baseline spread of 0.02% and a
+    control that moves the result twenty-six fold. The same library computes both;
+    only the number of calls it is reached through differs, and a fused kernel
+    does not accumulate the way three primitive calls do.
+
+    It is not the default. That is a stage measurement, not an end-to-end one,
+    and this repository has twice this month watched a stage-level improvement
+    fail to predict a coordinate one. Changing what ships needs a native
+    comparison on final coordinates.
+    """
+
+    value = os.environ.get("BOLTZ_JAX_TRIANGLE_AMP_GRANULARITY", "decomposed").lower()
+    if value not in ("decomposed", "fused"):
+        msg = (
+            "BOLTZ_JAX_TRIANGLE_AMP_GRANULARITY must be 'decomposed' or "
+            f"'fused'; got {value!r}. A misspelling must not quietly select "
+            "the other path: two machines would run two different programs "
+            "under one setting."
+        )
+        raise ValueError(msg)
+    return value
+
+
 def cueq_triangle_multiplication_forward(
     params: TriangleMultiplicationParams,
     x: jnp.ndarray,
@@ -99,7 +135,11 @@ def cueq_triangle_multiplication_forward(
     cuex = _load_cueq()
 
     compute_dtype = params["p_in"]["kernel"].dtype
-    if x.dtype == jnp.float32 and compute_dtype == jnp.bfloat16:
+    if (
+        x.dtype == jnp.float32
+        and compute_dtype == jnp.bfloat16
+        and triangle_amp_granularity() == "decomposed"
+    ):
         return _cueq_triangle_native_amp(cuex, params, x, mask, direction, eps=eps)
 
     return cuex.triangle_multiplicative_update(

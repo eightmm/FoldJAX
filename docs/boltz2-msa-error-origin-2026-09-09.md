@@ -463,3 +463,34 @@ than excluding a candidate. It is small: 0.67% of a 3.2e-2 stage residual will
 not by itself move a 1.18 Å cell. What it establishes is that the remaining
 difference is *reachable* -- it lives in how the port calls a shared library, not
 in a kernel nobody here can change.
+
+## The stage improvement does not survive to the coordinates
+
+The 0.67% is real at the stage it was measured. It reverses at the output.
+
+Two end-to-end runs of the same capture harness against the same native 5SAK
+reference, same snapshot, same weights, differing only in
+`BOLTZ_JAX_TRIANGLE_AMP_GRANULARITY`. Per-sample RMSD after one whole-system
+Kabsch fit, no rematching:
+
+| Arm | Per sample | Max | Mean |
+| --- | --- | ---: | ---: |
+| `decomposed` (shipped) | 1.897, 0.082, 0.049, 1.477, 0.636 | **1.897** | 0.828 |
+| `fused` (upstream's granularity) | 1.983, 0.143, 0.040, 2.832, 0.627 | **2.832** | 1.125 |
+
+The maximum is 49% worse and the mean 36% worse. Sample 3 moves from 1.48 Å to
+2.83 Å.
+
+So the switch stays off, and now for a measured reason rather than a cautious
+one. Matching upstream's call granularity brings the first-cycle `delta_z`
+closer and the final structure further away, on the same input, in the same run.
+
+This is the third time this month that a stage-level improvement failed to
+predict a coordinate one on this family of models -- after OpenFold3's TF32
+operand rounding and OpenDDE's precision pin -- and the first where the
+direction actually inverted rather than merely being unresolvable.
+
+A caveat that does not change the decision: this port's rerun floor at 5SAK is
+unmeasured, so 0.93 Å on one sample of five cannot be separated from trajectory
+chaos with n=1. What can be said is that there is no evidence the fused
+granularity improves the output, which is all the default needs.
