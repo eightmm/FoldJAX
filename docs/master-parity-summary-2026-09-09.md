@@ -47,9 +47,8 @@ above 0.1 Å but within upstream's own process movement (or basin sharing).
 ## Open items
 
 - **ESMFold2 7ST3 chain B**: samples 1/3/5 sit 2-4× above native's own
-  scatter with autotune frozen (1.07/0.53/3.58 Å vs 0.24/0.08/1.09). The
-  only residual in the panel that is above upstream's scatter on every
-  pairing.
+  scatter with autotune frozen (1.07/0.53/3.58 Å vs 0.24/0.08/1.09), above
+  upstream's scatter on every pairing.
 - **Boltz-2 ion case (1AAY)**: protein 0.175 Å, all of it on sample 3 (the
   other four samples 0.006-0.028 Å), against a bitwise-repeatable native and
   a 0.018 Å port floor. Upstream's own kernels-off toggle moves this case by
