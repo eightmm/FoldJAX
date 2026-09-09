@@ -107,16 +107,18 @@ below consumes.
 | protenix-v2 | 594 | prediction ran and wrote `seed_101/predictions`; **exited 1** at 201 s, same error |
 | opendde | 595 | prediction ran and wrote `seed_101/predictions`; **exited 1** at 208 s, same error |
 
-Three of the four exits are not the ion, and not a prediction failure.
-`bench/provenance.py` fingerprints `src/foldjax` and aborts when that tree
-changes mid-prediction; another agent landed three refactor commits in it while
-these jobs ran (repository HEAD moved `5987229` to `4902a7a`). OpenFold3 ran
-before those commits and is clean. In every case the backend-native input was
-written before the guard fired, and the Protenix and OpenDDE predictions
-completed and were written, so what the guard rejected is the provenance record,
-not the result. Every parity arm below reads a snapshot source tree rather than
-the live checkout and is insulated from the same churn. Not re-run: these rows
-are the arms' input source, not a measurement this note reports.
+Three of the four exits are fingerprint kills, not the ion and not a prediction
+failure. `bench/provenance.py` fingerprints `src/foldjax` and aborts when that
+tree changes mid-prediction; a merge landed three refactor commits in it on
+`main` while these jobs ran, moving the repository HEAD from `5987229` to
+`4902a7a`. The trigger is that merge, not the input. OpenFold3 ran before those
+commits and is clean. In every case the backend-native input was written before
+the guard fired, and the Protenix and OpenDDE predictions completed and were
+written, so what the guard rejected is the provenance record, not the result.
+Every parity arm below reads a snapshot source tree rather than the live
+checkout and is insulated from the same churn. Not re-run, at the task owner's
+direction: these rows are the arms' input source, not a measurement this note
+reports.
 
 ## OpenFold3 / OpenBind: the native side
 
@@ -333,11 +335,15 @@ job. Ledger rows in `docs/EXPERIMENTS.jsonl`.
 - OpenDDE: `opendde-master-20260909-Ayx8BN/protein_dna_ion_1aay/{native-A,native-B,fj-high-A,fj-high-B,fj-highest}`.
 - Job scripts and launchers for this case: `foldjax-bench/ion-1aay-master-20260909/jobs/`.
 
-## Not run
+## Not run, and what the default sweep now covers
 
-- AlphaFold3 and ESMFold2. The task scoped this case to the four models above.
-  Because the manifest now carries eight targets, a bare `run_suite.py` would
-  include both for this case.
-- The three `results/protein_dna_ion_1aay/foldjax/*.json` records left by the
-  fingerprint-tripped materialization jobs are marked failed, so `run_suite.py`
-  would archive and rerun them.
+1AAY is deliberately kept in the default sweep: the mixed-modality benchmark is
+meant to carry an ion case, so the manifest's eighth target is not an opt-in.
+
+- **AlphaFold3 and ESMFold2 were not run on this case tonight.** The task scoped
+  it to the four models above. A bare `run_suite.py` will now run both here.
+- **Three `results/protein_dna_ion_1aay/foldjax/*.json` records are marked
+  failed, and all three are fingerprint kills** (`boltz2`, `protenix-v2`,
+  `opendde`), not input or model failures: see the materialization section
+  above. `run_suite.py` will archive and rerun them, which is the right
+  behaviour for a record whose provenance could not be sealed.
