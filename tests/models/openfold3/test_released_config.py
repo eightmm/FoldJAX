@@ -154,7 +154,9 @@ def test_no_field_is_left_unchecked(upstream) -> None:
         "returned_pair_logits",
         "has_atomized_tokens",
         "returned_representations",
+        "return_plddt_logits",
         "stop_after_trunk",
+        "stop_after_inputs",
         "cp_shards",
         "cp_layout",
     }

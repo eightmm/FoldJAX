@@ -143,6 +143,7 @@ def test_public_crop_removes_atom_and_pair_padding() -> None:
         pde_logits=np.zeros((2, 8, 8, 64), dtype=np.float32),
         distogram_logits=np.zeros((1, 8, 8, 64), dtype=np.float32),
         experimentally_resolved_logits=np.zeros((2, 13, 2), dtype=np.float32),
+        plddt_logits=np.zeros((2, 13, 50), dtype=np.float32),
     )
 
     cropped = crop_prediction(prediction, features)
@@ -153,6 +154,7 @@ def test_public_crop_removes_atom_and_pair_padding() -> None:
     assert cropped.pde_logits.shape == (2, 4, 4, 64)
     assert cropped.distogram_logits.shape == (1, 4, 4, 64)
     assert cropped.experimentally_resolved_logits.shape == (2, 7, 2)
+    assert cropped.plddt_logits.shape == (2, 7, 50)
 
 
 def test_crop_rejects_interleaved_padding() -> None:

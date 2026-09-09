@@ -373,11 +373,14 @@ def _batch(torch) -> dict:
     return {k: jnp.asarray(v.numpy()) for k, v in raw.items()}
 
 
-def test_full_inference_path_runs(openfold3_source, randomized, monkeypatch) -> None:
+@pytest.mark.parametrize("return_logits", [False, True])
+def test_full_inference_path_runs(
+    openfold3_source, randomized, monkeypatch, return_logits
+) -> None:
     import foldjax.models.openfold3.inference as inference
 
     torch = _torch()
-    config = _config()
+    config = _config()._replace(return_plddt_logits=return_logits)
     batch = _batch(torch)
     # An archive mask describes reference geometry, not each predicted sample.
     # Keep it present to prove inference still derives frames from coordinates.
@@ -409,6 +412,13 @@ def test_full_inference_path_runs(openfold3_source, randomized, monkeypatch) -> 
     # each sample's predicted geometry, so these carry the sample axis. Only the
     # distogram, which reads the trunk pair embedding, does not.
     assert out.plddt.shape == (config.num_samples, N_ATOM)
+    if return_logits:
+        assert out.plddt_logits.shape == (config.num_samples, N_ATOM, PLDDT_BINS)
+        np.testing.assert_allclose(
+            out.plddt, inference.compute_plddt(out.plddt_logits), atol=1e-6
+        )
+    else:
+        assert out.plddt_logits is None
     assert out.ptm.shape == (config.num_samples,)
     assert out.pae_logits.shape == (config.num_samples, N_TOKEN, N_TOKEN, PAE_BINS)
     assert out.pde_logits.shape == (config.num_samples, N_TOKEN, N_TOKEN, PAE_BINS)
@@ -477,6 +487,25 @@ def test_monomer_iptm_is_zero_without_tracing_interface_tm(
     np.testing.assert_array_equal(np.asarray(out.iptm), 0.0)
     assert out.chain_pair_iptm is None
     assert ptm_calls == [False]
+
+
+def test_raw_plddt_return_preserves_existing_outputs(openfold3_source, randomized):
+    torch = _torch()
+    batch, params, config = _batch(torch), _params(torch, randomized), _config()
+    table = _representative_atoms()
+    key = jax.random.key(5)
+    off = predict(key, batch, params, config, table)
+    on = predict(key, batch, params, config._replace(return_plddt_logits=True), table)
+    assert off.plddt_logits is None
+    assert on.plddt_logits is not None
+    for name, expected in off._asdict().items():
+        if name == "plddt_logits":
+            continue
+        actual = getattr(on, name)
+        if expected is None:
+            assert actual is None
+        else:
+            np.testing.assert_array_equal(actual, expected, err_msg=name)
 
 
 def test_prediction_is_deterministic_for_a_fixed_key(

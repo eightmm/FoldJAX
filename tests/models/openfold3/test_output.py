@@ -361,6 +361,36 @@ def _fake_prediction(n_token: int, n_bin: int, num_samples: int = 5):
     )
 
 
+def test_write_arrays_preserves_optional_atom_logits(tmp_path) -> None:
+    from foldjax.models.openfold3.output import write_arrays
+
+    prediction = _prediction(8, n_samples=2)
+    logits = np.arange(800, dtype=np.float32).reshape(2, 8, 50)
+    path, _ = write_arrays(
+        prediction._replace(plddt_logits=logits), tmp_path / "raw.npz", max_bytes=0
+    )
+    with np.load(path, allow_pickle=False) as arrays:
+        np.testing.assert_array_equal(arrays["plddt_logits"], logits)
+    path, _ = write_arrays(prediction, tmp_path / "default.npz")
+    with np.load(path, allow_pickle=False) as arrays:
+        assert "plddt_logits" not in arrays
+
+
+def test_optional_atom_logits_count_toward_pair_omission_budget(tmp_path) -> None:
+    from foldjax.models.openfold3.output import write_arrays
+
+    prediction = _prediction(8, n_samples=2)
+    budget = sum(x.nbytes for x in prediction if x is not None)
+    _, omitted = write_arrays(prediction, tmp_path / "off.npz", max_bytes=budget)
+    assert omitted == ()
+    prediction = prediction._replace(plddt_logits=np.zeros((2, 8, 50), np.float32))
+    path, omitted = write_arrays(prediction, tmp_path / "on.npz", max_bytes=budget)
+    assert omitted
+    with np.load(path, allow_pickle=False) as arrays:
+        assert "plddt_logits" in arrays
+        assert not set(omitted) & set(arrays.files)
+
+
 def test_write_arrays_keeps_everything_when_it_fits(tmp_path) -> None:
     from foldjax.models.openfold3.output import write_arrays
 

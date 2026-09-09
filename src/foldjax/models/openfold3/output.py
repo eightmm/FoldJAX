@@ -509,8 +509,8 @@ def write_scores(
 #: 1.0 GiB distogram, against about 1 MB of coordinates.
 DEFAULT_ARRAY_BUDGET_BYTES = 4 * 2**30
 
-#: Arrays that are per-bin distributions over token pairs. Everything else a
-#: prediction carries is small enough that its size never decides anything.
+#: Pair distributions eligible for omission. Other requested outputs are retained
+#: but still count toward the writer's budget, including opt-in atom logits.
 _PAIR_LOGIT_NAMES = ("pae_logits", "pde_logits", "distogram_logits")
 
 
@@ -536,7 +536,9 @@ def crop_prediction(prediction: Any, features: Mapping[str, Any]) -> Any:
         value = values.get(name)
         if value is not None:
             values[name] = value[..., :n_token, :n_token, :]
-    for name in ("coordinates", "plddt", "experimentally_resolved_logits"):
+    for name in (
+        "coordinates", "plddt", "plddt_logits", "experimentally_resolved_logits"
+    ):
         value = values.get(name)
         if value is None:
             continue
@@ -560,12 +562,10 @@ def plan_returned_pair_logits(
     """Which pair logits `write_arrays` would keep, decided before the run.
 
     Same rule as `write_arrays` -- drop largest-first until the total fits --
-    with a 64 MiB allowance standing in for the small arrays it also counts,
-    so this plan is strictly more conservative than the writer. The writer
-    still applies its own budget to whatever arrives, so a prediction built
-    from this plan never writes an array the old behaviour would have dropped;
-    the only divergence is inside that 64 MiB band, where an array narrowly
-    inside the budget is not returned at all.
+    with a 64 MiB estimate for other outputs. This is conservative only while
+    those outputs fit that allowance: opt-in atom logits or representations can
+    exceed it. The writer applies its budget to actual array sizes and may omit
+    additional pair logits. This plan is not a guarantee of which arrays persist.
 
     The point is where the decision lands: an excluded array is not required as
     an entry output of the compiled program. Inference can then sink metrics or

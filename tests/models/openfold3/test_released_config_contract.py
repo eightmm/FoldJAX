@@ -16,6 +16,13 @@ import pathlib
 from foldjax.models.openfold3 import inference
 
 
+def test_raw_plddt_return_is_opt_in():
+    assert not inference.released_config(n_token=3, n_atom=12).return_plddt_logits
+    assert inference.released_config(
+        n_token=3, n_atom=12, return_plddt_logits=True
+    ).return_plddt_logits
+
+
 def _override_keys() -> set[str]:
     """Every constant key the backend writes into its ``overrides`` dict."""
     source = pathlib.Path(inspect.getfile(inference)).parents[3]

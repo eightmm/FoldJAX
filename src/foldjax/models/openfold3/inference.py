@@ -200,6 +200,8 @@ class InferenceConfig(NamedTuple):
     #: ordinary protein, RNA and DNA inputs; True is the conservative direct-API
     #: default.
     has_atomized_tokens: bool = True
+    #: Keep the atom confidence distribution for raw-output parity checks.
+    return_plddt_logits: bool = False
 
 
 class InferenceParams(NamedTuple):
@@ -239,6 +241,7 @@ class Prediction(NamedTuple):
     single_inputs: jnp.ndarray | None = None
     single: jnp.ndarray | None = None
     pair: jnp.ndarray | None = None
+    plddt_logits: jnp.ndarray | None = None
 
 
 #: Bytes the triangle-attention score tensor is allowed to reach before
@@ -1108,6 +1111,7 @@ def _predict_from_trunk(
     return Prediction(
         coordinates=coordinates,
         plddt=compute_plddt(plddt_logits),
+        plddt_logits=plddt_logits if config.return_plddt_logits else None,
         ptm=ptm,
         iptm=iptm,
         chain_pair_iptm=chain_pair,
@@ -1138,6 +1142,7 @@ def released_config(
     cp_shards: int = 1,
     cp_layout: str = "auto",
     returned_representations: tuple[str, ...] = (),
+    return_plddt_logits: bool = False,
     stop_after_trunk: bool = False,
     stop_after_inputs: bool = False,
     has_atomized_tokens: bool = True,
@@ -1209,6 +1214,7 @@ def released_config(
         cp_shards=cp_shards,
         cp_layout=cp_layout,
         returned_representations=returned_representations,
+        return_plddt_logits=return_plddt_logits,
         stop_after_trunk=stop_after_trunk,
         stop_after_inputs=stop_after_inputs,
         has_atomized_tokens=has_atomized_tokens,
