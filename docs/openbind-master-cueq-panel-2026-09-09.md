@@ -71,6 +71,36 @@ admitted by this (the strict gate is separate), and this port arm still runs
 the multiplication in XLA; the `cueq-full` arm below measures whether fusing
 it as upstream does tightens the remaining 0.05 Å.
 
+## Upstream against itself: Triton versus cuEq, same tape
+
+Both native captures of a case share the forward batch array for array and
+the RNG tape digest, so the only change between them is upstream's own
+kernel flag. Entity maxima after one system Kabsch per sample:
+
+| case | tokens | native Triton vs native cuEq (Å) | cuEq attention in the cuEq arm |
+| --- | ---: | --- | --- |
+| protein_ligand_5sak | 437 | A 0.9635; L 6.8847 | cuEq |
+| protein_protein_7st3 | 545 | A 0.2176; B 0.9034 | cuEq |
+| protein_1ubq | 76 | A 0.1935 | fell back (plain torch attention) |
+| protein_dna_7r6r | 245 | A 0.8254; B 0.6251; D 0.6200 | cuEq |
+| protein_rna_ligand_3v7e | 235 | L 0.0944; P 0.0626; R 0.1319 | cuEq |
+| protein_rna_1urn | 118 | P 0.0336; R 0.0127 | cuEq |
+| rna_ligand_3gca | 46 | L 0.0076; R 0.0099 | fell back (plain torch attention) |
+
+These are the numbers the earlier seven-case ledgers attributed to the port:
+5SAK's ligand (6.89 Å there, 6.88 Å here), 7ST3's B chain (0.91 / 0.90),
+7R6R's three chains (0.82/0.61/0.61 there, 0.83/0.63/0.62 here). Upstream
+moves that far by itself when it swaps its Triton kernels for cuEq. A port
+that runs cuEq can only be compared against the cuEq arm.
+
+The native cuEq arm is not bitwise reproducible across processes either:
+a second 5SAK capture with the same tape (job 296, census identical) differs
+from the first by A 0.0455 Å, L 0.0562 Å. The port's residual
+against the first capture, 0.048/0.049 Å, is therefore at the native floor,
+not above it. `bench/openbind_native_diff.py` produced these reports
+(`native-triton-vs-cueq.json`, `native-cueq-vs-repeat.json` beside the
+captures).
+
 ## Still running
 
 Jobs 265–294 complete the seven cases with the same three arms per case
