@@ -113,3 +113,13 @@ what it costs.
 
 This closes the item. The measurement that was deferred is done, and the
 conclusion it supports is "expose and document", not "flip the default".
+
+## Decision, 2026-09-09: the default stays at `high`
+
+Put to the user with both numbers in hand -- 1.7x-4.5x median improvement
+against native, ~2x wall time -- and the answer is to keep `_MATMUL_PRECISION =
+"high"`. No code change accompanies this document.
+
+The reasoning that made it an easy call: the knob is already exposed, so the
+people who need fp32 (parity work against native upstream) can ask for it, and
+nobody else pays for it. This document is the record of what asking buys.
