@@ -64,3 +64,57 @@ single number.
 
 Artifacts: `esmfold2-jax-full-tape-RERUN-20260909` (this session),
 `esmfold2-{jax,native}-full-tape-20260907-5sak-a`.
+
+## The distribution comparison, run
+
+The section above named a distribution comparison as what would fill the row.
+Two more port runs were added, giving four port runs against the one native run.
+
+| Distribution | n | median | mean | p90 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| port vs port (floor) | 30 | 0.1305 | 0.4101 | 0.7120 | 2.8665 |
+| port vs native | 20 | 0.1711 | 0.4643 | 1.5637 | 1.9298 |
+
+**Every one of the twenty port-versus-native distances falls inside the range of
+the port-versus-port distances** (fraction 1.00). The port's largest disagreement
+with native, 1.93 A, is smaller than the port's largest disagreement with
+itself, 2.87 A.
+
+A Mann-Whitney U on the two samples returns p = 0.029, with port-versus-native
+shifted slightly higher.
+
+## Why that p-value should not be reported as a difference
+
+The twenty cross values are not twenty independent draws. They are four port
+runs measured against **one** native run, so every one of them shares a single
+native sample, and the thirty floor values reuse the same four port runs
+pairwise. The test's independence assumption fails in both samples.
+
+With one native draw there is no way to separate "the port's distribution
+differs from native's" from "this particular native run sits slightly off-centre
+in its own ensemble". A shift of 0.04 A in median is exactly the size that one
+off-centre draw would produce.
+
+So the measurement stands where the previous section left it, now with 30 floor
+values instead of 5: the port is inside its own sampling spread of native, and
+nothing sharper can be said from one native run.
+
+## The blocker, named precisely
+
+More native runs need the upstream torch model, and that path is broken in the
+one environment that has it:
+
+```
+$ foldjax-bench/jctc-matrix-20260904/upstream-root/esmfold2-venv/bin/python
+  -c "import transformers.models.esmfold2"
+ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub'
+```
+
+`torch` and `transformers` are both installed there; `huggingface_hub` is a
+version ahead of what this `transformers` expects. No other virtualenv on the
+machine has `transformers` at all.
+
+That is a dependency repair, not a numerics question, and it changes an
+environment other work may depend on -- so it is recorded here rather than done.
+Repairing it makes the ESMFold2 row answerable: run native at several seeds, and
+test the two distributions with both sides properly replicated.
