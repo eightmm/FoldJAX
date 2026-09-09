@@ -702,3 +702,61 @@ placement artifact would have looked like the reverse.
 
 It also scopes the Protenix caution correctly: read multi-entity targets per
 entity before attributing, and expect the answer to differ by target.
+
+---
+
+# Scope correction: this investigation measured the bf16 path, the failing cell is FP32
+
+Everything above concludes that the 5SAK residual is the bf16 rounding floor,
+and applies that conclusion to the standard's failing cell of 1.1761 A. Reading
+the source artifact's contract rather than the inherited table, those are two
+different measurements.
+
+`COMBINED_DIAGNOSTICS.md` states the matched-tape contract:
+
+> Matched-tape runs also use n=5 and each model's released 200-step and 3- or
+> 10-recycle schedule. **Both frameworks are forced to FP32** with identical
+> feature tensors, captured upstream noise, and identity augmentation, so these
+> isolate model-core parity rather than released mixed-precision timing.
+
+So the 1.1761 A cell is an FP32-versus-FP32 comparison. Every arm in this
+document ran the shipped bf16 configuration -- the kernels were cast to bfloat16
+before the standalone calls, and the end-to-end arms scored 1.8971 A, not
+1.1761 A. The bf16 floor is a true statement about the shipped path and says
+nothing about the cell that fails.
+
+## What the artifact already says about that cell
+
+| replay variant | max raw RMSD Å | max Kabsch RMSD Å |
+| --- | ---: | ---: |
+| full FoldJAX core (scan) | 1.239340 | 1.176058 |
+| full FoldJAX core (no scan) | 1.240488 | 1.175220 |
+| upstream trunk + FoldJAX sampler | 0.000820 | 0.000766 |
+
+with trunk correlations s = 0.999999994236, z = 0.999999872654 and RMSE 0.006470
+and 0.013546.
+
+## Why this reopens the cell
+
+Under FP32 those RMSEs are not rounding. Against a z whose RMS is about 15.6,
+0.013546 is roughly `8.7e-4` relative -- four orders of magnitude above FP32's
+`~1e-7`. Whatever separates the two trunks at FP32, it is an arithmetic or
+ordering difference large enough to see, not a precision floor.
+
+The artifact's own wording, "small cross-framework trunk rounding differences
+are amplified by this target's long diffusion trajectories", is right that the
+amplification is real and that the sampler and scan are excluded. It does not
+establish that the trunk difference is *rounding*, and at FP32 the magnitude
+argues it is not.
+
+## What this changes for the goal
+
+The one failing cell in the panel is not closed. This document closed the wrong
+thing: it closed the bf16 path, thoroughly and with controls, while the cell
+that fails runs FP32. The correct next step is the boundary decomposition
+already done here -- MSA module and pairformer deltas in units of the local
+rounding -- repeated on an **FP32** matched-tape replay, where a `8.7e-4`
+relative difference should localise sharply rather than sit at a floor.
+
+That is a real, unblocked experiment, and it is the first one in this
+investigation aimed at the configuration the failing cell actually uses.
