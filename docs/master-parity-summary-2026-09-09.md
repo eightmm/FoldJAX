@@ -44,9 +44,11 @@ the port's measured band.
    present in `s_trunk`/`z_trunk` with bitwise-equal inputs; with
    `--xla_gpu_deterministic_ops=true` (jobs 654/656) two port processes are
    bitwise and the port sits 0.037 Å from native-A on every sample, moving
-   1UBQ from at-floor into the pass band at no wall-time cost on that case.
-   Whether to make it the Protenix default awaits the other six cases and a
-   1-3k-token timing.
+   1UBQ from at-floor into the pass band. On the other six cases (jobs
+   657-662) the flag leaves every verdict where it was (3 pass, 1 deferred,
+   3 at-floor in total) and no wall-time penalty is visible at ≤ 300 tokens.
+   Recommended for every Protenix parity replay; default promotion waits on a
+   1-3k-token timing and a port-level setting.
 4. **Precision policy decisions**: OpenDDE keeps `high` (matches native's
    torch TF32; `highest` is worse everywhere). OpenFold3 keeps `cueq` as the
    default triangle kernel; `cueq-full` is 4-10% faster (9.9% at 1003

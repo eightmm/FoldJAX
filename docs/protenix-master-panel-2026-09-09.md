@@ -137,3 +137,32 @@ band. Wall time did not move (69 s for jobs 630, 654 and 656 alike on this
 115-token case). Not yet a default: one case; the other six cases and the
 1-3k-token timing cost are unmeasured, and the flag is process-wide XLA
 configuration rather than a port option.
+
+### Deterministic ops on all seven cases (jobs 657-662, one port process each)
+
+Entity maximum RMSD (Å), port with `--xla_gpu_deterministic_ops=true`
+(`port-E`) against each native process, beside the earlier unfrozen port-A
+column. Verdict from the better native pairing at the same rule as the panel.
+
+| case | native A-B | A vs port-A | B vs port-A | A vs port-E | B vs port-E | port-E verdict (before) |
+| --- | --- | --- | --- | --- | --- | --- |
+| protein_1ubq | A 0.095 | 0.170 | 0.171 | 0.037 | 0.109 | pass (at-floor) |
+| protein_rna_1urn | P 0.008, R 0.003 | 0.021 | 0.018 | 0.035 | 0.028 | pass (pass) |
+| rna_ligand_3gca | L 0.001, R 0.002 | 0.034 | 0.034 | 0.044 | 0.044 | pass (pass) |
+| protein_ligand_5sak | A 0.069, L 0.028 | A 0.105, L 0.055 | A 0.061, L 0.048 | A 0.117, L 0.044 | A 0.090, L 0.039 | deferred (deferred) |
+| protein_dna_7r6r | A 1.27, B 1.01, D 0.96 | A 1.49 | A 0.26 | A 1.23 | A 0.24 | at-floor (at-floor) |
+| protein_rna_ligand_3v7e | L 1.05, P 0.84, R 1.53 | R 1.56 | R 0.22 | R 1.58 | R 0.50 | at-floor (at-floor) |
+| protein_protein_7st3 | A 10.9, B 25.5 | B 19.2 | B 25.7 | B 19.1 | B 26.4 | at-floor (at-floor) |
+
+The flag changes one verdict (1UBQ at-floor → pass) and leaves the other six
+in their bands; the three chaotic cases keep sharing a basin with one native
+process per sample (7ST3 samples 2/4: 0.03-0.09 Å against native-A). Wall
+time: 67-180 s per replay against 150-360 s for the earlier port-A runs, but
+those ran with a colder compile cache, so this is "no penalty visible", not
+a timing. The deterministic port is bitwise across processes (1UBQ E/F), which
+the frozen-autotune port was not.
+
+Recommendation: use `XLA_FLAGS=--xla_gpu_deterministic_ops=true` for every
+Protenix parity replay from here on. Promotion to the backend's default waits
+on a 1-3k-token timing (deterministic reductions can cost at scale) and on a
+port-level way to set it that does not reconfigure the host process.
