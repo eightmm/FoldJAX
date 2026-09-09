@@ -24,6 +24,31 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
 
+def config_record(config):
+    """Record full-run defaults absent from the publisher config schema.
+
+    Keep explicit port values: an early stop or extra representations must
+    still fail strict comparison with the native full-output run.
+    Compare only after JSON serialization normalizes tuples to arrays.
+    """
+    record = dict(config.as_dict())
+    record.setdefault("foldjax_stop_after", "full")
+    record.setdefault("foldjax_return_representations", [])
+    return record
+
+
+def save_config(path, config):
+    """Retain the raw schema beside the comparable execution record."""
+    raw = config.as_dict()
+    record = config_record(config)
+    save(path.with_name(path.stem + "-recording.json"), {
+        "raw_config": raw,
+        "synthesized_fields": sorted(record.keys() - raw.keys()),
+        "recording_policy": "af3-full-run-defaults-v1",
+    })
+    save(path, record)
+
+
 def sha(path):
     h = hashlib.sha256()
     with path.open("rb") as stream:
@@ -141,7 +166,7 @@ def main():
         num_recycles=10,
         flash_attention_implementation="triton",
     )
-    save(out / "config.json", config.as_dict())
+    save_config(out / "config.json", config)
     assert config.global_config.bfloat16 == "all"
     kernel_overlay = None
     kernel_provenance = {}
@@ -288,7 +313,7 @@ def main():
                 "observers_enabled": not args.no_preprocessing_observers,
             },
         )
-        save(out / "effective-config.json", self._model_config.as_dict())
+        save_config(out / "effective-config.json", self._model_config)
         save(
             out / "parameters.json",
             {
