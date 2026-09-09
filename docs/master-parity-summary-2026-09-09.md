@@ -10,7 +10,7 @@ this page is the cross-model reading.
 | model | cases | pass | deferred | at-floor | open | detail |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | OpenFold3 (OpenBind, `cueq`) | 7 + ion | 2 + ion | 1 | 2 | 0 (2 excluded: native attention fell back below 100 tokens) | `openbind-master-cueq-panel-2026-09-09.md` |
-| Boltz-2 | 5SAK + ion | 0 | 0 | 5SAK (kernel-toggle scale), ion (trunk band inside upstream's own; sampler exact given the trunk) | 0 | `boltz2-master-kernel-toggle-2026-09-09.md`, `ion-case-1aay-master-2026-09-09.md` |
+| Boltz-2 | 5SAK + ion | 0 | 0 | 5SAK (kernel-toggle scale), ion (sample 3 bistable under same-size random trunk noise; sampler exact given the trunk) | 0 | `boltz2-master-kernel-toggle-2026-09-09.md`, `ion-case-1aay-master-2026-09-09.md` |
 | Protenix | 7 + ion | 2 | ion | 5 | 0 | `protenix-master-panel-2026-09-09.md` |
 | OpenDDE | 7 + ion | 6 | ion | 1 | 0 | `opendde-master-panel-2026-09-09.md` |
 | ESMFold2 | 7 | 1 | 2 | 3 | 7ST3 chain B | `esmfold2-master-panel-2026-09-09.md` |
@@ -61,10 +61,11 @@ above 0.1 Å but within upstream's own process movement (or basin sharing).
   native's trunk injected the port's conditioning and sampler reproduce
   native to 1e-5 Å on every sample, and at every trunk boundary the port is
   closer to native than upstream's own kernels-off arm (delta_z relative
-  1.31e-3 vs 1.45e-3, output_z 2.94e-3 vs 3.31e-3). The 0.175 Å is one
-  near-tie sample amplifying a trunk band that upstream's own alternate
-  implementation exceeds; same class as 5SAK, accepted as sensitivity, not
-  a port route the operators can close.
+  1.31e-3 vs 1.45e-3, output_z 2.94e-3 vs 3.31e-3). The near-tie is
+  measured, not asserted (jobs 647-650): four random Gaussian perturbations
+  of native's own trunk at the port's band put sample 3 at 0.1745 Å twice
+  and at 0.008 Å twice, the other samples staying at 0.005-0.02 Å. Sample 3
+  is bistable at exactly the port's distance; at-floor, same class as 5SAK.
 - **cuEq release independence** was shown for Boltz-2 only.
 
 ## Interface unification (in parallel, CPU)
