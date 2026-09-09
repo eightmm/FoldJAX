@@ -51,6 +51,7 @@ class ManagedCcdMemory:
 
     def _ccd_lease(self) -> AbstractContextManager[None]:
         """Return this backend's chemistry lease, importing its release late."""
+        raise NotImplementedError(f"{type(self).__name__} names no chemistry lease")
 
     @contextmanager
     def _ccd_memory_scope(self) -> Iterator[None]:
