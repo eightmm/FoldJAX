@@ -58,3 +58,47 @@ Note also that every case reports `passed: false` including the three that pass
 the coordinate gate, so the report's overall verdict is gated on more than
 coordinates (`confidence`, `tape`, and the recorded `exclusions`). This document
 addresses the coordinate gate only.
+
+---
+
+# RETRACTED, same day: the control I used was not a rerun control
+
+Everything above rests on reading `repeat-native-report.json` as "native
+compared against a second native run". It is not. The panel holds four arm
+directories per case, and the actual rerun controls are the two
+`*-repeat-comparison.json` files, which I did not open before committing:
+
+| Comparison | entity A | entity B | what it is |
+| --- | ---: | ---: | --- |
+| `native-repeat-comparison.json` | 0.00513 | 0.00553 | native run 2 vs native run 1 |
+| `unobserved-repeat-comparison.json` | 0.00555 | 0.00509 | port run 2 vs port run 1 |
+| `unobserved-report.json` | 0.05351 | 0.11811 | port run 1 vs native |
+| `repeat-native-report.json` | 0.05419 | 0.11824 | port run 2 vs native |
+
+`native-repeat/provenance.json` records `"arm": "native"`, confirming the first
+row is native against itself.
+
+## What the numbers actually say
+
+Both sides reproduce themselves to about **0.005 A**. The port-versus-native gap
+on entity B is **0.118 A**, and it reproduces across two independent port runs
+(0.11811 and 0.11824, differing by 0.0001).
+
+So the conclusion inverts. This is not noise and the 0.05 A gate is not set
+inside the floor -- the floor is ten times below the gate. The gap is a real,
+reproducible port-versus-native difference, roughly **21x the rerun floor** on
+the entity that fails worst.
+
+OpenDDE's elevated row is therefore a legitimate error-reduction target, not a
+measurement artefact, and the opposite of what the section above claims. The
+retracted section's own stated remaining measurement -- capture rerun controls
+for 7r6r and 5sak -- was also unnecessary for 7st3 and 1urn, because the
+controls already existed in the artifact.
+
+## The error I made
+
+I attributed a gap to a control without checking which two arms the control
+file compares, when a sibling file named for exactly that comparison was in the
+same directory. This is the second time in this session that an attribution was
+committed before the evidence beside it was read; the first was the AF3 config
+gate, where a guard test caught it. Here nothing caught it but re-reading.
