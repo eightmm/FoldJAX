@@ -44,8 +44,9 @@ above 0.1 Å but within upstream's own process movement (or basin sharing).
    native's own floor there).
 4. **Precision policy decisions**: OpenDDE keeps `high` (matches native's
    torch TF32; `highest` is worse everywhere). OpenFold3 keeps `cueq` as the
-   default triangle kernel; `cueq-full` is 4-9% faster with higher peak and one
-   stable 0.22 Å case, so it stays opt-in pending a 1-3k-token warm pair.
+   default triangle kernel; `cueq-full` is 4-10% faster (9.9% at 1003
+   tokens, jobs 638-641) for 3-8% more peak and one stable 0.22 Å case, so it
+   stays opt-in; the 3k-token point is unmeasured.
 
 ## Open items
 

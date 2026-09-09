@@ -276,3 +276,26 @@ and seven `cueq-full` port floors. 432-457: native warm (Triton, cuEq).
   [--backend cueq-full]` exits 0 on both arms.
 - Open: a 1-3k-token warm pair for the `cueq-full` default question; an
   ion-containing case once the other models' floors are settled.
+
+
+## 1003-token warm pair (jobs 638-641, 2026-09-10)
+
+The missing measurement for the `cueq-full` default decision: L1000_3og2
+(1003 protein tokens, colabfold MSA), native cuEq capture on master (job 638,
+census `attention.cueq` 534 / `trimul.cueq` 462, no fallback), then three
+warm arms on that capture, three warm calls each, unfrozen autotune, same
+card (RTX PRO 6000 Blackwell, 2422-2430 MHz, 47-55 C at the end).
+
+| arm | warm median s | peak GiB | vs native | vs fj-cueq |
+| --- | ---: | ---: | ---: | ---: |
+| native cuEq torch | 47.47 | 16.33 | - | - |
+| FoldJAX `cueq` | 45.75 | 12.09 | -3.6% | - |
+| FoldJAX `cueq-full` | 41.24 | 12.52 | -13.1% | -9.9% |
+
+At 1k tokens `cueq-full` keeps the 4-9% advantage seen at 100-300 tokens
+(9.9% here) for +0.43 GiB of peak (3.6%); both FoldJAX arms sit 4 GiB under
+native. The runner does not score coordinates (`upstream_comparison`: not
+measured), so the accuracy side of the default decision still rests on the
+seven-case panel above (one stable 0.22 Å case on 5SAK). Decision unchanged:
+`cueq` stays the default and `cueq-full` stays the documented opt-in for
+throughput; the 3k-token point remains unmeasured.

@@ -17,7 +17,7 @@ from pathlib import Path
 CASES = (
     "protein_ligand_5sak", "protein_protein_7st3", "protein_1ubq",
     "protein_dna_7r6r", "protein_rna_ligand_3v7e", "protein_rna_1urn",
-    "rna_ligand_3gca",
+    "rna_ligand_3gca", "L1000_3og2",
 )
 ARMS = ("native-triton", "native-cueq", "fj-cueq", "fj-cueq-full")
 
