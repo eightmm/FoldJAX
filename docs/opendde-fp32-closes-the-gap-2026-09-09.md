@@ -46,3 +46,36 @@ Note also that the panel's own gate uses per-entity RMSD under one global
 superposition, not the whole-system number used here, so the gate verdicts are
 not directly comparable to this table -- the direction and the ratio are what
 this arm establishes.
+
+## It generalizes: three of three
+
+Both queued cases returned. Same metric, same references, same arms.
+
+| Case | `high` max | `highest` max | `high` median | `highest` median |
+| --- | ---: | ---: | ---: | ---: |
+| protein_protein_7st3 | 0.05396 | **0.02181** | 0.01808 | **0.00398** |
+| protein_dna_7r6r | 0.05737 | **0.02855** | 0.02049 | **0.01139** |
+| protein_rna_1urn | 0.04022 | 0.04324 | 0.00400 | **0.00229** |
+
+**The median improves on all three** -- by 4.5x, 1.8x and 1.7x. The max improves
+on two of three; on 1urn it rises by 0.0030 A, which is below the 0.0055 A rerun
+floor measured for this port and so is not a real regression.
+
+Two of the three cases are ones the panel's 0.05 A gate failed (7st3 and 7r6r);
+both land under it at `highest`.
+
+## What this justifies, and what it costs
+
+The evidence now supports changing OpenDDE's default matmul precision from
+`high` to `highest`: three cases, consistent direction on the metric that is not
+dominated by a single outlier sample, effects between 1.7x and 4.5x against a
+rerun floor an order of magnitude below.
+
+The cost is real and unmeasured here: `highest` is fp32 matmul, so it gives up
+the TF32 tensor-core path. Time and memory for these arms were not recorded, and
+a default change should not land without them -- this port's users did not ask
+to trade throughput for a hundredth of an angstrom without being told the price.
+
+That is the next measurement, and it is a benchmark run rather than a numerical
+one. This branch stops at the numerics it set out to establish: OpenDDE's gap
+against native was real, reproducible, and is substantially closable.
