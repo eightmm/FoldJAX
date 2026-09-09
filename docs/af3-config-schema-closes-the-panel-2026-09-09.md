@@ -75,3 +75,24 @@ The gate was deliberate; what it was refusing to admit was a schema difference
 that should not have existed in the artifact. With the records made
 schema-identical the panel admits the case, on a strict comparison, with the
 policy and its guard intact.
+
+## All six cases, re-run and scored
+
+Every case re-run on both arms from the fixed snapshot, scored with the
+unmodified `compare_arms`:
+
+```
+protein_1ubq             passed=True  38 checks  failed=[]
+protein_dna_7r6r         passed=True  38 checks  failed=[]
+protein_ligand_5sak      passed=True  38 checks  failed=[]
+protein_protein_7st3     passed=True  38 checks  failed=[]
+protein_rna_1urn         passed=True  38 checks  failed=[]
+protein_rna_ligand_3v7e  passed=True  38 checks  failed=[]
+```
+
+Six of six, 38 of 38, zero failed checks. The panel went from all-six-failing to
+all-six-passing on a strict comparison, with the allowlist policy and its guard
+test untouched.
+
+Artifacts: `foldjax-bench/af3-schemafix-20260909`, source snapshot
+`foldjax-bench/af3-schemafix-src-20260909`.
