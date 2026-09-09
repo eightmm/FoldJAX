@@ -538,3 +538,64 @@ artefact of the harness rather than a port defect.
 The next attempt should compare the two standalone runs **against each other**,
 not against the stored in-run value. That comparison has never been made and is
 now one line: both arrays exist.
+
+## Closing measurement, 2026-09-09: the residual is one bf16 rounding
+
+The comparison this investigation had never made -- the two *standalone* runs
+against each other rather than each against the stored in-run value -- now
+exists. All three pairwise distances on the MSA module's `delta_z` (shape
+`(1, 437, 437, 128)`, rms `1.561856e+01`):
+
+| Pair | rmse | relative |
+| --- | ---: | ---: |
+| native standalone vs stored in-run | 3.217599e-02 | 2.060e-03 |
+| port standalone vs stored in-run | 3.233621e-02 | 2.070e-03 |
+| **port standalone vs native standalone** | **3.157311e-02** | **2.022e-03** |
+
+Max elementwise difference between the two standalone runs: `2.035156e+00`.
+
+The three points are mutually equidistant. That is not the signature of one
+side being wrong; it is the signature of a common floor. The floor is
+identified by rounding the native output through bf16 once and back:
+
+```
+one bf16 round-trip of the native output: rel 1.788e-03
+bf16 half-ulp                           : 1.953e-03
+```
+
+Every one of the three distances is the size of a single bf16 rounding of the
+tensor being compared. Two differently-ordered bf16 evaluations of this module
+-- different framework, different kernel, different chunking, or the same code
+inside versus outside the full graph -- cannot land closer together than this.
+
+MSA subsampling is off in this configuration (`"subsample_msa": false`, and the
+port's only RNG use is gated behind that flag), so run-to-run randomness is
+excluded as the cause.
+
+### What this closes
+
+The framing that opened this investigation -- "the port's MSA module is
+3.2e-2 from native, find the arithmetic that explains it" -- was ill-posed.
+There is no such arithmetic to find: 3.2e-2 *is* the bf16 resolution of the
+comparison. This explains, in one mechanism, why thirty controlled arms all
+returned 3.21e-2 to 3.23e-2 and only the deliberate x2 tripwire and the
+`8.536005e-01` positive control ever moved. Those arms were not
+underpowered relative to each other -- the tripwire and control prove the
+harness discriminates -- but they were all measuring inside the floor.
+
+### What it does not close
+
+The shipped Boltz-2 / 5SAK cell is still `1.1761` A, and it is still the only
+failed cell in the six-model panel. What changes is where the remaining cause
+can live. It is not a defect in the MSA module's arithmetic. It is that the
+trunk runs in bf16 at all: a module-level difference at the bf16 floor, fed
+through this target's diffusion trajectory, arrives as an angstrom. The
+already-measured arms are consistent with that -- raising trunk precision was
+measured and was worse (tf32 20% worse) or bitwise inert, because those arms
+changed matmul accumulation, not the bf16 activations that set this floor.
+
+The next honest experiment is therefore not another module-level arm. It is
+whether an fp32 *activation* trunk (not fp32 accumulation) closes the 1.1761 A
+cell, measured end-to-end against native with the 0.0032 A rerun floor as the
+control. That is a large arm, upstream does not run it, and it would not ship;
+it would establish the cause, not the fix.
