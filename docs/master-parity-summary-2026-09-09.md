@@ -10,7 +10,7 @@ this page is the cross-model reading.
 | model | cases | pass | deferred | at-floor | open | detail |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | OpenFold3 (OpenBind, `cueq`) | 7 + ion | 2 + ion | 1 | 2 | 0 (2 excluded: native attention fell back below 100 tokens) | `openbind-master-cueq-panel-2026-09-09.md` |
-| Boltz-2 | 5SAK + ion | 0 | 0 | 5SAK (kernel-toggle scale) | ion 0.17 Å on one sample, above upstream's 0.02 Å toggle scale | `boltz2-master-kernel-toggle-2026-09-09.md`, `ion-case-1aay-master-2026-09-09.md` |
+| Boltz-2 | 5SAK + ion | 0 | 0 | 5SAK (kernel-toggle scale), ion (trunk band inside upstream's own; sampler exact given the trunk) | 0 | `boltz2-master-kernel-toggle-2026-09-09.md`, `ion-case-1aay-master-2026-09-09.md` |
 | Protenix | 7 + ion | 2 | ion | 5 | 0 | `protenix-master-panel-2026-09-09.md` |
 | OpenDDE | 7 + ion | 6 | ion | 1 | 0 | `opendde-master-panel-2026-09-09.md` |
 | ESMFold2 | 7 | 1 | 2 | 3 | 7ST3 chain B | `esmfold2-master-panel-2026-09-09.md` |
@@ -55,12 +55,15 @@ above 0.1 Å but within upstream's own process movement (or basin sharing).
 - **Boltz-2 ion case (1AAY)**: protein 0.175 Å, all of it on sample 3 (the
   other four samples 0.006-0.028 Å), against a bitwise-repeatable native and
   a 0.018 Å port floor. Upstream's own kernels-off toggle moves this case by
-  only 0.020 Å (job 634), so unlike 5SAK the port residual here is about 9×
-  upstream's own implementation scatter: a genuine route difference on one
-  sample of a tame target. Together with 5SAK's chaotic band this is the
-  Boltz-2 item to keep open; the earlier ledger's placement of the
-  difference in the MSA module's bf16 rounding order still stands as the
-  best lead.
+  only 0.020 Å (job 634), so at the coordinates the port residual is about
+  9× upstream's own implementation scatter. Placed (jobs 635/636): with
+  native's trunk injected the port's conditioning and sampler reproduce
+  native to 1e-5 Å on every sample, and at every trunk boundary the port is
+  closer to native than upstream's own kernels-off arm (delta_z relative
+  1.31e-3 vs 1.45e-3, output_z 2.94e-3 vs 3.31e-3). The 0.175 Å is one
+  near-tie sample amplifying a trunk band that upstream's own alternate
+  implementation exceeds; same class as 5SAK, accepted as sensitivity, not
+  a port route the operators can close.
 - **cuEq release independence** was shown for Boltz-2 only.
 
 ## Interface unification (in parallel, CPU)

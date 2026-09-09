@@ -6,9 +6,12 @@ changes, on the same tape, at every recorded trunk boundary and at the
 coordinates. **This scale is 5SAK-specific.** On the ion case 1AAY
 (`docs/ion-case-1aay-master-2026-09-09.md`) upstream's own toggle moves the
 protein by 0.020 Å while the port sits 0.175 Å away on one sample (stable
-across port processes, 0.018 Å), so there the difference is a genuine route
-difference about 9x upstream's implementation scatter, and Boltz-2 stays
-open on that case. Bitwise agreement is unreachable without matching torch's
+across port processes, 0.018 Å), so at the coordinates the port sits about 9x
+upstream's implementation scatter there. The 1AAY section below places it:
+the port's trunk is inside upstream's own implementation band at every
+boundary and the port's sampler reproduces native to 1e-5 Å given native's
+trunk, so it is one near-tie sample amplifying a same-size trunk band, not a
+route the port can change. Bitwise agreement is unreachable without matching torch's
 fusion order and is not claimed.
 
 ## Question
@@ -139,6 +142,47 @@ samples 1 and 4 as the unfrozen `port-B` did. Nothing about the native
 residual changes; only its attribution: the chaos is amplified from the
 kernel-family rounding band, and the port's own contribution to the scatter
 is 1e-3 Å once its kernels are pinned.
+
+## 1AAY: where the 0.175 Å lives (jobs 635/636)
+
+The ion case is the one Boltz-2 residual above upstream's own toggle scale
+(port 0.175 Å on sample 3 against 0.020 Å for kernels-off). Two
+counterfactuals on `native-A`'s tape with `bench.boltz_downstream_probe`
+(native trunk `s/z/s_inputs/rel_pos` substituted, FoldJAX sampler and
+confidence heads skipped; snapshot `boltz2-master-port-20260909-IcGOFo`):
+
+| arm | protein samples 1-5 (Å) | DNA / Zn max |
+| --- | --- | ---: |
+| native trunk + FoldJAX conditioning + FoldJAX sampler | 1.6e-5, 6.6e-5, 5.1e-5, 4.8e-5, 3.7e-5 | 6e-5 |
+| native trunk + native conditioning + FoldJAX sampler | 5.2e-5, 3.1e-5, 5.6e-5, 3.3e-5, 7.0e-5 | 8e-5 |
+
+Given native's trunk, the port's diffusion conditioning and sampler
+reproduce native's coordinates to 1e-5 Å on every sample and every entity,
+sample 3 included. The whole 0.175 Å is therefore born in the trunk and
+amplified by sample 3's diffusion path.
+
+Trunk boundaries on 1AAY, `native-A` versus the port and versus upstream's
+own kernels-off arm (RMSE / relative / correlation, float64):
+
+| boundary | port | kernels-off |
+| --- | --- | --- |
+| cycle-00 `msa_module.input_z` | 7.8e-4 / 1.1e-4 / 0.99999999 | 0 (bitwise) |
+| cycle-00 `msa_module.delta_z` | 2.567e-2 / 1.314e-3 / 0.99999914 | 2.841e-2 / 1.454e-3 / 0.99999894 |
+| cycle-00 `pairformer.output_s` | 6.104e-2 / 8.42e-4 / 0.99999965 | 6.735e-2 / 9.29e-4 / 0.99999958 |
+| cycle-00 `pairformer.output_z` | 8.847e-2 / 2.937e-3 / 0.99999569 | 9.975e-2 / 3.311e-3 / 0.99999452 |
+| cycle-03 `msa_module.delta_z` | 3.315e-2 / 1.518e-3 / 0.99999885 | 3.458e-2 / 1.583e-3 / 0.99999875 |
+| cycle-03 `pairformer.output_s` | 7.381e-2 / 1.022e-3 / 0.99999948 | 8.140e-2 / 1.127e-3 / 0.99999937 |
+| cycle-03 `pairformer.output_z` | 8.508e-2 / 2.698e-3 / 0.99999636 | 9.548e-2 / 3.028e-3 / 0.99999542 |
+
+As on 5SAK, the port's trunk is closer to `native-A` at every boundary than
+upstream's own unfused path is. The two perturbations have the same size and
+different directions; sample 3's diffusion path amplifies the port's
+direction to 0.175 Å and the kernels-off direction to 0.020 Å. So the 1AAY
+item is not a defect the port can fix by matching operators (it already
+matches them better than upstream matches itself); it is one near-tie sample
+on a tame target whose outcome depends on which sub-bf16 rounding direction
+the trunk takes. Recorded as an accepted sensitivity, same class as 5SAK,
+with the coordinate figure kept in the ion document as measured.
 
 ## Reading
 
