@@ -14,6 +14,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax._openfold3_compile import resolve_triangle_kernel
 from foldjax.models._cp import (
     CP_COL_AXIS,
     CP_ROW_AXIS,
@@ -99,7 +100,22 @@ def triangle_multiplication(
     Returns:
         ``[..., N, N, C_z]`` update. Upstream returns the update only; the
         caller adds it to ``z``.
+
+    The ambient ``cueq-full`` kernel (see :func:`resolve_triangle_kernel`)
+    routes this through cuEquivariance's fused update, which is the same
+    kernel upstream's ``use_cueq_triangle_kernels`` selects. ``cueq`` alone
+    keeps attention fused and this multiplication in XLA, so the two remain
+    separately measurable arms.
     """
+    if resolve_triangle_kernel(None, cp_shards=1) == "cueq-full":
+        if cp_mesh() is not None:
+            raise ValueError(
+                "cueq-full triangle multiplication does not support context "
+                "parallelism; select cueq or xla"
+            )
+        return _cueq_triangle_multiplication(
+            z, params, outgoing=outgoing, mask=mask, eps=eps
+        )
     z = layer_norm(z, params.layer_norm_in, eps=eps)
     gate_mask = 1.0 if mask is None else mask[..., None]
 
@@ -132,6 +148,80 @@ def triangle_multiplication(
     x = layer_norm(x, params.layer_norm_out, eps=eps)
     x = linear(x, params.linear_z)
     return x * jax_sigmoid(linear(z, params.linear_g))
+
+
+def _cueq_triangle_multiplication(
+    z: jnp.ndarray,
+    params: TriangleMultiplicationParams,
+    *,
+    outgoing: bool,
+    mask: jnp.ndarray | None,
+    eps: float,
+) -> jnp.ndarray:
+    """Run the fused cuEquivariance update with upstream's parameter packing.
+
+    Upstream's ``_cueq_triangle_mult`` concatenates the ``a``/``b`` gate and
+    projection weights along the output axis; the kernel then computes the
+    gated projections, the contraction, the output norm and the output gate
+    in one pass and returns the update without the residual. Leading axes
+    beyond ``[N, N, C]`` fold into the kernel's batch axis.
+    """
+    from foldjax.models._cueq import load_cueq, triangle_multiplication_precision
+
+    required = {
+        "layer_norm_in.weight": params.layer_norm_in.weight,
+        "layer_norm_in.bias": params.layer_norm_in.bias,
+        "layer_norm_out.weight": params.layer_norm_out.weight,
+        "layer_norm_out.bias": params.layer_norm_out.bias,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        raise ValueError(f"cueq-full requires affine layer norms; missing {missing}")
+    if z.ndim < 3 or z.shape[-3] != z.shape[-2]:
+        raise ValueError("triangle multiplication requires square pair axes")
+    cuex = load_cueq()
+    lead, (n, channels) = z.shape[:-3], z.shape[-2:]
+    x = z.reshape((-1, n, n, channels))
+    pair_mask = (
+        jnp.ones(z.shape[:-1], dtype=z.dtype)
+        if mask is None
+        else jnp.broadcast_to(mask, z.shape[:-1]).astype(z.dtype)
+    ).reshape((-1, n, n))
+
+    def packed(first, second):
+        weight = jnp.concatenate((first.weight, second.weight), axis=0)
+        if (first.bias is None) != (second.bias is None):
+            raise ValueError("paired projections must both carry or omit a bias")
+        bias = (
+            None
+            if first.bias is None
+            else jnp.concatenate((first.bias, second.bias), axis=0)
+        )
+        return weight, bias
+
+    p_in_weight, p_in_bias = packed(params.linear_a_p, params.linear_b_p)
+    g_in_weight, g_in_bias = packed(params.linear_a_g, params.linear_b_g)
+    out = cuex.triangle_multiplicative_update(
+        x=x,
+        direction="outgoing" if outgoing else "incoming",
+        mask=pair_mask,
+        norm_in_weight=params.layer_norm_in.weight,
+        norm_in_bias=params.layer_norm_in.bias,
+        p_in_weight=p_in_weight,
+        p_in_bias=p_in_bias,
+        g_in_weight=g_in_weight,
+        g_in_bias=g_in_bias,
+        norm_out_weight=params.layer_norm_out.weight,
+        norm_out_bias=params.layer_norm_out.bias,
+        p_out_weight=params.linear_z.weight,
+        p_out_bias=params.linear_z.bias,
+        g_out_weight=params.linear_g.weight,
+        g_out_bias=params.linear_g.bias,
+        eps=eps,
+        precision=triangle_multiplication_precision(cuex, dtype=x.dtype),
+        fallback=False,
+    )
+    return out.reshape((*lead, n, n, out.shape[-1]))
 
 
 def _cannon_combine(

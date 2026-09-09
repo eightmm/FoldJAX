@@ -520,7 +520,9 @@ def test_ambient_triangle_kernel_is_resolved_into_the_graph_identity(
         )
         kernel = os.environ[TRIANGLE_BACKEND_ENV]
         traces.append(kernel)
-        return batch["x"] + {"cueq": 1, "xla": 2, "native-private": 3}[kernel]
+        return batch["x"] + {
+            "cueq": 1, "xla": 2, "native-private": 3, "cueq-full": 4,
+        }[kernel]
 
     monkeypatch.setattr(inference, "predict", tiny_predict)
     inference._compiled_predict.clear_cache()
@@ -537,13 +539,16 @@ def test_ambient_triangle_kernel_is_resolved_into_the_graph_identity(
         xla = run(*args)
         monkeypatch.setenv(TRIANGLE_BACKEND_ENV, "native-private")
         native = run(*args)
-        jax.block_until_ready((cueq, xla, native))
+        monkeypatch.setenv(TRIANGLE_BACKEND_ENV, "cueq-full")
+        full = run(*args)
+        jax.block_until_ready((cueq, xla, native, full))
 
-        assert traces == ["cueq", "xla", "native-private"]
+        assert traces == ["cueq", "xla", "native-private", "cueq-full"]
         np.testing.assert_array_equal(cueq, [1])
         np.testing.assert_array_equal(xla, [2])
         np.testing.assert_array_equal(native, [3])
-        assert inference._compiled_predict._cache_size() == 3
+        np.testing.assert_array_equal(full, [4])
+        assert inference._compiled_predict._cache_size() == 4
     finally:
         inference._compiled_predict.clear_cache()
 

@@ -216,7 +216,12 @@ class OpenFold3Backend(Backend):
         **MATMUL_PRECISION_OPTION,
         "triangle_kernel": (
             "triangle_kernel",
-            {"auto": "cueq", "cueq": "cueq", "xla": "xla"},
+            {
+                "auto": "cueq",
+                "cueq": "cueq",
+                "cueq-full": "cueq-full",
+                "xla": "xla",
+            },
         ),
     }
     compile_options = _COMPILE_OPTIONS

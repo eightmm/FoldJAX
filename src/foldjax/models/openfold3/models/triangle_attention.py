@@ -149,6 +149,10 @@ def triangle_attention(
             backend = "xla"
         elif backend is None:
             backend = _default_backend()
+        if backend == "cueq-full":
+            raise ValueError(
+                "cueq-full does not support context parallelism; select cueq or xla"
+            )
         if backend not in {"xla", "cueq"}:
             raise ValueError(
                 "context-parallel triangle attention supports the XLA and "
@@ -168,6 +172,10 @@ def triangle_attention(
         )
     if backend is None:
         backend = _default_backend()
+    if backend == "cueq-full":
+        # The suffix selects the fused multiplication as well; attention itself
+        # is the same cuEquivariance kernel either way.
+        backend = "cueq"
     if backend not in {"xla", "cueq"}:
         raise ValueError(f"unsupported triangle attention backend: {backend!r}")
 
