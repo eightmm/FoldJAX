@@ -79,3 +79,37 @@ to trade throughput for a hundredth of an angstrom without being told the price.
 That is the next measurement, and it is a benchmark run rather than a numerical
 one. This branch stops at the numerics it set out to establish: OpenDDE's gap
 against native was real, reproducible, and is substantially closable.
+
+## The throughput cost, measured
+
+The previous section named this as the gate for a default change and deferred
+it. The queue already recorded it; no new runs were needed. Wall time in
+seconds, same GPU, same queue, same inputs:
+
+| Case | `high` | `highest` | ratio |
+| --- | ---: | ---: | ---: |
+| protein_protein_7st3 | 233.61 | 442.72 | 1.90x |
+| protein_dna_7r6r | 117.72 | 237.64 | 2.02x |
+
+**fp32 roughly doubles wall time.** These are whole-process times and include
+compilation, which is a large fraction at these sizes, so 1.9-2.0x is an upper
+bound on the steady-state cost rather than a measurement of it.
+
+## Recommendation, and why the default is left alone
+
+The trade is: roughly 2x wall time for a 1.7x-4.5x reduction in median
+coordinate disagreement with native, on a quantity already between 0.002 and
+0.02 A.
+
+`_MATMUL_PRECISION = "high"` in `models/opendde/cli/predict.py` is therefore
+left as it is on this branch, and the change is not made. Doubling every user's
+inference time to close a hundredth of an angstrom is a product decision, not a
+numerical one, and the evidence does not make it for us. What the evidence does
+settle is that the option is worth having and worth documenting: the knob
+already exists -- `resolved_matmul_precision` honours a caller's request, and
+the bench harness exposes `--jax-matmul-precision` -- so anyone doing parity
+work against native upstream should use `highest` and now knows what it buys and
+what it costs.
+
+This closes the item. The measurement that was deferred is done, and the
+conclusion it supports is "expose and document", not "flip the default".
