@@ -114,3 +114,26 @@ freezing, so the remaining candidates are XLA's non-deterministic reductions
 (atomics in the cuEq/Triton triangle kernels or `xla_gpu_deterministic_ops`
 off). One sentence of status, not a defect: native's own floor on this case
 is the same size.
+
+### Deterministic XLA ops make the port bitwise and move 1UBQ into the pass band (jobs 654/656)
+
+Two more port processes on native-A's tape with `XLA_FLAGS=--xla_gpu_deterministic_ops=true`
+and nothing else (under that flag XLA recorded no autotune results, so the
+autotune cache could not be frozen separately; `port-autotune-detops.textproto`
+is empty). Entity RMSD, chain A, five samples:
+
+| pair | samples 1-5 (Å) | max |
+| --- | --- | ---: |
+| `port-E` vs `port-F` (both deterministic) | 3e-15, 7e-15, 5e-15, 4e-15, 5e-15 | bitwise (every `prediction.npz` array equal) |
+| `native-A` vs `port-E` | 0.013, 0.016, 0.017, 0.028, 0.037 | 0.037 |
+| `native-A` vs `port-C` (frozen autotune, non-deterministic ops) | 0.022, 0.172, 0.026, 0.017, 0.024 | 0.172 |
+| `port-E` vs `port-C` | 0.015, 0.177, 0.013, 0.022, 0.017 | 0.177 |
+
+So the port's remaining 0.17 Å on 1UBQ sample 2 was XLA's non-deterministic
+reductions (atomics in scatter/reduce fusions), not the cuEq/Triton kernels
+and not the sampler; with deterministic ops the port is bitwise across
+processes and sits 0.037 Å from native-A on every sample, inside the pass
+band. Wall time did not move (69 s for jobs 630, 654 and 656 alike on this
+115-token case). Not yet a default: one case; the other six cases and the
+1-3k-token timing cost are unmeasured, and the flag is process-wide XLA
+configuration rather than a port option.

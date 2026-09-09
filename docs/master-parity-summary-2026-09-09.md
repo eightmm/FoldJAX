@@ -11,7 +11,7 @@ this page is the cross-model reading.
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | OpenFold3 (OpenBind, `cueq`) | 7 + ion | 2 + ion | 1 | 2 | 0 (2 excluded: native attention fell back below 100 tokens) | `openbind-master-cueq-panel-2026-09-09.md` |
 | Boltz-2 | 5SAK + ion | 0 | 0 | 5SAK (kernel-toggle scale), ion (sample 3 bistable under same-size random trunk noise; sampler exact given the trunk) | 0 | `boltz2-master-kernel-toggle-2026-09-09.md`, `ion-case-1aay-master-2026-09-09.md` |
-| Protenix | 7 + ion | 2 | ion | 5 | 0 | `protenix-master-panel-2026-09-09.md` |
+| Protenix | 7 + ion | 2 (3 with deterministic XLA ops: 1UBQ 0.037) | ion | 5 (4) | 0 | `protenix-master-panel-2026-09-09.md` |
 | OpenDDE | 7 + ion | 6 | ion | 1 | 0 | `opendde-master-panel-2026-09-09.md` |
 | ESMFold2 | 7 | 1 | 2 | 3 | 7ST3 chain B | `esmfold2-master-panel-2026-09-09.md` |
 
@@ -39,11 +39,14 @@ the port's measured band.
    makes OpenFold3 and ESMFold2 bitwise repeatable across processes and
    removed the one 1UBQ "residual" on ESMFold2 (0.122 → 0.02 Å), and
    collapses Boltz-2's 5SAK port floor from 0.83 Å to 0.0008 Å (jobs
-   631/632) without moving the native residual. Protenix is the exception:
-   its frozen pair still differs by 0.17 Å on 1UBQ sample 2, and the
-   difference is already present in `s_trunk`/`z_trunk` with bitwise-equal
-   inputs, so it is trunk-level nondeterminism beyond autotune (same size as
-   native's own floor there).
+   631/632) without moving the native residual. Protenix needed one more
+   flag: its frozen pair still differed by 0.17 Å on 1UBQ sample 2, already
+   present in `s_trunk`/`z_trunk` with bitwise-equal inputs; with
+   `--xla_gpu_deterministic_ops=true` (jobs 654/656) two port processes are
+   bitwise and the port sits 0.037 Å from native-A on every sample, moving
+   1UBQ from at-floor into the pass band at no wall-time cost on that case.
+   Whether to make it the Protenix default awaits the other six cases and a
+   1-3k-token timing.
 4. **Precision policy decisions**: OpenDDE keeps `high` (matches native's
    torch TF32; `highest` is worse everywhere). OpenFold3 keeps `cueq` as the
    default triangle kernel; `cueq-full` is 4-10% faster (9.9% at 1003
