@@ -923,3 +923,41 @@ The factorial, complete:
 Precision dominates by three orders in both columns. The kernels cost a factor
 of two at FP32 and four and a half at bf16 -- they amplify what bf16 introduces
 rather than introducing anything themselves.
+
+## The cueq patch is excluded too
+
+The previous section named two remaining variables between this driver's FP32
+arms and the matched-tape row: the tape, and the cueq triangle-multiplication
+patch this driver applies. The second is now measured.
+
+| arm | trimul backend | global max | protein |
+| --- | --- | ---: | ---: |
+| FP32, cueq patch | cueq | 0.001305 | 0.001308 |
+| FP32, no patch | xla | **0.005547** | 0.005563 |
+
+Dropping the patch costs a factor of four and leaves the result at 0.0055 A --
+still three orders below the matched-tape row's 1.1761 A. The patch is not the
+explanation.
+
+## Where the failing cell now stands
+
+Excluded, each by measurement rather than argument:
+
+| candidate | evidence |
+| --- | --- |
+| the sampler | upstream trunk + FoldJAX sampler collapses to 0.000766 |
+| the scan lowering | no-scan control reproduces the outlier pattern |
+| the fused kernels | 2.2x at FP32; they amplify, they do not originate |
+| the cueq patch | 0.0013 -> 0.0055, three orders short |
+| an algorithmic port error | at matched FP32 the port tracks native to 0.0013 A |
+
+What remains named and unmeasured is the tape itself: the matched-tape contract
+injects captured upstream noise with identity augmentation, while these arms use
+each side's actual reference draws. Those two constructions differ by three
+orders on this target, and nothing else in the list survives.
+
+That is a statement about the harness, not the port, and it should be treated as
+a hypothesis until someone runs the matched-tape construction and this driver's
+construction against the *same* native capture. This document has been wrong
+often enough today that naming the last suspect is not the same as convicting
+it.
