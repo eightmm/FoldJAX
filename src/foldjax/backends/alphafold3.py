@@ -29,6 +29,7 @@ from foldjax.backends._tokamax_autotune import (
     ensure_safe_autotuning_route as _ensure_safe_tokamax_route,
 )
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
+from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -36,7 +37,6 @@ from foldjax.padding import MSA_PROFILE_DEPTH, TOKEN_BUCKETS, PaddingPlan
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
-    PredictionError,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
@@ -787,10 +787,20 @@ class AlphaFold3Backend(Backend):
     def __init__(self) -> None:
         self._session_open = False
         self._session_active = False
-        self._session_poisoned: str | None = None
-        self._asset_anchors: dict[
-            tuple[str, str, str], tuple[tuple[str, str, str], ...] | None
-        ] = {}
+        self._asset_anchors = WeightAnchors(
+            # Resolved at call time so a test that replaces either module
+            # global still reaches the substitute.
+            snapshot=lambda weights: _managed_asset_snapshot(weights),
+            source_key=lambda weights: _managed_source_key(weights),
+            changed_message=lambda weights: (
+                "AlphaFold3 managed weights, runner or source changed while "
+                "a prediction batch was active"
+            ),
+            unverifiable_message=lambda weights: (
+                "AlphaFold3 cannot verify weights used by a resumed prediction"
+            ),
+            invalidate=self.invalidate_session,
+        )
         self._model_runner: Any | None = None
         self._model_runner_key: tuple[Any, ...] | None = None
 
@@ -842,7 +852,6 @@ class AlphaFold3Backend(Backend):
         finally:
             self.invalidate_session()
             self._asset_anchors.clear()
-            self._session_poisoned = None
             self._session_active = False
             self._session_open = False
 
@@ -852,19 +861,10 @@ class AlphaFold3Backend(Backend):
         self._model_runner = None
         self._model_runner_key = None
 
-    def _raise_if_poisoned(self) -> None:
-        if self._session_poisoned is not None:
-            raise PredictionError(self._session_poisoned)
-
-    def _poison(self, message: str) -> None:
-        self.invalidate_session()
-        self._session_poisoned = message
-        raise PredictionError(message)
-
     def _managed_weights(self, request: PredictionRequest) -> Path | None:
         """Return weights only for the vendored route, without importing it."""
 
-        self._raise_if_poisoned()
+        self._asset_anchors.raise_if_poisoned()
         options = self.apply_sampling(request)
         if options.get("source"):
             return None
@@ -879,27 +879,9 @@ class AlphaFold3Backend(Backend):
     ) -> tuple[tuple[str, str, str], tuple[tuple[str, str, str], ...] | None]:
         """Bind this session to one immutable managed model generation."""
 
-        self._raise_if_poisoned()
-        source = _managed_source_key(weights)
-        snapshot = _managed_asset_snapshot(weights)
-        missing = object()
-        expected = self._asset_anchors.get(source, missing)
-        if expected is missing:
-            self._asset_anchors[source] = snapshot
-        elif expected is None:
-            # A source that could not be proven immutable stays on the fresh
-            # compatibility path for the rest of this session.
-            snapshot = None
-        elif snapshot != expected:
-            self._poison(
-                "AlphaFold3 managed weights, runner or source changed while "
-                "a prediction batch was active"
-            )
-        if require_verifiable and snapshot is None:
-            self._poison(
-                "AlphaFold3 cannot verify weights used by a resumed prediction"
-            )
-        return source, snapshot
+        return self._asset_anchors.anchor(
+            weights, require_verifiable=require_verifiable
+        )
 
     def validate_session(self, request: PredictionRequest) -> None:
         if not self._session_active:
@@ -1030,7 +1012,7 @@ class AlphaFold3Backend(Backend):
         requested_matmul_precision = options.get("matmul_precision")
         matmul_precision = self.matmul_precision(options)
         buckets = _prediction_buckets(request, options)
-        self._raise_if_poisoned()
+        self._asset_anchors.raise_if_poisoned()
         managed_weights = (
             Path(request.weights) if self._session_active and managed_route else None
         )

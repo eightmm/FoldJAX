@@ -629,7 +629,7 @@ def test_poison_after_all_atom_seed_still_releases_session_ccd(
         ("enter", "esmfold2_ccd"),
         ("exit", "esmfold2_ccd"),
     ]
-    assert backend._session_poisoned is None
+    assert backend._asset_anchors.poisoned is None
 
 
 def test_all_atom_session_without_execution_never_acquires_ccd(

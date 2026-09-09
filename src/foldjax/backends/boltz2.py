@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from foldjax.backends._representations import _representations_result
+from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
@@ -19,7 +20,6 @@ from foldjax.models.boltz2.weights import resolve_native_weight_bundle
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
-    PredictionError,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
@@ -360,10 +360,21 @@ class Boltz2Backend(Backend):
     def __init__(self) -> None:
         self._session_open = False
         self._session_active = False
-        self._session_poisoned: str | None = None
-        self._asset_anchors: dict[
-            tuple[str, str], tuple[Any, ...] | None
-        ] = {}
+        self._asset_anchors = WeightAnchors(
+            # Resolved at call time so a test that replaces either module
+            # global still reaches the substitute.
+            snapshot=lambda role, path: _weight_bundle_snapshot(path),
+            source_key=lambda role, path: _weight_source_key(role, path),
+            changed_message=lambda role, path: (
+                f"Boltz2 {role} weights changed while a prediction batch "
+                "was active"
+            ),
+            unverifiable_message=lambda role, path: (
+                f"Boltz2 cannot verify {role} weights used by a resumed "
+                "prediction"
+            ),
+            invalidate=self.invalidate_session,
+        )
         self._params: dict[
             str, tuple[tuple[Any, ...], tuple[Any, ...] | None, Any]
         ] = {}
@@ -383,7 +394,6 @@ class Boltz2Backend(Backend):
         finally:
             self.invalidate_session()
             self._asset_anchors.clear()
-            self._session_poisoned = None
             self._session_active = False
             self._session_open = False
 
@@ -444,19 +454,10 @@ class Boltz2Backend(Backend):
         self._params.pop("affinity", None)
         self._drop_runner("affinity")
 
-    def _raise_if_poisoned(self) -> None:
-        if self._session_poisoned is not None:
-            raise PredictionError(self._session_poisoned)
-
-    def _poison(self, message: str) -> None:
-        self.invalidate_session()
-        self._session_poisoned = message
-        raise PredictionError(message)
-
     def _request_weight_paths(
         self, request: PredictionRequest
     ) -> tuple[Path, Path | None]:
-        self._raise_if_poisoned()
+        self._asset_anchors.raise_if_poisoned()
         assert request.weights is not None
         primary = Path(request.weights)
         affinity = None
@@ -476,24 +477,9 @@ class Boltz2Backend(Backend):
         *,
         require_verifiable: bool = False,
     ) -> tuple[tuple[str, str], tuple[Any, ...] | None]:
-        self._raise_if_poisoned()
-        source = _weight_source_key(role, path)
-        snapshot = _weight_bundle_snapshot(path)
-        missing = object()
-        expected = self._asset_anchors.get(source, missing)
-        if expected is missing:
-            self._asset_anchors[source] = snapshot
-        elif expected is None:
-            snapshot = None
-        elif snapshot != expected:
-            self._poison(
-                f"Boltz2 {role} weights changed while a prediction batch was active"
-            )
-        if require_verifiable and snapshot is None:
-            self._poison(
-                f"Boltz2 cannot verify {role} weights used by a resumed prediction"
-            )
-        return source, snapshot
+        return self._asset_anchors.anchor(
+            role, path, require_verifiable=require_verifiable
+        )
 
     def validate_session(self, request: PredictionRequest) -> None:
         if not self._session_active:
@@ -540,7 +526,9 @@ class Boltz2Backend(Backend):
         if snapshot is None or after is None:
             return params
         if after != snapshot:
-            self._poison(f"Boltz2 {role} weights changed while they were loading")
+            self._asset_anchors.poison(
+                f"Boltz2 {role} weights changed while they were loading"
+            )
         self._params[role] = (key, None, params)
         return params
 
@@ -556,7 +544,7 @@ class Boltz2Backend(Backend):
 
         if not self._session_active:
             return placer(params)
-        self._raise_if_poisoned()
+        self._asset_anchors.raise_if_poisoned()
         cached = self._params.get(role)
         if cached is None or cached[2] is not params:
             # Unverifiable bundles deliberately never enter the parameter
@@ -579,7 +567,7 @@ class Boltz2Backend(Backend):
 
         if not self._session_active:
             return jit_factory(function)
-        self._raise_if_poisoned()
+        self._asset_anchors.raise_if_poisoned()
         cached = self._runners.get(role)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -690,7 +678,7 @@ class Boltz2Backend(Backend):
         super().validate_request(request)
 
     def predict(self, request: PredictionRequest) -> PredictionResult:
-        self._raise_if_poisoned()
+        self._asset_anchors.raise_if_poisoned()
         if self._session_active:
             self.validate_session(request)
             # The native API confirms this from realized features, but the

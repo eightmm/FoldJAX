@@ -42,6 +42,7 @@ import numpy as np
 
 from foldjax.backends._ccd_session import ManagedCcdMemory
 from foldjax.backends._representations import _representations_result
+from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -51,7 +52,6 @@ from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
     PaddingConfig,
-    PredictionError,
     PredictionRequest,
     PredictionResult,
     PredictionSample,
@@ -393,10 +393,23 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         self._session_open = False
         self._session_active = False
         self._stage_single_input = False
-        self._session_poisoned: str | None = None
-        self._asset_anchors: dict[
-            tuple[bool, str, str | None], tuple[tuple[str, str], ...] | None
-        ] = {}
+        self._asset_anchors = WeightAnchors(
+            # Resolved at call time so a test that replaces either module
+            # global still reaches the substitute.
+            snapshot=lambda weights, **kwargs: _model_asset_snapshot(
+                weights, **kwargs
+            ),
+            source_key=lambda weights, **kwargs: _model_source_key(
+                weights, **kwargs
+            ),
+            changed_message=lambda *args, **kwargs: (
+                "ESMFold2 weights changed while a prediction batch was active"
+            ),
+            unverifiable_message=lambda *args, **kwargs: (
+                "ESMFold2 cannot verify weights used by a resumed prediction"
+            ),
+            invalidate=self.invalidate_session,
+        )
         self._loaded_model: Any | None = None
         self._loaded_model_key: (
             tuple[
@@ -433,7 +446,6 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         finally:
             self.invalidate_session()
             self._asset_anchors.clear()
-            self._session_poisoned = None
             self._session_active = False
             self._stage_single_input = False
             self._session_open = False
@@ -493,11 +505,6 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         self._loaded_model_key = None
         self._loaded_model_staged = False
 
-    def _poison(self, message: str) -> None:
-        self.invalidate_session()
-        self._session_poisoned = message
-        raise PredictionError(message)
-
     def _request_model_source(
         self, request: PredictionRequest
     ) -> tuple[Path, str | Path | None, bool]:
@@ -523,31 +530,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     ) -> tuple[
         tuple[bool, str, str | None], tuple[tuple[str, str], ...] | None
     ]:
-        if self._session_poisoned is not None:
-            raise PredictionError(self._session_poisoned)
-        source = _model_source_key(
-            weights, esmc=esmc, language_model=language_model
+        return self._asset_anchors.anchor(
+            weights,
+            esmc=esmc,
+            language_model=language_model,
+            require_verifiable=require_verifiable,
         )
-        snapshot = _model_asset_snapshot(
-            weights, esmc=esmc, language_model=language_model
-        )
-        missing = object()
-        expected = self._asset_anchors.get(source, missing)
-        if expected is missing:
-            self._asset_anchors[source] = snapshot
-        elif expected is None:
-            # Once this source is unverifiable, keep the entire session on the
-            # uncached compatibility path even if its layout later changes.
-            snapshot = None
-        elif expected is not None and snapshot != expected:
-            self._poison(
-                "ESMFold2 weights changed while a prediction batch was active"
-            )
-        if require_verifiable and snapshot is None:
-            self._poison(
-                "ESMFold2 cannot verify weights used by a resumed prediction"
-            )
-        return source, snapshot
 
     def observe_resumed(self, request: PredictionRequest) -> None:
         if not self._session_active:
@@ -620,7 +608,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # Unverifiable trees are still runnable, but not retained.
             return model
         if snapshot != after:
-            self._poison("ESMFold2 weights changed while they were being loaded")
+            self._asset_anchors.poison(
+                "ESMFold2 weights changed while they were being loaded"
+            )
         self._loaded_model = model
         self._loaded_model_key = key
         self._loaded_model_staged = staged
@@ -643,7 +633,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         if key is None:
             # `_load_model` never retains an unverifiable stage, but keep this
             # guard fail-closed if a compatibility wrapper violates that rule.
-            self._poison("ESMFold2 cannot verify a staged language model")
+            self._asset_anchors.poison(
+                "ESMFold2 cannot verify a staged language model"
+            )
 
         # The compact result is the last consumer of every ESMC parameter.
         # Synchronize it before deleting those buffers; only then may the
@@ -671,7 +663,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         placement = _runtime_placement_key(inference)
         expected_key = (source, placement, snapshot)
         if expected_key != key:
-            self._poison(
+            self._asset_anchors.poison(
                 "ESMFold2 weights changed between language-model and structure load"
             )
 
@@ -686,7 +678,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             raise
         after = _model_asset_snapshot(weights, esmc=esmc, language_model=True)
         if after != snapshot:
-            self._poison(
+            self._asset_anchors.poison(
                 "ESMFold2 weights changed while the structure model was loading"
             )
         self._loaded_model = structure
