@@ -494,3 +494,47 @@ A caveat that does not change the decision: this port's rerun floor at 5SAK is
 unmeasured, so 0.93 Å on one sample of five cannot be separated from trajectory
 chaos with n=1. What can be said is that there is no evidence the fused
 granularity improves the output, which is all the default needs.
+
+## The reference was wrong: native's own module reproduces its stored output no better than the port
+
+The paradox above -- source matches, output differs -- had a third reading that
+this investigation never tested: that the comparison itself was mismeasured.
+
+Upstream's `MSAModule` was built standalone in the upstream torch environment,
+loaded with the checkpoint's 226 `msa_module.*` tensors (0 missing, 0
+unexpected), and run under bfloat16 autocast with `use_kernels=True` on the same
+inputs every arm above used -- native's own `input_z`, the captured embedding,
+and the six bitwise-identical features.
+
+| Run | RMSE against the *stored* native `delta_z` |
+| --- | ---: |
+| **Native module, standalone** | **3.217599e-02** |
+| Port's module, standalone (shipped configuration) | 3.233621e-02 |
+
+Native's own module, given native's own inputs, misses native's own stored
+output by the same margin the port does. **The 3.2e-2 is not a JAX-versus-Torch
+difference.** It is the difference between running this module standalone and
+running it inside the full model, and both implementations show it.
+
+### What this invalidates
+
+Every teacher-forced arm in this document measured against a reference that
+carries that offset. The comparisons *between* arms remain valid -- they shared
+the reference and the controls moved -- so the exclusions of dtype, boundary
+placement, chunk width and kernel choice still stand as statements about what
+changes the port's output. What does not stand is the framing: those arms were
+never measuring the port's distance from native.
+
+The 0.67% "improvement" from upstream's call granularity, and its 49% coordinate
+degradation, are unaffected -- that pair was measured end to end.
+
+### What it opens
+
+The port's MSA module may be correct. Its standalone output sits 0.5% *closer*
+to the stored native value than native's own standalone run does, which is not
+evidence of superiority but is evidence that the residual localised here was an
+artefact of the harness rather than a port defect.
+
+The next attempt should compare the two standalone runs **against each other**,
+not against the stored in-run value. That comparison has never been made and is
+now one line: both arrays exist.
