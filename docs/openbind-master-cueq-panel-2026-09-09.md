@@ -77,3 +77,30 @@ Jobs 265–294 complete the seven cases with the same three arms per case
 (native Triton, native cuEq, FoldJAX cuEq replay against each, plus a
 second-process FoldJAX repeat for the cross-process floor). Results are
 appended below as they land; the ledger rows are in `docs/EXPERIMENTS.jsonl`.
+
+## Handoff state (session end, 2026-09-09 20:40 KST)
+
+- Snapshot root: `/home/jaemin/non-project/optimizing/foldjax-bench/openbind-cueq-master-20260909-Ieldnw` (FoldJAX `1d1cfea`); job scripts in its `jobs/`
+  (`core-case.sbatch`, `native-capture.sbatch`, `launch-panel.sh`,
+  `gpu-pytest.sbatch`); logs in `logs/`. Native captures under
+  `foldjax-bench/openbind-master-native-20260909/<case>/native-{triton,cueq}`.
+- Queued: panel jobs 265–294 (native Triton/cuEq per case, FoldJAX cuEq replay
+  against each, second-process repeat), 295 (GPU test for `cueq-full`),
+  296 (second native cuEq 5SAK capture for the native cross-process floor).
+  `python bench/openbind_panel_table.py <snapshot>` renders the results.
+- Uncommitted: the `cueq-full` triangle kernel (fused cuEq multiplication,
+  `src/foldjax/models/openfold3/models/triangle.py`, attention alias, option
+  map, tests). Commit only after job 295 passes; the GPU test's masked-input
+  case may expose a mask-semantics difference (cuEq masks output, the XLA path
+  masks the projections) and must not be loosened to pass.
+- Next: (1) diff job 262 against 261 with `openbind_candidate_diff.py` and
+  job 296's `coordinate.npz` against 263's for the two floors; (2) write the
+  acceptance script (native arm = cuEq, 0.05 pass / 0.05–0.1 deferred / >0.1
+  investigate, census `attention.cueq_fallback_true == 0` required, 1UBQ and
+  3GCA reported as a separate small-token class, repeat flags required) and
+  register it as the goal-drive acceptance; (3) snapshot #2 with `cueq-full`
+  and replay it against the native cuEq captures; (4) warm benchmarks with
+  the scope mismatch stated; (5) an ion case only after parity is settled.
+- Not done, by decision: no push to origin (not authorised); the
+  workstation tree still holds the 54 files committed here as 85f23a6,
+  3d3ae56, 1d1cfea.
