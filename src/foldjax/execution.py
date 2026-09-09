@@ -56,7 +56,7 @@ from typing import Any
 KNOBS: dict[str, tuple[str, ...]] = {
     "dtype": ("float32", "bfloat16"),
     "matmul_precision": ("highest", "high"),
-    "triangle_kernel": ("auto", "cueq", "xla"),
+    "triangle_kernel": ("auto", "cueq", "cueq-full", "xla"),
     "attention_kernel": ("auto", "cueq", "tokamax", "xla"),
 }
 
