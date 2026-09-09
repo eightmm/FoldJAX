@@ -102,8 +102,14 @@ parentheses as the maximum):
 
 The three implementations are mutually equidistant at 2.4-2.9 Å on samples
 1 and 4, and samples 2 and 3 agree to 0.2 Å in every pair: a common chaotic
-floor, not a port-specific offset. Port-versus-port (second process, job
-491) is appended when it lands.
+floor, not a port-specific offset.
+
+Port versus port, two processes on master (jobs 490/491, XLA autotune not
+frozen): protein 0.828, 0.002, 0.001, 0.141, 0.110 Å; ligand max 0.082 Å.
+Sample 1 alone moves 0.83 Å between two runs of the identical port source on
+the identical tape, which is the same sample that moves 2.4-2.9 Å between any
+two of the three implementations. The chaos is in the target, and the port's
+own process floor on it is already 0.8 Å.
 
 ## Reading
 
