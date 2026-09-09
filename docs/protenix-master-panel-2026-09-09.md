@@ -83,8 +83,17 @@ difference; samples 1, 3-5 are at 0.015-0.044 Å.
 - Bitwise Protenix parity is not reachable: upstream is not deterministic
   against itself on these targets. What is reachable, and what this panel
   shows, is that the port's distribution of outcomes is upstream's.
-- Not measured here: cuEq 0.9.0 versus 0.11.1 for Protenix natively; the
-  port's frozen-autotune floor (would tighten 1UBQ sample 2 and 5SAK).
+- Frozen-autotune port pair on 1UBQ (jobs 629/630, XLA autotune dumped by C
+  and loaded by D with complete-results required): **not** bitwise; the two
+  frozen processes still differ by 0.171 Å on sample 2 (0.018-0.059 on the
+  others), and port C sits 0.172 Å from native A on that sample. Unlike
+  OpenFold3 and ESMFold2, the Protenix port carries a process-to-process
+  nondeterminism that autotune freezing does not remove (a candidate is the
+  atom-level scatter/segment reductions, which are not order-stable on GPU).
+  It is the same size as the native process floor on 1UBQ (0.095 Å) and does
+  not change any verdict, but it is the one place where "bitwise
+  repeatable port" is not yet true.
+- Not measured here: cuEq 0.9.0 versus 0.11.1 for Protenix natively.
 
 ## Job log
 

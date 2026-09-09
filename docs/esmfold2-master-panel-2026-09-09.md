@@ -57,8 +57,13 @@ from upstream's on the chaotic samples. It is consistent with the
 workstation's earlier 0.42 Å finding on 5SAK and with the known port-side
 autocast placement work in `docs/esmfold2-native-tape-2026-09-07.md`.
 
-The frozen pairs for the other five cases (jobs 619-628) are appended when
-they land.
+Frozen pairs for the other five cases (jobs 619-628): every pair is bitwise
+equal. Frozen port C against native A, entity maxima: 5SAK 1.62 (sample 1,
+the shared basin; native B vs port C 0.64) / ligand 0.48; 7R6R 0.28 / 0.05 /
+0.05 (native A vs B is 0.73 on sample 5, and the port sits with native A);
+3V7E 0.056 / 0.022 / 0.017; 1URN 0.026 / 0.020; 3GCA 0.022 / 0.008. With
+kernel selection removed, 1URN and 3GCA are in the pass band and 3V7E stays
+deferred at 0.056 Å.
 
 ## Reading
 
