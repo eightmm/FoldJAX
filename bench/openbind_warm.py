@@ -53,7 +53,9 @@ def main(argv=None):
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
-        "--backend", choices=("cueq", "xla", "native-private"), required=True
+        "--backend",
+        choices=("cueq", "cueq-full", "xla", "native-private"),
+        required=True,
     )
     parser.add_argument("--warm-repeats", type=positive_count, default=3)
     args = parser.parse_args(argv)
