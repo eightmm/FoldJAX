@@ -24,6 +24,31 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
 
+# The port's copy of the upstream config dataclass carries two extra fields that
+# drive tape capture. Upstream's dataclass has neither, so the two arms used to
+# serialize different schemas and every config comparison failed on a key that
+# describes the harness rather than the model.
+#
+# The fix is on this side, not in the comparison: state the same fact in both
+# records. For a run that captured nothing extra these values are what upstream
+# did too -- it ran to completion and returned no additional representations --
+# so writing them on the native arm is a statement about that run, not a waiver.
+# The comparison stays strict, and a port run that stopped early or returned
+# representations still differs from native and still fails.
+PORT_ONLY_CONFIG_DEFAULTS = {
+    "foldjax_stop_after": "full",
+    "foldjax_return_representations": [],
+}
+
+
+def config_record(config):
+    """Serialize a model config with both arms carrying the same schema."""
+    record = config.as_dict()
+    for key, default in PORT_ONLY_CONFIG_DEFAULTS.items():
+        record.setdefault(key, default)
+    return record
+
+
 def sha(path):
     h = hashlib.sha256()
     with path.open("rb") as stream:
@@ -141,7 +166,7 @@ def main():
         num_recycles=10,
         flash_attention_implementation="triton",
     )
-    save(out / "config.json", config.as_dict())
+    save(out / "config.json", config_record(config))
     assert config.global_config.bfloat16 == "all"
     kernel_overlay = None
     kernel_provenance = {}
@@ -288,7 +313,7 @@ def main():
                 "observers_enabled": not args.no_preprocessing_observers,
             },
         )
-        save(out / "effective-config.json", self._model_config.as_dict())
+        save(out / "effective-config.json", config_record(self._model_config))
         save(
             out / "parameters.json",
             {

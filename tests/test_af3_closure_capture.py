@@ -41,3 +41,47 @@ def test_capture_sha_binds_artifact_bytes(tmp_path):
     artifact = tmp_path / "small"
     artifact.write_bytes(b"known bytes")
     assert sha(artifact) == hashlib.sha256(b"known bytes").hexdigest()
+
+
+class _Config:
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def as_dict(self):
+        return dict(self._mapping)
+
+
+def test_both_arms_record_the_same_config_schema():
+    from bench.af3_closure_capture import config_record
+
+    native = _Config({"num_recycles": 10})
+    port = _Config(
+        {
+            "num_recycles": 10,
+            "foldjax_stop_after": "full",
+            "foldjax_return_representations": [],
+        }
+    )
+    assert config_record(native) == config_record(port)
+
+
+def test_a_run_that_captured_something_extra_still_differs():
+    from bench.af3_closure_capture import config_record
+
+    native = _Config({"num_recycles": 10})
+    for key, value in (
+        ("foldjax_stop_after", "trunk"),
+        ("foldjax_stop_after", "inputs"),
+        ("foldjax_return_representations", ["single"]),
+    ):
+        port = _Config({"num_recycles": 10, key: value})
+        assert config_record(native) != config_record(port), key
+
+
+def test_config_record_does_not_mutate_the_config():
+    from bench.af3_closure_capture import config_record
+
+    mapping = {"num_recycles": 10}
+    config = _Config(mapping)
+    config_record(config)
+    assert mapping == {"num_recycles": 10}
