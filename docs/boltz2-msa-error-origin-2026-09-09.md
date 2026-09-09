@@ -803,3 +803,59 @@ directory is named `fp32-ffi` (that fp32 refers to the FFI linear kernel).
 So the experiment needs a port source snapshot at `compute_dtype=float32`
 replaying this tape with `--trunk-only` boundary capture. That is a bounded
 change against an existing native reference, not a research problem.
+
+## Both sides at FP32 without kernels: the cell essentially closes
+
+`entity-parity-20260905/fresh-n5-20260905` holds three boltz2 arms on 5SAK that
+this investigation never opened. All use the same harness, the same case, and
+the scope "independent preprocessing, actual reference and sampler draws; five
+paired samples" -- so the sampler draws are shared between the arms, and this is
+not a free-running comparison.
+
+| arm | precision | kernels | global max RMSD | protein | ligand |
+| --- | --- | --- | ---: | ---: | ---: |
+| `fp32` | 32 | False | 0.029911 | 0.029999 | 0.001267 |
+| `fp32-repeat` | 32 | False | **0.002405** | 0.002412 | 0.000497 |
+| `native-default` | bf16-mixed | True | **16.193149** | 16.209293 | 13.169447 |
+
+`native-default`'s `status.json` records `replay: 1`; the log says why, and it is
+a verdict rather than a crash:
+
+```
+PARITY FAILED:
+  all-atom RMSD 18.9089 A > 0.5 A
+```
+
+The two FP32 arms differ from each other by an order of magnitude (0.0024 vs
+0.0299), which is this comparison's own rerun spread, so FP32 agreement is
+"somewhere between 0.002 and 0.03 A" rather than a single number.
+
+## What this says
+
+With both sides at FP32 and kernels off, the port and native track each other to
+about a hundredth of an angstrom on the target that fails. With both sides in
+the shipped configuration -- bf16 mixed precision with fused kernels -- they
+diverge by 16 A. That is a factor of roughly 500 to 5000, and it is not ensemble
+width, because the sampler draws are shared and the FP32 arms prove the harness
+can resolve a hundredth of an angstrom.
+
+So 5SAK's divergence lives in the shipped **bf16-plus-kernels** configuration,
+not in the model core. That is consistent with the matched-tape row, which forces
+FP32 on both sides and reports 1.1761 A rather than 16 A, and with the trunk
+substitution collapsing to 0.0008 A.
+
+## How this squares with the fp32-activation arm
+
+Earlier here, raising the MSA module's activations to FP32 made agreement 8.5x
+*worse* (1.8971 -> 16.1595 A). That is not in tension with this. That arm raised
+precision on **one** side while native stayed in bf16 autocast; these arms move
+**both** sides together. Matching native's arithmetic is what helps; diverging
+from it hurts, in whichever direction.
+
+## What is now worth separating
+
+`fp32` and `native-default` differ in two variables at once, precision and
+kernels. The harness ran `kernels=False` with FP32 and `kernels=True` with
+bf16, so nothing here says which one carries the 16 A. Two more arms --
+FP32-with-kernels and bf16-without-kernels -- would separate them, and they are
+the same shape of run as the three that already exist.
