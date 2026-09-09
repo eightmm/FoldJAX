@@ -1,5 +1,65 @@
 # AF3 current-source warm comparison
 
+## Final current-harness seven-case warm panel
+
+Jobs 1004-1017 completed. All seven paired warm comparisons and all fourteen
+same-arm revised audit-to-warm bridges pass every output-only check (21 saved
+reports). The separate revised actual-tape audit remains 7/7 passing. Every
+arm's three warm raw outputs equal its first inference bitwise. Settings: n5,
+10 recycles, native BF16 policy, fixed Tokamax/XLA choices, independent executable
+caches, no preprocessing or forward RNG observers in the warm arms.
+
+| Case | Native warm median s | FoldJAX warm median s | Native peak bytes | FoldJAX peak bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 1UBQ | 4.336989 | 4.367371 | 1821111296 | 1825606912 |
+| 5SAK | 11.918286 | 11.981493 | 2617227776 | 2622493184 |
+| 1URN | 4.418016 | 4.411112 | 1825340672 | 1820823808 |
+| 3GCA | 4.292179 | 4.322651 | 1820667136 | 1825340672 |
+| 7R6R | 4.478611 | 4.492472 | 1820660736 | 1821538816 |
+| 3V7E | 4.496169 | 4.487664 | 1820846336 | 1825844736 |
+| 7ST3 | 25.071566 | 25.193752 | 3884231168 | 3883865600 |
+
+Peaks are lifetime JAX allocator bytes, including compilation, not warm-reset
+VRAM. No reproducible runtime or memory advantage is established by this panel.
+Source/artifact root: af3-final-warm-20260909-BjN099; 3GCA lives at its root,
+the other six cases in named subdirectories. Each has paired-final-report.json,
+native-bridge-final-report.json and foldjax-bridge-final-report.json.
+
+Verification: all 21 saved reports reloaded with every check true, both arms'
+three repeat flags asserted for every case. AF3 config recording code was
+independently reviewed and committed as 447b1ca. Fixed-kernel/RDKit internal
+RNG scope limits remain; this is finite panel evidence, not whole-project
+release, independent arm-identity enforcement, optimized performance or push.
+The dated intermediate checkpoints below preserve the investigation history.
+
+## Audit and implementation provenance
+
+The revised fixed-kernel audit uses af3-schemafix-20260909 for six cases
+(1UBQ at its root) and af3-schemafix-3gca-20260909 for 3GCA. All seven pairs
+pass compare_arms(require_tape=True), including independent input/identity,
+actual observed tape, coordinates and raw/public confidence. For 3GCA all five
+coordinate arrays are exactly equal; entity Kabsch residuals are roundoff
+(RNA 1.0431e-14 A, ligand 2.9731e-15 A). No thresholds were relaxed.
+
+The schemafix model Python source hashes match the current AF3 tree. Generated
+CCD data and ABI extensions are separate runtime provenance, not covered by
+Python source identity alone.
+
+The successful config-schema correction initially existed only in an external
+snapshot. Commit 447b1ca integrates it into both current capture sites, preserves
+explicit early-stop/representation choices, avoids mutating the config and
+retains raw settings plus synthesized field names in sidecars. Focused tests:
+75 passed; Ruff and diff checks passed. Independent review judged normalization
+merge-safe. Sidecars are inspectable evidence, not an automated native-runner
+identity gate; the comparator also supports legitimate same-arm bridges.
+
+Historical warm captures lack the two added native config fields and retain
+their strict config mismatch. Those artifacts were not rewritten or admitted
+by a relaxed gate. The fresh jobs 1004-1017 supersede that incomplete warm
+connection with the passing results above.
+
+## Earlier measurements (superseded where noted)
+
 Status: partial measurements completed; later sections supersede submission
 status below. Seven-case completion and actual-tape admission remain separate.
 
