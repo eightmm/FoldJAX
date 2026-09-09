@@ -520,7 +520,7 @@ def test_ambient_triangle_kernel_is_resolved_into_the_graph_identity(
         )
         kernel = os.environ[TRIANGLE_BACKEND_ENV]
         traces.append(kernel)
-        return batch["x"] + (1 if kernel == "cueq" else 2)
+        return batch["x"] + {"cueq": 1, "xla": 2, "native-private": 3}[kernel]
 
     monkeypatch.setattr(inference, "predict", tiny_predict)
     inference._compiled_predict.clear_cache()
@@ -535,12 +535,15 @@ def test_ambient_triangle_kernel_is_resolved_into_the_graph_identity(
         cueq = run(*args)
         monkeypatch.setenv(TRIANGLE_BACKEND_ENV, "xla")
         xla = run(*args)
-        jax.block_until_ready((cueq, xla))
+        monkeypatch.setenv(TRIANGLE_BACKEND_ENV, "native-private")
+        native = run(*args)
+        jax.block_until_ready((cueq, xla, native))
 
-        assert traces == ["cueq", "xla"]
+        assert traces == ["cueq", "xla", "native-private"]
         np.testing.assert_array_equal(cueq, [1])
         np.testing.assert_array_equal(xla, [2])
-        assert inference._compiled_predict._cache_size() == 2
+        np.testing.assert_array_equal(native, [3])
+        assert inference._compiled_predict._cache_size() == 3
     finally:
         inference._compiled_predict.clear_cache()
 

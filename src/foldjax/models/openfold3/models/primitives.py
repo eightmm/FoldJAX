@@ -114,8 +114,8 @@ def jax_sigmoid(x: jnp.ndarray) -> jnp.ndarray:
 def swiglu(x: jnp.ndarray, params: SwiGLUParams) -> jnp.ndarray:
     """Apply ``swish(linear_a(x)) * linear_b(x)``.
 
-    Upstream dispatches to a Triton kernel on CUDA, which computes the same
-    product; the reference path is reproduced here.
+    Upstream uses its ordinary SiLU path unless explicitly given
+    ``use_kernel=True``; SwiGLUTransition does not pass that flag.
     """
     return silu(linear(x, params.linear_a)) * linear(x, params.linear_b)
 

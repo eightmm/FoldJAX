@@ -1,4 +1,4 @@
-"""Private OpenBind full-operator candidates; not a selectable model backend.
+"""Experimental native-private OpenBind full-operator backend.
 
 Contracts follow pinned c4771653's layers/triangular_multiplicative_update.py
 (``_inference_forward``) and layers/triangular_attention.py (``forward``).
@@ -32,8 +32,21 @@ from foldjax.models.openfold3.models.native_triton_linear import (
     native_linear_fused,
 )
 from foldjax.models.openfold3.models.native_triton_norm import native_layer_norm
-from foldjax.models.openfold3.models.primitives import jax_sigmoid, layer_norm
+from foldjax.models.openfold3.models.primitives import jax_sigmoid, layer_norm, silu
 from foldjax.models.openfold3.models.triangle import permute_final_dims
+
+
+def map_native_samples(fn, z, mask):
+    """Preserve B=1 kernel arithmetic for independent confidence samples."""
+    if cp_mesh() is not None:
+        raise ValueError("native-private does not support context parallelism")
+    if z.ndim != 4 or mask.shape != z.shape[:-1] or z.shape[0] < 1:
+        raise ValueError(
+            f"invalid native-private batch shapes: {z.shape}, {mask.shape}"
+        )
+    if z.shape[0] == 1:
+        return fn(z, mask)
+    return jax.lax.map(lambda one: fn(one[0][None], one[1][None])[0], (z, mask))
 
 
 def _tf32_rne(x):
@@ -60,6 +73,33 @@ def _ordinary_linear(x, params, *, interpret=False):
     )
     result = jnp.matmul(lhs, rhs.T, precision="high")
     return result if params.bias is None else result + params.bias
+
+
+def native_swiglu_transition_update(x, params, *, mask=None, eps=1e-5, interpret=False):
+    """Rejected full-model control; never selected by production pair dispatch.
+
+    Pinned SwiGLUTransition calls SwiGLU without use_kernel=True, so its
+    projections and normalization are ordinary Torch, not fused Triton ops.
+    Activation arithmetic remains the existing JAX SiLU control. Interpretation
+    checks the continuous formula, not the GPU rounding/accumulation policy.
+    """
+    if cp_mesh() is not None:
+        raise ValueError(
+            "native transition control does not support context parallelism"
+        )
+    if x.ndim < 2 or x.shape[-1] not in (64, 128):
+        raise ValueError("native transition control requires released width 64/128")
+    if any(a.dtype != jnp.float32 for a in (x, *jax.tree.leaves(params))):
+        raise ValueError("native transition control requires FP32")
+    if not math.isfinite(eps) or eps <= 0:
+        raise ValueError("eps must be positive and finite")
+    if mask is not None and (mask.shape != x.shape[:-1] or mask.dtype != x.dtype):
+        raise ValueError("transition mask must match input shape and FP32 dtype")
+    y = _ordinary_norm(x, params.layer_norm, eps, interpret=interpret)
+    a = _ordinary_linear(y, params.swiglu.linear_a, interpret=interpret)
+    b = _ordinary_linear(y, params.swiglu.linear_b, interpret=interpret)
+    y = _ordinary_linear(silu(a) * b, params.linear_out, interpret=interpret)
+    return y if mask is None else y * mask[..., None]
 
 
 def _ordinary_norm(x, params, eps, *, interpret=False):

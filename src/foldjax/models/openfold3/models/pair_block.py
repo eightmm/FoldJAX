@@ -18,6 +18,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax._openfold3_compile import resolve_triangle_kernel
 from foldjax.models._cp import cp_mesh, shard_pair_rows
 from foldjax.models.openfold3.models.primitives import (
     SwiGLUTransitionParams,
@@ -46,6 +47,33 @@ class PairBlockParams(NamedTuple):
     pair_transition: SwiGLUTransitionParams
 
 
+def _native_pair_backend() -> bool:
+    # compile_predict includes this resolved choice in its executable identity.
+    return resolve_triangle_kernel(None, cp_shards=1) == "native-private"
+
+
+def _pair_attention(z, params, *, no_heads, mask, chunk_size=None, **kwargs):
+    if not _native_pair_backend():
+        return triangle_attention(
+            z, params, no_heads=no_heads, mask=mask, chunk_size=chunk_size, **kwargs
+        )
+    from foldjax.models.openfold3.models import native_triangle_ops as ops
+
+    if no_heads != 4:
+        raise ValueError("native-private triangle attention requires four heads")
+    return ops.map_native_samples(
+        lambda one, one_mask: ops.native_triangle_attention_update(
+            one,
+            params,
+            mask=one_mask,
+            chunk_size=1024 if chunk_size is None else chunk_size,
+            **kwargs,
+        ),
+        z,
+        mask,
+    )
+
+
 def tri_mul_out_in(
     z: jnp.ndarray,
     params: PairBlockParams,
@@ -54,6 +82,18 @@ def tri_mul_out_in(
     eps: float = 1e-5,
 ) -> jnp.ndarray:
     """Apply the outgoing then incoming triangular multiplicative updates."""
+    if _native_pair_backend():
+        from foldjax.models.openfold3.models import native_triangle_ops as ops
+
+        def one(pair, mask):
+            pair = ops.native_triangle_multiplication_residual(
+                pair, params.tri_mul_out, outgoing=True, mask=mask, eps=eps
+            )
+            return ops.native_triangle_multiplication_residual(
+                pair, params.tri_mul_in, outgoing=False, mask=mask, eps=eps
+            )
+
+        return ops.map_native_samples(one, z, pair_mask)
     z = z + triangle_multiplication(
         z, params.tri_mul_out, outgoing=True, mask=pair_mask, eps=eps
     )
@@ -77,7 +117,7 @@ def tri_att_start_end(
     Both layers are starting-node modules upstream; the transposes around the
     second one are what make it an ending-node update.
     """
-    z = z + triangle_attention(
+    z = z + _pair_attention(
         z,
         params.tri_att_start,
         no_heads=no_heads_pair,
@@ -91,7 +131,7 @@ def tri_att_start_end(
     # rows, so under context parallelism the sharded axis moves with the
     # transpose (an all-to-all under the partitioner, an identity otherwise).
     z = shard_pair_rows(z)
-    z = z + triangle_attention(
+    z = z + _pair_attention(
         z,
         params.tri_att_end,
         no_heads=no_heads_pair,
