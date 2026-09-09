@@ -69,6 +69,7 @@ def main(argv=None):
         prune_sample_diffusion_aliases,
         resolve_model_prefix,
     )
+    from foldjax.models.openfold3.data.featurize import prepare_msa_cycle_features
     from foldjax.models.openfold3.inference import compile_predict, released_config
 
     input_path = args.capture / "input.npz"
@@ -85,6 +86,14 @@ def main(argv=None):
             "per_sample_token_cutoff"
         ],
     )
+    # The CLI plans native MSA row selection per recycle from an ordinary
+    # NumPy stream; direct predict refuses an over-depth MSA without it.
+    batch = prepare_msa_cycle_features(
+        batch,
+        config.msa_depth,
+        num_recycles=config.num_recycles,
+        rng=np.random.default_rng(101),
+    )
     identity = {
         "source": source_hashes(args.source_root),
         "checkpoint": digest(args.checkpoint),
@@ -100,7 +109,10 @@ def main(argv=None):
             **identity,
             "backend": args.backend,
             "config": config._asdict(),
-            "rng": "ordinary JAX key 101 reset per call; no tape replay",
+            "rng": (
+                "ordinary JAX key 101 reset per call; MSA cycle rows from "
+                "numpy default_rng(101) once per process; no tape replay"
+            ),
             "scope": (
                 "resident-input model forward; excludes preprocessing, loading, "
                 "transfers and output writing"
