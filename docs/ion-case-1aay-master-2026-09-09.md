@@ -238,6 +238,35 @@ Confidence maxima over the five samples: `complex_iplddt` 0.000183,
 `complex_plddt` 0.000321, `confidence_score` 0.000684, `iptm` 0.003235,
 `complex_pde` 0.003462, `complex_ipde` 0.003719.
 
+### Upstream's own kernel toggle on this case
+
+Native Boltz-2 has no process floor here (A and B are bitwise), so the scale for
+the residual is upstream's own alternate implementation, as
+`docs/boltz2-master-kernel-toggle-2026-09-09.md` established for 5SAK. A third
+native capture ran the same tape with `use_kernels=False` (job 634, 42 s;
+submitted by another agent, folded in here because this note is the case's
+results record).
+
+| pair | A | B | C | D | E | F |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| native A vs native kernels-off | 0.019571 | 0.003529 | 0.003501 | 0.003377 | 0.009497 | 0.006592 |
+| native kernels-off vs port A | 0.174574 | 0.002391 | 0.003288 | 0.002878 | 0.004964 | 0.004655 |
+| native A vs port A | 0.174617 | 0.004053 | 0.004741 | 0.005161 | 0.006293 | 0.003292 |
+
+Protein chain per sample, Å:
+
+| pair | 1 | 2 | 3 | 4 | 5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| native A vs kernels-off | 0.010 | 0.012 | 0.006 | 0.009 | 0.020 |
+| kernels-off vs port A | 0.021 | 0.015 | 0.175 | 0.010 | 0.015 |
+| native A vs port A | 0.028 | 0.016 | 0.175 | 0.006 | 0.011 |
+
+The whole of the port's 0.1746 Å is sample 3; the other four samples sit at
+0.006-0.028 Å, and both port pairings carry the same sample-3 movement.
+Upstream's own kernel toggle moves the protein 0.020 Å at most, on sample 5.
+Unlike 5SAK, where the toggle moved the coordinates further than the port did
+(2.912 Å against 2.421 Å), here it moves them less.
+
 ## Protenix
 
 Pinned upstream `4c355be` plus the pinned `layer_norm/torch_ext_compile.py`
@@ -288,7 +317,7 @@ no verdict column because its panel reports gates rather than a verdict.
 | model | reference | worst residual | worst entity | native floor | port floor | verdict |
 | --- | --- | ---: | --- | ---: | ---: | --- |
 | OpenFold3 / OpenBind | native cuEq, same tape | 0.0337 | F (Zn) | 0.0640 | 0.0369 | pass |
-| Boltz-2 | native A, same tape | 0.1746 | A (protein) | 0 (bitwise) | 0.0181 | coordinate gate 0.05 Å not passed |
+| Boltz-2 | native A, same tape | 0.1746 | A (protein) | 0 (bitwise); kernels-off 0.0196 | 0.0181 | coordinate gate 0.05 Å not passed |
 | Protenix | native A, same tape | 0.063 | A (protein) | 0.054 | 0.055 | deferred |
 | OpenDDE | native A, same tape, `high` | 0.0696 | A (protein) | 0.0696 | 0.0360 | deferred |
 
@@ -318,6 +347,7 @@ job. Ledger rows in `docs/EXPERIMENTS.jsonl`.
 | 606-609 | Boltz-2 native A/B and port A/B |
 | 610-613 | Protenix native A/B and port A/B |
 | 614-618 | OpenDDE native A/B, port `high` A/B, port `highest` |
+| 634 | Boltz-2 third native capture, `use_kernels=False` (submitted by another agent) |
 
 ## State
 
@@ -328,9 +358,9 @@ job. Ledger rows in `docs/EXPERIMENTS.jsonl`.
   `autotune/protein_dna_ion_1aay-cueq.textproto`), native captures
   `openbind-master-native-20260909/protein_dna_ion_1aay/native-{triton,cueq,cueq-repeat}`
   with `native-cueq-vs-repeat.json` and `native-triton-vs-cueq.json`.
-- Boltz-2: `boltz2-master-native-20260909/protein_dna_ion_1aay/native-{A,B}`,
+- Boltz-2: `boltz2-master-native-20260909/protein_dna_ion_1aay/native-{A,B,nokernels}`,
   port `boltz2-master-port-20260909-IcGOFo/protein_dna_ion_1aay-port-{A,B}`,
-  reports `-three-way.json` and `-port-A-vs-native-A.json`.
+  reports `-three-way.json`, `-port-A-vs-native-A.json` and `-kernel-toggle.json`.
 - Protenix: `protenix-master-native-20260909-9yET4f/protein_dna_ion_1aay/{native-A,native-B,port-A,port-B}`.
 - OpenDDE: `opendde-master-20260909-Ayx8BN/protein_dna_ion_1aay/{native-A,native-B,fj-high-A,fj-high-B,fj-highest}`.
 - Job scripts and launchers for this case: `foldjax-bench/ion-1aay-master-20260909/jobs/`.
