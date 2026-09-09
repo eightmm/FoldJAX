@@ -1,7 +1,8 @@
 """Tabulate OpenBind warm measurements: FoldJAX arms beside native arms per case.
 
-Reads ``<root>/<case>-<arm>/measurements.json`` written by
-``openbind_warm.py`` (arms ``fj-<backend>``) and ``openbind_native_warm.py``
+Reads ``<root>/<case>-<arm>/finished.json`` written by
+``openbind_warm.py`` (arms ``fj-<backend>``) and
+``<root>/<case>-<arm>/measurements.json`` from ``openbind_native_warm.py``
 (arms ``native-<backend>``). Warm medians are not the same workload: native
 ``predict_step`` includes confidence and ranking, the FoldJAX forward does
 not, so the ratio is reported as observed, never as a kernel speedup.
@@ -22,8 +23,13 @@ ARMS = ("native-triton", "native-cueq", "fj-cueq", "fj-cueq-full")
 
 
 def read(root, case, arm):
-    path = root / f"{case}-{arm}" / "measurements.json"
-    if not path.exists():
+    # Native writes measurements.json; the FoldJAX harness writes finished.json.
+    paths = [
+        root / f"{case}-{arm}" / name
+        for name in ("measurements.json", "finished.json")
+    ]
+    path = next((p for p in paths if p.exists()), None)
+    if path is None:
         return None
     data = json.loads(path.read_text())
     peaks = [
