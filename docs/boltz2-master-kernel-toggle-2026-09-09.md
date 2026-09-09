@@ -116,6 +116,30 @@ the identical tape, which is the same sample that moves 2.4-2.9 Å between any
 two of the three implementations. The chaos is in the target, and the port's
 own process floor on it is already 0.8 Å.
 
+## The port's 0.83 Å process floor was XLA kernel selection (jobs 631/632)
+
+Two more port processes on the same tape with XLA autotune frozen
+(`port-C` dumped `protein_ligand_5sak-port-autotune.textproto`, `port-D`
+loaded it with `--xla_gpu_require_complete_aot_autotune_results=true`;
+`protein_ligand_5sak-frozen-pair.json`):
+
+| pair | protein samples 1-5 (Å) | ligand max |
+| --- | --- | ---: |
+| `port-C` vs `port-D` (frozen) | 0.0008, 0.0001, 0.0001, 0.0002, 0.0002 | 0.0001 |
+| `port-A` (unfrozen) vs `port-C` | 0.827, 0.002, 0.001, 0.141, 0.110 | 0.081 |
+| `native-A` vs `port-C` | 2.219, 0.166, 0.020, 2.277, 0.338 | 0.150 |
+| `native-A` vs `port-D` | 2.219, 0.166, 0.020, 2.277, 0.338 | 0.151 |
+
+With kernel selection pinned the port is repeatable to 1e-3 Å (not bitwise:
+the remaining 1e-4 band is the same trunk-level nondeterminism Protenix
+shows, `docs/protenix-master-panel-2026-09-09.md`). The 0.83 Å "port floor"
+of jobs 490/491 was therefore autotune choosing different kernels per
+process, and the frozen port sits at the same 2.2-2.3 Å from `native-A` on
+samples 1 and 4 as the unfrozen `port-B` did. Nothing about the native
+residual changes; only its attribution: the chaos is amplified from the
+kernel-family rounding band, and the port's own contribution to the scatter
+is 1e-3 Å once its kernels are pinned.
+
 ## Reading
 
 - The residual is not attributable to a port defect: no exposed knob moved it
