@@ -16,7 +16,9 @@ this page is the cross-model reading.
 | ESMFold2 | 7 | 1 | 2 | 3 | 7ST3 chain B | `esmfold2-master-panel-2026-09-09.md` |
 
 Bands: pass < 0.05 Å, deferred < 0.1 Å (the user's tolerance), at-floor =
-above 0.1 Å but within upstream's own process movement (or basin sharing).
+above 0.1 Å but within upstream's own process movement, or basin sharing, or
+(Boltz-2 1AAY) reproduced by random perturbations of native's own trunk at
+the port's measured band.
 
 ## What the night established
 

@@ -200,13 +200,16 @@ protein entity RMSD against native-A:
 | seed 1002 | 0.016, 0.006, 0.007, 0.007, 0.013 | 0.007 |
 | seed 1003 | 0.020, 0.013, **0.1745**, 0.006, 0.015 | 0.008 |
 | seed 1004 | 0.007, 0.009, **0.1744**, 0.005, 0.007 | 0.006 |
-| port (for reference) | 0.028, 0.006, **0.1746**, 0.010, 0.018 | 0.018 |
+| port-A (for reference) | 0.028, 0.016, **0.1746**, 0.006, 0.011 | 0.006 |
 
 Two of four random perturbations of the port's own size land sample 3 at
 0.1745 Å, the same distance as the port's 0.1746 Å, while the other two stay
 at 0.007-0.009 Å; the other samples stay at 0.005-0.02 Å except one 0.067 Å
-on sample 5. Sample 3 has two outcomes 0.17 Å apart and a random same-norm
-trunk perturbation picks the far one about half the time. The port's 0.175 Å
+on sample 5. Sample 3 has two discrete outcomes 0.17 Å apart: port-A, seed 1003 and
+seed 1004 agree with one another on sample 3 to 0.007-0.009 Å (all entities
+under 0.006 Å), so the far outcome is one second basin, not a shell of
+scatter, and a random same-norm trunk perturbation picks it about half the
+time. The port's 0.175 Å
 is that outcome, not a route of its own. Verdict for 1AAY: at-floor, with
 the floor now measured as this bistability rather than inferred. (The
 kernels-off-trunk sanity arm, job 651, did not run: the probe refuses a
