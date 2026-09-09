@@ -247,3 +247,42 @@ rerun controls that would have exposed it, but the caveat belongs on record.
 
 The correct next measurement for this row is both arms replayed with pinned
 kernels, which is now a small job rather than a research problem.
+
+## The matched measurement, with the port pinned
+
+The retraction above named this as a small job. It is done.
+
+Port replayed from the shared compilation cache, so its side contributes no
+kernel-selection variance. Two native captures as the control:
+
+| Comparison | max | median | per sample |
+| --- | ---: | ---: | --- |
+| native N2 vs N1 (native's own spread) | 2.1838 | 0.1364 | 2.1838, 0.1247, 0.1364, 0.1626, 0.1013 |
+| port (pinned) vs native N1 | 1.8922 | 0.1767 | 1.8922, 0.1164, 0.1347, 0.1817, 0.1767 |
+| port (pinned) vs native N2 | **0.4915** | 0.1740 | 0.4915, 0.0949, 0.1414, 0.1740, 0.1789 |
+
+**The port sits inside native's own variance.** Its worst disagreement with
+native run 2 is 0.49 A, against 2.18 A between the two native runs, and its
+distance to native run 1 (1.89 A) is smaller than native's distance to itself.
+
+On the median the port is 0.176/0.174 against native's self-spread of 0.136 --
+about **0.04 A beyond**, which is the same figure the earlier permutation
+estimate produced. That estimate was arrived at unsoundly, measuring autotune
+variance on both sides; it survives the correction because the port's variance
+and native's happened to be the same size.
+
+## What now limits this row
+
+Native's own run-to-run spread, 2.18 A max and 0.136 A median. The port's
+contribution to the comparison is now zero by construction, so every remaining
+angstrom is upstream's kernel selection. Pinning that is a torch-side question
+(cuDNN benchmark mode and algorithm selection), not a JAX one, and it is what
+would turn 0.04 A into a number with an error bar.
+
+## Where this leaves the standard's `N/A`
+
+The stated reason -- no complete injectable tape -- is measurably wrong; the tape
+is complete and consumed, and the port replays it bitwise. What is true is that
+neither this document nor the panel can yet quote a matched RMSD with a
+controlled reference, because the reference is the noisy side. That is a
+narrower and more actionable statement than the one the table carries.
