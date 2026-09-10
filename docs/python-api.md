@@ -24,8 +24,9 @@ result = predict(
         # pinning axes defines one exact serving/cache profile.
         padding=PaddingConfig(tokens=512, atoms=4096, msa=128),
         # Execution, likewise: dtype, matmul_precision, triangle_kernel,
-        # attention_kernel. "auto" is the fastest path this build can run --
-        # never a silent fallback to a slower one.
+        # attention_kernel, deterministic. "auto" is the fastest path this
+        # build can run -- never a silent fallback to a slower one, and
+        # "deterministic" buys repeatable reductions with wall time.
         options={"dtype": "bfloat16", "triangle_kernel": "auto"},
     )
 )
@@ -109,7 +110,10 @@ the CLI and prints one object for a scalar request or a list for a plural one.
 
 `sample.scores` carries that model's released confidence summaries. Native
 option spellings (`compute_dtype`, `trunk_dtype=bf16`, ...) still work and
-warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary. Predictions
+warn once; `foldjax.execution.KNOBS` lists the neutral vocabulary.
+`deterministic="on"` is Protenix-only for now and compiles that run's
+executables for repeatable reduction orders, at 13% of the wall time at 1,003
+tokens; see [the CLI reference](cli.md#--option-deterministicon). Predictions
 return summaries, not raw tensors -- the full-bin PAE/PDE logits are tens of
 GiB at long sequences and come back only on request
 (`--option return_confidence_logits=true` on Boltz-2, `--option

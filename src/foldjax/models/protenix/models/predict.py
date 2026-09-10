@@ -96,6 +96,10 @@ def protenix_predict_static(
     guidance_config: Mapping[str, Any] | None = None,
     guidance_features: Mapping[str, Any] | None = None,
     graph_jit: bool = True,
+    # Repeatability instead of speed, off by default: see
+    # `foldjax.models.protenix.compile_policy` for the measurement and for why
+    # the setting rides on the executable rather than on the process.
+    deterministic: bool = False,
     cp_shards: int = 1,
     cp_layout: str = "auto",
     padded_generated_schema: bool = False,
@@ -106,6 +110,11 @@ def protenix_predict_static(
     it primitive by primitive; see :func:`protenix_infer_compiled`. Guidance
     configuration is a plain mapping and cannot travel as a static argument,
     so a guided run falls back to the eager path on its own.
+
+    ``deterministic`` compiles that program for reduction orders that repeat
+    across runs. It is carried by the compiled graph, so the eager path -- and
+    the guided run that selects it -- is refused rather than silently run
+    without it.
     """
 
     # Pin the f32 matmul/einsum precision rather than inheriting it: the setting
@@ -137,6 +146,15 @@ def protenix_predict_static(
                 "context parallelism requires the compiled graph; drop "
                 "--no-graph-jit/guidance or cp_shards"
             )
+        if deterministic and (not graph_jit or guided):
+            # The eager path has no outer executable to carry the option: it
+            # dispatches module-level jitted primitives that every run in the
+            # process shares. Running it anyway would report a deterministic
+            # run that was not one.
+            raise ValueError(
+                "deterministic reductions are carried by the compiled graph; "
+                "drop --no-graph-jit/guidance or deterministic"
+            )
         if graph_jit and not guided:
             infer = protenix_infer_compiled
             # Rolling the repeated stacks into `lax.scan` only pays once the whole
@@ -151,6 +169,7 @@ def protenix_predict_static(
         compiled_only_kwargs = (
             {
                 "padded_generated_schema": padded_generated_schema,
+                "deterministic": deterministic,
                 "cp_shards": cp_shards,
                 "cp_layout": cp_layout,
             }

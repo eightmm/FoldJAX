@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models.protenix.compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 
 ESM_MODELS = {
     "esm2-3b": "esm2_t36_3B_UR50D.pt",
@@ -292,12 +293,34 @@ _compiled_esm2_layer = BoundedJitPool(
     limit=8,
 )
 
+#: The same layer under the deterministic-reduction options.
+#:
+#: The ESM/ISM variants run this executable before the structure graph, so a
+#: `deterministic=on` prediction on those profiles is only as repeatable as
+#: its embeddings. The trailing embedding lookup and final layer norm in
+#: :func:`esm2_forward` are dispatched op by op and are outside any executable
+#: this option can reach.
+_compiled_esm2_layer_deterministic = BoundedJitPool(
+    _esm2_layer,
+    static_argnames=("attention_heads", "layer_norm_eps"),
+    limit=8,
+    compiler_options=DETERMINISTIC_COMPILER_OPTIONS,
+)
+
+
+def _layer_pool(deterministic: bool) -> BoundedJitPool:
+    """The layer-executable owner for this run's reduction policy."""
+    if deterministic:
+        return _compiled_esm2_layer_deterministic
+    return _compiled_esm2_layer
+
 
 def esm2_forward(
     weights: Esm2Weights,
     tokens: np.ndarray | jax.Array,
     *,
     compile_layers: bool = True,
+    deterministic: bool = False,
 ) -> jax.Array:
     """Run the exact ESM-2 representation path and return ``[B, T, C]``.
 
@@ -326,7 +349,7 @@ def esm2_forward(
         x = x * ((1.0 - 0.15 * 0.8) / (1.0 - observed_ratio))[:, None, None]
     x = jnp.where(padding_mask[..., None], 0.0, x)
 
-    layer_function = _compiled_esm2_layer if compile_layers else _esm2_layer
+    layer_function = _layer_pool(deterministic) if compile_layers else _esm2_layer
     for layer in weights.layers:
         x = layer_function(
             x,
@@ -562,6 +585,7 @@ class JaxEsmProvider:
         checkpoint_dir: str | Path,
         max_sequence_length: int = 4094,
         config: Esm2Config = ESM2_3B_CONFIG,
+        deterministic: bool = False,
     ) -> None:
         if model_name not in ESM_MODELS:
             raise ValueError(f"unsupported ESM model: {model_name}")
@@ -579,6 +603,7 @@ class JaxEsmProvider:
         )
         self.max_sequence_length = max_sequence_length
         self.config = config
+        self.deterministic = bool(deterministic)
         self._weights: Esm2Weights | None = None
 
     def _load(self) -> Esm2Weights:
@@ -624,7 +649,9 @@ class JaxEsmProvider:
                 (0, target_length - len(sequence)),
                 constant_values=_PADDING_INDEX,
             )
-        representation = esm2_forward(self._load(), tokens)
+        representation = esm2_forward(
+            self._load(), tokens, deterministic=self.deterministic
+        )
         embedding = representation[0, 1 : 1 + len(sequence)]
         return np.asarray(embedding, dtype=np.float32)
 

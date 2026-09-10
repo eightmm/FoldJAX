@@ -263,6 +263,27 @@ equivalent is `compute_dtype`, default `bfloat16`; OpenFold3 has no trunk
 dtype: upstream runs `32-true` and a bf16 trunk destroys its prediction.
 Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
+### `--option deterministic=on`
+
+Compiles this run's Protenix executables for reduction orders that repeat, so
+two processes given the same input return the same structure bit for bit
+instead of the same structure to within the model's own rerun scatter. It costs
+13% of the wall time at 1,003 tokens and it is off by default, which is what
+every measurement in this repository was taken under.
+
+The setting rides on the executable rather than on the process. The equivalent
+XLA environment variable is read once at start-up, so it cannot distinguish one
+prediction from the next and it reaches every other model sharing a benchmark
+process. Being part of the compiled program also makes it part of the
+compilation-cache identity: a deterministic run never receives the executable
+built without it.
+
+Protenix is the only port that takes it so far; the others say so rather than
+accept it. Both of the port's compiled programs carry it -- the consolidated
+graph and, on the ESM/ISM variants, the language-model encoder. The eager
+routes have no executable to put it on, so `--no-graph-jit` and guidance are
+refused with the option rather than run without it.
+
 ### `--max-msa-depth`
 
 Selects the model's native MSA depth control. Candidate assembly, profile

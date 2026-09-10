@@ -69,10 +69,17 @@ class BoundedJitPool:
         *,
         static_argnames: tuple[str, ...] = (),
         limit: int = 8,
+        compiler_options: Mapping[str, Any] | None = None,
     ) -> None:
         if limit < 1:
             raise ValueError("a bounded JIT pool must retain at least one entry")
         self._function = function
+        # XLA options this owner compiles under. A pool that asks for none
+        # calls ``jax.jit`` with exactly the arguments it always did, so the
+        # default program is unchanged rather than compiled with an empty
+        # option map. Two policies are two pools: the option belongs to the
+        # executable, and one owner must not hand back another's.
+        self._compiler_options = dict(compiler_options) if compiler_options else None
         self._static_argnames = tuple(static_argnames)
         self._static_argname_set = frozenset(static_argnames)
         signature = inspect.signature(function)
@@ -135,9 +142,15 @@ class BoundedJitPool:
         # function object repeatedly would make the wrappers share JAX's
         # underlying cache and defeat per-identity eviction.
         owned_function = functools.partial(self._function)
+        if self._compiler_options is None:
+            return jax.jit(
+                owned_function,
+                static_argnames=self._static_argnames,
+            )
         return jax.jit(
             owned_function,
             static_argnames=self._static_argnames,
+            compiler_options=self._compiler_options,
         )
 
     @staticmethod

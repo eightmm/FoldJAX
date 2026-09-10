@@ -53,11 +53,17 @@ from typing import Any
 #: machines run two different programs under one command, which is how a
 #: benchmark ends up comparing kernels instead of models. A backend that cannot
 #: reach its fast path says so.
+#:
+#: `deterministic` is the one knob here that buys repeatability rather than
+#: speed: it asks the compiler for reduction orders that do not vary between
+#: runs, which costs wall time. It is off everywhere, because the run every
+#: measurement in this repository describes is the one without it.
 KNOBS: dict[str, tuple[str, ...]] = {
     "dtype": ("float32", "bfloat16"),
     "matmul_precision": ("highest", "high"),
     "triangle_kernel": ("auto", "cueq", "cueq-full", "xla"),
     "attention_kernel": ("auto", "cueq", "tokamax", "xla"),
+    "deterministic": ("off", "on"),
 }
 
 #: Old spellings, kept working. The new name is the documented one; these are

@@ -257,6 +257,15 @@ def _run(
     parser.set_defaults(sampler_scan=True)
     parser.add_argument("--denoiser-jit", action="store_true")
     parser.add_argument(
+        "--deterministic-ops",
+        choices=("off", "on"),
+        default="off",
+        help="compile this run's executables for reduction orders that repeat "
+        "between runs, instead of asking for them process-wide; measured at "
+        "13%% more wall time at 1,003 tokens, and refused with --no-graph-jit "
+        "or guidance, which have no executable to carry it",
+    )
+    parser.add_argument(
         "--diffusion-attention-backend",
         choices=("xla", "xla_jit", "xla_sdpa"),
         default="xla_jit",
@@ -403,6 +412,7 @@ def _run(
         default="error",
     )
     args = parser.parse_args(argv)
+    deterministic = args.deterministic_ops == "on"
 
     padding_requested = args.padding or any(
         value is not None
@@ -662,6 +672,10 @@ def _run(
             esm_provider = JaxEsmProvider(
                 esm_name,
                 checkpoint_dir=args.esm_checkpoint_dir or args.weights.parent,
+                # The language-model encoder is its own executable, run before
+                # the structure graph; a run asking for repeatable reductions
+                # has to carry the option into it too.
+                deterministic=deterministic,
             )
     elif padding_config is not None and args.pad_language_model_tokens is not None:
         raise SystemExit(
@@ -1063,6 +1077,7 @@ def _run(
                 guidance_config=guidance_config,
                 guidance_features=guidance_features,
                 graph_jit=not args.no_graph_jit,
+                deterministic=deterministic,
                 cp_shards=args.cp_devices,
                 cp_layout=args.cp_layout,
                 padded_generated_schema=padding_plan is not None,

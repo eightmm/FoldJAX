@@ -568,8 +568,8 @@ def test_cli_releases_all_dense_category_arrays_before_loading_params(
     if mode == "esm":
 
         class FakeProvider:
-            def __init__(self, _model_name, *, checkpoint_dir):
-                del checkpoint_dir
+            def __init__(self, _model_name, *, checkpoint_dir, deterministic=False):
+                del checkpoint_dir, deterministic
 
             def __call__(self, sequence):
                 return np.ones((len(sequence), 2560), dtype=np.float32)

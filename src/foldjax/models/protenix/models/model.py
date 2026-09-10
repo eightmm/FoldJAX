@@ -26,6 +26,7 @@ from foldjax.models._graph import (
     traceable_features,
 )
 from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models.protenix.compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 from foldjax.models.protenix.data.compact_categories import (
     COMPACT_REF_ATOM_CATEGORIES_MARKER,
     COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
@@ -707,6 +708,27 @@ _compiled_protenix_infer = BoundedJitPool(
     static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
 )
 
+#: The same graph, compiled under the deterministic-reduction options.
+#:
+#: A separate owner rather than an option on the call: the setting is part of
+#: how the executable is built, so the two cannot share one cache entry, and a
+#: run that asked for repeatable reductions must never be handed the program
+#: compiled without them. Neither pool is created lazily -- both are empty
+#: until something calls them -- and the default one keeps its name and its
+#: arguments, so a run that asks for nothing compiles what it always did.
+_compiled_protenix_infer_deterministic = BoundedJitPool(
+    _protenix_infer_graph,
+    static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
+    compiler_options=DETERMINISTIC_COMPILER_OPTIONS,
+)
+
+
+def _infer_pool(deterministic: bool) -> BoundedJitPool:
+    """The executable owner for this run's reduction policy."""
+    if deterministic:
+        return _compiled_protenix_infer_deterministic
+    return _compiled_protenix_infer
+
 
 def protenix_infer_compiled(
     input_feature_dict: Mapping[str, Any],
@@ -714,6 +736,7 @@ def protenix_infer_compiled(
     noise_schedule: jnp.ndarray,
     *,
     padded_generated_schema: bool = False,
+    deterministic: bool = False,
     **kwargs: Any,
 ) -> dict[str, jnp.ndarray]:
     """Run Protenix as one compiled program instead of op by op.
@@ -729,6 +752,9 @@ def protenix_infer_compiled(
     have to be hashable to travel as a static argument, so a guided run stays
     on the eager path. :func:`protenix_infer_static` remains available and
     ``--no-graph-jit`` selects it.
+
+    ``deterministic`` selects the owner compiled for repeatable reduction
+    orders. It changes which executable runs, not what it computes.
     """
     validate_compact_ref_atom_categories(input_feature_dict)
     restype = input_feature_dict.get("restype")
@@ -800,7 +826,7 @@ def protenix_infer_compiled(
             model_features = replicate_tree(model_features)
             noise_schedule = replicate_tree(noise_schedule)
             kwargs = replicate_tree(kwargs)
-        return _compiled_protenix_infer(
+        return _infer_pool(deterministic)(
             model_features,
             param_arrays,
             noise_schedule,

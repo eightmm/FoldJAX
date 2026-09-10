@@ -50,6 +50,7 @@ _CLI_OPTIONS = {
     "token_q_chunk_size",
     "opm_chunk_size",
     "diffusion_chunk_size",
+    "deterministic_ops",
 }
 _RESERVED_CLI_FLAGS = frozenset(
     {
@@ -126,6 +127,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "chunk_policy": "auto",
     "cp_devices": 1,
     "cp_layout": "auto",
+    "deterministic_ops": "off",
 }
 
 
@@ -236,6 +238,11 @@ class ProtenixBackend(ManagedCcdSession, Backend):
             "trunk_single_attention_backend",
             {"auto": "xla_jit", "xla": "xla_jit"},
         ),
+        # Repeatable reduction orders, compiled into this run's executables
+        # rather than asked for with a process-wide XLA environment variable.
+        # Protenix is the only port that carries it so far, so the neutral name
+        # is here and nowhere else; the value vocabulary is the neutral one.
+        "deterministic": ("deterministic_ops", {"off": "off", "on": "on"}),
     }
     compile_options = (
         "cp_devices",
@@ -257,6 +264,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "token_q_chunk_size",
         "opm_chunk_size",
         "diffusion_chunk_size",
+        "deterministic_ops",
         "cli_args",
     )
 

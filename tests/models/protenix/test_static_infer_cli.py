@@ -739,8 +739,11 @@ def test_static_infer_adds_esm_for_esm_model(
     captured = {}
 
     class FakeProvider:
-        def __init__(self, model_name, *, checkpoint_dir):
-            providers.append((model_name, checkpoint_dir))
+        # The CLI hands its encoder the run's reduction policy; a double whose
+        # signature stops at the checkpoint would keep passing after the real
+        # provider stopped accepting the call the CLI makes.
+        def __init__(self, model_name, *, checkpoint_dir, deterministic=False):
+            providers.append((model_name, checkpoint_dir, deterministic))
 
         def __call__(self, sequence):
             return np.ones((len(sequence), 2560), dtype=np.float32)
@@ -777,7 +780,9 @@ def test_static_infer_adds_esm_for_esm_model(
         ]
     )
 
-    assert providers == [(provider_name, checkpoint_dir)]
+    # False, not merely accepted: an unasked run must build the encoder the
+    # way it always did.
+    assert providers == [(provider_name, checkpoint_dir, False)]
     assert captured["esm_token_embedding"].shape == (1, 2560)
 
 
@@ -793,8 +798,8 @@ def test_static_infer_releases_esm_provider_before_structure_weights(
     provider_refs: list[weakref.ReferenceType[object]] = []
 
     class FakeProvider:
-        def __init__(self, _model_name, *, checkpoint_dir):
-            del checkpoint_dir
+        def __init__(self, _model_name, *, checkpoint_dir, deterministic=False):
+            del checkpoint_dir, deterministic
             provider_refs.append(weakref.ref(self))
 
         def __call__(self, sequence):
@@ -857,8 +862,8 @@ def test_static_infer_pads_mini_esm_language_model_and_reports_profile(
     class FakeProvider:
         max_sequence_length = 4094
 
-        def __init__(self, _model_name, *, checkpoint_dir):
-            del checkpoint_dir
+        def __init__(self, _model_name, *, checkpoint_dir, deterministic=False):
+            del checkpoint_dir, deterministic
 
         def __call__(self, sequence):
             return np.ones((len(sequence), 2560), dtype=np.float32)
