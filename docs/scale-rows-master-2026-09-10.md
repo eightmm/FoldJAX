@@ -52,8 +52,9 @@ Reading, where both sides ran:
 
 OpenDDE `--option dtype=bfloat16` (opt-in; upstream runs fp32/TF32 so this is
 not the parity arm): 1k 149 s / 21.0 GiB against the fp32 row's 235 s / 41.3
-GiB (37% faster, half the peak); 2k/3k rows and the eight-case accuracy
-comparison against fp32 and upstream follow (jobs 975-984).
+GiB (37% faster, half the peak); at 2k it still OOMs (an 85 GiB request,
+job 975), so bf16 moves the ceiling but not past 2,096 tokens; the 3k row and
+the eight-case accuracy comparison against fp32 and upstream follow (976-984).
 
 Extra rows on the same cases: Protenix `deterministic=on` costs 13% wall at 1k
 (74 vs 65 s) and 9.7% at 3k with Triton gemms disabled (635 vs 579 s;
