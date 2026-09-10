@@ -24,6 +24,13 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models import _capture
+from foldjax.models._compile_policy import (
+    compiler_options as _compiler_options,
+)
+from foldjax.models._compile_policy import (
+    policy_pools,
+    select,
+)
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -158,6 +165,7 @@ def language_model_states(
     model: LoadedModel,
     *,
     packed_length: int | None = None,
+    deterministic: bool = False,
 ) -> jnp.ndarray | None:
     """ESMC's stacked hidden states for these tokens, or `None` without it."""
     if model.esmc_parameters is None or model.esmc_settings is None:
@@ -168,6 +176,7 @@ def language_model_states(
         model.esmc_parameters,
         settings=model.esmc_settings,
         packed_length=packed_length,
+        deterministic=deterministic,
     )
 
 
@@ -285,8 +294,14 @@ def release_language_model_parameters(
 def _compiled_language_model_embedding(
     compute_dtype: str,
     input_signature: tuple[object, ...],
+    deterministic: bool = False,
 ) -> Callable[[jnp.ndarray, Mapping[str, jnp.ndarray]], jnp.ndarray]:
-    """One bounded JIT owner for an exact hidden/parameter signature."""
+    """One bounded JIT owner for an exact hidden/parameter signature.
+
+    The reduction policy is part of the key rather than of the call: the two
+    are different executables, and a run that asked for repeatable reductions
+    must not be handed the one compiled without them.
+    """
 
     del input_signature
 
@@ -299,12 +314,17 @@ def _compiled_language_model_embedding(
             hidden_states, parameters, compute_dtype=compute
         )
 
-    return jax.jit(run)
+    options = _compiler_options(deterministic=deterministic)
+    if options is None:
+        return jax.jit(run)
+    return jax.jit(run, compiler_options=options)
 
 
 def _language_model_embedding_from_states(
     hidden_states: jnp.ndarray,
     model: LoadedModel,
+    *,
+    deterministic: bool = False,
 ) -> jnp.ndarray:
     """Project one stack through a bounded, signature-specific JIT owner."""
     parameters = _language_model_embedding_parameters(model.parameters)
@@ -317,7 +337,7 @@ def _language_model_embedding_from_states(
         ),
     )
     return _compiled_language_model_embedding(
-        str(model.settings.trunk_dtype), signature
+        str(model.settings.trunk_dtype), signature, deterministic
     )(hidden_states, parameters)
 
 
@@ -326,15 +346,21 @@ def language_model_embedding(
     model: LoadedModel,
     *,
     packed_length: int | None = None,
+    deterministic: bool = False,
 ) -> jnp.ndarray | None:
     """Return the compact seed-independent ESMC embedding for one input."""
 
     hidden_states = language_model_states(
-        features, model, packed_length=packed_length
+        features,
+        model,
+        packed_length=packed_length,
+        deterministic=deterministic,
     )
     if hidden_states is None:
         return None
-    return _language_model_embedding_from_states(hidden_states, model)
+    return _language_model_embedding_from_states(
+        hidden_states, model, deterministic=deterministic
+    )
 
 
 def language_model_length(features: Mapping[str, np.ndarray]) -> int:
@@ -506,6 +532,10 @@ def predict(
     return_distogram_logits: bool = True,
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
+    #: Repeatability instead of speed, off by default: see
+    #: `foldjax.models._compile_policy` for the measurement and for why the
+    #: setting rides on the executable rather than on the process.
+    deterministic: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """One forward over already-built features.
 
@@ -513,7 +543,22 @@ def predict(
     time -- forty-eight trunk layers, four loops, twelve diffusion blocks per
     sampling step -- so the difference is not a tuning detail; `compile_it` is
     there for debugging, where a traced error message is worth the wait.
+
+    `deterministic` compiles both executables this call owns -- the structure
+    graph and, when ESMC runs, its blocks -- for reduction orders that repeat
+    across runs. It is carried by those executables, so the eager path is
+    refused rather than silently run without it.
     """
+    if deterministic and not compile_it:
+        # The eager path has no outer executable to carry the option: it
+        # dispatches module-level jitted primitives that every run in the
+        # process shares. Running it anyway would report a deterministic run
+        # that was not one. Refused before any work, like every other
+        # configuration error here.
+        raise ValueError(
+            "deterministic reductions are carried by the compiled graph; "
+            "drop compile_it=False or deterministic"
+        )
     settings = structure_model.with_overrides(
         model.settings,
         num_recycles=num_recycles,
@@ -555,7 +600,10 @@ def predict(
     )
     if hidden is None and not stop_after_inputs:
         hidden = language_model_states(
-            features, model, packed_length=language_model_tokens
+            features,
+            model,
+            packed_length=language_model_tokens,
+            deterministic=deterministic,
         )
     # Read on the host: it sizes the confidence head's per-chain matrix, and a
     # traced maximum cannot size anything.
@@ -575,12 +623,16 @@ def predict(
     )
     if stop_after_inputs:
         auxiliary_output_kwargs["stop_after_inputs"] = True
+    # Named only when asked, like every other optional key on this call: an
+    # unrequested run must reach the factory in the call form it always used.
+    policy_kwargs = {"deterministic": True} if deterministic else {}
     runner = (
         compiled_predict(
             settings, n_chains, preserve_prefix_rng, cp_shards,
             return_representations, stop_after_trunk, contiguous_atom_groups,
             compact_token_bond_encoding, return_distogram_logits,
             compact_lm_input, atom_rows_per_block,
+            **policy_kwargs,
             **auxiliary_output_kwargs,
         )
         if compile_it
@@ -681,7 +733,10 @@ _COMPILED_PREDICT_STATIC_ARGNAMES = (
     "return_auxiliary_outputs",
     "stop_after_inputs",
 )
-_compiled_predict_pool = BoundedJitPool(
+#: The graph's two executable owners, the second under the
+#: deterministic-reduction options: see `foldjax.models._compile_policy` for
+#: why the policy is part of the build rather than an argument to the call.
+_compiled_predict_pool, _compiled_predict_pool_deterministic = policy_pools(
     _run,
     static_argnames=_COMPILED_PREDICT_STATIC_ARGNAMES,
     limit=8,
@@ -691,17 +746,29 @@ _compiled_predict_pool = BoundedJitPool(
 class _CompiledPredictFacade:
     """One public factory result backed by the shared bounded owner pool."""
 
+    def __init__(self, deterministic: bool = False) -> None:
+        self._deterministic = deterministic
+
+    @property
+    def _pool(self) -> BoundedJitPool:
+        # Resolved per call through the module globals rather than bound once,
+        # so replacing an owner still reaches this facade.
+        return select(
+            (_compiled_predict_pool, _compiled_predict_pool_deterministic),
+            self._deterministic,
+        )
+
     def __call__(self, *args: Any, **kwargs: Any) -> dict[str, jnp.ndarray]:
-        return _compiled_predict_pool(*args, **kwargs)
+        return self._pool(*args, **kwargs)
 
     def lower(self, *args: Any, **kwargs: Any) -> Any:
-        return _compiled_predict_pool.lower(*args, **kwargs)
+        return self._pool.lower(*args, **kwargs)
 
     def clear_cache(self) -> None:
-        _compiled_predict_pool.clear_cache()
+        self._pool.clear_cache()
 
     def _cache_size(self) -> int:
-        return _compiled_predict_pool._cache_size()  # noqa: SLF001
+        return self._pool._cache_size()  # noqa: SLF001
 
 
 @lru_cache(maxsize=8)
@@ -720,6 +787,7 @@ def _compiled_predict_factory(
     *,
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
+    deterministic: bool = False,
 ) -> _CompiledPredictFacade:
     del (
         settings,
@@ -736,7 +804,7 @@ def _compiled_predict_factory(
         return_auxiliary_outputs,
         stop_after_inputs,
     )
-    return _CompiledPredictFacade()
+    return _CompiledPredictFacade(deterministic)
 
 
 def compiled_predict(
@@ -754,6 +822,7 @@ def compiled_predict(
     *,
     return_auxiliary_outputs: bool = True,
     stop_after_inputs: bool = False,
+    deterministic: bool = False,
 ) -> Callable[..., dict[str, jnp.ndarray]]:
     """`predict` as one jitted program, cached per settings, chains and RNG mode.
 
@@ -788,22 +857,28 @@ def compiled_predict(
         compact_lm_input,
         atom_rows_per_block,
     )
+    # Spelled only when asked, like every other optional key here: an
+    # unrequested run must reach the factory in the call form it always used,
+    # so its owner and its cache entry are the ones it already had.
+    policy = {"deterministic": True} if deterministic else {}
     if stop_after_inputs:
         return _compiled_predict_factory(
             *identity, return_auxiliary_outputs=return_auxiliary_outputs,
-            stop_after_inputs=True,
+            stop_after_inputs=True, **policy,
         )
     if return_auxiliary_outputs:
-        return _compiled_predict_factory(*identity)
+        return _compiled_predict_factory(*identity, **policy)
     return _compiled_predict_factory(
         *identity,
         return_auxiliary_outputs=False,
+        **policy,
     )
 
 
 def _clear_compiled_predict_cache() -> None:
     _compiled_predict_factory.cache_clear()
     _compiled_predict_pool.clear_cache()
+    _compiled_predict_pool_deterministic.clear_cache()
 
 
 compiled_predict.cache_clear = _clear_compiled_predict_cache  # type: ignore[attr-defined]

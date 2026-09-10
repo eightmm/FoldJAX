@@ -25,12 +25,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models.esmfold2.models.primitives import layer_norm, linear
+
+if TYPE_CHECKING:
+    from foldjax.models._jit_pool import BoundedJitPool
 
 Params = Mapping[str, jnp.ndarray]
 
@@ -249,6 +254,53 @@ def block(
     )
 
 
+#: The arguments that decide which block program is built rather than what it
+#: is fed. `prefix` is always `""`: the loop hands each block its own subtree
+#: under the block's own names, which is what lets all eighty share one owner.
+_BLOCK_STATIC_ARGNAMES = (
+    "prefix",
+    "n_heads",
+    "residual_scale",
+    "autocast_bfloat16",
+)
+
+#: The block's two executable owners, the second under the
+#: deterministic-reduction options: see `foldjax.models._compile_policy` for
+#: why the policy is part of the build rather than an argument to the call.
+#:
+#: Eighty blocks, one owner, because they all have the same shapes -- the same
+#: arrangement Protenix uses for its ESM-2 layers. Unlike that one this loop
+#: adds no per-block barrier: `bridge.esmc.load_parameters` has already
+#: transferred the checkpoint, so there is no host staging buffer for a
+#: barrier to bound.
+#:
+#: What the owner reaches is the blocks. The embedding lookup that opens
+#: :func:`encode`, the final layer norm that closes it, and the packing and
+#: scatter-back around it in :func:`lm_hidden_states` are dispatched op by op
+#: and stay outside any executable this option can carry -- the same boundary
+#: Protenix records for its own encoder.
+_compiled_block, _compiled_block_deterministic = policy_pools(
+    block,
+    static_argnames=_BLOCK_STATIC_ARGNAMES,
+    limit=8,
+)
+
+
+def _block_pool(deterministic: bool) -> BoundedJitPool:
+    """The block-executable owner for this run's reduction policy."""
+    return select((_compiled_block, _compiled_block_deterministic), deterministic)
+
+
+def _block_parameters(params: Params, prefix: str) -> dict[str, jnp.ndarray]:
+    """One block's subtree, under the names the block itself asks for."""
+    dot = f"{prefix}."
+    return {
+        name[len(dot) :]: value
+        for name, value in params.items()
+        if name.startswith(dot)
+    }
+
+
 def encode(
     input_ids: jnp.ndarray,
     sequence_id: jnp.ndarray | None,
@@ -256,6 +308,8 @@ def encode(
     prefix: str = "",
     *,
     settings: ESMCSettings,
+    compile_blocks: bool | None = None,
+    deterministic: bool = False,
 ) -> jnp.ndarray:
     """Every hidden state, stacked `[n_layers + 1, B, L, d_model]`.
 
@@ -263,7 +317,21 @@ def encode(
     embedding untouched -- and the last is the final layer norm's output. That
     is the stack `LanguageModelShim` softmaxes over, and taking only the last
     layer, or dropping the embedding, silently changes what the trunk reads.
+
+    Unset, `compile_blocks` follows `deterministic`: the released run stays on
+    the operation-by-operation dispatch every ESMFold2 measurement describes,
+    and a run that asked for repeatable reduction orders gets the executable
+    that can carry them. Compiled and eager are not bitwise-equal here -- on
+    XLA CPU a lone `layer_norm` already moves by 3e-8 between the two -- so
+    which one runs is a property worth being explicit about.
     """
+    if compile_blocks is None:
+        compile_blocks = deterministic
+    elif deterministic and not compile_blocks:
+        raise ValueError(
+            "deterministic reductions are carried by the compiled blocks; "
+            "drop compile_blocks=False or deterministic"
+        )
     dot = f"{prefix}." if prefix else ""
     x = params[f"{dot}embed.weight"][input_ids]
     rope = rotary_tables(
@@ -271,12 +339,14 @@ def encode(
     )
     scale = settings.residual_scale
 
+    run_block = _block_pool(deterministic) if compile_blocks else block
     collected = [x]
     for index in range(settings.n_layers):
-        x = block(
+        name = f"{dot}transformer.blocks.{index}"
+        x = run_block(
             x,
-            params,
-            f"{dot}transformer.blocks.{index}",
+            _block_parameters(params, name) if compile_blocks else params,
+            prefix="" if compile_blocks else name,
             n_heads=settings.n_heads,
             sequence_id=sequence_id,
             rope=rope,
@@ -431,6 +501,7 @@ def lm_hidden_states(
     *,
     settings: ESMCSettings,
     packed_length: int | None = None,
+    deterministic: bool = False,
 ) -> jnp.ndarray:
     """`compute_lm_hidden_states`: pack, run ESMC, scatter back."""
     lm_input_ids, sequence_id, expand_map = pack_lm_inputs(
@@ -447,6 +518,7 @@ def lm_hidden_states(
         params,
         prefix,
         settings=settings,
+        deterministic=deterministic,
     )
     return hidden_states_for_tokens(hidden, expand_map, input_ids.shape[1])
 
