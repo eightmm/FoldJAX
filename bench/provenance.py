@@ -611,6 +611,11 @@ def source_identity(repo: Path) -> dict[str, Any]:
         "alphafold3_sample_arm": repo
         / "tests/models/alphafold3/scripts/run_sample_shard_end_to_end_arm.py",
         "drive": repo / "bench/drive.py",
+        # Every other upstream row executes only its own checkout, which
+        # `upstream_git_provenance` pins. ESMFold2's fork ships no
+        # predictor, so the code that drives it lives here and is a
+        # measurement input like the OpenFold3 runner config below.
+        "esmfold2_upstream": repo / "bench/esmfold2_upstream.py",
         "gap_ablation": repo / "bench/run_gap_ablation.py",
         "opendde_relp_arm": repo
         / "tests/models/opendde/scripts/run_structural_relp_end_to_end_arm.py",

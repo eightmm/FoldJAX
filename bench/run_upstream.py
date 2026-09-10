@@ -56,6 +56,41 @@ def _upstream_root() -> Path:
     )
 
 
+#: Directory name each upstream's checkout carries under the bench root.
+_UPSTREAM_CHECKOUTS = {
+    "boltz2": "boltz",
+    "esmfold2": "transformers-esmfold2",
+    "opendde": "OpenDDE",
+    "openfold3": "openfold3-v050",
+    "protenix": "protenix",
+    "protenix-v2": "protenix",
+}
+
+
+def upstream_checkout(model: str) -> Path:
+    """The git checkout whose source one supported upstream row executes."""
+
+    try:
+        return _upstream_root() / _UPSTREAM_CHECKOUTS[model]
+    except KeyError:
+        raise ValueError(f"no upstream checkout for {model}") from None
+
+
+def upstream_python(model: str) -> Path:
+    """The interpreter one upstream environment runs.
+
+    Every torch upstream here keeps its virtualenv inside its own checkout, so
+    the version probe could derive the interpreter from the checkout it was
+    already given. The ESMFold2 fork does not: it is an unmodified
+    `transformers` tree whose environment is staged beside it, so the
+    interpreter has to be named rather than guessed off the checkout.
+    """
+
+    if model == "esmfold2":
+        return _upstream_root() / "esmfold2-venv/bin/python"
+    return upstream_checkout(model) / ".venv/bin/python"
+
+
 def _git(repo: Path, *args: str, binary: bool = False) -> str | bytes:
     """Run one non-interactive provenance query in an upstream checkout."""
 
@@ -298,10 +333,21 @@ def upstream_git_provenance(
     }
 
 
-def upstream_runtime_versions(repo: Path) -> dict[str, object]:
-    """Read environment versions without importing either tensor runtime."""
+def upstream_runtime_versions(
+    repo: Path,
+    *,
+    python: Path | None = None,
+) -> dict[str, object]:
+    """Read environment versions without importing either tensor runtime.
 
-    python = repo / ".venv/bin/python"
+    ``python`` names the interpreter when it does not live inside ``repo``.
+    See :func:`upstream_python`: ESMFold2 runs an unmodified `transformers`
+    checkout from an environment staged beside it, and probing
+    ``repo/.venv`` there reports a virtualenv that does not exist rather than
+    the one the row runs.
+    """
+
+    python = repo / ".venv/bin/python" if python is None else Path(python)
     if not python.is_file():
         raise RuntimeError(f"upstream virtualenv is missing its Python: {python}")
     script = """
@@ -311,6 +357,7 @@ import platform
 
 names = (
     "torch", "triton", "boltz", "protenix", "opendde", "openfold3", "biotite",
+    "transformers", "safetensors", "huggingface-hub", "accelerate", "gemmi",
     "numpy", "scipy", "rdkit", "biopython", "pyyaml", "omegaconf",
     "hydra-core", "lightning", "pytorch-lightning",
     "cuequivariance", "cuequivariance-torch",
@@ -442,7 +489,24 @@ def upstream_checkpoint_paths(model: str) -> dict[str, Path]:
         }
     if model == "opendde":
         return {"model": _store() / "downloads" / "opendde" / "opendde.pt"}
+    if model == "esmfold2":
+        # Both arms load the same published checkpoint from the same
+        # directory: the fork has no weights of its own, and FoldJAX converts
+        # nothing ahead of time. Resolving it through the FoldJAX rule keeps
+        # the two rows' fingerprints comparable by construction rather than by
+        # two spellings of one path agreeing.
+        from bench.provenance import foldjax_checkpoint_paths
+
+        return foldjax_checkpoint_paths(model, _esmfold2_weights())
     raise ValueError(f"no upstream checkpoint for {model}")
+
+
+def _esmfold2_weights() -> Path:
+    """The staged ESMFold2 checkpoint directory both arms read."""
+
+    from foldjax.paths import weights_dir
+
+    return weights_dir("esmfold2")
 
 
 def _upstream_boltz_canonical_tokens() -> tuple[str, ...]:
@@ -764,7 +828,39 @@ def upstream_implicit_asset_paths(
                 _upstream_root() / "openfold3-v050"
             ),
         }
+    if model == "esmfold2":
+        from bench.provenance import foldjax_implicit_asset_paths
+
+        weights = _esmfold2_weights()
+        selected = foldjax_implicit_asset_paths(model, weights)
+        if _esmfold2_job_is_all_atom(native_input):
+            # Publisher chemistry, and a job-dependent asset like Boltz's
+            # molecule pickles: a lone protein chain with no alignment takes
+            # the legacy builder and never opens it. Every bench case does
+            # open it -- each one names an alignment -- but binding it
+            # unconditionally would refuse a job that does not need it.
+            selected["esmfold2.ccd"] = weights / "ccd.pkl"
+        return selected
     raise ValueError(f"no upstream assets for {model}")
+
+
+def _esmfold2_job_is_all_atom(native_input: Path | None) -> bool:
+    """Whether this job selects the all-biomolecule builder, and its CCD."""
+
+    if native_input is None:
+        return False
+    from foldjax.backends.esmfold2 import (
+        _job_document,
+        _requires_all_atom_features,
+    )
+
+    try:
+        document, _base = _job_document(Path(native_input))
+        return _requires_all_atom_features(document)
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
+        raise ArtifactFingerprintError(
+            "cannot read the ESMFold2 benchmark job document"
+        ) from error
 
 
 def command(
@@ -776,9 +872,8 @@ def command(
     openfold3_runner_yaml: Path | None = None,
 ):
     """Return (argv, cwd, extra_env) for one upstream prediction."""
-    root = _upstream_root()
     if model == "boltz2":
-        repo = root / "boltz"
+        repo = upstream_checkout(model)
         checkpoint = upstream_checkpoint_paths(model)["model"]
         return (
             [
@@ -810,7 +905,7 @@ def command(
             {"PYTHONPATH": str(repo / "src")},
         )
     if model in {"protenix", "protenix-v2"}:
-        repo = root / "protenix"
+        repo = upstream_checkout(model)
         # Upstream resolves the architecture from the name: `model_name` picks
         # the entry in configs_model_type, which for v2 widens c_z to 256 and
         # turns on hidden_scale_up before the checkpoint is loaded. The bench's
@@ -869,7 +964,7 @@ def command(
                 f"!= recorded {expected}; "
                 "provide a matching --openfold3-runner-yaml"
             )
-        repo = root / "openfold3-v050"
+        repo = upstream_checkout(model)
         checkpoint = upstream_checkpoint_paths(model)["model"]
         return (
             [
@@ -896,7 +991,7 @@ def command(
             {},
         )
     if model == "opendde":
-        repo = root / "OpenDDE"
+        repo = upstream_checkout(model)
         checkpoint = upstream_checkpoint_paths(model)["model"]
         return (
             _protenix_family(
@@ -913,7 +1008,67 @@ def command(
             repo,
             {"PYTHONPATH": str(repo)},
         )
+    if model == "esmfold2":
+        # The only upstream here with no predictor above the model class, so
+        # the entry point is this repository's `bench.esmfold2_upstream`
+        # running inside the fork's environment. `-P` keeps the fork's own
+        # working directory off `sys.path`, so the `transformers` the child
+        # imports is the one it puts there itself and checks.
+        repo = upstream_checkout(model)
+        harness = Path(__file__).resolve().parent.parent
+        return (
+            [
+                str(upstream_python(model)),
+                "-P",
+                "-m",
+                "bench.esmfold2_upstream",
+                "--job",
+                str(job),
+                "--output-dir",
+                str(out),
+                "--weights",
+                str(_esmfold2_weights()),
+                "--upstream-source-root",
+                str(repo),
+                "--num-samples",
+                str(schedule["num_samples"]),
+                # Upstream's `num_loops` is this knob: `forward` documents it
+                # as a caller override, and both implementations run
+                # `max(1, n + 1)` trunk loops from it. Passing the pinned
+                # schedule is what makes the two ESMFold2 columns a
+                # comparison; the FoldJAX row already runs these values.
+                "--num-recycles",
+                str(schedule["num_recycles"]),
+                "--num-steps",
+                str(schedule["num_steps"]),
+                "--seed",
+                str(seed),
+            ],
+            repo,
+            {"PYTHONPATH": f"{harness}:{harness / 'src'}"},
+        )
     raise ValueError(f"no upstream runner for {model}")
+
+
+def effective_schedule(model: str, out: Path) -> dict[str, object] | None:
+    """What one upstream reports it actually ran, where it reports anything.
+
+    Requested steps are not run steps for ESMFold2: its sampler clips the
+    noise schedule at sigma 256, so it denoises fewer times than it was asked
+    to by an amount that depends on the checkpoint. The row carries the
+    read-back rather than the request alone.
+    """
+
+    if model != "esmfold2":
+        return None
+    path = out / "esmfold2_upstream_run.json"
+    if not path.is_file():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return document if isinstance(document, dict) else None
 
 
 def upstream_environment(
@@ -955,6 +1110,21 @@ def scores(model: str, out: Path) -> list[dict]:
                     if isinstance(body.get(key), (int, float))
                 }
             )
+    elif model == "esmfold2":
+        # One file with one entry per sample, because that is what the shared
+        # ESMFold2 writer produces on both arms. Dropping `sample` leaves the
+        # exact key set the FoldJAX row records, so the two columns compare
+        # the same four confidences and the same masked pLDDT mean.
+        for path in sorted(out.rglob("*_confidence.json")):
+            body = json.loads(path.read_text())
+            for entry in body.get("samples") or []:
+                found.append(
+                    {
+                        key: float(value)
+                        for key, value in entry.items()
+                        if key != "sample" and isinstance(value, (int, float))
+                    }
+                )
     elif model == "openfold3":
         # `<case>/seed_<n>/
         #    <case>_seed_<n>_sample_<k>_confidences_aggregated.json`;
@@ -1102,7 +1272,9 @@ def main() -> int:
             cwd,
             expected_diff_sha256=args.expected_upstream_diff_sha256,
         )
-        upstream_runtime = upstream_runtime_versions(cwd)
+        upstream_runtime = upstream_runtime_versions(
+            cwd, python=upstream_python(args.model)
+        )
         checkpoint_paths = upstream_checkpoint_paths(args.model)
         implicit_asset_paths = upstream_implicit_asset_paths(
             args.model,
@@ -1188,7 +1360,9 @@ def main() -> int:
     except RuntimeError as error:
         postflight_errors.append(str(error))
     try:
-        postflight_runtime = upstream_runtime_versions(cwd)
+        postflight_runtime = upstream_runtime_versions(
+            cwd, python=upstream_python(args.model)
+        )
         if postflight_runtime != upstream_runtime:
             postflight_errors.append(
                 "upstream runtime changed while prediction was running: "
@@ -1266,6 +1440,9 @@ def main() -> int:
         "upstream_git": upstream_git,
         "upstream_runtime": upstream_runtime,
     }
+    reported = effective_schedule(args.model, args.output_dir)
+    if reported is not None:
+        record["upstream_effective_schedule"] = reported
     if postflight_error is not None:
         record["failed"] = True
         record["reason"] = "benchmark provenance changed during prediction"

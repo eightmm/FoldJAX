@@ -895,6 +895,7 @@ def test_source_and_execution_identity_are_path_free_and_scoped(
     for relative in (
         "tests/models/alphafold3/scripts/run_sample_shard_end_to_end_arm.py",
         "bench/drive.py",
+        "bench/esmfold2_upstream.py",
         "bench/run_gap_ablation.py",
         "tests/models/opendde/scripts/run_structural_relp_end_to_end_arm.py",
         "bench/openfold3_runner.yml",
@@ -1545,6 +1546,196 @@ def test_upstream_root_can_be_relocated(monkeypatch, tmp_path: Path) -> None:
     assert environment["PYTHONPATH"] == str(tmp_path / "boltz/src")
 
 
+def _esmfold2_weights_tree(root: Path) -> Path:
+    """The staged ESMFold2 directory both arms read, in miniature."""
+
+    weights = root / "weights/esmfold2"
+    (weights / "esmc").mkdir(parents=True)
+    (weights / "model.safetensors").write_bytes(b"structure")
+    (weights / "config.json").write_text('{"num_loops": 3}\n')
+    (weights / "ccd.pkl").write_bytes(b"chemistry")
+    (weights / "esmc/config.json").write_text('{"hidden_size": 16}\n')
+    (weights / "esmc/model.safetensors").write_bytes(b"language model")
+    return weights
+
+
+def _esmfold2_job(path: Path, *, aligned: bool) -> Path:
+    entity = {"type": "protein", "id": "A", "sequence": "MKV"}
+    if aligned:
+        entity["unpaired_msa"] = str(path.parent / "a.a3m")
+    path.write_text(json.dumps({"name": "case", "entities": [entity]}))
+    return path
+
+
+def test_upstream_esmfold2_runs_the_fork_from_a_staged_environment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FOLDJAX_BENCH_ROOT", str(tmp_path))
+    weights = _esmfold2_weights_tree(tmp_path)
+    monkeypatch.setattr(run_upstream, "_esmfold2_weights", lambda: weights)
+
+    argv, cwd, environment = command(
+        "esmfold2",
+        tmp_path / "inputs/esmfold2_input.json",
+        tmp_path / "out",
+        {"num_samples": 5, "num_steps": 200, "num_recycles": 10},
+        101,
+    )
+
+    harness = Path(run_upstream.__file__).resolve().parent.parent
+    assert cwd == tmp_path / "transformers-esmfold2"
+    assert argv == [
+        str(tmp_path / "esmfold2-venv/bin/python"),
+        "-P",
+        "-m",
+        "bench.esmfold2_upstream",
+        "--job",
+        str(tmp_path / "inputs/esmfold2_input.json"),
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--weights",
+        str(weights),
+        "--upstream-source-root",
+        str(tmp_path / "transformers-esmfold2"),
+        "--num-samples",
+        "5",
+        "--num-recycles",
+        "10",
+        "--num-steps",
+        "200",
+        "--seed",
+        "101",
+    ]
+    # The fork ships no virtualenv of its own, so the interpreter has to be
+    # named rather than derived from the checkout the provenance gate reads.
+    assert environment["PYTHONPATH"] == f"{harness}:{harness / 'src'}"
+    assert run_upstream.upstream_python("esmfold2") == Path(argv[0])
+    assert cwd not in Path(argv[0]).parents
+    assert run_upstream.upstream_python("boltz2") == tmp_path / "boltz/.venv/bin/python"
+
+
+def test_upstream_esmfold2_binds_the_same_staged_assets_as_foldjax(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    weights = _esmfold2_weights_tree(tmp_path)
+    monkeypatch.setattr(run_upstream, "_esmfold2_weights", lambda: weights)
+    aligned = _esmfold2_job(tmp_path / "aligned.json", aligned=True)
+    bare = _esmfold2_job(tmp_path / "bare.json", aligned=False)
+
+    assert upstream_checkpoint_paths("esmfold2") == foldjax_checkpoint_paths(
+        "esmfold2", weights
+    )
+    shared = foldjax_implicit_asset_paths("esmfold2", weights)
+    # Publisher chemistry is job-dependent: every bench case names an
+    # alignment and therefore takes the all-biomolecule builder, but a lone
+    # unaligned chain never opens `ccd.pkl`.
+    assert upstream_implicit_asset_paths("esmfold2", native_input=aligned) == {
+        **shared,
+        "esmfold2.ccd": weights / "ccd.pkl",
+    }
+    assert upstream_implicit_asset_paths("esmfold2", native_input=bare) == shared
+
+
+def test_upstream_runtime_probe_reads_an_interpreter_outside_the_checkout(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "transformers-esmfold2"
+    repo.mkdir()
+    python = tmp_path / "esmfold2-venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n")
+    seen: list[str] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv[0])
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps({"python": {}, "distributions": {"transformers": "5.0"}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(run_upstream.subprocess, "run", fake_run)
+
+    versions = run_upstream.upstream_runtime_versions(repo, python=python)
+
+    assert seen == [str(python)]
+    assert versions["distributions"]["transformers"] == "5.0"
+    # Without one, the probe still looks inside the checkout, which is where
+    # every other upstream keeps its environment.
+    with pytest.raises(RuntimeError, match="virtualenv is missing"):
+        run_upstream.upstream_runtime_versions(repo)
+
+
+def test_upstream_esmfold2_reads_one_score_record_per_written_sample(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "case_confidence.json").write_text(
+        json.dumps(
+            {
+                "model": "esmfold2",
+                "samples": [
+                    {
+                        "sample": index,
+                        "complex_plddt": 0.8 + index / 100,
+                        "complex_iplddt": 0.7,
+                        "ptm": 0.6,
+                        "iptm": 0.5,
+                        "plddt": 0.9,
+                    }
+                    for index in range(3)
+                ],
+            }
+        )
+    )
+
+    found = run_upstream.scores("esmfold2", tmp_path)
+
+    assert len(found) == 3
+    # `sample` is an index, not a confidence; the FoldJAX row drops it too, so
+    # both columns carry the same key set.
+    assert all(
+        set(entry) == {"complex_plddt", "complex_iplddt", "ptm", "iptm", "plddt"}
+        for entry in found
+    )
+    assert [entry["complex_plddt"] for entry in found] == pytest.approx(
+        [0.8, 0.81, 0.82]
+    )
+
+
+def test_upstream_esmfold2_reports_the_steps_it_ran_not_the_ones_asked_for(
+    tmp_path: Path,
+) -> None:
+    assert run_upstream.effective_schedule("esmfold2", tmp_path) is None
+    assert run_upstream.effective_schedule("boltz2", tmp_path) is None
+
+    (tmp_path / "esmfold2_upstream_run.json").write_text(
+        json.dumps(
+            {
+                "requested": {
+                    "num_diffusion_samples": 5,
+                    "num_loops": 10,
+                    "num_sampling_steps": 200,
+                },
+                "effective": {"trunk_loops": 11, "denoising_steps": 122},
+            }
+        )
+    )
+
+    reported = run_upstream.effective_schedule("esmfold2", tmp_path)
+
+    assert reported is not None
+    # The sampler clips its noise schedule at sigma 256, so it denoises fewer
+    # times than it was asked to. A row that recorded only the request would
+    # name a step count nothing ran.
+    assert reported["requested"]["num_sampling_steps"] == 200
+    assert reported["effective"]["denoising_steps"] == 122
+    assert run_upstream.effective_schedule("boltz2", tmp_path) is None
+
+
 def test_upstream_provenance_requires_the_exact_tracked_diff(
     tmp_path: Path,
 ) -> None:
@@ -1737,10 +1928,14 @@ def test_upstream_rejects_nominal_success_without_structure_or_peak(
             "ignored_runtime_artifacts": [],
         },
     )
+    probed: list[Path] = []
+
+    def runtime_versions(repo, *, python=None):
+        probed.append(python)
+        return {"python": "test", "distributions": {}}
+
     monkeypatch.setattr(
-        run_upstream,
-        "upstream_runtime_versions",
-        lambda repo: {"python": "test", "distributions": {}},
+        run_upstream, "upstream_runtime_versions", runtime_versions
     )
     monkeypatch.setattr(run_upstream, "source_identity", lambda repo: {"source": 1})
     monkeypatch.setattr(run_upstream, "runtime_identity", lambda: {"runtime": 1})
@@ -1810,6 +2005,9 @@ def test_upstream_rejects_nominal_success_without_structure_or_peak(
     }
     assert "argv" not in record
     assert "execution_environment" not in record
+    # The version probe is told which interpreter to read, because one
+    # upstream keeps its environment outside the checkout it executes.
+    assert probed == [run_upstream.upstream_python("opendde")] * 2
 
 
 @pytest.mark.parametrize(
