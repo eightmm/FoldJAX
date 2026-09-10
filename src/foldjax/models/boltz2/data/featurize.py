@@ -27,6 +27,7 @@ def _cache_opts(
     msa_server_url: str,
     msa_pairing_strategy: str,
     max_msa_depth: int | None,
+    msa_deletions: str,
 ) -> tuple:
     """Everything besides the input files that changes the features produced.
 
@@ -34,8 +35,18 @@ def _cache_opts(
     for a cap got an earlier uncapped run's features straight back from cache,
     and a run that asked for no cap got the capped ones -- on the knob that
     dominates both peak memory and accuracy, with nothing to say it happened.
+
+    `msa_deletions` belongs here for the same reason: it changes three of the
+    seven MSA arrays and nothing else about the request, so a cached
+    `released` entry would answer a `restored` run silently.
     """
-    return (use_msa_server, msa_server_url, msa_pairing_strategy, max_msa_depth)
+    return (
+        use_msa_server,
+        msa_server_url,
+        msa_pairing_strategy,
+        max_msa_depth,
+        msa_deletions,
+    )
 
 
 def _input_digest(yaml_path: Path, mol_dir: Path, opts: tuple) -> str:
@@ -91,6 +102,7 @@ def featurize_yaml(
     msa_api_key_value: str | None = None,
     cache_dir: Path | None = None,
     max_msa_depth: int | None = None,
+    msa_deletions: str = "released",
 ) -> tuple[dict[str, np.ndarray], object, Path]:
     """Run preprocessing + featurization for one YAML.
 
@@ -105,7 +117,11 @@ def featurize_yaml(
     assert mol_dir.exists(), f"missing mols dir: {mol_dir}"
 
     opts = _cache_opts(
-        use_msa_server, msa_server_url, msa_pairing_strategy, max_msa_depth
+        use_msa_server,
+        msa_server_url,
+        msa_pairing_strategy,
+        max_msa_depth,
+        msa_deletions,
     )
     cache_entry = None
     if cache_dir is not None:
@@ -146,6 +162,7 @@ def featurize_yaml(
         template_dir=processed / "templates",
         extra_mols_dir=processed / "mols",
         max_msa_seqs=max_msa_depth,
+        msa_deletions=msa_deletions,
     )
     features = dataset[0]
 
@@ -181,6 +198,7 @@ def featurize_affinity_from_prediction(
     atom_pad_mask: np.ndarray,
     out_dir: Path,
     max_msa_depth: int | None = None,
+    msa_deletions: str = "released",
 ) -> dict[str, np.ndarray]:
     """Build cropped affinity features under the primary stage's MSA cap."""
 
@@ -227,6 +245,7 @@ def featurize_affinity_from_prediction(
         override_method="other",
         affinity=True,
         max_msa_seqs=max_msa_depth,
+        msa_deletions=msa_deletions,
     )
     features = dataset[0]
     feats_np: dict[str, np.ndarray] = {}

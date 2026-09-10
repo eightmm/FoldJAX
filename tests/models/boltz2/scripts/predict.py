@@ -95,6 +95,16 @@ def main() -> None:
         "--msa-pairing-strategy", choices=["greedy", "complete"], default="greedy"
     )
     p.add_argument(
+        "--msa-deletions",
+        choices=["released", "restored"],
+        default="released",
+        help="which MSA deletion loop the featurizer runs. 'released' "
+        "reproduces upstream v2.2.0+, which zeroes has_deletion, "
+        "deletion_value and deletion_mean for every real MSA; 'restored' "
+        "reinstates the pre-04d27c71 loop. See "
+        "docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md",
+    )
+    p.add_argument(
         "--msa-server-username",
         default=None,
         help="basic-auth username (or BOLTZ_MSA_USERNAME)",
@@ -196,6 +206,7 @@ def main() -> None:
         msa_api_key_header=args.msa_api_key_header,
         msa_api_key_value=args.msa_api_key_value,
         cache_dir=args.feature_cache,
+        msa_deletions=args.msa_deletions,
     )
     if manifest is not None:
         records = manifest.records

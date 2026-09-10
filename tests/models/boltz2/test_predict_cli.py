@@ -22,3 +22,4 @@ def test_predict_cli_exposes_affinity_and_steering_controls() -> None:
     assert "--msa-api-key-header" in result.stdout
     assert "--msa-api-key-value" in result.stdout
     assert "--prewarm-only" in result.stdout
+    assert "--msa-deletions" in result.stdout

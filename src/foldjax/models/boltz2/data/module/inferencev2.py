@@ -164,6 +164,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         override_method: str | None = None,
         affinity: bool = False,
         max_msa_seqs: int | None = None,
+        msa_deletions: str = "released",
     ) -> None:
         """Initialize the training dataset.
 
@@ -202,6 +203,9 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.max_msa_seqs = (
             const.max_msa_seqs if max_msa_seqs is None else int(max_msa_seqs)
         )
+        # Which deletion loop the featurizer runs. `released` reproduces
+        # upstream v2.2.0+, zeroed deletion features included.
+        self.msa_deletions = msa_deletions
         if self.affinity:
             # Lazy import: AffinityCropper lives in foldjax.models.boltz2.data.crop (not
             # copied for the protein-only path). Only needed when affinity=True.
@@ -291,6 +295,7 @@ class PredictionDataset(torch.utils.data.Dataset):
                 compute_constraint_features=True,
                 override_method=self.override_method,
                 compute_affinity=self.affinity,
+                msa_deletions=self.msa_deletions,
             )
         except Exception as e:
             raise RuntimeError(f"featurizing {record.id} failed") from e

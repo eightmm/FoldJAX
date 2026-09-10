@@ -386,6 +386,7 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             "triangle_backend": "cueq",
             "glu_backend": "xla",
             "bucket": False,
+            "msa_deletions": "released",
         },
     )
     backend = Boltz2Backend()
@@ -422,6 +423,7 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             triangle_backend="cueq",
             glu_backend="xla",
             bucket=False,
+            msa_deletions="released",
         )
 
         assert counts == {"loads": 1, "traces": 1}

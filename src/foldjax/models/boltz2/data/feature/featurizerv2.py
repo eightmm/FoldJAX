@@ -237,6 +237,26 @@ def compute_collinear_mask(v1, v2):
     return mask_angle & mask_overlap1 & mask_overlap2
 
 
+#: Accepted values for the ``msa_deletions`` featurizer option.
+#:
+#: ``released`` reproduces upstream Boltz-2 v2.2.0+ exactly, including the
+#: regression that zeroes every MSA deletion feature.  ``restored`` reinstates
+#: the pre-``04d27c71`` loop.  See
+#: ``docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md``.
+MSA_DELETION_MODES = ("released", "restored")
+
+
+def _resolve_msa_deletions(msa_deletions: str) -> bool:
+    """Return whether the pre-``04d27c71`` deletion loop was asked for."""
+
+    if msa_deletions not in MSA_DELETION_MODES:
+        raise ValueError(
+            "msa_deletions must be one of "
+            + ", ".join(repr(mode) for mode in MSA_DELETION_MODES)
+        )
+    return msa_deletions == "restored"
+
+
 def dummy_msa(residues: np.ndarray) -> MSA:
     """Create a dummy MSA for a chain.
 
@@ -268,6 +288,7 @@ def construct_paired_msa(  # noqa: C901, PLR0915, PLR0912
     max_pairs: int = 8192,
     max_total: int = 16384,
     random_subset: bool = False,
+    msa_deletions: str = "released",
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Pair the MSA data.
 
@@ -275,6 +296,9 @@ def construct_paired_msa(  # noqa: C901, PLR0915, PLR0912
     ----------
     data : Tokenized
         The input data to the model.
+    msa_deletions : str
+        ``released`` keeps upstream v2.2.0+'s deletion loop verbatim, zeroed
+        output included; ``restored`` reinstates the pre-``04d27c71`` slice.
 
     Returns
     -------
@@ -474,13 +498,17 @@ def construct_paired_msa(  # noqa: C901, PLR0915, PLR0912
             [numba.types.int64, numba.types.int64, numba.types.int64]),
         value_type=numba.types.int64
     )
+    restore_deletions = _resolve_msa_deletions(msa_deletions)
     for chain_id, chain_msa in msa.items():
         chain_deletions = chain_msa.deletions
         for sequence in chain_msa.sequences:
             seq_idx = sequence["seq_idx"]
             del_start = sequence["del_start"]
             del_end = sequence["del_end"]
-            chain_deletions = chain_deletions[del_start:del_end]
+            if restore_deletions:
+                chain_deletions = chain_msa.deletions[del_start:del_end]
+            else:
+                chain_deletions = chain_deletions[del_start:del_end]
             for deletion_data in chain_deletions:
                 res_idx = deletion_data["res_idx"]
                 deletion_values = deletion_data["deletion"]
@@ -1624,6 +1652,7 @@ def process_msa_features(
     pad_to_max_seqs: bool = False,
     msa_sampling: bool = False,
     affinity: bool = False,
+    msa_deletions: str = "released",
 ) -> dict[str, Tensor]:
     """Get the MSA features.
 
@@ -1641,6 +1670,8 @@ def process_msa_features(
         Whether to pad to the maximum number of sequences.
     msa_sampling : bool
         Whether to sample the MSA.
+    msa_deletions : str
+        Which deletion loop to run; see :data:`MSA_DELETION_MODES`.
 
     Returns
     -------
@@ -1654,6 +1685,7 @@ def process_msa_features(
         random=random,
         max_seqs=max_seqs_batch,
         random_subset=msa_sampling,
+        msa_deletions=msa_deletions,
     )
     msa, deletion, paired = (
         msa.transpose(1, 0),
@@ -2243,6 +2275,7 @@ class Boltz2Featurizer:
         inference_pocket_constraints: list[tuple[int, list[tuple[int, int]], float]] | None = None,
         inference_contact_constraints: list[tuple[tuple[int, int], tuple[int, int], float]] | None = None,
         compute_affinity: bool = False,
+        msa_deletions: str = "released",
     ) -> dict[str, Tensor]:
         """Compute features.
 
@@ -2329,6 +2362,7 @@ class Boltz2Featurizer:
             max_tokens=max_tokens,
             pad_to_max_seqs=pad_to_max_seqs,
             msa_sampling=training and msa_sampling,
+            msa_deletions=msa_deletions,
         )
 
         # Compute MSA features
@@ -2343,6 +2377,7 @@ class Boltz2Featurizer:
                 pad_to_max_seqs=pad_to_max_seqs,
                 msa_sampling=training and msa_sampling,
                 affinity=True,
+                msa_deletions=msa_deletions,
             )
 
         # Compute affinity ligand Molecular Weight

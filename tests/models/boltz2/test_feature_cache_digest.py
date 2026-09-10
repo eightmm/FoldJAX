@@ -9,6 +9,10 @@ from pathlib import Path
 from foldjax.models.boltz2.data.featurize import _cache_opts, _input_digest
 
 
+def _opts(max_msa_depth: int | None = None, msa_deletions: str = "released"):
+    return _cache_opts(False, "u", "greedy", max_msa_depth, msa_deletions)
+
+
 def test_the_msa_cap_is_part_of_the_cache_key() -> None:
     """It was not, so a capped run reused an uncapped run's features.
 
@@ -18,8 +22,8 @@ def test_the_msa_cap_is_part_of_the_cache_key() -> None:
     features, and asking for none after a capped run returned the capped ones.
     Neither said anything.
     """
-    uncapped = _cache_opts(False, "u", "greedy", None)
-    capped = _cache_opts(False, "u", "greedy", 1024)
+    uncapped = _opts()
+    capped = _opts(1024)
     assert uncapped != capped
     assert 1024 in capped
 
@@ -37,9 +41,9 @@ def test_an_alignment_named_relative_to_the_job_is_hashed(tmp_path: Path) -> Non
     mols = tmp_path / "mols"
 
     a3m.write_text(">q\nAAAA\n")
-    before = _input_digest(job, mols, _cache_opts(False, "u", "greedy", None))
+    before = _input_digest(job, mols, _opts())
     a3m.write_text(">q\nAAAA\n>hit\nCCCC\n")
-    after = _input_digest(job, mols, _cache_opts(False, "u", "greedy", None))
+    after = _input_digest(job, mols, _opts())
 
     assert before != after, "editing the alignment must invalidate the cache"
 
@@ -51,6 +55,19 @@ def test_an_absolute_alignment_path_still_works(tmp_path: Path) -> None:
     job.write_text(f"sequences:\n  - protein:\n      msa: {a3m}\n")
     mols = tmp_path / "mols"
 
-    before = _input_digest(job, mols, _cache_opts(False, "u", "greedy", None))
+    before = _input_digest(job, mols, _opts())
     a3m.write_text(">q\nAAAA\n>hit\nCCCC\n")
-    assert _input_digest(job, mols, _cache_opts(False, "u", "greedy", None)) != before
+    assert _input_digest(job, mols, _opts()) != before
+
+
+def test_the_deletion_mode_is_part_of_the_cache_key() -> None:
+    """`msa_deletions` moves three of the seven MSA arrays and nothing else.
+
+    Without it in the key a `restored` run gets a `released` run's zeroed
+    deletion features straight back, which is the whole point of the option
+    silently undone -- the same failure `max_msa_depth` had above.
+    """
+    released = _opts()
+    restored = _opts(msa_deletions="restored")
+    assert released != restored
+    assert "restored" in restored

@@ -241,6 +241,7 @@ def featurize(
     msa_api_key_value: str | None = None,
     feature_cache: str | Path | None = None,
     max_msa_depth: int | None = None,
+    msa_deletions: str = "released",
 ) -> tuple[dict[str, np.ndarray], str, Path]:
     """Featurize a YAML path or bare entities.
 
@@ -282,6 +283,7 @@ def featurize(
         msa_api_key_value=msa_api_key_value,
         cache_dir=Path(feature_cache) if feature_cache is not None else None,
         max_msa_depth=max_msa_depth,
+        msa_deletions=msa_deletions,
     )
     if manifest is not None:
         record_id = manifest.records[0].id
@@ -564,6 +566,7 @@ def predict(
     padding: PaddingConfig | None = None,
     write_fmt: str | None = None,
     max_msa_depth: int | None = None,
+    msa_deletions: str = "released",
     _runtime: Any | None = None,
 ) -> dict[str, Any]:
     """Run end-to-end Boltz-2 inference.
@@ -574,6 +577,12 @@ def predict(
     Returns a dict with ``coords`` (n_atom, 3), ``plddt``, ``record_id``,
     ``raw`` (full model output), and ``out_path`` (if ``write_fmt`` is
     "pdb"/"cif"). Defaults match the Boltz-2 reference.
+
+    ``msa_deletions`` selects which MSA deletion loop the featurizer runs.
+    ``released`` (the default) reproduces upstream v2.2.0+ exactly, which
+    zeroes ``has_deletion``, ``deletion_value`` and ``deletion_mean`` for every
+    real MSA; ``restored`` reinstates the pre-``04d27c71`` loop.  See
+    ``docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md``.
     """
     import jax
     import jax.numpy as jnp
@@ -659,6 +668,7 @@ def predict(
         msa_api_key_value=msa_api_key_value,
         feature_cache=feature_cache,
         max_msa_depth=max_msa_depth,
+        msa_deletions=msa_deletions,
     )
 
     cache = None
@@ -1102,6 +1112,7 @@ def predict(
             msa_api_key_header=msa_api_key_header,
             msa_api_key_value=msa_api_key_value,
             max_msa_depth=max_msa_depth,
+            msa_deletions=msa_deletions,
         )
         if padding is None:
             from foldjax.models.boltz2.data.bucket import select_model_features
@@ -1383,6 +1394,7 @@ def _prepare_affinity_features(
     msa_api_key_header: str | None = None,
     msa_api_key_value: str | None = None,
     max_msa_depth: int | None = None,
+    msa_deletions: str = "released",
 ) -> dict[str, np.ndarray]:
     from foldjax.models.boltz2.data.featurize import (
         featurize_affinity_from_prediction,
@@ -1412,6 +1424,7 @@ def _prepare_affinity_features(
             msa_api_key_value=msa_api_key_value,
             cache_dir=None,
             max_msa_depth=max_msa_depth,
+            msa_deletions=msa_deletions,
         )
         processed_dir = regenerated_struct_dir.parent
         if manifest.records[0].id != record_id:
@@ -1424,4 +1437,5 @@ def _prepare_affinity_features(
         atom_pad_mask=atom_pad_mask,
         out_dir=out_dir,
         max_msa_depth=max_msa_depth,
+        msa_deletions=msa_deletions,
     )
