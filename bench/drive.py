@@ -220,6 +220,7 @@ def _expected_identity(
         upstream_environment,
         upstream_git_provenance,
         upstream_implicit_asset_paths,
+        upstream_python,
         upstream_runtime_versions,
     )
 
@@ -237,7 +238,7 @@ def _expected_identity(
         cwd,
         expected_diff_sha256=expected_upstream_diff_sha256,
     )
-    upstream_runtime = upstream_runtime_versions(cwd)
+    upstream_runtime = upstream_runtime_versions(cwd, python=upstream_python(model))
     artifacts = artifact_identity(
         job=case.job,
         native_input=job,
