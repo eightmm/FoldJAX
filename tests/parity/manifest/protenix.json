@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "port": "protenix",
+  "entries": [
+    {
+      "case": "protein_1ubq",
+      "tier": "A",
+      "tokens": 76,
+      "capture": {
+        "provenance": "/home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A/provenance.json",
+        "commit": "48521d2"
+      },
+      "tripwire": {
+        "tape_arguments": "cycle_msa_features,cycle_msa_index_tape,cycle_pair_dropout_keep_masks,init_noise,rotations,step_noises,translations",
+        "msa_cycle_index_tape_fields": "row_indices,row_mask",
+        "trunk_representations": "single_inputs,single,pair"
+      },
+      "files": {
+        "foldjax-input.npz": {
+          "sha256": "e7f9c4a3b45845950094eeac0acc92529bb67abdc4700a92fb4733a53bd39af7",
+          "bytes": 872638
+        },
+        "msa-tape.npz": {
+          "sha256": "d4a5e80ccb1a16bb2c9e55f18ce715aeca465aedb2100754ee188a6322518c80",
+          "bytes": 5578638
+        },
+        "trunk.npz": {
+          "sha256": "e9470cfac80108f4aabe8643031a63211c9fb0065db367d6ef11628ea1f2341f",
+          "bytes": 3211282
+        }
+      },
+      "gpu_residual_angstrom": {
+        "max": 0.037,
+        "per_sample": [
+          0.0127,
+          0.016,
+          0.0172,
+          0.0281,
+          0.0372
+        ]
+      },
+      "cpu_calibration": {
+        "residual_angstrom": 0.0196271,
+        "wall_seconds": 24.6,
+        "source_commit": "64f9413",
+        "host": "workstation, taskset -c 40-47, OMP_NUM_THREADS=8, MKL_NUM_THREADS=8, JAX_PLATFORMS=cpu, default (cueq_jit) triangle backend; host load average ~25 from sibling agents",
+        "recorded": "2026-09-10"
+      },
+      "tolerance": {
+        "metric": "relative_rms",
+        "value": 0.025,
+        "set_from": "CPU calibration 0.0196271 on the pair stream (single 0.0036626, single_inputs 0.0023915) plus 27%. Not a rerun margin -- two CPU trunk runs agree bit for bit, in one process and across two processes on disjoint core sets -- but headroom for a fusion change under a new XLA. The detection floor is measured, not assumed: reversing the MSA cycle order moves the pair stream 0.04637 (0.04824 from the capture) and shifting every row index by one moves it 0.03003 (0.03311), both caught; swapping one row of one cycle moves it 0.01178 (0.01972 from the capture) and is NOT caught, because the CPU-against-GPU gap is already 0.01963."
+      },
+      "test_node_ids": [
+        "tests/parity/test_protenix.py::test_the_trunk_matches_the_native_capture",
+        "tests/parity/test_protenix.py::test_the_trunk_comparison_notices_a_reversed_cycle_order"
+      ],
+      "excluded_samples": [],
+      "notes": "Trunk boundary, 11 passes (recycling_steps=10), bfloat16 trunk, triangle attention on the port's own default (cueq_jit, recorded in the tripwire). The residual is relative RMS per array (||port-native|| / ||native||), NOT angstrom: `cpu_calibration.residual_angstrom` is the schema's field name and carries that number here, and `tolerance.metric` says what it really is. The two fixture npz files come from one capture but two of its directories -- foldjax-input.npz from port-A (the port's own pre-featurized input, so this tier certifies the core and never the featurizer) and msa-tape.npz/trunk.npz from native-A -- so fetch with `python -m tests.parity.fetch --from /home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq`, the case directory above both, rather than the single capture directory the failure message prints. gpu_residual_angstrom is the panel's coordinate number for this case (docs/protenix-master-panel-2026-09-09.md:149, native-A vs port-E): context only, not this tier's metric and not where the tolerance came from."
+    },
+    {
+      "case": "protein_1ubq",
+      "tier": "B",
+      "tokens": 76,
+      "capture": {
+        "provenance": "/home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq/native-A/provenance.json",
+        "commit": "48521d2"
+      },
+      "tripwire": {
+        "tape_arguments": "cycle_msa_features,cycle_msa_index_tape,cycle_pair_dropout_keep_masks,init_noise,rotations,step_noises,translations",
+        "msa_cycle_index_tape_fields": "row_indices,row_mask",
+        "trunk_representations": "single_inputs,single,pair"
+      },
+      "files": {
+        "foldjax-input.npz": {
+          "sha256": "e7f9c4a3b45845950094eeac0acc92529bb67abdc4700a92fb4733a53bd39af7",
+          "bytes": 872638
+        },
+        "msa-tape.npz": {
+          "sha256": "d4a5e80ccb1a16bb2c9e55f18ce715aeca465aedb2100754ee188a6322518c80",
+          "bytes": 5578638
+        },
+        "sampler-tape.npz": {
+          "sha256": "5ac16877778534d58222b9570583ada497e0dc7883a5a273fddf6d151e726100",
+          "bytes": 7310218
+        },
+        "prediction.npz": {
+          "sha256": "ca75757ca91c71b21d79ff430469f5d5c49a9d7433e57b090fc683931f9eec18",
+          "bytes": 15962157
+        }
+      },
+      "gpu_residual_angstrom": {
+        "max": 0.037,
+        "per_sample": [
+          0.0127,
+          0.016,
+          0.0172,
+          0.0281,
+          0.0372
+        ]
+      },
+      "cpu_calibration": {
+        "residual_angstrom": 0.050798,
+        "wall_seconds": 81.5,
+        "source_commit": "64f9413",
+        "host": "workstation, taskset -c 40-47, OMP_NUM_THREADS=8, MKL_NUM_THREADS=8, JAX_PLATFORMS=cpu, default (cueq_jit) triangle backend, confidence heads off; host load average ~25 from sibling agents",
+        "recorded": "2026-09-10"
+      },
+      "tolerance": {
+        "metric": "rmsd_angstrom",
+        "value": 0.06,
+        "set_from": "CPU calibration over the asserted samples 0/2/4 -- 0.014675, 0.014762, 0.050798 A -- taken at its worst (0.050798) plus 0.009 A, which exceeds the native A-vs-B floor on those three samples (0.0024, 0.0065, 0.0024 A). No rerun margin: the five per-sample values reproduce to every printed digit in a second replay in the same process and in a separate process pinned to a disjoint core set, so the CPU replay has no measurable floor of its own."
+      },
+      "test_node_ids": [
+        "tests/parity/test_protenix.py::test_the_replayed_coordinates_match_the_native_capture",
+        "tests/parity/test_protenix.py::test_the_replay_notices_one_changed_msa_row"
+      ],
+      "excluded_samples": [
+        1,
+        3
+      ],
+      "notes": "Full n5 x 200-step replay of the stored sampler tape, nothing sliced; triangle attention on the port's own default (cueq_jit, recorded in the tripwire), confidence heads off. Sample 1 is excluded because it is the reduction-order-sensitive one: the panel measured it at 0.172 A with non-deterministic XLA reductions and 0.016 A with --xla_gpu_deterministic_ops=true (docs/protenix-master-panel-2026-09-09.md:126-135, where it is 1-based 'sample 2'), and on CPU it lands at 0.1132 A, twice any other sample. Sample 3 is excluded because the two native processes are themselves 0.0946 A apart there (native-A-vs-native-B.json), so an assertion on it measures upstream chaos rather than this port. Detection floor, measured rather than argued: swapping one row of one MSA cycle -- one row of 160, in one cycle of ten -- moves the asserted samples to 0.0171 / 0.0419 / 0.1387 A, so sample 4 crosses this tolerance at 2.3x and the shipped negative-control test catches it; the same perturbation is invisible at Tier A. What this tier does NOT catch is a single initial-noise element: adding 1.0 to one of the 9,030 values in init_noise moved sample 0 by 4.9e-6 A and left the other four bitwise, because the sampler contracts toward its trajectory rather than amplifying that draw. Against the coordinate scale the GPU panel works at, this tier is coarse: CPU XLA already sits 0.015-0.051 A from the GPU native run, so a regression has to push an asserted sample past 0.06 A -- 0.045 A of headroom on samples 0 and 2, 0.009 A on sample 4 -- and the panel's own 0.037 A port-vs-native maximum is below that. prediction.npz ships whole (16 MB) although only its `coordinate` array is read: a derived 36 KB file would hash to nothing in any capture and `python -m tests.parity.fetch` could never find it. Fetch with `--from /home/jaemin/non-project/optimizing/foldjax-bench/protenix-master-native-20260909-9yET4f/protein_1ubq` (the case directory), because foldjax-input.npz lives in port-A and the rest in native-A."
+    }
+  ]
+}
