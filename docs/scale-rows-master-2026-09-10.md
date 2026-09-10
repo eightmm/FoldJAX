@@ -85,6 +85,16 @@ bitwise unchanged). Reading:
 - Boltz-2 and OpenFold3 at 1k: cross equals within-FoldJAX; both sides have
   sampling spread on 3og2 (TM 0.984-0.999) and the cross distribution sits
   inside it.
+- **OpenFold3 at 3k (L3000_6ztx, homotetramer of 753 residues): cross TM
+  0.852 / 24 Å with both sides internally identical (within 0.998-0.999),
+  and it is not chain assignment: every FoldJAX chain against every upstream
+  chain, superposed on its own, is 20.7 Å / TM 0.843. The monomer fold
+  differs between the two implementations at this size while it agrees at
+  1k and 2k. Protenix on the same case shows a uniform 2.2 Å / TM 0.991 per
+  chain (cross 2.4 Å against within 0.3 Å). Both are open: a tape-pinned
+  replay at 3k (native capture + port replay on the same tape) is queued to
+  separate arithmetic from the MSA-row subsample draw, which at this depth
+  is a random choice on both sides.**
 - OpenDDE at 1k: cross equals within-FoldJAX, but within-upstream is tighter
   (0.999-1.000 against 0.984-0.999). FoldJAX OpenDDE draws a wider sample
   distribution on this case than upstream. The tape-pinned panel shows the
