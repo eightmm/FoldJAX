@@ -323,6 +323,7 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--n-queries", "--n-keys",
     "--use-template", "--use-rna-msa",
     "--max-msa-depth", "--max-msa-rows",
+    "--deterministic-ops",
     "--diffusion-attention-backend", "--trunk-single-attention-backend",
     "--structural-single-attention-backend",
     "--no-graph-jit",

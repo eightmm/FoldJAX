@@ -224,11 +224,18 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         return raw_output
 
     monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(
-        predict_impl,
-        "_score",
-        lambda output, value, *, num_recycles, return_confidence_details: scored_output,
-    )
+
+    def fake_score(
+        output,
+        value,
+        *,
+        num_recycles,
+        return_confidence_details,
+        deterministic,
+    ):
+        return scored_output
+
+    monkeypatch.setattr(predict_impl, "_score", fake_score)
     expected_path = output_dir / "tiny" / "seed_101" / "predictions" / "tiny.cif"
     write_calls = []
 

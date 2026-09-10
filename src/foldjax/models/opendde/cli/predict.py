@@ -177,6 +177,10 @@ def _predict(
     chunk_policy: ChunkPolicyName = "auto",
     chunk_overrides: Mapping[str, int | None] | None = None,
     graph_jit: bool = True,
+    # Repeatability instead of speed, off by default: see
+    # `foldjax.models._compile_policy` for the measurement and for why the
+    # setting rides on the executable rather than on the process.
+    deterministic: bool = False,
     cp_shards: int = 1,
     cp_layout: str = "auto",
     trunk_dtype: Any = None,
@@ -232,6 +236,15 @@ def _predict(
         raise ValueError(
             "context parallelism requires the compiled graph; "
             "drop --no-graph-jit or --cp-devices"
+        )
+    if deterministic and not graph_jit:
+        # The eager path has no outer executable to carry the option: it
+        # dispatches module-level jitted primitives that every run in the
+        # process shares. Running it anyway would report a deterministic run
+        # that was not one.
+        raise ValueError(
+            "deterministic reductions are carried by the compiled graph; "
+            "drop --no-graph-jit or deterministic"
         )
     infer = opendde_infer_compiled if graph_jit else opendde_infer_static
     # Rolling the repeated stacks into `lax.scan` only pays once the whole graph
@@ -339,6 +352,9 @@ def _predict(
         rotations=rotations,
         translations=translations,
         preserve_prefix_rng=preserve_prefix_rng,
+        # The policy is a property of the compiled owner, and the eager entry
+        # point has no such parameter -- it was refused above.
+        **({"deterministic": deterministic} if graph_jit else {}),
         **scans,
     )
 
@@ -349,6 +365,7 @@ def _score(
     *,
     num_recycles: int,
     return_confidence_details: bool = True,
+    deterministic: bool = False,
 ) -> dict[str, Any]:
     from foldjax.models.opendde.postprocess import opendde_confidence_scores
 
@@ -359,6 +376,7 @@ def _score(
             features,
             num_recycles=num_recycles,
             return_confidence_details=return_confidence_details,
+            deterministic=deterministic,
         ),
     }
 
@@ -443,6 +461,7 @@ def main(
     parser.add_argument("--use-template", type=_boolean, default=False)
     parser.add_argument("--use-rna-msa", type=_boolean, default=False)
     _predict_flags.add_msa_depth(parser)
+    _predict_flags.add_deterministic_ops(parser)
     _predict_flags.add_attention_backends(parser)
     parser.add_argument(
         "--structural-single-attention-backend",
@@ -651,6 +670,7 @@ def main(
         ),
     )
     written: list[Path] = []
+    deterministic = args.deterministic_ops == "on"
     try:
         jobs = _load_jobs(args.input_json)
         if not jobs:
@@ -805,6 +825,7 @@ def main(
                         "token_q_chunk_size": args.token_q_chunk_size,
                     },
                     graph_jit=not args.no_graph_jit,
+                    deterministic=deterministic,
                     cp_shards=args.cp_devices,
                     cp_layout=args.cp_layout,
                     # Without asym_id the per-chain loops cannot be sized on
@@ -854,6 +875,7 @@ def main(
                     output_features,
                     num_recycles=args.num_recycles,
                     return_confidence_details=args.include_raw,
+                    deterministic=deterministic,
                 )
                 paths = _write(
                     args.out,
