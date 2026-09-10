@@ -317,8 +317,10 @@ upstream v2.2.0+ slices each sequence's deletion records out of the previous
 sequence's slice rather than the chain's, and because the first MSA row is the
 query and carries no deletions, `has_deletion`, `deletion_value` and
 `deletion_mean` come out zero for every real alignment. `restored` reinstates
-the pre-`04d27c71` loop, which is what the published weights were trained
-against. Jobs without an MSA are unaffected either way.
+the pre-`04d27c71` loop, which predates the regression and, by release date,
+matches the pipeline the published weights were trained with -- an inference
+from release dates, not something checked against the training code. Jobs
+without an MSA are unaffected either way.
 
 The two modes compile the same executable and differ only in three feature
 arrays, but they are separate compile-cache and feature-cache namespaces, so a
