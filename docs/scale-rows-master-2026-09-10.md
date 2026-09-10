@@ -135,8 +135,16 @@ by sample:
 pTM/ipTM agree to 0.0009. The tape-free 24 Å monomer-fold difference was
 the draw as well (MSA subsample, reference-conformer RNG, noise): four
 samples in the pass band and one sample at 0.41 Å on every chain, the same
-shape as Protenix's. Second native processes at 3k are queued for both
-models to place that one sample against native's own scatter.
+shape as Protenix's.
+
+Native's own scatter at 3k (OpenFold3 native-cueq A vs B, same seed, per-chain
+CA RMSD Å by sample): s1 0.026-0.027, s2 0.098-0.103, s3 0.027-0.029,
+s4 0.032-0.034, s5 0.029-0.030; pLDDT max 1.3 points, pTM/ipTM 1e-4. So the
+port sits at native's own scatter on samples 1/2/3/5 (0.030-0.038 vs
+0.026-0.103) and 12× above it on sample 4 (0.41 vs 0.033; native's widest
+sample is 0.10). One more port draw (autotune unfrozen) is queued to read
+sample 4 as a near-tie or a stable route difference before the verdict;
+Protenix's native-B is still writing its tapes.
 
 ## Provenance of the upstream arm on master
 
