@@ -1,0 +1,35 @@
+data_MINI
+#
+loop_
+_entity_poly.entity_id
+_entity_poly.type
+_entity_poly.pdbx_seq_one_letter_code_can
+_entity_poly.pdbx_strand_id
+1 'polypeptide(L)' MKTAYIAKQR A,B
+2 'polydeoxyribonucleotide' GATC C
+#
+loop_
+_pdbx_entity_nonpoly.entity_id
+_pdbx_entity_nonpoly.comp_id
+_pdbx_entity_nonpoly.name
+3 ZN 'ZINC ION'
+4 GTP 'GUANOSINE-5-TRIPHOSPHATE'
+5 GOL GLYCEROL
+6 HOH WATER
+#
+loop_
+_struct_asym.id
+_struct_asym.entity_id
+A 1
+B 1
+C 2
+D 3
+E 3
+F 3
+G 4
+H 5
+I 6
+J 6
+#
+_refine.ls_d_res_high 2.10
+#
