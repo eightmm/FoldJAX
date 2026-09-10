@@ -24,7 +24,7 @@ upstream runner ended with zero samples and the card full.
 | model | 1003 | 2096 | 3012 | 4116 | 5000 |
 | --- | --- | --- | --- | --- | --- |
 | OpenFold3 | 100 / 9.1 vs 139 / 14.0 | 404 / 24.5 vs 629 / 44.2 | 951 / 49.2 (`cueq`), 863 / 42.5 (`cueq-full`) vs (running) | OOM (78) vs upstream OOM | OOM (110) vs upstream OOM |
-| Boltz-2 | 91 / 12.3 vs 132 / 15.8 | 318 / 21.3 vs 466 / 46.6 | 806 / 39.9 vs (running) | 3081 / 64.2 vs upstream OOM | OOM (85) vs (running) |
+| Boltz-2 | 91 / 12.3 vs 132 / 15.8 | 318 / 21.3 vs 466 / 46.6 | 806 / 39.9 vs upstream OOM | 3081 / 64.2 vs upstream OOM | OOM (85) vs upstream OOM |
 | Protenix | 65 / 6.7 vs (running) | 210 / 22.9 vs 242 / 40.8 | 579 / 41.2 vs (running) | 2206 / 73.5 vs (running) | OOM (94) vs upstream OOM |
 | OpenDDE | 235 / 41.3 vs 247 / 57.0 | OOM (23) vs upstream OOM | OOM (48) vs upstream OOM | OOM (89) vs upstream OOM | - |
 | ESMFold2 | 155 / 14.4 | 451 / 45.0 | OOM (86) | OOM (32) | - |
@@ -42,7 +42,8 @@ Reading, where both sides ran:
   Protenix 13% at 2k, OpenDDE 5% at 1k) and uses less peak memory on every
   pair (OpenFold3 35-45% less, Boltz-2 22-54% less, Protenix 44% less at 2k,
   OpenDDE 28% less at 1k).
-- Boltz-2 at 4116 tokens finishes in FoldJAX (64 GiB) and OOMs upstream.
+- Boltz-2 at 3012 and 4116 tokens finishes in FoldJAX (40 and 64 GiB) and OOMs
+  upstream at both sizes (the upstream row filled the 96 GiB card).
 - The memory ceilings match between sides where both OOM: OpenDDE from 2k,
   OpenFold3 from 4k, Protenix at 5k.
 - ESMFold2's 3k wall is its `num_samples x L^2` arena; OpenDDE's 2k wall is its
