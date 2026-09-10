@@ -37,6 +37,7 @@ from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._output_validation import require_finite_coordinates
 from foldjax.models.boltz2.compile_policy import compiler_options as _compiler_options
 from foldjax.models.boltz2.compile_policy import jit as _boltz_jit
+from foldjax.models.boltz2.data.compact_categories import compact_category_storage
 from foldjax.models.boltz2.data.featurize import featurize_yaml
 from foldjax.models.boltz2.data.job_yaml import build_job_yaml
 from foldjax.models.boltz2.data.ownership import (
@@ -786,6 +787,9 @@ def predict(
         else:
             feats_np = compact_token_to_rep_atom_storage(feats_np)
             feats_np = compact_atom_to_token_storage(feats_np)
+        # Pair and atom category one-hots carry the same information as small
+        # IDs; the graph rebuilds the historical arrays at its entry.
+        feats_np = compact_category_storage(feats_np)
     if padding_plan is not None:
         from foldjax.models.boltz2.data.bucket import pad_feats
 
@@ -1099,6 +1103,7 @@ def predict(
             )
         affinity_feats_np = compact_token_to_rep_atom_storage(affinity_feats_np)
         affinity_feats_np = compact_atom_to_token_storage(affinity_feats_np)
+        affinity_feats_np = compact_category_storage(affinity_feats_np)
         if padding is not None or bucket:
             from foldjax.models.boltz2.data.bucket import (
                 pad_feats,

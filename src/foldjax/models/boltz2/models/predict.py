@@ -29,6 +29,9 @@ import jax.numpy as jnp
 
 from foldjax.models import _capture
 from foldjax.models._cp import cp_mesh
+from foldjax.models.boltz2.models._compact_categories import (
+    restore_compact_categories,
+)
 from foldjax.models.boltz2.models.heads.affinity import affinity_module_forward
 from foldjax.models.boltz2.models.heads.bfactor import bfactor_forward
 from foldjax.models.boltz2.models.heads.confidence import confidence_module_forward
@@ -132,6 +135,10 @@ def boltz2_predict(
     For fully-jitted pair-chain confidence, pass ``confidence_chain_ids`` as a
     static tuple of all unique input ``asym_id`` values, resolved before JIT.
     """
+    # Managed prediction hands the categorical pair/atom features as private
+    # compact IDs; rebuild the publisher arrays before any consumer runs.
+    # Dense input keeps precedence, so direct and custom callers are unchanged.
+    feats = restore_compact_categories(feats)
     multiplicity = int(sample_kwargs.pop("multiplicity", 1))
     # The released BF16 graph has one low-precision generic-attention site:
     # the trunk input embedder's atom-window transformer.  Keep its backend

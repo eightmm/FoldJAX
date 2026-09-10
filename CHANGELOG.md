@@ -61,6 +61,41 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Managed Boltz-2 full, trunk-only and affinity prediction carry the
+  categorical pair and atom features as compact private IDs.** Before model
+  padding the publisher's `int64[B, N, N, 5]` contact one-hot becomes a scalar
+  `uint8` version-1 marker plus a `uint8[B, N, N]` category, `type_bonds`
+  becomes `uint8[B, N, N]`, `token_bonds` becomes `bool[B, N, N, 1]`, and
+  `ref_element` / `ref_atom_name_chars` become `uint8[B, A]` / `uint8[B, A, 4]`
+  IDs. Class-count sentinels (5, 128 and 64) preserve the all-zero rows that
+  token and atom padding leaves behind, and the graph rebuilds the historical
+  arrays at the model entry, before every existing consumer. The restored
+  arrays carry the canonicalized publisher dtype rather than the consuming
+  module's compute dtype: `contact_conditioning` is read a second time as
+  `flags`, whose own dtype decides whether `encoded * (one - sum(flags))`
+  stays BF16 or promotes to FP32. Public featurizer output, direct/custom
+  calls and eager steering remain dense and authoritative; dense values take
+  precedence over stale private provenance, and an incomplete or
+  wrong-version private-only form fails before tracing.
+
+  At 3,012 tokens and 23,776 atoms the five model-bound device arguments fall
+  from 290,539,968 to 27,335,315 bytes (263,204,653 removed, 251.0 MiB); at
+  4,100 tokens and 31,264 atoms they fall from 518,701,504 to 50,586,323 bytes
+  (468,115,181 removed, 446.4 MiB), which is 55% of the 0.798 GiB device
+  argument set that job was measured to transfer. In an isolated CPU graph over
+  the 76-token / 608-atom fixture running the real input embedder, contact
+  conditioning and bond terms, compiled dynamic arguments fell from 1,339,728
+  to 264,480 bytes with executable temporary storage unchanged at 2,109,584
+  bytes and a byte-identical result -- on this backend XLA fused the
+  reconstruction instead of materializing it, and CPU fusion decisions do not
+  carry to GPU. Synthetic and fixture CPU gates cover exact in-JIT
+  reconstruction (value and dtype), padding sentinels, `int64`-only admission,
+  multi-hot / non-binary / signed-zero / non-finite / rank fallbacks, version
+  markers, incomplete private rejection through the managed API, per-feature
+  tripwires that a dropped feature would trip, full/trunk-only/affinity
+  routing, and the eager steering path keeping its dense arrays. Released
+  weight GPU peak, latency and end-to-end prediction remain unverified.
+
 - **Every model now has an explicit, immutable version target and a dated
   latest-upstream audit.** The README and `docs/model-versions.md` distinguish
   source versions and commits from checkpoint revisions, hashes, and
