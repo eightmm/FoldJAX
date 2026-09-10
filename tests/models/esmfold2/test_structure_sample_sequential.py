@@ -41,16 +41,31 @@ N_TOKENS = 2
 C_TOKEN = 2
 
 
-def _sampler_fixture(monkeypatch: pytest.MonkeyPatch):
-    """A sampler whose denoiser records the width it was entered at."""
-    settings = d.DiffusionSettings(num_steps=3, c_token=C_TOKEN, noise_scale=1.003)
+def _sampler_fixture(monkeypatch: pytest.MonkeyPatch, *, steps: int = 2):
+    """A sampler whose denoiser records the width it was entered at.
+
+    Two schedule steps by default, and that is a measurement rather than a
+    default. The schedule spans sigma 256 down to 0.0064, and the Euler step
+    cancels a magnitude-250 intermediate down to a magnitude-2 coordinate; at
+    two steps the two paths agree to 3e-8, and at three -- where the clip
+    leaves an intermediate sigma of 42.8 and the cancellation happens twice --
+    they agree only to 5e-6, which is the sampler's own float32 floor and not
+    a property of this option. `test_the_three_step_schedule_...` below pins
+    that case against a measured floor instead of a chosen tolerance.
+    """
+    settings = d.DiffusionSettings(num_steps=steps, c_token=C_TOKEN, noise_scale=1.003)
     single_mask = jnp.asarray([[1.0, 1.0, 1.0, 0.0]], jnp.float32)
     widths: list[int] = []
 
     def denoise(x, sigma, s_inputs, cache, params, prefix="", **kwargs):
         del s_inputs, cache, params, prefix
         widths.append(int(x.shape[0]))
-        energy = jnp.sum(x * x, axis=(1, 2), keepdims=True)
+        # Bounded on purpose. An amplifying stand-in run over three steps
+        # reaches 1e13, where the two paths still agree to 1e-5 *relatively*
+        # and disagree by 1e8 absolutely -- which measures the fixture's
+        # conditioning rather than this change. `tanh` keeps the row-local
+        # coupling and drops the growth.
+        energy = jnp.tanh(jnp.sum(x * x, axis=(1, 2), keepdims=True))
         denoised = jnp.tanh(x) * (1.0 + energy) / (1.0 + sigma[:, None, None])
         token_repr = jnp.broadcast_to(
             jnp.mean(x, axis=(1, 2))[:, None, None],
@@ -170,11 +185,45 @@ def test_the_native_tape_still_drives_both_paths(
     mapping the denoiser rather than the sampler.
     """
     run, _ = _sampler_fixture(monkeypatch)
-    tape = _tape(rows=3, steps=3)
+    tape = _tape(rows=3, steps=2)
     batched = run(jax.random.key(0), samples=3, sequential=False, **tape)
+    # A different key, because a tape is supposed to make the key irrelevant.
     sequential = run(jax.random.key(41), samples=3, sequential=True, **tape)
     for one, other in zip(batched, sequential, strict=True):
         np.testing.assert_allclose(one, other, rtol=1e-6, atol=1e-6)
+
+
+def test_the_three_step_schedule_agrees_to_the_samplers_own_float32_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where the rollout amplifies, the comparison has to be against a floor.
+
+    A third step leaves an intermediate sigma of 42.8 in the clipped schedule
+    and cancels the magnitude-250 opening intermediate twice, so the float32
+    error it carries arrives on a magnitude-2 coordinate near 1e-6 whatever
+    the execution order. Measured here rather than written down: a one-ULP
+    change to a single entry of the initial draw moves the *batched* result on
+    its own, and the gap between the paths is held to that scale. The rows
+    differ from each other by order one, so a plumbing error sits four orders
+    of magnitude above both numbers and neither can hide it.
+    """
+    run, _ = _sampler_fixture(monkeypatch, steps=3)
+    tape = _tape(rows=3, steps=3)
+    batched, _ = run(jax.random.key(0), samples=3, sequential=False, **tape)
+    sequential, _ = run(jax.random.key(0), samples=3, sequential=True, **tape)
+
+    nudged = np.asarray(tape["diffusion_initial_normal"]).copy()
+    nudged[0, 0, 0] = np.nextafter(nudged[0, 0, 0], np.float32(np.inf))
+    moved, _ = run(
+        jax.random.key(0),
+        samples=3,
+        sequential=False,
+        **dict(tape, diffusion_initial_normal=jnp.asarray(nudged)),
+    )
+
+    floor = float(np.max(np.abs(np.asarray(batched) - np.asarray(moved))))
+    gap = float(np.max(np.abs(np.asarray(batched) - np.asarray(sequential))))
+    assert gap <= max(10.0 * floor, 1e-5), (gap, floor)
 
 
 def test_the_sequential_sampler_compiles(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -320,14 +369,14 @@ def _predict_fixture(
 
     monkeypatch.setattr(structure_model, "confidence_head", fake_confidence)
 
-    def call(features=None):
+    def call(features=None, *, pair_batch=1):
         return structure_model.predict(
             jax.random.key(0),
             _cheap_features() if features is None else features,
             {"token_bonds.weight": jnp.ones((2, 1), dtype=jnp.float32)},
             settings=settings,
             initial_pair_state=jnp.zeros(
-                (1, N_TOKENS, N_TOKENS, 2), dtype=jnp.float32
+                (pair_batch, N_TOKENS, N_TOKENS, 2), dtype=jnp.float32
             ),
             n_chains=1,
         )
@@ -422,4 +471,4 @@ def test_a_batched_input_is_refused_rather_than_sliced(
         for name, value in _cheap_features().items()
     }
     with pytest.raises(ValueError, match="structure_sample_sequential"):
-        call(doubled)
+        call(doubled, pair_batch=2)

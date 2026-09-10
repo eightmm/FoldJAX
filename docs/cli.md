@@ -299,8 +299,10 @@ Denoises the diffusion samples N at a time instead of all of them at once, on
 Boltz-2, OpenDDE, OpenFold3 and Protenix. Unlike `--num-samples` it narrows the
 sample axis without dropping a prediction, so it is the first thing to try when
 a run is close to fitting. AlphaFold 3 and ESMFold2 do not take it: AlphaFold 3
-already evaluates more than five samples in groups of five, and ESMFold2's
-equivalent is its confidence head, which runs one sample at a time by default.
+already evaluates more than five samples in groups of five, and ESMFold2 spells
+its two equivalents separately -- its confidence head runs one sample at a time
+by default, and `structure_sample_sequential` below does the same for its
+denoiser.
 
 Whether it helps depends on where the model's peak lives, and that is not the
 same place in every model. Measured at 4,100 tokens: OpenFold3's default route
@@ -314,6 +316,20 @@ on coordinates of magnitude 10-30.
 The default is unchunked for the released five-sample schedules; the automatic
 width engages only above five samples. Per-model measurements:
 [docs/engineering-notes.md](engineering-notes.md).
+
+### `--option structure_sample_sequential=true` (ESMFold2)
+
+Denoises ESMFold2's diffusion samples one at a time rather than together, and
+narrows the diffusion cache to match. Off by default. It divides the token
+transformer's `[samples, tokens, tokens, heads]` float32 attention logits by
+the sample count -- 2.7 GiB at 3,012 tokens and five samples, 17.3 GiB at the
+released thirty-two -- and little else, because ESMFold2's pair trunk carries
+no sample axis at all. Its measured 45 GiB peak at 2,096 residues and its failure at
+3,012 are trunk tensors, so this is a control for raising the sample count and
+not for reaching a longer input. Each sample draws the noise it would have
+drawn batched, from the same key; the result is arithmetically the same
+prediction on a narrower array and not a bitwise one. Details and the cost:
+[docs/esmfold2.md](esmfold2.md#denoising-the-samples-one-at-a-time).
 
 ### Weights and setup
 

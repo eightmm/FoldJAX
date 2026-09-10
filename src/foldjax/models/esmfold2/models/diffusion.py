@@ -804,6 +804,7 @@ def sample(
     diffusion_rotation_quaternions: jnp.ndarray | None = None,
     diffusion_translations: jnp.ndarray | None = None,
     diffusion_churn_normals: jnp.ndarray | None = None,
+    sample_sequential: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Algorithm 18, returning `(sample_atom_coords, token_repr)`.
 
@@ -812,6 +813,13 @@ def sample(
     compares two consecutive predictions and stops, which is a host-side
     branch on a traced value; asking for it runs the same step function in a
     Python loop instead, and the result cannot be jitted.
+
+    `sample_sequential` denoises the `batch * num_samples` rollouts one at a
+    time. It expects `cache` built at one sample, because the atom-level
+    conditioning it repeats is the other half of the saving, and restores the
+    batched width for the schedule state below. Everything outside the
+    denoiser stays batched, which is what keeps the random stream identical:
+    see the note on `denoise`.
     """
     if preserve_prefix_rng and any(
         value is not None
@@ -828,6 +836,16 @@ def sample(
     steps = np.stack([schedule[:-1], schedule[1:], gammas[1:]], axis=-1)
 
     atom_mask = cache.atom_mask.astype(jnp.float32)
+    if sample_sequential:
+        # `build_cache`'s `spread` is this same `jnp.repeat`, so restoring the
+        # width here reproduces the mask the batched cache would have carried,
+        # in the same row order. Everything below -- the schedule state, the
+        # initial draw, the per-step augmentation and churn, the align -- then
+        # runs at the batched width on both paths. That is deliberate: those
+        # are `[rows, atoms, 3]` and cost nothing, and leaving them alone is
+        # what makes "the same key draws the same noise for the same sample" a
+        # property of unchanged code rather than a claim about sliced streams.
+        atom_mask = jnp.repeat(atom_mask, num_samples, axis=0)
     batch, _ = atom_mask.shape
     validate_diffusion_tape(
         diffusion_initial_normal,
@@ -857,17 +875,49 @@ def sample(
     def denoise(
         x_noisy: jnp.ndarray, t_hat: jnp.ndarray
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        return diffusion_module(
-            x_noisy,
-            t_hat,
-            s_inputs,
-            cache,
-            params,
-            prefix,
-            settings=settings,
-            token_mask=token_mask,
-            num_samples=num_samples,
-        )
+        if not sample_sequential:
+            return diffusion_module(
+                x_noisy,
+                t_hat,
+                s_inputs,
+                cache,
+                params,
+                prefix,
+                settings=settings,
+                token_mask=token_mask,
+                num_samples=num_samples,
+            )
+
+        # The only place the sample axis is expensive. The token
+        # transformer's attention logits are `[rows, tokens, tokens, heads]`
+        # float32, quadratic in tokens and linear in rollouts, and nothing
+        # else between here and the coordinates carries that axis at more
+        # than atom width. Mapping this call and nothing else divides that
+        # tensor by the sample count while leaving the sampler's arithmetic,
+        # its random stream and its tape contract untouched.
+        #
+        # `num_samples=1` inside, because the cache is the one-sample cache
+        # and the pair bias is added against it directly rather than through
+        # `add_over_samples`' folded view.
+        def one_rollout(
+            row: tuple[jnp.ndarray, jnp.ndarray],
+        ) -> tuple[jnp.ndarray, jnp.ndarray]:
+            row_x, row_t = row
+            return diffusion_module(
+                row_x[None],
+                row_t[None],
+                s_inputs,
+                cache,
+                params,
+                prefix,
+                settings=settings,
+                token_mask=token_mask,
+                num_samples=1,
+            )
+
+        denoised, token_repr = jax.lax.map(one_rollout, (x_noisy, t_hat))
+        # `lax.map` stacks over the size-1 rollout axis each call kept.
+        return denoised[:, 0], token_repr[:, 0]
 
     def run(carry, step):
         draws = None
