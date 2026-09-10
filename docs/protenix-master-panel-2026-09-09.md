@@ -166,3 +166,17 @@ Recommendation: use `XLA_FLAGS=--xla_gpu_deterministic_ops=true` for every
 Protenix parity replay from here on. Promotion to the backend's default waits
 on a 1-3k-token timing (deterministic reductions can cost at scale) and on a
 port-level way to set it that does not reconfigure the host process.
+
+### Deterministic ops at scale (jobs 663/664, L1000_3og2, 1003 protein tokens)
+
+`bench.run_foldjax`, warm after a compile-cache prefill, n=5, 200 steps,
+10 recycles, one process per row:
+
+| arm | wall s | peak MiB |
+| --- | ---: | ---: |
+| default XLA | 65.44 | 6888 |
+| `--xla_gpu_deterministic_ops=true` | 74.12 | 6912 |
+
+The flag costs 13% wall at 1k tokens (the 115-token replays showed none),
+so it is a parity-replay setting, not a default. The 3k-token rows (jobs
+665/666) follow below when they land.
