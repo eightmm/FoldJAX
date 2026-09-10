@@ -154,7 +154,7 @@ appended here.
 | case | tokens | OpenFold3 | Boltz-2 | Protenix | OpenDDE | ESMFold2 | AlphaFold3 |
 | --- | ---: | --- | --- | --- | --- | --- | --- |
 | mixed_1k_4xww | 1138 | 132 / 9.2 / 0.90 | 111 / 10.4 / 0.95 | 80 / 11.8 / 0.94 | 302 / 52.6 / 0.94 | 186 / 14.7 / 0.89 | 81 / 5.6 / 0.94 |
-| mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 | 348 / 18.4 / 0.87 | running | OOM (fp32 pair wall, as on the protein set) | running | running |
+| mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 | 348 / 18.4 / 0.87 | 248 / 21.9 / 0.76 | OOM (fp32 pair wall, as on the protein set) | running | running |
 
 ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
 The Protenix 4k protein row is the first pair where FoldJAX is not faster
