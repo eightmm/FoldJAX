@@ -51,9 +51,10 @@ the port's measured band.
    1-3k-token timing and a port-level setting.
 4. **Precision policy decisions**: OpenDDE keeps `high` (matches native's
    torch TF32; `highest` is worse everywhere). OpenFold3 keeps `cueq` as the
-   default triangle kernel; `cueq-full` is 4-10% faster (9.9% at 1003
-   tokens, jobs 638-641) for 3-8% more peak and one stable 0.22 Å case, so it
-   stays opt-in; the 3k-token point is unmeasured.
+   default triangle kernel; `cueq-full` is 4-10% faster at every size (9.9%
+   at 1003 tokens, 9.2% at 3012) and at 3k also 6.7 GiB lower in peak (jobs
+   746/727); against it stands one stable 0.22 Å case (5SAK) and no CP
+   support. It stays opt-in pending the user's call.
 
 ## Open items
 

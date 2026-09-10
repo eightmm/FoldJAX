@@ -299,3 +299,23 @@ measured), so the accuracy side of the default decision still rests on the
 seven-case panel above (one stable 0.22 Å case on 5SAK). Decision unchanged:
 `cueq` stays the default and `cueq-full` stays the documented opt-in for
 throughput; the 3k-token point remains unmeasured.
+
+## 3012-token point (jobs 746/727, 2026-09-10)
+
+`bench.run_foldjax` rows from the `scale-timing-20260910` snapshot, L3000_6ztx
+(3012 protein tokens, colabfold MSA), warm after a compile-cache prefill
+(the first process OOMs at this size as recorded before; the second passes),
+n=5, 200 steps:
+
+| arm | warm wall s | peak GiB |
+| --- | ---: | ---: |
+| FoldJAX `cueq` | 950.8 | 49.2 |
+| FoldJAX `cueq-full` | 863.1 | 42.5 |
+
+At 3k `cueq-full` is 9.2% faster and 6.7 GiB lower in peak: the fused
+multiplication no longer pays its own workspace on top of the score tensor
+XLA materialises for the unfused path, so the +3-8% peak seen at 100-1000
+tokens inverts. Throughput and memory now both favour `cueq-full` at every
+size measured; the only argument for `cueq` as the default is the one stable
+0.22 Å coordinate difference on 5SAK and CP support. The default stays `cueq`
+until the user chooses; the numbers to choose with are all here.
