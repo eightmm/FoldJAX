@@ -131,9 +131,11 @@ def test_high_level_primary_and_affinity_factories_and_metadata(
     actual_jit = api._boltz_jit
     factories = []
 
-    def observe(function, *, compute_dtype):
+    def observe(function, *, compute_dtype, deterministic=False):
         factories.append((function.__name__, compute_dtype))
-        return actual_jit(function, compute_dtype=compute_dtype)
+        return actual_jit(
+            function, compute_dtype=compute_dtype, deterministic=deterministic
+        )
 
     monkeypatch.setattr(api, "_boltz_jit", observe)
     backend = Boltz2Backend() if session else None
