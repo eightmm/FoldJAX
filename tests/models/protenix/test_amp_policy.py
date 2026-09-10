@@ -365,16 +365,18 @@ def test_the_denoiser_is_entered_in_the_policys_dtype(
 ) -> None:
     """The network's own operands, recorded at its boundary.
 
-    ``x_noisy`` is the interesting one: the sampler state stays FP32 under
-    every policy, so a narrowed denoiser has to narrow it at the boundary or
-    the first geometry projection would widen everything after it.
+    The conditioning narrows and the coordinates do not. ``x_noisy`` staying
+    FP32 is the load-bearing half: its only matmul consumer is ``linear_r``,
+    which upstream builds with ``precision=torch.float32`` and the comment
+    "use high precision for ref_pos", so narrowing it here would be exactly
+    the rounding that exemption exists to prevent.
     """
     seen: list[dict[str, str]] = []
     original = diffusion_module.diffusion_module_forward
 
     def record(*args, **kwargs):
-        # Positional layout: the ninth argument is ``r_noisy`` and the
-        # thirteenth to fifteenth are s_inputs, s_trunk, z_trunk.
+        # Positional layout: the tenth argument is ``x_noisy`` and the
+        # fifteenth is ``s_trunk``.
         seen.append(
             {
                 "x_noisy": str(args[9].dtype),
@@ -397,8 +399,10 @@ def test_the_denoiser_is_entered_in_the_policys_dtype(
     )
 
     assert seen, "the denoising network was never entered"
-    expected = "bfloat16" if diffusion_autocast else "float32"
-    assert all(record == dict.fromkeys(record, expected) for record in seen), seen
+    conditioning = "bfloat16" if diffusion_autocast else "float32"
+    assert seen == [
+        {"x_noisy": "float32", "s_trunk": conditioning, "pair_z": conditioning}
+    ] * len(seen)
     # The sampler keeps its own FP32 state on both sides of the boundary.
     assert out["coordinate"].dtype == jnp.float32
 
@@ -421,13 +425,13 @@ def test_a_policy_the_parameters_were_not_rebuilt_for_is_refused() -> None:
         _infer(prepared, trunk_dtype=jnp.bfloat16)
 
 
-def test_a_small_case_is_bitwise_unchanged_under_the_resolved_fp32_policy() -> None:
-    """Below the gate `auto` resolves to FP32, and FP32 must be the old program.
+def test_the_resolved_fp32_policy_is_the_same_program_as_passing_nothing() -> None:
+    """Below the gate `auto` resolves to FP32, and FP32 must add no arithmetic.
 
-    The port's parity at these sizes is 0.04-0.1 A and was measured on the
-    program that existed before this option. Passing the resolved policy has to
-    leave that program alone, not merely close to it -- so this compares the
-    arrays, not a tolerance.
+    This is the in-suite half of the claim; both arms run this branch's code,
+    so it pins that the resolved policy adds nothing on top of the defaults.
+    That the defaults themselves still match `main` is a two-snapshot check --
+    one process on each source tree -- which no single-tree test can make.
     """
     params = _bf16_trunk_params()
     policy = realise_amp_policy(requested_amp_policy("auto", 2560), trunk_is_bf16=True)

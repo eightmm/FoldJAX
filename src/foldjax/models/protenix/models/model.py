@@ -595,7 +595,7 @@ def protenix_infer_static(
             use_sampler_scan=use_sampler_scan,
             use_denoiser_jit=use_denoiser_jit,
             use_efficient_fusion=use_diffusion_efficient_fusion,
-            denoiser_dtype=jnp.bfloat16 if diffusion_autocast else None,
+            denoiser_autocast=diffusion_autocast,
             attention_backend=diffusion_attention_backend,
             token_q_chunk_size=token_q_chunk_size,
             diffusion_chunk_size=diffusion_chunk_size,
