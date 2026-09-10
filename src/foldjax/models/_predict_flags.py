@@ -70,6 +70,24 @@ def add_trunk_chunk_sizes(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token-q-chunk-size", type=int)
 
 
+def add_deterministic_ops(parser: argparse.ArgumentParser) -> None:
+    """Repeatable reduction orders, carried on this run's executables.
+
+    Port-neutral prose deliberately: the option means the same thing on every
+    port, so its `--help` must not name one port's measurement or one port's
+    eager path. See `foldjax.models._compile_policy` for both.
+    """
+    parser.add_argument(
+        "--deterministic-ops",
+        choices=("off", "on"),
+        default="off",
+        help="compile this run's executables for reduction orders that "
+        "repeat between runs, instead of asking for them process-wide; it "
+        "costs wall time, and any path that runs op by op rather than as "
+        "one compiled graph refuses it instead of running without it",
+    )
+
+
 def add_attention_backends(parser: argparse.ArgumentParser) -> None:
     """The two attention kernels both ports expose, with the shared default."""
     parser.add_argument(

@@ -15,14 +15,17 @@ properties matter more than the plumbing:
   before this existed -- not an empty option map, which is a different
   compile -- so every measurement taken so far still describes the default
   run, and
-* the flag name lives in one constant. The narrower
+* the flag name lives in one shared constant. The narrower
   ``--xla_gpu_exclude_nondeterministic_ops`` is still being measured at 3,012
   tokens, where the autotuner failed under this one, so switching has to be an
   edit in one place.
 
-The compiled jits here execute: the CPU backend accepts the option (it is a
-shared XLA debug-options field), so the pool test below runs a real
-executable rather than only recording that the argument was passed.
+The first is pinned below. The second is now a property of the shared
+``foldjax.models._compile_policy`` that every port reads, so
+``tests/models/test_compile_policy.py`` owns it, along with the proof that
+the option reaches the compiler at all rather than only reaching ``jax.jit``.
+The rest of this file is this port's own plumbing: which owners exist, which
+one a run gets, and how the flag travels from argv to the executable.
 """
 
 from __future__ import annotations
@@ -37,9 +40,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from foldjax.models._jit_pool import BoundedJitPool
+from foldjax.models._compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 from foldjax.models.protenix.cli import predict as predict_cli
-from foldjax.models.protenix.compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 from foldjax.models.protenix.data import esm
 from foldjax.models.protenix.models import model as model_impl
 from foldjax.models.protenix.models import predict as predict_impl
@@ -111,49 +113,6 @@ def test_the_two_policies_are_two_owners() -> None:
     assert model_impl._infer_pool(True) is deterministic
     assert default._compiler_options is None
     assert deterministic._compiler_options == DETERMINISTIC_COMPILER_OPTIONS
-
-
-def test_a_pool_that_asks_for_the_options_still_runs() -> None:
-    """The recording tests would pass against an option XLA rejects."""
-    pool = BoundedJitPool(
-        lambda value: value + 1,
-        compiler_options=DETERMINISTIC_COMPILER_OPTIONS,
-    )
-
-    assert int(pool(jnp.asarray(1, dtype=jnp.int32))) == 2
-
-
-def test_the_pool_keeps_the_constant_out_of_reach() -> None:
-    """A pool that stored the caller's dict could be edited through it."""
-    pool = BoundedJitPool(
-        lambda value: value,
-        compiler_options=DETERMINISTIC_COMPILER_OPTIONS,
-    )
-
-    assert pool._compiler_options is not DETERMINISTIC_COMPILER_OPTIONS
-
-
-def test_the_flag_name_is_spelled_in_exactly_one_place() -> None:
-    """Because it is provisional.
-
-    The 3,012-token measurement may replace it with the narrower
-    ``xla_gpu_exclude_nondeterministic_ops``. A second copy in a CLI help
-    string or a backend table would be the one that gets missed.
-
-    The names searched for are read out of the constant rather than written
-    here, so this survives that switch instead of failing the day it lands --
-    which would be this guard reporting the opposite of what it guards.
-    """
-    root = Path(__file__).resolve().parents[3] / "src" / "foldjax"
-    sources = {
-        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
-        for path in root.rglob("*.py")
-    }
-
-    assert DETERMINISTIC_COMPILER_OPTIONS
-    for flag in DETERMINISTIC_COMPILER_OPTIONS:
-        spelled = sorted(name for name, text in sources.items() if flag in text)
-        assert spelled == ["models/protenix/compile_policy.py"], flag
 
 
 @pytest.mark.parametrize(

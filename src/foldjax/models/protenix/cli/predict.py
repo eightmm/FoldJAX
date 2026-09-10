@@ -284,15 +284,7 @@ def _run(
     )
     parser.set_defaults(sampler_scan=True)
     parser.add_argument("--denoiser-jit", action="store_true")
-    parser.add_argument(
-        "--deterministic-ops",
-        choices=("off", "on"),
-        default="off",
-        help="compile this run's executables for reduction orders that repeat "
-        "between runs, instead of asking for them process-wide; measured at "
-        "13%% more wall time at 1,003 tokens, and refused with --no-graph-jit "
-        "or guidance, which have no executable to carry it",
-    )
+    _predict_flags.add_deterministic_ops(parser)
     _predict_flags.add_attention_backends(parser)
     parser.add_argument(
         "--trunk-triangle-attention-backend",
