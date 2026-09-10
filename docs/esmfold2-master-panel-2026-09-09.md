@@ -82,3 +82,39 @@ Jobs 533-536, 564-591, 619-628; ledger rows in `docs/EXPERIMENTS.jsonl`.
 Upstream environment `foldjax-bench/jctc-matrix-20260904/upstream-root/esmfold2-venv`
 (uv, `--no-deps` from the workstation's freeze) and the fork source tree
 copied from the workstation.
+
+## 7ST3 chain B: the language model is excluded as the cause (2026-09-10)
+
+Two CPU reads and one GPU arm on the open item.
+
+**LM outputs are deterministic on both sides and differ by a bf16-order
+drift.** `upstream_lm.npz` (native A = native B bitwise) versus `jax_lm.npz`
+(port A = port B bitwise), `lm_hidden_states` `[1, L, 81, 2560]`, relative
+RMSE per layer: 0 at the embedding, 1.6-2.6e-3 at layer 1, growing smoothly to
+1.4-2.2e-2 at layer 80 on 1UBQ / 7ST3 / 5SAK alike. A uniform per-layer band
+that starts at one bf16 rounding is accumulation-order arithmetic in ESMC-6B,
+the same class as Boltz-2's MSA band; it is not case-specific and 1UBQ
+passes at 0.02 Å with the same drift.
+
+**Native LM injected into the port (job 707, `--native-lm`, the port's
+trunk and structure head on native-A's exact LM output and tape):**
+
+| pair | chain A samples 1-5 | chain B samples 1-5 |
+| --- | --- | --- |
+| native-A vs native-B | 0.10, 0.05, 0.08, 0.03, 0.19 | 0.24, 0.03, 0.08, 0.03, 1.09 |
+| native-A vs port-C (frozen, own LM) | 0.40, 0.04, 0.23, 0.03, 0.58 | 1.07, 0.06, 0.53, 0.04, 3.58 |
+| native-A vs port-nativelm | 0.97, 0.08, 0.54, 0.05, 0.84 | 3.16, 0.13, 1.27, 0.08, 4.69 |
+| native-B vs port-nativelm | 1.06, 0.06, 0.51, 0.04, 0.73 | 3.37, 0.14, 1.20, 0.08, 3.69 |
+| port-C vs port-nativelm | 0.59, 0.05, 0.31, 0.04, 0.34 | 2.22, 0.08, 0.74, 0.05, 1.66 |
+
+Giving the port native's LM does not bring chain B toward native; it moves
+samples 1/3/5 further (3.2/1.3/4.7 Å). So the residual is not the LM drift.
+It sits in the downstream core (pair trunk + structure head) on the three
+samples that native itself cannot repeat to better than 1.09 Å; samples 2 and
+4 agree to 0.03-0.08 Å in every pairing including this one. Reading: 7ST3
+chain B samples 1/3/5 are near-chaotic for this model, the port's downstream
+core lands outside native's own scatter on them, and the cause is a rounding
+route inside the trunk or structure head, not the language model. Stays
+open, narrower: one deterministic-array bisect inside the downstream core
+(trunk output, then structure-module output) is the next step, not more
+coordinate draws.

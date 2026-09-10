@@ -59,7 +59,11 @@ the port's measured band.
 
 - **ESMFold2 7ST3 chain B**: samples 1/3/5 sit 2-4× above native's own
   scatter with autotune frozen (1.07/0.53/3.58 Å vs 0.24/0.08/1.09), above
-  upstream's scatter on every pairing.
+  upstream's scatter on every pairing. Narrowed 2026-09-10: the ESMC-6B
+  language model is excluded (its bf16-order drift is uniform across cases
+  and injecting native's exact LM moves the port further, 3.2/1.3/4.7 Å);
+  the residual lives in the pair trunk or structure head on three
+  near-chaotic samples. Next step is a deterministic-array bisect there.
 - **Boltz-2 ion case (1AAY)**: protein 0.175 Å, all of it on sample 3 (the
   other four samples 0.006-0.028 Å), against a bitwise-repeatable native and
   a 0.018 Å port floor. Upstream's own kernels-off toggle moves this case by
