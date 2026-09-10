@@ -108,6 +108,16 @@ FoldJAX 155 / 14.4; 2k OOM (3203 s to failure at 93.5 GiB) where FoldJAX runs
 451 / 45.0. The port's ESMFold2 is 4.7× lighter at 1k and completes 2k where
 upstream cannot.
 
+ESMFold2 1k structure agreement (tape-free, CA): cross TM 0.994 (0.990-0.997),
+within FoldJAX 0.998, within upstream 0.996; cross RMSD 1.27 Å (0.68-2.85)
+against within 0.43 / 1.01 — cross at the upstream within level.
+
+ESMFold2 sequential-sample option (`structure_sample_sequential=true`, G1b) at
+L2000: 5 samples 512 s / 44.9 GiB against the batched 440 / 45.0 — the peak
+does not move (the folding-trunk pair arena sets it, not the sampler) and the
+sequential denoiser costs 16% wall; the 32-sample pair (591 / 45.2 batched)
+is running.
+
 Mixed upstream rows at 3k/4k: OpenFold3 3k 1500 s / 81.8 GiB (FoldJAX 1013 /
 50.1), Protenix 3k 760 / 57.4 (699 / 42.1) and 4k 1666 / 78.6 (1509 / 66.5),
 Boltz-2 3k and 4k OOM (FoldJAX 944 / 41.1 and 2111 / 60.9).
