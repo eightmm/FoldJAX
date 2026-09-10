@@ -587,3 +587,57 @@ def test_the_graph_entry_rejects_a_marker_without_restypes() -> None:
 
     with pytest.raises(KeyError, match="template_aatype"):
         validate_zero_template_geometry(features)
+
+
+def _narrow_like_the_trunk(features, dtype):
+    """What ``protenix_infer_static`` hands the trunk at ``--trunk-dtype bf16``.
+
+    The narrowing is by dtype kind over the whole feature tree, so the marker
+    is cast exactly as the arrays it stands in for; anything that pinned it to
+    float32 would reject the released trunk's own input.
+    """
+    return jax.tree.map(
+        lambda value: (
+            value.astype(dtype)
+            if hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating)
+            else value
+        ),
+        features,
+    )
+
+
+def test_the_compact_path_survives_the_bf16_trunk() -> None:
+    dense = _narrow_like_the_trunk(_as_model_features(_zero_templates()), jnp.bfloat16)
+    compact = _narrow_like_the_trunk(
+        _as_model_features(compact_zero_template_geometry(_zero_templates())),
+        jnp.bfloat16,
+    )
+    pair_mask = _pair_mask().astype(jnp.bfloat16)
+
+    # The narrowing has to have reached the marker, or this proves nothing.
+    assert compact[ZERO_TEMPLATE_GEOMETRY_MARKER].dtype == jnp.bfloat16
+    expected = np.asarray(template_pair_features(dense, 0, pair_mask))
+    actual = np.asarray(template_pair_features(compact, 0, pair_mask))
+
+    assert expected.dtype == actual.dtype == jnp.bfloat16
+    assert np.array_equal(expected, actual)
+
+
+def test_the_bf16_embedder_output_is_bitwise_the_dense_one() -> None:
+    rng = np.random.default_rng(2)
+    params = map_template_embedder_state_dict(_template_state(rng))
+    z = jnp.asarray(rng.normal(size=(N_TOKEN, N_TOKEN, 4)).astype(np.float32)).astype(
+        jnp.bfloat16
+    )
+    dense = _narrow_like_the_trunk(_as_model_features(_zero_templates()), jnp.bfloat16)
+    compact = _narrow_like_the_trunk(
+        _as_model_features(compact_zero_template_geometry(_zero_templates())),
+        jnp.bfloat16,
+    )
+    pair_mask = _pair_mask().astype(jnp.bfloat16)
+
+    expected = np.asarray(template_embedder(dense, z, pair_mask, params))
+    actual = np.asarray(template_embedder(compact, z, pair_mask, params))
+
+    assert np.any(expected != 0.0)
+    assert np.array_equal(expected, actual)

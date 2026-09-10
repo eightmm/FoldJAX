@@ -64,20 +64,26 @@ def _zero_template_geometry(
     dense path ran, on values that are bitwise the ones it received.
 
     The scalar stays a runtime operand rather than becoming ``jnp.zeros``: a
-    literal zero lets the compiler fold ``0 * x`` and lose the dense path's
+    literal zero would let a compiler fold ``0 * x`` and lose the dense path's
     ``0 * NaN`` and ``0 * Inf``.
+
+    Its dtype is whatever reached the trunk, not float32. ``trunk_dtype``
+    narrows every floating leaf of the feature tree by kind, so at ``bf16``
+    this scalar arrives narrowed exactly as the four arrays it stands in for --
+    and ``dgram.dtype``, which sets the precision of the 108-wide concatenation
+    below, comes out the same on both paths. The float32 storage contract is
+    enforced on the host instead, by
+    :func:`~foldjax.models.protenix.data.template_features.validate_zero_template_geometry`.
     """
 
     if not has_compact_zero_template_geometry(input_feature_dict):
         return None
     zero = jnp.asarray(input_feature_dict[ZERO_TEMPLATE_GEOMETRY_MARKER])
     if zero.shape != ():
+        raise ValueError("Protenix zero-template geometry marker must be a scalar")
+    if not jnp.issubdtype(zero.dtype, jnp.floating):
         raise ValueError(
-            "Protenix zero-template geometry marker must be a float32 scalar"
-        )
-    if zero.dtype != jnp.float32:
-        raise ValueError(
-            "Protenix zero-template geometry marker must be a float32 scalar"
+            "Protenix zero-template geometry marker must be a floating scalar"
         )
     if not isinstance(zero, jax.core.Tracer) and (
         bool(zero != 0.0) or bool(jnp.signbit(zero))
