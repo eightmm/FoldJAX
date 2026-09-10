@@ -162,10 +162,22 @@ to 0.29 Å: sample 4 is a stable route difference at 3k, not a near-tie,
 while sample 2 is the port's kernel-choice-sensitive sample (its spread 0.29
 against native's 0.10 on the same sample, the pattern seen on ESMFold2 7ST3).
 Both port draws also put one pLDDT value 20 points from native where the two
-native processes differ by 1.3 points. Open at 3k on one sample of five; the
-per-residue localisation of the 0.41 Å and of the pLDDT difference is being
-read on CPU, and a trunk-boundary bisect at 3k needs the streamed replay to
-capture the trunk (the fused replay exceeds the card at this size).
+native processes differ by 1.3 points.
+
+Localised on CPU (per-residue, both port draws, all four chains): sample 4's
+0.41 Å is the N-terminal coil, residues 15-27 (HIS17 3.7 Å, LEU16 3.0, SER20
+2.8), carrying 97% of the squared deviation on every chain; the other 711
+residues sit at 0.033 Å, native's own floor, and the fit is neither a rigid
+shift nor an inter-chain component. That loop has two wells about 2 Å apart
+in native's own five samples ({1,2,5} and {3,4}); the port's sample 4 sits in
+the {1,2,5} well on every chain (0.36-0.43 Å from native sample 2's loop,
+1.86 Å from native sample 4's), and both port draws land there together
+(0.026 Å apart). The 20-point pLDDT difference is PRO15-HIS17 on sample 4
+only, where the port's confidence matches native's samples 1/2/5 to about a
+point: the head scores the conformer it was handed. Native ranks sample 4
+last on both processes and so does the port. Reading: a basin choice on a
+bistable loop whose two wells native's own run populates, the class already
+measured on Boltz-2 1AAY and ESMFold2 7ST3 — at-floor. OpenFold3 3k closed.
 
 ## Provenance of the upstream arm on master
 

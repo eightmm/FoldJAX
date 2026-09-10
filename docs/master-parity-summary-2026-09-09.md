@@ -128,6 +128,9 @@ uniform, OpenFold3 24 Å on one chain) were draws, not arithmetic. On the
 shared tape the port sits at 0.05-0.11 / 0.03-0.04 Å on four samples and
 0.40 / 0.41 Å on one. Protenix's own process floor at 3k is 0.64-3.32 Å
 (permutation-aware), so Protenix 3k is closed; OpenFold3's native floor is
-0.026-0.10 Å, so its sample 4 (0.41) awaits a second port draw. ESMFold2
+0.026-0.10 Å and its sample 4 (0.41 Å, stable across two port draws) is one
+N-terminal loop sitting in the other of the two wells native's own samples
+populate, with the port's pLDDT matching native's for that well — a basin
+choice, at-floor, so OpenFold3 3k is closed too. ESMFold2
 7ST3 chain B closed at-floor the same day (job 964). Detail in
 `scale-rows-master-2026-09-10.md` and `closing-plan-2026-09-10.md`.
