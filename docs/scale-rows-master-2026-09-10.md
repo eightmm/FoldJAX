@@ -116,8 +116,13 @@ to satisfy it, all recorded beside the snapshot:
   offset, an env-gated `BOLTZ_FAST_FC12` path left off, f32 triangle bias
   under `use_kernels`, stacked projection weights); Protenix `c69fdc19…`
   (`protenix-4c355be.diff`: sm_120 gencode for the layer-norm extension). A
-  pristine-checkout rerun of the Boltz column is the follow-up if those
-  performance patches are ever in question.
+  pristine-checkout rerun of the Boltz column answers whether those
+  performance patches matter: a `git worktree` of `boltz` at b1ebfc4 with
+  zero tracked diff (the CUDA 13 preload moved into the venv as a
+  `site-packages/_boltz_cu13_preload.pth`, sha256 `70a01d1e…`/`57a77e1d…`),
+  root `upstream-root-pristine/boltz`, label `pristine`: 1k 135 s / 15.7 GiB
+  against the reviewed arm's 132 s / 15.8 GiB (job 989); 2k follows (990).
+  The reviewed patches did not move the 1k timing.
 - Untracked session directories excluded through each checkout's
   `.git/info/exclude`; `boltz/.venv-cueq011` moved to `boltz-venv-cueq011`
   (a symlinked python inside an ignored directory is refused).
@@ -154,7 +159,7 @@ appended here.
 | case | tokens | OpenFold3 | Boltz-2 | Protenix | OpenDDE | ESMFold2 | AlphaFold3 |
 | --- | ---: | --- | --- | --- | --- | --- | --- |
 | mixed_1k_4xww | 1138 | 132 / 9.2 / 0.90 vs 177 / 17.7 / 0.91 | 111 / 10.4 / 0.95 vs 174 / 18.1 / 0.95 | 80 / 11.8 / 0.94 vs 108 / 15.8 / 0.94 | 302 / 52.6 / 0.94 vs 318 / 73.2 / 0.93 | 186 / 14.7 / 0.89 | 81 / 5.6 / 0.94 |
-| mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 vs 698 / 43.9 / 0.76 | 348 / 18.4 / 0.87 vs 492 / 50.4 / 0.88 | 248 / 21.9 / 0.76 | OOM (fp32 pair wall, as on the protein set) | 487 / 51.2 / 0.63 | 260 / 14.6 / 0.74 |
+| mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 vs 698 / 43.9 / 0.76 | 348 / 18.4 / 0.87 vs 492 / 50.4 / 0.88 | 248 / 21.9 / 0.76 vs 280 / 44.6 / 0.75 | OOM (fp32 pair wall, as on the protein set) | 487 / 51.2 / 0.63 | 260 / 14.6 / 0.74 |
 
 ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
 OpenDDE's 1k pair is the one mixed row where FoldJAX is not faster (302 vs
