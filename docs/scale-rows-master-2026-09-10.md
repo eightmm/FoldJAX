@@ -11,8 +11,8 @@ file, so both sides see the same MSA and the same chains.
 
 Cases are the pinned length-sweep proteins (`foldjax-bench/jobs`), all
 protein-only: L1000_3og2 (1003 tokens, 1 chain), L2000_5dei (2096, homotetramer
-A-D), L3000_6ztx (3012, homotetramer), L4000_1gte (4116, homotetramer),
-L5000_8e2f (5000, 1 chain). MSAs are the colabfold a3m files pulled from the
+A-D), L3000_6ztx (3012, homotetramer), L4000_1gte (4100, homotetramer),
+L5000_8e2f (4888, 1 chain). MSAs are the colabfold a3m files pulled from the
 workstation.
 
 ## Wall time and peak
@@ -43,7 +43,7 @@ Reading, where both sides ran:
   pair (OpenFold3 35-45% less, Boltz-2 22-54% less, Protenix 44-47% less,
   OpenDDE 28% less at 1k). At 3k OpenFold3 upstream needs 80 GiB against
   FoldJAX's 49 (`cueq`) or 42.5 (`cueq-full`).
-- Boltz-2 at 3012 and 4116 tokens finishes in FoldJAX (40 and 64 GiB) and OOMs
+- Boltz-2 at 3012 and 4100 tokens finishes in FoldJAX (40 and 64 GiB) and OOMs
   upstream at both sizes (the upstream row filled the 96 GiB card).
 - The memory ceilings match between sides where both OOM: OpenDDE from 2k,
   OpenFold3 from 4k, Protenix at 5k.
