@@ -122,3 +122,174 @@ def test_component_replacement_preserves_each_selected_array():
     )
     with pytest.raises(ValueError, match="unknown"):
         replace_trunk_components(candidate, native, "other")
+
+
+def _replay_capture(*, tokens=4, atoms=4, rows=17, templates=4):
+    """A template-free query as the released featurizer stores one.
+
+    Four copies of one empty template on a fixed-width axis, exact positive-zero
+    geometry, and the dense int32 MSA one-hot the portable archive keeps.
+    """
+    from tests.models.openfold3.feature_fixture import minimal_features
+
+    features = minimal_features(
+        tokens=tokens, atoms=atoms, msa_rows=rows, templates=templates
+    )
+    for name in ("template_pseudo_beta_mask", "template_backbone_frame_mask"):
+        features[name] = np.zeros_like(features[name])
+    return features
+
+
+def _prepared(features, *, depth, cycles, seed=5):
+    from foldjax.models.openfold3.data import prepare_msa_cycle_features
+
+    return prepare_msa_cycle_features(
+        features, depth, num_recycles=cycles, rng=np.random.default_rng(seed)
+    )
+
+
+def test_streamed_host_features_stage_the_managed_backend_representation():
+    from bench.openbind_core_replay import streamed_host_features
+    from foldjax.models.openfold3.data.featurize import (
+        _COMPACT_MSA_INDICES,
+        _COMPACT_MSA_MARKER,
+        _ZERO_TEMPLATE_PAIR_FEATURES,
+        _ZERO_TEMPLATE_PAIR_MARKER,
+    )
+    from foldjax.models.openfold3.inference import (
+        _prepare_ref_atom_category_graph_input,
+        _restore_ref_atom_category_one_hot,
+    )
+
+    dense = _prepared(_replay_capture(), depth=2, cycles=2)
+    staged = streamed_host_features(dense)
+
+    # One template row, and no quadratic template array at all.
+    assert staged["template_restype"].shape[1] == 1
+    assert dense["template_restype"].shape[1] == 4
+    assert not [name for name in _ZERO_TEMPLATE_PAIR_FEATURES if name in staged]
+    assert _ZERO_TEMPLATE_PAIR_MARKER in staged
+    # Categories, not one-hots, across the private model boundary.
+    assert "msa" not in staged and _COMPACT_MSA_MARKER in staged
+    assert staged[_COMPACT_MSA_INDICES].dtype == np.uint8
+    assert "ref_element" not in staged and "ref_atom_name_chars" not in staged
+    # The graph boundary accepts the composed dict and rebuilds both one-hots.
+    restored = _restore_ref_atom_category_one_hot(
+        _prepare_ref_atom_category_graph_input(staged)
+    )
+    for name in ("ref_element", "ref_atom_name_chars"):
+        np.testing.assert_array_equal(np.asarray(restored[name]), dense[name])
+
+
+def test_streamed_device_features_never_carry_the_source_row_count():
+    from bench.openbind_core_replay import streamed_host_features
+    from foldjax.models.openfold3 import streaming
+
+    rows, depth, cycles = 17, 2, 2
+    staged = streamed_host_features(
+        _prepared(_replay_capture(rows=rows), depth=depth, cycles=cycles)
+    )
+    provider = streaming.HostMSACycles(staged, depth=depth, cycles=cycles)
+    for cycle in range(cycles):
+        device = {**provider.common, **provider.select(cycle)}
+        assert not any(rows in v.shape for v in device.values() if hasattr(v, "shape"))
+        assert all(
+            device[name].shape[:2] == (1, depth)
+            for name in ("msa_mask", "has_deletion", "deletion_value")
+        )
+    # The host union is the only place the wider storage survives.
+    assert staged["msa_mask"].shape[1] <= depth * cycles < rows
+
+
+def test_streamed_budget_drops_pair_logits_and_the_fused_default_keeps_them():
+    from bench.openbind_core_replay import array_budget_bytes
+    from foldjax.models.openfold3.inference import released_config
+
+    def logits(**flags):
+        return released_config(
+            n_token=3012, n_atom=23764,
+            max_array_bytes=array_budget_bytes(**flags),
+        ).returned_pair_logits
+
+    assert logits(streamed=True, all_arrays=False) == ()
+    expected = ("pae_logits", "pde_logits", "distogram_logits")
+    assert logits(streamed=True, all_arrays=True) == expected
+    assert logits(streamed=False, all_arrays=False) == expected
+
+
+def test_streamed_preparation_preserves_the_template_and_msa_embeddings(monkeypatch):
+    """The compaction is a storage change; the values the model reads are equal.
+
+    Each step has its own gate (``test_template_collapse``,
+    ``test_compact_msa_storage``, ``test_compact_atom_categories``). What is new
+    here is the composition, applied to the replay's own prepared features. The
+    template tolerance is the one ``test_template_collapse`` established for a
+    collapsed axis: absolute, one float32 epsilon, no rtol.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    from bench.openbind_core_replay import streamed_host_features
+    from foldjax.models.openfold3 import streaming
+    from foldjax.models.openfold3.models.input_embedders import msa_embedder
+    from foldjax.models.openfold3.models.template_module import template_embedder
+    from tests.models.openfold3.test_compact_msa_storage import _params
+    from tests.models.openfold3.test_template_collapse import _embedder_params
+
+    monkeypatch.setenv("OPENFOLD3_TRIANGLE_BACKEND", "xla")
+    tokens, channels, heads, depth, cycles = 4, 8, 2, 2, 2
+    dense = _prepared(
+        _replay_capture(tokens=tokens, atoms=tokens), depth=depth, cycles=cycles
+    )
+    staged = streamed_host_features(dense)
+    params = _embedder_params(channels, heads)
+    z = jax.random.normal(jax.random.key(3), (1, tokens, tokens, channels))
+    pair_mask = jnp.ones((1, tokens, tokens), dtype=jnp.float32)
+
+    def embed(batch):
+        return template_embedder(
+            {name: jnp.asarray(value) for name, value in batch.items()},
+            z,
+            params,
+            pair_mask=pair_mask,
+            no_heads=heads,
+        )
+
+    expected = embed(dense)
+    # Zero parameters or a dead branch would satisfy any comparison below.
+    assert np.abs(np.asarray(expected)).max() > 1e-3
+    np.testing.assert_allclose(
+        expected, embed(staged), rtol=0, atol=np.finfo(np.float32).eps
+    )
+
+    single = jnp.ones((1, tokens, 7))
+    msa_params = _params(jnp.float32)
+    for cycle in range(cycles):
+        rows = [
+            streaming.HostMSACycles(batch, depth=depth, cycles=cycles).select(cycle)
+            for batch in (dense, staged)
+        ]
+        left, right = (msa_embedder(row, single, msa_params) for row in rows)
+        assert np.abs(np.asarray(left[0])).max() > 0.0
+        for one, other in zip(left, right, strict=True):
+            np.testing.assert_array_equal(np.asarray(one), np.asarray(other))
+
+
+def test_a_declined_host_step_stops_the_streamed_replay():
+    """A silent fallback would run the dense program under the streamed label."""
+    import pytest
+
+    from bench.openbind_core_replay import streamed_host_features
+
+    capture = _replay_capture()
+    # One template that differs from the other three blocks the collapse; the
+    # geometry is still exact zero, so only that step declines.
+    capture["template_restype"] = capture["template_restype"].copy()
+    capture["template_restype"][:, 1, :, 0] = 0
+    with pytest.raises(ValueError, match="collapse_identical_templates"):
+        streamed_host_features(_prepared(capture, depth=2, cycles=2))
+
+    capture = _replay_capture()
+    capture["msa"] = capture["msa"] * 2  # no longer a one-hot
+    with pytest.raises(ValueError, match="compact_msa_features"):
+        streamed_host_features(_prepared(capture, depth=2, cycles=2))
