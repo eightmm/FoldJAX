@@ -172,3 +172,39 @@ def test_openfold3_kernel_selection_restores_the_host_environment(
             assert os.environ[name] == "cueq"
             raise RuntimeError("failed")
     assert name not in os.environ
+
+
+def test_the_deterministic_knob_is_in_the_vocabulary_and_protenix_answers_it(
+    request_with,
+) -> None:
+    """One spelling for "reduction orders that repeat", already renamed.
+
+    Protenix reached this by way of a process-wide
+    `XLA_FLAGS=--xla_gpu_deterministic_ops=true`, which no request can carry
+    and which reaches every other model in the same process. The neutral name
+    is here from the start so the second port that grows the option does not
+    invent a second word for it.
+    """
+    assert execution.KNOBS["deterministic"] == ("off", "on")
+
+    options = get_backend("protenix").apply_sampling(request_with(deterministic="on"))
+    assert options["deterministic_ops"] == "on"
+    assert "deterministic" not in options
+
+
+def test_asking_a_port_without_the_option_is_an_error(request_with) -> None:
+    """Only Protenix carries it; the others must say so rather than run."""
+    with pytest.raises(ValueError, match="boltz2 does not support deterministic"):
+        get_backend("boltz2").apply_sampling(request_with(deterministic="on"))
+
+
+def test_the_option_is_part_of_the_protenix_compile_identity() -> None:
+    """A repeatable-reduction executable is a different executable.
+
+    Two runs that differ only here compile different programs, so sharing one
+    cache namespace would hand a run that asked for deterministic reductions
+    the program built without them.
+    """
+    from foldjax.backends.protenix import ProtenixBackend
+
+    assert "deterministic_ops" in ProtenixBackend.compile_options
