@@ -68,5 +68,10 @@ the released control 1046): CA RMSD 0.93-1.41 Å and TM 0.990-0.995 over the
 same five samples, per sample within 0.04 Å of the released arm's numbers;
 wall 92 s and peak 12.3 GiB unchanged. On this case the 30,519 restored
 deletion records move the prediction by less than the model's own sample
-spread against the deposited structure. The option stays opt-in; its value
-on MSA-poor or insertion-rich targets is not measured here.
+spread against the deposited structure. The released control from the same snapshot (job 1046) reproduces the
+baseline (0.92-1.41 Å, TM 0.990-0.994). Per-atom the two arms differ by up
+to 8-17 Å on individual atoms before superposition, which is the size of the
+port's own process scatter on this chaotic case (the control differs from the
+earlier scale row by 1-8 Å the same way), so nothing beyond the sampling
+spread is attributable to the deletions here. The option stays opt-in; its
+value on MSA-poor or insertion-rich targets is not measured here.
