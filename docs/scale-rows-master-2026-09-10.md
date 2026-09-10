@@ -358,9 +358,15 @@ permutation-aware, CA TM median (min-max), cross RMSD Å):
 | Boltz-2 | mixed_2k_7y7q | 0.981 (0.969-0.996) | 0.994 (0.971-0.997) | 0.981 (0.967-0.997) | 2.67 (0.84-5.17) | 1.25 (0.85-3.31) | 2.71 (0.81-5.06) | cross 15/25; fj 7/10; up 7/10 |
 | OpenFold3 | mixed_2k_7y7q | 0.988 (0.968-0.994) | 0.990 (0.987-0.995) | 0.979 (0.969-0.994) | 2.06 (1.15-4.63) | 1.68 (1.17-2.51) | 3.07 (1.31-4.46) | cross 17/25; fj 6/10; up 9/10 |
 | Protenix | mixed_2k_7y7q | 0.969 (0.954-0.978) | 0.965 (0.962-0.988) | 0.972 (0.967-0.980) | 9.01 (3.67-11.72) | 10.14 (2.05-11.34) | 6.32 (3.32-10.89) | cross 14/25; fj 8/10; up 4/10 |
+| OpenFold3 | mixed_3k_5npk | 0.993 (0.610-0.998) | 0.997 (0.991-0.999) | 0.616 (0.608-0.998) | 1.47 (0.62-20.31) | 0.79 (0.51-1.83) | 19.52 (0.70-20.55) | cross 17/25; fj 7/10; up 5/10 |
+| Protenix | mixed_3k_5npk | 0.990 (0.961-0.999) | 0.995 (0.992-0.998) | 0.991 (0.967-0.999) | 1.70 (0.54-3.20) | 1.22 (0.69-1.58) | 1.48 (0.56-2.95) | cross 25/25; fj 9/10; up 5/10 |
+| Protenix | mixed_4k_6kqf | 0.957 (0.946-0.969) | 0.968 (0.959-0.981) | 0.966 (0.957-0.972) | 10.34 (4.84-16.81) | 9.54 (3.81-14.81) | 10.85 (7.24-13.20) | cross 0/25; fj 0/10; up 0/10 |
 
 Cross RMSD is at or below the within-set RMSD of both implementations on all
-four finished 1k pairs and at the within level on the three 2k pairs (7Y7Q's
+four finished 1k pairs, at the within level on the three 2k pairs and on the
+three 3k/4k pairs (5NPK: upstream OpenFold3's own five samples split into two
+assemblies, within TM median 0.616, so its cross column is read against that;
+6KQF is a loose 3.9k-token complex on both sides, within 10 Å) (7Y7Q's
 QDE-1 dimer with its 14-mer RNAs is a loose assembly on both sides: Protenix
 within 10.1 Å FoldJAX / upstream in the same band, cross 9.0 Å). Boltz-2's 5 Å is the model's own spread on this entry
 (the 7-mer RNA and the dimer arrangement move between samples at the same
