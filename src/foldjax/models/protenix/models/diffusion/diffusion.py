@@ -334,6 +334,13 @@ def sample_diffusion_with_module(
     use_sampler_scan: bool = False,
     use_denoiser_jit: bool = False,
     use_efficient_fusion: bool = False,
+    #: Compute dtype of the denoising network ``F`` when upstream's
+    #: ``skip_amp.sample_diffusion`` is False, i.e. BF16. ``None`` keeps the
+    #: whole sampler FP32, which is what every released size below 3,840
+    #: tokens runs. The cast is applied at the network's boundary and undone
+    #: on its result, so the sampler's own arithmetic is unaffected -- see the
+    #: note on ``denoise_fn``.
+    denoiser_dtype: jnp.dtype | None = None,
     attention_backend: str = "xla",
     token_q_chunk_size: int | None = None,
     diffusion_chunk_size: int | None = None,
@@ -362,7 +369,23 @@ def sample_diffusion_with_module(
         )
 
     def denoise_fn(x_noisy: jnp.ndarray, t_hat: jnp.ndarray) -> jnp.ndarray:
-        return diffusion_module_forward(
+        """One evaluation of the denoising network at the sampler's boundary.
+
+        With ``denoiser_dtype`` set, the noisy coordinates enter narrowed and
+        the prediction leaves widened again. Upstream has no such boundary:
+        ``sample_diffusion`` takes ``dtype = s_inputs.dtype``
+        (``protenix/model/generator.py:184``), so once the sampler runs under
+        autocast its whole state -- the initial noise, ``t_hat``, and the Euler
+        update -- is BF16 too. Keeping that state FP32 is a deliberate
+        departure: it is a handful of elementwise operations on an
+        ``[N_sample, N_atom, 3]`` tensor, with no bearing on the arena or the
+        wall time this policy exists to control, and FP32 is the more accurate
+        of the two. Everything inside the network matches upstream.
+        """
+        sampler_dtype = x_noisy.dtype
+        if denoiser_dtype is not None:
+            x_noisy = x_noisy.astype(denoiser_dtype)
+        denoised = diffusion_module_forward(
             atom_to_token_idx,
             input_feature_dict["ref_pos"],
             input_feature_dict["ref_charge"],
@@ -399,6 +422,11 @@ def sample_diffusion_with_module(
             token_mask=token_padding_mask,
             atom_mask=atom_padding_mask,
         )
+        # Guarded rather than unconditional: with no policy in flight the
+        # network already returns the sampler's dtype, and an added convert
+        # would be a change to the FP32 program this port has parity numbers
+        # for.
+        return denoised if denoiser_dtype is None else denoised.astype(sampler_dtype)
 
     denoiser = jax.jit(denoise_fn) if use_denoiser_jit else denoise_fn
     return sample_diffusion(

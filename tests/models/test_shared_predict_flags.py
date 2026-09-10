@@ -272,7 +272,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--triangle-mul-chunk-size", "--triangle-att-q-chunk-size",
     "--single-att-q-chunk-size", "--token-q-chunk-size",
     "--opm-chunk-size", "--diffusion-chunk-size",
-    "--trunk-dtype", "--chunk-policy",
+    "--trunk-dtype", "--amp-policy", "--chunk-policy",
     "--pairformer-scan", "--no-pairformer-scan",
     "--diffusion-scan",
     "--sampler-scan", "--no-sampler-scan",

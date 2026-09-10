@@ -50,7 +50,10 @@ from foldjax.models.protenix.models.heads.confidence import (
 )
 from foldjax.models.protenix.models.heads.head import DistogramParams, distogram_head
 from foldjax.models.protenix.models.input_precision import native_input_autocast_params
-from foldjax.models.protenix.models.primitives.primitives import AutocastLinearParams
+from foldjax.models.protenix.models.primitives.primitives import (
+    AutocastLinearParams,
+    Fp32PrecisionLinearParams,
+)
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
@@ -75,6 +78,69 @@ class ProtenixInferenceParams(NamedTuple):
     diffusion: DiffusionModuleParams
     distogram: DistogramParams
     confidence: ConfidenceHeadParams
+
+
+def _amp_marker(params: Any, *path: str) -> Any:
+    """The node an AMP realisation would have replaced, or None if absent.
+
+    Partial parameter trees are a supported input here: a ``stop_after`` run
+    supplies only the stage it reaches, and tests build a namespace with one
+    field. An absent stage cannot disagree with a policy it never runs.
+    """
+    node = params
+    for name in path:
+        node = getattr(node, name, None)
+        if node is None:
+            return None
+    return node
+
+
+def _require_realised_amp_params(
+    params: ProtenixInferenceParams,
+    *,
+    confidence_autocast: bool,
+    diffusion_autocast: bool,
+) -> None:
+    """Refuse a policy the parameter tree was not rebuilt for.
+
+    The two flags decide activation dtypes; the parameter subtrees decide
+    weight dtypes, and they are prepared on the host (see
+    :mod:`foldjax.models.protenix.models.input_precision`). Split like that,
+    the failure mode of getting them out of step is silent: BF16 activations
+    against FP32 weights promote back to an FP32 matmul, and the run looks
+    exactly like a policy that was never applied. One structural check costs
+    nothing at trace time and turns that into an error.
+    """
+    for stage, marker, expected_type, wanted, preparer in (
+        (
+            "confidence",
+            _amp_marker(params, "confidence", "distance_embedding", "linear_d"),
+            AutocastLinearParams,
+            confidence_autocast,
+            "native_confidence_autocast_params",
+        ),
+        (
+            "diffusion",
+            _amp_marker(params, "diffusion", "conditioning", "linear_z"),
+            Fp32PrecisionLinearParams,
+            diffusion_autocast,
+            "native_diffusion_autocast_params",
+        ),
+    ):
+        if marker is None:
+            if wanted:
+                raise ValueError(
+                    f"{stage}_autocast=True but these parameters carry no "
+                    f"{stage} stage to apply it to"
+                )
+            continue
+        prepared = isinstance(marker, expected_type)
+        if prepared != wanted:
+            state = "prepared for autocast" if prepared else "left FP32"
+            raise ValueError(
+                f"{stage}_autocast={wanted} but the {stage} parameters were "
+                f"{state}; pass params through {preparer}"
+            )
 
 
 _PADDED_MODEL_FEATURES = frozenset(
@@ -330,6 +396,15 @@ def protenix_infer_static(
     centre_each_step: bool = True,
     preserve_prefix_rng: bool = False,
     trunk_dtype: jnp.dtype | None = None,
+    #: The two stages upstream moves between FP32 and the forward's BF16
+    #: autocast by token count, resolved by
+    #: :func:`foldjax.models.protenix.amp_policy.amp_policy_for_tokens` and
+    #: passed here already realised -- this function does no token gating of
+    #: its own. Each flag says the *activations* run BF16; the matching
+    #: parameter subtree has to have been rebuilt for it as well, which
+    #: :func:`_require_realised_amp_params` checks rather than assumes.
+    confidence_autocast: bool = False,
+    diffusion_autocast: bool = False,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
     cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
@@ -369,6 +444,11 @@ def protenix_infer_static(
     # Attention keeps its configured kernel (run per-shard inside
     # `shard_map`); triangle multiplication falls back to the partitionable
     # XLA einsum on its own when a mesh is active.
+    _require_realised_amp_params(
+        params,
+        confidence_autocast=confidence_autocast,
+        diffusion_autocast=diffusion_autocast,
+    )
     n_token = int(input_feature_dict["restype"].shape[-2])
     token_padding_mask = input_feature_dict.get("token_padding_mask")
     atom_padding_mask = input_feature_dict.get("atom_padding_mask")
@@ -446,9 +526,21 @@ def protenix_infer_static(
         # should not pay for a structure they will discard.
         return dict(_capture.collected())
 
-    diffusion_s_inputs = s_inputs.astype(jnp.float32)
-    diffusion_s_trunk = s_trunk.astype(jnp.float32)
-    diffusion_z_trunk = z_trunk.astype(jnp.float32)
+    # Under autocast the stage keeps whatever dtype the trunk produced: torch
+    # only casts a stage's arguments to FP32 when that stage's autocast is
+    # *disabled* (`autocasting_disable_decorator`), so a BF16 confidence head
+    # reads the BF16 trunk representations directly. The widened copies below
+    # are the FP32 path, shared by both stages so that a run with both
+    # policies off computes exactly the arrays it computed before.
+    wide_s_inputs = s_inputs.astype(jnp.float32)
+    wide_s_trunk = s_trunk.astype(jnp.float32)
+    wide_z_trunk = z_trunk.astype(jnp.float32)
+    diffusion_s_inputs = s_inputs if diffusion_autocast else wide_s_inputs
+    diffusion_s_trunk = s_trunk if diffusion_autocast else wide_s_trunk
+    diffusion_z_trunk = z_trunk if diffusion_autocast else wide_z_trunk
+    confidence_s_inputs = s_inputs if confidence_autocast else wide_s_inputs
+    confidence_s_trunk = s_trunk if confidence_autocast else wide_s_trunk
+    confidence_z_trunk = z_trunk if confidence_autocast else wide_z_trunk
     # Managed inputs keep four uint8 pair components instead of transferring a
     # 139-channel tensor. Rebuild the exact historical int8 feature inside the
     # graph, then preserve the existing shard-before-projection boundary. Dense
@@ -503,6 +595,7 @@ def protenix_infer_static(
             use_sampler_scan=use_sampler_scan,
             use_denoiser_jit=use_denoiser_jit,
             use_efficient_fusion=use_diffusion_efficient_fusion,
+            denoiser_dtype=jnp.bfloat16 if diffusion_autocast else None,
             attention_backend=diffusion_attention_backend,
             token_q_chunk_size=token_q_chunk_size,
             diffusion_chunk_size=diffusion_chunk_size,
@@ -562,9 +655,9 @@ def protenix_infer_static(
             """
             logits = confidence_head(
                 input_feature_dict,
-                diffusion_s_inputs,
-                diffusion_s_trunk,
-                diffusion_z_trunk,
+                confidence_s_inputs,
+                confidence_s_trunk,
+                confidence_z_trunk,
                 pair_mask,
                 sample_coordinates,
                 params.confidence,
@@ -641,9 +734,11 @@ GRAPH_STATIC_ARGNAMES = (
     "centre_each_step",
     "confidence_triangle_attention_backend",
     "compact_confidence_distance_bins",
+    "confidence_autocast",
     "cp_layout",
     "cp_shards",
     "diffusion_attention_backend",
+    "diffusion_autocast",
     "diffusion_chunk_size",
     "gamma0",
     "gamma_min",
