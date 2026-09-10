@@ -145,9 +145,7 @@ def test_the_eager_path_refuses_instead_of_running_without_the_option() -> None:
         )
 
 
-def test_the_single_sample_stage_shape_refuses_rather_than_running_eagerly(
-    tmp_path: Path,
-) -> None:
+def test_the_single_sample_stage_shape_refuses_rather_than_running_eagerly() -> None:
     """That shape keeps the historical eager boundary and owns no executable.
 
     A prediction always has a sample axis, so this is unreachable from the
@@ -208,21 +206,20 @@ def test_the_stage_runs_under_both_policies_and_agrees_with_itself() -> None:
 
 
 def _stage_features() -> dict[str, np.ndarray]:
+    """Two tokens over four atoms, the least the stage will accept."""
     return {
         "token_index": np.arange(2, dtype=np.int64),
         "atom_to_token_idx": np.asarray([0, 0, 1, 1], dtype=np.int64),
         "asym_id": np.asarray([0, 1], dtype=np.int64),
         "distogram_rep_atom_mask": np.asarray([1, 0, 1, 0], dtype=bool),
+        "has_frame": np.ones((2,), dtype=bool),
+        "is_protein": np.ones((4,), dtype=bool),
     }
 
 
-def test_the_host_scores_carry_the_option_to_the_stage(monkeypatch) -> None:
-    """The graph returns summaries; this stage is finished afterwards.
-
-    Both branches of ``opendde_confidence_scores`` reach it, and the one the
-    CLI takes is the passthrough -- the in-graph summaries with shape
-    complementarity left out because it cannot trace.
-    """
+@pytest.fixture
+def captured_stage(monkeypatch) -> list[bool]:
+    """What ``deterministic`` the shape-complementarity stage is asked for."""
     captured: list[bool] = []
 
     def capture(*_args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -230,6 +227,17 @@ def test_the_host_scores_carry_the_option_to_the_stage(monkeypatch) -> None:
         return {}
 
     monkeypatch.setattr(shape_comp, "compute_shape_complementarity_batched", capture)
+    return captured
+
+
+def test_the_in_graph_summaries_carry_the_option_to_the_stage(
+    captured_stage,
+) -> None:
+    """The route the CLI takes: summaries computed in-graph, this stage after.
+
+    Shape complementarity is left out of the graph because it cannot trace, so
+    it is finished here -- on the host, in its own executable.
+    """
     features = _stage_features()
     output = {
         "coordinate": jnp.zeros((2, 4, 3), dtype=jnp.float32),
@@ -241,7 +249,38 @@ def test_the_host_scores_carry_the_option_to_the_stage(monkeypatch) -> None:
     )
     postprocess_impl.opendde_confidence_scores(output, features, num_recycles=1)
 
-    assert captured == [True, False]
+    assert captured_stage == [True, False]
+
+
+def test_the_host_scored_logits_carry_it_too(captured_stage, monkeypatch) -> None:
+    """The other route: no ``asym_id`` in the graph, so scoring happens here.
+
+    Wiring one branch and not the other would make the option depend on which
+    features the job had.
+    """
+    monkeypatch.setattr(
+        postprocess_impl,
+        "confidence_scores_from_logits",
+        lambda **_kwargs: {"token_pair_pde": jnp.zeros((2, 2, 2), dtype=jnp.float32)},
+    )
+    monkeypatch.setattr(
+        postprocess_impl, "calculate_chain_based_gpde", lambda *_a, **_k: {}
+    )
+    features = _stage_features()
+    output = {
+        "coordinate": jnp.zeros((2, 4, 3), dtype=jnp.float32),
+        "plddt": jnp.zeros((2, 4, 50), dtype=jnp.float32),
+        "pae": jnp.zeros((2, 2, 2, 64), dtype=jnp.float32),
+        "pde": jnp.zeros((2, 2, 2, 64), dtype=jnp.float32),
+        "distogram_logits": jnp.zeros((2, 2, 2, 96), dtype=jnp.float32),
+    }
+
+    postprocess_impl.opendde_confidence_scores(
+        output, features, num_recycles=1, deterministic=True
+    )
+    postprocess_impl.opendde_confidence_scores(output, features, num_recycles=1)
+
+    assert captured_stage == [True, False]
 
 
 class _DefaultsCapturedError(Exception):
