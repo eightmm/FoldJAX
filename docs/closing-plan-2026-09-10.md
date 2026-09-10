@@ -77,3 +77,18 @@ pairs need 96 GB (three cards, not four).
   full suite; the parent runs it once at the end.
 - Report: branch name, files, test command and its output, what was not
   done. No commit trailers.
+
+## 12-hour extension (2026-09-10 19:40 → 2026-09-11 07:30)
+
+Ultracode window. Anchored on the two consistency items that are still open
+and on the levers that keep every closed item closed. Each package has a
+terminal state; nothing below reopens an at-floor verdict.
+
+| package | owner | terminal state |
+| --- | --- | --- |
+| X1 3k offsets (OpenFold3 6ztx 24 Å uniform, Protenix 6ztx 2.4 Å uniform) | parent (GPU 1002/1003) + workflow readers (CPU) | Config diff done on CPU: neither upstream carries a size-gated *input* knob at 3012 (Protenix `chunk_size_thresholds` and `msa_chunk_size` are memory-only, input audit at 3k passes leaf-by-leaf; OpenFold3 `offload_inference.token_cutoff 2800` and `per_sample_token_cutoff 750` are memory/batching, native subsamples 1024 rows per cycle like the port). The tape-pinned replay is therefore the necessary test. Small residual → sampler/MSA-row draw, closed. Large → bisect from the captured trunk. Two more OOMs → one lever each (packed dropout tape without `--include-trunk`; template-collapsed streamed replay) then the ceiling is recorded. |
+| X2 unified `deterministic` execution knob | workflow (CPU implement, worktrees) → parent GPU verify | Every port accepts `deterministic=on` through the shared execution vocabulary (Protenix already does); two processes of the same case are bitwise on GPU for each port, cost recorded at 1k. |
+| X3 parity regression suite on CPU | workflow | The gated upstream-parity suites (never collected in CI) get a CPU-runnable subset driven by small stored captures, so a rounding-route regression fails CI instead of the next GPU night. |
+| X4 device-argument compaction for the 4k wall | workflow inventory (CPU) → parent `memory_analysis` audit at 4k (GPU, compile-only) → implement if the arithmetic says it clears the card | Per-port table of device arguments by dtype and bytes at 4116 tokens; the compaction that keeps outputs bitwise (bool/int8 masks, bf16 template geometry, in-graph relp) lands where it moves the 4k peak below 96 GiB, else the ceiling is recorded with the numbers. |
+| X5 collection | parent | mixed 4k/5k rows, OpenDDE bf16, ESMFold2 seq/upstream, Boltz-2 pristine 2k; tables and structures updated. |
+| X6 close-out | parent | full CI, ruff, `uv lock --check`, ledger, memory, push; final status maps every goal and package to its terminal state (~07:30). |
