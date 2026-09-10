@@ -508,6 +508,7 @@ def _run(
         save_output_npz,
     )
     from foldjax.models.protenix.data.template_features import (
+        compact_zero_template_geometry,
         dedup_templates,
     )
     from foldjax.models.protenix.models.predict import protenix_predict_static
@@ -914,7 +915,14 @@ def _run(
             # multiplicity so the average is unchanged. After padding, because
             # `pad_protenix_features` requires the native depth of four.
             # `output_features` was snapshotted above and keeps its rows.
-            model_features = compact_msa_storage(dedup_templates(job["features"]))
+            # A template-free query's four quadratic geometry tensors are
+            # bitwise zero -- 5.9 GB of arguments at 4,100 tokens over the two
+            # survivors -- and the trunk rebuilds them from a scalar. After
+            # deduplication, because the dropped arrays are what distinguishes
+            # the rows.
+            model_features = compact_msa_storage(
+                compact_zero_template_geometry(dedup_templates(job["features"]))
+            )
             if compact_generated_atom_categories:
                 # This is intentionally after every shape-changing operation:
                 # padded all-zero rows become the v1 sentinels, and the graph

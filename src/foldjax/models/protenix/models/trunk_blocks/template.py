@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
+from foldjax.models.protenix.data.template_features import (
+    TEMPLATE_DISTOGRAM_BINS,
+    ZERO_TEMPLATE_GEOMETRY_MARKER,
+    has_compact_zero_template_geometry,
+)
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
     LinearParams,
@@ -29,6 +35,64 @@ class TemplateEmbedderParams(NamedTuple):
     linear_u: LinearParams
 
 
+def _geometry(
+    input_feature_dict: dict[str, jnp.ndarray],
+    name: str,
+    template_id: int,
+    compact: tuple[jnp.ndarray, int] | None,
+    trailing: tuple[int, ...],
+) -> jnp.ndarray:
+    """One template geometry operand: the stored row, or the rebuilt zero."""
+
+    if compact is None:
+        return input_feature_dict[name][template_id]
+    zero, n_token = compact
+    return jnp.broadcast_to(zero, (n_token, n_token, *trailing))
+
+
+def _zero_template_geometry(
+    input_feature_dict: dict[str, jnp.ndarray],
+) -> tuple[jnp.ndarray, int] | None:
+    """The rebuilt-zero operand and token count, or ``None`` for dense inputs.
+
+    A query with no template hits hands the device four all-zero quadratic
+    tensors -- 5.9 GB at 4,100 tokens over the two deduplicated survivors --
+    that exist only to be multiplied by a mask.
+    :func:`~foldjax.models.protenix.data.template_features.compact_zero_template_geometry`
+    drops them on the host and leaves this scalar behind; every operand below
+    is a broadcast of it, so the arithmetic that follows is the arithmetic the
+    dense path ran, on values that are bitwise the ones it received.
+
+    The scalar stays a runtime operand rather than becoming ``jnp.zeros``: a
+    literal zero would let a compiler fold ``0 * x`` and lose the dense path's
+    ``0 * NaN`` and ``0 * Inf``.
+
+    Its dtype is whatever reached the trunk, not float32. ``trunk_dtype``
+    narrows every floating leaf of the feature tree by kind, so at ``bf16``
+    this scalar arrives narrowed exactly as the four arrays it stands in for --
+    and ``dgram.dtype``, which sets the precision of the 108-wide concatenation
+    below, comes out the same on both paths. The float32 storage contract is
+    enforced on the host instead, by
+    :func:`~foldjax.models.protenix.data.template_features.validate_zero_template_geometry`.
+    """
+
+    if not has_compact_zero_template_geometry(input_feature_dict):
+        return None
+    zero = jnp.asarray(input_feature_dict[ZERO_TEMPLATE_GEOMETRY_MARKER])
+    if zero.shape != ():
+        raise ValueError("Protenix zero-template geometry marker must be a scalar")
+    if not jnp.issubdtype(zero.dtype, jnp.floating):
+        raise ValueError(
+            "Protenix zero-template geometry marker must be a floating scalar"
+        )
+    if not isinstance(zero, jax.core.Tracer) and (
+        bool(zero != 0.0) or bool(jnp.signbit(zero))
+    ):
+        raise ValueError("Protenix zero-template geometry marker must be exactly +0.0")
+    n_token = int(input_feature_dict["template_aatype"].shape[-1])
+    return zero, n_token
+
+
 def template_pair_features(
     input_feature_dict: dict[str, jnp.ndarray],
     template_id: int,
@@ -36,8 +100,13 @@ def template_pair_features(
 ) -> jnp.ndarray:
     """Build one Protenix template pair-feature tensor."""
 
-    dgram = input_feature_dict["template_distogram"][template_id]
-    n_token = dgram.shape[-3]
+    compact = _zero_template_geometry(input_feature_dict)
+    if compact is None:
+        dgram = input_feature_dict["template_distogram"][template_id]
+        n_token = dgram.shape[-3]
+    else:
+        zero, n_token = compact
+        dgram = jnp.broadcast_to(zero, (n_token, n_token, TEMPLATE_DISTOGRAM_BINS))
     dtype = dgram.dtype
     if pair_mask is None:
         pair_mask = jnp.ones(dgram.shape[:-1], dtype=dtype)
@@ -48,7 +117,9 @@ def template_pair_features(
     pair_mask = pair_mask * multichain_mask
 
     pseudo_beta_mask = (
-        input_feature_dict["template_pseudo_beta_mask"][template_id].astype(dtype)
+        _geometry(
+            input_feature_dict, "template_pseudo_beta_mask", template_id, compact, ()
+        ).astype(dtype)
         * pair_mask
     )
     aatype = input_feature_dict["template_aatype"][template_id]
@@ -56,11 +127,19 @@ def template_pair_features(
     aatype_i = jnp.broadcast_to(aatype[..., None, :, :], dgram.shape[:-1] + (32,))
     aatype_j = jnp.broadcast_to(aatype[..., :, None, :], dgram.shape[:-1] + (32,))
     unit_vector = (
-        input_feature_dict["template_unit_vector"][template_id].astype(dtype)
+        _geometry(
+            input_feature_dict, "template_unit_vector", template_id, compact, (3,)
+        ).astype(dtype)
         * pair_mask[..., None]
     )
     backbone_mask = (
-        input_feature_dict["template_backbone_frame_mask"][template_id].astype(dtype)
+        _geometry(
+            input_feature_dict,
+            "template_backbone_frame_mask",
+            template_id,
+            compact,
+            (),
+        ).astype(dtype)
         * pair_mask
     )
 

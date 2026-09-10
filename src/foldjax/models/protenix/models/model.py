@@ -34,6 +34,10 @@ from foldjax.models.protenix.data.compact_categories import (
     COMPACT_REF_ELEMENT_IDS,
     validate_compact_ref_atom_categories,
 )
+from foldjax.models.protenix.data.template_features import (
+    ZERO_TEMPLATE_GEOMETRY_MARKER,
+    validate_zero_template_geometry,
+)
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
@@ -189,6 +193,11 @@ _PADDED_MODEL_FEATURES = frozenset(
 _PADDED_MODEL_FEATURES = _PADDED_MODEL_FEATURES.union(
     COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES
 )
+# The template geometry the marker stands in for is listed above and simply
+# absent on the compact path; the marker itself has to be admitted, or the
+# allow-list would drop the only provenance the trunk has and leave it with
+# neither representation.
+_PADDED_MODEL_FEATURES = _PADDED_MODEL_FEATURES.union({ZERO_TEMPLATE_GEOMETRY_MARKER})
 
 
 def _restore_ref_atom_category_one_hot(
@@ -842,6 +851,7 @@ def protenix_infer_compiled(
     orders. It changes which executable runs, not what it computes.
     """
     validate_compact_ref_atom_categories(input_feature_dict)
+    validate_zero_template_geometry(input_feature_dict)
     restype = input_feature_dict.get("restype")
     relp_token_count = int(
         restype.shape[-2]
