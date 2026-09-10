@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "port": "boltz2",
+  "entries": [
+    {
+      "case": "protein_dna_ion_1aay",
+      "tier": "A",
+      "tokens": 115,
+      "capture": {
+        "provenance": "/home/jaemin/non-project/optimizing/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A/provenance.json",
+        "commit": "b1ebfc4"
+      },
+      "tripwire": {
+        "trunk_checkpoint_flags": "cyclic_pos_enc=True,fix_sym_check=True",
+        "trunk_boundary_arrays": "relative_position_encoding,s,s_inputs,z"
+      },
+      "files": {
+        "features.npz": {
+          "sha256": "a674ff06054a740b1d369ce672f5cc6aca2f22fc523ea9fb32b17eaba117581e",
+          "bytes": 613718
+        },
+        "trunk.npz": {
+          "sha256": "1c02d3c715a6258ef805b04a22e4a6cd08257aa18e9424d6484d3d9a9fd96969",
+          "bytes": 7839357
+        },
+        "tape.json": {
+          "sha256": "3e7c31fedcd849b79d64684a319f0b0ce5f3f2f759b66300038f2474430be91d",
+          "bytes": 545
+        },
+        "effective-model-settings.json": {
+          "sha256": "a8775ef02b954668295f57372df43146619e11545c666a8cd4b83215cab86381",
+          "bytes": 1130
+        }
+      },
+      "gpu_residual_angstrom": {
+        "max": 0.0027
+      },
+      "cpu_calibration": {
+        "residual_angstrom": 0.002736,
+        "wall_seconds": 50.9,
+        "source_commit": "64f9413",
+        "host": "144-core workstation, taskset -c 100-107, OMP_NUM_THREADS=8, JAX_PLATFORMS=cpu",
+        "recorded": "2026-09-10"
+      },
+      "tolerance": {
+        "metric": "trunk_relative_rmse_max",
+        "value": 0.005,
+        "set_from": "CPU calibration 0.002736 (worst array z) x 1.8; also 1.5x upstream's own kernels-off band 0.003311 at cycle-00 pairformer.output_z"
+      },
+      "test_node_ids": [
+        "tests/parity/test_boltz2.py::test_trunk_boundary_matches_the_native_capture"
+      ],
+      "excluded_samples": [],
+      "notes": "UNITS: tolerance.value, cpu_calibration.residual_angstrom and gpu_residual_angstrom.max are a DIMENSIONLESS relative RMSE ||port-native||_2/||native||_2, not angstrom -- a trunk activation carries no length unit. The schema's angstrom-suffixed names are wrong for tier A; the parent should rename them. CPU calibration per array: s 1.297e-3, z 2.736e-3 (worst, the asserted one), s_inputs 4.496e-4, relative_position_encoding 0.0 (bit-identical to the capture). gpu_residual 0.0027 is the port's recorded GPU band on z (docs/boltz2-master-kernel-toggle-2026-09-09.md, 'the port's measured band (relative RMSE s 1.02e-3, z 2.70e-3, s_inputs 7.8e-5)'), so the CPU trunk residual is the same size as the port's own GPU residual. DETECTION FLOOR, measured by perturbing the fixture in memory and re-running: masking the MSA beyond 1024 rows (an MSA-cap regression) takes the worst array from 0.002736 to 0.05714, 21x the tolerance -- fails. Duplicating ONE MSA row of 8192 moves it to 0.002789, 2% -- passes, and is not detectable. So the floor is roughly twice the recorded implementation scatter; the test does not resolve differences at the scatter's own size, and it cannot see the 0.175 A coordinate bistability, which is a downstream amplification of a trunk difference inside this band. Backends: the GPU capture ran cuEquivariance triangle kernels; the CPU replay runs the XLA einsum (triangle_backend='xla') and pins BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND=xla -- that switch defaults to 'cueq' from the environment and the cuEquivariance import is not stable across processes on this CPU host, so an unpinned run would be calibrated against whichever backend happened to import. Reproducibility: bit-identical over two runs on different 8-core sets (taskset 100-107 and 120-127), same OMP_NUM_THREADS=8."
+    },
+    {
+      "case": "protein_dna_ion_1aay",
+      "tier": "B",
+      "tokens": 115,
+      "capture": {
+        "provenance": "/home/jaemin/non-project/optimizing/foldjax-bench/boltz2-master-native-20260909/protein_dna_ion_1aay/native-A/provenance.json",
+        "commit": "b1ebfc4"
+      },
+      "tripwire": {
+        "sampler_tape_kwargs": "aug_transforms,init_noise,step_noises",
+        "diffusion_schedule_constants": "rho=7.0,sigma_max=160.0,sigma_min=0.0001"
+      },
+      "files": {
+        "features.npz": {
+          "sha256": "a674ff06054a740b1d369ce672f5cc6aca2f22fc523ea9fb32b17eaba117581e",
+          "bytes": 613718
+        },
+        "tape.npz": {
+          "sha256": "2a2edc19eadd1209c8aae213644a16dc2eb1b9697be199bd00a0ca8ba15e5d30",
+          "bytes": 13628286
+        },
+        "trunk.npz": {
+          "sha256": "1c02d3c715a6258ef805b04a22e4a6cd08257aa18e9424d6484d3d9a9fd96969",
+          "bytes": 7839357
+        },
+        "coordinate.npz": {
+          "sha256": "b1daa188d3859727b11c90afc69597b89b63e96e3bd9618f70caacc9191adc31",
+          "bytes": 67876
+        },
+        "tape.json": {
+          "sha256": "3e7c31fedcd849b79d64684a319f0b0ce5f3f2f759b66300038f2474430be91d",
+          "bytes": 545
+        },
+        "effective-model-settings.json": {
+          "sha256": "a8775ef02b954668295f57372df43146619e11545c666a8cd4b83215cab86381",
+          "bytes": 1130
+        }
+      },
+      "gpu_residual_angstrom": {
+        "max": 0.174617,
+        "per_sample": [
+          0.028,
+          0.016,
+          0.175,
+          0.006,
+          0.011
+        ]
+      },
+      "cpu_calibration": {
+        "residual_angstrom": 0.00188,
+        "wall_seconds": 129.6,
+        "source_commit": "64f9413",
+        "host": "144-core workstation, taskset -c 100-107, OMP_NUM_THREADS=8, JAX_PLATFORMS=cpu",
+        "recorded": "2026-09-10"
+      },
+      "tolerance": {
+        "metric": "entity_max_rmsd_angstrom",
+        "value": 0.01,
+        "set_from": "CPU calibration 0.00188 A (protein entity, sample 0) x 5.3; still 5x below the panel's 0.05 A coordinate gate"
+      },
+      "test_node_ids": [
+        "tests/parity/test_boltz2.py::test_tape_pinned_sampler_replay_matches_native_coordinates"
+      ],
+      "excluded_samples": [],
+      "notes": "SCOPE: sampler-only. The captured native trunk boundary (trunk.npz) is injected and the port's diffusion sampler replays the stored 200-step x 5-sample tape to coordinates. The full port-trunk -> port-sampler replay was measured first with the same code and rejected: per-sample all-atom RMSD 0.057/0.114/0.147/0.067/0.024 A, a residual band the size of the 0.05 A panel gate and of the 0.175 A bistable sample it exists to catch. Tier A + tier B therefore cover trunk and sampler separately; their COMPOSITION is not asserted end to end here. CPU calibration, entity max over the five samples: protein(asym=0) 0.00188, DNA(asym=1) 0.00024, DNA(asym=2) 0.00024, Zn(asym=3) 0.00016, Zn(asym=4) 0.00023, Zn(asym=5) 0.00139 A; unaligned max single-atom |dx| 0.03699 A, guarded separately by the module constant MAX_ABS_COORDINATE_ANGSTROM = 0.10 because an entity RMSD averages a single-atom move away. The same arm on GPU is 1.6e-5..7.0e-5 A (docs/boltz2-master-kernel-toggle-2026-09-09.md, jobs 635/636): CPU XLA is ~30x looser, which is why the tolerance is not the GPU number. DETECTION FLOOR, measured by perturbing the fixture in memory and re-running: swapping the tape slices of samples 0 and 1 (a sample-ordering bug) takes the protein entity from 0.00188 to 0.56827 A, 57x the tolerance -- fails. Shifting ONE scalar of step_noises (of 3.65M) by 1 A takes the entity metric only to 0.00348 A, inside the 0.01 A tolerance, and is caught instead by the max|dx| guard at 0.11213 > 0.10 A -- fails. Negating init_noise entirely is NOT detectable (0.00190 A, indistinguishable from the unperturbed 0.00188): with sigma_max=160 A and alignment_reverse_diff on, this case's trajectory does not remember its starting noise, so an init_noise tripwire would prove nothing. excluded_samples is empty deliberately: sample index 2 is the bistable one end to end (0.175 A GPU, 0.147 A in the rejected CPU full replay) but the bifurcation is trunk-driven, and with the captured trunk injected it lands at 0.00045 A, tied with the other four. gpu_residual_angstrom.per_sample is the protein chain, native-A vs port-A (docs/ion-case-1aay-master-2026-09-09.md 'Protein chain per sample'). Reproducibility: bit-identical over two runs on different 8-core sets."
+    }
+  ]
+}
