@@ -232,6 +232,37 @@ def test_the_sequences_entry_reproduces_the_reference_bytes() -> None:
     assert dump_sequences(document) == REFERENCE_SEQUENCES.read_text()
 
 
+def test_rewriting_sequences_json_keeps_other_cases_untouched(tmp_path: Path) -> None:
+    """`materialise` rewrites a file the whole set shares.
+
+    Reshaping every entry to the three keys this module knows about would delete
+    a field another tool added, in a case this run was not even asked about.
+    """
+    cifs = tmp_path / "cif"
+    cifs.mkdir()
+    (cifs / "MINI.cif").write_text(MINI_CIF.read_text())
+    root = tmp_path / "set"
+    (root / "jobs").mkdir(parents=True)
+    (root / "sequences.json").write_text(
+        json.dumps(
+            {
+                "zz_other": {
+                    "length": 7,
+                    "sequence": "AAA",
+                    "pdb": "1ABC",
+                    "note": "keep",
+                }
+            },
+            indent=1,
+        )
+    )
+    materialise("MINI", "mixed_mini", root, cif_directory=cifs, heavy_atoms=HEAVY_ATOMS)
+    document = json.loads((root / "sequences.json").read_text())
+    assert document["zz_other"]["note"] == "keep"
+    assert list(document) == ["mixed_mini", "zz_other"], "cases stay sorted"
+    assert list(document["mixed_mini"]) == ["length", "sequence", "pdb"]
+
+
 def test_the_job_carries_no_key_the_harness_refuses() -> None:
     """The harness's own answer, not a restatement of its key set.
 
@@ -359,6 +390,31 @@ def test_an_empty_or_headerless_alignment_is_refused() -> None:
         sanitise_a3m("", QUERY)
     with pytest.raises(ValueError, match="does not start with a FASTA header"):
         sanitise_a3m("MKTAYIAKQR\n", QUERY)
+
+
+def test_an_archive_that_will_not_extract_is_discarded(tmp_path: Path) -> None:
+    """Otherwise a corrupt download is permanent.
+
+    The ticket id is content-addressed over the submitted query, so the archive
+    path is the same on every run. `curl -C -` then sees a complete file, has
+    nothing to resume, and each attempt re-reads the same broken bytes.
+    """
+    from bench.mixed_cases import ColabFoldUnpairedClient
+
+    client = ColabFoldUnpairedClient(sleep=lambda seconds: None)
+    archive = tmp_path / "TICKET.tar.gz"
+
+    client.submit = lambda sequence, label: "TICKET"  # type: ignore[method-assign]
+    client.poll = lambda job_id: None  # type: ignore[method-assign]
+
+    def download(job_id: str, destination: str | Path) -> Path:
+        Path(destination).write_bytes(b"not a tarball")
+        return Path(destination)
+
+    client.download = download  # type: ignore[method-assign]
+    with pytest.raises(Exception):
+        client.search("MKTAYIAKQR", "probe", tmp_path)
+    assert not archive.exists(), "the poisoned archive would be resumed forever"
 
 
 def test_the_cache_key_is_the_sequence_not_the_case() -> None:

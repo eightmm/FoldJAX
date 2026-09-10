@@ -626,15 +626,15 @@ def dump_job(job: Mapping[str, Any]) -> str:
 
 
 def dump_sequences(document: Mapping[str, Mapping[str, Any]]) -> str:
-    ordered = {
-        name: {
-            "length": document[name]["length"],
-            "sequence": document[name]["sequence"],
-            "pdb": document[name]["pdb"],
-        }
-        for name in sorted(document)
-    }
-    return json.dumps(ordered, indent=1)
+    """Sort the cases, and leave each entry exactly as it was handed over.
+
+    Cases are sorted so the file does not reorder when one is rewritten, but the
+    *fields* of an entry are not touched. `materialise` rewrites a file it
+    shares with every other case in the set, and reshaping each entry to the
+    three keys it knows about would silently delete a field some other tool
+    added. New entries get their key order from `materialise`.
+    """
+    return json.dumps({name: document[name] for name in sorted(document)}, indent=1)
 
 
 def materialise(
@@ -920,10 +920,24 @@ class ColabFoldUnpairedClient:
         return "".join(chunks)
 
     def search(self, sequence: str, label: str, work_dir: str | Path) -> str:
+        """One search, with a poisoned archive discarded rather than resumed.
+
+        The ticket id is content-addressed over the submitted query -- the same
+        sequence and label always come back with the same id, verified against
+        the live endpoint -- so the archive path is stable across runs. That is
+        what makes `-C -` safe, and it is also what would make a corrupt
+        download permanent: `curl` sees a complete file, has nothing to resume,
+        and every later attempt re-reads the same broken bytes. So an archive
+        that will not extract is removed on the way out.
+        """
         job_id = self.submit(sequence, label)
         self.poll(job_id)
         archive = self.download(job_id, Path(work_dir) / f"{job_id}.tar.gz")
-        return self.extract(archive)
+        try:
+            return self.extract(archive)
+        except Exception:
+            archive.unlink(missing_ok=True)
+            raise
 
 
 def fetch_unpaired_msa(
