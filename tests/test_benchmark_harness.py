@@ -2099,3 +2099,27 @@ def test_gap_ablation_records_the_successful_prefill_timing_state(
         assert Path(argv[cache_index + 1]) == (
             tmp_path / "openfold3-confidence-serial-t0488-n5/cache"
         )
+
+
+def test_run_foldjax_options_follow_the_cli_literal_rule(monkeypatch):
+    """`bench.run_foldjax --option k=v` must hand the backend the same value
+    `foldjax predict --option k=v` would: JSON literals become Python values
+    (`true` -> True, `4` -> 4) and anything else stays a string. A row with
+    `structure_sample_sequential=true` reached the ESMFold2 backend as the
+    string "true" and was refused (job 992), so the rule is pinned here."""
+    from foldjax.cli import _options
+
+    parsed = _options(
+        ["structure_sample_sequential=true", "dtype=bfloat16", "num=4", "x=1.5"]
+    )
+    assert parsed == {
+        "structure_sample_sequential": True,
+        "dtype": "bfloat16",
+        "num": 4,
+        "x": 1.5,
+    }
+    import inspect
+
+    import bench.run_foldjax as harness
+
+    assert "_parse_cli_options(list(args.option))" in inspect.getsource(harness.main)

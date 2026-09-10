@@ -336,8 +336,13 @@ def _language_model_embedding_from_states(
             for name, value in parameters.items()
         ),
     )
+    # Spell the policy only when asked so the default owner's lru_cache key
+    # stays the two-positional key it always had (the review of 8451ffe found
+    # the unconditional third positional made every off call a fresh entry).
     return _compiled_language_model_embedding(
-        str(model.settings.trunk_dtype), signature, deterministic
+        str(model.settings.trunk_dtype),
+        signature,
+        *((True,) if deterministic else ()),
     )(hidden_states, parameters)
 
 

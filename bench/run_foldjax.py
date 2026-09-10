@@ -163,7 +163,13 @@ def main() -> int:
         schedule["num_recycles"] = args.num_recycles
     from foldjax.schema import PredictionRequest
 
-    options = dict(entry.split("=", 1) for entry in args.option)
+    # Same rule as `foldjax predict --option`: a JSON literal when the value
+    # parses as one (true/false/numbers/lists), the raw string otherwise, so
+    # a boolean native option such as `structure_sample_sequential=true`
+    # reaches the backend as a bool rather than the string "true".
+    from foldjax.cli import _options as _parse_cli_options
+
+    options = _parse_cli_options(list(args.option))
     case = next(item for item in cases() if item.name == args.case)
     # A benchmark row is a (weights, schedule) pair, so Protenix's two
     # supported checkpoints are two rows. FoldJAX spells the second as a
