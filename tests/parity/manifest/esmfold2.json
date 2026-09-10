@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "port": "esmfold2",
+  "entries": [
+    {
+      "case": "protein_1ubq",
+      "tier": "B",
+      "tokens": 76,
+      "capture": {
+        "provenance": "/home/jaemin/non-project/optimizing/foldjax-bench/esmfold2-master-20260909-RbVYiU/protein_1ubq/native-A/metadata.json",
+        "commit": "85376b7"
+      },
+      "tripwire": {
+        "tape_inputs": "diffusion_churn_normals,diffusion_initial_normal,diffusion_rotation_quaternions,diffusion_translations,initial_pair_state,lm_dropout_masks,msa_column_keep,msa_row_choices",
+        "samples": "5",
+        "seed": "101",
+        "trunk_dtype": "bfloat16",
+        "checkpoint_config_sha256": "e9ec2496ec433a1dce18627ed4bf3785b4ce0c1d69e4bb4663dad1ab895da012"
+      },
+      "files": {
+        "features.npz": {
+          "sha256": "85e5b0f8f430fe76bb38a825fcd2c8f8d953806d1b40af9fed54c9816d7920d2",
+          "bytes": 46592
+        },
+        "tape.npz": {
+          "sha256": "95a1a8f87f0dc0a093c072d3173678513bc0e4cb2ab4b8e07e43a84ed8dd9668",
+          "bytes": 6719508
+        },
+        "upstream_coords.npz": {
+          "sha256": "ff6fc8c9b667a31740c1e3a52a9bd9fa526c5300965a63f03c5ad16207d91c7d",
+          "bytes": 34077
+        },
+        "upstream_lm.npz": {
+          "sha256": "47ce5124da61c77f9bef2fdd24be1c0ef2524e3867261a31abd2fd5835000680",
+          "bytes": 30085370
+        }
+      },
+      "gpu_residual_angstrom": {
+        "max": 0.1218135804697867,
+        "per_sample": [
+          0.01310171431388705,
+          0.1218135804697867,
+          0.015621600415119582,
+          0.015272137082783632,
+          0.01927099659467783
+        ]
+      },
+      "cpu_calibration": {
+        "residual_angstrom": 0.019346,
+        "wall_seconds": 38.5,
+        "source_commit": "64f9413",
+        "host": "workstation master, taskset -c 0-7, OMP_NUM_THREADS=8, JAX_PLATFORMS=cpu",
+        "recorded": "2026-09-10"
+      },
+      "tolerance": {
+        "metric": "entity_rmsd_angstrom",
+        "value": 0.03,
+        "set_from": "CPU calibration 0.019346 A (worst asserted sample) + 0.010654 A margin, which exceeds the native A-vs-B floor 0.0059 A for this case; kept below the panel's 0.05 A coordinate gate so the 0.122 A run the panel failed would still fail here"
+      },
+      "test_node_ids": [
+        "tests/parity/test_esmfold2.py::test_tape_replay_matches_native_coordinates",
+        "tests/parity/test_esmfold2.py::test_one_flipped_msa_column_trips_the_comparison",
+        "tests/parity/test_esmfold2.py::test_the_tolerance_is_tighter_than_the_defects_the_panel_recorded"
+      ],
+      "excluded_samples": [
+        1
+      ],
+      "notes": "Sample 1 is excluded because the port cannot reproduce it: two GPU port runs of this same tape land 0.109 A apart at sample 1 (port-A-vs-port-B.json) while the other four agree to 0.019-0.023 A, and native-vs-port is 0.122 A there against 0.013-0.019 A elsewhere. The native side alone does not show it (native-A-vs-native-B 0.0052 A at sample 1), so it is a port-side basin edge, not a native one. This CPU run measures 0.074618 A at sample 1 against 0.0147-0.0193 A at the other four; asserting on it would assert on the sampler's own scatter. Reproducibility: three separate CPU processes replayed this tape to the same six decimals (0.016604 / 0.074618 / 0.019346 / 0.014694 / 0.018261 A), so the run-to-run floor on CPU is zero and the whole detection margin is the 0.010654 A between the calibration and the tolerance. Measured detection floor: flipping one bit of the tape (msa_column_keep[0,0], the tripwire test) moves the asserted samples to 0.029-0.057 A and fails; adding 1.0 to one element of diffusion_initial_normal moves its sample 0.0166 -> 0.0262 A and passes, and flipping one lm_dropout_masks bit reaches 0.0244 A and passes -- so this test detects coordinate movement above ~0.011 A on the worst asserted sample, well below the panel's 0.05 A gate and the 0.122 A residual it failed. capture.provenance names metadata.json: this capture writes its provenance there, it has no provenance.json. No slicing: bench/esmfold2_tape.py pins SAMPLES = 5 (:31) and validate_diffusion_tape checks batch == 1 * 5, so the tape is replayed whole. upstream_lm.npz is the native ESM-C output injected as lm_hidden_states, which is what keeps the 25.4 GB language model out of a CPU run; upstream_confidence.npz (14 MB) is not fetched because this tier compares coordinates. gpu_residual_angstrom is recorded for context only and is not comparable to the CPU number: port-A ran its own JAX language model (lm_arm jax_independent_lm), this fixture injects the native one, so the LM difference is absent here. Layer certified: the shared core (trunk, sampler, atom decoder) -- features.npz is the native feature dictionary already built, so neither featurizer is exercised. wall_seconds is the replay test's pytest call duration; the replay itself measured 36.7-55.9 s depending on host load, and the whole module (three tests, two replays) 56.4 s."
+    }
+  ]
+}
