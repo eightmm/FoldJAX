@@ -11,11 +11,15 @@ and it reaches every other model in a benchmark process -- including the ones
 whose recorded numbers were measured without it. The setting belongs on the
 executable that wants it, which is what this constant is for.
 
-One dict, in one place, because the flag itself is provisional: the narrower
-``--xla_gpu_exclude_nondeterministic_ops`` is being measured at 3,012 tokens,
-where the autotuner failed under this one ("Failed to get configs for 2 of 171
-instructions"). Switching is then an edit here and nowhere else, so nothing
-outside this module spells the flag name.
+One dict, in one place, so nothing outside this module spells a flag name.
+At 3,012 tokens XLA's deterministic autotuner has no candidate for two batched
+``gemm_fusion_dot`` instructions of shape ``f32[5,16,4,96,48]`` and the
+compile fails ("Failed to get configs for 2 of 171 instructions") under both
+``xla_gpu_deterministic_ops`` and the narrower
+``xla_gpu_exclude_nondeterministic_ops``. Disabling Triton gemms alongside
+routes those two through cuBLAS and compiles: 635 s warm against 579 s
+default at 3,012 tokens, peak unchanged (jobs 665/747, 2026-09-10). That is
+why the option carries the second key.
 """
 
 from __future__ import annotations
@@ -23,4 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 #: XLA compile options for a run that asked for `deterministic=on`.
-DETERMINISTIC_COMPILER_OPTIONS: dict[str, Any] = {"xla_gpu_deterministic_ops": True}
+DETERMINISTIC_COMPILER_OPTIONS: dict[str, Any] = {
+    "xla_gpu_deterministic_ops": True,
+    "xla_gpu_enable_triton_gemm": False,
+}

@@ -197,3 +197,17 @@ disabled (`--xla_gpu_enable_triton_gemm=false`, job queued as
 `det-notriton`) is the one remaining escape hatch, recorded below when it
 lands. Either way the opt-in option in the port must fail loudly at compile
 time rather than silently fall back, which is what XLA already does.
+
+### The escape hatch works: deterministic ops with Triton gemms disabled (job 747)
+
+| arm (L3000_6ztx) | wall s | peak MiB |
+| --- | ---: | ---: |
+| default XLA (job 665) | 579.3 | 42219 |
+| `--xla_gpu_deterministic_ops=true --xla_gpu_enable_triton_gemm=false` | 635.4 | 41207 |
+
+Routing the two batched gemms through cuBLAS instead of Triton gives the
+deterministic autotuner a candidate; the run compiles and costs 9.7% wall at
+3k tokens (13% at 1k with Triton still on). The port's `deterministic=on`
+option (`foldjax.models.protenix.compile_policy.DETERMINISTIC_COMPILER_OPTIONS`)
+therefore carries both keys, so it compiles at every bucket measured. Still
+opt-in; the default run is the one every other number here describes.
