@@ -377,3 +377,22 @@ meant to carry an ion case, so the manifest's eighth target is not an opt-in.
   `opendde`), not input or model failures: see the materialization section
   above. `run_suite.py` will archive and rerun them, which is the right
   behaviour for a record whose provenance could not be sealed.
+
+## AlphaFold3 and ESMFold2 arms (2026-09-10, jobs 729/730)
+
+Both remaining ports accept the case. These are FoldJAX predictions with
+their own confidence scores, warm after a compile-cache prefill, seed 101,
+n=5 (`bench.run_foldjax`, snapshot `scale-timing-20260910`); there is no
+native AlphaFold3 or ESMFold2 capture of 1AAY on master, so no parity number
+is claimed for either.
+
+| port | schedule | warm wall s | peak MiB | per-sample scores (5 samples) |
+| --- | --- | ---: | ---: | --- |
+| AlphaFold3 | 10 recycles, 200 steps | 54.08 | 1462 | ipTM 0.93, pTM 0.90, ranking 0.922-0.925 |
+| ESMFold2 | model defaults | 49.52 | 12623 | ipTM 0.972-0.973, pTM 0.940-0.943, pLDDT 0.956-0.958 |
+
+Both input translations carried the two DNA strands and the three Zn ions
+without complaint; the AlphaFold3 peak figure is the harness's process
+high-water mark and is small because the AlphaFold3 runtime allocates
+outside the tracked XLA client for most of its work (see the AlphaFold3
+memory notes), so compare it with other AlphaFold3 rows only.
