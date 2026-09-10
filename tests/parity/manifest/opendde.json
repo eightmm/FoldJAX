@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "port": "opendde",
+  "entries": [
+    {
+      "case": "protein_1ubq",
+      "tier": "B",
+      "tokens": 76,
+      "capture": {
+        "provenance": "/home/jaemin/non-project/optimizing/foldjax-bench/opendde-master-20260909-Ayx8BN/protein_1ubq/native-A/provenance.json",
+        "commit": "e324ad0"
+      },
+      "tripwire": {
+        "model_feature_contract": "48:f0547d0b49264827",
+        "tape_injection": "noise_schedule,init_noise,step_noises,rotations,translations,cycle_msa_features"
+      },
+      "files": {
+        "native-input.npz": {
+          "sha256": "cc5b51c0541b7208de101cba032eaa7d842d3e91dbbcd6f8d5c065f426dafd36",
+          "bytes": 82168
+        },
+        "native-derived.npz": {
+          "sha256": "a626f97422c3614f0a6b27572291496fe2dd3eb9e4bb11499a281f07857c0d52",
+          "bytes": 807643
+        },
+        "tape.npz": {
+          "sha256": "0b392fd1912bcda981de0466ebdbda928bfeb990f05290c09de24d0509b4be64",
+          "bytes": 6770535
+        },
+        "msa.npz": {
+          "sha256": "6398b369e9e6fc9daa8cd059b20366f46da85f306157d7520e34cfa11d09c93e",
+          "bytes": 428946
+        },
+        "coordinate.npz": {
+          "sha256": "593339a675c4b024f3357a16db9640ecccc32a83a9579266c00b91f079cd5b32",
+          "bytes": 33753
+        }
+      },
+      "gpu_residual_angstrom": {
+        "max": 0.012251067507364957,
+        "per_sample": [
+          0.00222577518345593,
+          0.012251067507364957,
+          0.0020578034632521263,
+          0.0022906169996158355,
+          0.00218067670571211
+        ]
+      },
+      "cpu_calibration": {
+        "residual_angstrom": 0.0017818724924888452,
+        "wall_seconds": 324.5,
+        "source_commit": "64f9413",
+        "host": "master, taskset -c 64-71, OMP_NUM_THREADS=8, JAX_PLATFORMS=cpu",
+        "recorded": "2026-09-10"
+      },
+      "tolerance": {
+        "metric": "entity_rmsd_angstrom",
+        "value": 0.005,
+        "set_from": "CPU calibration 0.0017819 A on sample 0, raised to the GPU port residual on that sample (0.0022258 A) plus a margin >= the native A-B floor there (0.0020710 A), rounded to 0.005 A. Detection floor: the assertion trips 0.0032 A above the calibrated residual, 10x below the panel's 0.05 A coordinate gate, so the 0.0123 A the panel's worst sample shows on this case would trip it."
+      },
+      "test_node_ids": [
+        "tests/parity/test_opendde.py::test_tape_pinned_replay_matches_the_native_capture"
+      ],
+      "excluded_samples": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "notes": "Tier B only: this capture has no trunk-boundary arrays (native-A/raw.npz holds heads and coordinates), so there is no tier A entry for OpenDDE until a trunk capture exists. The stored 5-sample tape is sliced to sample 0 on the sample axis in memory -- the files on disk are byte-for-byte the capture's, so `python -m tests.parity.fetch` can reproduce them. That slice is not an approximation: `opendde_infer_static` slices the tape the same way for `diffusion_chunk_size` (src/foldjax/models/opendde/models/model.py:954-970), the trunk is computed once either way, and the samples do not interact. The step axis is NOT sliced; the noise schedule is the sampler's clock. Excluded samples: 1 is the one loose sample on this case in every arm (native A-B floor 0.0063166 A, GPU port 0.0122511 A) and would set a tolerance six times looser than the tight samples; 2-4 are as tight as sample 0 and are left out for the CPU budget, each being another 200 denoising steps (~5 min). Precision: CPU cannot run the port's shipped `high` policy -- CPU dot_general rejects TF32_TF32_F32, there is no TF32 there -- so the CPU arm runs `highest`. The GPU arm to read it against is therefore fj-highest, per_sample [0.0017812, 0.0117881, 0.0016474, 0.0017767, 0.0039416], whose sample 0 (0.0017812 A) and the CPU number (0.0017819 A) differ by 7e-7 A; `gpu_residual_angstrom` above is the shipped-default fj-high-A arm. Native A-B floor per sample: [0.0020710, 0.0063166, 0.0021155, 0.0019792, 0.0019034]. Core only: the input is upstream's own featurization (native-input.npz plus the derived local-atom geometry in native-derived.npz), so a featurizer regression is invisible here by construction. Measured with the shipped test on 8 pinned cores: 324.5 s for the test call (319.3 s inside the model call), and a rerun printed the same 0.0017819 A, so the CPU replay is reproducible at the precision it reports. What the one-sample slice costs, measured against a batched two-sample replay of the same tape: sample 0's coordinates move 3.6e-5 A max / 1.0e-5 A RMSD and its residual moves 8e-7 A (0.0017819 -> 0.0017827) -- the same run arithmetically, not bitwise. That batched run also puts sample 1 at 0.0117661 A on CPU, matching its GPU numbers (fj-highest 0.0117881, fj-high 0.0122511), so it is loose in the model rather than in one arm and asserting it would need a tolerance three times looser. A further sample costs ~45 s (n1 324 s, n2 364 s): the trunk is most of the run, and a five-sample entry would be ~7.5 min. The assertion is shown to be able to fail by negating the 200 per-step churn draws (0.7317 A, 146x the tolerance); the module docstring records what it is and is not sensitive to."
+    }
+  ]
+}
