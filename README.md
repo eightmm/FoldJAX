@@ -229,6 +229,12 @@ runtime tests hard-block external Torch, Lightning, TorchMetrics, and fair-esm
 imports. Tests on real depositions skip without `biotite`
 (`--extra openfold3-preprocess`).
 
+`tests/parity/` is a CPU replay of stored native captures, deselected by
+default and selected with `--run-cpu-parity`. It needs released weights and
+fixtures that are fetched by digest rather than committed, so it does not run
+in the CI job; [docs/parity-cpu.md](docs/parity-cpu.md) has the tiers, the
+manifest schema, and what a passing run does and does not certify.
+
 ## Provenance
 
 FoldJAX vendors these ports rather than depending on them, so one install covers

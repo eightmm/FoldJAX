@@ -296,6 +296,12 @@ markers = [
     # reason as the one above: an unknown mark is a warning per test, and a
     # suite that prints warnings by default is a suite whose warnings go unread.
     "network: reaches an external service (RCSB)",
+    # The CPU parity subset replays stored native captures (tests/parity). It
+    # needs released weights and multi-MB fixtures that are not in the tree, so
+    # `tests/parity/conftest.py` deselects it unless `--run-cpu-parity` or
+    # `-m cpu_parity` asks for it. Registered here so the marker is a marker
+    # rather than a warning, and so `-m cpu_parity` is a supported selection.
+    "cpu_parity: replays a stored native capture on CPU (needs fixtures + weights)",
 ]
 
 [tool.coverage.run]

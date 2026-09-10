@@ -36,6 +36,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="run tests that require official model assets or an upstream checkout",
     )
+    # Same reason, one directory further down: `tests/parity/conftest.py` is
+    # reached through `tests/`, so registering it there made
+    # `pytest --run-cpu-parity` from the root fail to parse.
+    parser.addoption(
+        "--run-cpu-parity",
+        action="store_true",
+        default=False,
+        help="run the CPU parity regression subset (tests/parity, marker cpu_parity)",
+    )
 
 
 _LEAKY_ENVIRONMENT = (
