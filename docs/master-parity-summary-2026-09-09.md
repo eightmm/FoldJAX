@@ -105,3 +105,19 @@ data-cache/small-input set and one is the mtime-resolution flake in
 tokens) accepted by all four ion-capable input translations; OpenBind pass
 (0.034 Å worst, on a Zn), Protenix 0.063 and OpenDDE 0.070 Å deferred at
 their native floors (0.054/0.070), Boltz-2 as above.
+
+## Scale rows (2026-09-10)
+
+`scale-rows-master-2026-09-10.md`: 1k-5k-token rows for all six ports beside
+upstream for four of them, same input file and schedule per pair. FoldJAX is
+faster (13-36%) and lighter (22-54% less peak) on every finished pair, Boltz-2
+completes 4k tokens where upstream OOMs, and the memory ceilings agree where
+both OOM. Without a shared tape, cross-implementation TM/RMSD sits at the
+within-set level for Protenix and Boltz-2 at 2k and for the 1k single-chain
+rows; OpenDDE's FoldJAX samples spread wider than upstream's on 3og2 (open,
+one case); homomeric multi-chain cases need a permutation-aware alignment
+before their cross numbers are read. Interface unification wave three (shared
+Protenix/OpenDDE predict-flag declarations and one weight-export CLI body)
+merged; Protenix gained an opt-in `deterministic` execution knob. A
+mixed-entity scale set (five real complexes, 1.1k-4.8k tokens) is built and
+its 30 FoldJAX rows are running.
