@@ -57,3 +57,11 @@ run what the released upstream runs). An opt-in native option
 `msa_deletions=restored` reinstates the pre-`04d27c71` loop for users who
 want the training-time features; its effect is measured on GPU before any
 recommendation. The regression is filed upstream against PR #441.
+
+## Measurement (2026-09-11)
+
+Baseline, released deletions (the scale row `L1000_3og2-boltz2-scale`, 1003
+residues, single chain): against the deposited 3OG2 chain A (986 CA matched by
+sequence alignment), CA RMSD 0.93-1.41 Å and TM-score 0.990-0.995 over the
+five samples. The `msa_deletions=restored` arm (job 1045) and a released
+control from the same snapshot (job 1046) are compared the same way below.
