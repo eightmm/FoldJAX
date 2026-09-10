@@ -686,3 +686,139 @@ def assemble_template_features(
     atom_positions = np.concatenate([c[1] for c in chain_dense], axis=1)
     atom_mask = np.concatenate([c[2] for c in chain_dense], axis=1)
     return _as_protenix_dict(aatype, atom_positions, atom_mask)
+
+
+#: Private provenance for the compact all-zero template geometry.  Its value is
+#: a float32 ``+0.0`` rather than a version tag: the model rebuilds the dropped
+#: tensors by broadcasting *this* scalar, so the zero stays a runtime operand
+#: and ``0 * NaN`` keeps producing ``NaN`` the way the dense arrays did.
+ZERO_TEMPLATE_GEOMETRY_MARKER = "_foldjax_zero_template_geometry"
+
+#: The four quadratic template inputs the marker stands in for.  Everything
+#: else on the template axis stays: ``template_aatype`` discriminates the
+#: deduplicated survivors (restype 31 against restype 0) and is what makes the
+#: template tower nonzero for a query with no hits at all.
+ZERO_TEMPLATE_GEOMETRY_FIELDS = (
+    "template_distogram",
+    "template_pseudo_beta_mask",
+    "template_unit_vector",
+    "template_backbone_frame_mask",
+)
+
+#: The distogram's bin count, public because the trunk rebuilds the dropped
+#: tensor at this width and the two spellings must not drift apart.
+TEMPLATE_DISTOGRAM_BINS = _DGRAM_NUM_BINS
+
+
+def compact_zero_template_geometry(features: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Replace exact-zero quadratic template geometry with one scalar marker.
+
+    A query with no template hits is padded up to :data:`MAX_TEMPLATES` with
+    zeros, so after :func:`dedup_templates` both survivors carry geometry that
+    is bitwise ``+0.0`` everywhere. Those four tensors are ``2 x 44 x 4 B x
+    N_token^2`` of arguments -- 5.9 GB at 4,100 tokens -- copied to the device
+    so the trunk can multiply them by a mask and get zero back.
+
+    Dropping them is bit-exact rather than an approximation of one: the model
+    rebuilds the same all-zero operands in-graph and every downstream op runs
+    unchanged. Protenix cannot take OpenFold3's shortcut of projecting a single
+    zero vector, because its six template features are concatenated into one
+    108-wide tensor and projected by a *single* linear
+    (``trunk_blocks/template.py`` ``template_pair_features`` -> ``linear_a``),
+    so collapsing the pair axes would change that dot's reduction.
+
+    This host boundary is the only producer of the marker. Missing, malformed,
+    differently typed, non-``float32``, nonzero, non-finite or negative-zero
+    geometry retains the dense representation unchanged, and a caller-supplied
+    marker is discarded before validation rather than trusted as provenance.
+
+    Args:
+        features: a feature mapping, normally the output of
+            :func:`dedup_templates`.
+
+    Returns:
+        A new ``dict`` without the four geometry fields and with the marker,
+        or -- when anything at all disqualifies the input -- a mapping whose
+        template representation is exactly the one that came in.
+    """
+    if not any(name in features for name in ZERO_TEMPLATE_GEOMETRY_FIELDS):
+        if ZERO_TEMPLATE_GEOMETRY_MARKER in features:
+            out = dict(features)
+            del out[ZERO_TEMPLATE_GEOMETRY_MARKER]
+            return out
+        return features
+
+    out = dict(features)
+    out.pop(ZERO_TEMPLATE_GEOMETRY_MARKER, None)
+
+    aatype_value = out.get("template_aatype")
+    if aatype_value is None:
+        return out
+    aatype = np.asarray(aatype_value)
+    if aatype.ndim != 2:
+        return out
+    n_template, n_token = aatype.shape
+
+    expected_shapes = {
+        "template_distogram": (n_template, n_token, n_token, _DGRAM_NUM_BINS),
+        "template_pseudo_beta_mask": (n_template, n_token, n_token),
+        "template_unit_vector": (n_template, n_token, n_token, 3),
+        "template_backbone_frame_mask": (n_template, n_token, n_token),
+    }
+    arrays: dict[str, np.ndarray] = {}
+    for name in ZERO_TEMPLATE_GEOMETRY_FIELDS:
+        value = out.get(name)
+        if value is None:
+            return out
+        array = np.asarray(value)
+        if array.shape != expected_shapes[name] or array.dtype != np.dtype(np.float32):
+            return out
+        arrays[name] = array
+
+    # Compare the raw float32 words, so -0.0 and every NaN payload are rejected
+    # rather than compared equal to the exact +0.0 the featurizer emits. Scan
+    # the small masks before the quadratic fields, which are multiple GiB at
+    # serving sizes.
+    for array in sorted(arrays.values(), key=lambda value: value.nbytes):
+        if not array.flags["C_CONTIGUOUS"]:
+            return out
+        if np.any(array.view(np.uint32)):
+            return out
+
+    for name in ZERO_TEMPLATE_GEOMETRY_FIELDS:
+        del out[name]
+    out[ZERO_TEMPLATE_GEOMETRY_MARKER] = np.zeros((), dtype=np.float32)
+    return out
+
+
+def has_compact_zero_template_geometry(features: Mapping[str, Any]) -> bool:
+    """True for the private representation :func:`compact_zero_template_geometry` emits.
+
+    The marker is provenance for one exact representation, not a switch: a
+    caller that carries it beside dense geometry must keep using that geometry.
+    """
+    return ZERO_TEMPLATE_GEOMETRY_MARKER in features and all(
+        name not in features for name in ZERO_TEMPLATE_GEOMETRY_FIELDS
+    )
+
+
+def validate_zero_template_geometry(features: Mapping[str, Any]) -> None:
+    """Reject a malformed private marker on host arrays before tracing.
+
+    A marker that is not a float32 scalar ``+0.0`` would be broadcast into the
+    rebuilt geometry, so an unchecked stale value turns into all-ones template
+    inputs rather than an error.
+    """
+    if not has_compact_zero_template_geometry(features):
+        return
+    marker = np.asarray(features[ZERO_TEMPLATE_GEOMETRY_MARKER])
+    if marker.shape != () or marker.dtype != np.dtype(np.float32):
+        raise ValueError(
+            "Protenix zero-template geometry marker must be a float32 scalar"
+        )
+    if marker.view(np.uint32) != 0:
+        raise ValueError("Protenix zero-template geometry marker must be exactly +0.0")
+    if "template_aatype" not in features:
+        raise KeyError(
+            "Protenix zero-template geometry marker requires template_aatype"
+        )

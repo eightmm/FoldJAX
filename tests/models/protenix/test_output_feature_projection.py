@@ -27,7 +27,12 @@ from foldjax.models.protenix.data.output import (
     write_protenix_outputs,
 )
 from foldjax.models.protenix.data.static_io import save_static_feature_npz
-from foldjax.models.protenix.data.template_features import dedup_templates
+from foldjax.models.protenix.data.template_features import (
+    ZERO_TEMPLATE_GEOMETRY_MARKER,
+    compact_zero_template_geometry,
+    dedup_templates,
+    has_compact_zero_template_geometry,
+)
 
 
 class _ReaderPoison(Mapping[str, Any]):
@@ -105,13 +110,28 @@ def _tree_bytes_signature(tree: Any) -> tuple[str, tuple[tuple[Any, ...], ...]]:
 
 
 def _template_probe_hlo_hash(features: Mapping[str, Any]) -> bytes:
-    def graph_probe(distogram, unit_vector):
-        return jnp.sum(distogram[..., 0]) + jnp.sum(unit_vector[..., 0])
+    # Whichever template representation reaches the model has to lower the
+    # same way on both sides. A template-free query hands the graph one scalar
+    # marker instead of the two all-zero geometry tensors, so probe the
+    # representation that is actually there and let the hash differ between the
+    # two -- a side that carries the wrong one is exactly what this catches.
+    if has_compact_zero_template_geometry(features):
 
-    lowered = jax.jit(graph_probe).lower(
-        jnp.asarray(features["template_distogram"]),
-        jnp.asarray(features["template_unit_vector"]),
-    )
+        def graph_probe(marker):
+            return jnp.sum(marker)
+
+        operands = (jnp.asarray(features[ZERO_TEMPLATE_GEOMETRY_MARKER]),)
+    else:
+
+        def graph_probe(distogram, unit_vector):
+            return jnp.sum(distogram[..., 0]) + jnp.sum(unit_vector[..., 0])
+
+        operands = (
+            jnp.asarray(features["template_distogram"]),
+            jnp.asarray(features["template_unit_vector"]),
+        )
+
+    lowered = jax.jit(graph_probe).lower(*operands)
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
     return hashlib.sha256(stablehlo.encode()).digest()
 
@@ -212,7 +232,9 @@ def test_generated_cli_projection_never_reaches_model_bound_features(
     }
     input_path.write_text(json.dumps([job]), encoding="utf-8")
     expected = compact_msa_storage(_protein_features("ACDE"))
-    expected = compact_msa_storage(dedup_templates(expected))
+    expected = compact_msa_storage(
+        compact_zero_template_geometry(dedup_templates(expected))
+    )
     expected = compact_ref_atom_category_storage(expected)
     captured: dict[str, Mapping[str, Any]] = {}
 
