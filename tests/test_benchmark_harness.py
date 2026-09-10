@@ -1609,7 +1609,12 @@ def test_upstream_esmfold2_runs_the_fork_from_a_staged_environment(
     ]
     # The fork ships no virtualenv of its own, so the interpreter has to be
     # named rather than derived from the checkout the provenance gate reads.
-    assert environment["PYTHONPATH"] == f"{harness}:{harness / 'src'}"
+    # The fork's own `src` is on the launched path, ahead of the pip
+    # `transformers` this virtualenv also carries, which is a different
+    # ESMFold2 implementation rather than this one.
+    assert environment["PYTHONPATH"] == (
+        f"{harness}:{harness / 'src'}:{tmp_path / 'transformers-esmfold2/src'}"
+    )
     assert run_upstream.upstream_python("esmfold2") == Path(argv[0])
     assert cwd not in Path(argv[0]).parents
     assert run_upstream.upstream_python("boltz2") == tmp_path / "boltz/.venv/bin/python"
