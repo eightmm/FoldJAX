@@ -180,3 +180,20 @@ port-level way to set it that does not reconfigure the host process.
 The flag costs 13% wall at 1k tokens (the 115-token replays showed none),
 so it is a parity-replay setting, not a default. The 3k-token rows (jobs
 665/666) follow below when they land.
+
+### Deterministic ops at 3012 tokens: XLA's autotuner has no deterministic config for two gemm fusions (jobs 666, 728)
+
+| arm (L3000_6ztx, 3012 tokens) | outcome |
+| --- | ---: |
+| default XLA (job 665) | 579.3 s warm, peak 42219 MiB |
+| `--xla_gpu_deterministic_ops=true` | compile fails: `Failed to get configs for: 2 out of 171 instructions` |
+| `--xla_gpu_exclude_nondeterministic_ops=true` | same failure, same two instructions |
+
+The two are `gemm_fusion_dot` instructions of shape `f32[5,16,4,96,48]`
+(a batched diffusion-head matmul whose padded shape only appears at this
+bucket), for which XLA's deterministic autotuner finds "No supported config".
+So the flag is not usable at 3k tokens as-is; a retry with Triton gemms
+disabled (`--xla_gpu_enable_triton_gemm=false`, job queued as
+`det-notriton`) is the one remaining escape hatch, recorded below when it
+lands. Either way the opt-in option in the port must fail loudly at compile
+time rather than silently fall back, which is what XLA already does.
