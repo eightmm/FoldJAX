@@ -862,6 +862,11 @@ def test_cache_access_metadata_does_not_invalidate(tmp_path) -> None:
     assert not cache_scope_changed(str(scope))
 
     payload.write_bytes(b"corrupt")
+    # Same length as the original payload, and written within the filesystem's
+    # mtime tick of the observation: the signature is (inode, size, mtime_ns),
+    # so make the rewrite land at a later mtime as any real later write would.
+    later = payload.stat().st_mtime_ns + 1_000_000_000
+    os.utime(payload, ns=(later, later))
 
     assert cache_scope_changed(str(scope))
     observe_cache_scope(str(scope))
