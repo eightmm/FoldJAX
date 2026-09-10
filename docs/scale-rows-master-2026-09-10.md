@@ -78,6 +78,63 @@ recommended opt-in when memory or time matter, since it costs no measurable
 accuracy on this panel and buys 37% time and half the peak at 1k; it does not
 lift the 2k ceiling. 1AAY (ion case) follows when job 984 lands.
 
+### Evening rows (2026-09-10/11): AMP policy, argument compaction, deterministic pairs, ESMFold2 upstream
+
+Protenix under the upstream token-gated AMP policy (`--amp-policy auto`,
+default since 5b40b5d: confidence head bf16 above 2,560 tokens, diffusion bf16
+above 3,840) and with the zero-template-geometry compaction (`compact`, X4,
+includes the AMP default):
+
+| case | fp32 head (before) | `amp-auto` | `compact` |
+| --- | --- | --- | --- |
+| L3000_6ztx (3012) | 579 s / 41.2 GiB | 581 / 42.1 | 580 / 37.5 |
+| L4000_1gte (4100) | 2206 / 73.5 | 2106 / 70.6 | 2101 / 65.1 |
+| L5000_8e2f (4888) | OOM (94) | OOM (89.4) | OOM (89.4) |
+
+The compaction lands 1:1 as predicted (−3.7 GiB at 3k, −5.5 GiB at 4.1k
+against the AMP row) with unchanged wall time; the 5k row still fails on the
+same 89.4 GiB temporary, so the 5k ceiling is a temporary, not the arguments.
+The bf16 diffusion above 3,840 tokens (upstream's own policy) saves 4.5% wall
+and 2.9 GiB at 4.1k. Boltz-2's uint8 categorical compaction at 4.1k (job 1041)
+is still running.
+
+Boltz-2 pristine upstream (zero tracked diff): 2k 485 s / 46.6 GiB against
+the reviewed arm's 466 / 46.6 — the reviewed performance patches did not
+move the upstream column at either size.
+
+ESMFold2 upstream (Biohub fork `ef32577f55`, torch 2.13, `bench.run_upstream`
+esmfold2 runner, same 5/200/10 schedule): 1k 199 s / 67.6 GiB against
+FoldJAX 155 / 14.4; 2k OOM (3203 s to failure at 93.5 GiB) where FoldJAX runs
+451 / 45.0. The port's ESMFold2 is 4.7× lighter at 1k and completes 2k where
+upstream cannot.
+
+Mixed upstream rows at 3k/4k: OpenFold3 3k 1500 s / 81.8 GiB (FoldJAX 1013 /
+50.1), Protenix 3k 760 / 57.4 (699 / 42.1) and 4k 1666 / 78.6 (1509 / 66.5),
+Boltz-2 3k and 4k OOM (FoldJAX 944 / 41.1 and 2111 / 60.9).
+
+Deterministic execution (`--option deterministic=on`, X2) at L1000_3og2, two
+processes per arm, no autotune freeze, coordinates compared file by file:
+
+| port | off A vs B | on A vs B | wall off → on | peak off → on |
+| --- | --- | --- | --- | --- |
+| Protenix | differ (max 2.3 Å/atom) | bitwise | 65 → 76 s (+17%) | 6.7 → 6.6 GiB |
+| OpenFold3 | bitwise | bitwise | 99 → 118 s (+19%) | 9.1 → 9.3 |
+| OpenDDE | differ (max 0.66 Å) | bitwise | 233 → 250 s (+7%) | 41.3 → 36.2 |
+| ESMFold2 | bitwise | bitwise | 157 → 221/228 s (+41-45%) | 14.4 → 14.4 |
+| AlphaFold 3 | bitwise | bitwise | 110 → 103 s (−6%) | 4.7 → 4.9 |
+| Boltz-2 | differ (max 9 Å/atom) | differ (max 8 Å/atom) | 92 → 96 s (+4%) | 12.3 → 9.7 |
+
+The knob delivers bitwise repeatability without a per-case autotune file on
+Protenix and OpenDDE (whose off pairs differ), and OpenFold3, ESMFold2 and
+AlphaFold 3 are already repeatable at 1k either way. Boltz-2 is the one port
+where two `on` processes still differ: 3OG2 is a chaotic case for this model
+and the residual nondeterminism sits in kernels the flag does not reach
+(cuEquivariance triangle kernels, cuBLAS), so Boltz-2 keeps the frozen
+autotune cache as its repeatability route (0.0008 Å on 5SAK). Costs: ESMFold2
+pays the most (its ESMC blocks move from an eager stack into compiled
+deterministic pools), AlphaFold 3 gets faster (Triton GEMMs off routes its
+bf16 GEMMs to cuBLAS).
+
 Extra rows on the same cases: Protenix `deterministic=on` costs 13% wall at 1k
 (74 vs 65 s) and 9.7% at 3k with Triton gemms disabled (635 vs 579 s;
 `docs/protenix-master-panel-2026-09-09.md`); OpenFold3 `cueq-full` at 3k is
