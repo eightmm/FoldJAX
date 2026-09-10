@@ -418,7 +418,10 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
     if not eager:
-        assert seen["compile_options"] == {"cache_scope": None}
+        assert seen["compile_options"] == {
+            "cache_scope": None,
+            "deterministic": False,
+        }
     expected_budget = None if all_arrays else DEFAULT_ARRAY_BUDGET_BYTES
     assert seen["config_array_budget"] == expected_budget
     assert seen["writer_array_budget"] == expected_budget
