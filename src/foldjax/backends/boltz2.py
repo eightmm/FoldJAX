@@ -310,8 +310,8 @@ class Boltz2Backend(Backend):
             "glu_backend",
             "mols",
             "msa_api_key_header",
-            "msa_deletions",
             "msa_api_key_value",
+            "msa_deletions",
             "msa_pairing_strategy",
             "msa_server_password",
             "msa_server_url",
@@ -364,6 +364,10 @@ class Boltz2Backend(Backend):
         "glu_backend",
         "bucket",
         "deterministic",
+        # Both values compile the same executable -- only three MSA feature
+        # arrays differ -- so this is not shape identity. It is here because a
+        # cache entry stands for the prediction, not just the program: a
+        # `restored` request must not be answered out of a `released` run.
         "msa_deletions",
     )
 
