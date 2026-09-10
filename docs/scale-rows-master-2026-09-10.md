@@ -149,9 +149,16 @@ CA RMSD Å by sample): s1 0.026-0.027, s2 0.098-0.103, s3 0.027-0.029,
 s4 0.032-0.034, s5 0.029-0.030; pLDDT max 1.3 points, pTM/ipTM 1e-4. So the
 port sits at native's own scatter on samples 1/2/3/5 (0.030-0.038 vs
 0.026-0.103) and 12× above it on sample 4 (0.41 vs 0.033; native's widest
-sample is 0.10). One more port draw (autotune unfrozen) is queued to read
-sample 4 as a near-tie or a stable route difference before the verdict;
-Protenix's native-B is still writing its tapes.
+sample is 0.10). A second port draw with the autotune cache unfrozen (job
+1009) leaves sample 4 at 0.41 Å on every chain and moves sample 2 from 0.038
+to 0.29 Å: sample 4 is a stable route difference at 3k, not a near-tie,
+while sample 2 is the port's kernel-choice-sensitive sample (its spread 0.29
+against native's 0.10 on the same sample, the pattern seen on ESMFold2 7ST3).
+Both port draws also put one pLDDT value 20 points from native where the two
+native processes differ by 1.3 points. Open at 3k on one sample of five; the
+per-residue localisation of the 0.41 Å and of the pLDDT difference is being
+read on CPU, and a trunk-boundary bisect at 3k needs the streamed replay to
+capture the trunk (the fused replay exceeds the card at this size).
 
 ## Provenance of the upstream arm on master
 
