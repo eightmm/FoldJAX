@@ -161,7 +161,7 @@ appended here.
 | mixed_1k_4xww | 1138 | 132 / 9.2 / 0.90 vs 177 / 17.7 / 0.91 | 111 / 10.4 / 0.95 vs 174 / 18.1 / 0.95 | 80 / 11.8 / 0.94 vs 108 / 15.8 / 0.94 | 302 / 52.6 / 0.94 vs 318 / 73.2 / 0.93 | 186 / 14.7 / 0.89 | 81 / 5.6 / 0.94 |
 | mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 vs 698 / 43.9 / 0.76 | 348 / 18.4 / 0.87 vs 492 / 50.4 / 0.88 | 248 / 21.9 / 0.76 vs 280 / 44.6 / 0.75 | OOM (fp32 pair wall, as on the protein set) | 487 / 51.2 / 0.63 | 260 / 14.6 / 0.74 |
 | mixed_3k_5npk | 2861 | 1013 / 50.1 / 0.62 | 944 / 41.1 / 0.63 | 699 / 42.1 / 0.59 | OOM | OOM (trunk pair arena, as at 3k protein) | 521 / 29.7 / 0.46 |
-| mixed_4k_6kqf | 3874 | OOM (69) | running | running | OOM | pending | pending |
+| mixed_4k_6kqf | 3874 | OOM (69) | running | 1509 / 66.5 / 0.90 | OOM | pending | pending |
 
 ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
 OpenDDE's 1k pair is the one mixed row where FoldJAX is not faster (302 vs
