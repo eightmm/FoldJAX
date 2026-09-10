@@ -34,6 +34,10 @@ _CLI_OPTIONS = {
     "strict_token_limit",
     "esm_checkpoint_dir",
     "trunk_dtype",
+    # Which stages run under the BF16 autocast. Released default `auto`
+    # reproduces upstream's token gate, so it is resolved from the job
+    # rather than from this table; the table only carries the request.
+    "amp_policy",
     "max_msa_depth",
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
@@ -122,6 +126,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "num_samples": 5,
     "max_msa_depth": 16384,
     "trunk_dtype": "bf16",
+    "amp_policy": "auto",
     "diffusion_attention_backend": "xla_jit",
     "trunk_single_attention_backend": "xla_jit",
     "chunk_policy": "auto",
@@ -252,6 +257,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "num_recycles",
         "model_name",
         "trunk_dtype",
+        "amp_policy",
         "max_msa_depth",
         "diffusion_attention_backend",
         "trunk_single_attention_backend",

@@ -42,6 +42,26 @@ class AutocastLinearParams(NamedTuple):
     bias: jnp.ndarray | None = None
 
 
+class Fp32PrecisionLinearParams(NamedTuple):
+    """Upstream ``Linear(precision=torch.float32)``: fp32 matmul, narrow output.
+
+    These projections opt out of autocast individually, and the opt-out is not
+    "stay wide": ``Linear.forward`` widens the input, multiplies in FP32, and
+    casts the result back to the input's dtype
+    (``protenix/model/modules/primitives.py:84-96``). Under an FP32 ambient
+    dtype every step of that is the identity, which is why an FP32 run can
+    spell these as ordinary :class:`LinearParams` and get the same numbers.
+    Under BF16 it is not: dropping the final cast would widen everything
+    downstream of a geometry or conditioning projection and quietly delete the
+    autocast the caller asked for.
+
+    Weights stay FP32 -- an autocast-exempt projection is never rounded.
+    """
+
+    weight: jnp.ndarray
+    bias: jnp.ndarray | None = None
+
+
 class TransitionParams(NamedTuple):
     """Parameters for ``protenix.model.modules.primitives.Transition``."""
 
@@ -60,9 +80,18 @@ class AdaptiveLayerNormParams(NamedTuple):
     linear_no_bias_s: LinearParams
 
 
-def linear(x: jnp.ndarray, params: LinearParams | AutocastLinearParams) -> jnp.ndarray:
+def linear(
+    x: jnp.ndarray,
+    params: LinearParams | AutocastLinearParams | Fp32PrecisionLinearParams,
+) -> jnp.ndarray:
     """Apply a PyTorch-layout linear projection."""
 
+    if isinstance(params, Fp32PrecisionLinearParams):
+        input_dtype = x.dtype
+        y = jnp.matmul(x.astype(jnp.float32), jnp.swapaxes(params.weight, -1, -2))
+        if params.bias is not None:
+            y = y + params.bias
+        return y.astype(input_dtype)
     if isinstance(params, AutocastLinearParams):
         x = x.astype(params.weight.dtype)
     y = jnp.matmul(x, jnp.swapaxes(params.weight, -1, -2))

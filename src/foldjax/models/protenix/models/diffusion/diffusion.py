@@ -334,6 +334,12 @@ def sample_diffusion_with_module(
     use_sampler_scan: bool = False,
     use_denoiser_jit: bool = False,
     use_efficient_fusion: bool = False,
+    #: Whether the denoising network ``F`` runs under the forward's BF16
+    #: autocast, i.e. upstream's ``skip_amp.sample_diffusion = False``. Only
+    #: sizes above 3,840 tokens reach it. The narrowing itself lives in the
+    #: network's parameters; what changes at the sampler's boundary is the
+    #: dtype of the prediction handed back -- see ``denoise_fn``.
+    denoiser_autocast: bool = False,
     attention_backend: str = "xla",
     token_q_chunk_size: int | None = None,
     diffusion_chunk_size: int | None = None,
@@ -362,7 +368,25 @@ def sample_diffusion_with_module(
         )
 
     def denoise_fn(x_noisy: jnp.ndarray, t_hat: jnp.ndarray) -> jnp.ndarray:
-        return diffusion_module_forward(
+        """One evaluation of the denoising network at the sampler's boundary.
+
+        The sampler's own state stays FP32 under every policy, and so does
+        upstream's: ``sample_diffusion`` takes ``dtype = s_inputs.dtype``
+        (``protenix/model/generator.py:184``), and ``s_inputs`` is FP32 even
+        under autocast, because ``InputFeatureEmbedder`` concatenates raw FP32
+        reference features onto its BF16 atom embedding
+        (``modules/embedders.py:103``) and ``torch.cat`` promotes.
+
+        So ``x_noisy`` is *not* narrowed on the way in. Its only matmul
+        consumer inside the network is ``linear_r``, one of the projections
+        upstream builds with ``precision=torch.float32`` and the comment "use
+        high precision for ref_pos"; rounding the coordinates at this boundary
+        would be exactly the rounding that exemption exists to prevent. What
+        does change is the way back: with the network under autocast its last
+        projection returns BF16, so the prediction is widened here rather than
+        left to promote inside the Euler step.
+        """
+        denoised = diffusion_module_forward(
             atom_to_token_idx,
             input_feature_dict["ref_pos"],
             input_feature_dict["ref_charge"],
@@ -399,6 +423,10 @@ def sample_diffusion_with_module(
             token_mask=token_padding_mask,
             atom_mask=atom_padding_mask,
         )
+        # Guarded rather than unconditional: with no policy in flight the
+        # network already returns FP32, and an added convert would be a change
+        # to the program this port has its parity numbers for.
+        return denoised.astype(x_noisy.dtype) if denoiser_autocast else denoised
 
     denoiser = jax.jit(denoise_fn) if use_denoiser_jit else denoise_fn
     return sample_diffusion(

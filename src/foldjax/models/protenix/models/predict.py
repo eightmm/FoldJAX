@@ -88,6 +88,11 @@ def protenix_predict_static(
     # is 0.9-6.3 A). Pass "highest" for a float32 reference tape.
     matmul_precision: str = "high",
     trunk_dtype: jnp.dtype | None = None,
+    #: The realised token-gated AMP policy; see
+    #: `foldjax.models.protenix.amp_policy`. Resolved by the caller,
+    #: which also owns preparing the matching parameter subtrees.
+    confidence_autocast: bool = False,
+    diffusion_autocast: bool = False,
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
     cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
@@ -227,6 +232,8 @@ def protenix_predict_static(
             centre_each_step=centre_each_step,
             preserve_prefix_rng=preserve_prefix_rng,
             trunk_dtype=trunk_dtype,
+            confidence_autocast=confidence_autocast,
+            diffusion_autocast=diffusion_autocast,
             cycle_msa_features=cycle_msa_features,
             cycle_msa_index_tape=cycle_msa_index_tape,
             cycle_pair_dropout_keep_masks=cycle_pair_dropout_keep_masks,

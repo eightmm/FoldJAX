@@ -14,6 +14,12 @@ from typing import Any
 
 from foldjax.models import _predict_flags, _representations
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models.protenix.amp_policy import (
+    AMP_POLICY_CHOICES,
+    DEFAULT_AMP_POLICY,
+    realise_amp_policy,
+    requested_amp_policy,
+)
 from foldjax.models.protenix.data.compact_categories import (
     compact_ref_atom_category_storage,
     drop_dense_categories_from_writer_snapshot,
@@ -56,6 +62,34 @@ def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
             input_embedder=native_input_autocast_params(params.input_embedder)
         )
     return load_native_weights(path)
+
+
+def _amp_realised_params(params, policy, cache):
+    """One parameter tree per realised policy, prepared once for the run.
+
+    The policy is per job -- it is resolved from that job's token count -- but
+    the checkpoint is loaded once, so the realisations are memoised rather than
+    rebuilt for every job. A run whose jobs all land on the same side of the
+    gate holds exactly one tree, as it did before this option existed.
+    """
+    from foldjax.models.protenix.models.input_precision import (
+        native_confidence_autocast_params,
+        native_diffusion_autocast_params,
+    )
+
+    if policy in cache:
+        return cache[policy]
+    realised = params
+    if policy.confidence_autocast:
+        realised = realised._replace(
+            confidence=native_confidence_autocast_params(realised.confidence)
+        )
+    if policy.diffusion_autocast:
+        realised = realised._replace(
+            diffusion=native_diffusion_autocast_params(realised.diffusion)
+        )
+    cache[policy] = realised
+    return realised
 
 
 def _collect_representations(output, wanted):
@@ -213,7 +247,18 @@ def _run(
         "--trunk-dtype",
         choices=("bf16", "fp32"),
         default="bf16",
-        help="Use upstream-style BF16 trunk with FP32 diffusion/confidence islands.",
+        help="Use upstream-style BF16 trunk; which of the diffusion and "
+        "confidence stages stay FP32 beside it is --amp-policy.",
+    )
+    parser.add_argument(
+        "--amp-policy",
+        choices=AMP_POLICY_CHOICES,
+        default=DEFAULT_AMP_POLICY,
+        help="which stages run under the BF16 autocast: 'auto' reproduces "
+        "upstream's token gate (confidence head above 2560 tokens, diffusion "
+        "sampler above 3840), 'fp32' and 'bf16' pin both stages at every "
+        "size; realised only under --trunk-dtype bf16, since an FP32 trunk "
+        "opens no autocast for a stage to run in",
     )
     parser.add_argument(
         "--chunk-policy",
@@ -939,6 +984,7 @@ def _run(
         ),
     )
     written: list[Path] = []
+    amp_params_cache: dict[Any, Any] = {}
     # Only the raw-npz path reads the trunk representations or the full-bin
     # logits; the protenix cif+JSON path consumes the in-graph summaries alone.
     # Keeping unread [num_samples, N, N, 64] logits as program outputs held 21.6
@@ -958,6 +1004,20 @@ def _run(
             guidance_features = prepare_tfg_features(features)
             require_supported_geometry(guidance_features)
         n_token = int(features["restype"].shape[-2])
+        # Resolved here, from this job's own token count, because that is what
+        # upstream's `update_inference_configs` keys on -- a run with a small
+        # and a large job in one `--input-json` gets two policies, and two
+        # executables, exactly as upstream would build two configurations.
+        amp_policy = realise_amp_policy(
+            requested_amp_policy(args.amp_policy, n_token, model_name),
+            trunk_is_bf16=trunk_dtype is not None,
+        )
+        job_params = _amp_realised_params(params, amp_policy, amp_params_cache)
+        print(
+            f"{job['name']}: amp policy {amp_policy.label()} "
+            f"(--amp-policy {args.amp_policy}, n_token={n_token}, "
+            f"trunk={args.trunk_dtype})"
+        )
         chunk_config = resolve_chunk_config(
             n_token=n_token,
             num_samples=args.num_samples,
@@ -992,7 +1052,7 @@ def _run(
                     seed=seed,
                 )
             output = protenix_predict_static(
-                params,
+                job_params,
                 features,
                 key=jax.random.PRNGKey(seed),
                 num_samples=args.num_samples,
@@ -1039,6 +1099,8 @@ def _run(
                 opm_chunk_size=chunk_config.opm_chunk_size,
                 diffusion_chunk_size=chunk_config.diffusion_chunk_size,
                 trunk_dtype=trunk_dtype,
+                confidence_autocast=amp_policy.confidence_autocast,
+                diffusion_autocast=amp_policy.diffusion_autocast,
                 cycle_msa_index_tape=cycle_msa_index_tape,
                 gamma0=gamma0,
                 step_scale_eta=eta,
