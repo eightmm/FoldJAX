@@ -163,16 +163,19 @@ OpenDDE's 1k pair is the one mixed row where FoldJAX is not faster (302 vs
 Structure agreement on the mixed pairs so far (`bench.structures`,
 permutation-aware, CA TM median (min-max), cross RMSD Å):
 
-| model | case | cross TM | within FoldJAX TM | within upstream TM | cross RMSD | chain perm |
-| --- | --- | --- | --- | --- | --- | --- |
-| OpenFold3 | mixed_1k_4xww | 0.994 (0.978-0.998) | 0.990 (0.978-0.995) | 0.997 (0.994-0.999) | 0.93 (0.45-6.54) | cross 14/25; fj 7/10; up 6/10 |
-| Boltz-2 | mixed_1k_4xww | 0.981 (0.976-0.997) | 0.980 (0.977-0.995) | 0.979 (0.977-0.997) | 5.06 (0.61-7.87) | cross 10/25; fj 4/10; up 4/10 |
-| Protenix | mixed_1k_4xww | 0.996 (0.989-0.999) | 0.994 (0.990-0.998) | 0.995 (0.993-0.999) | 0.81 (0.40-1.64) | cross 12/25; fj 4/10; up 6/10 |
+| model | case | cross TM | within FoldJAX TM | within upstream TM | cross RMSD | within FoldJAX RMSD | within upstream RMSD | chain perm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| OpenFold3 | mixed_1k_4xww | 0.994 (0.978-0.998) | 0.990 (0.978-0.995) | 0.997 (0.994-0.999) | 0.93 (0.45-6.54) | 1.52 (0.85-6.83) | 0.68 (0.32-1.03) | cross 14/25; fj 7/10; up 6/10 |
+| Boltz-2 | mixed_1k_4xww | 0.981 (0.976-0.997) | 0.980 (0.977-0.995) | 0.979 (0.977-0.997) | 5.06 (0.61-7.86) | 5.41 (0.82-6.97) | 5.41 (0.66-7.41) | cross 10/25; fj 4/10; up 4/10 |
+| Protenix | mixed_1k_4xww | 0.996 (0.989-0.999) | 0.994 (0.990-0.998) | 0.995 (0.993-0.999) | 0.81 (0.40-1.64) | 0.99 (0.46-1.40) | 0.92 (0.39-1.19) | cross 12/25; fj 4/10; up 6/10 |
+| OpenDDE | mixed_1k_4xww | - | 0.994 (0.986-0.999) | - | 0.71 (0.31-2.15) | 0.96 (0.43-2.20) | 0.73 (0.53-1.43) | fj 5/10 |
 
-Cross TM equals within TM on all three finished pairs (Boltz-2's 5 Å cross
-RMSD median comes with a within-set TM of 0.980 on both sides: the 7-mer RNA
-and the dimer arrangement move between samples on both implementations at
-the same rate; the within-set RMSD is read from the JSON once it lands).
+Cross RMSD is at or below the within-set RMSD of both implementations on all
+four finished pairs. Boltz-2's 5 Å is the model's own spread on this entry
+(the 7-mer RNA and the dimer arrangement move between samples at the same
+rate on both sides, within-set 5.41 Å each); OpenFold3's FoldJAX set has one
+sample 6.8 Å from the others while upstream's five agree to 1 Å, a sampler
+draw at n=5 rather than a systematic offset (cross median 0.93 Å).
 4XWW's two RNase J chains are identical, so the permutation-aware pairing
 swaps them in 10-14 of 25 cross pairs.
 The Protenix 4k protein row is the first pair where FoldJAX is not faster
