@@ -120,8 +120,23 @@ by sample:
 
 With the draw shared, the 2.4 Å tape-free offset disappears: four samples
 sit at 0.05-0.11 Å (the 1k-2k pass/deferred level) and sample 2 at 0.40 Å on
-every chain. A second native process at 3k is queued to place sample 2
-against native's own scatter. OpenFold3's replay is running.
+every chain.
+
+OpenFold3, port (`cueq`, streamed graph) vs native-cueq, per-chain CA RMSD Å
+by sample:
+
+| chain | s1 | s2 | s3 | s4 | s5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 0.032 | 0.038 | 0.031 | 0.41 | 0.030 |
+| B | 0.031 | 0.037 | 0.032 | 0.41 | 0.031 |
+| C | 0.031 | 0.037 | 0.033 | 0.41 | 0.031 |
+| D | 0.032 | 0.037 | 0.032 | 0.41 | 0.031 |
+
+pTM/ipTM agree to 0.0009. The tape-free 24 Å monomer-fold difference was
+the draw as well (MSA subsample, reference-conformer RNG, noise): four
+samples in the pass band and one sample at 0.41 Å on every chain, the same
+shape as Protenix's. Second native processes at 3k are queued for both
+models to place that one sample against native's own scatter.
 
 ## Provenance of the upstream arm on master
 
