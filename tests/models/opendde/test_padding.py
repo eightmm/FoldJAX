@@ -273,11 +273,18 @@ def test_native_cli_pads_after_sampling_and_reports_profile(
         return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
 
     monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(
-        predict_impl,
-        "_score",
-        lambda output, _features, *, num_recycles, return_confidence_details: output,
-    )
+
+    def fake_score(
+        output,
+        _features,
+        *,
+        num_recycles,
+        return_confidence_details,
+        deterministic,
+    ):
+        return output
+
+    monkeypatch.setattr(predict_impl, "_score", fake_score)
     output_path = tmp_path / "out" / "job.cif"
     monkeypatch.setattr(
         predict_impl,
@@ -374,11 +381,18 @@ def test_native_cli_falls_back_to_materialized_tapes_for_other_prngs(
         return {"coordinate": np.zeros((1, 3, 3), dtype=np.float32)}
 
     monkeypatch.setattr(predict_impl, "_predict", fake_predict)
-    monkeypatch.setattr(
-        predict_impl,
-        "_score",
-        lambda output, _features, *, num_recycles, return_confidence_details: output,
-    )
+
+    def fake_score(
+        output,
+        _features,
+        *,
+        num_recycles,
+        return_confidence_details,
+        deterministic,
+    ):
+        return output
+
+    monkeypatch.setattr(predict_impl, "_score", fake_score)
     output_path = tmp_path / "out" / "job.cif"
     monkeypatch.setattr(
         predict_impl,

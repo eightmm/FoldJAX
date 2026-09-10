@@ -12,6 +12,7 @@ from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.schema import (
@@ -40,6 +41,7 @@ _CLI_OPTIONS = {
     "components_cif",
     "cp_devices",
     "cp_layout",
+    "deterministic_ops",
     "diffusion_attention_backend",
     "diffusion_chunk_size",
     "kalign_binary",
@@ -86,6 +88,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "cp_layout": "auto",
     "use_template": False,
     "use_rna_msa": False,
+    "deterministic_ops": "off",
 }
 
 
@@ -113,6 +116,11 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             "trunk_single_attention_backend",
             {"auto": "xla_jit", "xla": "xla_jit"},
         ),
+        # Repeatable reduction orders, compiled into this run's executables
+        # rather than asked for with a process-wide XLA environment variable.
+        # The shared entry, because this port is driven by rendering argv for
+        # its own predict parser and every argv port renders the same strings.
+        **DETERMINISTIC_ARGV_OPTION,
     }
     compile_options = tuple(sorted(_CLI_OPTIONS))
 
