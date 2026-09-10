@@ -21,7 +21,7 @@ FoldJAX / upstream, "s / GiB". OOM rows are rows: the card is 96 GiB and the
 allocation the run asked for is in parentheses. "upstream OOM" means the
 upstream runner ended with zero samples and the card full.
 
-| model | 1003 | 2096 | 3012 | 4116 | 5000 |
+| model | 1003 | 2096 | 3012 | 4100 | 4888 |
 | --- | --- | --- | --- | --- | --- |
 | OpenFold3 | 100 / 9.1 vs 139 / 14.0 | 404 / 24.5 vs 629 / 44.2 | 951 / 49.2 (`cueq`), 863 / 42.5 (`cueq-full`) vs 1430 / 79.7 | OOM (78) vs upstream OOM | OOM (110) vs upstream OOM |
 | Boltz-2 | 91 / 12.3 vs 132 / 15.8 | 318 / 21.3 vs 466 / 46.6 | 806 / 39.9 vs upstream OOM | 3081 / 64.2 vs upstream OOM | OOM (85) vs upstream OOM |
