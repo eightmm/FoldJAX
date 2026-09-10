@@ -35,6 +35,51 @@ def model_feature_batch(captured):
             if name in captured}
 
 
+#: The host feature chain ``backends/openfold3.py`` applies to every managed
+#: run, minus serving padding and chain normalization, which the replay must not
+#: introduce: it pads nothing and passes no chain count.  Recorded by name in
+#: preflight.json because it decides which program the device actually runs.
+HOST_FEATURE_STEPS = (
+    "collapse_identical_templates",
+    "compact_zero_template_pair_features",
+    "compact_msa_features",
+    "compact_ref_atom_category_storage",
+)
+
+
+def streamed_host_features(features):
+    """Stage the representation the managed backend stages, not the archive one.
+
+    The released fixed-width template axis holds four copies of one empty
+    template and its geometry is exact positive zero, so the dense form hands
+    the cycle stage four [1, 4, N, N, 39] and [1, 4, N, N, 3] entry arrays and
+    makes every template pair intermediate four times wider than the model
+    needs; the MSA and reference-atom one-hots cross the private boundary as
+    categories. ``prepare_msa_cycle_features`` has already chosen the rows.
+    """
+    from foldjax.models.openfold3 import data
+
+    for step in HOST_FEATURE_STEPS:
+        features = getattr(data, step)(features)
+    return features
+
+
+def array_budget_bytes(*, streamed, all_arrays):
+    """The managed backend's budget on the streamed path; historical elsewhere.
+
+    ``released_config`` turns this into ``returned_pair_logits``: the managed
+    value drops the [samples, N, N, bins] distributions the npz writer would
+    discard anyway, which are 23.8 GiB of entry outputs at 3012 tokens. The
+    fused path keeps its historical all-arrays behaviour so its recorded
+    comparisons stay comparable.
+    """
+    from foldjax.backends.openfold3 import _MANAGED_ARRAY_BUDGET_BYTES
+
+    if all_arrays or not streamed:
+        return None
+    return _MANAGED_ARRAY_BUDGET_BYTES
+
+
 def positive_count(value):
     count = int(value)
     if count < 1:
@@ -120,10 +165,17 @@ def main(argv=None):
     parser.add_argument(
         "--streamed",
         action="store_true",
-        help="replay through the host-streamed recycling graph the CLI uses "
-        "(chunked outer-product-mean, per-cycle stage executables) instead of "
-        "the fused single program; the fused graph materialises the "
-        "[n_token, n_token, c_msa^2] outer product, 35 GiB at 3k tokens",
+        help="replay through the host-streamed recycling graph the managed "
+        "backend uses (per-cycle stage executables, the backend's host feature "
+        "chain and its managed array budget) instead of the fused single "
+        "program, whose one executable does not fit 3012 tokens",
+    )
+    parser.add_argument(
+        "--all-arrays",
+        action="store_true",
+        help="keep every quadratic pair-logit distribution as a graph output "
+        "on the streamed path, so the comparison can read them; the fused path "
+        "already returns them and is unaffected",
     )
     args = parser.parse_args(argv)
     if args.streamed and (
@@ -157,11 +209,16 @@ def main(argv=None):
     with np.load(args.capture / "input.npz", allow_pickle=False) as archive:
         features = prepare_core_features(dict(archive), max_atoms_per_token=23)
     features = tape.prepare_features(model_feature_batch(features))
+    host_steps = ()
+    if args.streamed:
+        features = streamed_host_features(features)
+        host_steps = HOST_FEATURE_STEPS
+    budget = array_budget_bytes(streamed=args.streamed, all_arrays=args.all_arrays)
     config = released_config(
         n_token=features["token_mask"].shape[-1],
         n_atom=features["atom_mask"].shape[-1],
         num_recycles=4, num_samples=5, num_steps=200,
-        msa_depth=tape.msa_indices.shape[1], max_array_bytes=None,
+        msa_depth=tape.msa_indices.shape[1], max_array_bytes=budget,
         returned_representations=(
             ("single_inputs", "single", "pair") if args.capture_trunk else ()
         ),
@@ -224,6 +281,8 @@ def main(argv=None):
         "not_verified": ["independent preprocessing", "device tape consumption",
                          "native tuned chunks", "warm performance"],
         "execution": "host_streamed_cycles" if args.streamed else "fused",
+        "host_feature_preparation": list(host_steps),
+        "max_array_bytes": budget,
     })
     state = load_checkpoint(args.checkpoint)
     prefix = resolve_model_prefix(state, None)
