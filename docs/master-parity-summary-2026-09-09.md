@@ -134,3 +134,20 @@ populate, with the port's pLDDT matching native's for that well — a basin
 choice, at-floor, so OpenFold3 3k is closed too. ESMFold2
 7ST3 chain B closed at-floor the same day (job 964). Detail in
 `scale-rows-master-2026-09-10.md` and `closing-plan-2026-09-10.md`.
+
+## Evening/night extension (2026-09-10 19:40 → 2026-09-11)
+
+Consistency work beyond the parity panel, all on main (`closing-plan-2026-09-10.md`
+sections X1-X8): one shared `deterministic` execution knob for all six ports
+(bitwise two-process repeatability on Protenix, OpenDDE, OpenFold3, ESMFold2,
+AlphaFold 3; Boltz-2 keeps the frozen autotune route); Protenix now follows
+upstream's token-gated AMP policy (`--amp-policy auto`, verified bitwise-neutral
+below 3,840 tokens under deterministic ops); bit-exact argument compaction
+(Protenix template geometry −5.5 GiB at 4.1k, 1:1; Boltz-2 one-hots no GPU gain);
+a CPU-runnable tape-pinned parity subset for all five ports (`tests/parity`,
+`--run-cpu-parity`); OpenDDE bf16 measured as a no-accuracy-cost opt-in; the
+ESMFold2 upstream column (upstream 4.7× heavier at 1k, OOM at 2k) and a
+sequential-sample option that buys nothing (the trunk arena rules); and an
+upstream Boltz-2 regression (v2.2.0+ zeroes MSA deletions) documented with an
+opt-in restore that does not move 3OG2. CI on the final tree: 6546 passed,
+coverage 87.76%.

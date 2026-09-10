@@ -95,7 +95,12 @@ The compaction lands 1:1 as predicted (−3.7 GiB at 3k, −5.5 GiB at 4.1k
 against the AMP row) with unchanged wall time; the 5k row still fails on the
 same 89.4 GiB temporary, so the 5k ceiling is a temporary, not the arguments.
 The bf16 diffusion above 3,840 tokens (upstream's own policy) saves 4.5% wall
-and 2.9 GiB at 4.1k. Boltz-2's uint8 categorical compaction at 4.1k (job
+and 2.9 GiB at 4.1k. The AMP change leaves the ≤3,840-token coordinate path
+bitwise intact: the 3k tape replay on the pre-change code and on the new code
+with `--amp-policy fp32`, both under `--deterministic-ops on`, agree on every
+coordinate (jobs 1048/1049); an earlier pair of replays without the
+deterministic flag had differed by 0.4-2.1 Å, which was the port's own
+process scatter, not the change. Boltz-2's uint8 categorical compaction at 4.1k (job
 1041): 3133 s / 64.4 GiB against 3081 / 64.2 — the 446 MiB of argument
 bytes did not reach the peak, so on this port the in-graph one-hot rebuild is
 materialised where the dense argument used to sit (the CPU probe fused it;
