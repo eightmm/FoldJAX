@@ -50,6 +50,11 @@ Reading, where both sides ran:
 - ESMFold2's 3k wall is its `num_samples x L^2` arena; OpenDDE's 2k wall is its
   fp32 pair arena (both recorded before, now measured at the row).
 
+OpenDDE `--option dtype=bfloat16` (opt-in; upstream runs fp32/TF32 so this is
+not the parity arm): 1k 149 s / 21.0 GiB against the fp32 row's 235 s / 41.3
+GiB (37% faster, half the peak); 2k/3k rows and the eight-case accuracy
+comparison against fp32 and upstream follow (jobs 975-984).
+
 Extra rows on the same cases: Protenix `deterministic=on` costs 13% wall at 1k
 (74 vs 65 s) and 9.7% at 3k with Triton gemms disabled (635 vs 579 s;
 `docs/protenix-master-panel-2026-09-09.md`); OpenFold3 `cueq-full` at 3k is
@@ -221,7 +226,7 @@ appended here.
 | mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 vs 698 / 43.9 / 0.76 | 348 / 18.4 / 0.87 vs 492 / 50.4 / 0.88 | 248 / 21.9 / 0.76 vs 280 / 44.6 / 0.75 | OOM (fp32 pair wall, as on the protein set) | 487 / 51.2 / 0.63 | 260 / 14.6 / 0.74 |
 | mixed_3k_5npk | 2861 | 1013 / 50.1 / 0.62 | 944 / 41.1 / 0.63 | 699 / 42.1 / 0.59 | OOM | OOM (trunk pair arena, as at 3k protein) | 521 / 29.7 / 0.46 |
 | mixed_4k_6kqf | 3874 | OOM (69) | 2111 / 60.9 / 0.86 | 1509 / 66.5 / 0.90 | OOM | OOM | 814 / 43.1 / 0.89 |
-| mixed_5k_5xog | 4787 | OOM (103) | OOM (83) | OOM (91) | OOM | pending | pending |
+| mixed_5k_5xog | 4787 | OOM (103) | OOM (83) | OOM (91) | OOM | OOM (44) | pending |
 
 ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
 OpenDDE's 1k pair is the one mixed row where FoldJAX is not faster (302 vs
