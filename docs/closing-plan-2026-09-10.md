@@ -94,3 +94,32 @@ terminal state; nothing below reopens an at-floor verdict.
 | X8 Boltz-2 upstream MSA-deletion regression (found by the X4 inventory, verified by `boltz2-deletion-check`) | worker (CPU opt-in option) → parent GPU A/B | Upstream v2.2.0+ zeroes has_deletion/deletion_value/deletion_mean for every real MSA (commit 04d27c71); the port reproduces it bitwise. Terminal: documented (`boltz2-upstream-msa-deletion-regression-2026-09-10.md`); default stays upstream-faithful; opt-in `msa_deletions=restored` with a guard test; one GPU A/B at 1k (restored vs released) with TM to the deposited structure recorded; regression reported upstream. |
 | X5 collection | parent | mixed 4k/5k rows, OpenDDE bf16, ESMFold2 seq/upstream, Boltz-2 pristine 2k; tables and structures updated. |
 | X6 close-out (CI on 5e40334 at 02:40: 6546 passed / 0 failed / 421 skipped, coverage 87.76%; ruff clean; `uv lock --check` clean; ledgers merged (139 rows); memory notes written; the three deterministic 3k replays 1048-1050 decide X7's default before the final status) | parent | full CI, ruff, `uv lock --check`, ledger, memory, push; final status maps every goal and package to its terminal state (~07:30). |
+
+## X9 (2026-09-11 morning): fused attention where cuEq does not reach, and bf16 compute with fp32 residuals
+
+Question from the user: AlphaFold 3 is 1.3-2× faster and 1.5-2× lighter than
+the three torch-faithful ports at the same schedule. Two levers it uses and
+they do not: bf16 compute in the diffusion transformer and confidence head,
+and fused (tokamax/Pallas) attention on every attention site. Both are
+experiments, never defaults; the parity defaults stay upstream-faithful.
+
+Design: a 2×2 matrix per port (compute dtype of diffusion/confidence:
+released vs bf16-with-fp32-residuals) × (pair-bias attention kernel: XLA vs
+tokamax `dot_product_attention`), because the earlier Boltz-2 verdict
+(`boltz-jax-kernel-backends-verdict`: tokamax/flash regressed 9-11% on sm120)
+was measured with fp32 q/k/v in the diffusion island, exactly the cell the
+dtype lever removes. Existing starting points: Protenix `--amp-policy bf16`
+(X7 realisation: autocast projections, ten `precision=torch.float32` layers
+exempt, sampler state f32); Boltz-2 `compute_dtype=bfloat16` default with
+deliberate fp32 islands (diffusion attention, confidence) and an existing
+`attention_backend=tokamax|flash|xla` knob; OpenFold3 `32-true` upstream, bf16
+known to break the input embedder, diffusion/confidence-only bf16 untested;
+OpenDDE mirrors Protenix. Rows queued first with no code: Protenix
+`amp_policy=bf16` at 1k/2k/3k (1051-1053), Boltz-2 `attention_backend=tokamax`
+at 1k/2k (1054-1055, the fp32-island cell).
+
+Acceptance for a recommended opt-in: wall/peak gain at 1k-3k, AND the
+tape-pinned 1k replay residual of the bf16 arm stays inside native's process
+floor with `deterministic=on` on both arms, AND TM to the deposited structure
+unchanged within sample scatter. sm120 (this host) is Triton-only for
+tokamax; a win here is not a fleet-wide win and is recorded as such.
