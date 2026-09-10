@@ -7,6 +7,19 @@ from collections.abc import Mapping
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models.boltz2.data.compact_categories import (
+    COMPACT_CONTACT_CONDITIONING,
+    COMPACT_REF_ATOM_CATEGORIES,
+    COMPACT_TOKEN_BONDS,
+    CONTACT_CONDITIONING_CLASSES,
+    CONTACT_CONDITIONING_IDS,
+    REF_ATOM_NAME_CHAR_CLASSES,
+    REF_ATOM_NAME_CHAR_IDS,
+    REF_ELEMENT_CLASSES,
+    REF_ELEMENT_IDS,
+    TOKEN_BONDS_FLAGS,
+    TYPE_BONDS_IDS,
+)
 from foldjax.models.boltz2.data.ownership import (
     ATOM_TO_TOKEN_INDEX,
     COMPACT_ATOM_TO_TOKEN,
@@ -106,6 +119,12 @@ _FEATURE_AXES: dict[str, tuple[tuple[int, str], ...]] = {
     "token_to_rep_atom": ((1, _TOKEN), (2, _ATOM)),
     ATOM_TO_TOKEN_INDEX: ((1, _ATOM),),
     TOKEN_TO_REP_ATOM_INDEX: ((1, _TOKEN),),
+    # Private compact categorical storage keeps its publisher's semantic axes.
+    CONTACT_CONDITIONING_IDS: ((1, _TOKEN), (2, _TOKEN)),
+    TOKEN_BONDS_FLAGS: ((1, _TOKEN), (2, _TOKEN)),
+    TYPE_BONDS_IDS: ((1, _TOKEN), (2, _TOKEN)),
+    REF_ELEMENT_IDS: ((1, _ATOM),),
+    REF_ATOM_NAME_CHAR_IDS: ((1, _ATOM),),
     # The first r_set axis is not necessarily the token count.
     "r_set_to_rep_atom": ((2, _ATOM),),
     "token_to_center_atom": ((1, _TOKEN), (2, _ATOM)),
@@ -168,6 +187,14 @@ _MODEL_FEATURES = frozenset(
         COMPACT_ATOM_TO_TOKEN,
         ATOM_TO_TOKEN_INDEX,
         "contact_conditioning",
+        COMPACT_CONTACT_CONDITIONING,
+        CONTACT_CONDITIONING_IDS,
+        COMPACT_TOKEN_BONDS,
+        TOKEN_BONDS_FLAGS,
+        TYPE_BONDS_IDS,
+        COMPACT_REF_ATOM_CATEGORIES,
+        REF_ELEMENT_IDS,
+        REF_ATOM_NAME_CHAR_IDS,
         "contact_threshold",
         "cyclic_period",
         "deletion_mean",
@@ -443,6 +470,18 @@ def resolve_bucket_shape(feats: Mapping[str, object]) -> tuple[int, int, int]:
     return plan.target["tokens"], plan.target["atoms"], plan.target["msa"]
 
 
+#: Non-zero padding constants. Ownership indices mark an absent owner with
+#: ``-1``; a private compact category marks the all-zero row its dense form
+#: pads with by carrying its own class count as an out-of-range sentinel.
+_PAD_CONSTANTS: dict[str, int] = {
+    ATOM_TO_TOKEN_INDEX: -1,
+    TOKEN_TO_REP_ATOM_INDEX: -1,
+    CONTACT_CONDITIONING_IDS: CONTACT_CONDITIONING_CLASSES,
+    REF_ELEMENT_IDS: REF_ELEMENT_CLASSES,
+    REF_ATOM_NAME_CHAR_IDS: REF_ATOM_NAME_CHAR_CLASSES,
+}
+
+
 def pad_feats(
     feats: Mapping[str, object],
     target_tokens: int,
@@ -484,9 +523,7 @@ def pad_feats(
                 new,
                 axis,
                 target,
-                constant_value=(
-                    -1 if key in {ATOM_TO_TOKEN_INDEX, TOKEN_TO_REP_ATOM_INDEX} else 0
-                ),
+                constant_value=_PAD_CONSTANTS.get(key, 0),
             )
             if before != new.shape[axis]:
                 actions.append(f"{kind}@{axis}:{before}->{new.shape[axis]}")

@@ -36,6 +36,9 @@ CP_COL_AXIS = "cp_col"
 #: distributed atom-window implementation.
 PAIR_FEATURE_NAMES = frozenset(
     {
+        "_foldjax_contact_conditioning_ids",
+        "_foldjax_token_bonds_flags",
+        "_foldjax_type_bonds_ids",
         "contact_conditioning",
         "contact_threshold",
         "disto_target",
@@ -54,6 +57,8 @@ PAIR_FEATURE_NAMES = frozenset(
 #: contract rather than independent axis sharding.
 ATOM_FEATURE_AXES: dict[str, int] = {
     "_foldjax_atom_to_token_index": 1,
+    "_foldjax_ref_atom_name_char_ids": 1,
+    "_foldjax_ref_element_ids": 1,
     "atom_backbone_feat": 1,
     "atom_pad_mask": 1,
     "atom_resolved_mask": 1,
