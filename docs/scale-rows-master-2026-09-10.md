@@ -61,17 +61,26 @@ Extra rows on the same cases: Protenix `deterministic=on` costs 13% wall at 1k
 pair, and within each set). Torch and JAX do not share a diffusion random tape,
 so "cross at the level of within" is the most a correct port can show.
 
-| model | case | cross TM | within FoldJAX | within upstream | cross RMSD Å |
-| --- | --- | --- | --- | --- | --- |
-| Protenix | L2000_5dei | 1.000 (1.000-1.000) | 1.000 | 1.000 | 0.19 (0.13-0.24) |
-| Boltz-2 | L2000_5dei | 1.000 (0.999-1.000) | 1.000 (0.999-1.000) | 1.000 | 0.28 (0.21-0.35) |
-| Boltz-2 | L1000_3og2 | 0.992 (0.988-0.997) | 0.992 (0.987-0.994) | 0.993 (0.991-0.997) | 1.54 (0.66-2.86) |
-| OpenDDE | L1000_3og2 | 0.993 (0.984-0.999) | 0.992 (0.984-0.999) | 0.999 (0.999-1.000) | 2.33 (0.34-4.77) |
-| OpenFold3 | L1000_3og2 | 0.987 (0.984-0.998) | 0.988 (0.985-0.999) | 0.995 (0.984-0.997) | 3.48 (0.43-5.79) |
-| OpenFold3 | L2000_5dei | 0.569 (0.569-0.569) | 1.000 | 1.000 | 37.4 |
+| model | case | cross TM | within FoldJAX | within upstream | cross RMSD Å | chain pairing |
+| --- | --- | --- | --- | --- | --- | --- |
+| Protenix | L2000_5dei | 1.000 (1.000-1.000) | 1.000 | 1.000 | 0.19 (0.12-0.24) | permuted 17/25 cross pairs (near-ties, ~0.01 Å) |
+| OpenFold3 | L2000_5dei | 1.000 (1.000-1.000) | 1.000 | 1.000 | 0.21 (0.16-0.24) | permuted 25/25 (was 37 Å by chain id) |
+| Boltz-2 | L2000_5dei | 1.000 (0.999-1.000) | 1.000 (1.000-1.000) | 1.000 | 0.27 (0.18-0.35) | permuted 21/25 (near-ties) |
+| Boltz-2 | L1000_3og2 | 0.992 (0.988-0.997) | 0.992 (0.987-0.994) | 0.993 (0.991-0.997) | 1.54 (0.66-2.86) | single chain |
+| OpenDDE | L1000_3og2 | 0.993 (0.984-0.999) | 0.992 (0.984-0.999) | 0.999 (0.999-1.000) | 2.33 (0.34-4.77) | single chain |
+| OpenFold3 | L1000_3og2 | 0.987 (0.984-0.998) | 0.988 (0.985-0.999) | 0.995 (0.984-0.997) | 3.48 (0.43-5.79) | single chain |
+| Boltz-2 | L4000_1gte | - (upstream OOM) | 0.993 (0.988-0.998) | - | - | within-FoldJAX permuted 9/10 (was TM 0.59) |
 
-- Protenix and Boltz-2 at 2k: cross equals within on both sides; the two
-  implementations are as close as the sampler allows (0.2-0.3 Å).
+`bench.structures` now pairs chains of identical sequence by minimum RMSD
+(exhaustive up to 720 permutations; commit `2339fae`, single-chain numbers
+bitwise unchanged). Reading:
+
+- Protenix, OpenFold3 and Boltz-2 at 2k: cross equals within on both sides
+  at 0.2-0.3 Å; the two implementations are as close as the sampler allows.
+  The OpenFold3 37 Å of the first pass was chain labelling, not structure.
+  On a near-symmetric homotetramer most cross pairs pick a non-identity
+  assignment that wins by about 0.01 Å over the identity one, so "permuted
+  17/25" means the labels differed, not that the labelling mattered.
 - Boltz-2 and OpenFold3 at 1k: cross equals within-FoldJAX; both sides have
   sampling spread on 3og2 (TM 0.984-0.999) and the cross distribution sits
   inside it.
@@ -79,15 +88,7 @@ so "cross at the level of within" is the most a correct port can show.
   (0.999-1.000 against 0.984-0.999). FoldJAX OpenDDE draws a wider sample
   distribution on this case than upstream. The tape-pinned panel shows the
   arithmetic matches to 0.002-0.016 Å, so this is the ordinary-RNG sampler
-  path, not the trunk; open item, one case so far.
-- OpenFold3 at 2k (37 Å, TM 0.569 on a homotetramer while both sides are
-  internally identical) is chain assignment, not structure: `bench.structures`
-  pairs residues by chain id and the two implementations label the four
-  identical chains in a different order. The same shows in Boltz-2's own
-  within-set spread at 4k (0.59-1.00). Multi-chain cases need a
-  permutation-aware alignment before their cross numbers mean anything; the
-  1k single-chain rows and the 2k Protenix/Boltz-2 rows (where the orders
-  happened to agree) are the ones to read.
+  path, not the trunk; open item, being measured on the eight panel cases.
 
 ## Provenance of the upstream arm on master
 
