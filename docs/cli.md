@@ -309,6 +309,25 @@ of identical rows or an exact common tensor size. See the
 The legacy request/CLI padding presets supply a serving depth when omitted;
 the new model handle requires an explicit depth when enabling padding.
 
+### `--option msa_deletions={released,restored}` (Boltz-2)
+
+Selects which MSA deletion loop Boltz-2's featurizer runs. `released` is the
+default and reproduces the released upstream exactly, regression included:
+upstream v2.2.0+ slices each sequence's deletion records out of the previous
+sequence's slice rather than the chain's, and because the first MSA row is the
+query and carries no deletions, `has_deletion`, `deletion_value` and
+`deletion_mean` come out zero for every real alignment. `restored` reinstates
+the pre-`04d27c71` loop, which is what the published weights were trained
+against. Jobs without an MSA are unaffected either way.
+
+The two modes compile the same executable and differ only in three feature
+arrays, but they are separate compile-cache and feature-cache namespaces, so a
+`restored` run never answers out of a `released` run's cached features. The
+effect on coordinates has not been measured; treat `restored` as an experiment
+until it has been. Background and the reproduction:
+[docs/boltz2-upstream-msa-deletion-regression-2026-09-10.md](boltz2-upstream-msa-deletion-regression-2026-09-10.md).
+The native Boltz-2 predict script spells the same choice `--msa-deletions`.
+
 ### `--option diffusion_chunk_size=N`
 
 Denoises the diffusion samples N at a time instead of all of them at once, on

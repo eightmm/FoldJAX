@@ -287,6 +287,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "glu_backend": "xla",
     "bucket": False,
     "deterministic": False,
+    "msa_deletions": "released",
 }
 
 
@@ -309,6 +310,7 @@ class Boltz2Backend(Backend):
             "glu_backend",
             "mols",
             "msa_api_key_header",
+            "msa_deletions",
             "msa_api_key_value",
             "msa_pairing_strategy",
             "msa_server_password",
@@ -362,6 +364,7 @@ class Boltz2Backend(Backend):
         "glu_backend",
         "bucket",
         "deterministic",
+        "msa_deletions",
     )
 
     def __init__(self) -> None:
@@ -649,6 +652,13 @@ class Boltz2Backend(Backend):
         ):
             if name in options:
                 _strict_boolean(options[name], name=name)
+        if "msa_deletions" in options and options["msa_deletions"] not in {
+            "released",
+            "restored",
+        }:
+            raise ValueError(
+                "msa_deletions must be one of 'released' or 'restored'"
+            )
         if "write_fmt" in options and options["write_fmt"] not in {
             None,
             "cif",

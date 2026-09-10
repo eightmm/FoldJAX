@@ -161,3 +161,207 @@ def test_released_matches_the_pre_change_featurizer_bitwise() -> None:
 def test_unknown_value_is_rejected() -> None:
     with pytest.raises(ValueError, match="msa_deletions"):
         msa_features(msa_deletions="fixed")
+
+
+# --------------------------------------------------------------------------
+# Option plumbing: `--option msa_deletions=restored` from the adapter to the
+# featurizer call, one test per forwarding site.
+# --------------------------------------------------------------------------
+
+
+def _request(tmp_path: Path, input_format: str = "auto", **options: object):
+    from foldjax.schema import PredictionRequest
+
+    job = tmp_path / "job.yaml"
+    job.write_text("{}")
+    weights = tmp_path / "weights"
+    weights.mkdir(exist_ok=True)
+    return PredictionRequest(
+        model="boltz2",
+        input=job,
+        weights=weights,
+        output_dir=tmp_path / "out",
+        seed=5,
+        cache_dir=tmp_path / "cache",
+        input_format=input_format,
+        options=options,
+    )
+
+
+def test_the_backend_declares_the_option_and_its_released_default() -> None:
+    from foldjax.backends.boltz2 import _RELEASED_COMPILE_DEFAULTS, Boltz2Backend
+
+    assert "msa_deletions" in Boltz2Backend.native_options
+    assert "msa_deletions" in Boltz2Backend.compile_options
+    assert _RELEASED_COMPILE_DEFAULTS["msa_deletions"] == "released"
+
+
+@pytest.mark.parametrize("value", ["fixed", "", "restored ", True, None])
+def test_the_backend_rejects_an_unknown_deletion_mode(value: object) -> None:
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    with pytest.raises(ValueError, match="msa_deletions"):
+        Boltz2Backend().validate_native_options({"msa_deletions": value})
+
+
+@pytest.mark.parametrize("value", ["released", "restored"])
+def test_the_backend_accepts_both_deletion_modes(value: str) -> None:
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    Boltz2Backend().validate_native_options({"msa_deletions": value})
+
+
+def test_spelling_the_released_default_reuses_one_cache_namespace(
+    tmp_path: Path,
+) -> None:
+    """`released` is what the native runner resolves to, so naming it is free.
+
+    `restored` produces different features from the same input, so it has to
+    take a namespace of its own.
+    """
+    from foldjax.api import resolve_cache_dir
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    backend = Boltz2Backend()
+    omitted = resolve_cache_dir(_request(tmp_path), backend)
+    released = resolve_cache_dir(
+        _request(tmp_path, msa_deletions="released"), backend
+    )
+    restored = resolve_cache_dir(
+        _request(tmp_path, msa_deletions="restored"), backend
+    )
+
+    assert released == omitted
+    assert restored != omitted
+
+
+def test_the_option_reaches_the_native_predict_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    mols = tmp_path / "mols"
+    mols.mkdir()
+    seen: dict[str, object] = {}
+
+    def native_predict(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {
+            "coords": np.zeros((2, 3)),
+            "plddt": np.asarray([0.7, 0.8]),
+            "iptm": np.asarray([0.6]),
+            "out_path": tmp_path / "out" / "job.cif",
+        }
+
+    monkeypatch.setattr(
+        "foldjax.backends.boltz2.import_module",
+        lambda name: SimpleNamespace(predict=native_predict),
+    )
+    Boltz2Backend().predict(
+        _request(tmp_path, mols=mols, msa_deletions="restored")
+    )
+
+    assert seen["msa_deletions"] == "restored"
+
+
+def test_the_option_reaches_featurize_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.models.boltz2 import api
+
+    seen: dict[str, object] = {}
+
+    def fake_featurize_yaml(*args: object, **kwargs: object):
+        seen.update(kwargs)
+        return {}, SimpleNamespace(records=[SimpleNamespace(id="job")]), tmp_path
+
+    monkeypatch.setattr(api, "featurize_yaml", fake_featurize_yaml)
+    api.featurize(
+        seq=["ACDEFG"],
+        mols=tmp_path / "mols",
+        out_dir=tmp_path / "work",
+        msa_deletions="restored",
+    )
+
+    assert seen["msa_deletions"] == "restored"
+
+
+def test_featurize_yaml_reaches_the_prediction_dataset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.models.boltz2.data import featurize as featurize_module
+
+    seen: dict[str, object] = {}
+
+    def fake_dataset(**kwargs: object):
+        seen.update(kwargs)
+        return {0: {}}
+
+    monkeypatch.setattr(featurize_module, "check_inputs", lambda path: ["job"])
+    monkeypatch.setattr(
+        featurize_module,
+        "process_inputs",
+        lambda **kwargs: SimpleNamespace(records=[SimpleNamespace(id="job")]),
+    )
+    monkeypatch.setattr(featurize_module, "PredictionDataset", fake_dataset)
+    job = tmp_path / "job.yaml"
+    job.write_text("{}")
+
+    featurize_module.featurize_yaml(
+        job, tmp_path / "work", tmp_path, msa_deletions="restored"
+    )
+
+    assert seen["msa_deletions"] == "restored"
+
+
+def test_the_prediction_dataset_reaches_the_featurizer_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from foldjax.models.boltz2.data.module import inferencev2
+
+    monkeypatch.setattr(inferencev2, "load_canonicals", lambda mol_dir: {})
+    monkeypatch.setattr(inferencev2, "load_molecules", lambda mol_dir, names: {})
+    monkeypatch.setattr(
+        inferencev2,
+        "load_input",
+        lambda **kwargs: SimpleNamespace(extra_mols={}),
+    )
+    dataset = inferencev2.PredictionDataset(
+        manifest=SimpleNamespace(
+            records=[SimpleNamespace(id="job", inference_options=None)]
+        ),
+        target_dir=tmp_path,
+        msa_dir=tmp_path,
+        mol_dir=tmp_path,
+        msa_deletions="restored",
+    )
+    seen: dict[str, object] = {}
+    dataset.tokenizer = SimpleNamespace(
+        tokenize=lambda data: SimpleNamespace(
+            tokens={"res_name": np.asarray(["ALA"])}
+        )
+    )
+    dataset.featurizer = SimpleNamespace(
+        process=lambda *args, **kwargs: seen.update(kwargs) or {}
+    )
+
+    dataset[0]
+
+    assert seen["msa_deletions"] == "restored"
+
+
+def test_the_option_name_is_accepted_by_request_validation(tmp_path: Path) -> None:
+    """The `native_options` entry is what keeps `--option` from refusing it.
+
+    Without the declaration the adapter answers "unsupported boltz2 options"
+    before any model loads, so this is the behavioural half of the table entry.
+    """
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    Boltz2Backend().validate_request(
+        _request(tmp_path, input_format="native", msa_deletions="restored")
+    )
+    with pytest.raises(ValueError, match="unsupported boltz2 options"):
+        Boltz2Backend().validate_request(
+            _request(tmp_path, input_format="native", msa_deletion="restored")
+        )
