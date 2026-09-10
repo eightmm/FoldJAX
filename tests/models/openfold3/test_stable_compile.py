@@ -93,6 +93,10 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
         "num_steps": signature["num_steps"].default,
         "num_recycles": signature["num_recycles"].default,
         "max_msa_depth": signature["msa_depth"].default,
+        # The reduction policy is carried on the executable rather than by
+        # `released_config`, so it has no signature default to track. It is
+        # listed here so that asking for `off` names the shipped namespace.
+        "deterministic": False,
     }
 
 

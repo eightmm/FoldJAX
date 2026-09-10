@@ -33,6 +33,7 @@ from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.cache import compilation_cache_scope
+from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.models import _representations
 from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
 from foldjax.schema import (
@@ -58,6 +59,9 @@ _COMPILE_OPTIONS = (
     "cp_layout",
     "triangle_kernel",
     "all_arrays",
+    # Two runs that differ only in reduction policy compile different
+    # programs, so they must not share one namespace.
+    "deterministic",
 )
 
 # ``released_config``'s model-side MSA subsampling depth. The public
@@ -89,6 +93,10 @@ _RELEASED_COMPILE_DEFAULTS = {
     # that to the four executed trunk cycles stored in ``InferenceConfig``.
     "num_recycles": 4,
     "max_msa_depth": _RELEASED_MSA_DEPTH,
+    # Not a ``released_config`` parameter: the reduction policy rides on the
+    # executable rather than on the model configuration. It is here because
+    # ``off`` has to name the same cache scope as an unasked run.
+    "deterministic": False,
 }
 
 
@@ -214,8 +222,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # as anywhere else. There is no `dtype`: upstream runs `precision="32-true"`,
     # a whole-trunk bfloat16 cast destroys the prediction (pLDDT 0.858 -> 0.466),
     # and the partial profile that does work is one upstream never validated.
-    execution_options = {
+    # Annotated because the shared deterministic entry carries `bool` native
+    # values rather than the `str` the rest of this table maps to.
+    execution_options: dict[str, tuple[str, dict[str, Any]]] = {
         **MATMUL_PRECISION_OPTION,
+        **DETERMINISTIC_API_OPTION,
         "triangle_kernel": (
             "triangle_kernel",
             {
@@ -261,7 +272,14 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         for name, default in _RELEASED_COMPILE_DEFAULTS.items():
             if name not in options:
                 continue
-            resolved = int(options[name])
+            # `bool` before `int`, because `bool` is an `int`: coercing the
+            # reduction policy would put `1` in the namespace instead of the
+            # value the request and `predict` both carry.
+            resolved = (
+                _strict_boolean(options[name], name=name)
+                if isinstance(default, bool)
+                else int(options[name])
+            )
             if resolved == default:
                 profile.pop(name, None)
             else:
@@ -368,6 +386,17 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         options = self.apply_sampling(request)
         # Out before the leftover-option check: carried by the scope.
         matmul_precision = self.matmul_precision(options)
+        # Both are request-level, so the pair is settled before featurization
+        # rather than after it: an eager run dispatches operation by operation
+        # and owns no executable to carry the reduction policy, and running it
+        # anyway would report a deterministic run that was not one.
+        compile_it = _compile_enabled(options)
+        deterministic = bool(options.pop("deterministic", False))
+        if deterministic and not compile_it:
+            raise ValueError(
+                "deterministic reductions are carried by the compiled graph; "
+                "drop no_compile or deterministic"
+            )
         # The port is vendored, so these are ordinary in-package imports. They
         # stay inside `predict` only to keep `import foldjax` off JAX's import
         # cost, which is the same reason the other vendored backends do it.
@@ -572,7 +601,6 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             prepare_key=("prefix", requested_prefix),
         )
         kernel = options.pop("triangle_kernel", None)
-        compile_it = _compile_enabled(options)
         if getattr(config, "cp_shards", 1) > 1 and not compile_it:
             raise ValueError(
                 "context parallelism requires the compiled graph; drop "
@@ -623,6 +651,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                         None if request.cache_dir is None else str(request.cache_dir)
                     ),
                     compiled=compile_it,
+                    deterministic=deterministic,
                 )
                 prediction = streamed(key, features, params, noise_mask=noise_mask)
             elif compile_it:
@@ -634,6 +663,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                     cache_scope=(
                         None if request.cache_dir is None else str(request.cache_dir)
                     ),
+                    deterministic=deterministic,
                 )
                 prediction = (
                     compiled(key, features, params)
