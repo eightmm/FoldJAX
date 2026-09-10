@@ -61,6 +61,40 @@ def streamed_host_features(features):
 
     for step in HOST_FEATURE_STEPS:
         features = getattr(data, step)(features)
+    return verify_streamed_host_features(features)
+
+
+def verify_streamed_host_features(features):
+    """Fail closed: every step above declines silently on input it distrusts.
+
+    A declined step leaves valid dense features behind, so the run continues and
+    compiles the program the streamed path exists to avoid, under a label and a
+    preflight record that both say it did not. Name the step instead.
+    """
+    from foldjax.models.openfold3.data.featurize import (
+        _COMPACT_MSA_INDICES,
+        _ZERO_TEMPLATE_PAIR_FEATURES,
+        _ZERO_TEMPLATE_PAIR_MARKER,
+    )
+
+    declined = []
+    if "template_restype" in features:
+        rows = np.asarray(features["template_restype"]).shape[1]
+        if rows != 1:
+            declined.append(f"collapse_identical_templates ({rows} template rows)")
+        if _ZERO_TEMPLATE_PAIR_MARKER not in features or any(
+            name in features for name in _ZERO_TEMPLATE_PAIR_FEATURES
+        ):
+            declined.append("compact_zero_template_pair_features")
+    if "msa" in features or _COMPACT_MSA_INDICES not in features:
+        declined.append("compact_msa_features")
+    if "ref_element" in features or "ref_atom_name_chars" in features:
+        declined.append("compact_ref_atom_category_storage")
+    if declined:
+        raise ValueError(
+            "streamed replay features stayed dense; host steps that declined: "
+            + ", ".join(declined)
+        )
     return features
 
 

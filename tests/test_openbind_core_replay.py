@@ -273,3 +273,23 @@ def test_streamed_preparation_preserves_the_template_and_msa_embeddings(monkeypa
         assert np.abs(np.asarray(left[0])).max() > 0.0
         for one, other in zip(left, right, strict=True):
             np.testing.assert_array_equal(np.asarray(one), np.asarray(other))
+
+
+def test_a_declined_host_step_stops_the_streamed_replay():
+    """A silent fallback would run the dense program under the streamed label."""
+    import pytest
+
+    from bench.openbind_core_replay import streamed_host_features
+
+    capture = _replay_capture()
+    # One template that differs from the other three blocks the collapse; the
+    # geometry is still exact zero, so only that step declines.
+    capture["template_restype"] = capture["template_restype"].copy()
+    capture["template_restype"][:, 1, :, 0] = 0
+    with pytest.raises(ValueError, match="collapse_identical_templates"):
+        streamed_host_features(_prepared(capture, depth=2, cycles=2))
+
+    capture = _replay_capture()
+    capture["msa"] = capture["msa"] * 2  # no longer a one-hot
+    with pytest.raises(ValueError, match="compact_msa_features"):
+        streamed_host_features(_prepared(capture, depth=2, cycles=2))
