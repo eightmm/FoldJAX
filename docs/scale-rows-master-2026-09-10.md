@@ -120,7 +120,14 @@ by sample:
 
 With the draw shared, the 2.4 Å tape-free offset disappears: four samples
 sit at 0.05-0.11 Å (the 1k-2k pass/deferred level) and sample 2 at 0.40 Å on
-every chain.
+every chain. Native's own floor at 3k (native-A vs native-B, same tape, same
+seed, one process apart; job 1007): the two processes label the four
+identical chains in a different order on every pair, and after the
+permutation-aware alignment (`bench.structures`) they differ by 0.64-3.32 Å
+(median 2.05, TM 0.991-0.999) while each set agrees with itself to 0.30 /
+0.51 Å. The port's 0.05-0.40 Å against native-A is inside that floor on
+every sample: at 3k the port is closer to native-A than native is to itself
+(three-way reading, same class as 7ST3). Closed.
 
 OpenFold3, port (`cueq`, streamed graph) vs native-cueq, per-chain CA RMSD Å
 by sample:

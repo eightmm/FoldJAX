@@ -122,3 +122,12 @@ Protenix/OpenDDE predict-flag declarations and one weight-export CLI body)
 merged; Protenix gained an opt-in `deterministic` execution knob. A
 mixed-entity scale set (five real complexes, 1.1k-4.8k tokens) is built and
 its 30 FoldJAX rows are running.
+
+Evening addendum (2026-09-10): the two 3k tape-free offsets (Protenix 2.4 Å
+uniform, OpenFold3 24 Å on one chain) were draws, not arithmetic. On the
+shared tape the port sits at 0.05-0.11 / 0.03-0.04 Å on four samples and
+0.40 / 0.41 Å on one. Protenix's own process floor at 3k is 0.64-3.32 Å
+(permutation-aware), so Protenix 3k is closed; OpenFold3's native floor is
+0.026-0.10 Å, so its sample 4 (0.41) awaits a second port draw. ESMFold2
+7ST3 chain B closed at-floor the same day (job 964). Detail in
+`scale-rows-master-2026-09-10.md` and `closing-plan-2026-09-10.md`.
