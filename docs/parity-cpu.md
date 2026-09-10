@@ -5,9 +5,9 @@ port's core is caught by a test rather than by the next GPU panel. This
 document says what that certifies, what it does not, where the fixtures live,
 and why the subset does not run in the CI job that exists today.
 
-The scaffold is in place; the port cases are not. What ships right now is the
-marker, the gate, the manifest schema and loader, the fixture resolver and the
-fetch helper. Each port adds its own manifest and its own replay test.
+The scaffold is in place. Boltz-2 is the first port case
+(`tests/parity/test_boltz2.py`, `manifest/boltz2.json`); the other four ports
+add their own manifest and replay test the same way.
 
 ## What a passing run certifies -- and what it does not
 
@@ -54,6 +54,30 @@ need a new GPU capture before they get a tier A entry.
 Tier B slices to one sample where the port's model API accepts sliced noise
 (`sigmas` unchanged, so the tape stays valid). OpenBind's tape is a torch RNG
 call log and is not sample-indexed: it replays at n5 or not at all.
+
+### Where Boltz-2 put the split, and why
+
+Boltz-2's shipped tier B does **not** chain the port's own trunk into the
+sampler. That arm was measured first on `protein_dna_ion_1aay`: per-sample
+all-atom RMSD 0.057/0.114/0.147/0.067/0.024 A, which is the size of the panel's
+own 0.05 A coordinate gate and of the 0.175 A bistable sample the case is known
+for. A tolerance wide enough to pass it could not detect either. So tier A
+bounds the trunk drift directly (relative RMSE, worst array 0.0027 -- the same
+size as the port's recorded GPU band) and tier B injects the *captured native*
+trunk and bounds the sampler plus the tape injection at 0.0019 A. The
+composition of the two is not asserted end to end on CPU; that stays a GPU-panel
+question. Both tiers run at n5 x 200 steps: nothing is sliced, because the whole
+five-sample replay costs 110 s and slicing would delete the per-sample coverage
+that makes the bistable-sample claim testable. Whole module: 157 s on 8 pinned
+cores.
+
+One environment note for the ports that follow: Boltz-2's triangle
+*multiplication* backend is read from `BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND`
+at call time and defaults to `cueq`, and on this CPU host the cuEquivariance
+import is not stable across processes -- it raised
+`libcue_ops.so: cannot open shared object file` in one probe and loaded in the
+next. An unpinned CPU run is therefore calibrated against whichever backend
+happened to import. The test pins it to `xla`.
 
 ## Running it
 
