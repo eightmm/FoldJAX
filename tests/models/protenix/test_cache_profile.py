@@ -496,3 +496,55 @@ def test_released_default_aliases_reuse_one_real_bounded_native_owner(
     assert counts == {"features": 2, "loads": 1, "traces": 1}
     assert runner._entry_count() == 1
     assert runner._cache_size() == 1
+
+
+def test_tokamax_attention_stays_in_the_cache_namespace(tmp_path: Path) -> None:
+    """A non-default kernel is part of the executable's identity.
+
+    `cache_profile` strips exact matches to the released defaults so that the
+    spelled-out default lands in the same namespace as the omitted one. A
+    fused-attention run compiles a different program, so its two spellings --
+    the port's own `diffusion_attention_backend` and the neutral
+    `attention_kernel`, which reaches the trunk site -- must both survive that
+    stripping and separate the namespace.
+    """
+
+    backend = ProtenixBackend()
+    default = backend.cache_profile(_request(tmp_path))
+
+    for options, name, expected in (
+        (
+            {"diffusion_attention_backend": "tokamax"},
+            "diffusion_attention_backend",
+            "tokamax",
+        ),
+        (
+            {"attention_kernel": "tokamax"},
+            "trunk_single_attention_backend",
+            "tokamax",
+        ),
+    ):
+        profile = backend.cache_profile(
+            _request(tmp_path, output=name, options=options)
+        )
+        assert profile[name] == expected
+        assert profile != default
+
+    parser_choices = {
+        action.dest: action.choices
+        for action in _captured_predict_parser()._actions
+        if action.dest
+        in ("diffusion_attention_backend", "trunk_single_attention_backend")
+    }
+    assert set(parser_choices) == {
+        "diffusion_attention_backend",
+        "trunk_single_attention_backend",
+    }
+    for dest, choices in parser_choices.items():
+        assert "tokamax" in choices, dest
+
+
+def _captured_predict_parser() -> argparse.ArgumentParser:
+    from tests._parser_capture import capture_parser
+
+    return capture_parser(predict_cli.main)

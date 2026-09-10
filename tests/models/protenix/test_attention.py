@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from foldjax.models.protenix.bridge.torch_mapping import (
     map_attention_pair_bias_state_dict,
@@ -396,3 +399,276 @@ def _identity_attention_params(*, width: int) -> AttentionParams:
         linear_o=identity,
         linear_g=None,
     )
+
+
+def _tokamax_xla(monkeypatch) -> None:
+    """Run the tokamax branch through tokamax's XLA implementation.
+
+    The shipped value is Triton, which raises `NotImplementedError` off a GPU
+    -- deliberately, so a card that cannot run the kernel says so instead of
+    silently measuring XLA under the tokamax name. Moving the seam is how the
+    same branch is exercised here: the layout, the bias, the mask handling and
+    the dtype contract are the parts under test, and they are identical.
+    """
+
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+
+    monkeypatch.setattr(attention_tokamax, "TOKAMAX_IMPLEMENTATION", "xla")
+
+
+def _bfloat16_attention_params(*, width: int) -> AttentionParams:
+    identity = LinearParams(weight=jnp.eye(width, dtype=jnp.bfloat16), bias=None)
+    return AttentionParams(
+        linear_q=identity,
+        linear_k=identity,
+        linear_v=identity,
+        linear_o=identity,
+        linear_g=None,
+    )
+
+
+def test_tokamax_matches_manual_global_attention_with_additive_padding(
+    monkeypatch,
+) -> None:
+    """The global site, with the padding mask left additive inside the bias.
+
+    A fully padded query row therefore receives one constant on every key,
+    which cancels in the softmax -- the same distribution the XLA path
+    produces. Handing tokamax a boolean mask instead would soften those rows
+    to a uniform average and quietly change what padding means.
+    """
+
+    _tokamax_xla(monkeypatch)
+    rng = np.random.default_rng(11)
+    x = jnp.asarray(rng.normal(size=(1, 7, 8)), dtype=jnp.bfloat16)
+    params = _bfloat16_attention_params(width=8)
+    pair_bias = rng.normal(size=(1, 2, 7, 7)) * 0.5
+    padding = np.zeros((1, 1, 1, 7), dtype=np.float32)
+    padding[..., 5:] = -1.0e10
+    bias = jnp.asarray(pair_bias + padding, dtype=jnp.bfloat16)
+
+    manual = attention(x, x, params, 2, bias, attention_backend="xla")
+    fused = attention(x, x, params, 2, bias, attention_backend="tokamax")
+
+    assert fused.dtype == manual.dtype == jnp.bfloat16
+    np.testing.assert_allclose(
+        np.asarray(fused, dtype=np.float32),
+        np.asarray(manual, dtype=np.float32),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+
+
+def test_tokamax_matches_manual_local_attention_with_window_mask(
+    monkeypatch,
+) -> None:
+    """The windowed atom site, with a padded trunk and a masked atom.
+
+    Seven atoms into trunks of two leaves one padded query row, and the false
+    entry in `sequence_mask` masks a second. Both are rows the fused kernel
+    could return NaN for and the trailing `* sequence_mask` could not rescue,
+    so they are the point of the case rather than incidental.
+    """
+
+    _tokamax_xla(monkeypatch)
+    rng = np.random.default_rng(12)
+    x = jnp.asarray(rng.normal(size=(1, 7, 8)), dtype=jnp.bfloat16)
+    params = _bfloat16_attention_params(width=8)
+    bias = jnp.asarray(rng.normal(size=(1, 2, 4, 2, 4)) * 0.5, dtype=jnp.bfloat16)
+    sequence_mask = jnp.asarray([True, True, False, True, True, True, True])
+    kwargs = dict(
+        trunked_attn_bias=bias,
+        n_queries=2,
+        n_keys=4,
+        sequence_mask=sequence_mask,
+    )
+
+    manual = local_attention(x, x, params, 2, **kwargs, attention_backend="xla")
+    fused = local_attention(x, x, params, 2, **kwargs, attention_backend="tokamax")
+
+    assert not bool(jnp.isnan(fused).any())
+    assert fused.dtype == manual.dtype == jnp.bfloat16
+    np.testing.assert_allclose(
+        np.asarray(fused, dtype=np.float32),
+        np.asarray(manual, dtype=np.float32),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+
+
+def test_tokamax_ignores_the_query_chunk_size_and_says_so(monkeypatch) -> None:
+    """A chunk size cannot reach a kernel that takes the whole query axis."""
+
+    import foldjax.models.protenix.models.primitives.attention as attention_module
+
+    _tokamax_xla(monkeypatch)
+    monkeypatch.setattr(attention_module, "_WARNED_UNCHUNKABLE", False)
+    rng = np.random.default_rng(13)
+    x = jnp.asarray(rng.normal(size=(1, 8, 8)), dtype=jnp.bfloat16)
+    params = _bfloat16_attention_params(width=8)
+    bias = jnp.asarray(rng.normal(size=(1, 2, 8, 8)) * 0.5, dtype=jnp.bfloat16)
+
+    unchunked = attention(x, x, params, 2, bias, attention_backend="tokamax")
+    with pytest.warns(UserWarning, match="q_chunk_size=2 is not used"):
+        chunked = attention(
+            x, x, params, 2, bias, q_chunk_size=2, attention_backend="tokamax"
+        )
+
+    np.testing.assert_array_equal(np.asarray(chunked), np.asarray(unchunked))
+
+
+def test_tokamax_warns_once_on_float32_inputs(monkeypatch) -> None:
+    """An fp32 x tokamax cell is measurable, but it must not look like the fast one."""
+
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+
+    _tokamax_xla(monkeypatch)
+    monkeypatch.setattr(attention_tokamax, "_WARNED_FLOAT32", False)
+    x = jnp.arange(24, dtype=jnp.float32).reshape(1, 4, 6) / 10.0
+    params = _identity_attention_params(width=6)
+    bias = jnp.arange(32, dtype=jnp.float32).reshape(1, 2, 4, 4) / 100.0
+
+    with pytest.warns(UserWarning, match="float32 path"):
+        first = attention(x, x, params, 2, bias, attention_backend="tokamax")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        second = attention(x, x, params, 2, bias, attention_backend="tokamax")
+
+    assert first.dtype == second.dtype == jnp.float32
+    manual = attention(x, x, params, 2, bias, attention_backend="xla")
+    np.testing.assert_allclose(first, manual, rtol=1e-5, atol=1e-5)
+
+
+def test_bfloat16_inputs_do_not_warn(monkeypatch) -> None:
+    """The intended cell is silent, so the float32 warning stays informative."""
+
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+
+    _tokamax_xla(monkeypatch)
+    monkeypatch.setattr(attention_tokamax, "_WARNED_FLOAT32", False)
+    x = jnp.asarray(np.random.default_rng(14).normal(size=(1, 4, 8)), jnp.bfloat16)
+    params = _bfloat16_attention_params(width=8)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        attention(x, x, params, 2, None, attention_backend="tokamax")
+
+
+def test_tokamax_is_refused_under_context_parallelism(monkeypatch) -> None:
+    """These two sites have no `shard_map` wrapper the way triangle attention does."""
+
+    import foldjax.models.protenix.models.primitives.attention as attention_module
+
+    monkeypatch.setattr(attention_module, "cp_mesh", lambda: object())
+    x = jnp.arange(24, dtype=jnp.float32).reshape(1, 4, 6) / 10.0
+    params = _identity_attention_params(width=6)
+
+    with pytest.raises(ValueError, match="not supported under context parallelism"):
+        attention(x, x, params, 2, None, attention_backend="tokamax")
+    with pytest.raises(ValueError, match="not supported under context parallelism"):
+        local_attention(
+            x,
+            x,
+            params,
+            2,
+            trunked_attn_bias=None,
+            n_queries=2,
+            n_keys=4,
+            attention_backend="tokamax",
+        )
+
+    # The backends that are wired for a mesh keep working under the same guard.
+    attention(x, x, params, 2, None, attention_backend="xla")
+
+
+def test_both_backend_options_reach_the_tokamax_sites(monkeypatch) -> None:
+    """The two option strings thread from the model kwargs down to the kernel.
+
+    The parity cases above call the attention functions directly, so nothing
+    there would notice a site that stopped passing its backend along. This
+    watches the module the branch imports: `diffusion_attention_backend`
+    reaches the atom encoder/decoder window and the diffusion transformer's
+    global attention, `single_attention_backend` reaches the Pairformer's
+    single attention, and neither fires for the default.
+    """
+
+    import jax
+
+    from foldjax.models.protenix.bridge.torch_mapping import (
+        map_pairformer_stack_state_dict,
+    )
+    from foldjax.models.protenix.models.model import protenix_infer_static
+    from foldjax.models.protenix.models.primitives import attention_tokamax
+    from foldjax.models.protenix.models.trunk_blocks.pairformer import (
+        pairformer_stack,
+    )
+
+    from .test_model import _toy_features, _toy_params
+    from .test_pairformer import _pairformer_block_state
+
+    _tokamax_xla(monkeypatch)
+    # The toy checkpoint is float32, so the diffusion sites warn here. Set
+    # through monkeypatch so the flag is restored and no later test in the
+    # session finds the once-only warning already spent.
+    monkeypatch.setattr(attention_tokamax, "_WARNED_FLOAT32", False)
+    reached: list[tuple[int, ...]] = []
+    wrapped = attention_tokamax.tokamax_attention
+
+    def spy(q, k, v, **kwargs):
+        reached.append(tuple(q.shape))
+        return wrapped(q, k, v, **kwargs)
+
+    monkeypatch.setattr(attention_tokamax, "tokamax_attention", spy)
+
+    rng = np.random.default_rng(15)
+    state = _pairformer_block_state(rng, c_s=4, c_z=4, heads=2, prefix="s.blocks.0")
+    stack = map_pairformer_stack_state_dict(state, "s", has_s=True)
+    stack = jax.tree.map(lambda leaf: jnp.asarray(leaf, jnp.bfloat16), stack)
+    single = jnp.asarray(rng.normal(size=(1, 3, 4)), dtype=jnp.bfloat16)
+    pair = jnp.asarray(rng.normal(size=(1, 3, 3, 4)), dtype=jnp.bfloat16)
+    pair_mask = jnp.ones((1, 3, 3), dtype=jnp.bfloat16)
+
+    pairformer_stack(
+        single, pair, pair_mask, stack, use_scan=False, single_attention_backend="xla"
+    )
+    assert reached == []
+    pairformer_stack(
+        single,
+        pair,
+        pair_mask,
+        stack,
+        use_scan=False,
+        single_attention_backend="tokamax",
+    )
+    assert len(reached) == 1
+
+    infer = dict(
+        key=None,
+        num_samples=1,
+        init_noise=jnp.ones((1, 3, 3), dtype=jnp.float32),
+        step_noises=(jnp.zeros((1, 3, 3), dtype=jnp.float32),),
+        num_recycles=1,
+        input_atom_heads=1,
+        atom_encoder_heads=1,
+        token_heads=1,
+        atom_decoder_heads=1,
+        n_queries=2,
+        n_keys=4,
+        sigma_data=4.0,
+        centre_each_step=False,
+    )
+    schedule = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+
+    reached.clear()
+    protenix_infer_static(_toy_features(), _toy_params(), schedule, **infer)
+    assert reached == []
+
+    coordinate = protenix_infer_static(
+        _toy_features(),
+        _toy_params(),
+        schedule,
+        diffusion_attention_backend="tokamax",
+        **infer,
+    )["coordinate"]
+    assert reached, "diffusion_attention_backend=tokamax reached no fused site"
+    assert bool(jnp.isfinite(coordinate).all())
