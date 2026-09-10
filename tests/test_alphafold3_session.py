@@ -315,6 +315,10 @@ def test_cache_defaults_track_vendored_model_config() -> None:
         "return_embeddings": runner_defaults["return_embeddings"],
         "return_distogram": runner_defaults["return_distogram"],
         "kernel_autotuning": "autotune",
+        # Not a `make_model_config` parameter either, but unlike
+        # `kernel_autotuning` it changes the compiled program, so it is a
+        # cache-key option whose released value is "the run as measured".
+        "deterministic": False,
     }
 
     for name, default in expected.items():
@@ -325,6 +329,78 @@ def test_cache_defaults_track_vendored_model_config() -> None:
         AlphaFold3Backend.compile_options
     )
     assert "kernel_autotuning" not in AlphaFold3Backend.compile_options
+
+
+def test_a_deterministic_request_builds_a_runner_upstream_does_not(
+    tmp_path: Path, mock_runtime: _MockRuntime
+) -> None:
+    """The option lives on the executable, so it lives on the runner that owns it.
+
+    AF3's one executable is built inside upstream's own `ModelRunner`, which
+    FoldJAX carries rather than writes. A run that asked for nothing gets that
+    class untouched; a run that asked for repeatable reductions gets a subclass
+    whose only difference is the compile option it hands `jax.jit`.
+    """
+    weights = _weights(tmp_path)
+    backend = AlphaFold3Backend()
+    # Two seeds because a scalar prediction retains nothing to inspect.
+    plain = _request(tmp_path, weights=weights, output="plain", num_seeds=2)
+    repeatable = _request(
+        tmp_path,
+        weights=weights,
+        output="repeatable",
+        num_seeds=2,
+        options={"deterministic": "on"},
+    )
+
+    with backend.session((plain,)):
+        backend.predict(plain)
+        assert type(backend._model_runner) is mock_runtime.runner.ModelRunner
+
+    with backend.session((repeatable,)):
+        backend.predict(repeatable)
+        retained = backend._model_runner
+        assert isinstance(retained, mock_runtime.runner.ModelRunner)
+        assert type(retained) is not mock_runtime.runner.ModelRunner
+
+
+def test_a_retained_runner_never_serves_the_other_reduction_policy(
+    tmp_path: Path, mock_runtime: _MockRuntime
+) -> None:
+    """The policy is part of the retention key, not of the request only.
+
+    Everything else about these two requests is identical, so without the
+    policy in the key the second one is handed generation A's runner -- the
+    program compiled without the option -- and reports a deterministic run
+    that never was one.
+    """
+    weights = _weights(tmp_path)
+
+    def batch(*policies: str) -> tuple[PredictionRequest, ...]:
+        return tuple(
+            _request(
+                tmp_path,
+                weights=weights,
+                output=f"out-{index}-{policy}",
+                options={"deterministic": policy},
+            )
+            for index, policy in enumerate(policies)
+        )
+
+    unchanged = batch("on", "on")
+    backend = AlphaFold3Backend()
+    with backend.session(unchanged):
+        for request in unchanged:
+            backend.predict(request)
+    assert mock_runtime.counts["model_runners"] == 1
+
+    mock_runtime.reset_counts()
+    switched = batch("off", "on")
+    backend = AlphaFold3Backend()
+    with backend.session(switched):
+        for request in switched:
+            backend.predict(request)
+    assert mock_runtime.counts["model_runners"] == 2
 
 
 def test_tokamax_identity_uses_effective_matmul_precision(
