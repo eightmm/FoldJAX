@@ -24,29 +24,7 @@ import pytest
 
 from foldjax.models.opendde.cli import predict as opendde_predict
 from foldjax.models.protenix.cli import predict as protenix_predict
-
-
-class _ParserCapturedError(Exception):
-    """Raised once the parser exists, to stop before the model would run."""
-
-
-def _capture_parser(
-    main: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
-) -> argparse.ArgumentParser:
-    captured: dict[str, argparse.ArgumentParser] = {}
-
-    def capture(
-        parser: argparse.ArgumentParser,
-        _args: object = None,
-        _namespace: object = None,
-    ) -> None:
-        captured["parser"] = parser
-        raise _ParserCapturedError
-
-    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
-    with pytest.raises(_ParserCapturedError):
-        main([])
-    return captured["parser"]
+from tests._parser_capture import capture_parser, flag_order
 
 
 def _spec(action: argparse.Action) -> dict[str, object]:
@@ -68,10 +46,6 @@ def _by_option_strings(
     parser: argparse.ArgumentParser,
 ) -> dict[tuple[str, ...], dict[str, object]]:
     return {tuple(a.option_strings): _spec(a) for a in parser._actions}
-
-
-def _option_strings(parser: argparse.ArgumentParser) -> list[str]:
-    return [flag for action in parser._actions for flag in action.option_strings]
 
 
 #: Every flag both port parsers declare identically, down to the help string.
@@ -357,10 +331,9 @@ def test_port_predict_flag_order_is_pinned(
     port: str,
     main: Callable[..., Any],
     expected: Sequence[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    parser = _capture_parser(main, monkeypatch)
-    assert tuple(_option_strings(parser)) == tuple(expected), port
+    parser = capture_parser(main)
+    assert tuple(flag_order(parser)) == tuple(expected), port
 
 
 @pytest.mark.parametrize(("port", "main", "_expected_order"), _PORTS)
@@ -368,19 +341,16 @@ def test_shared_predict_flags_are_declared_as_pinned(
     port: str,
     main: Callable[..., Any],
     _expected_order: Sequence[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    declared = _by_option_strings(_capture_parser(main, monkeypatch))
+    declared = _by_option_strings(capture_parser(main))
     missing = sorted(set(_SHARED_FLAG_SPECS) - set(declared))
     assert not missing, f"{port} no longer declares {missing}"
     for option_strings, expected in _SHARED_FLAG_SPECS.items():
         assert declared[option_strings] == expected, (port, option_strings)
 
 
-def test_shared_predict_flags_match_between_the_two_ports(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    protenix = _by_option_strings(_capture_parser(protenix_predict.main, monkeypatch))
-    opendde = _by_option_strings(_capture_parser(opendde_predict.main, monkeypatch))
+def test_shared_predict_flags_match_between_the_two_ports() -> None:
+    protenix = _by_option_strings(capture_parser(protenix_predict.main))
+    opendde = _by_option_strings(capture_parser(opendde_predict.main))
     for option_strings in _SHARED_FLAG_SPECS:
         assert protenix[option_strings] == opendde[option_strings], option_strings

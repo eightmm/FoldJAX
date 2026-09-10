@@ -12,7 +12,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from foldjax.models import _representations
+from foldjax.models import _predict_flags, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.protenix.data.compact_categories import (
     compact_ref_atom_category_storage,
@@ -101,8 +101,7 @@ def _run(
     feature_group = parser.add_mutually_exclusive_group(required=True)
     feature_group.add_argument("--features", type=Path)
     feature_group.add_argument("--input-json", type=Path)
-    parser.add_argument("--weights", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    _predict_flags.add_weights_and_output(parser)
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument(
         "--seed", type=int, help="Single seed (legacy spelling; default: 101)."
@@ -116,13 +115,7 @@ def _run(
         default="npz",
         help="Write legacy NPZ, ranked CIF/JSON output, or both.",
     )
-    parser.add_argument(
-        "--num-samples",
-        "--n-sample",
-        dest="num_samples",
-        type=int,
-        default=5,
-    )
+    _predict_flags.add_sample_count(parser)
     parser.add_argument("--num-steps", "--n-step", dest="num_steps", type=int)
     parser.add_argument("--s-max", type=float, default=160.0)
     parser.add_argument("--s-min", type=float, default=4e-4)
@@ -137,15 +130,8 @@ def _run(
         type=float,
         help="Diffusion step scale eta (model-specific default).",
     )
-    parser.add_argument("--n-queries", type=int, default=32)
-    parser.add_argument("--n-keys", type=int, default=128)
-    parser.add_argument(
-        "--max-msa-depth",
-        "--max-msa-rows",
-        dest="max_msa_depth",
-        type=int,
-        default=None,
-    )
+    _predict_flags.add_atom_neighbourhood(parser)
+    _predict_flags.add_msa_depth(parser)
     parser.add_argument(
         "--msa-search",
         choices=("off", "local", "remote"),
@@ -220,10 +206,7 @@ def _run(
     parser.add_argument("--atom-encoder-heads", type=int, default=4)
     parser.add_argument("--token-heads", type=int, default=16)
     parser.add_argument("--atom-decoder-heads", type=int, default=4)
-    parser.add_argument("--triangle-mul-chunk-size", type=int)
-    parser.add_argument("--triangle-att-q-chunk-size", type=int)
-    parser.add_argument("--single-att-q-chunk-size", type=int)
-    parser.add_argument("--token-q-chunk-size", type=int)
+    _predict_flags.add_trunk_chunk_sizes(parser)
     parser.add_argument("--opm-chunk-size", type=int)
     parser.add_argument("--diffusion-chunk-size", type=int)
     parser.add_argument(
@@ -265,16 +248,7 @@ def _run(
         "13%% more wall time at 1,003 tokens, and refused with --no-graph-jit "
         "or guidance, which have no executable to carry it",
     )
-    parser.add_argument(
-        "--diffusion-attention-backend",
-        choices=("xla", "xla_jit", "xla_sdpa"),
-        default="xla_jit",
-    )
-    parser.add_argument(
-        "--trunk-single-attention-backend",
-        choices=("xla", "xla_jit", "xla_sdpa"),
-        default="xla_jit",
-    )
+    _predict_flags.add_attention_backends(parser)
     parser.add_argument(
         "--trunk-triangle-attention-backend",
         choices=("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),
@@ -307,12 +281,7 @@ def _run(
     parser.set_defaults(confidence_scan=False)
     parser.add_argument("--no-confidence", action="store_true")
     parser.add_argument("--no-confidence-scores", action="store_true")
-    parser.add_argument(
-        "--no-graph-jit",
-        action="store_true",
-        help="trace the model op by op instead of as one compiled graph; "
-        "much slower, kept for debugging and numerical comparison",
-    )
+    _predict_flags.add_graph_jit(parser)
     parser.add_argument(
         "--cp-devices",
         type=int,

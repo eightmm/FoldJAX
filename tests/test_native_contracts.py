@@ -17,6 +17,7 @@ import yaml
 from foldjax.input import materialize_native_input
 from foldjax.registry import capabilities
 from foldjax.schema import PredictionRequest
+from tests._parser_capture import capture_parser, declared_flags
 
 
 def _materialize(job: dict, model: str, tmp_path: Path) -> Path:
@@ -52,22 +53,28 @@ def _boltz_jax_root() -> Path:
 
 
 def test_protenix_cli_accepts_the_flags_the_adapter_emits() -> None:
-    """Every Protenix option the adapter forwards must exist on its CLI."""
+    """Every Protenix option the adapter forwards must exist on its CLI.
+
+    Asked of the built parser rather than of the module source. The source
+    spelling was a proxy for it: it also matched the flag named in a comment or
+    a help string, and it went red when a declaration moved to a shared builder
+    while the parser still accepted every flag.
+    """
     from foldjax.backends.protenix import _CLI_OPTIONS
     from foldjax.models.protenix.cli import predict as native
 
-    source = inspect.getsource(native)
+    declared = declared_flags(capture_parser(native.main))
     for option in sorted(_CLI_OPTIONS | {"compile_cache", "output_format", "seed"}):
-        assert f'"--{option.replace("_", "-")}"' in source, option
+        assert f"--{option.replace('_', '-')}" in declared, option
 
 
 def test_opendde_cli_accepts_the_flags_the_adapter_emits() -> None:
     from foldjax.backends.opendde import _CLI_OPTIONS
     from foldjax.models.opendde.cli import predict as native
 
-    source = inspect.getsource(native)
+    declared = declared_flags(capture_parser(native.main))
     for option in sorted(_CLI_OPTIONS | {"compile_cache", "include_raw", "seed"}):
-        assert f'"--{option.replace("_", "-")}"' in source, option
+        assert f"--{option.replace('_', '-')}" in declared, option
 
 
 def test_materialized_opendde_job_parses_with_native_loader(tmp_path: Path) -> None:

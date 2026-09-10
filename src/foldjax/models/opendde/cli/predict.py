@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from foldjax.models import _representations
+from foldjax.models import _predict_flags, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models.opendde.data.compact_categories import (
     compact_ref_atom_category_storage,
@@ -422,16 +422,9 @@ def main(
 ) -> list[Path]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-json", type=Path, required=True)
-    parser.add_argument("--weights", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    _predict_flags.add_weights_and_output(parser)
     parser.add_argument("--seed", type=int)
-    parser.add_argument(
-        "--num-samples",
-        "--n-sample",
-        dest="num_samples",
-        type=int,
-        default=5,
-    )
+    _predict_flags.add_sample_count(parser)
     parser.add_argument(
         "--num-steps",
         "--n-step",
@@ -446,38 +439,17 @@ def main(
         type=int,
         default=10,
     )
-    parser.add_argument("--n-queries", type=int, default=32)
-    parser.add_argument("--n-keys", type=int, default=128)
+    _predict_flags.add_atom_neighbourhood(parser)
     parser.add_argument("--use-template", type=_boolean, default=False)
     parser.add_argument("--use-rna-msa", type=_boolean, default=False)
-    parser.add_argument(
-        "--max-msa-depth",
-        "--max-msa-rows",
-        dest="max_msa_depth",
-        type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--diffusion-attention-backend",
-        choices=("xla", "xla_jit", "xla_sdpa"),
-        default="xla_jit",
-    )
-    parser.add_argument(
-        "--trunk-single-attention-backend",
-        choices=("xla", "xla_jit", "xla_sdpa"),
-        default="xla_jit",
-    )
+    _predict_flags.add_msa_depth(parser)
+    _predict_flags.add_attention_backends(parser)
     parser.add_argument(
         "--structural-single-attention-backend",
         choices=("xla", "xla_jit", "xla_sdpa"),
         default="xla_jit",
     )
-    parser.add_argument(
-        "--no-graph-jit",
-        action="store_true",
-        help="trace the model op by op instead of as one compiled graph; "
-        "much slower, kept for debugging and numerical comparison",
-    )
+    _predict_flags.add_graph_jit(parser)
     parser.add_argument(
         "--cp-devices",
         type=int,
@@ -503,10 +475,7 @@ def main(
     # sample axis took OpenFold3 at 4,100 tokens from an unplaceable 107.85 GiB
     # request to a completed 76.4 GiB run.
     parser.add_argument("--diffusion-chunk-size", type=int)
-    parser.add_argument("--triangle-mul-chunk-size", type=int)
-    parser.add_argument("--triangle-att-q-chunk-size", type=int)
-    parser.add_argument("--single-att-q-chunk-size", type=int)
-    parser.add_argument("--token-q-chunk-size", type=int)
+    _predict_flags.add_trunk_chunk_sizes(parser)
     parser.add_argument(
         "--chunk-policy",
         choices=("auto", "manual", "off"),

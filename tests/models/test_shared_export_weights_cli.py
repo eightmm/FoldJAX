@@ -23,6 +23,7 @@ import pytest
 
 from foldjax.models.opendde.bridge import export_weights as opendde_export
 from foldjax.models.protenix.bridge import export_weights as protenix_export
+from tests._parser_capture import capture_parser
 
 _MODULES: tuple[ModuleType, ...] = (protenix_export, opendde_export)
 _IDS: tuple[str, ...] = ("protenix", "opendde")
@@ -33,29 +34,6 @@ _EXPECTED_DESCRIPTIONS: dict[str, str] = {
     ),
     "opendde": "Export a trusted official OpenDDE checkpoint to native JAX weights.",
 }
-
-
-class _ParserCapturedError(Exception):
-    """Raised once the parser exists, to stop before any file is read."""
-
-
-def _capture_parser(
-    module: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> argparse.ArgumentParser:
-    captured: dict[str, argparse.ArgumentParser] = {}
-
-    def capture(
-        parser: argparse.ArgumentParser,
-        _args: object = None,
-        _namespace: object = None,
-    ) -> None:
-        captured["parser"] = parser
-        raise _ParserCapturedError
-
-    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
-    with pytest.raises(_ParserCapturedError):
-        module.main([])
-    return captured["parser"]
 
 
 def _run(
@@ -79,9 +57,9 @@ def _run(
 
 @pytest.mark.parametrize("module", _MODULES, ids=_IDS)
 def test_export_parser_keeps_the_port_docstring_as_its_description(
-    module: ModuleType, monkeypatch: pytest.MonkeyPatch, request: Any
+    module: ModuleType, request: Any
 ) -> None:
-    parser = _capture_parser(module, monkeypatch)
+    parser = capture_parser(module.main)
     port = request.node.callspec.id
     assert parser.description == module.__doc__
     assert parser.description == _EXPECTED_DESCRIPTIONS[port]
@@ -89,9 +67,9 @@ def test_export_parser_keeps_the_port_docstring_as_its_description(
 
 @pytest.mark.parametrize("module", _MODULES, ids=_IDS)
 def test_export_parser_declares_the_same_flags_in_the_same_order(
-    module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    module: ModuleType,
 ) -> None:
-    parser = _capture_parser(module, monkeypatch)
+    parser = capture_parser(module.main)
     specs = [
         (
             tuple(action.option_strings),
