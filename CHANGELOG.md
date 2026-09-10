@@ -61,6 +61,25 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2 can run its diffusion score model in BF16 and select that module's
+  attention on its own.** Two opt-in native options, both defaulting to the
+  released behaviour: `diffusion_compute_dtype` (`float32` or `bfloat16`) casts
+  only the score model's Linear kernels, keeping the residual stream, the
+  sampler's `atom_coords`, `r_to_q_trans` and `atom_feat_to_atom_pos_update` in
+  FP32, and carrying the projected pair bias at the low width the attention
+  consumes; `diffusion_attention_backend` (`null`, `xla`, `tokamax`, `triton`)
+  overrides the token transformer and the diffusion atom encoder/decoder while
+  the FP32 trunk and confidence Pairformers keep the global
+  `attention_backend`. Together they hand q, k, v and bias to the fused kernel
+  in BF16, where the released FP32 island puts Tokamax on its slow
+  `F32_F32_F32` preset. `triton` requires `diffusion_compute_dtype=bfloat16`
+  and an NVIDIA GPU with compute capability 8.0 or newer, context parallelism
+  admits only `xla` or `null`, and both options are part of the
+  compilation-cache identity. Both also apply to the affinity re-embedding
+  run, which shares the score model. The fused path rounds the attention
+  probabilities to BF16 before P@V, which upstream's autocast-disabled core
+  does not.
+
 - **Managed Boltz-2 full, trunk-only and affinity prediction carry the
   categorical pair and atom features as compact private IDs.** Before model
   padding the publisher's `int64[B, N, N, 5]` contact one-hot becomes a scalar

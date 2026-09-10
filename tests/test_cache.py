@@ -368,6 +368,8 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "compute_dtype": "bfloat16",
             "attention_backend": "xla",
             "trunk_atom_attention_backend": "xla",
+            "diffusion_attention_backend": "xla",
+            "diffusion_compute_dtype": "float32",
             "triangle_backend": "cueq",
             "glu_backend": "xla",
             "bucket": False,
@@ -397,6 +399,37 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
     assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
+
+
+def test_boltz2_inherited_diffusion_attention_backend_has_one_cache_identity(
+    tmp_path: Path,
+) -> None:
+    backend = Boltz2Backend()
+    omitted = _request(tmp_path)
+    explicit_none = dataclasses.replace(
+        omitted, options={"diffusion_attention_backend": None}
+    )
+    global_tokamax = dataclasses.replace(
+        omitted, options={"attention_backend": "tokamax"}
+    )
+    repeated_tokamax = dataclasses.replace(
+        omitted,
+        options={
+            "attention_backend": "tokamax",
+            "diffusion_attention_backend": "tokamax",
+        },
+    )
+
+    assert backend.cache_profile(explicit_none) == backend.cache_profile(omitted)
+    assert backend.cache_profile(repeated_tokamax) == backend.cache_profile(
+        global_tokamax
+    )
+    assert resolve_cache_dir(explicit_none, backend) == resolve_cache_dir(
+        omitted, backend
+    )
+    assert resolve_cache_dir(repeated_tokamax, backend) == resolve_cache_dir(
+        global_tokamax, backend
+    )
 
 
 def test_boltz2_inherited_atom_attention_backend_has_one_cache_identity(
@@ -473,6 +506,8 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         ({}, {"compute_dtype": "float32"}),
         ({}, {"attention_backend": "tokamax"}),
         ({}, {"trunk_atom_attention_backend": "triton"}),
+        ({}, {"diffusion_attention_backend": "tokamax"}),
+        ({}, {"diffusion_compute_dtype": "bfloat16"}),
         ({}, {"triangle_backend": "xla"}),
         ({}, {"glu_backend": "tokamax"}),
         ({}, {"bucket": True}),

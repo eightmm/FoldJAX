@@ -44,10 +44,28 @@ def diffusion_score_model_forward(
     atom_context_parallel: bool = False,
     atom_encoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
     atom_decoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
+    score_compute_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
-    """Run Boltz DiffusionModule.forward using precomputed conditioning."""
+    """Run Boltz DiffusionModule.forward using precomputed conditioning.
 
-    compute_dtype = r_noisy.dtype
+    ``score_compute_dtype`` is the opt-in low-precision diffusion knob.
+    ``None`` is the released behaviour: every activation follows ``r_noisy``,
+    which is also what the unreleased custom low-precision score weights want.
+    When it is set the two widths are split. The residual and conditioning
+    streams stay at ``r_noisy``'s width, because the AdaLN normalizations in
+    the diffusion transformer have no FP32 upcast of their own and ``_linear``
+    narrows its input per GEMM regardless; only the pair bias is carried at
+    ``score_compute_dtype``, which halves what the denoising loop holds and is
+    the width a fused attention kernel wants -- it adds the bias to FP32
+    logits either way.
+    """
+
+    residual_dtype = r_noisy.dtype
+    bias_dtype = (
+        residual_dtype
+        if score_compute_dtype is None
+        else jnp.dtype(score_compute_dtype)
+    )
     s, _ = single_conditioning_forward(
         params["single_conditioner"],
         times,
@@ -55,14 +73,18 @@ def diffusion_score_model_forward(
         jnp.repeat(s_inputs, multiplicity, axis=0),
         eps=eps,
     )
+    if score_compute_dtype is not None:
+        # Its Linears are low precision, so `s` comes back low precision. The
+        # AdaLN scale/bias projections normalize it without an FP32 upcast.
+        s = s.astype(residual_dtype)
 
     atom_to_token_idx = diffusion_conditioning.get("atom_to_token_idx")
     a, q_skip, c_skip = atom_attention_encoder_forward(
         params["atom_attention_encoder"],
         feats=feats,
-        q=diffusion_conditioning["q"].astype(compute_dtype),
-        c=diffusion_conditioning["c"].astype(compute_dtype),
-        atom_enc_bias=diffusion_conditioning["atom_enc_bias"].astype(compute_dtype),
+        q=diffusion_conditioning["q"].astype(residual_dtype),
+        c=diffusion_conditioning["c"].astype(residual_dtype),
+        atom_enc_bias=diffusion_conditioning["atom_enc_bias"].astype(bias_dtype),
         to_keys=diffusion_conditioning["to_keys"],
         r=r_noisy,
         multiplicity=multiplicity,
@@ -91,7 +113,7 @@ def diffusion_score_model_forward(
         params["token_transformer"],
         a=a,
         s=s,
-        bias=None if token_bias is None else token_bias.astype(compute_dtype),
+        bias=None if token_bias is None else token_bias.astype(bias_dtype),
         mask=mask.astype(jnp.float32),
         multiplicity=multiplicity,
         eps=eps,
@@ -103,6 +125,7 @@ def diffusion_score_model_forward(
         bias_input=diffusion_conditioning.get("token_trans_bias_input"),
         bias_normed_input=diffusion_conditioning.get("token_trans_bias_normed_input"),
         bias_compute_dtype=None if bias_precision is None else bias_precision.dtype,
+        bias_out_dtype=None if score_compute_dtype is None else bias_dtype,
     )
     a_norm = params["a_norm"]
     a = _layer_norm(a, a_norm["scale"], a_norm["bias"], eps)
@@ -112,7 +135,7 @@ def diffusion_score_model_forward(
         a=a,
         q=q_skip,
         c=c_skip,
-        atom_dec_bias=diffusion_conditioning["atom_dec_bias"].astype(compute_dtype),
+        atom_dec_bias=diffusion_conditioning["atom_dec_bias"].astype(bias_dtype),
         feats=feats,
         to_keys=diffusion_conditioning["to_keys"],
         multiplicity=multiplicity,

@@ -54,6 +54,7 @@ from foldjax.schema import PaddingConfig
 COMPUTE_DTYPES = ("bfloat16", "float32")
 ATTENTION_BACKENDS = ("flash", "tokamax", "xla")
 TRUNK_ATOM_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
+DIFFUSION_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 
 #: Matmul precision this port runs under. Boltz-2 is the one model here whose
 #: upstream asks for true float32 -- `main.py:1096` is
@@ -62,20 +63,20 @@ TRUNK_ATOM_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 MATMUL_PRECISION = "highest"
 
 
-def _require_triton_attention_device(jax_module: Any) -> None:
+def _require_triton_attention_device(
+    jax_module: Any, option: str = "trunk_atom_attention_backend"
+) -> None:
     """Fail before featurization when forced Triton cannot run."""
 
     device = jax_module.devices()[0]
     device_kind = str(getattr(device, "device_kind", ""))
     if device.platform != "gpu" or "nvidia" not in device_kind.casefold():
-        raise RuntimeError(
-            "trunk_atom_attention_backend='triton' requires an NVIDIA GPU"
-        )
+        raise RuntimeError(f"{option}='triton' requires an NVIDIA GPU")
     capability = getattr(device, "compute_capability", None)
     if capability is None:
         raise RuntimeError(
-            "trunk_atom_attention_backend='triton' could not verify the "
-            "NVIDIA GPU compute capability; version 8.0 or newer is required"
+            f"{option}='triton' could not verify the NVIDIA GPU compute "
+            "capability; version 8.0 or newer is required"
         )
     if isinstance(capability, tuple):
         capability_value = float(f"{capability[0]}.{capability[1]}")
@@ -84,13 +85,13 @@ def _require_triton_attention_device(jax_module: Any) -> None:
             capability_value = float(capability)
         except (TypeError, ValueError) as exc:
             raise RuntimeError(
-                "trunk_atom_attention_backend='triton' could not verify the "
-                "NVIDIA GPU compute capability; version 8.0 or newer is required"
+                f"{option}='triton' could not verify the NVIDIA GPU compute "
+                "capability; version 8.0 or newer is required"
             ) from exc
     if capability_value < 8.0:
         raise RuntimeError(
-            "trunk_atom_attention_backend='triton' requires compute "
-            f"capability >= 8.0; found {capability}"
+            f"{option}='triton' requires compute capability >= 8.0; "
+            f"found {capability}"
         )
 
 
@@ -516,6 +517,13 @@ def predict(
     # the two crossing in both directions per sample. Passing "float32"
     # restores the previous behaviour exactly.
     compute_dtype: str = "bfloat16",
+    # The diffusion score model is the one module upstream runs outside
+    # autocast (`torch.autocast(enabled=False)` around
+    # `structure_module.sample`), so this port ships it in float32 whatever the
+    # trunk does. "bfloat16" is an opt-in experiment: the score model's Linear
+    # kernels narrow, while the residual stream, the sampler's atom_coords and
+    # the two coordinate I/O projections stay float32. Defaults unchanged.
+    diffusion_compute_dtype: str = "float32",
     # False by default: the full-bin pae/pde/plddt logits and the distogram are
     # program outputs nothing in the cif/JSON path reads, and XLA keeps entry
     # outputs resident alongside the temp arena for the whole run -- at 3,012
@@ -529,6 +537,11 @@ def predict(
     #: ``"triton"`` is a fail-loud pilot that leaves the FP32 Pairformer,
     #: diffusion, confidence, and affinity re-embedding paths unchanged.
     trunk_atom_attention_backend: str | None = None,
+    #: Override only the diffusion score model's attention (token transformer,
+    #: atom encoder, atom decoder). None preserves the global
+    #: ``attention_backend``; a fused spelling is an experiment knob and leaves
+    #: the trunk and confidence Pairformers on their own setting.
+    diffusion_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     #: Context parallelism: shard the pair representations across this many
@@ -577,6 +590,11 @@ def predict(
     Returns a dict with ``coords`` (n_atom, 3), ``plddt``, ``record_id``,
     ``raw`` (full model output), and ``out_path`` (if ``write_fmt`` is
     "pdb"/"cif"). Defaults match the Boltz-2 reference.
+
+    ``diffusion_compute_dtype`` and ``diffusion_attention_backend`` are
+    opt-in experiment knobs scoped to the diffusion score model, which
+    upstream runs outside autocast and this port therefore ships in float32.
+    See ``docs/cli.md``; the released defaults are unchanged by both.
 
     ``msa_deletions`` selects which MSA deletion loop the featurizer runs.
     ``released`` (the default) reproduces upstream v2.2.0+ exactly, which
@@ -627,6 +645,37 @@ def predict(
         )
     if resolved_trunk_atom_attention_backend == "triton":
         _require_triton_attention_device(jax)
+    if (
+        diffusion_attention_backend is not None
+        and diffusion_attention_backend not in DIFFUSION_ATTENTION_BACKENDS
+    ):
+        raise ValueError(
+            "diffusion_attention_backend must be null or one of "
+            f"{DIFFUSION_ATTENTION_BACKENDS}, got "
+            f"{diffusion_attention_backend!r}"
+        )
+    if diffusion_compute_dtype not in COMPUTE_DTYPES:
+        raise ValueError(
+            f"diffusion_compute_dtype must be one of {COMPUTE_DTYPES}, got "
+            f"{diffusion_compute_dtype!r}"
+        )
+    resolved_diffusion_attention_backend = (
+        None
+        if diffusion_attention_backend in (None, attention_backend)
+        else diffusion_attention_backend
+    )
+    if (
+        resolved_diffusion_attention_backend == "triton"
+        and diffusion_compute_dtype != "bfloat16"
+    ):
+        raise ValueError(
+            "diffusion_attention_backend='triton' requires "
+            "diffusion_compute_dtype='bfloat16'"
+        )
+    if resolved_diffusion_attention_backend == "triton":
+        _require_triton_attention_device(
+            jax, option="diffusion_attention_backend"
+        )
     resolved_cp_layout = _resolve_cp_layout(cp_layout, cp_devices)
     cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after == "full"
     cp_rows = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else cp_devices
@@ -643,6 +692,11 @@ def predict(
         raise ValueError(
             "context parallelism requires trunk_atom_attention_backend='xla' "
             "or null; fused atom attention is not partitioned"
+        )
+    if cp_devices > 1 and resolved_diffusion_attention_backend not in (None, "xla"):
+        raise ValueError(
+            "context parallelism requires diffusion_attention_backend='xla' "
+            "or null; fused diffusion attention is not partitioned"
         )
 
     if padding is not None and max_msa_depth is None:
@@ -894,6 +948,10 @@ def predict(
         # retained-runner identity.  The graph sees the same resolved backend
         # either way, so these spellings must not cause a second full compile.
         "trunk_atom_attention_backend": resolved_trunk_atom_attention_backend,
+        # Same canonicalization, and the same reason: an explicit value equal
+        # to the global one must not compile a second program.
+        "diffusion_attention_backend": resolved_diffusion_attention_backend,
+        "diffusion_compute_dtype": diffusion_compute_dtype,
         "triangle_backend": (
             # The fused default cannot be partitioned; unset-equivalent
             # resolves to the blocked XLA path under context parallelism.

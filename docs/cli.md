@@ -263,6 +263,43 @@ equivalent is `compute_dtype`, default `bfloat16`; OpenFold3 has no trunk
 dtype: upstream runs `32-true` and a bf16 trunk destroys its prediction.
 Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
+### A bfloat16 Boltz-2 diffusion (`--option diffusion_compute_dtype=bfloat16`)
+
+Boltz-2's trunk dtype above stops at the trunk. Upstream wraps
+`structure_module.sample` in `torch.autocast(enabled=False)`, so this port runs
+the whole diffusion score model in float32 whatever `compute_dtype` says, and
+that stays the default. Two opt-in experiment knobs open the AlphaFold 3-shaped
+cell instead: `--option diffusion_compute_dtype=bfloat16` narrows the score
+model's Linear kernels while the residual stream, the sampler's `atom_coords`
+and the two coordinate projections at its edges stay float32, and `--option
+diffusion_attention_backend={xla,tokamax,triton}` selects the score model's
+attention alone, leaving the float32 trunk and confidence Pairformers on the
+global `attention_backend`. Neither changes any released default, and both are
+part of the compilation-cache identity, so a non-default value never receives
+the executable built without it. Both also reach the affinity re-embedding
+run, which uses the same score model.
+
+The two go together. Under the released float32 island a fused kernel takes
+Tokamax's slow `F32_F32_F32` preset, which is slower than plain XLA; with the
+bf16 knob on, q, k, v and the pair bias all reach the kernel in bfloat16 and
+Tokamax selects `BF16_BF16_F32` regardless of this port's pinned
+`matmul_precision=highest`, which it consults only for float32 operands.
+`triton` pins that kernel and fails loudly rather than falling back, so it
+requires `diffusion_compute_dtype=bfloat16` and an NVIDIA GPU of compute
+capability 8.0 or newer; on any card older than sm80 Tokamax would take
+`F32_F32_F32` for bfloat16 operands too. Tokamax ships Mosaic GPU kernels only
+up to sm100, so on an sm120 card `tokamax` skips Mosaic and lands on the same
+Triton kernel `triton` pins -- the two spellings differ there in whether a
+missing kernel is silent. Context parallelism refuses every non-`xla` value,
+because the 2-D grid routes pair-bias attention through its own collective and
+never reaches the backend switch.
+
+The fused path is not upstream's arithmetic. Tokamax rounds the attention
+probabilities to bfloat16 before the P@V contraction, where upstream's
+autocast-disabled core keeps that contraction in float32; the `xla` spelling
+keeps the float32 score core and is the upstream-faithful shape. Treat the
+combination as a measurement, not a recommended default.
+
 ### `--option deterministic=on`
 
 Compiles this run's executables for reduction orders that repeat, so two

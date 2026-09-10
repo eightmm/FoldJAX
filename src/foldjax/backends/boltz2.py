@@ -283,6 +283,8 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "compute_dtype": "bfloat16",
     "attention_backend": "xla",
     "trunk_atom_attention_backend": None,
+    "diffusion_attention_backend": None,
+    "diffusion_compute_dtype": "float32",
     "triangle_backend": "cueq",
     "glu_backend": "xla",
     "bucket": False,
@@ -305,7 +307,9 @@ class Boltz2Backend(Backend):
             "cp_atom_windows",
             "cp_devices",
             "cp_layout",
+            "diffusion_attention_backend",
             "diffusion_chunk_size",
+            "diffusion_compute_dtype",
             "feature_cache",
             "glu_backend",
             "mols",
@@ -360,6 +364,8 @@ class Boltz2Backend(Backend):
         "max_msa_depth",
         "attention_backend",
         "trunk_atom_attention_backend",
+        "diffusion_attention_backend",
+        "diffusion_compute_dtype",
         "triangle_backend",
         "glu_backend",
         "bucket",
@@ -438,12 +444,16 @@ class Boltz2Backend(Backend):
         resolved_attention = profile.get(
             "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
         )
-        atom_attention = profile.get("trunk_atom_attention_backend")
-        if atom_attention is None or (
-            type(atom_attention) is type(resolved_attention)
-            and atom_attention == resolved_attention
+        for scoped in (
+            "trunk_atom_attention_backend",
+            "diffusion_attention_backend",
         ):
-            profile.pop("trunk_atom_attention_backend", None)
+            value = profile.get(scoped)
+            if value is None or (
+                type(value) is type(resolved_attention)
+                and value == resolved_attention
+            ):
+                profile.pop(scoped, None)
         self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
         if profile.get("cp_layout") == "1d":
             profile.pop("cp_layout")
@@ -634,6 +644,42 @@ class Boltz2Backend(Backend):
             raise ValueError(
                 "trunk_atom_attention_backend='triton' requires "
                 "compute_dtype='bfloat16'"
+            )
+        if (
+            "diffusion_attention_backend" in options
+            and options["diffusion_attention_backend"]
+            not in {None, "tokamax", "triton", "xla"}
+        ):
+            raise ValueError(
+                "diffusion_attention_backend must be one of 'tokamax', "
+                "'triton', 'xla', or null"
+            )
+        if "diffusion_compute_dtype" in options and options[
+            "diffusion_compute_dtype"
+        ] not in {"float32", "bfloat16"}:
+            raise ValueError(
+                "diffusion_compute_dtype must be one of 'float32' or "
+                "'bfloat16'"
+            )
+        if (
+            options.get("diffusion_attention_backend") == "triton"
+            and options.get("diffusion_compute_dtype", "float32") != "bfloat16"
+        ):
+            raise ValueError(
+                "diffusion_attention_backend='triton' requires "
+                "diffusion_compute_dtype='bfloat16'"
+            )
+        scoped_diffusion_backend = options.get("diffusion_attention_backend")
+        if scoped_diffusion_backend == options.get("attention_backend", "xla"):
+            scoped_diffusion_backend = None
+        if (
+            type(options.get("cp_devices", 1)) is int
+            and options.get("cp_devices", 1) > 1
+            and scoped_diffusion_backend not in (None, "xla")
+        ):
+            raise ValueError(
+                "context parallelism requires "
+                "diffusion_attention_backend='xla' or null"
             )
         scoped_attention_backend = options.get("trunk_atom_attention_backend")
         if scoped_attention_backend == options.get("attention_backend", "xla"):
