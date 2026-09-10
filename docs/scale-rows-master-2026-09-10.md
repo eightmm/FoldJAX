@@ -100,7 +100,9 @@ bitwise intact: the 3k tape replay on the pre-change code and on the new code
 with `--amp-policy fp32`, both under `--deterministic-ops on`, agree on every
 coordinate (jobs 1048/1049); an earlier pair of replays without the
 deterministic flag had differed by 0.4-2.1 Å, which was the port's own
-process scatter, not the change. Boltz-2's uint8 categorical compaction at 4.1k (job
+process scatter, not the change. The `auto` policy at 3,012 tokens (bf16
+confidence head) leaves the coordinates bitwise equal to the fp32 run (job
+1050 vs 1049) and moves atom pLDDT by ≤0.01, pTM/ipTM by ≤2e-4. Boltz-2's uint8 categorical compaction at 4.1k (job
 1041): 3133 s / 64.4 GiB against 3081 / 64.2 — the 446 MiB of argument
 bytes did not reach the peak, so on this port the in-graph one-hot rebuild is
 materialised where the dense argument used to sit (the CPU probe fused it;
