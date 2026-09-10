@@ -152,10 +152,11 @@ def test_the_upstream_label_is_the_filename_not_the_null_field(work: Path) -> No
 def test_the_band_is_the_name_and_the_token_count_is_the_measurement(
     tmp_path: Path,
 ) -> None:
-    """`L5000_8e2f` is 4,888 tokens, and every FoldJAX run at that size OOMed.
+    """`L5000_8e2f` is 4,888 tokens, and nothing at that size finished.
 
-    The length therefore has to come from the upstream result, and the band from
-    the case name, or the row shows no size at all.
+    The length therefore has to come from a run that failed -- the upstream
+    result records it and then reports no samples -- and the band from the case
+    name, or the row shows no size at all.
     """
     root = tmp_path / "work"
     write_result(
@@ -180,7 +181,7 @@ def test_the_band_is_the_name_and_the_token_count_is_the_measurement(
         "L5000_z",
         "4888",
         "OOM",
-        "103 / 91.7",
+        "OOM",
     ]
 
 
@@ -545,3 +546,264 @@ def test_the_cli_defaults_a_label_per_table(
     assert [row["case"] for row in built["mixed"]] == ["mixed_1k_a"]
     assert built["spread"] == []
     assert built["alternatives"] == []
+
+
+def test_a_result_that_recorded_no_samples_is_an_oom_row(tmp_path: Path) -> None:
+    """The runner writes a json for a failed run, and it looks like a fast one.
+
+    L5000 upstream Boltz-2 reports 103 seconds at 91.7 GiB with zero samples on
+    a 96 GiB card: that is the cost of reaching the allocator failure, and next
+    to a FoldJAX column of completed runs it reads as the fastest row in the
+    table.
+    """
+    root = tmp_path / "work"
+    write_result(
+        root,
+        "L5000_z",
+        "boltz2",
+        "scale",
+        length=4888,
+        wall_s=103.23,
+        peak_mib=93949.4,
+        samples=[],
+    )
+    write_result(
+        root,
+        "L5000_z",
+        "protenix",
+        "scale",
+        length=4888,
+        wall_s=132.0,
+        peak_mib=6863.5,
+        samples=scores(iptm=0.0),
+    )
+    artifacts = scale_table.load_work(root)
+    failed = artifacts[("L5000_z", "boltz2", "scale")]
+    assert failed["status"] == "oom"
+    assert failed["oom"] is True
+    assert failed["samples"] == 0
+    # The timing survives in the parsed row; only the rendering withholds it.
+    assert (failed["wall_s"], failed["peak_mib"]) == (103.23, 93949.4)
+    assert failed["marker"] is None
+
+    finished = artifacts[("L5000_z", "protenix", "scale")]
+    assert (finished["status"], finished["oom"], finished["samples"]) == (
+        "ok",
+        False,
+        1,
+    )
+
+    rows = scale_table.measurement_rows(
+        artifacts, label="scale", upstream_label="upstream"
+    )
+    assert row_for(scale_table.render_measurements(rows), "L5000_z")[3:] == [
+        "OOM",
+        "-",
+        "132 / 6.7",
+        "-",
+    ]
+    # And in the mixed layout, where the ipTM column is empty for the same run.
+    assert row_for(scale_table.render_measurements(rows, iptm=True), "L5000_z")[
+        3:7
+    ] == ["OOM", "-", "", ""]
+
+
+def test_a_samples_key_that_is_absent_is_not_an_oom_row(tmp_path: Path) -> None:
+    """An empty list is a claim about the run; a missing key is not.
+
+    Every result in the 2026-09-10 directory writes the list, so reading the
+    absent key as zero would only ever fire on a runner that stopped recording
+    samples, and it would turn that whole model's column into OOM.
+    """
+    root = tmp_path / "work"
+    path = write_result(
+        root,
+        "L1000_x",
+        "protenix",
+        "scale",
+        length=1003,
+        wall_s=65.13,
+        peak_mib=6863.5,
+    )
+    document = json.loads(path.read_text())
+    assert "samples" not in document
+    cell = scale_table.load_work(root)[("L1000_x", "protenix", "scale")]
+    assert cell["status"] == "ok"
+    assert cell["oom"] is False
+    assert cell["samples"] is None
+    assert scale_table.measurement(cell) == "65 / 6.7"
+
+
+def test_a_failed_run_is_not_the_alternatives_baseline(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    write_result(
+        root,
+        "L4000_v",
+        "boltz2",
+        "scale",
+        length=4100,
+        wall_s=88.5,
+        peak_mib=94365.6,
+        samples=[],
+    )
+    write_result(
+        root,
+        "L4000_v",
+        "boltz2",
+        "bf16",
+        length=4100,
+        wall_s=3081.0,
+        peak_mib=65740.8,
+        samples=scores(iptm=0.0),
+    )
+    rows = scale_table.alternative_rows(
+        scale_table.load_work(root), label="scale", upstream_label="upstream"
+    )
+    by_label = {row["label"]: row for row in rows}
+    assert by_label["scale"]["oom"] is True
+    assert by_label["scale"]["wall_s"] == 88.5
+    assert all(row["wall_ratio"] is None for row in rows)
+    rendered = scale_table.render_alternatives(rows)
+    body = [cells(line) for line in rendered.splitlines() if line.startswith("| L4000")]
+    assert [row[2:] for row in body] == [
+        ["scale", "OOM", "-"],
+        ["bf16", "3081 / 64.2", "-"],
+    ]
+
+
+def test_labels_are_read_in_order() -> None:
+    assert scale_table.parse_labels("scale") == ("scale",)
+    assert scale_table.parse_labels("scale,cueq") == ("scale", "cueq")
+    assert scale_table.parse_labels(" scale , cueq-full ,") == ("scale", "cueq-full")
+    assert scale_table.parse_labels(("scale", "cueq")) == ("scale", "cueq")
+    assert scale_table.parse_labels("") == ()
+
+
+def test_a_fallback_label_is_named_in_the_cell(tmp_path: Path) -> None:
+    """OpenFold3 at 3,012 tokens was measured under `cueq`, never under `scale`.
+
+    Admitting only `scale` prints a dash where there is a measurement, and
+    substituting silently prints a `cueq` number in a `scale` column.
+    """
+    root = tmp_path / "work"
+    for label, wall, peak in (("cueq", 951.0, 50380.8), ("cueq-full", 863.0, 43520.0)):
+        write_result(
+            root,
+            "L3000_w",
+            "openfold3",
+            label,
+            length=3012,
+            wall_s=wall,
+            peak_mib=peak,
+            samples=scores(iptm=0.0),
+        )
+    write_result(
+        root,
+        "L3000_w",
+        "protenix",
+        "scale",
+        length=3012,
+        wall_s=579.0,
+        peak_mib=42188.8,
+        samples=scores(iptm=0.0),
+    )
+    rows = scale_table.measurement_rows(
+        scale_table.load_work(root),
+        label="scale,cueq",
+        upstream_label="upstream",
+    )
+    assert rows[0]["labels"] == ["scale", "cueq"]
+    assert row_for(scale_table.render_measurements(rows), "L3000_w")[3:] == [
+        "951 / 49.2 (cueq)",
+        "-",
+        "579 / 41.2",
+        "-",
+    ]
+    # Without the fallback the same directory reports no OpenFold3 measurement.
+    plain = scale_table.measurement_rows(
+        scale_table.load_work(root), label="scale", upstream_label="upstream"
+    )
+    assert row_for(scale_table.render_measurements(plain), "L3000_w")[3:] == [
+        "579 / 41.2",
+        "-",
+    ]
+
+
+def test_a_present_first_label_wins_even_when_it_has_not_finished(
+    tmp_path: Path,
+) -> None:
+    """Presence, not success: a running `scale` job is the row, `cueq` is not."""
+    root = tmp_path / "work"
+    write_log(root, "L3000_w-openfold3-scale", "job 945 master openfold3\n")
+    write_result(
+        root,
+        "L3000_w",
+        "openfold3",
+        "cueq",
+        length=3012,
+        wall_s=951.0,
+        peak_mib=50380.8,
+        samples=scores(iptm=0.0),
+    )
+    rows = scale_table.measurement_rows(
+        scale_table.load_work(root),
+        label="scale,cueq",
+        upstream_label="upstream",
+    )
+    assert row_for(scale_table.render_measurements(rows), "L3000_w")[3:] == [
+        "running",
+        "-",
+    ]
+
+
+def test_the_fallback_label_becomes_the_alternatives_baseline(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "work"
+    for label, wall, peak in (("cueq", 951.0, 50380.8), ("cueq-full", 863.0, 43520.0)):
+        write_result(
+            root,
+            "L3000_w",
+            "openfold3",
+            label,
+            length=3012,
+            wall_s=wall,
+            peak_mib=peak,
+            samples=scores(iptm=0.0),
+        )
+    rows = scale_table.alternative_rows(
+        scale_table.load_work(root),
+        label="scale,cueq",
+        upstream_label="upstream",
+    )
+    assert [row["label"] for row in rows] == ["cueq", "cueq-full"]
+    assert {row["baseline"] for row in rows} == {"cueq"}
+    rendered = scale_table.render_alternatives(rows)
+    body = [cells(line) for line in rendered.splitlines() if line.startswith("| L3000")]
+    assert [row[2:] for row in body] == [
+        ["cueq", "951 / 49.2", "1.00x / 1.00x"],
+        ["cueq-full", "863 / 42.5", "0.91x / 0.86x"],
+    ]
+
+
+def test_the_cli_takes_a_fallback_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "work"
+    write_result(
+        root,
+        "L3000_w",
+        "openfold3",
+        "cueq",
+        length=3012,
+        wall_s=951.0,
+        peak_mib=50380.8,
+        samples=scores(iptm=0.0),
+    )
+    assert (
+        scale_table.main(
+            ["--work", str(root), "--table", "scale", "--label", "scale,cueq"]
+        )
+        == 0
+    )
+    assert "951 / 49.2 (cueq)" in capsys.readouterr().out

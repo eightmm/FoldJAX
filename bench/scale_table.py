@@ -18,12 +18,26 @@ A label may contain a hyphen (`det-notriton`, `cueq-full`) and so may a model
 on a known model name whenever one is available, and only falls back to "the
 first two hyphens" for a model that never appears in a result.
 
+A result is not proof of a prediction. The runner writes its json even when
+the run died, so an empty `samples` list is an out-of-memory row carrying the
+time it took to reach the failure and the whole card as its peak: nine of the
+upstream results in the 2026-09-10 scale directory are that shape, at 92-96 GiB
+on a 96 GiB card. Those cells report `OOM`, never the number, because the number
+is the cost of failing.
+
 A row exists because a FoldJAX job exists. The row set for `scale` and `mixed`
 is every case carrying at least one artifact -- result or log -- at the selected
 FoldJAX label. Admitting cases on the upstream label instead would pull the
 `panel` cases into a scale table, since their upstream results sit in the same
 directory; admitting them on results alone would drop every case that OOMed,
 which is exactly the row the table exists to show.
+
+`--label` is an ordered fallback rather than one name, because a case may have
+been measured only under a variant: OpenFold3 at 3,012 tokens has `cueq` and
+`cueq-full` and no `scale` at all, and a table that admits only `scale` prints a
+dash where there is a measurement. `--label scale,cueq` takes the first label
+present for each case and model, and names the label in the cell whenever it is
+not the first, so a substituted row is never read as the default one.
 
 Nothing here recomputes a structural comparison. `spread` passes
 `compare-structures.json` through, and renders the columns it shares with
@@ -72,10 +86,13 @@ _BAND_TOKENS = re.compile(r"^L(\d+)_")
 _BAND_NAMED = re.compile(r"^mixed_(\d+)k_")
 
 _LEGEND = (
-    "cells are wall seconds / peak GiB. `OOM` is a submitted job whose log "
-    "carries an allocator failure; `running` is a log with neither a result "
-    "nor an OOM marker, which also covers a job that died without one; `-` is "
-    "no result and no log."
+    "cells are wall seconds / peak GiB. `OOM` is a job whose log carries an "
+    "allocator failure, or one whose result recorded no samples -- the runner "
+    "writes a json for a failed run too, holding the time to the failure and "
+    "the whole card as its peak; `running` is a log with neither a result nor "
+    "an OOM marker, which also covers a job that died without one; `-` is no "
+    "result and no log. A label in brackets is a fallback: that case and model "
+    "has no result under the first `--label` and this one was read instead."
 )
 
 
@@ -96,6 +113,15 @@ def parse_stem(stem: str, models: object = ()) -> tuple[str, str, str] | None:
     if len(parts) != 3 or not all(parts):
         return None
     return parts[0], parts[1], parts[2]
+
+
+def parse_labels(value: object) -> tuple[str, ...]:
+    """`scale,cueq` is an ordered fallback, not a set: the first present wins."""
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+    else:
+        parts = [str(part).strip() for part in value or ()]
+    return tuple(part for part in parts if part)
 
 
 def oom_marker(text: str) -> str | None:
@@ -137,23 +163,32 @@ def band(case: str) -> str | None:
 
 
 def _result_cell(document: dict, case: str, model: str, label: str) -> dict:
+    """One result, read as a measurement only if it produced a prediction.
+
+    An empty `samples` list is the shape a failed run leaves behind: the runner
+    writes the json regardless, so the row holds a wall time and a peak that
+    describe reaching the allocator failure rather than finishing the job. The
+    count is kept in the parsed row either way, so a reader can tell this OOM
+    from one that left only a log -- that one has no timing at all.
+
+    A `samples` key that is absent rather than empty says nothing, and is left
+    alone: every result in the 2026-09-10 directory writes the list.
+    """
+    samples = document.get("samples")
+    counted = len(samples) if isinstance(samples, list) else None
+    empty = counted == 0
     return {
         "case": case,
         "model": model,
         "label": label,
         "impl": document.get("impl"),
-        "status": "ok",
+        "status": "oom" if empty else "ok",
+        "oom": empty,
         "length": document.get("length"),
         "wall_s": document.get("wall_s"),
         "peak_mib": document.get("peak_mib"),
-        "iptm": best_iptm(document.get("samples")),
-        # Carried because a result is not proof of a prediction. Nine of the
-        # upstream results in the 2026-09-10 scale directory record a wall time
-        # and a whole-card peak with zero samples: the run died and wrote a row
-        # anyway. The rendered cell still shows the numbers the file holds --
-        # this table reports the directory, it does not adjudicate it -- but
-        # `--json` carries the count so the reader can see which rows are empty.
-        "samples": len(document.get("samples") or []),
+        "iptm": best_iptm(samples),
+        "samples": counted,
         "marker": None,
     }
 
@@ -207,6 +242,7 @@ def load_work(work: Path) -> dict[tuple[str, str, str], dict]:
                 "label": label,
                 "impl": None,
                 "status": "oom" if marker else "running",
+                "oom": marker is not None,
                 "length": None,
                 "wall_s": None,
                 "peak_mib": None,
@@ -239,41 +275,64 @@ def measurement_rows(
     case_prefix: str = "",
 ) -> list[dict]:
     """One row per case, cases admitted by the FoldJAX label, sorted by length."""
+    labels = parse_labels(label)
     lengths = case_lengths(artifacts)
     cases = sorted(
         {
             case
             for (case, _model, artifact_label) in artifacts
-            if artifact_label == label and case.startswith(case_prefix)
+            if artifact_label in labels and case.startswith(case_prefix)
         }
     )
     models = sorted(
         {
             model
             for (case, model, artifact_label) in artifacts
-            if case in cases and artifact_label in (label, upstream_label)
+            if case in cases
+            and (artifact_label in labels or artifact_label == upstream_label)
         }
     )
     rows = []
     for case in cases:
-        cells = {
-            model: {
-                "foldjax": artifacts.get((case, model, label)),
-                "upstream": artifacts.get((case, model, upstream_label)),
+        cells = {}
+        for model in models:
+            upstream = artifacts.get((case, model, upstream_label))
+            cells[model] = {
+                "foldjax": _fallback(artifacts, case, model, labels),
+                "upstream": (
+                    None if upstream is None else dict(upstream, fallback=False)
+                ),
             }
-            for model in models
-        }
         rows.append(
             {
                 "case": case,
                 "band": band(case),
                 "length": lengths.get(case),
+                "labels": list(labels),
                 "models": models,
                 "cells": cells,
             }
         )
     rows.sort(key=lambda row: (row["length"] is None, row["length"] or 0, row["case"]))
     return rows
+
+
+def _fallback(
+    artifacts: dict[tuple[str, str, str], dict],
+    case: str,
+    model: str,
+    labels: tuple[str, ...],
+) -> dict | None:
+    """The first of `labels` this pair has, flagged when it is not the first.
+
+    Presence, not success: a `scale` job that is still running takes precedence
+    over a finished `cueq`, because the row the table is about does exist.
+    """
+    for index, label in enumerate(labels):
+        found = artifacts.get((case, model, label))
+        if found is not None:
+            return dict(found, fallback=index > 0)
+    return None
 
 
 def alternative_rows(
@@ -285,10 +344,13 @@ def alternative_rows(
 ) -> list[dict]:
     """Every (case, model) measured under more than one FoldJAX label.
 
-    Ratios are against `label`; a group whose baseline never produced a result
-    -- OpenFold3 at 3,012 tokens has `cueq` and `cueq-full` and no `scale` --
-    keeps its rows and reports no ratio.
+    Ratios are against the first of `label` that produced a result for this
+    case and model, so a group measured only under a variant -- OpenFold3 at
+    3,012 tokens has `cueq` and `cueq-full` and no `scale` -- is still read
+    against its own baseline under `--label scale,cueq`. A group where no
+    listed label produced one keeps its rows and reports no ratio.
     """
+    labels = parse_labels(label)
     groups: dict[tuple[str, str], list[dict]] = {}
     for (case, model, artifact_label), cell in artifacts.items():
         if artifact_label == upstream_label or cell.get("impl") == "upstream":
@@ -301,16 +363,12 @@ def alternative_rows(
     for (case, model), cells in sorted(groups.items()):
         if len({cell["label"] for cell in cells}) < 2:
             continue
-        baseline = next(
-            (
-                cell
-                for cell in cells
-                if cell["label"] == label and cell["status"] == "ok"
-            ),
-            None,
-        )
+        measured = {cell["label"]: cell for cell in cells if cell["status"] == "ok"}
+        baseline = next((measured[name] for name in labels if name in measured), None)
+        baseline_label = baseline["label"] if baseline else labels[0]
         ordered = sorted(
-            cells, key=lambda cell: (cell["label"] != label, cell["label"])
+            cells,
+            key=lambda cell: (cell["label"] != baseline_label, cell["label"]),
         )
         for cell in ordered:
             rows.append(
@@ -319,9 +377,12 @@ def alternative_rows(
                     "model": model,
                     "label": cell["label"],
                     "status": cell["status"],
+                    "oom": cell.get("oom", cell["status"] == "oom"),
                     "wall_s": cell["wall_s"],
                     "peak_mib": cell["peak_mib"],
-                    "baseline": label,
+                    "samples": cell.get("samples"),
+                    "labels": list(labels),
+                    "baseline": baseline_label,
                     "wall_ratio": _ratio(cell, baseline, "wall_s"),
                     "peak_ratio": _ratio(cell, baseline, "peak_mib"),
                 }
@@ -339,18 +400,30 @@ def _ratio(cell: dict, baseline: dict | None, field: str) -> float | None:
 
 
 def measurement(cell: dict | None) -> str:
-    """`wall / peak`, or why there is no measurement."""
+    """`wall / peak`, or why there is no measurement.
+
+    An OOM keeps its timing in the parsed row and never renders it: that number
+    is how long the run took to fail, and a column of wall times is read as a
+    column of costs to succeed.
+    """
     if cell is None:
         return MISSING
     if cell["status"] == "oom":
-        return OOM
+        return _named(OOM, cell)
     if cell["status"] != "ok":
-        return RUNNING
+        return _named(RUNNING, cell)
     wall = "?" if cell.get("wall_s") is None else f"{float(cell['wall_s']):.0f}"
     peak = (
         "?" if cell.get("peak_mib") is None else f"{float(cell['peak_mib']) / 1024:.1f}"
     )
-    return f"{wall} / {peak}"
+    return _named(f"{wall} / {peak}", cell)
+
+
+def _named(text: str, cell: dict) -> str:
+    """A cell read from a fallback label says so; the default one does not."""
+    if not cell.get("fallback"):
+        return text
+    return f"{text} ({cell['label']})"
 
 
 def _iptm(cell: dict | None) -> str:
@@ -420,12 +493,13 @@ def render_alternatives(rows: list[dict]) -> str:
                 ratio,
             ]
         )
+    names = ", ".join(f"`{name}`" for name in (rows[0]["labels"] if rows else ()))
     legend = (
         _LEGEND
-        + " Ratios are against the `"
-        + (rows[0]["baseline"] if rows else "scale")
-        + "` label of the same case and model; a group whose baseline produced "
-        "no result reports none."
+        + " Ratios are against the first of "
+        + (names or "`scale`")
+        + " that produced a result for the same case and model, which is that "
+        "row's `baseline`; a group where none did reports no ratio."
     )
     return _table(header, body, legend)
 
@@ -557,7 +631,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--label",
-        help="FoldJAX label to read; defaults per table (scale, mixed)",
+        help="FoldJAX label to read, or a comma-separated fallback list read "
+        "in order (scale,cueq); defaults per table (scale, mixed)",
     )
     parser.add_argument("--upstream-label", default="upstream")
     parser.add_argument(
