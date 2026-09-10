@@ -44,6 +44,7 @@ from foldjax.backends._ccd_session import ManagedCcdMemory
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
@@ -75,6 +76,9 @@ _FIXED_COMPILE_DEFAULTS = {
     "no_language_model": False,
     "max_msa_depth": DEFAULTS["max_msa_depth"],
     "structure_sample_sequential": False,
+    # Off is the run every recorded ESMFold2 number describes, so naming
+    # it explicitly must not select a second compilation namespace.
+    "deterministic": False,
 }
 
 
@@ -174,6 +178,17 @@ def _language_model_feature_key(
         digest.update(b"\0")
         digest.update(memoryview(value).cast("B"))
     return digest.hexdigest()
+
+
+def _reduction_policy(deterministic: bool) -> dict[str, bool]:
+    """The policy keyword for a port call, empty when nothing was asked for.
+
+    Spelled only when asked, for the same reason the port spells it only when
+    asked: an unrequested run has to reach the port -- or a wrapper written
+    against an older signature -- in the call form it always used.
+    """
+
+    return {"deterministic": True} if deterministic else {}
 
 
 def _model_source_key(
@@ -388,8 +403,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     # `no_language_model` is not a performance knob -- it changes which model
     # runs -- but it is the only way to fold without the 25.4 GB download, so
     # it is exposed and named for what it does.
+    # `deterministic` is the shared object rather than a literal, in the
+    # bool shape, because this port is reached through a Python signature
+    # and not by rendering argv for a parser of its own.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {
         **MATMUL_PRECISION_OPTION,
+        **DETERMINISTIC_API_OPTION,
     }
     compile_options = (
         "num_samples",
@@ -401,6 +420,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Traced into the program rather than read at run time, so it selects
         # its own compilation namespace.
         "structure_sample_sequential",
+        # Compiled into the executable, on both the structure graph and
+        # ESMC's blocks, so it selects its own namespace for the same reason.
+        "deterministic",
     )
 
     def __init__(self) -> None:
@@ -435,7 +457,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         ) = None
         self._loaded_model_staged = False
         self._lm_embedding: Any | None = None
-        self._lm_embedding_key: str | None = None
+        #: `(deterministic, content digest)`: the policy is part of the
+        #: identity because it is part of how the value was computed.
+        self._lm_embedding_key: tuple[bool, str] | None = None
         self._managed_memory: ExitStack | None = None
         self._ccd_memory_leased = False
 
@@ -706,6 +730,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         model: Any,
         *,
         packed_length: int | None,
+        deterministic: bool = False,
     ) -> Any | None:
         """Return raw ESMC states for a legacy split inference wrapper."""
 
@@ -714,8 +739,16 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Raw 81-layer stacks are intentionally never retained. Wrappers that
         # predate the compact embedding API remain compatible, but recompute
         # the stack for each seed instead of pinning hundreds of megabytes.
+        # The recomputation has to happen under the policy the structure graph
+        # is about to be built with, or `on` covers only half of this run.
+        # Named only when asked: this route exists for wrappers that predate
+        # the compact API, and an unrequested run must reach them in the call
+        # form they were written against.
         return inference.language_model_states(
-            features, model, packed_length=packed_length
+            features,
+            model,
+            packed_length=packed_length,
+            **_reduction_policy(deterministic),
         )
 
     def _language_model_embedding(
@@ -725,6 +758,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         model: Any,
         *,
         packed_length: int | None,
+        deterministic: bool = False,
     ) -> Any | None:
         """Return one compact ESMC embedding, retaining at most one input."""
 
@@ -737,10 +771,18 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             or (self._stage_single_input and self._lm_embedding is not None)
         )
         if owned:
-            key = _language_model_feature_key(
-                features,
-                packed_length,
-                inference.LANGUAGE_MODEL_FEATURES,
+            # The reduction policy is part of the identity, not only the
+            # content: this value is produced by executables the policy
+            # selects, so handing the one built without it to a run that asked
+            # for it would make `deterministic=on` a claim about a value that
+            # was never computed under the option.
+            key = (
+                deterministic,
+                _language_model_feature_key(
+                    features,
+                    packed_length,
+                    inference.LANGUAGE_MODEL_FEATURES,
+                ),
             )
             if self._lm_embedding is not None and self._lm_embedding_key == key:
                 return self._lm_embedding
@@ -748,7 +790,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             return None
         if not owned:
             return inference.language_model_embedding(
-                features, model, packed_length=packed_length
+                features,
+                model,
+                packed_length=packed_length,
+                **_reduction_policy(deterministic),
             )
         # Drop the prior compact result before ESMC and the projection allocate
         # the next input. The transient raw stack is owned only by the helper;
@@ -756,7 +801,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         self._lm_embedding = None
         self._lm_embedding_key = None
         embedding = inference.language_model_embedding(
-            features, model, packed_length=packed_length
+            features,
+            model,
+            packed_length=packed_length,
+            **_reduction_policy(deterministic),
         )
         self._lm_embedding = embedding
         self._lm_embedding_key = key
@@ -856,6 +904,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         }
         if sequential_samples is not None:
             overrides["structure_sample_sequential"] = sequential_samples
+        # `translate` has already turned `off`/`on` into this port's own bool,
+        # so an absent key means unasked. Written into `overrides` only when
+        # asked, for the reason `structure_sample_sequential` above is: an
+        # unrequested run must reach the port in the call form it always used.
+        # The local outlives the pop because the language model runs before
+        # the structure graph and is compiled under the same policy.
+        deterministic = bool(options.pop("deterministic", False))
+        if deterministic:
+            overrides["deterministic"] = True
         if "cp_devices" in options:
             cp_devices = int(options.pop("cp_devices"))
             if cp_devices < 1:
@@ -1028,6 +1085,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             model_features,
                             model,
                             packed_length=lm_target,
+                            deterministic=deterministic,
                         )
                     if (
                         language_model_enabled
@@ -1056,6 +1114,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                                 model_features,
                                 model,
                                 packed_length=lm_target,
+                                deterministic=deterministic,
                             )
                     if self._loaded_model_staged:
                         model = self._materialize_structure_model(
@@ -1073,6 +1132,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                             model_features,
                             model,
                             packed_length=lm_target,
+                            deterministic=deterministic,
                         )
                     }
                 with matmul_precision():
