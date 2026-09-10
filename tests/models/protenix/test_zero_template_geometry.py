@@ -15,6 +15,10 @@ exactly as the dense path did.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -36,6 +40,7 @@ from foldjax.models.protenix.models.trunk_blocks.template import (
     template_embedder,
     template_pair_features,
 )
+from tests.models.cp_probe_env import inherited_environment
 from tests.models.protenix.test_template import _template_state
 
 N_TOKEN, BINS, N_ATOM = 3, 39, 24
@@ -641,3 +646,74 @@ def test_the_bf16_embedder_output_is_bitwise_the_dense_one() -> None:
 
     assert np.any(expected != 0.0)
     assert np.array_equal(expected, actual)
+
+
+_CP_PROBE = textwrap.dedent(
+    r"""
+    import os
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel, replicate_tree
+    from foldjax.models.protenix.data.template_features import (
+        compact_zero_template_geometry,
+    )
+    from foldjax.models.protenix.models.trunk_blocks.template import (
+        template_pair_features,
+    )
+
+    assert jax.device_count() == 4, jax.devices()
+    layout = os.environ["FOLDJAX_CP_PROBE_LAYOUT"]
+    n_token = 8
+    dense = {
+        "template_aatype": np.zeros((2, n_token), np.int32),
+        "template_pseudo_beta_mask": np.zeros((2, n_token, n_token), np.float32),
+        "template_distogram": np.zeros((2, n_token, n_token, 39), np.float32),
+        "template_unit_vector": np.zeros((2, n_token, n_token, 3), np.float32),
+        "template_backbone_frame_mask": np.zeros((2, n_token, n_token), np.float32),
+    }
+    dense["template_aatype"][0] = 31
+    compact = compact_zero_template_geometry(dense)
+    asym_id = np.zeros((n_token,), np.int32)
+    asym_id[n_token // 2 :] = 1
+    pair_mask = np.triu(np.ones((n_token, n_token), np.float32))
+
+    def run(features):
+        placed = replicate_tree(
+            {
+                **{name: jnp.asarray(value) for name, value in features.items()},
+                "asym_id": jnp.asarray(asym_id),
+            }
+        )
+        mask = replicate_tree(jnp.asarray(pair_mask))
+        return jax.jit(lambda f, m: template_pair_features(f, 0, m))(placed, mask)
+
+    with context_parallel(4, layout=layout):
+        expected = np.asarray(run(dense))
+        actual = np.asarray(run(compact))
+
+    assert expected.shape == (n_token, n_token, 108), expected.shape
+    assert np.array_equal(expected, actual), np.abs(expected - actual).max()
+    print("PROTENIX_ZERO_TEMPLATE_CP_OK")
+    """
+)
+
+
+def test_the_compact_path_is_bitwise_equal_under_context_parallelism() -> None:
+    """The marker is one replicated scalar where four sharded arrays used to be."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _CP_PROBE],
+        capture_output=True,
+        text=True,
+        env={
+            "JAX_PLATFORMS": "cpu",
+            "XLA_FLAGS": "--xla_force_host_platform_device_count=4",
+            "FOLDJAX_CP_PROBE_LAYOUT": "1d",
+            **inherited_environment(),
+        },
+        timeout=240,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "PROTENIX_ZERO_TEMPLATE_CP_OK" in completed.stdout
