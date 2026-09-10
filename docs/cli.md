@@ -298,7 +298,11 @@ not). Eager routes have no executable to put it on, so `--no-graph-jit`,
 `--no-compile`, Boltz-2 steering and the like are refused with the option
 rather than run without it. Custom-call kernels (cuEquivariance, tokamax,
 Pallas) sit outside the flag's reach; their repeatability is observed, not
-documented.
+documented. The option changes rounding routes (Triton GEMMs move to cuBLAS),
+so a deterministic run is repeatable but not the run the parity panel was
+measured on: on a chaotic 3,012-token Protenix case the deterministic port
+landed 5-7 Å from the non-deterministic port and from native, the size of
+native's own basin choices. Read parity residuals with the option off.
 
 ### `--max-msa-depth`
 
