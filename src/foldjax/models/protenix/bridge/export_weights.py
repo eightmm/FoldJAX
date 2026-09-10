@@ -2,29 +2,20 @@
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Sequence
-from pathlib import Path
 
+from foldjax.models._export_cli import run_weight_export
 from foldjax.models.protenix.bridge.torch_mapping import load_torch_checkpoint
 from foldjax.models.protenix.bridge.weights_io import save_native_weights
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
-    compression = parser.add_mutually_exclusive_group()
-    compression.add_argument("--compress", dest="compress", action="store_true")
-    compression.add_argument("--no-compress", dest="compress", action="store_false")
-    parser.set_defaults(compress=True)
-    args = parser.parse_args(argv)
-
-    if not args.checkpoint.is_file():
-        raise SystemExit(f"missing checkpoint: {args.checkpoint}")
-    params = load_torch_checkpoint(args.checkpoint)
-    save_native_weights(args.out, params, compress=args.compress)
-    print(f"wrote native weights: {args.out}")
+    run_weight_export(
+        argv,
+        description=__doc__,
+        load=load_torch_checkpoint,
+        save=save_native_weights,
+    )
 
 
 if __name__ == "__main__":
