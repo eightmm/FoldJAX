@@ -18,7 +18,7 @@ defect lives:
 
 Tier B deliberately does not chain the port's own trunk into the sampler. That
 was measured first (same code, ``trunk_source="jax"``): per-sample all-atom RMSD
-0.024/0.114/0.147/0.067/0.024 A, i.e. a residual band the size of the very
+0.057/0.114/0.147/0.067/0.024 A, i.e. a residual band the size of the very
 defects this module exists to catch -- the panel's 0.05 A coordinate gate and
 the 0.175 A bistable sample. A tolerance covering that band could not detect
 either. Split at the boundary instead, each half gets a real detection floor:
@@ -183,8 +183,22 @@ def _relative_rmse(port, native) -> float:
     return float(np.sqrt(np.mean((left - right) ** 2)) / scale)
 
 
-def _assert_schedule(meta) -> None:
-    """A closed form on both sides: a mismatch is a constants bug, not drift."""
+def _assert_schedule(meta, captured) -> None:
+    """A closed form on both sides, so read it directly rather than through drift.
+
+    The sampler builds its own schedule from these constants; the capture stored
+    the one upstream built. If they disagree the diffusion constants disagree,
+    and that is worth naming here instead of arriving later as coordinate
+    residual.
+
+    Compared pointwise-relative, not by absolute difference. This schedule opens
+    at ``sigma_max * sigma_data`` = 2560, where one float32 ULP is 2.4e-4, so
+    ``parity_matched_tape._verdict``'s absolute ``1e-4`` -- calibrated on a
+    20-step run -- is below the representation itself here and fails on an
+    agreeing schedule. Measured agreement is 1.1e-7, one ULP; 1e-6 is eight of
+    them, and a wrong ``rho``/``sigma_max``/``sigma_data`` moves this by orders
+    of magnitude.
+    """
     import numpy as np
 
     from foldjax.models.boltz2.models.trunk_blocks.trunk import _sample_schedule
@@ -198,7 +212,17 @@ def _assert_schedule(meta) -> None:
             rho=7.0,
         )
     )
-    assert generated.shape == (int(meta["num_steps"]) + 1,)
+    sigmas = np.asarray(captured, np.float64)
+    assert generated.shape == sigmas.shape == (int(meta["num_steps"]) + 1,)
+    nonzero = sigmas > 0.0
+    difference = float(
+        np.max(np.abs(generated[nonzero] - sigmas[nonzero]) / sigmas[nonzero])
+    )
+    assert difference < 1e-6, (
+        f"noise schedule differs from the capture by {difference:.3e} relative; "
+        "the diffusion constants do not match upstream"
+    )
+    assert generated[~nonzero].tolist() == sigmas[~nonzero].tolist()
 
 
 def test_trunk_boundary_matches_the_native_capture(
@@ -233,7 +257,6 @@ def test_trunk_boundary_matches_the_native_capture(
         native = {name: archive[name] for name in archive.files}
     assert set(native) == set(TRUNK_ARRAYS), sorted(native)
 
-    _assert_schedule(meta)
     params = load_params(weights)
     started = time.perf_counter()
     with jax.default_matmul_precision("highest"):
@@ -342,7 +365,7 @@ def test_tape_pinned_sampler_replay_matches_native_coordinates(
     with np.load(case.path("features.npz"), allow_pickle=False) as archive:
         raw_features = {name: archive[name] for name in archive.files}
 
-    _assert_schedule(meta)
+    _assert_schedule(meta, tape["sigmas"])
     params = load_params(weights)
     started = time.perf_counter()
     with jax.default_matmul_precision("highest"):
