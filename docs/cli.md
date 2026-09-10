@@ -265,10 +265,12 @@ Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
 ### `--option deterministic=on`
 
-Compiles this run's Protenix executables for reduction orders that repeat, so
-two processes given the same input return the same structure bit for bit
-instead of the same structure to within the model's own rerun scatter. It costs
-13% of the wall time at 1,003 tokens and it is off by default, which is what
+Compiles this run's executables for reduction orders that repeat, so two
+processes given the same input return the same structure bit for bit instead
+of the same structure to within the model's own rerun scatter. Measured on
+Protenix it costs 13% of the wall time at 1,003 tokens (9.7% at 3,012 with
+Triton GEMMs off); the other ports' costs are measured per port on GPU before
+the setting is recommended anywhere. It is off by default, which is what
 every measurement in this repository was taken under.
 
 The setting rides on the executable rather than on the process. The equivalent
@@ -276,13 +278,27 @@ XLA environment variable is read once at start-up, so it cannot distinguish one
 prediction from the next and it reaches every other model sharing a benchmark
 process. Being part of the compiled program also makes it part of the
 compilation-cache identity: a deterministic run never receives the executable
-built without it.
+built without it. One shared module (`foldjax.models._compile_policy`) owns
+the two XLA flags for all six ports.
 
-Protenix is the only port that takes it so far; the others say so rather than
-accept it. Both of the port's compiled programs carry it -- the consolidated
-graph and, on the ESM/ISM variants, the language-model encoder. The eager
-routes have no executable to put it on, so `--no-graph-jit` and guidance are
-refused with the option rather than run without it.
+Every port takes it through the shared execution vocabulary
+(`--option deterministic=on`); the argv ports (Protenix, OpenDDE) also expose
+`--deterministic-ops {off,on}` on their native CLIs. What it covers per port:
+Protenix's consolidated graph and, on the ESM/ISM variants, the language-model
+encoder; OpenDDE's inference graph and the shape-complementarity executable;
+OpenFold3's fused program and all four host-streamed stage executables;
+Boltz-2's primary and affinity runners (the bf16 arm keeps its
+`xla_allow_excess_precision` policy underneath); ESMFold2's structure program,
+the language-model embedding, and the ESMC blocks, which run eagerly under
+`off` and through a pool of compiled blocks under `on` (the two policies are
+therefore not expected to agree bit for bit with each other); AlphaFold 3's
+model runner, where the promise is XLA-emitted operations plus the pinned
+tokamax kernel store (the attention kernel has an XLA fallback, the GLU does
+not). Eager routes have no executable to put it on, so `--no-graph-jit`,
+`--no-compile`, Boltz-2 steering and the like are refused with the option
+rather than run without it. Custom-call kernels (cuEquivariance, tokamax,
+Pallas) sit outside the flag's reach; their repeatability is observed, not
+documented.
 
 ### `--max-msa-depth`
 
