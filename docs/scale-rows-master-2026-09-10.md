@@ -101,6 +101,28 @@ bitwise unchanged). Reading:
   arithmetic matches to 0.002-0.016 Å, so this is the ordinary-RNG sampler
   path, not the trunk; open item, being measured on the eight panel cases.
 
+### 3k tape-pinned pairs (2026-09-10 evening)
+
+The 3012-token tape-free rows differed uniformly (Protenix 2.38 Å cross vs
+0.30/0.51 within; OpenFold3 24 Å on one chain). Replaying the port on
+native's own tape at this size needed harness work (the fused OpenFold3 replay
+and the materialised-MSA Protenix replay both exceed the card at 3k; fixed by
+the streamed graph with the CLI's host feature chain, an MSA index tape, and a
+preallocated allocator pool). Protenix, port vs native-A, per-chain CA RMSD Å
+by sample:
+
+| chain | s1 | s2 | s3 | s4 | s5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 0.08 | 0.40 | 0.08 | 0.05 | 0.10 |
+| B | 0.11 | 0.41 | 0.10 | 0.07 | 0.10 |
+| C | 0.08 | 0.39 | 0.11 | 0.06 | 0.10 |
+| D | 0.09 | 0.40 | 0.09 | 0.07 | 0.11 |
+
+With the draw shared, the 2.4 Å tape-free offset disappears: four samples
+sit at 0.05-0.11 Å (the 1k-2k pass/deferred level) and sample 2 at 0.40 Å on
+every chain. A second native process at 3k is queued to place sample 2
+against native's own scatter. OpenFold3's replay is running.
+
 ## Provenance of the upstream arm on master
 
 `bench.run_upstream` refuses untracked files, unreviewed tracked changes and
