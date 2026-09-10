@@ -28,6 +28,17 @@ its wall time and source commit; `tests/parity/_manifest.py` refuses an entry
 whose tolerance is below its own calibration residual, and refuses a zero
 tolerance (chunk and scan choices are arithmetically equal, not bitwise).
 
+**`high` is not a CPU policy.** Where a port's shipped default is
+`jax_default_matmul_precision="high"` -- OpenDDE's is -- the CPU replay cannot
+run it at all: `dot_general` on CPU rejects `TF32_TF32_F32`, because there is no
+TF32 there. The CPU arm runs `highest`, so the GPU arm its residual should be
+read against is the panel's `highest` arm rather than the shipped-default one
+(on OpenDDE `protein_1ubq` sample 0 those are 0.00178 A and 0.00223 A, and the
+CPU run lands on the first). Set the policy with the
+`jax.default_matmul_precision(...)` context manager rather than
+`jax.config.update`, which is process-global and would leak into whatever else
+shares the session.
+
 **A regression detector, not an accuracy claim.** The subset answers "does this
 checkout still reproduce the run we captured", not "is this model right".
 Publisher parity remains the GPU panels' job.
