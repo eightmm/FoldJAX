@@ -1,0 +1,79 @@
+# FoldJAX closing plan, 2026-09-10 evening window
+
+Scope: the remaining gaps after the master parity night
+(`master-parity-summary-2026-09-09.md`) and the scale rows
+(`scale-rows-master-2026-09-10.md`). Every goal below has an owner, its
+inputs, the command or artifact that verifies it, and a **terminal state**:
+the condition under which the goal is closed even when the number itself
+cannot move. Three gaps cannot be closed by construction (Boltz-2 bitwise,
+OpenDDE fp32 wall, chaotic-sample residuals); for those the terminal state
+is a documented ceiling, not a smaller number.
+
+Split: the parent (this session) owns every GPU submission, every merge,
+docs synthesis, the ledger and the final CI. Workers run CPU-only in their
+own worktrees under `foldjax-bench/wt/` and report a branch, never a merge.
+Cancel jobs by explicit id only.
+
+## Goals, weakest model first
+
+### G1 ESMFold2 (open: 7ST3 chain B; 3k memory wall; no upstream column)
+
+| package | owner | inputs | verify | terminal state |
+| --- | --- | --- | --- | --- |
+| G1a chain B close | parent | job 964 (`esm-7st3-port-inj`, port on native LM injection) vs native-C/D captures | per-key relative diff of `injection.npz` / trunk / coda against the native pair; `bench/master_three_way.py` at the coordinates | inside native's per-boundary scatter (msa_output 3.8e-3, injection 2.7e-3, trunk_input 2.0e-3, coda 1.6e-2 rel; coords maxabs 2 Å) → at-floor, close. Outside → one per-block capture (folding trunk block index) and a bisect task opens. |
+| G1b sequential samples | worker `esm-seq` → parent GPU rows | `num_samples × L² × 4c_z` arena (`esmfold2-arena-is-quadratic`) | CPU equivalence test (batched vs sequential coordinates bitwise or ≤1e-5 rel); GPU rows L2000/L3000 with `--option samples=sequential` | 3k row completes below 96 GiB with equal coordinates, or the sequential arena is measured and documented as still above the card. |
+| G1c upstream column | worker `esm-upstream` → parent rows | Biohub/transformers fork at `ef32577f55` as a real git checkout, `esmfold2-venv` | `bench.run_upstream --model esmfold2` on protein_1ubq (CPU smoke), then L1000/L2000 Slurm rows | ESMFold2 has upstream time/VRAM at 1k/2k and a tape-free structure comparison, or the runner is merged and the rows are recorded as OOM. |
+
+### G2 OpenDDE (fp32 wall at 2k, no speed gain over upstream)
+
+| package | owner | inputs | verify | terminal state |
+| --- | --- | --- | --- | --- |
+| G2a bf16 rows | parent | jobs 974-984 (`--option dtype=bfloat16`, L1000/L2000/L3000 + 8 panel cases) | peak/time table; `bench.structures` bf16 vs fp32 vs upstream on the panel | bf16 rows tabulated; a documented decision (recommend / opt-in / reject) based on the cross-vs-within spread. No arena-reduction work: `opendde-arena-law-and-fp32-ceiling` already excludes every backend lever. |
+| G2b spread doc | parent | 8-case tape-free spread already measured (cross at within levels, 3og2 case-specific) | section in `scale-rows-master-2026-09-10.md` | written. |
+
+### G3 OpenFold3 / Protenix at 3k (6ztx: 20.7 Å monomer fold / 2.2 Å uniform)
+
+| package | owner | inputs | verify | terminal state |
+| --- | --- | --- | --- | --- |
+| G3a tape-pinned pairs | parent | jobs 970→971 (Protenix native → port), 972→973 (OpenFold3 native cueq → port replay) | per-sample CA RMSD, three-way where a second native exists | residual at the 1k-2k pass/at-floor level → the tape-free gap is the MSA-row / sampler draw, documented, closed. Residual large on the same tape → bisect task opens (trunk boundary capture at 3k). |
+
+### G4 Boltz-2 (best; only the reviewed-diff asterisk on the upstream column)
+
+| package | owner | inputs | verify | terminal state |
+| --- | --- | --- | --- | --- |
+| G4a pristine upstream | worker `boltz-pristine` (setup) → parent rows | `git worktree` of `boltz` at b1ebfc4 with only the cu13 preload shim, `.venv` reachable, `boltz.__file__` proof | 1k/2k upstream rows from the pristine root; times within the reviewed-diff rows' scatter | upstream column rows carry no diff sha, or the shim itself is recorded as the only tracked change with its sha. |
+
+### G5 Mixed-entity set (5 real complexes, 1.1k-4.8k tokens)
+
+| package | owner | inputs | verify | terminal state |
+| --- | --- | --- | --- | --- |
+| G5a FoldJAX rows | parent | jobs 934-963 | 30 rows in `results/`, OOM rows recorded from the slurm log | table in `scale-rows-master-2026-09-10.md`. |
+| G5b upstream rows | parent (`mixed_upstream_submitter.sh`) | rows 965-968, 985, and the rest as FoldJAX rows land | 20 upstream rows or OOM | same table, upstream columns filled. |
+| G5c structures | parent | `compare/` pairs | `bench.structures --markdown` (permutation-aware) | cross-vs-within per case in the doc. |
+| G5d tooling | workers `scale-table`, `mixed-cases` | `results/*.json`, `logs/*.slurm`, `compare-structures.json`; the afternoon's scratch fetchers | `tests/test_bench_scale_table.py`, `tests/test_bench_mixed_cases.py` | the four hand-rolled tables come from one command; the next mixed set is one command. |
+
+### G6 Close-out
+
+Full CI on main (`ZLIB_ROOT=$HOME/.local CMAKE_PREFIX_PATH=$HOME/.local
+JAX_PLATFORMS=cpu .venv/bin/python -m pytest -q -m 'not network'
+--cov=foldjax --cov-fail-under=80 tests`), `ruff check .`, `uv lock --check`,
+ledger rows copied from the snapshot, memory notes, push to origin main,
+final status mapping each goal to its terminal state (a goal still gated on
+a job names the job and what each outcome means).
+
+## Queue policy for the window
+
+Diagnostics (964, 970-973) gate decisions and run before collection: the
+3k-5k mixed rows and the OpenDDE bf16 rows are held (`scontrol hold`) until
+the diagnostics are running, then released. New rows stay at 48 GB host
+memory; only the OpenFold3/Protenix 4k-5k upstream rows and the 3k tape
+pairs need 96 GB (three cards, not four).
+
+## Worker briefs (common constraints)
+
+- Worktree under `foldjax-bench/wt/<name>` from main, CPU only
+  (`JAX_PLATFORMS=cpu`), never touch `src/` on main, never submit Slurm.
+- Verification is the tests you add plus the modules you touch. Never the
+  full suite; the parent runs it once at the end.
+- Report: branch name, files, test command and its output, what was not
+  done. No commit trailers.
