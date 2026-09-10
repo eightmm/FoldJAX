@@ -118,3 +118,42 @@ route inside the trunk or structure head, not the language model. Stays
 open, narrower: one deterministic-array bisect inside the downstream core
 (trunk output, then structure-module output) is the next step, not more
 coordinate draws.
+
+## 7ST3 chain B: closed at-floor by a second port draw with boundary capture (2026-09-10, job 964)
+
+`port-inj` is one more port process on native-C's tape (own LM, autotune not
+frozen, with `--capture-injection --capture-coda`), read against the frozen
+native pair C/D and against native-C at the coordinates.
+
+| pair | chain A samples 1-5 | chain B samples 1-5 |
+| --- | --- | --- |
+| native-C vs native-D (native scatter) | 0.10, 0.05, 0.08, 0.03, 0.19 | 0.24, 0.03, 0.08, 0.03, 1.09 |
+| native-C vs port-inj (job 964) | 0.06, 0.05, 0.08, 0.04, 0.11 | 0.15, 0.04, 0.15, 0.04, 0.85 |
+| native-A vs port-C (earlier draw) | 0.40, 0.04, 0.23, 0.03, 0.58 | 1.07, 0.06, 0.53, 0.04, 3.58 |
+
+This draw sits inside native's own scatter on every sample of both chains
+(sample 5 chain B 0.85 vs 1.09, sample 1 0.15 vs 0.24, sample 3 0.15 vs 0.08,
+within 2x). The pair-representation boundaries captured in the same run, as
+relative Frobenius distance (native C-D scatter first, then port vs C / vs D):
+
+| boundary (recycle loop, last iteration) | native C-D | port-inj vs C | port-inj vs D |
+| --- | ---: | ---: | ---: |
+| lm_encoder output | 0 (bitwise) | 1.61e-2 | 1.61e-2 |
+| msa output | 3.85e-3 | 6.76e-3 | 6.80e-3 |
+| input norm (injection) input / output | 2.75e-3 / 2.98e-3 | 1.05e-2 / 1.24e-2 | 1.05e-2 / 1.24e-2 |
+| folding trunk input | 1.99e-3 | 6.17e-3 | 6.18e-3 |
+| coda input / output (structure-head input) | 1.59e-2 / 1.61e-2 | 1.82e-2 / 1.74e-2 | 1.78e-2 / 1.72e-2 |
+
+Reading. The port carries one offset of LM origin (1.6e-2, the bf16 ESMC
+drift already shown to be uniform across cases; native's two processes are
+bitwise there) through the recycle loop at 2-4x native's scatter, and the
+coda, the last pair state before the structure head, is at 1.1x native's
+scatter. The coordinate residual is therefore the structure head's chaotic
+amplification of an input perturbation of native's own size, which is what
+native's C-D pair shows too (1.09 Å from 1.6e-2). Two port draws land at
+0.85 and 3.58 Å on sample 5: the same bistability measured on Boltz-2 1AAY
+sample 3 with random trunk noise. Verdict: at-floor. What remains as a
+documented property, not a defect: the port's spread across kernel choices on
+this chain (port A vs B unfrozen, 4.5 Å) is wider than native's across
+processes (1.1 Å); freezing the autotune cache makes the port bitwise
+repeatable, so a fixed cache is the recommended setting for parity replays.

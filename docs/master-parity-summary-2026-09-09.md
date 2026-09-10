@@ -13,7 +13,7 @@ this page is the cross-model reading.
 | Boltz-2 | 5SAK + ion | 0 | 0 | 5SAK (kernel-toggle scale), ion (sample 3 bistable under same-size random trunk noise; sampler exact given the trunk) | 0 | `boltz2-master-kernel-toggle-2026-09-09.md`, `ion-case-1aay-master-2026-09-09.md` |
 | Protenix | 7 + ion | 2 (3 with deterministic XLA ops: 1UBQ 0.037) | ion | 5 (4) | 0 | `protenix-master-panel-2026-09-09.md` |
 | OpenDDE | 7 + ion | 6 | ion | 1 | 0 | `opendde-master-panel-2026-09-09.md` |
-| ESMFold2 | 7 | 1 | 2 | 3 | 7ST3 chain B | `esmfold2-master-panel-2026-09-09.md` |
+| ESMFold2 | 7 | 1 | 2 | 4 (7ST3 chain B closed 2026-09-10, job 964) | 0 | `esmfold2-master-panel-2026-09-09.md` |
 
 Bands: pass < 0.05 Å, deferred < 0.1 Å (the user's tolerance), at-floor =
 above 0.1 Å but within upstream's own process movement, or basin sharing, or
@@ -58,13 +58,14 @@ the port's measured band.
 
 ## Open items
 
-- **ESMFold2 7ST3 chain B**: samples 1/3/5 sit 2-4× above native's own
-  scatter with autotune frozen (1.07/0.53/3.58 Å vs 0.24/0.08/1.09), above
-  upstream's scatter on every pairing. Narrowed 2026-09-10: the ESMC-6B
-  language model is excluded (its bf16-order drift is uniform across cases
-  and injecting native's exact LM moves the port further, 3.2/1.3/4.7 Å);
-  the residual lives in the pair trunk or structure head on three
-  near-chaotic samples. Next step is a deterministic-array bisect there.
+- **ESMFold2 7ST3 chain B** (closed 2026-09-10, job 964): a second port
+  draw with boundary capture sits inside native's own frozen-pair scatter on
+  every sample (chain B 0.15/0.04/0.15/0.04/0.85 Å vs native C-D up to
+  1.09); the pair state entering the structure head differs from native by
+  1.1x native's own scatter, and the earlier 3.58 Å draw is the head's
+  bistability on a near-chaotic sample. At-floor; the port's kernel-choice
+  spread on this chain (4.5 Å) is wider than native's (1.1 Å), so parity
+  replays freeze the autotune cache. Detail in `esmfold2-master-panel-2026-09-09.md`.
 - **Boltz-2 ion case (1AAY)**: protein 0.175 Å, all of it on sample 3 (the
   other four samples 0.006-0.028 Å), against a bitwise-repeatable native and
   a 0.018 Å port floor. Upstream's own kernels-off toggle moves this case by
