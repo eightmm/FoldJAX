@@ -28,7 +28,7 @@ Cancel jobs by explicit id only.
 
 | package | owner | inputs | verify | terminal state |
 | --- | --- | --- | --- | --- |
-| G2a bf16 rows | parent | jobs 974-984 (`--option dtype=bfloat16`, L1000/L2000/L3000 + 8 panel cases) | peak/time table; `bench.structures` bf16 vs fp32 vs upstream on the panel | bf16 rows tabulated; a documented decision (recommend / opt-in / reject) based on the cross-vs-within spread. No arena-reduction work: `opendde-arena-law-and-fp32-ceiling` already excludes every backend lever. |
+| G2a bf16 rows — **closed 22:20** | parent | jobs 974-984 | 1k 149 s / 21.0 GiB vs fp32 235 / 41.3; 2k and 3k still OOM; panel accuracy: bf16 within = fp32 within on all 7 cases, cross vs upstream at the within level, fp32-vs-bf16 closest pairs 0.01-0.16 Å | Decision: fp32 stays the released default (parity arm); `dtype=bfloat16` documented as the recommended opt-in for memory/time (no measurable accuracy cost on the panel, 37% faster, half the peak at 1k, ceiling unchanged at 2k). |
 | G2b spread doc | parent | 8-case tape-free spread already measured (cross at within levels, 3og2 case-specific) | section in `scale-rows-master-2026-09-10.md` | written. |
 
 ### G3 OpenFold3 / Protenix at 3k (6ztx: 20.7 Å monomer fold / 2.2 Å uniform)

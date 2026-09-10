@@ -54,8 +54,29 @@ OpenDDE `--option dtype=bfloat16` (opt-in; upstream runs fp32/TF32 so this is
 not the parity arm): 1k 149 s / 21.0 GiB against the fp32 row's 235 s / 41.3
 GiB (37% faster, half the peak); at 2k it still OOMs (an 85 GiB request,
 job 975) and at 3k (24 GiB request, job 976), so bf16 moves the ceiling but
-not past 2,096 tokens; the eight-case accuracy comparison against fp32 and
-upstream follows (977-984).
+not past 2,096 tokens. Accuracy on the panel (`bench.structures`, tape-free,
+CA RMSD Å median; cross read against the two withins):
+
+| case | bf16 within | upstream within | bf16 vs upstream | fp32 within | fp32 vs bf16 (min) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| L1000_3og2 | 2.47 | 0.34 | 2.45 | 2.47 | 2.34 (0.02) |
+| protein_1ubq | 0.33 | 0.37 | 0.33 | 0.34 | 0.30 (0.01) |
+| protein_dna_7r6r | 2.55 | 4.10 | 3.50 | 2.74 | 2.44 (0.16) |
+| protein_ligand_5sak | 10.76 | 5.43 | 7.01 | 10.73 | 9.19 (0.09) |
+| protein_protein_7st3 | 0.46 | 0.44 | 0.45 | 0.45 | 0.39 (0.02) |
+| protein_rna_1urn | 0.15 | 0.17 | 0.15 | 0.16 | 0.15 (0.01) |
+| protein_rna_ligand_3v7e | 0.22 | 0.16 | 0.20 | 0.22 | 0.20 (0.01) |
+
+bf16 sits where fp32 sits on every case: its within-set spread equals fp32's
+(the 3og2 and 5SAK spreads are the port's known case-specific wide ones, the
+same under both dtypes), its cross against upstream equals the within levels
+exactly as fp32's did, and against fp32 the closest sample pairs are
+0.01-0.16 Å apart (same noise tape, so the dtype alone moves a sample by that
+much). Decision (G2): keep fp32 as the released default (upstream runs
+fp32/TF32; parity is read there) and document `dtype=bfloat16` as the
+recommended opt-in when memory or time matter, since it costs no measurable
+accuracy on this panel and buys 37% time and half the peak at 1k; it does not
+lift the 2k ceiling. 1AAY (ion case) follows when job 984 lands.
 
 Extra rows on the same cases: Protenix `deterministic=on` costs 13% wall at 1k
 (74 vs 65 s) and 9.7% at 3k with Triton gemms disabled (635 vs 579 s;
@@ -240,7 +261,7 @@ appended here.
 | mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 vs 698 / 43.9 / 0.76 | 348 / 18.4 / 0.87 vs 492 / 50.4 / 0.88 | 248 / 21.9 / 0.76 vs 280 / 44.6 / 0.75 | OOM (fp32 pair wall, as on the protein set) | 487 / 51.2 / 0.63 | 260 / 14.6 / 0.74 |
 | mixed_3k_5npk | 2861 | 1013 / 50.1 / 0.62 | 944 / 41.1 / 0.63 | 699 / 42.1 / 0.59 | OOM | OOM (trunk pair arena, as at 3k protein) | 521 / 29.7 / 0.46 |
 | mixed_4k_6kqf | 3874 | OOM (69) | 2111 / 60.9 / 0.86 | 1509 / 66.5 / 0.90 | OOM | OOM | 814 / 43.1 / 0.89 |
-| mixed_5k_5xog | 4787 | OOM (103) | OOM (83) | OOM (91) | OOM | OOM (44) | pending |
+| mixed_5k_5xog | 4787 | OOM (103) | OOM (83) | OOM (91) | OOM | OOM (44) | 1544 / 61.4 / 0.91 |
 
 ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
 OpenDDE's 1k pair is the one mixed row where FoldJAX is not faster (302 vs
