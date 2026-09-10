@@ -742,10 +742,11 @@ def compact_zero_template_geometry(features: Mapping[str, Any]) -> Mapping[str, 
         template representation is exactly the one that came in.
     """
     if not any(name in features for name in ZERO_TEMPLATE_GEOMETRY_FIELDS):
-        if ZERO_TEMPLATE_GEOMETRY_MARKER in features:
-            out = dict(features)
-            del out[ZERO_TEMPLATE_GEOMETRY_MARKER]
-            return out
+        # Nothing dense to weigh a marker against: either there are no
+        # templates at all, or this is already the compact form. Returning it
+        # by identity makes the pass idempotent; stripping a marker here would
+        # leave a compact archive with neither representation. A malformed one
+        # is caught by :func:`validate_zero_template_geometry` before tracing.
         return features
 
     out = dict(features)

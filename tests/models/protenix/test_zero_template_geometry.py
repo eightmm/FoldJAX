@@ -29,6 +29,7 @@ from foldjax.models.protenix.data.template_features import (
     compact_zero_template_geometry,
     dedup_templates,
     has_compact_zero_template_geometry,
+    validate_zero_template_geometry,
 )
 from foldjax.models.protenix.models import model as model_impl
 from foldjax.models.protenix.models.trunk_blocks.template import (
@@ -569,3 +570,20 @@ def test_the_cli_compacts_after_serving_padding(tmp_path, monkeypatch) -> None:
 
     assert has_compact_zero_template_geometry(captured)
     assert np.asarray(captured["template_aatype"]).shape[-1] == 8
+
+
+def test_compaction_is_idempotent() -> None:
+    """A second pass must not strip the marker off an already-compact mapping."""
+    once = compact_zero_template_geometry(_zero_templates())
+    twice = compact_zero_template_geometry(once)
+
+    assert has_compact_zero_template_geometry(twice)
+    assert twice is once
+
+
+def test_the_graph_entry_rejects_a_marker_without_restypes() -> None:
+    features = compact_zero_template_geometry(_zero_templates())
+    del features["template_aatype"]
+
+    with pytest.raises(KeyError, match="template_aatype"):
+        validate_zero_template_geometry(features)
