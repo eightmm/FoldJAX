@@ -74,6 +74,7 @@ _FIXED_COMPILE_DEFAULTS = {
     "cp_devices": 1,
     "no_language_model": False,
     "max_msa_depth": DEFAULTS["max_msa_depth"],
+    "structure_sample_sequential": False,
 }
 
 
@@ -361,7 +362,17 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     name = "esmfold2"
     session_reuse = True
     padding_axes = ("tokens", "atoms", "msa", "language_model_tokens")
-    native_options = frozenset({"cp_devices", "esmc_weights", "no_language_model"})
+    native_options = frozenset(
+        {
+            "cp_devices",
+            "esmc_weights",
+            "no_language_model",
+            # Spelled through rather than renamed: the port's own settings
+            # field has this name, so there is no translation entry to get
+            # backwards and grepping the option finds every hop.
+            "structure_sample_sequential",
+        }
+    )
     # The neutral names, against the port's. `max_msa_depth` is the one that is
     # not simply a rename: the model resubsamples that many MSA rows *per trunk
     # loop* rather than cutting the alignment once, which is the same policy
@@ -387,6 +398,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         "max_msa_depth",
         "no_language_model",
         "cp_devices",
+        # Traced into the program rather than read at run time, so it selects
+        # its own compilation namespace.
+        "structure_sample_sequential",
     )
 
     def __init__(self) -> None:
@@ -772,6 +786,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         managed_asset_profile(options)
+        _strict_boolean(
+            options.get("structure_sample_sequential", False),
+            name="structure_sample_sequential",
+        )
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
@@ -805,6 +823,18 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         without_lm = _strict_boolean(
             options.get("no_language_model", False), name="no_language_model"
         )
+        # `None` rather than `False` when unasked: the model's default is
+        # already off, and spelling it for every caller would override a
+        # profile that ever set it and would put a value nobody asked for
+        # into the recorded overrides.
+        sequential_samples = (
+            _strict_boolean(
+                options.pop("structure_sample_sequential"),
+                name="structure_sample_sequential",
+            )
+            if "structure_sample_sequential" in options
+            else None
+        )
         # In-package imports, kept inside `predict` for the same reason every
         # other vendored backend does it: to keep `import foldjax` off JAX's
         # import cost.
@@ -824,6 +854,8 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             for name in ("num_recycles", "num_steps", "num_samples", "max_msa_depth")
             if name in options
         }
+        if sequential_samples is not None:
+            overrides["structure_sample_sequential"] = sequential_samples
         if "cp_devices" in options:
             cp_devices = int(options.pop("cp_devices"))
             if cp_devices < 1:

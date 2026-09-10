@@ -192,6 +192,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
             "cp_devices": 1,
             "no_language_model": False,
             "max_msa_depth": 1024,
+            "structure_sample_sequential": False,
         },
     )
 
@@ -212,6 +213,8 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
         ("cp_devices", np.int64(1)),
         ("max_msa_depth", np.int64(1024)),
         ("no_language_model", 0),
+        ("structure_sample_sequential", True),
+        ("structure_sample_sequential", 0),
     ],
 )
 def test_esmfold2_unproven_defaults_and_lookalikes_stay_distinct(

@@ -488,6 +488,9 @@ def predict(
     num_samples: int | None = None,
     num_steps: int | None = None,
     max_msa_depth: int | None = None,
+    #: Denoise the diffusion samples one at a time. Off unless asked; the
+    #: settings field carries what it costs and what it does not save.
+    structure_sample_sequential: bool | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
@@ -517,6 +520,7 @@ def predict(
         num_samples=num_samples,
         num_steps=num_steps,
         max_msa_depth=max_msa_depth,
+        structure_sample_sequential=structure_sample_sequential,
     )
     # Resolve the process-wide escape hatch before choosing a bounded JIT
     # owner. The same integer is passed into the graph and pins every atom

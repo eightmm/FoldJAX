@@ -171,6 +171,39 @@ class ModelSettings:
     #: silently rather than loudly. Protenix's copy of the rule carries the
     #: same exposure.
     confidence_sample_sequential: bool = True
+    #: Denoise the diffusion samples one at a time instead of together.
+    #:
+    #: The sibling of the flag above, one stage earlier, and off rather than
+    #: on for a reason that is about evidence and not about taste.
+    #:
+    #: What it divides: the diffusion token transformer's attention logits,
+    #: `float32[batch * samples, tokens, tokens, heads]`, rebuilt inside every
+    #: block of every denoiser call. At the released 16 heads and 3,012
+    #: tokens that is 2.7 GiB at five samples and 17.3 GiB at thirty-two.
+    #: `TRUNK_PREFIXES` excludes the diffusion stack from `trunk_dtype`, so
+    #: those logits are float32 and stay float32. The blocked atom attention
+    #: carries the sample axis too but is linear in atoms rather than
+    #: quadratic in tokens, so this one tensor is most of what sequencing the
+    #: structure head can save.
+    #:
+    #: What it does not divide, and the reason this is off: the *trunk* has no
+    #: sample axis in this port at all. `run_loops` and `folding_trunk` return
+    #: `[batch, tokens, tokens, d_pair]`, and `num_samples` first appears at
+    #: `diffusion.build_cache`. The measured 45 GiB peak at 2,096 residues and
+    #: the 3,012-residue failure are trunk pair tensors, so a caller running
+    #: the released five-sample schedule should not expect this option to move
+    #: them. Turning it on for that is not a small win, it is no win.
+    #:
+    #: Cost: the denoiser is entered `batch * samples` times per step instead
+    #: of once, so the per-call work shrinks by that factor and the launch
+    #: count grows by it. The arithmetic is the same arithmetic on a narrower
+    #: array, which is not bitwise -- a reduction at one row may order itself
+    #: differently than at thirty-two.
+    #:
+    #: `confidence_sample_sequential` is independent of this and stays on:
+    #: they narrow two different stages, and either may be set without the
+    #: other.
+    structure_sample_sequential: bool = False
     #: Return the confidence head's full-bin logits and the PAE/PDE matrices.
     #: False by default, mirroring Boltz-2's flag of the same name and default
     #: -- that argument was had once already on the other port and this is the
@@ -1415,6 +1448,19 @@ def predict(
 
     distogram_logits = _distogram_logits(z, params) if return_distogram_logits else None
 
+    sequential_samples = settings.structure_sample_sequential and n_samples > 1
+    if sequential_samples and batch != 1:
+        # A rollout would have to be told which input it belongs to, and the
+        # only place that lives is the pair conditioning -- the largest tensor
+        # the sampler holds. Slicing it per rollout, inside the loop this
+        # option exists to narrow, would cost more than the option saves.
+        # Nothing in this port builds a batch above one; a caller who does is
+        # told rather than handed the wrong rows.
+        raise ValueError(
+            "structure_sample_sequential runs one input at a time; this call "
+            f"has batch {batch}"
+        )
+
     cache = diffusion.build_cache(
         features["ref_pos"],
         features["ref_charge"],
@@ -1428,7 +1474,11 @@ def predict(
         params,
         "structure_head.diffusion_module",
         settings=settings.diffusion,
-        num_samples=n_samples,
+        # The atom-level entries are repeated to `batch * num_samples` here.
+        # Sequencing narrows them to one rollout, which is the other half of
+        # the saving: a batched cache would keep a factor the mapped denoiser
+        # cannot use.
+        num_samples=1 if sequential_samples else n_samples,
         n_tokens=n_tokens,
         trunk_dtype=compute,
     )
@@ -1448,6 +1498,7 @@ def predict(
             diffusion_rotation_quaternions=diffusion_rotation_quaternions,
             diffusion_translations=diffusion_translations,
             diffusion_churn_normals=diffusion_churn_normals,
+            sample_sequential=sequential_samples,
         )
 
     x_inputs = _capture.capture("single", x_inputs)
@@ -1548,11 +1599,19 @@ def with_overrides(
     num_samples: int | None = None,
     num_steps: int | None = None,
     max_msa_depth: int | None = None,
+    structure_sample_sequential: bool | None = None,
 ) -> ModelSettings:
-    """The four knobs a caller actually varies, applied without reconstruction."""
+    """The knobs a caller actually varies, applied without reconstruction.
+
+    All optional, and `None` means "leave the checkpoint's value alone" --
+    which for the boolean is the difference between a caller who did not ask
+    and one who asked for the default.
+    """
     updates: dict[str, object] = {}
     if num_recycles is not None:
         updates["num_recycles"] = num_recycles
+    if structure_sample_sequential is not None:
+        updates["structure_sample_sequential"] = structure_sample_sequential
     if num_samples is not None:
         updates["num_samples"] = num_samples
     if max_msa_depth is not None:
