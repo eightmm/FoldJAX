@@ -10,6 +10,7 @@ only when the request explicitly selects its ``source``.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import importlib.util
 import json
@@ -31,8 +32,10 @@ from foldjax.backends._tokamax_autotune import (
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
+from foldjax.models._compile_policy import compiler_options
 from foldjax.padding import MSA_PROFILE_DEPTH, TOKEN_BUCKETS, PaddingPlan
 from foldjax.schema import (
     InputRequirement,
@@ -315,6 +318,53 @@ def _model_device(device: Any):
     return jax.default_device(device)
 
 
+def _deterministic_model_runner(runner: Any, **kwargs: Any) -> Any:
+    """Upstream's runner with repeatable reductions asked of its one executable.
+
+    AlphaFold 3 owns exactly one executable and builds it inside
+    ``ModelRunner._model`` -- a file FoldJAX carries because upstream's wheel
+    does not install it, not one FoldJAX writes. A subclass is the only way to
+    add a compile option there without editing an upstream-licensed source, so
+    that property is reproduced here with one keyword added, and
+    ``tests/models/alphafold3/test_deterministic_ops.py`` fails if upstream's
+    version ever stops matching the copy. ``hk`` and ``model`` are read off the
+    module that was loaded, so an external ``source`` still builds its own
+    network rather than the vendored one.
+
+    The option covers the ops XLA emits. AlphaFold 3 also calls two Tokamax
+    kernels: attention, which ``attention_kernel=xla`` can route back into XLA,
+    and the gated linear unit, which upstream's config cannot -- it is called
+    unconditionally. Their kernel *selection* is autotuned, and what pins it
+    across processes is the persistent Tokamax store this backend installs.
+    That store is deliberately shared by both policies, because the compile
+    option does not change which Tokamax kernel is chosen. A repeatable
+    AlphaFold 3 run is this option together with that store, not this option
+    on its own.
+    """
+
+    import jax
+
+    class _DeterministicModelRunner(runner.ModelRunner):
+        """The vendored runner, compiled with the deterministic XLA options."""
+
+        @functools.cached_property
+        def _model(self) -> Any:
+            @runner.hk.transform
+            def forward_fn(batch):
+                return runner.model.Model(self._model_config)(batch)
+
+            return functools.partial(
+                jax.jit(
+                    forward_fn.apply,
+                    device=self._device,
+                    compiler_options=compiler_options(deterministic=True),
+                ),
+                self.model_params,
+            )
+
+    return _DeterministicModelRunner(**kwargs)
+
+
 def _settle_absl_flags() -> None:
     """Give absl its defaults instead of letting it parse FoldJAX's argv.
 
@@ -357,6 +407,11 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "return_embeddings": False,
     "return_distogram": False,
     "kernel_autotuning": "autotune",
+    # Not a ``make_model_config`` parameter either, but unlike
+    # ``kernel_autotuning`` it changes the program that is compiled, so `off`
+    # is the released value in the strict sense: the run every recorded
+    # AlphaFold 3 measurement describes.
+    "deterministic": False,
 }
 _MANAGED_CONFIG_DEFAULTS = frozenset({"num_steps", "max_msa_depth"})
 
@@ -765,15 +820,18 @@ class AlphaFold3Backend(Backend):
     }
     # AlphaFold 3 runs `bfloat16: 'all'` inside the model it ships, so there is
     # no dtype for a caller to choose here; the knob would be a lie.
-    execution_options = {
+    execution_options: dict[str, tuple[str, dict[str, Any]]] = {
         **MATMUL_PRECISION_OPTION,
         "attention_kernel": (
             "attention_backend",
             {"auto": "triton", "xla": "xla"},
         ),
+        **DETERMINISTIC_API_OPTION,
     }
     compile_options = (
         "matmul_precision",
+        # Unlike `kernel_autotuning`, this one is compiled into the program.
+        "deterministic",
         "num_samples",
         "num_steps",
         "num_recycles",
@@ -908,6 +966,7 @@ class AlphaFold3Backend(Backend):
         request: PredictionRequest,
         buckets: tuple[int, ...] | None,
         kernel_fallback: str,
+        deterministic: bool,
         anchor: tuple[tuple[str, str, str], tuple[tuple[str, str, str], ...] | None]
         | None,
     ) -> tuple[Any, tuple[Any, ...] | None]:
@@ -924,6 +983,9 @@ class AlphaFold3Backend(Backend):
                 kernel_fallback,
                 buckets,
                 request.padding is not None,
+                # The executable is compiled under this, so a runner retained
+                # without it must never be handed a request that asked for it.
+                deterministic,
             )
         if self._model_runner is not None:
             if key is not None and self._model_runner_key == key:
@@ -931,8 +993,15 @@ class AlphaFold3Backend(Backend):
             # Never construct generation B while generation A's 1.1 GB tree is
             # still retained by this backend.
             self.invalidate_session()
+        # A run that asked for nothing gets upstream's own class, so its
+        # program is built exactly as every recorded measurement describes it.
+        construct = (
+            functools.partial(_deterministic_model_runner, runner)
+            if deterministic
+            else runner.ModelRunner
+        )
         return (
-            runner.ModelRunner(
+            construct(
                 config=config,
                 device=device,
                 model_dir=request.weights,
@@ -1090,6 +1159,16 @@ class AlphaFold3Backend(Backend):
                     _RELEASED_COMPILE_DEFAULTS["kernel_autotuning"],
                 )
             )
+            # Out before the leftover-option check: it is not a config field
+            # and upstream's runner does not take it. It is deliberately kept
+            # out of `config_identity` too -- that identity keys the Tokamax
+            # store, whose kernel choices this option does not change.
+            deterministic = _strict_boolean(
+                options.pop(
+                    "deterministic", _RELEASED_COMPILE_DEFAULTS["deterministic"]
+                ),
+                name="deterministic",
+            )
             if options:
                 raise ValueError(
                     f"unsupported AlphaFold 3 options: {', '.join(options)}"
@@ -1161,6 +1240,7 @@ class AlphaFold3Backend(Backend):
                 request=request,
                 buckets=buckets,
                 kernel_fallback=kernel_fallback,
+                deterministic=deterministic,
                 anchor=anchor,
             )
             all_results = []
