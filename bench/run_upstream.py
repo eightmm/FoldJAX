@@ -1045,7 +1045,15 @@ def command(
                 str(seed),
             ],
             repo,
-            {"PYTHONPATH": f"{harness}:{harness / 'src'}"},
+            # The fork's `src` is declared here rather than left to the child
+            # to splice onto `sys.path`, so which `transformers` the row runs
+            # is visible in the launched environment and auditable without
+            # reading the child. It has to be on the path at all: this
+            # virtualenv also carries a pip `transformers`, and that one is
+            # the Hugging Face 5.16.x integration -- a different ESMFold2
+            # with `EsmFold2*` classes, not this fork. The child still
+            # asserts the class came from this checkout.
+            {"PYTHONPATH": f"{harness}:{harness / 'src'}:{repo / 'src'}"},
         )
     raise ValueError(f"no upstream runner for {model}")
 
