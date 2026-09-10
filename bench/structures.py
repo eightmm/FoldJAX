@@ -19,6 +19,14 @@ For an unconverged target that spread is enormous -- Boltz-2 at 132 tokens
 produces samples of its own that share TM 0.06 -- and reading a low
 cross-implementation score there as a porting defect would be a mistake.
 
+Homomers need one more step before any of that is readable. Residues are paired
+by (chain id, residue id), and nothing makes two implementations -- or two
+samples of one implementation -- assign the same label to the same copy of a
+repeated chain. On 2026-09-10 that put OpenFold3's homotetramer at 37 A and
+TM 0.569 while each side agreed with itself to TM 1.000, and it split Boltz-2's
+own 4k samples across TM 0.59-1.00. Interchangeable chains are therefore
+matched by minimum RMSD before the score is computed; see `best_assignment`.
+
 Usage:
 
     python -m bench.structures --work /path/to/bench-work --out summary.json
@@ -34,11 +42,59 @@ import itertools
 import json
 import statistics
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 
-def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
+class CAStructure(NamedTuple):
+    """One prediction's CA trace: coordinates, residue keys, chains, residues.
+
+    `coords` and `keys` are what the comparison has always used, in that order,
+    so index access still reads. `chains` and `comps` are what grouping
+    interchangeable chains needs: which chain each CA belongs to, and the
+    residue it is part of.
+    """
+
+    coords: np.ndarray
+    keys: list[str]
+    chains: list[str]
+    comps: list[str]
+
+
+MAX_ASSIGNMENTS = 720
+"""Chain assignments to score exhaustively before falling back to centroids.
+
+720 is 6! -- six interchangeable copies. Real complexes here are tetramers (24),
+so the fallback exists for correctness at scale rather than for any measured
+case, and its own test lowers this to reach it.
+"""
+
+_ONE_LETTER = {
+    "ALA": "A",
+    "ARG": "R",
+    "ASN": "N",
+    "ASP": "D",
+    "CYS": "C",
+    "GLN": "Q",
+    "GLU": "E",
+    "GLY": "G",
+    "HIS": "H",
+    "ILE": "I",
+    "LEU": "L",
+    "LYS": "K",
+    "MET": "M",
+    "PHE": "F",
+    "PRO": "P",
+    "SER": "S",
+    "THR": "T",
+    "TRP": "W",
+    "TYR": "Y",
+    "VAL": "V",
+}
+
+
+def ca_coords(path: Path) -> CAStructure:
     """CA coordinates and their residue keys, from an mmCIF atom_site loop.
 
     The keys matter. Historical Chai benchmark artifacts omit residues they did
@@ -59,6 +115,8 @@ def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
     """
     rows: list[tuple[float, float, float]] = []
     keys: list[str] = []
+    chains: list[str] = []
+    comps: list[str] = []
     header: list[str] = []
     in_loop = False
     for line in path.read_text().splitlines():
@@ -88,7 +146,9 @@ def ca_coords(path: Path) -> tuple[np.ndarray, list[str]]:
         chain = _first_real(record, ("label_asym_id", "auth_asym_id"), "?")
         number = _first_real(record, ("label_seq_id", "auth_seq_id"), str(len(keys)))
         keys.append(f"{chain}:{number}")
-    return np.asarray(rows, dtype=np.float64), keys
+        chains.append(chain)
+        comps.append(_first_real(record, ("label_comp_id", "auth_comp_id"), "UNK"))
+    return CAStructure(np.asarray(rows, dtype=np.float64), keys, chains, comps)
 
 
 def _first_real(record: dict[str, str], names: tuple[str, ...], default: str) -> str:
@@ -101,7 +161,7 @@ def _first_real(record: dict[str, str], names: tuple[str, ...], default: str) ->
 
 
 def common_residues(
-    left: tuple[np.ndarray, list[str]], right: tuple[np.ndarray, list[str]]
+    left: CAStructure, right: CAStructure
 ) -> tuple[np.ndarray, np.ndarray]:
     """The two coordinate sets restricted to the residues they share."""
     left_index = {key: i for i, key in enumerate(left[1])}
@@ -114,14 +174,257 @@ def common_residues(
     return left[0][li], right[0][ri]
 
 
+def kabsch(p: np.ndarray, q: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The rotation taking centred `p` onto centred `q`, and the two centroids.
+
+    Split out of `superpose` so the chain-assignment fallback can apply the
+    same transform to atoms that were not part of the fit.
+    """
+    pm = p.mean(axis=0)
+    qm = q.mean(axis=0)
+    u, _, vt = np.linalg.svd((p - pm).T @ (q - qm))
+    sign = np.sign(np.linalg.det(vt.T @ u.T))
+    return vt.T @ np.diag([1.0, 1.0, sign]) @ u.T, pm, qm
+
+
 def superpose(p: np.ndarray, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Kabsch-align `p` onto `q`, returning both centred."""
-    pc = p - p.mean(axis=0)
-    qc = q - q.mean(axis=0)
-    u, _, vt = np.linalg.svd(pc.T @ qc)
-    sign = np.sign(np.linalg.det(vt.T @ u.T))
-    rotation = vt.T @ np.diag([1.0, 1.0, sign]) @ u.T
-    return pc @ rotation.T, qc
+    rotation, pm, qm = kabsch(p, q)
+    return (p - pm) @ rotation.T, q - qm
+
+
+def rmsd(p: np.ndarray, q: np.ndarray) -> float:
+    """RMSD after a single global fit -- the conventional quantity."""
+    a, b = superpose(p, q)
+    return float(np.sqrt(np.mean(np.sum((a - b) ** 2, axis=-1))))
+
+
+def chain_sequences(structure: CAStructure) -> dict[str, str]:
+    """One-letter sequence per chain, over the residues that carry a CA.
+
+    A residue outside the standard twenty keeps its component id rather than
+    collapsing to `X`: two different ligands must not read as the same entity
+    and so become interchangeable.
+    """
+    letters: dict[str, list[str]] = {}
+    for chain, comp in zip(structure.chains, structure.comps, strict=True):
+        letters.setdefault(chain, []).append(_ONE_LETTER.get(comp, f"({comp})"))
+    return {chain: "".join(seq) for chain, seq in letters.items()}
+
+
+def _by_sequence(structure: CAStructure) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for chain, sequence in chain_sequences(structure).items():
+        grouped.setdefault(sequence, []).append(chain)
+    return grouped
+
+
+def interchangeable_groups(
+    left: CAStructure, right: CAStructure
+) -> list[tuple[list[str], list[str]]]:
+    """Chains of one sequence, per side, for every sequence both sides carry.
+
+    Chains keep the order they appear in the file, which is what makes the
+    identity assignment the first candidate below.
+    """
+    left_groups = _by_sequence(left)
+    right_groups = _by_sequence(right)
+    return [
+        (left_groups[sequence], right_groups[sequence])
+        for sequence in left_groups
+        if sequence in right_groups
+    ]
+
+
+def _is_identity(mapping: dict[str, str]) -> bool:
+    return all(ours == theirs for ours, theirs in mapping.items())
+
+
+def _group_candidates(lefts: list[str], rights: list[str]) -> list[dict[str, str]]:
+    """Every injective pairing of one group, the identity-by-name one first."""
+    if len(lefts) <= len(rights):
+        pairings = [
+            dict(zip(lefts, order, strict=True))
+            for order in itertools.permutations(rights, len(lefts))
+        ]
+    else:
+        pairings = [
+            dict(zip(order, rights, strict=True))
+            for order in itertools.permutations(lefts, len(rights))
+        ]
+    pairings.sort(key=lambda mapping: not _is_identity(mapping))
+    return pairings
+
+
+def relabel(right: CAStructure, mapping: dict[str, str]) -> CAStructure | None:
+    """`right` with each assigned chain renamed to the left chain it answers.
+
+    None when the renaming would give two chains the same label, which would
+    make the residue keys ambiguous. The identity mapping returns `right`
+    itself, so a structure that needs no permutation is compared through the
+    exact arrays it always was.
+    """
+    rename = {theirs: ours for ours, theirs in mapping.items()}
+    labels = [rename.get(chain, chain) for chain in right.chains]
+    if labels == right.chains:
+        return right
+    if len(set(labels)) != len(set(right.chains)):
+        return None
+    keys = [
+        f"{label}:{key.split(':', 1)[1]}"
+        for label, key in zip(labels, right.keys, strict=True)
+    ]
+    return CAStructure(right.coords, keys, labels, right.comps)
+
+
+def _seed_mapping(groups: list[tuple[list[str], list[str]]]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for lefts, rights in groups:
+        mapping.update(dict(zip(lefts, rights)))
+    return mapping
+
+
+def _search_assignment(
+    left: CAStructure,
+    right: CAStructure,
+    groups: list[tuple[list[str], list[str]]],
+) -> dict[str, str]:
+    """The assignment with the lowest globally-superposed RMSD.
+
+    Ties keep the earlier candidate, and the identity pairing is generated
+    first, so two predictions that already correspond are never reshuffled.
+    """
+    best: dict[str, str] | None = None
+    best_score: float | None = None
+    for combination in itertools.product(
+        *(_group_candidates(lefts, rights) for lefts, rights in groups)
+    ):
+        mapping = {k: v for part in combination for k, v in part.items()}
+        renamed = relabel(right, mapping)
+        if renamed is None:
+            continue
+        a, b = common_residues(left, renamed)
+        if len(a) < 4:
+            continue
+        score = rmsd(a, b)
+        if best_score is None or score < best_score:
+            best, best_score = mapping, score
+    return best if best is not None else _seed_mapping(groups)
+
+
+def _chain_rows(structure: CAStructure) -> dict[str, np.ndarray]:
+    rows: dict[str, list[int]] = {}
+    for position, chain in enumerate(structure.chains):
+        rows.setdefault(chain, []).append(position)
+    return {chain: np.asarray(index) for chain, index in rows.items()}
+
+
+def _centroid_assignment(
+    left: CAStructure,
+    right: CAStructure,
+    groups: list[tuple[list[str], list[str]]],
+) -> dict[str, str]:
+    """Hungarian matching on chain centroids, for groups too large to enumerate.
+
+    Centroids only separate the copies once the two structures are in a common
+    frame, and fitting that frame needs an assignment -- the circularity the
+    exhaustive search avoids by trying all of them. Seeding the fit on the
+    written chain order is not enough: with two copies of a tetramer swapped the
+    fit splits the difference, the centroids move with it, and the matching
+    returns the labelling it started from. So the frame is also seeded on single
+    chain pairs, one at a time, which no labelling of the rest can disturb. Each
+    seed produces one assignment; the one with the lowest RMSD wins.
+
+    This is still a heuristic. It searches a few candidate frames rather than
+    every assignment, and a complex whose copies are near-coincident in every
+    one of them can be matched wrongly.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    left_rows = _chain_rows(left)
+    right_rows = _chain_rows(right)
+
+    def assign(fit: tuple[np.ndarray, np.ndarray, np.ndarray]) -> dict[str, str]:
+        rotation, pm, qm = fit
+        moved = (left.coords - pm) @ rotation.T
+        target = right.coords - qm
+        mapping: dict[str, str] = {}
+        for lefts, rights in groups:
+            ours = np.stack([moved[left_rows[name]].mean(axis=0) for name in lefts])
+            theirs = np.stack(
+                [target[right_rows[name]].mean(axis=0) for name in rights]
+            )
+            cost = np.linalg.norm(ours[:, None, :] - theirs[None, :, :], axis=-1)
+            rows, columns = linear_sum_assignment(cost)
+            for row, column in zip(rows, columns, strict=True):
+                mapping[lefts[row]] = rights[column]
+        return mapping
+
+    seeds = []
+    written_order = _seed_mapping(groups)
+    renamed = relabel(right, written_order)
+    a, b = common_residues(left, renamed if renamed is not None else right)
+    if len(a) >= 4:
+        seeds.append(kabsch(a, b))
+    for lefts, rights in groups:
+        anchor = left.coords[left_rows[lefts[0]]]
+        for name in rights:
+            partner = right.coords[right_rows[name]]
+            if len(anchor) == len(partner) and len(anchor) >= 4:
+                seeds.append(kabsch(anchor, partner))
+
+    best: dict[str, str] | None = None
+    best_score: float | None = None
+    for seed in seeds:
+        mapping = assign(seed)
+        candidate = relabel(right, mapping)
+        if candidate is None:
+            continue
+        p, q = common_residues(left, candidate)
+        if len(p) < 4:
+            continue
+        score = rmsd(p, q)
+        if best_score is None or score < best_score:
+            best, best_score = mapping, score
+    return best if best is not None else written_order
+
+
+def best_assignment(
+    left: CAStructure, right: CAStructure
+) -> tuple[dict[str, str], bool]:
+    """Which chain of `right` answers which chain of `left`, and whether it moved.
+
+    Only chains whose sequence appears on both sides are candidates for
+    reassignment; everything else keeps the label it was written with.
+    """
+    groups = interchangeable_groups(left, right)
+    if not groups:
+        return {}, False
+    total = 1
+    for lefts, rights in groups:
+        larger, smaller = max(len(lefts), len(rights)), min(len(lefts), len(rights))
+        for taken in range(smaller):
+            total *= larger - taken
+    if total == 1:
+        mapping = _seed_mapping(groups)
+    elif total > MAX_ASSIGNMENTS:
+        mapping = _centroid_assignment(left, right, groups)
+    else:
+        mapping = _search_assignment(left, right, groups)
+    return mapping, not _is_identity(mapping)
+
+
+def aligned_residues(
+    left: CAStructure, right: CAStructure
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Shared residues under the best chain assignment, and whether it permuted."""
+    mapping, permuted = best_assignment(left, right)
+    if not permuted:
+        return (*common_residues(left, right), False)
+    renamed = relabel(right, mapping)
+    if renamed is None:
+        return (*common_residues(left, right), False)
+    return (*common_residues(left, renamed), True)
 
 
 def _tm_from_alignment(p: np.ndarray, q: np.ndarray, subset, d0: float, n: int):
@@ -182,9 +485,7 @@ def tm_and_rmsd(p: np.ndarray, q: np.ndarray) -> tuple[float, float]:
                 break
             subset = keep
 
-    a, b = superpose(p, q)
-    rmsd = float(np.sqrt(np.mean(np.sum((a - b) ** 2, axis=-1))))
-    return float(best), rmsd
+    return float(best), rmsd(p, q)
 
 
 def structures(directory: Path) -> list[Path]:
@@ -208,10 +509,18 @@ def _pairs(values: list[float]) -> dict[str, float] | None:
     }
 
 
-def compare(left: list[np.ndarray], right: list[np.ndarray] | None) -> dict | None:
-    """Pairwise TM over one set, or between two sets."""
+def compare(
+    left: list[CAStructure], right: list[CAStructure] | None
+) -> dict | None:
+    """Pairwise TM over one set, or between two sets.
+
+    `permuted` counts the scored pairs whose interchangeable chains had to be
+    reassigned. It is the difference between a homomer that disagrees and one
+    that was merely labelled in another order.
+    """
     tms: list[float] = []
     rmsds: list[float] = []
+    permuted = 0
     combos = (
         itertools.combinations(range(len(left)), 2)
         if right is None
@@ -220,16 +529,22 @@ def compare(left: list[np.ndarray], right: list[np.ndarray] | None) -> dict | No
     other = left if right is None else right
     dropped = 0
     for i, j in combos:
-        a, b = common_residues(left[i], other[j])
+        a, b, moved = aligned_residues(left[i], other[j])
         if len(a) < 4:
             dropped += 1
             continue
-        tm, rmsd = tm_and_rmsd(a, b)
+        tm, distance = tm_and_rmsd(a, b)
         tms.append(tm)
-        rmsds.append(rmsd)
+        rmsds.append(distance)
+        permuted += int(moved)
     if not tms:
         return None
-    return {"tm": _pairs(tms), "rmsd": _pairs(rmsds), "dropped": dropped}
+    return {
+        "tm": _pairs(tms),
+        "rmsd": _pairs(rmsds),
+        "dropped": dropped,
+        "permuted": permuted,
+    }
 
 
 def main() -> int:
@@ -293,9 +608,9 @@ def main() -> int:
 
     print(
         "| model | case | cross TM | within FoldJAX TM | within upstream TM "
-        "| cross RMSD A |"
+        "| cross RMSD A | chain perm |"
     )
-    print("|" + "---|" * 6)
+    print("|" + "---|" * 7)
     for row in rows:
 
         def cell(block, field="tm"):
@@ -308,10 +623,22 @@ def main() -> int:
                 f"({values['min']:.3f}-{values['max']:.3f})"
             )
 
+        def permutations(row):
+            parts = [
+                f"{label} {block['permuted']}/{block['tm']['n']}"
+                for label, block in (
+                    ("cross", row["cross"]),
+                    ("fj", row["within_foldjax"]),
+                    ("up", row["within_upstream"]),
+                )
+                if block and block.get("permuted")
+            ]
+            return "; ".join(parts) if parts else "-"
+
         print(
             f"| {row['model']} | {row['case']} | {cell(row['cross'])} "
             f"| {cell(row['within_foldjax'])} | {cell(row['within_upstream'])} "
-            f"| {cell(row['cross'], 'rmsd')} |"
+            f"| {cell(row['cross'], 'rmsd')} | {permutations(row)} |"
         )
     print(
         "\nTM-score, iterative search, median over all pairs (min-max in "
@@ -321,7 +648,11 @@ def main() -> int:
         "effective seed. Therefore `within` -- how well an implementation "
         "agrees with *itself* across samples -- is the closest any correct port "
         "could come. `cross` at or above `within` means the two are as close as "
-        "this model's own sampling allows."
+        "this model's own sampling allows. `chain perm` counts the scored "
+        "pairs -- cross, within FoldJAX, within upstream -- whose "
+        "interchangeable chains had to be reassigned before scoring, because "
+        "the two structures labelled the identical copies in a different "
+        "order. It is a labelling difference, not a structural one."
     )
 
     if args.out is not None:
