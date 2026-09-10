@@ -95,8 +95,11 @@ The compaction lands 1:1 as predicted (−3.7 GiB at 3k, −5.5 GiB at 4.1k
 against the AMP row) with unchanged wall time; the 5k row still fails on the
 same 89.4 GiB temporary, so the 5k ceiling is a temporary, not the arguments.
 The bf16 diffusion above 3,840 tokens (upstream's own policy) saves 4.5% wall
-and 2.9 GiB at 4.1k. Boltz-2's uint8 categorical compaction at 4.1k (job 1041)
-is still running.
+and 2.9 GiB at 4.1k. Boltz-2's uint8 categorical compaction at 4.1k (job
+1041): 3133 s / 64.4 GiB against 3081 / 64.2 — the 446 MiB of argument
+bytes did not reach the peak, so on this port the in-graph one-hot rebuild is
+materialised where the dense argument used to sit (the CPU probe fused it;
+GPU did not). The change is output-neutral and stays, with no memory claim.
 
 Boltz-2 pristine upstream (zero tracked diff): 2k 485 s / 46.6 GiB against
 the reviewed arm's 466 / 46.6 — the reviewed performance patches did not
@@ -115,8 +118,12 @@ against within 0.43 / 1.01 — cross at the upstream within level.
 ESMFold2 sequential-sample option (`structure_sample_sequential=true`, G1b) at
 L2000: 5 samples 512 s / 44.9 GiB against the batched 440 / 45.0 — the peak
 does not move (the folding-trunk pair arena sets it, not the sampler) and the
-sequential denoiser costs 16% wall; the 32-sample pair (591 / 45.2 batched)
-is running.
+sequential denoiser costs 16% wall. At 32 samples (the released count) the
+batched row is 591 s / 45.2 GiB and the sequential one 1088 s / 44.9 GiB: the
+17 GiB attention-logit transient the option removes is not at the peak
+either, so the option buys 0.3 GiB for 84% more wall. It stays available and
+is not recommended; ESMFold2's wall at 3k is the trunk arena, as the memory
+note says, and upstream cannot run 2k at all.
 
 Mixed upstream rows at 3k/4k: OpenFold3 3k 1500 s / 81.8 GiB (FoldJAX 1013 /
 50.1), Protenix 3k 760 / 57.4 (699 / 42.1) and 4k 1666 / 78.6 (1509 / 66.5),
