@@ -192,6 +192,100 @@ def test_scalar_backend_withholds_unused_graph_outputs_without_exposing_an_overr
     assert "return_auxiliary_outputs" not in result.raw["overrides"]
 
 
+def _stub_prediction(tmp_path, monkeypatch, options):
+    """Run the adapter against stub modules, returning the kwargs it passed on."""
+    job = _job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}])
+    weights = tmp_path / "weights"
+    weights.mkdir(exist_ok=True)
+    seen: dict[str, object] = {}
+
+    def predict_job(*args, **kwargs):
+        del args
+        seen.update(kwargs)
+        return {}, {"asym_id": np.asarray([[0]])}
+
+    modules = {
+        "foldjax.models.esmfold2.inference": SimpleNamespace(
+            load=lambda *args, **kwargs: SimpleNamespace(has_language_model=False),
+            seed_key=lambda seed: seed,
+            predict_job=predict_job,
+        ),
+        "foldjax.models.esmfold2.output": SimpleNamespace(
+            write_prediction_outputs=lambda *args, **kwargs: {
+                "structures": [tmp_path / "sample_0.cif"],
+                "summary": [{"sample": 0, "plddt": 0.75}],
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda name: modules[name]
+    )
+    result = ESMFold2Backend().predict(
+        PredictionRequest(
+            model="esmfold2",
+            input=job,
+            weights=weights,
+            output_dir=tmp_path / "out",
+            options={"no_language_model": True, **options},
+        )
+    )
+    return seen, result
+
+
+@pytest.mark.parametrize("asked", [False, True])
+def test_the_sequential_sampler_option_reaches_the_port(
+    tmp_path, monkeypatch, asked
+) -> None:
+    """Named the same on the request, in the adapter and in the model settings.
+
+    Spelled through once rather than renamed: the port's own field is
+    `structure_sample_sequential`, so there is no translation table entry to
+    get backwards, and a reader who greps the option name finds every hop.
+    """
+    seen, result = _stub_prediction(
+        tmp_path, monkeypatch, {"structure_sample_sequential": asked}
+    )
+    assert seen["structure_sample_sequential"] is asked
+    assert result.raw["overrides"]["structure_sample_sequential"] is asked
+
+
+def test_an_unasked_sequential_option_is_absent_rather_than_defaulted(
+    tmp_path, monkeypatch
+) -> None:
+    """Omission must reach the port as omission.
+
+    Passing an explicit `False` for every caller would work today only because
+    the model's default is also `False`; it would silently override a
+    checkpoint or profile that ever set it, and it makes the two spellings
+    look different in the recorded overrides.
+    """
+    seen, result = _stub_prediction(tmp_path, monkeypatch, {})
+    assert "structure_sample_sequential" not in seen
+    assert "structure_sample_sequential" not in result.raw["overrides"]
+
+
+def test_the_sequential_sampler_option_refuses_text(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2.import_module", lambda _name: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        "foldjax.backends.esmfold2._job_chains", lambda _path: ([], {})
+    )
+    request = PredictionRequest(
+        model="esmfold2",
+        input=_job(tmp_path, [{"type": "protein", "id": ["A"], "sequence": "ACD"}]),
+        options={"structure_sample_sequential": "true"},
+    )
+    with pytest.raises(
+        ValueError, match="structure_sample_sequential must be a boolean"
+    ):
+        ESMFold2Backend().predict(request)
+    with pytest.raises(
+        ValueError, match="structure_sample_sequential must be a boolean"
+    ):
+        ESMFold2Backend().validate_native_options(dict(request.options))
+
+
 def test_all_released_biomolecule_types_are_advertised() -> None:
     assert ESMFold2Backend().capabilities().entity_types == (
         "protein",
