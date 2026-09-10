@@ -157,5 +157,23 @@ appended here.
 | mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 | 348 / 18.4 / 0.87 | 248 / 21.9 / 0.76 | OOM (fp32 pair wall, as on the protein set) | 487 / 51.2 / 0.63 | 260 / 14.6 / 0.74 |
 
 ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
+OpenDDE's 1k pair is the one mixed row where FoldJAX is not faster (302 vs
+318 s) while 28% lighter (52.6 vs 73.2 GiB).
+
+Structure agreement on the mixed pairs so far (`bench.structures`,
+permutation-aware, CA TM median (min-max), cross RMSD Å):
+
+| model | case | cross TM | within FoldJAX TM | within upstream TM | cross RMSD | chain perm |
+| --- | --- | --- | --- | --- | --- | --- |
+| OpenFold3 | mixed_1k_4xww | 0.994 (0.978-0.998) | 0.990 (0.978-0.995) | 0.997 (0.994-0.999) | 0.93 (0.45-6.54) | cross 14/25; fj 7/10; up 6/10 |
+| Boltz-2 | mixed_1k_4xww | 0.981 (0.976-0.997) | 0.980 (0.977-0.995) | 0.979 (0.977-0.997) | 5.06 (0.61-7.87) | cross 10/25; fj 4/10; up 4/10 |
+| Protenix | mixed_1k_4xww | 0.996 (0.989-0.999) | 0.994 (0.990-0.998) | 0.995 (0.993-0.999) | 0.81 (0.40-1.64) | cross 12/25; fj 4/10; up 6/10 |
+
+Cross TM equals within TM on all three finished pairs (Boltz-2's 5 Å cross
+RMSD median comes with a within-set TM of 0.980 on both sides: the 7-mer RNA
+and the dimer arrangement move between samples on both implementations at
+the same rate; the within-set RMSD is read from the JSON once it lands).
+4XWW's two RNase J chains are identical, so the permutation-aware pairing
+swaps them in 10-14 of 25 cross pairs.
 The Protenix 4k protein row is the first pair where FoldJAX is not faster
 (2206 vs 2193 s) while still 15% lighter (73.5 vs 86.4 GiB).
