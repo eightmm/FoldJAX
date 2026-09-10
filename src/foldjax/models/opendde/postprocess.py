@@ -307,6 +307,7 @@ def opendde_confidence_scores(
     n_chain: int | None = None,
     include_shape_complementarity: bool = True,
     return_confidence_details: bool = True,
+    deterministic: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """Convert raw OpenDDE logits to released confidence summaries.
 
@@ -330,6 +331,7 @@ def opendde_confidence_scores(
                 output,
                 features,
                 n_token=int(jnp.asarray(features["asym_id"]).shape[0]),
+                deterministic=deterministic,
             )
         )
         filtered = {
@@ -441,7 +443,9 @@ def opendde_confidence_scores(
     )
     if include_shape_complementarity:
         scores.update(
-            _shape_complementarity_scores(output, features, n_token=n_token)
+            _shape_complementarity_scores(
+                output, features, n_token=n_token, deterministic=deterministic
+            )
         )
     filtered = {
         key: value for key, value in scores.items() if key in _OPENDDE_SCORE_KEYS
@@ -457,6 +461,7 @@ def _shape_complementarity_scores(
     features: Mapping[str, Any],
     *,
     n_token: int,
+    deterministic: bool = False,
 ) -> dict[str, jnp.ndarray]:
     """Upstream's six cross-chain shape-complementarity fields, per sample.
 
@@ -496,7 +501,7 @@ def _shape_complementarity_scores(
     )
 
     stacked = compute_shape_complementarity_batched(
-        coordinate, features, atom_mask, n_token=n_token
+        coordinate, features, atom_mask, n_token=n_token, deterministic=deterministic
     )
     stacked["shape_comp_uses_structural_tokens"] = jnp.asarray(
         "subtoken_role_id" in features

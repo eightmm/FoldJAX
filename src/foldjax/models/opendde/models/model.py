@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models import _capture
+from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -1170,10 +1171,23 @@ def _opendde_infer_graph(
     )
 
 
-_compiled_opendde_infer = BoundedJitPool(
+#: The graph's two executable owners, the second under the
+#: deterministic-reduction options: see `foldjax.models._compile_policy` for
+#: why the policy is part of the build rather than an argument to the call.
+#: A prediction also builds the shape-complementarity stage, which carries the
+#: same option of its own (`models/shape_complementarity.py`).
+_compiled_opendde_infer, _compiled_opendde_infer_deterministic = policy_pools(
     _opendde_infer_graph,
     static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
 )
+
+
+def _infer_pool(deterministic: bool) -> BoundedJitPool:
+    """The executable owner for this run's reduction policy."""
+    return select(
+        (_compiled_opendde_infer, _compiled_opendde_infer_deterministic),
+        deterministic,
+    )
 
 
 def _resolve_cp_layout(layout: str) -> str:
@@ -1196,6 +1210,8 @@ def opendde_infer_compiled(
     input_feature_dict: dict[str, Any],
     params: OpenDDEInferenceParams,
     noise_schedule: jnp.ndarray,
+    *,
+    deterministic: bool = False,
     **kwargs: Any,
 ) -> dict[str, jnp.ndarray]:
     """Run OpenDDE as one compiled program instead of op by op.
@@ -1210,6 +1226,10 @@ def opendde_infer_compiled(
     across the module boundaries the eager form hides and the per-call overhead
     collapses to one dispatch. This is the same computation: only how much of it
     XLA sees at once changes.
+
+    ``deterministic`` selects the owner compiled for repeatable reduction
+    orders. It is a property of the executable rather than an argument to it,
+    so it never reaches the traced program.
     """
     # Do value-level private-provenance validation while feature leaves are
     # concrete.  Dense public arrays take precedence and remove stale private
@@ -1264,7 +1284,7 @@ def opendde_infer_compiled(
             input_feature_dict = replicate_tree(input_feature_dict)
             noise_schedule = replicate_tree(noise_schedule)
             kwargs = replicate_tree(kwargs)
-        return _compiled_opendde_infer(
+        return _infer_pool(deterministic)(
             traceable_features(input_feature_dict),
             param_arrays,
             noise_schedule,

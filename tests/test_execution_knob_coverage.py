@@ -19,6 +19,33 @@ from foldjax.execution import KNOBS, translate
 
 BACKENDS = ("alphafold3", "boltz2", "esmfold2", "opendde", "openfold3", "protenix")
 
+#: The knobs that are not per-port renames, and so are every port's to answer.
+#:
+#: `matmul_precision` is the float32 matmul scope JAX applies to any program.
+#: `deterministic` is the compile option that asks XLA for reduction orders
+#: that repeat; it is not a rename either -- the same two XLA keys are the
+#: whole mechanism on every port, so a port that cannot answer it is a port
+#: whose repeatability still depends on a process-wide environment variable.
+UNIVERSAL_KNOBS = frozenset({"matmul_precision", "deterministic"})
+
+#: How each port is driven, which is what decides the native value shape.
+#: Protenix and OpenDDE are reached by rendering argv for their own predict
+#: parsers; the other four are called through a Python signature taking a
+#: `bool`.
+DETERMINISTIC_SHAPE = {
+    "alphafold3": "api",
+    "boltz2": "api",
+    "esmfold2": "api",
+    "opendde": "argv",
+    "openfold3": "api",
+    "protenix": "argv",
+}
+
+DETERMINISTIC_NATIVE = {
+    "argv": ("deterministic_ops", {"off": "off", "on": "on"}),
+    "api": ("deterministic", {"off": False, "on": True}),
+}
+
 
 def _table(name: str) -> dict:
     module = importlib.import_module(f"foldjax.backends.{name}")
@@ -40,10 +67,57 @@ def test_every_backend_answers_every_neutral_knob(backend: str, knob: str) -> No
     that JAX applies to any program, so every port can answer it, and the ones
     that pin a value of their own answer it by reading the request first.
     """
-    if knob != "matmul_precision":
+    if knob not in UNIVERSAL_KNOBS:
         pytest.skip(f"{knob} is a per-port rename, not a universal capability")
     table = _table(backend)
     assert knob in table, f"{backend} does not declare {knob}"
+
+
+def test_the_universal_knobs_are_the_two_that_are_not_renames() -> None:
+    """Written down once, so growing the set is a deliberate edit here.
+
+    A knob joins this set when every port can implement the same mechanism,
+    not when every port happens to have grown a similar option.
+    """
+    assert UNIVERSAL_KNOBS == {"matmul_precision", "deterministic"}
+    assert UNIVERSAL_KNOBS <= set(KNOBS)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("value", KNOBS["deterministic"])
+def test_deterministic_translates_on_every_backend(backend: str, value: str) -> None:
+    """Declared is not enough; the value has to survive translation.
+
+    Both values, because `off` is the one a bool-shaped port can get wrong:
+    `False` is a value the table supplies, not a missing entry, and a
+    `translate` that tested truthiness rather than `is None` would reject it.
+    """
+    native_name, values = DETERMINISTIC_NATIVE[DETERMINISTIC_SHAPE[backend]]
+
+    assert translate({"deterministic": value}, _table(backend), model=backend) == {
+        native_name: values[value]
+    }
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_the_deterministic_entry_is_one_of_two_shared_objects(backend: str) -> None:
+    """Six literals would be six chances to spell the vocabulary differently.
+
+    Two objects rather than one because the ports are reached two ways, and
+    the shape is a property of how the port is driven -- not something a
+    backend author should be deciding again from scratch.
+    """
+    from foldjax.execution import (
+        DETERMINISTIC_API_OPTION,
+        DETERMINISTIC_ARGV_OPTION,
+    )
+
+    shared = {
+        "argv": DETERMINISTIC_ARGV_OPTION,
+        "api": DETERMINISTIC_API_OPTION,
+    }[DETERMINISTIC_SHAPE[backend]]
+
+    assert _table(backend)["deterministic"] is shared["deterministic"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

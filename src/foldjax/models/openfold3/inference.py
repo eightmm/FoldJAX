@@ -31,6 +31,7 @@ from foldjax._openfold3_compile import (
     triangle_backend,
 )
 from foldjax.execution import DIFFUSION_CHUNK_SIZE, auto_diffusion_chunk_size
+from foldjax.models._compile_policy import compiler_options
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -1261,6 +1262,12 @@ class _PredictGraphIdentity:
     cp_topology: tuple[object, ...]
     cache_scope: str | None
     augmentation_taped: bool = False
+    #: Reduction orders that repeat between runs, asked for on this
+    #: executable rather than on the process. It is part of how the program is
+    #: built, so it partitions the pool: a run that asked for it must never be
+    #: handed the program compiled without it. See
+    #: ``foldjax.models._compile_policy``.
+    deterministic: bool = False
 
 
 def _validated_representative_atoms(
@@ -1399,7 +1406,14 @@ class _CompiledPredictPool:
 
     @staticmethod
     def _new(identity: _PredictGraphIdentity):
-        return jax.jit(functools.partial(_predict_for_identity, identity=identity))
+        traced = functools.partial(_predict_for_identity, identity=identity)
+        options = compiler_options(deterministic=identity.deterministic)
+        if options is None:
+            # Not ``compiler_options={}``: an empty option map is a different
+            # compile from no option map at all, and the default program is
+            # the one every recorded measurement describes.
+            return jax.jit(traced)
+        return jax.jit(traced, compiler_options=options)
 
     @staticmethod
     def _entry_size(compiled: Any) -> int:
@@ -1671,6 +1685,7 @@ def compile_predict(
     use_trunk_pair_embedding: bool = True,
     triangle_kernel: str | None = None,
     cache_scope: str | None = None,
+    deterministic: bool = False,
 ) -> Callable[[jax.Array, Mapping[str, jnp.ndarray], InferenceParams], Prediction]:
     """Return a compiled ``predict`` bound to one configuration.
 
@@ -1700,6 +1715,11 @@ def compile_predict(
     the presence of an augmentation tape selects a separate graph identity.
     Padding uses the mask so the compact random stream is preserved without
     retaining every rollout draw at once.
+
+    ``deterministic`` compiles this executable for reduction orders that repeat
+    between runs, instead of asking for them process-wide; it is part of the
+    graph identity, so the two policies never share one program. See
+    :mod:`foldjax.models._compile_policy`.
     """
     table = _validated_representative_atoms(representative_atoms)
     layout = "1d" if config.cp_shards <= 1 else resolve_cp_layout(config)
@@ -1747,6 +1767,7 @@ def compile_predict(
                 cp_topology=_cp_topology_identity(mesh, layout=layout),
                 cache_scope=scope,
                 augmentation_taped=augmentation_tape is not None,
+                deterministic=deterministic,
             )
             bounded_cache = _persistent_cache_is_bounded(scope)
             cache_token = inspect_cache_scope(scope, repair_atime=bounded_cache)

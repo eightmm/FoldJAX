@@ -188,6 +188,25 @@ _SHARED_FLAG_SPECS: dict[tuple[str, ...], dict[str, object]] = {
         "action": "_StoreAction",
         "help": None,
     },
+    ("--deterministic-ops",): {
+        "dest": "deterministic_ops",
+        "type": None,
+        "default": "off",
+        "choices": ("off", "on"),
+        "required": False,
+        "nargs": None,
+        "metavar": None,
+        "const": None,
+        "action": "_StoreAction",
+        # Port-neutral on purpose: the option means the same thing on both, so
+        # neither port's measurement nor its own eager path belongs in `--help`.
+        "help": (
+            "compile this run's executables for reduction orders that "
+            "repeat between runs, instead of asking for them process-wide; it "
+            "costs wall time, and any path that runs op by op rather than as "
+            "one compiled graph refuses it instead of running without it"
+        ),
+    },
     ("--diffusion-attention-backend",): {
         "dest": "diffusion_attention_backend",
         "type": None,
@@ -304,6 +323,7 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--n-queries", "--n-keys",
     "--use-template", "--use-rna-msa",
     "--max-msa-depth", "--max-msa-rows",
+    "--deterministic-ops",
     "--diffusion-attention-backend", "--trunk-single-attention-backend",
     "--structural-single-attention-backend",
     "--no-graph-jit",

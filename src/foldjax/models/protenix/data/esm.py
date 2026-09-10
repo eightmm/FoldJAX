@@ -24,8 +24,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._jit_pool import BoundedJitPool
-from foldjax.models.protenix.compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 
 ESM_MODELS = {
     "esm2-3b": "esm2_t36_3B_UR50D.pt",
@@ -287,32 +287,27 @@ def _esm2_layer(
     return residual + x
 
 
-_compiled_esm2_layer = BoundedJitPool(
-    _esm2_layer,
-    static_argnames=("attention_heads", "layer_norm_eps"),
-    limit=8,
-)
-
-#: The same layer under the deterministic-reduction options.
+#: The layer's two executable owners, the second under the
+#: deterministic-reduction options.
 #:
 #: The ESM/ISM variants run this executable before the structure graph, so a
 #: `deterministic=on` prediction on those profiles is only as repeatable as
 #: its embeddings. The trailing embedding lookup and final layer norm in
 #: :func:`esm2_forward` are dispatched op by op and are outside any executable
 #: this option can reach.
-_compiled_esm2_layer_deterministic = BoundedJitPool(
+_compiled_esm2_layer, _compiled_esm2_layer_deterministic = policy_pools(
     _esm2_layer,
     static_argnames=("attention_heads", "layer_norm_eps"),
     limit=8,
-    compiler_options=DETERMINISTIC_COMPILER_OPTIONS,
 )
 
 
 def _layer_pool(deterministic: bool) -> BoundedJitPool:
     """The layer-executable owner for this run's reduction policy."""
-    if deterministic:
-        return _compiled_esm2_layer_deterministic
-    return _compiled_esm2_layer
+    return select(
+        (_compiled_esm2_layer, _compiled_esm2_layer_deterministic),
+        deterministic,
+    )
 
 
 def esm2_forward(

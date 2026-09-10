@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax.models import _representations
+from foldjax.models import _predict_flags, _representations
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -68,6 +68,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run eagerly; far slower, but skips a multi-minute compile",
     )
+    _predict_flags.add_deterministic_ops(parser)
     parser.add_argument(
         "--cp-devices",
         type=int,
@@ -169,6 +170,15 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
     args = parser.parse_args(argv)
     if args.no_cache and args.cache_dir is not None:
         parser.error("--cache-dir and --no-cache are mutually exclusive")
+    deterministic = args.deterministic_ops == "on"
+    if deterministic and args.no_compile:
+        # Settled before the archive is read: the eager path dispatches
+        # operation by operation and owns no executable to carry the policy.
+        print(
+            "deterministic reductions are carried by the compiled graph; "
+            "drop --no-compile or --deterministic-ops"
+        )
+        return 1
 
     import jax
     import jax.numpy as jnp
@@ -319,6 +329,7 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
             table,
             n_chain=n_chain,
             cache_scope=cache_name,
+            deterministic=deterministic,
         )
         elapsed = []
         for _ in range(max(1, args.repeats)):

@@ -192,19 +192,58 @@ def test_the_deterministic_knob_is_in_the_vocabulary_and_protenix_answers_it(
     assert "deterministic" not in options
 
 
-def test_asking_a_port_without_the_option_is_an_error(request_with) -> None:
-    """Only Protenix carries it; the others must say so rather than run."""
-    with pytest.raises(ValueError, match="boltz2 does not support deterministic"):
-        get_backend("boltz2").apply_sampling(request_with(deterministic="on"))
+#: Every port, and the native name each one renders `deterministic` as.
+#:
+#: Protenix and OpenDDE are driven by rendering argv for their own predict
+#: parsers, whose flag is `--deterministic-ops`; the other four are called
+#: through a Python signature whose parameter is `deterministic`.
+_DETERMINISTIC_NATIVE_NAMES = {
+    "alphafold3": "deterministic",
+    "boltz2": "deterministic",
+    "esmfold2": "deterministic",
+    "opendde": "deterministic_ops",
+    "openfold3": "deterministic",
+    "protenix": "deterministic_ops",
+}
 
 
-def test_the_option_is_part_of_the_protenix_compile_identity() -> None:
+@pytest.mark.parametrize(
+    ("model", "native"), sorted(_DETERMINISTIC_NATIVE_NAMES.items())
+)
+def test_every_port_answers_the_deterministic_knob(
+    request_with, model: str, native: str
+) -> None:
+    """One request, six models, one spelling -- including this one.
+
+    Repeatability that only one port can be asked for is repeatability a
+    cross-model benchmark cannot use: the caller has to know which port it is
+    talking to, and the five that cannot answer keep depending on a
+    process-wide `XLA_FLAGS`, which reaches every other model in the process.
+
+    Both values, because `off` is the one a bool-shaped port can get wrong:
+    `False` is a value its table supplies, not a missing entry.
+    `tests/test_execution_knob_coverage.py` pins which shape each port takes;
+    what matters here is that asking works and that the two answers differ.
+    """
+    off = get_backend(model).apply_sampling(request_with(deterministic="off"))
+    on = get_backend(model).apply_sampling(request_with(deterministic="on"))
+
+    assert native in off and native in on
+    assert off[native] != on[native]
+    assert off[native] in ("off", False) and on[native] in ("on", True)
+    assert type(off[native]) is type(on[native])
+
+
+@pytest.mark.parametrize(
+    ("model", "native"), sorted(_DETERMINISTIC_NATIVE_NAMES.items())
+)
+def test_the_option_is_part_of_every_port_s_compile_identity(
+    model: str, native: str
+) -> None:
     """A repeatable-reduction executable is a different executable.
 
     Two runs that differ only here compile different programs, so sharing one
     cache namespace would hand a run that asked for deterministic reductions
     the program built without them.
     """
-    from foldjax.backends.protenix import ProtenixBackend
-
-    assert "deterministic_ops" in ProtenixBackend.compile_options
+    assert native in get_backend(model).compile_options

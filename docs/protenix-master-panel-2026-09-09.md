@@ -208,6 +208,7 @@ time rather than silently fall back, which is what XLA already does.
 Routing the two batched gemms through cuBLAS instead of Triton gives the
 deterministic autotuner a candidate; the run compiles and costs 9.7% wall at
 3k tokens (13% at 1k with Triton still on). The port's `deterministic=on`
-option (`foldjax.models.protenix.compile_policy.DETERMINISTIC_COMPILER_OPTIONS`)
+option (`foldjax.models._compile_policy.DETERMINISTIC_COMPILER_OPTIONS`, shared
+by every port)
 therefore carries both keys, so it compiles at every bucket measured. Still
 opt-in; the default run is the one every other number here describes.

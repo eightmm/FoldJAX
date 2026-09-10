@@ -543,6 +543,12 @@ def predict(
     #: Distribute Boltz-2 atom query windows over CP rows. The required atom
     #: and token alignment is padded automatically and cropped from outputs.
     cp_atom_windows: bool = True,
+    #: Ask the compiler for reduction orders that repeat between runs, on this
+    #: prediction's own executables rather than through a process-wide XLA
+    #: environment that reaches every other model in the process. Off is the
+    #: run every recorded Boltz-2 measurement describes; on costs wall time,
+    #: unmeasured for this port's BF16 trunk.
+    deterministic: bool = False,
     steering_args: Mapping[str, object] | None = None,
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
@@ -666,8 +672,10 @@ def predict(
             f"compute_dtype must be one of {COMPUTE_DTYPES}, got {compute_dtype!r}"
         )
     dtype = {"float32": jnp.float32, "bfloat16": jnp.bfloat16}[compute_dtype]
-    compile_options = _compiler_options(compute_dtype)
-    jit_factory = functools.partial(_boltz_jit, compute_dtype=compute_dtype)
+    compile_options = _compiler_options(compute_dtype, deterministic=deterministic)
+    jit_factory = functools.partial(
+        _boltz_jit, compute_dtype=compute_dtype, deterministic=deterministic
+    )
     parameter_identity = _parameter_runtime_identity(
         jax,
         cp_devices=cp_devices,
@@ -732,6 +740,12 @@ def predict(
             "contact_guidance_update",
         )
     )
+    if steering_active and deterministic:
+        raise ValueError(
+            "deterministic reductions are compiled into the outer executable; "
+            "steering runs eagerly and builds none, so drop steering or "
+            "deterministic"
+        )
     if cp_devices > 1:
         if steering_active:
             raise ValueError(

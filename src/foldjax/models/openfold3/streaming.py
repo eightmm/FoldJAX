@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._compile_policy import compiler_options
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -135,12 +136,20 @@ class _StreamedGraph:
                 use_trunk_pair_embedding=identity.use_trunk_pair_embedding,
             )
 
-        wrap = jax.jit if compiled else lambda fn: fn
+        # All four stages or none: the promise is about this prediction, and a
+        # streamed run that compiled three of them under the policy and one
+        # without it is not the run the caller asked for. ``None`` keeps the
+        # default stages at exactly the arguments they always had.
+        options = compiler_options(deterministic=identity.deterministic)
+        policy = {} if options is None else {"compiler_options": options}
+        wrap = (lambda fn: jax.jit(fn, **policy)) if compiled else lambda fn: fn
         self.inputs = wrap(inputs)
         self.initialize = wrap(initialize)
         # The previous carry is dead after dispatch. Donation preserves the
         # fused loop's ability to reuse its large pair-state allocation.
-        self.cycle = jax.jit(cycle, donate_argnums=(4,)) if compiled else cycle
+        self.cycle = (
+            jax.jit(cycle, donate_argnums=(4,), **policy) if compiled else cycle
+        )
         self.finish = wrap(finish)
         self.config = config
 
@@ -202,12 +211,25 @@ def compile_streamed_predict(
     triangle_kernel=None,
     cache_scope=None,
     compiled=True,
+    deterministic=False,
 ):
-    """Bind a host scheduler; only fixed-shape stage functions are compiled."""
+    """Bind a host scheduler; only fixed-shape stage functions are compiled.
+
+    ``deterministic`` compiles all four stage functions for reduction orders
+    that repeat between runs; see :mod:`foldjax.models._compile_policy`.
+    """
     if config.msa_depth is None or config.msa_depth < 1:
         raise ValueError("streamed prediction requires a fixed positive msa_depth")
     if not compiled and config.cp_shards > 1:
         raise ValueError("context parallelism requires compiled streamed prediction")
+    if deterministic and not compiled:
+        # The uncompiled scheduler dispatches its stages operation by
+        # operation and owns no executable to carry the option. Running it
+        # anyway would report a deterministic run that was not one.
+        raise ValueError(
+            "deterministic reductions are carried by the compiled graph; "
+            "drop compiled=False or deterministic"
+        )
     table = inf._validated_representative_atoms(representative_atoms)
     layout = "1d" if config.cp_shards <= 1 else inf.resolve_cp_layout(config)
     config = config._replace(cp_layout=layout)
@@ -241,6 +263,7 @@ def compile_streamed_predict(
                 cp_topology=inf._cp_topology_identity(mesh, layout=layout),
                 cache_scope=scope,
                 augmentation_taped=augmentation is not None,
+                deterministic=deterministic,
             )
             bounded = inf._persistent_cache_is_bounded(scope)
             token = inf.inspect_cache_scope(scope, repair_atime=bounded)

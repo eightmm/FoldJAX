@@ -34,6 +34,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.opendde.models.structural_tokens import STRUCTURAL_TOKEN_ROLES
 
@@ -525,11 +526,32 @@ def _compute_shape_complementarity_samples(
     return jax.lax.map(run_one, coordinate)
 
 
-_compiled_shape_complementarity = BoundedJitPool(
+#: This stage's two executable owners, the second under the
+#: deterministic-reduction options: see `foldjax.models._compile_policy`.
+#:
+#: It is the second executable a prediction builds, and the one holding the
+#: atom-to-token scatter, so a run that asked for repeatable reductions and got
+#: the default program here would report them for confidence fields that do not
+#: have them.
+(
+    _compiled_shape_complementarity,
+    _compiled_shape_complementarity_deterministic,
+) = policy_pools(
     _compute_shape_complementarity_samples,
     static_argnames=("n_token", "is_structural", "settings"),
     limit=8,
 )
+
+
+def _shape_complementarity_pool(deterministic: bool) -> BoundedJitPool:
+    """The stage's executable owner for this run's reduction policy."""
+    return select(
+        (
+            _compiled_shape_complementarity,
+            _compiled_shape_complementarity_deterministic,
+        ),
+        deterministic,
+    )
 
 
 def compute_shape_complementarity_batched(
@@ -538,9 +560,14 @@ def compute_shape_complementarity_batched(
     atom_mask: jnp.ndarray,
     *,
     n_token: int | None = None,
+    deterministic: bool = False,
     **overrides: Any,
 ) -> dict[str, jnp.ndarray]:
-    """Resolve features once and run all samples in one bounded JIT owner."""
+    """Resolve features once and run all samples in one bounded JIT owner.
+
+    ``deterministic`` selects the owner compiled for repeatable reduction
+    orders, which is what this stage's atom-to-token scatter needs.
+    """
 
     if coordinate.ndim not in {2, 3} or coordinate.shape[-1] != 3:
         raise ValueError(
@@ -552,6 +579,15 @@ def compute_shape_complementarity_batched(
     # amortize dispatch over multiple samples; compiling one sample can change
     # a few float32 reduction low bits without reducing any repeated work.
     if coordinate.ndim == 2:
+        # That boundary owns no executable to carry the option, so a run that
+        # asked for it is refused rather than answered by the eager path. A
+        # prediction always has a sample axis; this is a direct caller.
+        if deterministic:
+            raise ValueError(
+                "deterministic reductions are carried by the compiled "
+                "stage, which the single-sample shape does not build; "
+                "pass a [N_sample, N_atom, 3] coordinate or deterministic"
+            )
         return compute_shape_complementarity(
             coordinate, features, atom_mask, **overrides
         )
@@ -560,7 +596,7 @@ def compute_shape_complementarity_batched(
     resolved = resolve_shape_comp_token_features(
         features, np.asarray(atom_mask), n_token
     )
-    return _compiled_shape_complementarity(
+    return _shape_complementarity_pool(deterministic)(
         coordinate,
         atom_mask,
         _graph_features(resolved),

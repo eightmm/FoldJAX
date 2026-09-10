@@ -1938,6 +1938,7 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
         assert seen["compile_options"] == {
             "triangle_kernel": None,
             "cache_scope": str(tmp_path / "cache"),
+            "deterministic": False,
         }
     generation_events = [
         "load",
@@ -2064,6 +2065,7 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
         "triangle_kernel": None,
         "cache_scope": str(tmp_path / "cache"),
         "compiled": True,
+        "deterministic": False,
     }
     np.testing.assert_array_equal(
         seen["noise_mask"],

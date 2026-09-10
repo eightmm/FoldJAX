@@ -14,6 +14,7 @@ import numpy as np
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
 from foldjax.models.boltz2.weights import resolve_native_weight_bundle
@@ -285,6 +286,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "triangle_backend": "cueq",
     "glu_backend": "xla",
     "bucket": False,
+    "deterministic": False,
 }
 
 
@@ -327,8 +329,12 @@ class Boltz2Backend(Backend):
     }
     # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
     # already spells the values the neutral way; the names are its own.
-    execution_options = {
+    execution_options: dict[str, tuple[str, dict[str, Any]]] = {
         **MATMUL_PRECISION_OPTION,
+        # Repeatable reduction orders, compiled into this run's executables.
+        # The shared entry, because this port is called through a Python
+        # signature and every API-driven port takes the same `bool`.
+        **DETERMINISTIC_API_OPTION,
         "dtype": ("compute_dtype", {"float32": "float32", "bfloat16": "bfloat16"}),
         "triangle_kernel": (
             "triangle_backend",
@@ -355,6 +361,7 @@ class Boltz2Backend(Backend):
         "triangle_backend",
         "glu_backend",
         "bucket",
+        "deterministic",
     )
 
     def __init__(self) -> None:
