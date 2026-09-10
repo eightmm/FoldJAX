@@ -458,3 +458,55 @@ def test_predict_names_the_policy_to_the_factory_only_when_asked(
     )
 
     assert seen == [None, True]
+
+
+def _one_block_call() -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Positional and keyword arguments for exactly one ESMC block."""
+    params = _toy_parameters()
+    ids, sequence_id = _toy_tokens()
+    return (
+        (
+            params["embed.weight"][ids],
+            esmc._block_parameters(params, "transformer.blocks.0"),
+        ),
+        {
+            "prefix": "",
+            "n_heads": N_HEADS,
+            "sequence_id": sequence_id,
+            "rope": esmc.rotary_tables(
+                ids.shape[1], D_MODEL // N_HEADS, _toy_settings().rope_base
+            ),
+            "residual_scale": _toy_settings().residual_scale,
+            "autocast_bfloat16": False,
+        },
+    )
+
+
+def test_the_block_owner_asks_for_nothing_when_unasked(recorded_jit) -> None:
+    """The third owner, recorded like the other two rather than inspected.
+
+    The list is cleared after the arguments are realized: building them runs
+    ordinary `jnp` work, and a scalar conversion of its own would otherwise be
+    recorded here as an extra entry.
+    """
+    args, kwargs = _one_block_call()
+    recorded_jit.clear()
+
+    esmc._block_pool(False)(*args, **kwargs)
+
+    assert recorded_jit == [{"static_argnames": esmc._BLOCK_STATIC_ARGNAMES}]
+
+
+def test_the_block_owner_carries_the_options_when_asked(recorded_jit) -> None:
+    """And the values come from the constant, not from a literal here."""
+    args, kwargs = _one_block_call()
+    recorded_jit.clear()
+
+    esmc._block_pool(True)(*args, **kwargs)
+
+    assert recorded_jit == [
+        {
+            "static_argnames": esmc._BLOCK_STATIC_ARGNAMES,
+            "compiler_options": DETERMINISTIC_COMPILER_OPTIONS,
+        }
+    ]
