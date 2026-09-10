@@ -97,7 +97,7 @@ def protenix_predict_static(
     guidance_features: Mapping[str, Any] | None = None,
     graph_jit: bool = True,
     # Repeatability instead of speed, off by default: see
-    # `foldjax.models.protenix.compile_policy` for the measurement and for why
+    # `foldjax.models._compile_policy` for the measurement and for why
     # the setting rides on the executable rather than on the process.
     deterministic: bool = False,
     cp_shards: int = 1,

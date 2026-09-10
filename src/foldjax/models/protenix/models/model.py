@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models import _capture
+from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
@@ -26,7 +27,6 @@ from foldjax.models._graph import (
     traceable_features,
 )
 from foldjax.models._jit_pool import BoundedJitPool
-from foldjax.models.protenix.compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 from foldjax.models.protenix.data.compact_categories import (
     COMPACT_REF_ATOM_CATEGORIES_MARKER,
     COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
@@ -703,31 +703,21 @@ def _protenix_infer_graph(
     )
 
 
-_compiled_protenix_infer = BoundedJitPool(
+#: The graph's two executable owners, the second under the
+#: deterministic-reduction options: see `foldjax.models._compile_policy` for
+#: why the policy is part of the build rather than an argument to the call.
+_compiled_protenix_infer, _compiled_protenix_infer_deterministic = policy_pools(
     _protenix_infer_graph,
     static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
-)
-
-#: The same graph, compiled under the deterministic-reduction options.
-#:
-#: A separate owner rather than an option on the call: the setting is part of
-#: how the executable is built, so the two cannot share one cache entry, and a
-#: run that asked for repeatable reductions must never be handed the program
-#: compiled without them. Neither pool is created lazily -- both are empty
-#: until something calls them -- and the default one keeps its name and its
-#: arguments, so a run that asks for nothing compiles what it always did.
-_compiled_protenix_infer_deterministic = BoundedJitPool(
-    _protenix_infer_graph,
-    static_argnames=(*GRAPH_STATIC_ARGNAMES, "params_treedef", "params_flags"),
-    compiler_options=DETERMINISTIC_COMPILER_OPTIONS,
 )
 
 
 def _infer_pool(deterministic: bool) -> BoundedJitPool:
     """The executable owner for this run's reduction policy."""
-    if deterministic:
-        return _compiled_protenix_infer_deterministic
-    return _compiled_protenix_infer
+    return select(
+        (_compiled_protenix_infer, _compiled_protenix_infer_deterministic),
+        deterministic,
+    )
 
 
 def protenix_infer_compiled(

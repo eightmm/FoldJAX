@@ -66,6 +66,29 @@ KNOBS: dict[str, tuple[str, ...]] = {
     "deterministic": ("off", "on"),
 }
 
+#: The `deterministic` entry a backend puts in its `execution_options`, in the
+#: two shapes the ports need.
+#:
+#: One neutral name, two renderings, because the ports are reached two ways:
+#: Protenix and OpenDDE are driven by rendering argv for their own predict
+#: parsers, whose `--deterministic-ops` takes the strings `off`/`on`, while
+#: Boltz-2, OpenFold3, ESMFold2 and AlphaFold 3 are called through a Python
+#: signature whose `deterministic` parameter is a `bool`. A backend imports
+#: the one that matches how it calls its port rather than writing a literal,
+#: so six copies cannot drift into six vocabularies -- the same reason
+#: `MATMUL_PRECISION_OPTION` is one object.
+#:
+#: The bool shape relies on `translate` testing `is None` rather than
+#: truthiness, so `off` -> `False` is a value and not a missing entry.
+DETERMINISTIC_ARGV_OPTION: dict[str, tuple[str, dict[str, Any]]] = {
+    "deterministic": ("deterministic_ops", {"off": "off", "on": "on"})
+}
+
+DETERMINISTIC_API_OPTION: dict[str, tuple[str, dict[str, Any]]] = {
+    "deterministic": ("deterministic", {"off": False, "on": True})
+}
+
+
 #: Old spellings, kept working. The new name is the documented one; these are
 #: what the scripts in this repository, `EXPERIMENT_LOG.md`'s reproduction
 #: commands and anyone's shell history already say.

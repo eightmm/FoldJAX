@@ -12,6 +12,7 @@ from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
 from foldjax.models.protenix.runtime_policy import MODEL_INFERENCE_DEFAULTS
@@ -240,9 +241,9 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         ),
         # Repeatable reduction orders, compiled into this run's executables
         # rather than asked for with a process-wide XLA environment variable.
-        # Protenix is the only port that carries it so far, so the neutral name
-        # is here and nowhere else; the value vocabulary is the neutral one.
-        "deterministic": ("deterministic_ops", {"off": "off", "on": "on"}),
+        # The shared entry, because this port is driven by rendering argv for
+        # its own predict parser and every argv port renders the same strings.
+        **DETERMINISTIC_ARGV_OPTION,
     }
     compile_options = (
         "cp_devices",
