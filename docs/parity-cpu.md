@@ -5,9 +5,18 @@ port's core is caught by a test rather than by the next GPU panel. This
 document says what that certifies, what it does not, where the fixtures live,
 and why the subset does not run in the CI job that exists today.
 
-The scaffold is in place. Boltz-2 is the first port case
-(`tests/parity/test_boltz2.py`, `manifest/boltz2.json`); the other four ports
-add their own manifest and replay test the same way.
+Five port cases ship with the scaffold (2026-09-10), one stored capture each,
+calibrated on this host's CPU (8 pinned cores): Protenix protein_1ubq (tier A
+trunk boundary relative RMS 0.025 + tier B coordinates 0.06 Å, 209 s),
+OpenFold3 protein_rna_1urn (tier A 1e-3 scaled max-abs, 156 s), Boltz-2
+protein_dna_ion_1aay (tier A relative RMSE 0.005 + tier B 0.01 Å, 167 s),
+OpenDDE protein_1ubq (tier B 0.005 Å on sample 0, 325 s) and ESMFold2
+protein_1ubq (tier B 0.03 Å with the native LM embedding injected, 59 s).
+Each manifest records the CPU calibration residual, wall time and source
+commit, and each module carries a tripwire test that a perturbed input trips
+the assertion. Run them with `pytest --run-cpu-parity -m cpu_parity
+tests/parity` after fetching the fixtures by digest (`python -m
+tests.parity.fetch --from <capture dir>`).
 
 ## What a passing run certifies -- and what it does not
 
