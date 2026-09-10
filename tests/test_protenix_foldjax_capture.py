@@ -10,6 +10,7 @@ import pytest
 
 from bench.protenix_foldjax_capture import (
     infer_boundary_report,
+    msa_cycle_index_tape,
     msa_cycles,
     save_jax_boundary,
 )
@@ -23,7 +24,11 @@ def _msa():
     }
     tape = {}
     for cycle in range(10):
-        rows = np.asarray([cycle % 3, (cycle + 1) % 3], np.int64)
+        # Ragged on purpose: cycle 4 selects one row where the rest select two,
+        # which is the shape the padded index tape has to represent.
+        rows = np.asarray(
+            [cycle % 3] if cycle == 4 else [cycle % 3, (cycle + 1) % 3], np.int64
+        )
         tape[f"{cycle}.rows"] = rows
         tape.update(
             {
@@ -41,6 +46,53 @@ def test_msa_replay_uses_indices_into_independent_rows():
     for index, cycle in enumerate(cycles):
         for field, values in cycle.items():
             np.testing.assert_array_equal(values, tape[f"{index}.selected.{field}"])
+
+
+def test_msa_index_tape_pads_short_cycles_and_masks_the_padding():
+    features, tape = _msa()
+    index_tape = msa_cycle_index_tape(features, tape)
+    assert index_tape.row_indices.shape == (10, 2)
+    assert index_tape.row_mask.shape == (10, 2)
+    assert index_tape.row_indices.dtype == np.int32
+    assert index_tape.row_mask.dtype == np.bool_
+    for cycle in range(10):
+        rows = tape[f"{cycle}.rows"]
+        real = int(rows.size)
+        assert index_tape.row_mask[cycle].sum() == real
+        np.testing.assert_array_equal(index_tape.row_indices[cycle, :real], rows)
+        # The ordinary sampler fills a short cycle with index zero and a false
+        # mask; matching it keeps one meaning of "padded row" in the trunk.
+        np.testing.assert_array_equal(index_tape.row_indices[cycle, real:], 0)
+        np.testing.assert_array_equal(index_tape.row_mask[cycle, real:], False)
+    assert index_tape.row_mask[4].tolist() == [True, False]
+
+
+def test_msa_index_tape_gathers_native_rows_back_out_of_foldjax_inputs():
+    """A tape nothing can reconstruct native's own values from is not evidence."""
+    features, tape = _msa()
+    index_tape = msa_cycle_index_tape(features, tape)
+    for cycle in range(10):
+        real = int(index_tape.row_mask[cycle].sum())
+        rows = index_tape.row_indices[cycle, :real]
+        for name, values in features.items():
+            np.testing.assert_array_equal(
+                np.asarray(values)[rows], tape[f"{cycle}.selected.{name}"]
+            )
+
+
+@pytest.mark.parametrize("defect", ["extra", "missing", "rows", "values"])
+def test_msa_index_tape_rejects_the_same_unverified_tapes(defect):
+    features, tape = _msa()
+    if defect == "extra":
+        tape["unknown"] = np.ones(1)
+    elif defect == "missing":
+        tape.pop("9.rows")
+    elif defect == "rows":
+        tape["0.rows"] = np.asarray([-1, 0])
+    else:
+        features["deletion_value"][0, 0] = 9
+    with pytest.raises(ValueError):
+        msa_cycle_index_tape(features, tape)
 
 
 @pytest.mark.parametrize("defect", ["extra", "missing", "rows", "values"])
@@ -70,10 +122,11 @@ def test_bf16_output_storage_retains_dtype_and_all_numeric_bits(tmp_path):
     assert metadata["bf"]["dtype"] == "bfloat16"
 
 
+@pytest.mark.parametrize("materialised", [False, True])
 @pytest.mark.parametrize("graph_jit", [True, False])
 @pytest.mark.parametrize("aggregation_control", [False, True, "mismatch"])
 def test_replay_wires_complete_tape_through_public_prediction(
-    monkeypatch, tmp_path, graph_jit, aggregation_control
+    monkeypatch, tmp_path, graph_jit, aggregation_control, materialised
 ):
     from bench import protenix_closure_report as report
     from bench import protenix_foldjax_capture as capture
@@ -159,6 +212,7 @@ def test_replay_wires_complete_tape_through_public_prediction(
         input=input_path,
         weights=weights,
         fp32_atom_aggregation=aggregation_control is True,
+        materialised_msa_cycles=materialised,
     )
     if aggregation_control == "mismatch":
         with pytest.raises(ValueError, match="aggregation policies differ"):
@@ -167,13 +221,27 @@ def test_replay_wires_complete_tape_through_public_prediction(
     capture.replay(options)
     for name, expected in tape.items():
         np.testing.assert_array_equal(observed[name], expected)
-    assert len(observed["cycle_msa_features"]) == 10
-    assert observed["cycle_msa_index_tape"] is None
+    # Exactly one carrier reaches the trunk: the two are mutually exclusive
+    # there, and the CLI's own freshly sampled tape must not survive either way.
+    if materialised:
+        assert len(observed["cycle_msa_features"]) == 10
+        assert observed["cycle_msa_index_tape"] is None
+    else:
+        assert observed["cycle_msa_features"] is None
+        index_tape = observed["cycle_msa_index_tape"]
+        assert index_tape.row_indices.shape == (10, 2)
+        np.testing.assert_array_equal(
+            np.asarray(index_tape.row_indices[0]), msa["0.rows"]
+        )
+        np.testing.assert_array_equal(np.asarray(index_tape.row_mask[4]), [True, False])
     assert observed["use_diffusion_efficient_fusion"] is True
     assert json.loads((out / "capture-complete.json").read_text())["passed"]
     requested = json.loads((out / "requested-wrapper-options.json").read_text())
     boundary = json.loads((out / "infer-boundary.json").read_text())
     assert not requested["use_pairformer_scan"]
+    assert requested["replay_msa_cycle_path"] == (
+        "materialised" if materialised else "index_tape"
+    )
     for name in ("use_pairformer_scan", "use_confidence_scan", "use_diffusion_scan"):
         assert boundary["options"][name] is graph_jit
         assert observed[name] is graph_jit
@@ -193,13 +261,29 @@ def test_replay_wires_complete_tape_through_public_prediction(
             "dtype": str(expected.dtype),
             "content_sha256": hashlib.sha256(expected.tobytes()).hexdigest(),
         }
-    cycles = boundary["tape_inputs"]["cycle_msa_features"]
-    assert len(cycles["leaves"]) == 30
-    for index, cycle in enumerate(observed["cycle_msa_features"]):
-        for field, value in cycle.items():
-            signature = cycles["leaves"][f"{index}.{field}"]
+    if materialised:
+        assert boundary["tape_inputs"]["cycle_msa_index_tape"] == {"present": False}
+        cycles = boundary["tape_inputs"]["cycle_msa_features"]
+        assert len(cycles["leaves"]) == 30
+        for index, cycle in enumerate(observed["cycle_msa_features"]):
+            for field, value in cycle.items():
+                signature = cycles["leaves"][f"{index}.{field}"]
+                assert (
+                    signature["content_sha256"]
+                    == hashlib.sha256(np.asarray(value).tobytes()).hexdigest()
+                )
+    else:
+        assert boundary["tape_inputs"]["cycle_msa_features"] == {"present": False}
+        # A named tuple flattens positionally, so the leaf keys are ordinals;
+        # the pytree string is what records which field each one is.
+        carried = boundary["tape_inputs"]["cycle_msa_index_tape"]
+        assert "MSACycleIndexTape" in carried["pytree"]
+        assert set(carried["leaves"]) == {"0", "1"}
+        for leaf, value in zip(
+            ("0", "1"), observed["cycle_msa_index_tape"], strict=True
+        ):
             assert (
-                signature["content_sha256"]
+                carried["leaves"][leaf]["content_sha256"]
                 == hashlib.sha256(np.asarray(value).tobytes()).hexdigest()
             )
     provenance = json.loads((out / "provenance.json").read_text())

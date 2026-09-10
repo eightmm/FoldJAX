@@ -132,31 +132,73 @@ def record_features(input_path, features, out):
     )
 
 
-def msa_cycles(features, tape):
-    """Gather native-selected rows from independently verified FoldJAX inputs."""
-    fields = ("msa", "has_deletion", "deletion_value")
+_MSA_FIELDS = ("msa", "has_deletion", "deletion_value")
+
+
+def verified_msa_rows(features, tape):
+    """Bind native's row choices to independently verified FoldJAX rows.
+
+    The binding is the evidence that both arms index one alignment: every row
+    the native capture chose is gathered out of FoldJAX's own preprocessing and
+    required to reproduce, bit for bit, the values the native run recorded.
+    Nothing downstream may consume these indices without that check passing.
+    """
     expected_keys = {
         f"{i}.{field}"
         for i in range(10)
-        for field in ("rows", *(f"selected.{name}" for name in fields))
+        for field in ("rows", *(f"selected.{name}" for name in _MSA_FIELDS))
     }
     if set(tape) != expected_keys:
         raise ValueError("unmapped or incomplete native MSA tape schema")
-    cycles = []
+    selected = []
     for i in range(10):
         rows = tape[f"{i}.rows"]
         if rows.ndim != 1 or rows.dtype.kind not in "iu" or not len(rows):
             raise ValueError("native MSA indices must be a nonempty integer vector")
         if (rows < 0).any() or (rows >= len(features["msa"])).any():
             raise ValueError("native MSA row outside independent alignment")
-        cycle = {}
-        for name in fields:
+        for name in _MSA_FIELDS:
             value = np.asarray(features[name])[rows]
             if not np.array_equal(value, tape[f"{i}.selected.{name}"]):
                 raise ValueError(f"independent MSA selection differs: {i}.{name}")
-            cycle[name] = value
-        cycles.append(cycle)
-    return tuple(cycles)
+        selected.append(rows)
+    return tuple(selected)
+
+
+def msa_cycles(features, tape):
+    """Gather native-selected rows from independently verified FoldJAX inputs."""
+    return tuple(
+        {name: np.asarray(features[name])[rows] for name in _MSA_FIELDS}
+        for rows in verified_msa_rows(features, tape)
+    )
+
+
+def msa_cycle_index_tape(features, tape):
+    """Carry native's row choices as indices instead of ten materialized copies.
+
+    The trunk gathers one cycle inside the recycle scan, so the device only ever
+    holds the raw alignment plus ``[cycle, row]`` indices; the materialized form
+    hands it every cycle's token-wide rows at once, and at Protenix's released
+    depth those are tens of gibibytes the graph never needs more than one of.
+
+    Cycles select different row counts, so the shorter ones are padded the way
+    ``sample_msa_cycle_index_tape`` pads them: index zero, mask ``False``.
+    ``_materialize_msa_cycle_from_index_tape`` zeroes every masked row and hands
+    the MSA module a matching ``msa_mask``, which keeps padded rows out of the
+    outer product's numerator and out of its row-count denominator alike.
+    """
+    from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
+
+    rows = verified_msa_rows(features, tape)
+    if int(np.asarray(features["msa"]).shape[-2]) > np.iinfo(np.int32).max:
+        raise ValueError("MSA depth exceeds the compact int32 row-index range")
+    padded_depth = max(int(cycle.size) for cycle in rows)
+    row_indices = np.zeros((len(rows), padded_depth), dtype=np.int32)
+    row_mask = np.zeros((len(rows), padded_depth), dtype=bool)
+    for cycle, chosen in enumerate(rows):
+        row_indices[cycle, : chosen.size] = chosen
+        row_mask[cycle, : chosen.size] = True
+    return MSACycleIndexTape(row_indices=row_indices, row_mask=row_mask)
 
 
 def save_jax_boundary(path, value):
@@ -213,6 +255,9 @@ def replay(args):
         raise ValueError("native and FoldJAX input documents differ")
     native_config = json.loads((reference / "effective-config.json").read_text())
     fp32_aggregation = getattr(args, "fp32_atom_aggregation", False)
+    # The index tape is the default because the materialized form scales with
+    # rows x tokens x cycles; the flag keeps the earlier arm reproducible.
+    materialised_msa = getattr(args, "materialised_msa_cycles", False)
     policy_file = reference / "operator-policy.json"
     native_aggregation = (
         json.loads(policy_file.read_text()).get("fp32_atom_aggregation", False)
@@ -276,7 +321,11 @@ def replay(args):
         save(args.out / "input-audit.json", report)
         if not report["passed"]:
             raise ValueError(f"independent input gate failed: {report}")
-        selected["cycles"] = msa_cycles(features, msa)
+        selected["cycles"] = (
+            msa_cycles(features, msa)
+            if materialised_msa
+            else msa_cycle_index_tape(features, msa)
+        )
         seen["features"] += 1
         return features
 
@@ -309,22 +358,30 @@ def replay(args):
         kwargs["use_diffusion_efficient_fusion"] = native_config[
             "enable_efficient_fusion"
         ]
-        save(
-            args.out / "requested-wrapper-options.json",
-            {
-                name: str(value) if name == "trunk_dtype" else value
-                for name, value in kwargs.items()
-                if name not in {"cycle_msa_index_tape", "guidance_features"}
-            },
+        options = {
+            name: str(value) if name == "trunk_dtype" else value
+            for name, value in kwargs.items()
+            if name not in {"cycle_msa_index_tape", "guidance_features"}
+        }
+        # Not a wrapper argument: which of the two equivalent MSA carriers this
+        # replay handed the trunk. Recorded here rather than added to `kwargs`,
+        # which travels into the model call and the inference-entry report.
+        options["replay_msa_cycle_path"] = (
+            "materialised" if materialised_msa else "index_tape"
         )
+        save(args.out / "requested-wrapper-options.json", options)
         kwargs.update(
             {
                 name: jnp.asarray(tape[name])
                 for name in ("init_noise", "step_noises", "rotations", "translations")
             }
         )
-        kwargs["cycle_msa_index_tape"] = None
-        kwargs["cycle_msa_features"] = jax.tree.map(jnp.asarray, selected["cycles"])
+        # Mutually exclusive at the trunk, so both are always set explicitly:
+        # the CLI supplies its own freshly sampled tape, which this replay must
+        # displace rather than let ride alongside native's selection.
+        carried = jax.tree.map(jnp.asarray, selected["cycles"])
+        kwargs["cycle_msa_features"] = carried if materialised_msa else None
+        kwargs["cycle_msa_index_tape"] = None if materialised_msa else carried
         if dropout_masks is not None:
             kwargs["cycle_pair_dropout_keep_masks"] = jnp.asarray(dropout_masks)
             kwargs["pair_dropout_rate"] = dropout_rate
@@ -422,6 +479,7 @@ def main():
     parser.add_argument("--weight-audit", type=Path)
     parser.add_argument("--calibration", type=Path)
     parser.add_argument("--fp32-atom-aggregation", action="store_true")
+    parser.add_argument("--materialised-msa-cycles", action="store_true")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)
     if args.reference is not None:
