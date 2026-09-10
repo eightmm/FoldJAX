@@ -277,6 +277,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--diffusion-scan",
     "--sampler-scan", "--no-sampler-scan",
     "--denoiser-jit",
+    "--deterministic-ops",
     "--diffusion-attention-backend", "--trunk-single-attention-backend",
     "--trunk-triangle-attention-backend",
     "--confidence-triangle-attention-backend",
