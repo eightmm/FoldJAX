@@ -117,7 +117,21 @@ def main(argv=None):
     injection.add_argument("--inject-native-trunk", action="store_true")
     injection.add_argument("--inject-candidate-trunk", type=Path)
     parser.add_argument("--native-components", choices=("single", "pair"))
+    parser.add_argument(
+        "--streamed",
+        action="store_true",
+        help="replay through the host-streamed recycling graph the CLI uses "
+        "(chunked outer-product-mean, per-cycle stage executables) instead of "
+        "the fused single program; the fused graph materialises the "
+        "[n_token, n_token, c_msa^2] outer product, 35 GiB at 3k tokens",
+    )
     args = parser.parse_args(argv)
+    if args.streamed and (
+        args.capture_trunk
+        or args.inject_native_trunk
+        or args.inject_candidate_trunk is not None
+    ):
+        parser.error("--streamed cannot capture or inject the trunk")
     if args.private_pair_operators and (
         args.backend != "xla" or args.inject_native_trunk
         or args.inject_candidate_trunk is not None
@@ -209,6 +223,7 @@ def main(argv=None):
         "tape_sha256": digest(args.capture / "tape.npz"),
         "not_verified": ["independent preprocessing", "device tape consumption",
                          "native tuned chunks", "warm performance"],
+        "execution": "host_streamed_cycles" if args.streamed else "fused",
     })
     state = load_checkpoint(args.checkpoint)
     prefix = resolve_model_prefix(state, None)
@@ -228,8 +243,14 @@ def main(argv=None):
 
         pair_context = private_pair_operators()
     with injection_context, pair_context:
-        run = compile_predict(config, representative_atom_table(),
-                              triangle_kernel=args.backend)
+        if args.streamed:
+            from foldjax.models.openfold3.streaming import compile_streamed_predict
+
+            run = compile_streamed_predict(config, representative_atom_table(),
+                                           triangle_kernel=args.backend)
+        else:
+            run = compile_predict(config, representative_atom_table(),
+                                  triangle_kernel=args.backend)
         started = time.perf_counter()
         result = run(jax.random.key(101), features, params, noise_tape=tape.noise,
                      augmentation_tape=tape.augmentation())
