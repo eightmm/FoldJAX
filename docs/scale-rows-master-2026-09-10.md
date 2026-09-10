@@ -123,7 +123,12 @@ batched row is 591 s / 45.2 GiB and the sequential one 1088 s / 44.9 GiB: the
 17 GiB attention-logit transient the option removes is not at the peak
 either, so the option buys 0.3 GiB for 84% more wall. It stays available and
 is not recommended; ESMFold2's wall at 3k is the trunk arena, as the memory
-note says, and upstream cannot run 2k at all.
+note says, and upstream cannot run 2k at all. Two batched processes at 2k
+(base5 vs base5-B) are bitwise identical, so the 0.65-2.6 Å per-atom
+differences between the batched and the sequential rows are the sequential
+path's own rounding route (per-sample attention kernels) amplified by the
+model, not process scatter: arithmetically equivalent (CPU 1e-6), not
+bitwise, as with any chunked axis.
 
 Mixed upstream rows at 3k/4k: OpenFold3 3k 1500 s / 81.8 GiB (FoldJAX 1013 /
 50.1), Protenix 3k 760 / 57.4 (699 / 42.1) and 4k 1666 / 78.6 (1509 / 66.5),
