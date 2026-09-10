@@ -63,5 +63,10 @@ recommendation. The regression is filed upstream against PR #441.
 Baseline, released deletions (the scale row `L1000_3og2-boltz2-scale`, 1003
 residues, single chain): against the deposited 3OG2 chain A (986 CA matched by
 sequence alignment), CA RMSD 0.93-1.41 Å and TM-score 0.990-0.995 over the
-five samples. The `msa_deletions=restored` arm (job 1045) and a released
-control from the same snapshot (job 1046) are compared the same way below.
+five samples. The `msa_deletions=restored` arm (job 1045, same tape and snapshot as
+the released control 1046): CA RMSD 0.93-1.41 Å and TM 0.990-0.995 over the
+same five samples, per sample within 0.04 Å of the released arm's numbers;
+wall 92 s and peak 12.3 GiB unchanged. On this case the 30,519 restored
+deletion records move the prediction by less than the model's own sample
+spread against the deposited structure. The option stays opt-in; its value
+on MSA-poor or insertion-rich targets is not measured here.
