@@ -25,7 +25,7 @@ upstream runner ended with zero samples and the card full.
 | --- | --- | --- | --- | --- | --- |
 | OpenFold3 | 100 / 9.1 vs 139 / 14.0 | 404 / 24.5 vs 629 / 44.2 | 951 / 49.2 (`cueq`), 863 / 42.5 (`cueq-full`) vs 1430 / 79.7 | OOM (78) vs upstream OOM | OOM (110) vs upstream OOM |
 | Boltz-2 | 91 / 12.3 vs 132 / 15.8 | 318 / 21.3 vs 466 / 46.6 | 806 / 39.9 vs upstream OOM | 3081 / 64.2 vs upstream OOM | OOM (85) vs upstream OOM |
-| Protenix | 65 / 6.7 vs 96 / 12.6 | 210 / 22.9 vs 242 / 40.8 | 579 / 41.2 vs 650 / 55.9 | 2206 / 73.5 vs (running) | OOM (94) vs upstream OOM |
+| Protenix | 65 / 6.7 vs 96 / 12.6 | 210 / 22.9 vs 242 / 40.8 | 579 / 41.2 vs 650 / 55.9 | 2206 / 73.5 vs 2193 / 86.4 | OOM (94) vs upstream OOM |
 | OpenDDE | 235 / 41.3 vs 247 / 57.0 | OOM (23) vs upstream OOM | OOM (48) vs upstream OOM | OOM (89) vs upstream OOM | - |
 | ESMFold2 | 155 / 14.4 | 451 / 45.0 | OOM (86) | OOM (32) | - |
 | AlphaFold3 | 110 / 4.7 | 236 / 14.6 | 459 / 26.7 | 904 / 52.2 | - |
@@ -148,3 +148,14 @@ download). The 30 FoldJAX rows (5 cases x 6 ports) were submitted at 15:30
 and are running; their upstream rows follow once each FoldJAX row has
 materialised its native input. Results land in the same snapshot and will be
 appended here.
+
+### Mixed rows so far (FoldJAX "s / GiB / max ipTM"; upstream beside it once it lands)
+
+| case | tokens | OpenFold3 | Boltz-2 | Protenix | OpenDDE | ESMFold2 | AlphaFold3 |
+| --- | ---: | --- | --- | --- | --- | --- | --- |
+| mixed_1k_4xww | 1138 | 132 / 9.2 / 0.90 | 111 / 10.4 / 0.95 | 80 / 11.8 / 0.94 | 302 / 52.6 / 0.94 | 186 / 14.7 / 0.89 | 81 / 5.6 / 0.94 |
+| mixed_2k_7y7q | 2097 | 459 / 26.4 / 0.77 | 348 / 18.4 / 0.87 | running | OOM (fp32 pair wall, as on the protein set) | running | running |
+
+ESMFold2 reports ipTM from its own head; AlphaFold3's column has no upstream.
+The Protenix 4k protein row is the first pair where FoldJAX is not faster
+(2206 vs 2193 s) while still 15% lighter (73.5 vs 86.4 GiB).
