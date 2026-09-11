@@ -250,6 +250,42 @@ def _cast_trunk_params(params: Params, dtype: jnp.dtype) -> Params:
     return jax.tree_util.tree_map_with_path(cast, params)
 
 
+#: Diffusion score-model subtrees that stay FP32 under `diffusion_compute_dtype`.
+#:
+#: Both are the denoiser's coordinate I/O boundary: `r_to_q_trans` reads the
+#: noisy atom positions into the atom encoder and `atom_feat_to_atom_pos_update`
+#: writes the position update back out to the FP32 Euler step. Rounding either
+#: one costs precision on coordinates rather than on an activation, which is
+#: the trade the knob is not making.
+_FP32_SCORE_ISLANDS: tuple[tuple[str, ...], ...] = (
+    ("atom_attention_encoder", "r_to_q_trans"),
+    ("atom_attention_decoder", "atom_feat_to_atom_pos_update"),
+)
+
+
+def _cast_score_params(params: Params, dtype: jnp.dtype) -> Params:
+    """Select low-precision Linear kernels in the diffusion score model.
+
+    Mirrors `_cast_trunk_params`: only `kernel` leaves move, so norm affine,
+    embeddings and biases keep their original width and `linear` narrows the
+    bias at the call site inside the GEMM accumulator.
+    """
+
+    def cast(path, value):
+        keys = tuple(getattr(entry, "key", None) for entry in path)
+        if any(keys[: len(island)] == island for island in _FP32_SCORE_ISLANDS):
+            return value
+        if (
+            keys[-1:] == ("kernel",)
+            and hasattr(value, "dtype")
+            and jnp.issubdtype(value.dtype, jnp.floating)
+        ):
+            return value.astype(dtype)
+        return value
+
+    return jax.tree_util.tree_map_with_path(cast, params)
+
+
 def boltz2_graph_score_forward(
     params: Params,
     feats: Mapping[str, jnp.ndarray],
@@ -361,9 +397,19 @@ def boltz2_sample_forward(
     matmul_precision: str = "highest",
     attention_backend: str = "xla",
     trunk_atom_attention_backend: str | None = None,
+    #: Override only the diffusion score model's attention. `None` follows the
+    #: global `attention_backend`, which is what the released run does; the
+    #: fused spellings are an experiment knob and leave the trunk and
+    #: confidence Pairformers untouched.
+    diffusion_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
     glu_backend: str = "xla",
     compute_dtype: jnp.dtype = jnp.float32,
+    #: Width the diffusion score model's Linear kernels run at. `float32` is
+    #: the released island (upstream disables autocast around
+    #: `structure_module.sample`); `bfloat16` is opt-in and keeps the residual
+    #: stream, the sampler state and the coordinate I/O boundary in FP32.
+    diffusion_compute_dtype: jnp.dtype | str = jnp.float32,
     mesh: object | None = None,
     token_axis: str = "tok",
     shard_tokens: bool = True,
@@ -436,6 +482,37 @@ def boltz2_sample_forward(
             "trunk compute"
         )
     low_precision = compute_dtype != jnp.float32
+    score_dtype = jnp.dtype(diffusion_compute_dtype)
+    if score_dtype not in (jnp.dtype(jnp.float32), jnp.dtype(jnp.bfloat16)):
+        raise ValueError(
+            "diffusion_compute_dtype must be float32 or bfloat16; got "
+            f"{score_dtype.name!r}"
+        )
+    score_low = score_dtype != jnp.dtype(jnp.float32)
+    if diffusion_attention_backend == attention_backend:
+        diffusion_attention_backend = None
+    if diffusion_attention_backend not in (None, "tokamax", "triton", "xla"):
+        raise ValueError(
+            "diffusion_attention_backend must be 'tokamax', 'triton', 'xla', "
+            f"or null; got {diffusion_attention_backend!r}"
+        )
+    if diffusion_attention_backend == "triton" and not score_low:
+        raise ValueError(
+            "diffusion_attention_backend='triton' requires "
+            "diffusion_compute_dtype='bfloat16'"
+        )
+    if _cp_mesh() is not None and diffusion_attention_backend not in (None, "xla"):
+        # The 2-D grid routes pair-bias attention through its own collective
+        # (`pair_bias_attention_2d`), which never reaches the backend switch.
+        raise ValueError(
+            "context parallelism requires diffusion_attention_backend='xla' "
+            "or null"
+        )
+    score_attention_backend = (
+        attention_backend
+        if diffusion_attention_backend is None
+        else diffusion_attention_backend
+    )
     # Native sampling disables autocast, but conditioning has mixed-precision
     # pairwise/bias projections around an FP32 atom encoder. Keep the original
     # diffusion weights/features and apply that policy at the operation sites.
@@ -472,6 +549,13 @@ def boltz2_sample_forward(
             for k, v in trunk.items()
         }
     diffusion_params = params["conditioned_diffusion"]
+    if score_low:
+        diffusion_params = {
+            **diffusion_params,
+            "score_model": _cast_score_params(
+                diffusion_params["score_model"], score_dtype
+            ),
+        }
     diffusion_conditioning = diffusion_conditioning_forward(
         diffusion_params["diffusion_conditioning"],
         s_trunk=trunk["s"],
@@ -483,6 +567,9 @@ def boltz2_sample_forward(
         lazy_token_trans_bias=lazy_token_trans_bias,
         atom_context_parallel=atom_context_parallel,
         compute_dtype=compute_dtype if low_precision else None,
+        # The pair bias is projected once and held for every denoising step;
+        # under the knob it is stored at the width the score model consumes.
+        bias_dtype=score_dtype if score_low else None,
     )
     sigmas = _sample_schedule(
         num_sampling_steps,
@@ -529,10 +616,17 @@ def boltz2_sample_forward(
         # cast to r_noisy's score-compute dtype before its AdaLN/gate
         # projections. This is a no-op for the released fp32 diffusion island,
         # but matters for custom bf16/fp16 score weights.
-        score_compute_dtype = score_params["s_to_a_linear"]["linear"][
-            "kernel"
-        ].dtype
-        atom_c = diffusion_conditioning["c"].astype(score_compute_dtype)
+        #
+        # `diffusion_compute_dtype` owns the choice when it is on, rather than
+        # inheriting it from the kernel it just cast: the AdaLN normalizations
+        # these terms come out of have no FP32 upcast of their own, so the
+        # conditioning they read stays FP32 and each projection narrows itself.
+        atom_c_dtype = (
+            jnp.float32
+            if score_low
+            else score_params["s_to_a_linear"]["linear"]["kernel"].dtype
+        )
+        atom_c = diffusion_conditioning["c"].astype(atom_c_dtype)
         atom_c = atom_c.reshape(
             atom_c.shape[0] * (atom_c.shape[1] // 32),
             32,
@@ -665,12 +759,13 @@ def boltz2_sample_forward(
                 sigma_data=sigma_data,
                 eps=eps,
                 use_scan=score_scan,
-                attention_backend=attention_backend,
+                attention_backend=score_attention_backend,
                 token_attention_chunk=chunks["token_attention_chunk"],
                 token_layers=token_layers,
                 atom_context_parallel=atom_context_parallel,
                 atom_encoder_s_terms=atom_encoder_s_terms,
                 atom_decoder_s_terms=atom_decoder_s_terms,
+                score_compute_dtype=score_dtype if score_low else None,
             )
             if alignment_reverse_diff:
                 atom_coords_noisy = _weighted_rigid_align(
@@ -764,12 +859,13 @@ def boltz2_sample_forward(
             sigma_data=sigma_data,
             eps=eps,
             use_scan=score_scan,
-            attention_backend=attention_backend,
+            attention_backend=score_attention_backend,
             token_attention_chunk=chunks["token_attention_chunk"],
             token_layers=token_layers,
             atom_context_parallel=atom_context_parallel,
             atom_encoder_s_terms=atom_encoder_s_terms,
             atom_decoder_s_terms=atom_decoder_s_terms,
+            score_compute_dtype=score_dtype if score_low else None,
         )
 
         if steering_on:
@@ -1385,23 +1481,33 @@ def _preconditioned_score_forward(
     atom_context_parallel: bool = False,
     atom_encoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
     atom_decoder_s_terms: tuple[jnp.ndarray, ...] | None = None,
+    score_compute_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     padded_sigma = jnp.reshape(sigma, (1, 1, 1))
     scaled_input = r_noisy / jnp.sqrt(padded_sigma**2 + sigma_data**2)
-    # Run the score network activations in the param compute dtype (bf16/fp16
-    # when opted in), but keep the c_skip/c_out preconditioning (which feeds the
-    # fp32 Euler step) in fp32. r_noisy itself stays fp32.
-    compute_dtype = params["s_to_a_linear"]["linear"]["kernel"].dtype
+    if score_compute_dtype is None:
+        # Run the score network activations in the param compute dtype
+        # (bf16/fp16 when custom low-precision score weights are loaded), but
+        # keep the c_skip/c_out preconditioning (which feeds the fp32 Euler
+        # step) in fp32. r_noisy itself stays fp32.
+        activation_dtype = params["s_to_a_linear"]["linear"]["kernel"].dtype
+    else:
+        # `diffusion_compute_dtype`: the kernels are already low precision
+        # and `_linear` narrows each GEMM's input, so nothing is pre-rounded
+        # here. The scaled coordinates in particular reach `r_to_q_trans`,
+        # which the knob leaves fp32, at full width. `times` is still narrowed
+        # inside the fourier projection, as autocast would.
+        activation_dtype = r_noisy.dtype
     times = jnp.full(
         (r_noisy.shape[0],),
         jnp.log(sigma / sigma_data) * 0.25,
-        dtype=compute_dtype,
+        dtype=activation_dtype,
     )
     r_update = diffusion_score_model_forward(
         params,
         s_inputs=s_inputs,
         s_trunk=s_trunk,
-        r_noisy=scaled_input.astype(compute_dtype),
+        r_noisy=scaled_input.astype(activation_dtype),
         times=times,
         feats=feats,
         diffusion_conditioning=diffusion_conditioning,
@@ -1414,6 +1520,7 @@ def _preconditioned_score_forward(
         atom_context_parallel=atom_context_parallel,
         atom_encoder_s_terms=atom_encoder_s_terms,
         atom_decoder_s_terms=atom_decoder_s_terms,
+        score_compute_dtype=score_compute_dtype,
     )
     r_update = r_update.astype(jnp.float32)
     c_skip = sigma_data**2 / (padded_sigma**2 + sigma_data**2)

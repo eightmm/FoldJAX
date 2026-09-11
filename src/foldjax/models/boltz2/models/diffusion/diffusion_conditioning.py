@@ -51,8 +51,17 @@ def diffusion_conditioning_forward(
     lazy_token_trans_bias: bool = False,
     atom_context_parallel: bool = False,
     compute_dtype: jnp.dtype | None = None,
+    bias_dtype: jnp.dtype | None = None,
 ) -> dict[str, jnp.ndarray]:
-    """Run diffusion conditioning, optionally retaining CP atom ownership."""
+    """Run diffusion conditioning, optionally retaining CP atom ownership.
+
+    ``compute_dtype`` is the trunk's AMP policy for the conditioning
+    projections themselves. ``bias_dtype`` is the separate width the emitted
+    pair-bias tensors are stored in: ``None`` keeps the historical FP32 score
+    island, and the BF16 diffusion knob passes ``bfloat16`` so the atom and
+    token biases are carried across the whole denoising loop at half the
+    bytes and reach a fused kernel without a cast.
+    """
 
     active = atom_context_parallel and cp_mesh() is not None
     z = pairwise_conditioning_forward(
@@ -100,10 +109,18 @@ def diffusion_conditioning_forward(
         "atom_to_token_idx": atom_index,
         "to_keys": to_keys,
         "atom_enc_bias": _projection_list_forward(
-            params["atom_enc_proj_z"], p, eps, compute_dtype=compute_dtype
+            params["atom_enc_proj_z"],
+            p,
+            eps,
+            compute_dtype=compute_dtype,
+            out_dtype=bias_dtype,
         ),
         "atom_dec_bias": _projection_list_forward(
-            params["atom_dec_proj_z"], p, eps, compute_dtype=compute_dtype
+            params["atom_dec_proj_z"],
+            p,
+            eps,
+            compute_dtype=compute_dtype,
+            out_dtype=bias_dtype,
         ),
     }
     if lazy_token_trans_bias:
@@ -119,7 +136,7 @@ def diffusion_conditioning_forward(
             out["token_trans_bias_precision"] = jnp.zeros((), compute_dtype)
     else:
         out["token_trans_bias"] = _projection_list_forward(
-            token_proj, z, eps, compute_dtype=compute_dtype
+            token_proj, z, eps, compute_dtype=compute_dtype, out_dtype=bias_dtype
         )
     return out
 
@@ -319,6 +336,7 @@ def _projection_list_forward(
     eps: float,
     *,
     compute_dtype: jnp.dtype | None = None,
+    out_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     # boltz-faithful per-layer loop: each layer LayerNorms the same input ``x``
     # then applies a Linear(..., heads). boltz holds the full [N,N,L*heads]
@@ -351,7 +369,11 @@ def _projection_list_forward(
         outs.append(
             _linear(normed, layer["linear"]["kernel"], compute_dtype=compute_dtype)
         )
-    return jnp.concatenate(outs, axis=-1)
+    stacked = jnp.concatenate(outs, axis=-1)
+    # The layers already deliver ``compute_dtype``; ``out_dtype`` is only for a
+    # caller that wants another storage width for the whole bias, and is a
+    # no-op when the two agree.
+    return stacked if out_dtype is None else stacked.astype(out_dtype)
 
 
 def _projection_input_norm(

@@ -356,6 +356,7 @@ def diffusion_transformer_forward(
     bias_input: jnp.ndarray | None = None,
     bias_normed_input: jnp.ndarray | None = None,
     bias_compute_dtype: jnp.dtype | None = None,
+    bias_out_dtype: jnp.dtype | None = None,
     precomputed_s_terms: tuple[jnp.ndarray, ...] | None = None,
     precomputed_s_terms_multiplicity: int = 1,
     precomputed_s_terms_num_windows: int | None = None,
@@ -429,6 +430,7 @@ def diffusion_transformer_forward(
                     eps,
                     normed_input=bias_normed_input,
                     compute_dtype=bias_compute_dtype,
+                    out_dtype=bias_out_dtype,
                 )
                 if bias_per_layer is None
                 else bias_per_layer[i]
@@ -457,6 +459,7 @@ def diffusion_transformer_forward(
                 eps,
                 normed_input=bias_normed_input,
                 compute_dtype=bias_compute_dtype,
+                out_dtype=bias_out_dtype,
             )
         else:
             layer_params, layer_bias, layer_s_terms_i = layer
@@ -545,8 +548,17 @@ def _projection_layer_forward(
     *,
     normed_input: jnp.ndarray | None = None,
     compute_dtype: jnp.dtype | None = None,
+    out_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
-    """One layer of DiffusionConditioning token bias projection."""
+    """One layer of DiffusionConditioning token bias projection.
+
+    ``out_dtype`` is the dtype the projected bias is delivered in. ``None``
+    keeps the historical contract: a low-precision ``compute_dtype`` widens
+    back to FP32 on the way out, because the released score model is an FP32
+    island. The BF16 diffusion knob passes ``bfloat16`` so the pair bias is
+    stored and carried at the width the fused kernel consumes; the kernel adds
+    it to FP32 logits either way.
+    """
     scale, bias = params["norm"]["scale"], params["norm"]["bias"]
     if compute_dtype == jnp.bfloat16:
         if normed_input is None:
@@ -557,7 +569,7 @@ def _projection_layer_forward(
             normed = amp_affine(normed_input, scale, bias)
         return _linear(
             normed, params["linear"]["kernel"], compute_dtype=compute_dtype
-        ).astype(jnp.float32)
+        ).astype(jnp.float32 if out_dtype is None else out_dtype)
     if normed_input is None:
         if x is None:
             msg = "x is required when normed_input is None"
@@ -573,6 +585,8 @@ def _projection_layer_forward(
     projected = _linear(normed, params["linear"]["kernel"], compute_dtype=compute_dtype)
     # Native precomputes the mixed-precision bias, then widens it on entry to
     # the FP32 score model. Lazy evaluation must keep the same rounding.
+    if out_dtype is not None:
+        return projected.astype(out_dtype)
     return projected if compute_dtype is None else projected.astype(jnp.float32)
 
 

@@ -208,6 +208,43 @@ def boltz2_predict(
             "context parallelism requires trunk_atom_attention_backend='xla' "
             "or null"
         )
+    # The diffusion score model is the released FP32 island, so its attention
+    # and its compute width are selectable on their own. Both stay in
+    # `sample_kwargs`: unlike the trunk-atom override, the sampler -- not the
+    # trunk -- is the consumer, and `boltz2_sample_forward` names them.
+    diffusion_attention_backend = sample_kwargs.get("diffusion_attention_backend")
+    if diffusion_attention_backend == attention_backend:
+        diffusion_attention_backend = None
+        sample_kwargs["diffusion_attention_backend"] = None
+    if diffusion_attention_backend not in (None, "tokamax", "triton", "xla"):
+        raise ValueError(
+            "diffusion_attention_backend must be 'tokamax', 'triton', "
+            f"'xla', or null; got {diffusion_attention_backend!r}"
+        )
+    diffusion_compute_dtype = jnp.dtype(
+        sample_kwargs.get("diffusion_compute_dtype", jnp.float32)
+    )
+    if diffusion_compute_dtype not in (
+        jnp.dtype(jnp.float32),
+        jnp.dtype(jnp.bfloat16),
+    ):
+        raise ValueError(
+            "diffusion_compute_dtype must be float32 or bfloat16; got "
+            f"{diffusion_compute_dtype.name!r}"
+        )
+    if (
+        diffusion_attention_backend == "triton"
+        and diffusion_compute_dtype != jnp.bfloat16
+    ):
+        raise ValueError(
+            "diffusion_attention_backend='triton' requires "
+            "diffusion_compute_dtype='bfloat16'"
+        )
+    if cp_mesh() is not None and diffusion_attention_backend not in (None, "xla"):
+        raise ValueError(
+            "context parallelism requires diffusion_attention_backend='xla' "
+            "or null"
+        )
     trunk_params = params["trunk"]
     trunk_feats = feats
     if compute_dtype != jnp.float32:
