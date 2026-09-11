@@ -411,6 +411,24 @@ The process floor on this case is 0.05 / 0.31 Å and the within-set sample
 spread is 1.0-2.9 Å, so every arm's coordinates are at floor. Peak does not
 move: Boltz-2's peak is a trunk arena, not the denoiser.
 
+### Boltz-2, the fused GLU: a 1k win, not a general one
+
+`glu_backend=tokamax` changes no dtype and no precision; it only stops the
+transition materialising its pre-gate activation. The saving is real and it
+does not survive the arena flip.
+
+| tokens | wall | peak | same-index RMSD vs released |
+| ---: | ---: | ---: | --- |
+| 1,003 | 90.98 → 90.00 s (−1.1%) | 12612 → 9216 MiB (**−26.9%**) | median 0.012 / max 0.238 |
+| 2,096 | 317.91 → 313.94 s (−1.2%) | 21808 → 21778 MiB (−0.14%) | median 0.007 / max 0.145 |
+
+At 1,003 tokens the transition intermediate is the peak's largest tenant; at
+2,096 the pair arena is, and the same 3.4 GiB saving is invisible against it.
+The 2k peak is byte-identical to the fused-attention arm's, which says both
+knobs remove the same small thing and neither reaches the real tenant. The
+knob is free at both sizes and worth switching on for small inputs, but it is
+not the lever the 1k number alone suggested.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
@@ -536,12 +554,27 @@ someone asks for the fast path.
 
 | port | 1k tokens | 2k tokens |
 | --- | --- | --- |
-| Protenix | `tokamax` alone (5% time, 10% peak, pLDDT unchanged). The bf16 policy keeps only 3% after the fix and is not worth the deviation. | both: 11% time, 8% peak, coordinates 0.05 Å from the released arm |
+| Protenix | `tokamax` alone (3.9% time, 7.0% peak, pLDDT unchanged). The bf16 policy keeps only 3% after the fix and is not worth the deviation. | both: 11% time, 8% peak, coordinates 0.05 Å from the released arm |
 | Boltz-2 | both: 14.7% time, coordinates at the process floor | both: 15.1% time, same |
 
 At 3,012 tokens Protenix repeats its 2k answer: both levers, 11.3% of wall
 time and 8% of peak, coordinates inside the released arm's own sample
 spread.
+
+The fused kernel on its own, at the released dtype, is the one cell that is
+uniform across the sweep, because it is the score tensor it does not build:
+
+| tokens | wall | peak | pLDDT | same-index vs released |
+| ---: | ---: | ---: | ---: | --- |
+| 1,003 | 65.13 → 62.60 s (−3.9%) | 6864 → 6382 MiB (−7.0%) | 94.584 → 94.593 | median 0.021 Å |
+| 2,096 | 210.32 → 199.25 s (−5.3%) | 23440 → 21216 MiB (−9.5%) | 95.16 → 95.16 | per-chain identical |
+| 3,012 | 579.47 → 560.13 s (−3.3%) | 42219 → 38416 MiB (−9.0%) | 94.269 → 94.208 | median 0.261 Å (within-set 0.300) |
+
+It is still not a default. This repo's bar for changing one is the panel
+discipline of two native and two port processes per case; these are one case
+per size, one process per arm, one card. The measurements that would decide
+it are a tape-pinned same-index pair under `deterministic=on` and one run on
+a non-sm120 card, neither of which exists yet.
 
 Two size-dependent facts behind that. The fp32 pair bias the Protenix fix
 adds is a fixed cost against a denoiser whose work grows with the square of
