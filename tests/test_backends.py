@@ -2250,3 +2250,83 @@ def test_every_compile_option_is_reachable_through_validate_request():
             f"{backend.name} names {unreachable} in compile_options but "
             "validate_request would reject them"
         )
+
+
+def test_every_stripped_default_is_part_of_the_compile_identity():
+    """A name whose default is stripped must also fork the namespace.
+
+    The strip tables exist so that spelling a released value names the same
+    compilation-cache scope as omitting it. That is only meaningful if the
+    name reaches the profile at all: a key in the strip table but not in
+    `compile_options` is never written to the profile, so the strip removes
+    something that was never there and the option silently shares one
+    namespace with every other value of itself. Boltz-2's
+    `pair_residual_dtype` shipped that way for a day -- its CHANGELOG said it
+    "joins the compilation-cache identity" and it did not.
+
+    This is the mirror of the reachability test above. That one catches a
+    name in `compile_options` a request cannot carry; this one catches a
+    default that is stripped from a profile it never entered.
+    """
+
+    from foldjax.backends import alphafold3 as alphafold3_module
+    from foldjax.backends import boltz2 as boltz2_module
+    from foldjax.backends import esmfold2 as esmfold2_module
+    from foldjax.backends import opendde as opendde_module
+    from foldjax.backends import openfold3 as openfold3_module
+    from foldjax.backends import protenix as protenix_module
+
+    tables = {
+        "alphafold3": (
+            AlphaFold3Backend(),
+            alphafold3_module._RELEASED_COMPILE_DEFAULTS,
+        ),
+        "boltz2": (Boltz2Backend(), boltz2_module._RELEASED_COMPILE_DEFAULTS),
+        "esmfold2": (ESMFold2Backend(), esmfold2_module._FIXED_COMPILE_DEFAULTS),
+        "opendde": (OpenDDEBackend(), opendde_module._RELEASED_COMPILE_DEFAULTS),
+        "openfold3": (
+            OpenFold3Backend(),
+            openfold3_module._RELEASED_COMPILE_DEFAULTS,
+        ),
+        "protenix": (ProtenixBackend(), protenix_module._RELEASED_COMPILE_DEFAULTS),
+    }
+    # Pin the coverage too: a seventh backend must not slip past this by
+    # simply not appearing in the table above.
+    assert set(tables) == {
+        "alphafold3",
+        "boltz2",
+        "esmfold2",
+        "opendde",
+        "openfold3",
+        "protenix",
+    }
+
+    # Deliberately outside the identity. An allow-list rather than an
+    # absence, because one name really does belong here: AlphaFold 3's
+    # autotuning strategy is claimed to be a cache-miss policy rather than a
+    # program shape, on the line above `deterministic` in that backend's
+    # `compile_options`. Naming it keeps the assertion sharp instead of
+    # weakening it to "warn".
+    #
+    # UNVERIFIED, and deliberately recorded as such: that claim is a comment,
+    # and a comment is not a measurement. If the strategy does select a
+    # different Triton kernel then two values compile two executables and
+    # share one namespace -- the exact defect this test exists to catch,
+    # hiding behind this test's own exemption. Settling it needs a GPU
+    # compile of both values with the released weights; until someone runs
+    # that, this entry is a deferral rather than a finding.
+    OUTSIDE_THE_IDENTITY = {"alphafold3": {"kernel_autotuning"}}
+
+    for name, (backend, defaults) in tables.items():
+        # `sampling_options` values reach the profile by their own route, and
+        # the execution table's natives are rendered rather than stripped.
+        routed = set(backend.compile_options)
+        routed.update(backend.sampling_options)
+        routed.update(backend.execution_options)
+        routed.update(OUTSIDE_THE_IDENTITY.get(name, ()))
+        orphaned = sorted(set(defaults) - routed)
+        assert not orphaned, (
+            f"{name} strips {orphaned} from a cache profile they never enter; "
+            "add them to compile_options, or to OUTSIDE_THE_IDENTITY above "
+            "with the code that justifies it"
+        )
