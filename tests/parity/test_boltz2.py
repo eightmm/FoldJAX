@@ -102,12 +102,33 @@ TRIANGLE_MULTIPLICATION_ENV = "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"
 #: the kernel rounds at its own width. A tokamax arm therefore belongs to the
 #: GPU panel, not here. See ``docs/cli.md`` for the measurement that made it
 #: the default.
+#: ``pair_residual_dtype="float32"`` is pinned for the same reason, one step
+#: further: the product default is now ``auto``, which stores the pair
+#: residual in bfloat16 on this bfloat16 trunk. That deviates from the AMP
+#: placement the capture was taken under -- upstream's eval-mode dropout mask
+#: is float32 and promotes every Pairformer residual sum -- so replaying
+#: against this capture under the default would compare two policies and
+#: charge the difference to the port. The pinned spelling emits no cast at
+#: all, so it lowers to the same program, byte for byte, that these residuals
+#: were calibrated on. Unpinned, tier A's ``z`` lands at relative RMSE
+#: 1.7405e-02 against this case's 5.0e-03 tolerance -- 3.5x over, next to a
+#: 2.7360e-03 calibration -- so this is measured, not precautionary. Whether
+#: the released default is close enough to upstream is a GPU-panel question
+#: and was answered there (5DEI at 2,096 tokens; see ``docs/cli.md``), not by
+#: widening a tolerance here.
+#:
+#: The pin routes around a hole in the tripwire below rather than closing it:
+#: ``assert_tripwire`` reads ``cyclic_pos_enc`` and ``fix_sym_check`` and
+#: nothing else, so a trunk default that changes the output does not trip it.
+#: It surfaced here only because the tolerance was tight enough. The next
+#: trunk default to move will meet the same gap.
 SHARED_OPTIONS: Mapping[str, Any] = {
     "chunk_size": 128,
     "matmul_precision": "highest",
     "attention_backend": "xla",
     "triangle_backend": "xla",
     "glu_backend": "xla",
+    "pair_residual_dtype": "float32",
 }
 
 #: Entity-blind secondary guard for tier B: the largest single-atom coordinate

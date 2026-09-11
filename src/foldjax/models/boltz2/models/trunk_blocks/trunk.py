@@ -283,43 +283,78 @@ def _cast_trunk_params(params: Params, dtype: jnp.dtype) -> Params:
     return jax.tree_util.tree_map_with_path(cast, params)
 
 
-#: Why the pair residual is a knob and not a default.
+#: Why the pair residual follows the trunk.
 #:
-#: `compute_dtype="bfloat16"` already narrows every trunk GEMM. What stays
-#: FP32 is the *storage* of the pair stream: `z_init` picks up float32 from
-#: ContactConditioning's `encoding_unspecified` parameter -- an `nn.Parameter`,
-#: not a Linear kernel, so `_cast_trunk_params` leaves it alone -- and above
-#: 384 tokens OuterProductMean re-promotes on every MSA layer. Upstream stores
-#: it FP32 for a second, independent reason: eval-mode `get_dropout_mask`
-#: returns an FP32 tensor (`boltz/model/layers/dropout.py:42-43`) and it
-#: multiplies all four Pairformer pair updates
-#: (`boltz/model/layers/pairformer.py:77,82,87,95`), so torch promotes the sum.
+#: `compute_dtype="bfloat16"` already narrows every trunk GEMM. What used to
+#: stay FP32 is the *storage* of the pair stream: `z_init` picks up float32
+#: from ContactConditioning's `encoding_unspecified` parameter -- an
+#: `nn.Parameter`, not a Linear kernel, so `_cast_trunk_params` leaves it
+#: alone -- and above 384 tokens OuterProductMean re-promotes on every MSA
+#: layer. Upstream stores it FP32 for a second, independent reason: eval-mode
+#: `get_dropout_mask` returns an FP32 tensor
+#: (`boltz/model/layers/dropout.py:42-43`) and it multiplies all four
+#: Pairformer pair updates (`boltz/model/layers/pairformer.py:77,82,87,95`),
+#: so torch promotes the sum.
 #:
-#: Narrowing it therefore moves the AMP boundary away from upstream's, in the
-#: one port where AMP *placement* has already been shown to move coordinates
-#: (upstream's own kernels-off toggle moves 5SAK by 2.91 A). AlphaFold 3 stores
-#: its trunk pair activations in bfloat16, so the deviation is not unheard of
-#: -- but it is a deviation, it is unmeasured on GPU here, and it ships off.
+#: Narrowing it moves the AMP boundary away from upstream's, in the one port
+#: where AMP *placement* has already been shown to move coordinates
+#: (upstream's own kernels-off toggle moves 5SAK by 2.91 A). It is the
+#: released width anyway, because it is the only lever measured on this port
+#: that moves the peak at all, and its saving *grows* with size: on one
+#: RTX PRO 6000 Blackwell, 21,778 -> 18,511 MiB at 2,096 tokens (-15.0%) and
+#: 40,748 -> 29,416 MiB at 3,012 (-27.8%), with wall -12.8% and -8.2%. On
+#: 5DEI at 2,096 tokens, per-chain RMSD to the
+#: deposited chain is 0.34-0.40 A on both arms and 19 of 20 chain-sample
+#: cells agree to two decimals. AlphaFold 3 stores its trunk pair
+#: activations in bfloat16 too.
+#:
+#: `"float32"` keeps the wide stream and is still exactly reachable. It
+#: resolves to `None` here, the sentinel `residual_cast` reads as "emit no
+#: operation at all", so the wide arm is the same lowered program it was when
+#: it was the default -- unchanged by construction rather than by a
+#: numerically-equal cast.
+
+#: The released spelling: store the pair residual at the trunk's own compute
+#: width. Shared by the two trunk entry points and `predict.py`'s fallback,
+#: and repeated as a literal by the backend's `_RELEASED_COMPILE_DEFAULTS`,
+#: which must not import the model runtime. A drift test pins all four.
+PAIR_RESIDUAL_DTYPE_DEFAULT = "auto"
 
 
 def _resolve_pair_residual_dtype(
     value: jnp.dtype | str | None,
     kernel_dtype: jnp.dtype,
 ) -> jnp.dtype | None:
-    """Validate the pair-residual storage request against the trunk's AMP arm."""
+    """Resolve a pair-residual storage request against the trunk's AMP arm.
+
+    Returns the storage dtype, or ``None`` for the float32 stream -- the
+    sentinel `residual_cast` reads as "emit nothing". Idempotent, because the
+    full predict wrapper resolves before it calls the trunk and the trunk
+    resolves again for its own direct callers.
+    """
 
     if value is None:
+        # Already-resolved float32 stream. This spelling keeps the meaning it
+        # had when it was the default; what changed is only what *omitting*
+        # the option resolves to, which is why the user boundary refuses
+        # `None` rather than silently reinterpreting it.
         return None
+    if isinstance(value, str) and value == PAIR_RESIDUAL_DTYPE_DEFAULT:
+        # Follow the trunk. A narrowed residual is only coherent against the
+        # narrowed GEMMs it sits between, so an FP32 trunk keeps the FP32
+        # stream instead of failing a request the caller never made.
+        value = (
+            "bfloat16"
+            if jnp.dtype(kernel_dtype) == jnp.dtype(jnp.bfloat16)
+            else "float32"
+        )
     dtype = jnp.dtype(value)
+    if dtype == jnp.dtype(jnp.float32):
+        return None
     if dtype != jnp.dtype(jnp.bfloat16):
-        # float32 is deliberately not spellable: it is what the released trunk
-        # already stores, so a second spelling for the shipped behaviour would
-        # make "explicit" and "omitted" indistinguishable in a provenance
-        # record without naming a different arm.
         raise ValueError(
-            "pair_residual_dtype must be bfloat16 or null; got "
-            f"{dtype.name!r}. The released pair residual is float32 already "
-            "and null is its spelling."
+            "pair_residual_dtype must be 'auto', 'bfloat16' or 'float32'; got "
+            f"{dtype.name!r}"
         )
     if jnp.dtype(kernel_dtype) != jnp.dtype(jnp.bfloat16):
         raise ValueError(
@@ -490,11 +525,12 @@ def boltz2_sample_forward(
     #: `structure_module.sample`); `bfloat16` is opt-in and keeps the residual
     #: stream, the sampler state and the coordinate I/O boundary in FP32.
     diffusion_compute_dtype: jnp.dtype | str = jnp.float32,
-    #: Storage width of the trunk's pair residual stream. `None` is the
-    #: released float32; `bfloat16` is opt-in and requires
-    #: `compute_dtype=bfloat16`. See the note above
+    #: Storage width of the trunk's pair residual stream. `"auto"` -- the
+    #: released spelling -- follows the trunk's own compute width, so the
+    #: released bfloat16 trunk stores it narrow. `"float32"` keeps the wide
+    #: stream and emits no cast at all. See the note above
     #: `_resolve_pair_residual_dtype`.
-    pair_residual_dtype: jnp.dtype | str | None = None,
+    pair_residual_dtype: jnp.dtype | str | None = PAIR_RESIDUAL_DTYPE_DEFAULT,
     mesh: object | None = None,
     token_axis: str = "tok",
     shard_tokens: bool = True,
@@ -1183,10 +1219,12 @@ def boltz2_trunk_forward(
     token_axis: str = "tok",
     shard_tokens: bool = True,
     use_template: bool | None = None,
-    #: Storage width of the trunk's pair residual stream. `None` is the
-    #: released float32; `bfloat16` is opt-in. See the note above
+    #: Storage width of the trunk's pair residual stream. `"auto"` -- the
+    #: released spelling -- follows the trunk's own compute width, so the
+    #: released bfloat16 trunk stores it narrow. `"float32"` keeps the wide
+    #: stream and emits no cast at all. See the note above
     #: `_resolve_pair_residual_dtype`.
-    pair_residual_dtype: jnp.dtype | str | None = None,
+    pair_residual_dtype: jnp.dtype | str | None = PAIR_RESIDUAL_DTYPE_DEFAULT,
 ) -> dict[str, jnp.ndarray]:
     """Run the non-template Boltz-2 trunk in eval mode.
 

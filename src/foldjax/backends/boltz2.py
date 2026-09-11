@@ -285,7 +285,10 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "trunk_atom_attention_backend": None,
     "diffusion_attention_backend": None,
     "diffusion_compute_dtype": "float32",
-    "pair_residual_dtype": None,
+    # "auto" follows `compute_dtype`; `cache_profile` records the width it
+    # resolves to rather than the spelling, so two names for one program do
+    # not name two namespaces.
+    "pair_residual_dtype": "auto",
     # `api.MATMUL_PRECISION`, in the neutral vocabulary. Naming it here is what
     # makes an explicit `matmul_precision=high` share the namespace an omitted
     # one selects, while `highest` keeps its own.
@@ -315,7 +318,6 @@ class Boltz2Backend(Backend):
             "diffusion_attention_backend",
             "diffusion_chunk_size",
             "diffusion_compute_dtype",
-        "pair_residual_dtype",
             "pair_residual_dtype",
             "feature_cache",
             "glu_backend",
@@ -374,6 +376,10 @@ class Boltz2Backend(Backend):
         "trunk_atom_attention_backend",
         "diffusion_attention_backend",
         "diffusion_compute_dtype",
+        # Two programs, so two namespaces. It was missing here while the knob
+        # was opt-in, which left every recorded run unable to say which pair
+        # width it ran; `cache_profile` now spells the resolved width always.
+        "pair_residual_dtype",
         "triangle_backend",
         "glu_backend",
         "token_attention_chunk",
@@ -468,7 +474,34 @@ class Boltz2Backend(Backend):
                 and value == resolved_attention
             ):
                 profile.pop(scoped, None)
-        self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
+        # Record the pair-residual width the trunk realises, never the
+        # spelling that asked for it: "auto" and the arm it resolves to are
+        # one program. It is always spelled, including for float32 -- the key
+        # was absent from every run recorded before this, so absence has to
+        # keep meaning "this record predates the width being recorded" rather
+        # than quietly becoming a third name for one of the two arms.
+        residual = profile.get(
+            "pair_residual_dtype",
+            _RELEASED_COMPILE_DEFAULTS["pair_residual_dtype"],
+        )
+        if residual == _RELEASED_COMPILE_DEFAULTS["pair_residual_dtype"]:
+            residual = (
+                "bfloat16"
+                if profile.get(
+                    "compute_dtype",
+                    _RELEASED_COMPILE_DEFAULTS["compute_dtype"],
+                )
+                == "bfloat16"
+                else "float32"
+            )
+        profile["pair_residual_dtype"] = residual
+        # ... and keep it out of the strip, which would otherwise put the
+        # released spelling back to absent the moment it equals a default.
+        self._strip_released_defaults(
+            profile,
+            _RELEASED_COMPILE_DEFAULTS,
+            skip=("pair_residual_dtype",),
+        )
         if profile.get("cp_layout") == "1d":
             profile.pop("cp_layout")
         return profile
@@ -695,14 +728,15 @@ class Boltz2Backend(Backend):
             )
         if "pair_residual_dtype" in options and options[
             "pair_residual_dtype"
-        ] not in {None, "bfloat16"}:
-            # "float32" is refused rather than accepted as a synonym for the
-            # default: the released stream is float32, so a second spelling
-            # would leave a provenance record unable to say which arm ran.
+        ] not in {"auto", "bfloat16", "float32"}:
+            # Null is refused rather than read as "the default". It spelled
+            # the float32 stream while that was the default, so accepting it
+            # now would make one token mean two programs depending on when
+            # the run was recorded; "float32" says which arm outright.
             raise ValueError(
-                "pair_residual_dtype must be 'bfloat16' or null; the "
-                "released pair residual is float32 already and null is its "
-                "spelling"
+                "pair_residual_dtype must be 'auto', 'bfloat16' or "
+                "'float32'; null used to spell the float32 stream and the "
+                "default is now bfloat16, so spell the arm you want"
             )
         if (
             options.get("pair_residual_dtype") == "bfloat16"

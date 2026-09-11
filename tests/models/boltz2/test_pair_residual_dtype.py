@@ -1,20 +1,25 @@
-"""``pair_residual_dtype`` must narrow the pair carry, and only when asked.
+"""``pair_residual_dtype`` stores the pair carry narrow, and says so.
 
-Two failure modes are in scope and neither is visible from a config field.
+Three failure modes are in scope and none is visible from a config field.
 
-The first is a default that drifts. `compute_dtype="bfloat16"` already narrows
-every trunk GEMM; what this option changes is the *storage* of the pair
-residual, which the released trunk keeps in float32 -- `z_init` inherits it
-from ContactConditioning's `encoding_unspecified` (an nn.Parameter, not a
-Linear kernel, so `_cast_trunk_params` leaves it alone) and OuterProductMean
-re-promotes it above 384 tokens. So ``test_released_default_emits_nothing``
-lowers the shipped trunk twice in one process -- once as shipped, once with
-the option's own helper replaced by a strict identity, i.e. with the feature
-physically absent -- and compares the programs as text.
+The first is a default that drifts. `compute_dtype="bfloat16"` narrows every
+trunk GEMM; this option is the separate question of what the pair residual is
+*stored* in between them, and the released answer is now bfloat16.
+``test_released_default_realises_a_bfloat16_pair_carry`` reads the dtype off
+arrays the trunk actually produced with the option omitted entirely, so a
+default that silently reverts fails here rather than in a memory table.
 
-The second is an arm that never fires. A patched arm measuring dead code is
-how a knob gets reported as free, so every other test here reads ``.dtype``
-off an array the trunk actually produced, or reads the lowered program.
+The second is the float32 arm losing its identity. It is still exactly
+reachable, and it must still be the program it was while it was the default:
+``test_the_float32_arm_emits_nothing`` lowers it twice -- once as spelled,
+once with the option's own helper replaced by a strict identity, i.e. with
+the feature physically absent -- and compares the programs as text.
+
+The third is an arm that never fires. A patched arm measuring dead code is
+how a knob gets reported as free, so every test here reads ``.dtype`` off an
+array the trunk produced, or reads the lowered program. The precision checks
+that used to run "off vs opt-in" now run the *omitted* arm too, because what
+they guard is the released program and that is no longer the wide one.
 
 The parameters are synthetic and tiny on purpose: the checkpoint-parity
 fixtures need a torch install and an upstream checkout, and a gate that only
@@ -201,9 +206,23 @@ def _build():
     return params, feats, arr(1, N_TOKEN, C_S_IN)
 
 
-def _run(monkeypatch, pair_residual_dtype, *, lower_only=False, omit=False):
+#: The two arms every precision check runs: the wide one, spelled, and the
+#: released one, omitted. Omission is what a released run actually does, and
+#: a check that only ever ran the explicit spelling would not notice the
+#: default moving out from under it.
+_ARMS = (("float32", False), (None, True))
+
+
+def _run(
+    monkeypatch,
+    pair_residual_dtype,
+    *,
+    lower_only=False,
+    omit=False,
+    trunk_dtype=jnp.bfloat16,
+):
     params, feats, s_inputs = _build()
-    params = trunk_module._cast_trunk_params(params, jnp.bfloat16)
+    params = trunk_module._cast_trunk_params(params, trunk_dtype)
     fired = []
 
     def stub(_params, _feats, **_kwargs):
@@ -234,17 +253,30 @@ def _run(monkeypatch, pair_residual_dtype, *, lower_only=False, omit=False):
     return result
 
 
-def test_released_default_emits_nothing(monkeypatch) -> None:
-    shipped = _run(monkeypatch, None, lower_only=True)
-    omitted = _run(monkeypatch, None, lower_only=True, omit=True)
-    assert shipped == omitted
+def test_the_released_default_is_the_narrow_arm(monkeypatch) -> None:
+    """Omitting the option must name the bfloat16 program, not the wide one."""
 
-    # Replace the option's own helper with a strict identity in every module
-    # that calls it: the feature is then physically absent from the trace. If
-    # the released default emitted even one convert, this text would differ.
+    omitted = _run(monkeypatch, None, lower_only=True, omit=True)
+    assert omitted == _run(monkeypatch, "bfloat16", lower_only=True)
+    assert omitted == _run(monkeypatch, "auto", lower_only=True)
+    assert omitted != _run(monkeypatch, "float32", lower_only=True)
+
+
+def test_the_float32_arm_emits_nothing(monkeypatch) -> None:
+    """The wide arm is still the program it was while it was the default.
+
+    Not a numerically-equal cast: no operation at all. `"float32"` and the
+    bare `None` sentinel both resolve to "emit nothing", so replacing the
+    helper with a strict identity -- the feature physically absent from the
+    trace -- has to leave the text alone.
+    """
+
+    spelled = _run(monkeypatch, "float32", lower_only=True)
+    assert spelled == _run(monkeypatch, None, lower_only=True)
+
     for module in (trunk_module, msa_module, pf_module):
         monkeypatch.setattr(module, "_residual_cast", lambda x, dtype: x)
-    assert _run(monkeypatch, None, lower_only=True) == shipped
+    assert _run(monkeypatch, "float32", lower_only=True) == spelled
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16, jnp.int32])
@@ -254,7 +286,7 @@ def test_residual_cast_is_the_identity_object_when_unset(dtype) -> None:
     assert _common.residual_cast(x, dtype) is x
 
 
-def _spy(monkeypatch, pair_residual_dtype):
+def _spy(monkeypatch, pair_residual_dtype, *, omit=False, **kwargs):
     seen: dict[str, list[str]] = {
         "msa_layer_in": [],
         "pairformer_layer_in": [],
@@ -277,21 +309,25 @@ def _spy(monkeypatch, pair_residual_dtype):
 
     monkeypatch.setattr(msa_module, "msa_layer_forward", msa_spy)
     monkeypatch.setattr(pf_module, "pairformer_layer_forward", pf_spy)
-    result = _run(monkeypatch, pair_residual_dtype)
+    result = _run(monkeypatch, pair_residual_dtype, omit=omit, **kwargs)
     assert all(seen.values()), "no layer ran; the spy recorded nothing"
     return seen, result
 
 
-def test_default_realises_a_float32_pair_carry(monkeypatch) -> None:
-    seen, result = _spy(monkeypatch, None)
+@pytest.mark.parametrize("arm", ["float32", None])
+def test_the_float32_arm_realises_a_float32_pair_carry(monkeypatch, arm) -> None:
+    seen, result = _spy(monkeypatch, arm)
     assert set(seen["msa_layer_in"]) == {jnp.dtype(jnp.float32)}
     assert set(seen["pairformer_layer_in"]) == {jnp.dtype(jnp.float32)}
     assert set(seen["pairformer_layer_out"]) == {jnp.dtype(jnp.float32)}
     assert result["z"].dtype == jnp.float32
 
 
-def test_opt_in_realises_a_bfloat16_pair_carry(monkeypatch) -> None:
-    seen, result = _spy(monkeypatch, jnp.bfloat16)
+@pytest.mark.parametrize("omit", [True, False])
+def test_the_released_default_realises_a_bfloat16_pair_carry(
+    monkeypatch, omit
+) -> None:
+    seen, result = _spy(monkeypatch, jnp.bfloat16, omit=omit)
     assert set(seen["msa_layer_in"]) == {jnp.dtype(jnp.bfloat16)}
     assert set(seen["pairformer_layer_in"]) == {jnp.dtype(jnp.bfloat16)}
     assert set(seen["pairformer_layer_out"]) == {jnp.dtype(jnp.bfloat16)}
@@ -305,14 +341,34 @@ def test_opt_in_realises_a_bfloat16_pair_carry(monkeypatch) -> None:
     assert result["s"].dtype == jnp.float32
 
 
-def test_opt_in_narrows_pair_shaped_buffers_in_the_lowered_program(
+def test_an_fp32_trunk_keeps_its_fp32_carry_under_the_released_default(
     monkeypatch,
 ) -> None:
-    default = _run(monkeypatch, None, lower_only=True)
-    narrowed = _run(monkeypatch, jnp.bfloat16, lower_only=True)
-    assert default != narrowed
-    assert narrowed.count(PAIR + "bf16>") > default.count(PAIR + "bf16>")
-    assert narrowed.count(PAIR + "f32>") < default.count(PAIR + "f32>")
+    """`compute_dtype="float32"` must not have to opt out of the new default.
+
+    The narrow storage is only coherent between the narrowed GEMMs it sits
+    in, so the released spelling follows the trunk rather than demanding one.
+    An FP32 run that never named this option must still be the FP32 program.
+    """
+
+    seen, result = _spy(monkeypatch, None, omit=True, trunk_dtype=jnp.float32)
+    assert set(seen["msa_layer_in"]) == {jnp.dtype(jnp.float32)}
+    assert set(seen["pairformer_layer_out"]) == {jnp.dtype(jnp.float32)}
+    assert result["z"].dtype == jnp.float32
+    omitted = _run(monkeypatch, None, lower_only=True, trunk_dtype=jnp.float32)
+    assert omitted == _run(
+        monkeypatch, "float32", lower_only=True, trunk_dtype=jnp.float32
+    )
+
+
+def test_the_default_narrows_pair_shaped_buffers_in_the_lowered_program(
+    monkeypatch,
+) -> None:
+    wide = _run(monkeypatch, "float32", lower_only=True)
+    narrowed = _run(monkeypatch, None, lower_only=True, omit=True)
+    assert wide != narrowed
+    assert narrowed.count(PAIR + "bf16>") > wide.count(PAIR + "bf16>")
+    assert narrowed.count(PAIR + "f32>") < wide.count(PAIR + "f32>")
     # Nothing the caller passes in or gets back changes width: every byte this
     # option saves is a temp, and temps are repacked.
     def signature(text):
@@ -325,20 +381,44 @@ def test_opt_in_narrows_pair_shaped_buffers_in_the_lowered_program(
             tail.split(")", 1)[0].count("xbf16>"),
         )
 
-    assert signature(default) == signature(narrowed)
+    assert signature(wide) == signature(narrowed)
 
 
-def test_opt_in_moves_the_numbers(monkeypatch) -> None:
+def test_the_two_arms_move_the_numbers(monkeypatch) -> None:
     # An arm that computes the same answer is an arm that never fired.
-    default = _run(monkeypatch, None)
-    narrowed = _run(monkeypatch, jnp.bfloat16)
-    assert not np.array_equal(default["z"], narrowed["z"])
-    assert not np.array_equal(default["s"], narrowed["s"])
+    wide = _run(monkeypatch, "float32")
+    narrowed = _run(monkeypatch, None, omit=True)
+    assert not np.array_equal(wide["z"], narrowed["z"])
+    assert not np.array_equal(wide["s"], narrowed["s"])
 
 
-def test_float32_is_not_spellable() -> None:
-    with pytest.raises(ValueError, match="null is its spelling"):
-        trunk_module._resolve_pair_residual_dtype(jnp.float32, jnp.bfloat16)
+def test_auto_follows_the_trunk_width() -> None:
+    resolve = trunk_module._resolve_pair_residual_dtype
+    default = trunk_module.PAIR_RESIDUAL_DTYPE_DEFAULT
+    assert resolve(default, jnp.bfloat16) == jnp.dtype(jnp.bfloat16)
+    # An FP32 trunk keeps the FP32 stream rather than failing a request the
+    # caller never made: the narrow storage is only coherent between the
+    # narrowed GEMMs it sits in.
+    assert resolve(default, jnp.float32) is None
+
+
+def test_the_resolver_is_idempotent() -> None:
+    # `predict.py` resolves and `boltz2_trunk_forward` resolves again.
+    resolve = trunk_module._resolve_pair_residual_dtype
+    for kernel in (jnp.bfloat16, jnp.float32):
+        once = resolve(trunk_module.PAIR_RESIDUAL_DTYPE_DEFAULT, kernel)
+        assert resolve(once, kernel) == once
+
+
+def test_float32_resolves_to_the_emit_nothing_sentinel() -> None:
+    resolve = trunk_module._resolve_pair_residual_dtype
+    for kernel in (jnp.bfloat16, jnp.float32):
+        assert resolve("float32", kernel) is None
+        assert resolve(jnp.float32, kernel) is None
+        # `None` keeps the meaning it had while it was the default spelling.
+        # Only *omission* changed what it resolves to, which is why the user
+        # boundary refuses `None` while the resolver still reads it.
+        assert resolve(None, kernel) is None
 
 
 def test_narrow_pair_residual_requires_a_bfloat16_trunk() -> None:
@@ -346,33 +426,101 @@ def test_narrow_pair_residual_requires_a_bfloat16_trunk() -> None:
         trunk_module._resolve_pair_residual_dtype(jnp.bfloat16, jnp.float32)
 
 
-def test_unset_resolves_to_none() -> None:
-    assert trunk_module._resolve_pair_residual_dtype(None, jnp.float32) is None
-    assert trunk_module._resolve_pair_residual_dtype(None, jnp.bfloat16) is None
+def test_an_unknown_width_is_refused() -> None:
+    with pytest.raises(ValueError, match="'auto', 'bfloat16' or 'float32'"):
+        trunk_module._resolve_pair_residual_dtype(jnp.float16, jnp.bfloat16)
 
 
-def test_backend_refuses_float32_and_an_fp32_trunk() -> None:
+def test_every_layer_spells_the_same_released_default() -> None:
+    """The four places that have to agree, pinned to each other.
+
+    The adapter repeats the value as a literal on purpose -- cache-directory
+    selection must not import the model runtime -- so nothing but a test
+    stops the two from drifting apart.
+    """
+
+    import inspect
+
+    from foldjax.backends import boltz2 as backend_module
+    from foldjax.models.boltz2 import api as native_api
+
+    default = trunk_module.PAIR_RESIDUAL_DTYPE_DEFAULT
+    signatures = (
+        native_api.predict,
+        trunk_module.boltz2_trunk_forward,
+        trunk_module.boltz2_sample_forward,
+    )
+    for function in signatures:
+        parameter = inspect.signature(function).parameters["pair_residual_dtype"]
+        assert parameter.default == default, function.__name__
+    released = backend_module._RELEASED_COMPILE_DEFAULTS["pair_residual_dtype"]
+    assert released == default
+    assert type(released) is type(default)
+
+
+def test_the_user_boundary_refuses_the_inverted_spelling() -> None:
+    """`None` meant float32 and would now read as "the default"."""
+
     from foldjax.backends.boltz2 import Boltz2Backend
 
     backend = Boltz2Backend()
-    with pytest.raises(ValueError, match="pair_residual_dtype"):
-        backend.validate_native_options({"pair_residual_dtype": "float32"})
+    with pytest.raises(ValueError, match="spell the arm you want"):
+        backend.validate_native_options({"pair_residual_dtype": None})
     with pytest.raises(ValueError, match="requires"):
         backend.validate_native_options(
             {"pair_residual_dtype": "bfloat16", "compute_dtype": "float32"}
         )
-    backend.validate_native_options({"pair_residual_dtype": "bfloat16"})
-    backend.validate_native_options({"pair_residual_dtype": None})
+    # Both widths, and the released spelling, are sayable outright.
+    for value in ("auto", "bfloat16", "float32"):
+        backend.validate_native_options({"pair_residual_dtype": value})
+    # The wide arm needs no permission from `compute_dtype`, and an FP32
+    # trunk that never names the option is not asked to opt out of it.
+    backend.validate_native_options(
+        {"pair_residual_dtype": "float32", "compute_dtype": "float32"}
+    )
+    backend.validate_native_options({"compute_dtype": "float32"})
 
 
-def test_opt_in_keeps_the_bfloat16_triangle_contraction(monkeypatch) -> None:
+def test_the_native_api_refuses_the_inverted_spelling(tmp_path) -> None:
+    from foldjax.models.boltz2 import api as native_api
+
+    with pytest.raises(ValueError, match="spell the arm you want"):
+        native_api.predict(
+            seq=["ACD"],
+            weights=tmp_path / "unused",
+            mols=tmp_path,
+            pair_residual_dtype=None,
+        )
+
+
+def test_an_fp32_request_clears_the_native_validation(monkeypatch, tmp_path) -> None:
+    """The coupling rule must not fire on a default the caller never set."""
+
+    from foldjax.models.boltz2 import api as native_api
+
+    class ReachedError(RuntimeError):
+        pass
+
+    def reached(**kwargs):
+        raise ReachedError
+
+    monkeypatch.setattr(native_api, "featurize", reached)
+    for options in ({"compute_dtype": "float32"}, {"pair_residual_dtype": "float32"}):
+        with pytest.raises(ReachedError):
+            native_api.predict(
+                seq=["ACD"], weights=tmp_path / "unused", mols=tmp_path, **options
+            )
+
+
+def test_both_arms_keep_the_bfloat16_triangle_contraction(monkeypatch) -> None:
     """The narrowed carry must not be mistaken for a different AMP policy.
 
     `triangle_multiplication_forward` used to decide "is this autocast?" by
     reading the activation width. A BF16 pair residual is still autocast, but
     that reading called it FP32-model and ran the contraction in float32 --
-    an arm that fires and measures a *wider* program than the default. The
-    assertion is the contraction operand's dtype, not the carry's.
+    a *wider* program than either arm intends. The assertion is the
+    contraction operand's dtype, not the carry's, and it runs on the omitted
+    arm because that is now the released one.
     """
 
     monkeypatch.setenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", "xla")
@@ -384,15 +532,15 @@ def test_opt_in_keeps_the_bfloat16_triangle_contraction(monkeypatch) -> None:
         return original(a, b, direction, chunk_size)
 
     monkeypatch.setattr(tri_module, "_chunked_triangle_einsum", spy)
-    for arm in (None, jnp.bfloat16):
+    for arm, omit in _ARMS:
         seen.clear()
-        _run(monkeypatch, arm)
+        _run(monkeypatch, arm, omit=omit)
         assert seen, "triangle multiplication never ran"
         for direction, dtypes in seen.items():
-            assert set(dtypes) == {jnp.dtype(jnp.bfloat16)}, (arm, direction)
+            assert set(dtypes) == {jnp.dtype(jnp.bfloat16)}, (arm, omit, direction)
 
 
-def test_opt_in_keeps_the_fused_cueq_native_amp_branch(monkeypatch) -> None:
+def test_the_default_keeps_the_fused_cueq_native_amp_branch(monkeypatch) -> None:
     """Same question on the released backend, which is cuEq, not XLA."""
 
     cueq = pytest.importorskip(
@@ -413,8 +561,11 @@ def test_opt_in_keeps_the_fused_cueq_native_amp_branch(monkeypatch) -> None:
     monkeypatch.setattr(cueq, "_cueq_triangle_native_amp", spy)
 
     # The fused norm returns the width it is given, unlike `nn.LayerNorm`.
-    # That is a second precision change the pin makes on the released
-    # backend, and the docs say so, so it is asserted rather than assumed.
+    # On the released backend that makes the pair normalisation inside
+    # triangle multiplication bfloat16 by default, where plain XLA triangle
+    # multiplication keeps float32 -- the two backends diverge further under
+    # the default than they did while it was opt-in, and the docs say so, so
+    # it is asserted rather than assumed.
     normed: list = []
     load_original = cueq._load_cueq_amp_primitives
 
@@ -432,17 +583,17 @@ def test_opt_in_keeps_the_fused_cueq_native_amp_branch(monkeypatch) -> None:
 
     seen.clear()
     normed.clear()
-    _run(monkeypatch, None)
-    default_calls = len(seen)
-    assert default_calls, "the fused native-AMP branch never ran"
+    _run(monkeypatch, "float32")
+    wide_calls = len(seen)
+    assert wide_calls, "the fused native-AMP branch never ran"
     assert set(seen) == {jnp.dtype(jnp.float32)}
     assert (jnp.dtype(jnp.float32), jnp.dtype(jnp.float32)) in normed
 
     seen.clear()
     normed.clear()
-    _run(monkeypatch, jnp.bfloat16)
+    _run(monkeypatch, None, omit=True)
     # Same branch, same number of entries -- only the stored width differs.
-    assert len(seen) == default_calls
+    assert len(seen) == wide_calls
     assert set(seen) == {jnp.dtype(jnp.bfloat16)}
     assert (jnp.dtype(jnp.float32), jnp.dtype(jnp.float32)) not in normed
     assert set(normed) == {(jnp.dtype(jnp.bfloat16), jnp.dtype(jnp.bfloat16))}
@@ -473,11 +624,13 @@ def test_the_knob_rounds_no_pair_bias_that_was_not_already_rounded(
 
     A bias re-projected every block and added under an exponential must not
     pick up a rounding it did not have. Both of Boltz-2's do their arithmetic
-    at the same width with the pin on as with it off: the single track's
-    because its projection is inside the autocast-disabled parameter island
-    and `pairformer_layer_forward` hands it an explicitly widened pair, and
-    triangle attention's because its projection kernel is BF16 in the
-    released run already, which is upstream's autocast Linear.
+    at the same width on the narrow arm as on the wide one: the single
+    track's because its projection is inside the autocast-disabled parameter
+    island and `pairformer_layer_forward` hands it an explicitly widened
+    pair, and triangle attention's because its projection kernel is BF16 in
+    the released run already, which is upstream's autocast Linear.
+
+    The narrow arm is now the omitted one, so that is the arm measured here.
     """
 
     from foldjax.models.boltz2.models.primitives import attention as attn_module
@@ -501,12 +654,13 @@ def test_the_knob_rounds_no_pair_bias_that_was_not_already_rounded(
 
     monkeypatch.setattr(attn_module, "_attention_qblock", single_spy)
     monkeypatch.setattr(tri_att_module, "_attention_block", triangle_spy)
-    widths = {}
-    for arm in (None, jnp.bfloat16):
+    widths = []
+    for arm, omit in _ARMS:
         seen["single"].clear()
         seen["triangle"].clear()
-        _run(monkeypatch, arm)
+        _run(monkeypatch, arm, omit=omit)
         assert seen["single"] and seen["triangle"], "no softmax ran"
-        widths[arm] = (set(seen["single"]), set(seen["triangle"]))
-    assert widths[None] == widths[jnp.bfloat16]
-    assert widths[None] == ({jnp.dtype(jnp.float32)}, {jnp.dtype(jnp.bfloat16)})
+        widths.append((set(seen["single"]), set(seen["triangle"])))
+    wide, released = widths
+    assert wide == released
+    assert released == ({jnp.dtype(jnp.float32)}, {jnp.dtype(jnp.bfloat16)})
