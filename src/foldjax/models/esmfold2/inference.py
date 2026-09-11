@@ -48,6 +48,7 @@ from foldjax.models.esmfold2.data import features as featurisation
 from foldjax.models.esmfold2.models import atom as atom_model
 from foldjax.models.esmfold2.models import esmc as esmc_model
 from foldjax.models.esmfold2.models import model as structure_model
+from foldjax.models.esmfold2.models.model import CONFIDENCE_DTYPES
 from foldjax.models.esmfold2.models.segments import MAX_ATOMS_PER_TOKEN
 
 #: Where `assets.py` stages the language model beside the structure weights.
@@ -526,6 +527,11 @@ def predict(
     #: Which implementation the diffusion token transformer's packed SwiGLU
     #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
     glu_backend: str | None = None,
+    #: The confidence head's re-embedding width. `None` leaves the
+    #: checkpoint's value, which is `"float32"`; `"bfloat16"` opens
+    #: AlphaFold 3's narrowed re-embedding. Scores only -- the head cannot
+    #: reach the coordinates.
+    confidence_dtype: str | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
@@ -571,6 +577,12 @@ def predict(
     if glu_backend is not None and glu_backend not in GLU_BACKENDS:
         msg = f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
         raise ValueError(msg)
+    if confidence_dtype is not None and confidence_dtype not in CONFIDENCE_DTYPES:
+        msg = (
+            f"confidence dtype must be one of {CONFIDENCE_DTYPES}; "
+            f"got {confidence_dtype!r}"
+        )
+        raise ValueError(msg)
     if cp_shards > 1 and glu_backend not in (None, "xla"):
         # The pair state is placed by `with_sharding_constraint`, and a Pallas
         # custom call brings no partitioner of its own, so GSPMD has no rule
@@ -588,6 +600,7 @@ def predict(
         max_msa_depth=max_msa_depth,
         structure_sample_sequential=structure_sample_sequential,
         glu_backend=glu_backend,
+        confidence_dtype=confidence_dtype,
     )
     # Resolve the process-wide escape hatch before choosing a bounded JIT
     # owner. The same integer is passed into the graph and pins every atom

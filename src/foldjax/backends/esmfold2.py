@@ -82,6 +82,9 @@ _FIXED_COMPILE_DEFAULTS = {
     # The unfused transition is what every released number describes, and the
     # value is independent of the checkpoint: no `config.json` key reaches it.
     "glu_backend": "xla",
+    # A float32 confidence re-embedding is what every released number
+    # describes, and no `config.json` key reaches it either.
+    "confidence_dtype": "float32",
 }
 
 #: The values `glu_backend` accepts, spelled here rather than imported.
@@ -99,6 +102,24 @@ def _checked_glu_backend(value: object) -> str:
     if value not in _GLU_BACKENDS:
         raise ValueError(
             f"glu_backend must be one of {', '.join(_GLU_BACKENDS)}; got {value!r}"
+        )
+    return str(value)
+
+
+#: The values `confidence_dtype` accepts, spelled here for the reason above.
+#:
+#: `foldjax.models.esmfold2.models.model.CONFIDENCE_DTYPES` is the authority
+#: and a drift test pins this tuple to it.
+_CONFIDENCE_DTYPES = ("float32", "bfloat16")
+
+
+def _checked_confidence_dtype(value: object) -> str:
+    """Reject a misspelled confidence dtype before anything is loaded."""
+
+    if value not in _CONFIDENCE_DTYPES:
+        raise ValueError(
+            "confidence_dtype must be one of "
+            f"{', '.join(_CONFIDENCE_DTYPES)}; got {value!r}"
         )
     return str(value)
 
@@ -406,6 +427,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # rather than a neutral knob: no other port spells a GLU choice
             # the neutral vocabulary could rename, and Boltz-2's is native too.
             "glu_backend",
+            # Opt-in bfloat16 confidence re-embedding. Native for the same
+            # reason `trunk_dtype` is: it names a region of this port's own
+            # arrangement, and the neutral vocabulary has no word for it.
+            "confidence_dtype",
             "no_language_model",
             # Spelled through rather than renamed: the port's own settings
             # field has this name, so there is no translation entry to get
@@ -452,6 +477,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # traced against, so a fused run must not be answered out of the
         # default executable's cache entry.
         "glu_backend",
+        # Traced into the confidence head's re-embedding, so a narrowed run
+        # must not be answered out of the float32 executable's cache entry.
+        "confidence_dtype",
     )
 
     def __init__(self) -> None:
@@ -877,6 +905,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 "context parallelism requires glu_backend='xla'; a fused GLU "
                 "cannot be partitioned"
             )
+        # Refused early for the spelling only. Unlike `glu_backend` there is
+        # no context-parallel restriction to add: this narrows arithmetic
+        # under a sharding constraint rather than introducing a custom call
+        # GSPMD has no partitioner for.
+        _checked_confidence_dtype(options.get("confidence_dtype", "float32"))
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
@@ -948,6 +981,12 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # nobody requested into the recorded overrides.
         if "glu_backend" in options:
             overrides["glu_backend"] = _checked_glu_backend(options.pop("glu_backend"))
+        # Absent means unasked, for the same reason: the port's own default is
+        # already `float32`.
+        if "confidence_dtype" in options:
+            overrides["confidence_dtype"] = _checked_confidence_dtype(
+                options.pop("confidence_dtype")
+            )
         # `translate` has already turned `off`/`on` into this port's own bool,
         # so an absent key means unasked. Written into `overrides` only when
         # asked, for the reason `structure_sample_sequential` above is: an

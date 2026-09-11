@@ -26,6 +26,20 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **An opt-in bfloat16 confidence head for ESMFold2**, off by default.
+  `--option confidence_dtype=bfloat16` narrows the confidence head's
+  re-embedding -- the five `s_to_z*` projections, the distance-bin gather and
+  the residual stream they feed into the head's own trunk -- at AlphaFold 3's
+  boundary: narrow re-embedding, float32 output heads. `float32` stays the
+  default, so every released run is unchanged. It is the safest dtype change
+  the port offers, because the confidence head produces scores and never
+  coordinates, so nothing inside it can move the structure; Protenix measured
+  the equivalent narrowing at 3,012 tokens as bitwise-identical coordinates,
+  at most 0.0099 of atom pLDDT and at most 1.9e-4 of chain pTM and ipTM. The
+  pooling and pTM softmaxes, the four output heads, the representative
+  distances and the bin comparison against them all stay float32. Unlike the
+  fused kernels, it composes with context parallelism, where it narrows the
+  re-embedding and leaves the head's trunk unchanged.
 - **An opt-in fused gated linear unit for ESMFold2**, off by default.
   `--option glu_backend=tokamax` runs the twelve transitions in the diffusion
   token transformer through one fused Triton kernel instead of materialising
