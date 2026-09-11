@@ -281,6 +281,17 @@ def boltz2_predict(
         triangle_attention_chunk=sample_kwargs.get("triangle_attention_chunk"),
         triangle_attention_q_chunk=sample_kwargs.get("triangle_attention_q_chunk"),
         transition_hidden_chunk=sample_kwargs.get("transition_hidden_chunk"),
+        # The second precision surface, and the one the neutral knob does NOT
+        # reach: this string becomes an explicit `precision=` on triangle
+        # attention's projections, which beats the scope that
+        # `api._pinned_matmul_precision` opens from `api.MATMUL_PRECISION`
+        # (now "high"). No caller sets this key -- `api.predict`'s
+        # `predict_kwargs` deliberately omits it -- so the graph runs
+        # "highest" here whatever the scope says. That is the state the
+        # 2026-09-11 GPU measurement was taken in, and the checkpoint-parity
+        # modules that call this stack directly were calibrated against it.
+        # Wiring the two together is a real change, not a tidy-up; the note at
+        # `api.MATMUL_PRECISION` says what it would cost.
         matmul_precision=str(sample_kwargs.get("matmul_precision", "highest")),
         attention_backend=attention_backend,
         atom_attention_backend=(
@@ -422,6 +433,8 @@ def boltz2_predict(
             triangle_attention_chunk=sample_kwargs.get("triangle_attention_chunk"),
             triangle_attention_q_chunk=sample_kwargs.get("triangle_attention_q_chunk"),
             transition_hidden_chunk=sample_kwargs.get("transition_hidden_chunk"),
+            # The same op-level surface as the trunk call above, and the
+            # same reason it stays "highest" while the scope ships "high".
             matmul_precision=str(sample_kwargs.get("matmul_precision", "highest")),
             attention_backend=attention_backend,
             triangle_backend=str(sample_kwargs.get("triangle_backend", "cueq")),

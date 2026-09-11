@@ -73,6 +73,15 @@ def resolve_matmul_precision(matmul_precision: str) -> jax.lax.Precision:
     tensor-core accumulation on GPU). Callers selecting a relaxed precision
     should also set ``jax.config jax_default_matmul_precision`` to match so that
     the unpinned matmuls use the same path (the trunk entry does this).
+
+    **There is deliberately no ``"high"``**, the spelling the neutral
+    ``matmul_precision`` knob uses. This function is reached only by the
+    op-level string, which `api.predict` does not set and which therefore
+    stays at its signature default while the port's scope ships ``"high"``
+    (see `api.MATMUL_PRECISION`). Accepting ``"high"`` here would make a
+    future edit that wires the two together compile quietly; refusing it
+    makes that edit raise on the first prediction instead. Adding it is part
+    of the cost of unifying the two surfaces, not a tidy-up.
     """
     key = matmul_precision.lower()
     if key in ("highest", "float32", "fp32"):

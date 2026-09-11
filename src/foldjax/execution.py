@@ -37,9 +37,13 @@ opened around them was simply overridden -- and the other two opened none, so
 there was nothing to reach. It is now delivered by `matmul_precision_scope`
 below: the adapter records the request, and the port that pins reads it where
 it used to name its own constant. With no request in flight each port keeps
-its own pinned value, which is upstream parity and measured -- Boltz-2 is
-`highest` because `main.py:1096` asks for it, OpenFold3 and Protenix are
-`high` because their upstreams select TF32.
+its own pinned value, and every one of those values is measured. Three of them
+are also upstream parity -- OpenFold3 and Protenix are `high` because their
+upstreams select TF32. Boltz-2 is the departure: `main.py:1096` asks for
+`highest` and the port ships `high` anyway, because the criterion for a
+default here is accuracy equivalence rather than agreement with upstream's
+configuration, and TF32 meets it there for about a tenth of the wall clock
+(`models/boltz2/api.py`, at the constant).
 """
 
 from __future__ import annotations
@@ -227,9 +231,9 @@ def matmul_precision_scope(value: str | None) -> Iterator[None]:
     """Ask every port in this call to run float32 matmuls at `value`.
 
     `None` is not "default" -- it is "do not ask", and leaves each port on the
-    precision it pins for itself. Those pins are upstream parity, measured and
-    recorded next to each one, so they stay the default and this only overrides
-    them when a caller says so.
+    precision it pins for itself. Those pins are measured and recorded next to
+    each one, so they stay the default and this only overrides them when a
+    caller says so.
 
     The JAX scope is opened here as well as read by the ports, so that the
     three backends which pin nothing get the setting too.

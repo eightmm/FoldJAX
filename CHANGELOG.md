@@ -311,6 +311,39 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2 runs its float32 matmuls at TF32.** It was the one port here
+  pinned to `highest`, because its upstream is -- `main.py:1096` is
+  `torch.set_float32_matmul_precision("highest")`, where OpenFold3, Protenix
+  and OpenDDE all select TF32. **This changes what a recorded Boltz-2 command
+  predicts**, so it is a deliberate departure and not an oversight: the
+  criterion for a default here is accuracy equivalence, not agreement with
+  upstream's configuration. Measured on GPU over the released schedule, warm
+  after prefill, `highest` -> `high`: 88.31 -> 82.17 s at 1,003 tokens
+  (-7.0%) and about 313.94 -> 287.62 s at 2,096 (~-8.4%). **It changes wall
+  clock and no memory**: peak is 9,216 MiB on both arms at 1,003 tokens and
+  21,778 MiB on both at 2,096. (An earlier reading of these rows claimed
+  -26.9% peak at 1,003 tokens against a 12,612 MiB baseline; that baseline
+  predates the fused-GLU default and the whole saving belongs to
+  `glu_backend=tokamax`, which already records it.) Accuracy at 2,096
+  tokens on 5DEI, five samples: per-chain RMSD to the deposited chain
+  0.34-0.40 Å on both arms chain for chain, TM 0.998 on both, sample 4
+  selecting the same alternative basin in both, and a same-index residual
+  between the arms of 0.038 Å median / 0.135 Å max against a 0.238 Å spread
+  within either set. `--option matmul_precision=highest` selects exactly the
+  program the port shipped before -- upstream's rounding, cuEquivariance's
+  `IEEE` triangle-multiplication mode, and Tokamax's three-pass
+  `F32_F32_F32` preset for float32 operands -- and is its own compilation
+  cache namespace, while spelling `high` selects the namespace an omitted
+  value already selects. Every Boltz-2 parity harness pins `highest`
+  explicitly, so none of them moved. The change moves the port's
+  `jax.default_matmul_precision` scope and nothing else, which is exactly the
+  arm that was measured: triangle attention's four projections take an
+  explicit `precision=` from a string `api.predict` does not set, so they stay
+  on upstream's float32 rounding under either value. That disagreement is
+  inert at the released `dtype=bfloat16` -- every operand it reaches is
+  bfloat16 -- and live under `--option dtype=float32`; `docs/cli.md` says what
+  unifying the two would cost.
+
 - **Protenix runs its confidence head in bfloat16 at every token count.**
   `--amp-policy auto`, the released default, used to reproduce upstream's
   token gate, which keeps the confidence head float32 at or below 2,560

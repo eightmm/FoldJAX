@@ -514,12 +514,16 @@ def boltz2_sample_forward(
     update loop from ``diffusionv2.AtomDiffusion.sample`` is mirrored. The
     stochastic multinomial resampling only runs when steering is enabled.
 
-    ``matmul_precision`` ("highest" default) controls the triangle-attention
-    projection precision pin (the one matmul the global flag cannot reach). The
-    default "highest" path is bit-identical to before. To run the full graph in
-    TF32, the caller should ALSO set
-    ``jax.config.update("jax_default_matmul_precision", "default")`` so the
-    remaining unpinned matmuls (diffusion score, triangle mult, einsums) match.
+    ``matmul_precision`` controls the triangle-attention projection precision
+    pin (the one matmul the global flag cannot reach), and the signature
+    default stays "highest" so a direct caller -- every checkpoint-parity
+    module here is one -- keeps the arithmetic it was calibrated against.
+    ``foldjax.models.boltz2.api.predict`` does not rely on that default: it
+    passes the value its own scope resolved, which ships as "high". A caller
+    who drives this function directly and wants the whole graph on one policy
+    should ALSO open ``jax.default_matmul_precision`` at the same value, so
+    that the remaining unpinned matmuls (diffusion score, triangle mult,
+    einsums) match.
 
     ``aug_transforms`` (default None) is a test-only injection hook for parity
     studies: a ``(R, tr)`` tuple with ``R`` shape ``(num_sampling_steps,

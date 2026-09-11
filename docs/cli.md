@@ -500,11 +500,16 @@ part of the compilation-cache identity, so a non-default value never receives
 the executable built without it. Both also reach the affinity re-embedding
 run, which uses the same score model.
 
-The two go together. Under the released float32 island a fused kernel takes
-Tokamax's slow `F32_F32_F32` preset, which is slower than plain XLA; with the
-bf16 knob on, q, k, v and the pair bias all reach the kernel in bfloat16 and
-Tokamax selects `BF16_BF16_F32` regardless of this port's pinned
-`matmul_precision=highest`, which it consults only for float32 operands.
+The two go together. Under the float32 island a fused kernel inherits this
+port's `matmul_precision` -- Tokamax resolves an unset precision from
+`jax_default_matmul_precision` -- so before 2026-09-11 it took the three-pass
+`F32_F32_F32`, which was measured slower than plain XLA; since the default
+moved to `high` it takes `TF32_TF32_F32` there instead, and that comparison
+has not been re-measured. `--option matmul_precision=highest` restores the
+arm the recorded figure describes. With the bf16 knob on, q, k, v and the pair
+bias all reach the kernel in bfloat16 and Tokamax selects `BF16_BF16_F32`
+whatever `matmul_precision` says, because it consults it only for float32
+operands.
 `triton` pins that kernel and fails loudly rather than falling back, so it
 requires `diffusion_compute_dtype=bfloat16` and an NVIDIA GPU of compute
 capability 8.0 or newer; on any card older than sm80 Tokamax would take
@@ -606,6 +611,214 @@ moves 5SAK by 2.91 Å -- so a knob that moves the AMP boundary away from
 upstream's needs its own row before it is trusted. AlphaFold 3 does store its
 trunk pair activations in bfloat16, which is why the cell is worth opening at
 all.
+
+### Boltz-2's matmul precision (`--option matmul_precision=highest`)
+
+Boltz-2 ships TF32 float32 matmuls since 2026-09-11. It is the one model here
+whose upstream asks for true float32 -- `main.py:1096` is
+`torch.set_float32_matmul_precision("highest")`, where OpenFold3, Protenix and
+OpenDDE all select TF32 -- and this port followed it until that date, on the
+reasoning that matching upstream's configuration is what faithfulness means.
+
+It is a deliberate departure, not an oversight. The criterion for a default
+here is accuracy equivalence, and TF32 meets it. Measured on GPU over the
+released schedule, warm after prefill, one RTX PRO 6000 Blackwell:
+
+| tokens | wall, `highest` | wall, `high` | peak |
+|---|---|---|---|
+| 1,003 | 88.31 s | 82.17 s (**-7.0%**) | 9,216 MiB, both arms |
+| 2,096 | ~313.94 s | 287.62 s (**~-8.4%**) | 21,778 MiB, both arms |
+
+**This buys wall clock and no memory at all**, and the peak column is worth a
+paragraph because an earlier reading of these rows got it wrong. That reading
+put 1,003 tokens at 90.98 -> 82.17 s with peak 12,612 -> 9,216 MiB, a -26.9%
+memory saving, and attributed it here. The 90.98 / 12,612 baseline was source
+`72116ac3`, which predates the fused-GLU default: the whole 12,612 -> 9,216
+belongs to `glu_backend=tokamax` and is recorded under that option, along
+with the 317.91 -> 313.94 s the 2,096-token baseline moved at the same time.
+Against same-source controls the precision change moves no bytes at any size.
+The one control actually run beside this change is the 1,003-token 88.31 s;
+the 2,096-token figure is the GLU note's post-flip number rather than a
+control run beside 287.62, so read that row as approximate.
+
+Accuracy at 2,096 tokens on 5DEI, a homotetramer, five samples: per-chain RMSD
+to the deposited chain is 0.34-0.40 Å on both arms, chain for chain, TM 0.998
+on both, and sample 4 selects the same alternative basin in both arms. The
+same-index residual between the arms is 0.038 Å median / 0.135 Å max against a
+0.238 Å spread *within* either set -- the arms are closer to each other than
+five samples of one arm are to each other.
+
+`--option matmul_precision=highest` selects exactly the program this port
+shipped before. It stays reachable because the parity harnesses compare
+against upstream's rounding and need it; they all pin it explicitly, so none
+of them moved. The two values are separate compilation-cache namespaces, and
+spelling `high` explicitly selects the same namespace as omitting it.
+
+#### The second precision surface, which this default does not reach
+
+Triangle attention takes a `matmul_precision` *string*
+(`models/predict.py:284`, `:425`), turns it into a `jax.lax.Precision`, and
+passes it explicitly to its four projections -- q/g, k/v, the triangle bias
+and the output linear. An explicit `precision=` beats
+`jax.default_matmul_precision`, so those four dots do not follow the option
+above. `api.predict` sets no such string, so they sit at their signature
+default, `highest`. Inside one triangle-attention layer the two surfaces are
+visible side by side: the four projections stay `HIGHEST` while the score and
+P@V contractions beside them, which carry no `precision=`, follow the option.
+
+That asymmetry is not new and the flip did not create it; it is the state the
+measurement above was taken in, which is why the shipped default is
+bit-for-bit that arm.
+
+**On the released `dtype=bfloat16` it is inert, and the reason is not
+obvious** -- the pin is still spelled `HIGHEST` on those matmuls, so the
+natural assumption is that it is doing something. Two narrowings meet there:
+
+* `_cast_trunk_params` (`models/trunk_blocks/trunk.py:246`) narrows every
+  `*/kernel` in the trunk except four subtrees --
+  `input_embedder/atom_encoder`, `template_module/a_proj`,
+  `input_embedder/atom_attention_encoder/atom_to_token_trans`, and each
+  Pairformer layer's `pre_norm_s`/`attention`/`transition_s`. Triangle
+  attention's `tri_att_start`/`tri_att_end` are in none of them, so their
+  kernels are bfloat16. (The exempt `attention` key is the *single*
+  representation's `AttentionPairBias`, not this one.)
+* `triangle_attention._linear` then casts the activation to the kernel's
+  width before the matmul, so the float32 pair residual never meets a float32
+  kernel there either.
+
+Both operands are therefore bfloat16, and the attribute has no float32
+accumulation to choose between. `cuequivariance_ops_jax` agrees
+independently: its `use_tf32` returns False for any non-float32 dtype
+(`_triangle_attention.py:51`) before it reads the precision at all.
+
+#### What unifying the two surfaces would be worth, and what it would cost
+
+Unifying them was built and measured: at 1,003 tokens the unified default is
+81.96 s against the hybrid's 82.17 s and at 2,096 it is 287.71 s against
+287.62 s -- the same to within noise at both sizes, which is what the
+inertness above predicts. So there is no performance case for it at the
+shipped dtype, and it is not shipped: a unified default would be a program no
+accuracy row describes.
+
+Under `--option dtype=float32` the pin is live and worth something. From the
+released checkpoint the trunk Pairformer is 64 layers at `c_z=128` with 4
+heads of 32, plus 4 more inside the MSA module and an 8-layer stack in the
+confidence head. Per Pairformer layer, in MACs:
+
+* the pinned projections, 164,864 × N²
+* scope-governed N² in the same layer (`tri_mul` p/g in and out,
+  `transition_z`), 393,216 × N²
+* scope-governed N³ (triangle-attention scores and P@V 512, `tri_mul`
+  contraction 256), 768 × N³
+
+| tokens | pinned share of one Pairformer layer |
+|---|---|
+| 1,003 | 12.4% |
+| 2,096 | 7.6% |
+| 3,012 | 5.7% |
+
+It is N² against N³ competition, so it shrinks with length. Layer-passes
+carrying it per released prediction: 64 × 4 recycles, plus 16 in the MSA
+module, plus 8 × 5 samples in the confidence head. Treat these as a FLOP
+share, not a wall prediction.
+
+If anyone does want that row, the recipe is not "edit one constant". Both
+snapshots need `--option dtype=float32`, or the pin has no float32 operand
+and the measurement is of nothing; and the changed snapshot needs **two**
+edits, not one -- `predict_kwargs["matmul_precision"]` added in
+`api.predict`, *and* a `"high" -> Precision.HIGH` arm in
+`triangle_attention.resolve_matmul_precision`, which takes
+`highest`/`float32`/`fp32` and `default`/`tensorfloat32`/`tf32` and raises on
+anything else. That refusal is deliberate: it makes a quiet wiring of the two
+surfaces fail on the first prediction rather than compile a program nothing
+has measured.
+
+#### Harnesses pinned to the old value
+
+Every Boltz-2 parity harness pins `highest` on both surfaces and was left
+alone: `tests/parity/test_boltz2.py`,
+`tests/models/boltz2/scripts/parity_matched_tape.py`,
+`bench/boltz_foldjax_capture.py` (which refuses a capture recorded at
+anything else), `bench/boltz_pair_stage_probe.py`,
+`bench/boltz_atom_attention_probe.py` and
+`bench/boltz_atom_projection_probe.py`. Their question is "do we match
+upstream", so pinning is correct and nothing drifted.
+
+**Four benchmark and profiling scripts now measure a configuration the
+product no longer ships**: `tests/models/boltz2/scripts/predict.py`,
+`profile_warm_stages.py`, `compare_trunk_backends.py` and
+`benchmark_warm_predict.py` all latch `jax_default_matmul_precision` to
+`highest`. They were left pinned on purpose, so their recorded numbers stay
+comparable with each other -- but a figure they produce from today on is a
+`highest` figure, not a default-configuration one. A recorded number whose
+configuration has quietly stopped being the default is the failure mode the
+stale 12,612 MiB baseline above is an instance of; say which arm a row
+describes when you quote one.
+
+The torch-gated checkpoint-parity modules (`tests/models/conftest.py`) are
+immune for a different reason: they call the forward functions directly and
+never enter the scope, so they take the signature defaults, which stay
+`highest`. That is what keeps all 24 comparing upstream's rounding, and it is
+why those defaults are not a tidy-up target.
+
+#### What is still float32 in this trunk, with the scope at `high`
+
+Asked after the flip: is anything left running genuine float32 arithmetic at
+the released `compute_dtype=bfloat16`?
+
+**No matmul runs at `HIGHEST` any more.** The only explicit `precision=` in
+the whole Boltz-2 tree is the triangle-attention one above -- every other dot
+inherits the scope -- and at the released dtype its operands are bfloat16. So
+nothing in the trunk asks XLA for float32 accumulation.
+
+**Float32 weights do survive, and now run TF32.** Applying
+`_cast_trunk_params` at bfloat16 to the released checkpoint leaves 612.92 MiB
+of float32 `kernel` parameters, and essentially all of it is the *single*
+representation's path in each of the 64 trunk Pairformer layers, which that
+function exempts on purpose:
+
+| site | float32 | why it is exempt |
+|---|---|---|
+| `transition_s` fc1/fc2/fc3 | 432.00 MiB | the `transition_s` exemption |
+| `attention` proj q/k/v/g/o | 180.00 MiB | the `attention` exemption |
+| `attention` proj_z | 0.50 MiB | same |
+| `input_embedder/atom_encoder` (10 sites) | 0.21 MiB | named subtree |
+| `atom_attention_encoder/atom_to_token_trans` | 0.19 MiB | named subtree |
+| `template_module/a_proj` | 0.03 MiB | named subtree |
+
+A further 1.06 MiB over 84 sites is float32 norm affine, biases and
+embeddings, which are not GEMM operands.
+
+As arithmetic this is small and shrinking. Per Pairformer layer the exempt
+path is 2,506,752 × N (the `transition_s` and attention projections, linear
+in tokens) plus 2,816 × N² (proj_z and the single attention's own scores and
+P@V), against the pair path's 393,216 × N² + 768 × N³ -- **0.45% of the
+layer's MACs at 1,003 tokens, 0.20% at 2,096, 0.13% at 3,012.** It is not a
+lever.
+
+**What is left is storage, and it already has a knob.** The float32 pair
+representation `[1, N, N, 128]` is 4.326 GiB at 3,012 tokens against 2.163
+GiB in bfloat16 (2.095 / 1.047 at 2,096), and from roughly 2,000 tokens up it
+is the peak's largest tenant. `--option pair_residual_dtype=bfloat16` narrows
+it; it ships off and its own section above says why. After that the trunk has
+nothing else wide: the remaining float32 activations are the single
+representation `[1, N, 384]` and the norms, both negligible, and the
+diffusion module's float32 island is upstream's `autocast(enabled=False)`
+rather than anything this port chose -- it has its own
+`diffusion_compute_dtype` knob.
+
+#### What the flip does at the fused call sites
+
+The cuEquivariance triangle-*multiplication* FFI reads the scope
+(`models/_cueq.py:67`), so it moves -- but only where its operands are
+float32: it overrides any float32 policy to `TriMulPrecision.DEFAULT` for
+half-precision operands, so the released bfloat16 trunk saw `DEFAULT` before
+and sees `DEFAULT` now, and only `--option dtype=float32` goes `IEEE` ->
+`TF32`. The triangle-*attention* FFI does **not** read the scope on this
+port: Boltz-2 hands it the op-level `precision` argument, and its TF32 flag
+is dtype-gated as above. Tokamax does read the scope and resolves an unset
+precision through it, so its float32 branch now takes `TF32_TF32_F32` where
+it took the three-pass `F32_F32_F32`.
 
 ### A bfloat16 OpenDDE denoising network (`--option diffusion_dtype=bf16`)
 

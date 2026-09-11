@@ -377,6 +377,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "triangle_backend": "cueq",
             "glu_backend": "tokamax",
             "bucket": False,
+            "matmul_precision": "high",
         },
     )
     neutral = dataclasses.replace(
@@ -395,6 +396,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "triangle_kernel": "auto",
             "glu_backend": "tokamax",
             "bucket": False,
+            "matmul_precision": "high",
         },
     )
 
@@ -520,6 +522,11 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         ({}, {"token_attention_chunk": 256}),
         ({}, {"token_attention_chunk": 0}),
         ({}, {"bucket": True}),
+        # Upstream's float32 is a second program -- a different `precision`
+        # attribute on every float32 dot, a different cuEquivariance
+        # triangle-multiplication mode, a different Tokamax preset -- so the
+        # parity arm must not be answered out of the shipped TF32 entry.
+        ({}, {"matmul_precision": "highest"}),
     ],
 )
 def test_boltz2_nondefault_compile_options_keep_distinct_namespaces(
