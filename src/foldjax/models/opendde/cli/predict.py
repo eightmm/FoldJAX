@@ -183,8 +183,9 @@ def _preflight_arena(features: Mapping[str, Any], trunk_dtype: Any) -> str | Non
     ]
     if name == "float32":
         lines.append(
-            "This run pins --trunk-dtype fp32, upstream's own precision "
-            "policy. The default is --trunk-dtype bf16, which roughly halves "
+            "This run pins --trunk-dtype fp32, upstream's own trunk "
+            "precision policy (the confidence head has its own flag). The "
+            "default is --trunk-dtype bf16, which roughly halves "
             "the measured arena and on the eight-case panel is 13-39% faster, "
             "33-52% lighter, and no further from upstream than fp32 is."
         )
@@ -547,19 +548,23 @@ def main(
         choices=("bf16", "fp32"),
         default="bf16",
         help="element width of the embedder and both trunks; the diffusion "
-        "sampler and the output heads stay FP32 either way. Defaults to BF16, "
-        "which on the eight-case panel is 13-39% faster, 33-52% lighter and no "
-        "further from upstream than FP32; pass fp32 for upstream's own policy",
+        "sampler, the distogram head and every confidence logit stay FP32 "
+        "either way, and the confidence head's own stack is --confidence-dtype. "
+        "Defaults to BF16, which on the eight-case panel is 13-39% faster, "
+        "33-52% lighter and no further from upstream than FP32; pass fp32 for "
+        "upstream's own trunk policy",
     )
     parser.add_argument(
         "--confidence-dtype",
         choices=("fp32", "bf16"),
-        default="fp32",
+        default="bf16",
         help="element width of the confidence head's re-embedding Pairformer "
-        "and the three activations entering it. 'bf16' reproduces AlphaFold "
-        "3's confidence boundary: narrow stack, FP32 pLDDT/PAE/PDE/resolved "
-        "logits. It moves scores only -- the head runs after the sampler and "
-        "emits no coordinates -- and is independent of --trunk-dtype",
+        "and the three activations entering it. Defaults to BF16, which "
+        "reproduces AlphaFold 3's confidence boundary: narrow stack, FP32 "
+        "pLDDT/PAE/PDE/resolved logits. It moves scores only -- the head runs "
+        "after the sampler and emits no coordinates, so no structure can move "
+        "-- and is independent of --trunk-dtype; pass fp32 to keep the whole "
+        "head wide",
     )
     # Native OpenDDE defaults to FP32. The five-sample, fixed-tape native
     # precision panel rejects BF16 on 5SAK/1URN; memory savings and a matched

@@ -108,9 +108,10 @@ def cast_trunk_params(
 
     The diffusion module, distogram, and confidence heads keep FP32 weights.
     The sampler already upcasts its inputs at the boundary, so the cast stops
-    where the coordinates start. The confidence head has its own opt-in
-    narrowing in :func:`cast_confidence_params`, kept separate from this one so
-    that the trunk and the scores are two decisions rather than one.
+    where the coordinates start. The confidence head has its own narrowing in
+    :func:`cast_confidence_params` -- also bfloat16 by default since
+    2026-09-11 -- kept separate from this one so that the trunk and the scores
+    are two decisions rather than one.
     """
 
     def cast_leaf(value):
@@ -807,13 +808,17 @@ def opendde_infer_static(
     capture_names: tuple[str, ...] = (),
     trunk_dtype: jnp.dtype | None = None,
     #: Element width of the confidence head's re-embedding Pairformer, and of
-    #: the three activations that enter it. ``None`` is FP32 and the released
-    #: default; ``jnp.bfloat16`` reproduces AlphaFold 3's confidence boundary,
-    #: with the output logit heads still FP32. Separate from ``trunk_dtype``
-    #: on purpose -- the trunk decides coordinates and this decides only
-    #: scores -- so the two combine freely. The matching parameter subtree has
-    #: to have been rebuilt by :func:`cast_confidence_params`, which
-    #: :func:`_require_realised_confidence_params` checks rather than assumes.
+    #: the three activations that enter it. ``None`` is FP32; ``jnp.bfloat16``
+    #: reproduces AlphaFold 3's confidence boundary, with the output logit
+    #: heads still FP32, and is what the CLI passes unless the caller pins
+    #: ``--confidence-dtype fp32``. This signature keeps ``None`` because the
+    #: width only holds once :func:`cast_confidence_params` has rebuilt the
+    #: matching subtree, which no default can do for a caller. Separate from
+    #: ``trunk_dtype`` on purpose -- the trunk decides coordinates and this
+    #: decides only scores -- so the two combine freely. The matching parameter
+    #: subtree has to have been rebuilt by :func:`cast_confidence_params`,
+    #: which :func:`_require_realised_confidence_params` checks rather than
+    #: assumes.
     confidence_dtype: jnp.dtype | None = None,
     #: Run the denoising network under the bfloat16 autocast -- upstream's
     #: `skip_amp.sample_diffusion = False`. A sibling of `trunk_dtype`, not a

@@ -46,6 +46,7 @@ from foldjax.models.protenix.relative_position import (
     compact_relative_position_storage,
 )
 from foldjax.schema import PaddingConfig, PredictionRequest
+from tests.models.opendde.toy_params import inference_params
 
 
 def _params_double():
@@ -53,16 +54,14 @@ def _params_double():
 
     `object()` was enough while OpenDDE shipped float32, because that path
     casts nothing and never touches the tree. The shipped trunk is bfloat16
-    since 2026-08-28, so `cast_trunk_params` runs on every default prediction
-    -- these flows had simply never exercised it. Empty subtrees keep the
-    double cheap: `jax.tree.map` over `{}` is a no-op, and `_replace` is what
-    the cast actually needs.
+    since 2026-08-28 and the shipped confidence head since 2026-09-11, so
+    both `cast_trunk_params` and `cast_confidence_params` run on every
+    default prediction -- these flows had simply never exercised either. The
+    shared double carries a real confidence head for the second cast to
+    rebuild and cheap markers everywhere else.
     """
-    from foldjax.models.opendde.models.model import OpenDDEInferenceParams
 
-    return OpenDDEInferenceParams(
-        **{name: {} for name in OpenDDEInferenceParams._fields}
-    )
+    return inference_params()
 
 
 def _msa_features(depth: int, tokens: int = 3) -> dict[str, np.ndarray]:

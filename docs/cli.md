@@ -262,12 +262,13 @@ tokens it is the difference between completing and OOM on both sides. Boltz-2's
 equivalent is `compute_dtype`, default `bfloat16`.
 Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
-### A bfloat16 OpenDDE confidence head (`--confidence-dtype bf16`)
+### The bfloat16 OpenDDE confidence head (`--confidence-dtype`)
 
 OpenDDE's trunk dtype above stops at the trunk: `cast_trunk_params` narrows the
 embedder and both trunks and leaves the diffusion module, the distogram and the
-confidence head in float32. This opt-in flag narrows the confidence head alone,
-and only the part of it AlphaFold 3 narrows.
+confidence head in float32. This flag narrows the confidence head alone, and
+only the part of it AlphaFold 3 narrows. It defaults to `bf16` since
+2026-09-11; `--confidence-dtype fp32` keeps the whole head wide.
 
 AF3's released confidence head is the boundary. With `global_config.bfloat16 ==
 'all'`, its default, the pair and single activations are cast to bfloat16 on
@@ -292,12 +293,16 @@ The two distance projections and the outer-sum initialiser `linear_s1`/
 `linear_s2` narrow their own operands instead of inheriting a dtype, because
 what reaches them is float32 geometry rather than a trunk representation.
 
-The default is `fp32` and no released run changes. The value joins the
-compilation-cache identity, so a run that narrows the head never receives the
-executable built without it, and an unrecognised width is refused naming
-`fp32` and `bf16` rather than falling back. It is independent of
-`--trunk-dtype`: OpenDDE widens every trunk output to float32 before its heads,
-so this flag casts the head's activations itself and `--trunk-dtype fp32
+`bf16` is the default because the argument above has no counterweight: the
+head cannot move a structure, the same shared code was measured at 3,012
+tokens on Protenix, and the narrow arm is the shape AlphaFold 3 ships. What
+does not yet exist is an OpenDDE-specific GPU row for it, so `fp32` remains a
+supported pin rather than a fallback. The value joins the compilation-cache
+identity, so a run that narrows the head never receives the executable built
+without it, and an unrecognised width is refused naming `fp32` and `bf16`
+rather than falling back. It is independent of `--trunk-dtype`: OpenDDE
+widens every trunk output to float32 before its heads, so this flag casts the
+head's activations itself and `--trunk-dtype fp32
 --confidence-dtype bf16` is a real combination. Protenix's nearest equivalent,
 `--amp-policy`, works the other way -- it reproduces a torch autocast context,
 so its confidence stage inherits the trunk's dtype and a float32 trunk leaves
@@ -406,7 +411,8 @@ into the sampler, whatever the trunk and the confidence head are set to.
 sibling of the trunk dtype rather than a second spelling of it -- `trunk_dtype`
 casts four whole parameter subtrees, while this one reproduces a boundary and
 narrows only what upstream's autocast narrows -- and it is independent of
-`--confidence-dtype`, which owns a different stage and its own default.
+`--confidence-dtype`, which owns a different stage and reached its own bf16
+default separately.
 
 **Upstream runs float32 here and this is a deviation.** Upstream OpenDDE's
 released `dtype` is `fp32` (`opendde/config/model_base.py:37`), so its autocast

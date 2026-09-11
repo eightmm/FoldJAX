@@ -20,6 +20,7 @@ from foldjax.models.opendde.cli import predict as predict_cli
 from foldjax.models.opendde.models import model as model_impl
 from foldjax.models.protenix.chunking import resolve_chunk_config
 from foldjax.schema import PaddingConfig, PredictionRequest
+from tests.models.opendde.toy_params import inference_params
 
 
 class _DefaultsCapturedError(Exception):
@@ -119,7 +120,9 @@ def test_released_default_cache_aliases_reuse_one_bounded_native_owner(
 
     def load_prepared(_path: Path, _dtype: str) -> object:
         counts["loads"] += 1
-        return object()
+        # A real confidence head, because the released default narrows one on
+        # every run: the CLI rebuilds this subtree before it reaches `_predict`.
+        return inference_params()
 
     monkeypatch.setattr(predict_cli, "_load_prepared_params", load_prepared)
 

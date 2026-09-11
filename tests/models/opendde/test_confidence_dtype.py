@@ -8,8 +8,6 @@ the outside, which is the whole reason the option carries a guard.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -18,7 +16,6 @@ import pytest
 import foldjax.models.opendde.models.model as model_impl
 import foldjax.models.protenix.models.heads.confidence as confidence_impl
 from foldjax.models.opendde.models.model import (
-    OpenDDEInferenceParams,
     cast_confidence_params,
     cast_trunk_params,
 )
@@ -33,57 +30,16 @@ from foldjax.models.protenix.models.primitives.primitives import (
     LinearParams,
 )
 from foldjax.models.protenix.models.trunk_blocks.pairformer import PairformerStackParams
-
-N_TOKEN, N_ATOM, C_S_INPUTS, C_S, C_Z, N_BINS, N_OUT = 2, 3, 5, 4, 3, 8, 2
-
-
-def _array(*shape: int) -> jnp.ndarray:
-    rng = np.random.default_rng(sum(shape) * 7 + len(shape))
-    return jnp.asarray(rng.normal(size=shape), dtype=jnp.float32)
-
-
-def _confidence_params() -> ConfidenceHeadParams:
-    """A released-shaped head: adjacent finite bins, so compact binning is exact."""
-
-    lower = jnp.asarray(np.linspace(2.0, 18.0, N_BINS), dtype=jnp.float32)
-    upper = jnp.concatenate([lower[1:], jnp.asarray([22.0], dtype=jnp.float32)])
-    return ConfidenceHeadParams(
-        input_strunk_ln=LayerNormParams(_array(C_S), _array(C_S)),
-        linear_s1=LinearParams(_array(C_Z, C_S_INPUTS)),
-        linear_s2=LinearParams(_array(C_Z, C_S_INPUTS)),
-        distance_embedding=ConfidenceDistanceEmbeddingParams(
-            lower_bins=lower,
-            upper_bins=upper,
-            linear_d=LinearParams(_array(C_Z, N_BINS)),
-            linear_d_wo_onehot=LinearParams(_array(C_Z, 1)),
-        ),
-        pairformer_stack=PairformerStackParams(blocks=()),
-        output=ConfidenceOutputParams(
-            pae_ln=LayerNormParams(_array(C_Z), _array(C_Z)),
-            pde_ln=LayerNormParams(_array(C_Z), _array(C_Z)),
-            plddt_ln=LayerNormParams(_array(C_S), _array(C_S)),
-            resolved_ln=LayerNormParams(_array(C_S), _array(C_S)),
-            linear_pae=LinearParams(_array(N_OUT, C_Z)),
-            linear_pde=LinearParams(_array(N_OUT, C_Z)),
-            plddt_weight=_array(2, C_S, N_OUT),
-            resolved_weight=_array(2, C_S, N_OUT),
-        ),
-    )
-
-
-def _params() -> OpenDDEInferenceParams:
-    return OpenDDEInferenceParams(
-        input_embedder=object(),
-        pairformer_output=object(),
-        structural_expander=object(),
-        structural_refiner=object(),
-        diffusion=SimpleNamespace(
-            conditioning=SimpleNamespace(relpe=object()),
-            atom_encoder=object(),
-        ),
-        distogram=object(),
-        confidence=_confidence_params(),
-    )
+from tests.models.opendde.toy_params import (
+    C_S,
+    C_S_INPUTS,
+    C_Z,
+    N_ATOM,
+    N_OUT,
+    N_TOKEN,
+)
+from tests.models.opendde.toy_params import array as _array
+from tests.models.opendde.toy_params import inference_params as _params
 
 
 def _features() -> dict[str, object]:
@@ -290,8 +246,12 @@ def test_the_output_logit_heads_stay_wide() -> None:
     assert realised.distance_embedding.upper_bins.dtype == jnp.float32
 
 
-def test_the_released_default_leaves_the_confidence_tree_untouched() -> None:
-    """The trunk default narrows four subtrees; this is not one of them."""
+def test_the_trunk_cast_leaves_the_confidence_tree_untouched() -> None:
+    """`cast_trunk_params` narrows four subtrees; this is not one of them.
+
+    Both casts are released defaults now, so what keeps them two decisions is
+    that neither preparer reaches the other's fields.
+    """
 
     params = _params()
     narrowed_trunk = cast_trunk_params(params, jnp.bfloat16)
@@ -459,28 +419,71 @@ def test_the_option_is_independent_of_the_trunk_dtype(monkeypatch) -> None:
     assert seen == ["bfloat16"]
 
 
+
+
+# ----------------------------------------------- the head that is not narrowed --
+
+
+def test_the_distogram_head_never_sees_the_confidence_dtype(monkeypatch) -> None:
+    """It reads the FP32 trunk copy and runs before the cast, at :1175.
+
+    Two things keep it out: ``cast_confidence_params`` rebuilds only
+    ``params.confidence``, and the model projects the distogram from
+    ``head_z_trunk`` before it narrows the three activations the head takes.
+    """
+
+    params = _params()
+    narrowed = cast_confidence_params(params, jnp.bfloat16)
+    assert narrowed.distogram is params.distogram
+
+    output = _infer(narrowed, monkeypatch, confidence_dtype=jnp.bfloat16)
+    assert output["distogram_logits"].dtype == jnp.float32
+
+
+# ---------------------------------------------------- the shared Protenix head --
+
+
+def test_the_shared_head_takes_its_width_from_the_parameters(monkeypatch) -> None:
+    """OpenDDE's default cannot reach Protenix, and this is the mechanism.
+
+    ``confidence_head`` is Protenix's module -- OpenDDE imports it rather than
+    owning a copy -- so a default flipped in OpenDDE's CLI could only reach
+    Protenix through the shared code. It cannot: nothing in the shared head
+    names a dtype. The width arrives entirely through the parameter tree and
+    the activations, and Protenix resolves those from its own token gate in
+    ``foldjax.models.protenix.amp_policy``, never from
+    ``cast_confidence_params``.
+
+    So the same call with an unprepared tree -- what Protenix's fp32 policy
+    passes -- still runs float32 end to end, under any OpenDDE default.
+    """
+
+    import inspect
+
+    for function in (
+        confidence_impl.confidence_head,
+        confidence_impl.confidence_head_single_sample,
+        confidence_impl.confidence_distance_embedding,
+    ):
+        named = sorted(inspect.signature(function).parameters)
+        assert not [name for name in named if "dtype" in name], (
+            function.__name__,
+            named,
+        )
+
+    features, schedule = _setup(monkeypatch)
+    wide = _dot_operand_dtypes(
+        jax.make_jaxpr(lambda: _run(_params(), features, schedule))()
+    )
+    assert wide, "no matmul was traced"
+    assert set(wide) == {("float32", "float32")}
+
+
 # ------------------------------------------------------------------ wiring --
 
 
-def test_the_value_joins_the_compilation_cache_identity() -> None:
-    """A run that narrows the head must not hit a cache entry that did not."""
-
-    from foldjax.backends.opendde import (
-        _CLI_OPTIONS,
-        _RELEASED_COMPILE_DEFAULTS,
-        OpenDDEBackend,
-    )
-
-    assert "confidence_dtype" in _CLI_OPTIONS
-    assert "confidence_dtype" in OpenDDEBackend.compile_options
-    assert _RELEASED_COMPILE_DEFAULTS["confidence_dtype"] == "fp32"
-    assert "confidence_dtype" in model_impl.GRAPH_STATIC_ARGNAMES
-
-
-def test_the_cli_refuses_an_unknown_width_naming_the_allowed_ones(
-    monkeypatch, capsys
-) -> None:
-    """An unrecognised width must name the set, not fall back to a default."""
+def _captured_parser():
+    """The real ``predict`` parser, captured before it consumes any argv."""
 
     import argparse
 
@@ -495,15 +498,391 @@ def test_the_cli_refuses_an_unknown_width_naming_the_allowed_ones(
         captured.append(parser)
         raise _StopError
 
-    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
-    with pytest.raises(_StopError):
+    original = argparse.ArgumentParser.parse_args
+    argparse.ArgumentParser.parse_args = capture
+    try:
         predict_cli.main([])
-    monkeypatch.undo()
-    parser = captured[0]
+    except _StopError:
+        pass
+    finally:
+        argparse.ArgumentParser.parse_args = original
+    return captured[0]
 
+
+def _parser_default(name: str) -> str:
+    parser = _captured_parser()
+    return next(
+        action.default for action in parser._actions if action.dest == name
+    )
+
+
+def _cache_request(tmp_path, **options):
+    import json
+
+    from foldjax.schema import PredictionRequest
+
+    input_path = tmp_path / "job.json"
+    input_path.write_text(
+        json.dumps([{"name": "tiny", "modelSeeds": [0], "sequences": []}]),
+        encoding="utf-8",
+    )
+    weights = tmp_path / "opendde.jax"
+    weights.write_bytes(b"native fixture")
+    return PredictionRequest(
+        model="opendde",
+        input=input_path,
+        input_format="native",
+        weights=weights,
+        output_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache",
+        options=dict(options),
+    )
+
+
+def test_the_value_joins_the_compilation_cache_identity() -> None:
+    """A run that narrows the head must not hit a cache entry that did not."""
+
+    from foldjax.backends.opendde import _CLI_OPTIONS, OpenDDEBackend
+
+    assert "confidence_dtype" in _CLI_OPTIONS
+    assert "confidence_dtype" in OpenDDEBackend.compile_options
+    assert "confidence_dtype" in model_impl.GRAPH_STATIC_ARGNAMES
+
+
+def test_the_default_spelled_out_names_the_same_namespace_as_unset(tmp_path) -> None:
+    """Whatever the default is, saying it must not select a second namespace.
+
+    Written against the parser's own value rather than a literal so that the
+    property survives the next flip: asking for what the CLI would have
+    supplied is the same run, and the other width is not.
+    """
+
+    from foldjax.backends.opendde import OpenDDEBackend
+
+    backend = OpenDDEBackend()
+    default = _parser_default("confidence_dtype")
+    other = next(value for value in ("fp32", "bf16") if value != default)
+
+    omitted = backend.cache_profile(_cache_request(tmp_path))
+    spelled = backend.cache_profile(
+        _cache_request(tmp_path, confidence_dtype=default)
+    )
+    pinned = backend.cache_profile(_cache_request(tmp_path, confidence_dtype=other))
+
+    assert "confidence_dtype" not in omitted
+    assert spelled == omitted
+    assert pinned["confidence_dtype"] == other
+    assert pinned != omitted
+
+
+def test_the_cli_refuses_an_unknown_width_naming_the_allowed_ones(capsys) -> None:
+    """An unrecognised width must name the set, not fall back to a default."""
+
+    parser = _captured_parser()
     required = ["--input-json", "in.json", "--out", "out", "--weights", "w.npz"]
 
-    assert parser.parse_args(required).confidence_dtype == "fp32"
     with pytest.raises(SystemExit):
         parser.parse_args([*required, "--confidence-dtype", "bfloat16"])
     assert "'fp32', 'bf16'" in capsys.readouterr().err
+
+
+# --------------------------------------------------------- the released run --
+
+
+def _run_cli(monkeypatch, tmp_path, argv_extra=()):
+    """Drive the native CLI down to ``_predict`` with a real confidence tree."""
+
+    import json
+
+    import foldjax.models.opendde.cli.predict as predict_impl
+
+    input_path = tmp_path / "tiny.json"
+    weights_path = tmp_path / "opendde.jax"
+    job = {"name": "tiny", "modelSeeds": [1], "sequences": []}
+    input_path.write_text(json.dumps([job]), encoding="utf-8")
+    weights_path.write_bytes(b"native fixture")
+    loaded = _params()
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    monkeypatch.setattr(predict_impl, "_load_jobs", lambda path: [job])
+    monkeypatch.setattr(
+        predict_impl,
+        "_featurize",
+        lambda value, **kwargs: {
+            "restype": np.zeros((N_TOKEN, 32), dtype=np.float32)
+        },
+    )
+    monkeypatch.setattr(
+        predict_impl, "_load_prepared_params", lambda path, trunk_dtype: loaded
+    )
+
+    def fake_predict(value, model_params, **kwargs):
+        calls.append((model_params, kwargs))
+        return {"coordinate": np.zeros((1, N_ATOM, 3), dtype=np.float32)}
+
+    monkeypatch.setattr(predict_impl, "_predict", fake_predict)
+    monkeypatch.setattr(predict_impl, "_score", lambda output, *a, **k: output)
+    monkeypatch.setattr(
+        predict_impl, "_write", lambda root, **kwargs: [tmp_path / "tiny.cif"]
+    )
+
+    predict_impl.main(
+        [
+            "--input-json",
+            str(input_path),
+            "--weights",
+            str(weights_path),
+            "--out",
+            str(tmp_path / "out"),
+            "--n-sample",
+            "1",
+            "--n-step",
+            "2",
+            *argv_extra,
+        ]
+    )
+    return loaded, calls
+
+
+def test_a_run_that_asks_for_nothing_gets_a_realised_bfloat16_head(
+    monkeypatch, tmp_path
+) -> None:
+    """No flag, and the tree reaching the model is already rebuilt.
+
+    The parser's string is not the evidence: an option that is resolved but
+    never applied is exactly the failure ``_require_realised_confidence_params``
+    exists to catch, and it would look identical from the outside.
+    """
+
+    loaded, calls = _run_cli(monkeypatch, tmp_path)
+    params, kwargs = calls[0]
+
+    assert kwargs["confidence_dtype"] == jnp.bfloat16
+    node = params.confidence.distance_embedding.linear_d
+    assert isinstance(node, AutocastLinearParams)
+    assert node.weight.dtype == jnp.bfloat16
+    assert params.confidence.input_strunk_ln.weight.dtype == jnp.bfloat16
+    # The weight session memoizes on `trunk_dtype` alone, so the cast has to
+    # leave its tree alone or a second policy in one process is served this
+    # one's weights.
+    assert isinstance(loaded.confidence.distance_embedding.linear_d, LinearParams)
+    assert _float_leaf_dtypes(loaded.confidence) == {"float32"}
+
+
+def test_pinning_fp32_hands_the_model_the_checkpoints_own_head(
+    monkeypatch, tmp_path
+) -> None:
+    """The escape hatch: no rebuild, no dtype, the loader's own subtree."""
+
+    loaded, calls = _run_cli(monkeypatch, tmp_path, ("--confidence-dtype", "fp32"))
+    params, kwargs = calls[0]
+
+    assert kwargs["confidence_dtype"] is None
+    assert params.confidence is loaded.confidence
+    assert _float_leaf_dtypes(params.confidence) == {"float32"}
+
+
+# ------------------------------------ the stack, with blocks that are not empty --
+
+
+def _uniform_head(n_blocks: int = 2, *, channels: int = 8, heads: int = 2):
+    """A confidence head whose Pairformer stack is real.
+
+    The toy head above carries ``blocks=()``, which is enough to record what
+    the stack is handed and says nothing about what the blocks realise. This
+    one has the same channel count on both representations so that one set of
+    shapes builds every projection in a block.
+    """
+
+    from foldjax.models.protenix.models.primitives.attention import (
+        AttentionPairBiasParams,
+        AttentionParams,
+    )
+    from foldjax.models.protenix.models.primitives.primitives import (
+        TransitionParams,
+    )
+    from foldjax.models.protenix.models.triangle.triangle import (
+        TriangleAttentionParams,
+        TriangleMultiplicationParams,
+    )
+    from foldjax.models.protenix.models.trunk_blocks.pairformer import (
+        PairformerBlockParams,
+    )
+
+    c = channels
+
+    def lin(out_features, in_features):
+        return LinearParams(_array(out_features, in_features), _array(out_features))
+
+    def norm():
+        return LayerNormParams(_array(c) * 0.1 + 1.0, _array(c) * 0.1)
+
+    def attention():
+        return AttentionParams(lin(c, c), lin(c, c), lin(c, c), lin(c, c), lin(c, c))
+
+    def transition():
+        return TransitionParams(
+            layer_norm=norm(),
+            linear_a=lin(2 * c, c),
+            linear_b=lin(2 * c, c),
+            linear_out=lin(c, 2 * c),
+        )
+
+    def block():
+        return PairformerBlockParams(
+            tri_mul_out=TriangleMultiplicationParams(
+                layer_norm_in=norm(), layer_norm_out=norm(),
+                linear_a_p=lin(c, c), linear_a_g=lin(c, c),
+                linear_b_p=lin(c, c), linear_b_g=lin(c, c),
+                linear_z=lin(c, c), linear_g=lin(c, c),
+            ),
+            tri_mul_in=TriangleMultiplicationParams(
+                layer_norm_in=norm(), layer_norm_out=norm(),
+                linear_a_p=lin(c, c), linear_a_g=lin(c, c),
+                linear_b_p=lin(c, c), linear_b_g=lin(c, c),
+                linear_z=lin(c, c), linear_g=lin(c, c),
+            ),
+            tri_att_start=TriangleAttentionParams(
+                layer_norm=norm(),
+                linear=LinearParams(_array(heads, c)),
+                attention=attention(),
+            ),
+            tri_att_end=TriangleAttentionParams(
+                layer_norm=norm(),
+                linear=LinearParams(_array(heads, c)),
+                attention=attention(),
+            ),
+            pair_transition=transition(),
+            attention_pair_bias=AttentionPairBiasParams(
+                layernorm_a=norm(), layernorm_kv=None, attention=attention(),
+                layernorm_z=norm(),
+                linear_z=LinearParams(_array(heads, c)),
+                has_s=False, cross_attention_mode=False,
+            ),
+            single_transition=transition(),
+        )
+
+    n_bins = 8
+    lower = jnp.asarray(np.linspace(2.0, 18.0, n_bins), dtype=jnp.float32)
+    upper = jnp.concatenate([lower[1:], jnp.asarray([22.0], dtype=jnp.float32)])
+    return ConfidenceHeadParams(
+        input_strunk_ln=norm(),
+        linear_s1=lin(c, c), linear_s2=lin(c, c),
+        distance_embedding=ConfidenceDistanceEmbeddingParams(
+            lower_bins=lower, upper_bins=upper,
+            linear_d=lin(c, n_bins), linear_d_wo_onehot=lin(c, 1),
+        ),
+        pairformer_stack=PairformerStackParams(
+            blocks=tuple(block() for _ in range(n_blocks))
+        ),
+        output=ConfidenceOutputParams(
+            pae_ln=norm(), pde_ln=norm(), plddt_ln=norm(), resolved_ln=norm(),
+            linear_pae=lin(N_OUT, c), linear_pde=lin(N_OUT, c),
+            plddt_weight=_array(2, c, N_OUT), resolved_weight=_array(2, c, N_OUT),
+        ),
+    )
+
+
+def _head_dots(head, activation_dtype):
+    """Trace the shared head the way OpenDDE calls it, and read every matmul."""
+
+    n_token, n_atom, channels = 6, 9, 8
+    cast = (lambda x: x) if activation_dtype is None else (
+        lambda x: x.astype(activation_dtype)
+    )
+    s_inputs, s_trunk = _array(n_token, channels), _array(n_token, channels)
+    z_trunk = _array(n_token, n_token, channels)
+    rep_coords = _array(n_token, 3) * 6.0
+    atom_to_token = jnp.asarray(
+        np.random.default_rng(1).integers(0, n_token, n_atom), jnp.int32
+    )
+    atom_to_tokatom = jnp.asarray(
+        np.random.default_rng(2).integers(0, 2, n_atom), jnp.int32
+    )
+
+    entered: list[tuple[str, str]] = []
+    real_stack = confidence_impl.pairformer_stack
+
+    def recording_stack(s_single, z_pair, *args, **kwargs):
+        entered.append((str(s_single.dtype), str(z_pair.dtype)))
+        return real_stack(s_single, z_pair, *args, **kwargs)
+
+    confidence_impl.pairformer_stack = recording_stack
+    try:
+        traced = jax.make_jaxpr(
+            lambda: confidence_impl.confidence_head_single_sample(
+                cast(s_inputs), cast(s_trunk), cast(z_trunk), None, rep_coords,
+                atom_to_token, atom_to_tokatom, head,
+                # What both compiled wrappers resolve to on a released
+                # checkpoint, so this is the route the CLI takes.
+                compact_distance_bins=True, use_scan=False,
+            )
+        )()
+    finally:
+        confidence_impl.pairformer_stack = real_stack
+    return entered, _dot_operand_dtypes(traced)
+
+
+def test_every_confidence_pairformer_block_realises_bfloat16() -> None:
+    """Blocks, not just the entry: an FP32 operand anywhere is the old defect.
+
+    The FP32 arm is the x2 control -- same program, same matmuls -- so a count
+    that moved because the head changed shape cannot be read as a saving.
+
+    What stays FP32 is pinned to the output stage structurally rather than by
+    line number: a head with no blocks at all runs the same three
+    re-embedding matmuls and the same output stage, so its FP32 count is the
+    output stage's own, and the blocked head must not add to it.
+    """
+
+    head = _uniform_head()
+    narrow = cast_confidence_params(_params()._replace(confidence=head), jnp.bfloat16)
+
+    wide_entry, wide = _head_dots(head, None)
+    narrow_entry, narrowed = _head_dots(narrow.confidence, jnp.bfloat16)
+
+    assert wide_entry == [("float32", "float32")]
+    assert narrow_entry == [("bfloat16", "bfloat16")]
+    assert len(narrowed) == len(wide)
+    assert set(wide) == {("float32", "float32")}
+
+    stackless = _uniform_head(n_blocks=0)
+    _, outside = _head_dots(
+        cast_confidence_params(
+            _params()._replace(confidence=stackless), jnp.bfloat16
+        ).confidence,
+        jnp.bfloat16,
+    )
+    output_stage = outside.count(("float32", "float32"))
+    # `linear_s1`, `linear_s2` and `linear_d_wo_onehot`: the three real
+    # matmuls a compact-binned re-embedding runs. The bin projection is a
+    # gather on this path, which is why it is not a fourth.
+    assert outside.count(("bfloat16", "bfloat16")) == 3
+
+    assert narrowed.count(("float32", "float32")) == output_stage
+    assert narrowed.count(("bfloat16", "bfloat16")) == len(wide) - output_stage
+
+
+def test_the_compact_bin_projection_follows_the_weight_on_openddes_route() -> None:
+    """The defect that returned FP32 from a fully realised BF16 policy.
+
+    Protenix pins this for its own preparer; the head is the same module and
+    OpenDDE reaches it through ``cast_confidence_params``, so the arm that
+    matters here is that tree. Promoting against the FP32 distances instead
+    of following the weight widened ``z_pair`` and every block after it.
+    """
+
+    narrow = cast_confidence_params(_params(), jnp.bfloat16).confidence
+    coords = jnp.asarray(
+        np.random.default_rng(3).normal(size=(N_TOKEN, 3)) * 8.0, jnp.float32
+    )
+
+    dense = confidence_impl.confidence_distance_embedding(
+        coords, narrow.distance_embedding, compact_bins=False
+    )
+    compact = confidence_impl.confidence_distance_embedding(
+        coords, narrow.distance_embedding, compact_bins=True
+    )
+    assert dense.dtype == jnp.bfloat16
+    assert compact.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(np.asarray(compact), np.asarray(dense))
