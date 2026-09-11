@@ -524,6 +524,18 @@ def predict(
     # kernels narrow, while the residual stream, the sampler's atom_coords and
     # the two coordinate I/O projections stay float32. Defaults unchanged.
     diffusion_compute_dtype: str = "float32",
+    # Storage width of the trunk's pair residual stream `z`, which is the
+    # largest tenant of the pair arena from roughly 2,000 tokens up.
+    # `compute_dtype="bfloat16"` already narrows every trunk GEMM; this is the
+    # separate question of what the residual is *stored* in between them.
+    # Released is float32, and so is upstream's -- eval-mode
+    # `get_dropout_mask` hands back an FP32 tensor
+    # (`boltz/model/layers/dropout.py:42-43`) that multiplies all four
+    # Pairformer pair updates, and torch promotes the sum. `"bfloat16"` is
+    # opt-in and moves the AMP boundary away from that, in the one port where
+    # AMP placement is already known to move coordinates. Null (default)
+    # changes nothing; `"float32"` is refused because null already spells it.
+    pair_residual_dtype: str | None = None,
     # False by default: the full-bin pae/pde/plddt logits and the distogram are
     # program outputs nothing in the cif/JSON path reads, and XLA keeps entry
     # outputs resident alongside the temp arena for the whole run -- at 3,012
@@ -678,6 +690,16 @@ def predict(
         raise ValueError(
             f"diffusion_compute_dtype must be one of {COMPUTE_DTYPES}, got "
             f"{diffusion_compute_dtype!r}"
+        )
+    if pair_residual_dtype not in (None, "bfloat16"):
+        raise ValueError(
+            "pair_residual_dtype must be 'bfloat16' or null, got "
+            f"{pair_residual_dtype!r}. The released pair residual is float32 "
+            "already and null is its spelling."
+        )
+    if pair_residual_dtype == "bfloat16" and compute_dtype != "bfloat16":
+        raise ValueError(
+            "pair_residual_dtype='bfloat16' requires compute_dtype='bfloat16'"
         )
     resolved_diffusion_attention_backend = (
         None
@@ -967,6 +989,7 @@ def predict(
         # to the global one must not compile a second program.
         "diffusion_attention_backend": resolved_diffusion_attention_backend,
         "diffusion_compute_dtype": diffusion_compute_dtype,
+        "pair_residual_dtype": pair_residual_dtype,
         "triangle_backend": (
             # The fused default cannot be partitioned; unset-equivalent
             # resolves to the blocked XLA path under context parallelism.

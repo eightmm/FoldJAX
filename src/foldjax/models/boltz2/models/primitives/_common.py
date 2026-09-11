@@ -20,6 +20,21 @@ def sigmoid(x: jnp.ndarray) -> jnp.ndarray:
     return jax.nn.sigmoid(x)
 
 
+def residual_cast(x: jnp.ndarray, dtype: jnp.dtype | None) -> jnp.ndarray:
+    """Pin a residual stream to ``dtype``.
+
+    ``None`` -- the released spelling -- returns ``x`` itself, so no operation
+    at all reaches the traced program and the shipped graph is unchanged by
+    construction rather than by a numerically-equal cast. A dtype equal to the
+    value's own is the same identity, which is what lets the call sit on every
+    residual seam without adding a convert to the arms that do narrow.
+    """
+
+    if dtype is None or x.dtype == dtype:
+        return x
+    return x.astype(dtype)
+
+
 def layer_norm(
     x: jnp.ndarray,
     scale: jnp.ndarray,

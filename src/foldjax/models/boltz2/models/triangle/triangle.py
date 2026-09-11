@@ -31,6 +31,25 @@ TriangleDirection = Literal["outgoing", "incoming"]
 TriangleMultiplicationParams = Mapping[str, Mapping[str, jnp.ndarray]]
 
 
+def resolve_native_amp(
+    x: jnp.ndarray,
+    kernel: jnp.ndarray,
+    override: bool | None,
+) -> bool:
+    """Whether this call is the CUDA-autocast configuration.
+
+    The released inference reads the activation: an FP32 pair against BF16
+    kernels is autocast, anything else is not. That reading is only sound
+    while the pair residual is stored FP32. ``override`` lets a caller that
+    narrowed the storage say so, instead of having the width mistaken for a
+    different precision policy. ``None`` keeps the original inference exactly.
+    """
+
+    if override is not None:
+        return bool(override)
+    return x.dtype == jnp.float32 and kernel.dtype == jnp.bfloat16
+
+
 def triangle_multiplication_forward(
     params: TriangleMultiplicationParams,
     x: jnp.ndarray,
@@ -40,6 +59,7 @@ def triangle_multiplication_forward(
     chunk_size: int = 128,
     glu_backend: str = "xla",
     contraction_precision: str = "float32",
+    native_amp: bool | None = None,
 ) -> jnp.ndarray:
     """Run Boltz triangle multiplication with mapped PyTorch parameters.
 
@@ -47,6 +67,15 @@ def triangle_multiplication_forward(
     fused Triton kernel (GPU, low precision); the triangle contraction stays in
     XLA either way (cuBLAS-bound, no custom kernel — matches AF3). ``"xla"``
     (default) keeps the bit-exact elementwise gate.
+
+    ``native_amp`` answers "is this the CUDA-autocast configuration". ``None``
+    (default) infers it from the activation width, which is what every
+    released caller wants because the pair residual reaches here in FP32.
+    A caller that stores the residual narrow (``pair_residual_dtype``) answers
+    it explicitly: upstream's module is a plain ``nn.LayerNorm`` plus autocast
+    Linears and einsum, so its program does not change when the tensor handed
+    to it is already BF16 -- but the inference would read that tensor and
+    silently drop to the port's FP32-contraction path.
     """
 
     # Context parallelism (an active `foldjax.models._cp` mesh) reroutes two
@@ -71,14 +100,14 @@ def triangle_multiplication_forward(
             cueq_triangle_multiplication_forward,
         )
 
-        return cueq_triangle_multiplication_forward(params, x, mask, direction, eps=eps)
+        return cueq_triangle_multiplication_forward(
+            params, x, mask, direction, eps=eps, native_amp=native_amp
+        )
     if backend not in ("xla", "cueq"):
         msg = f"Unsupported triangle multiplication backend: {backend!r}"
         raise ValueError(msg)
 
-    native_amp = (
-        x.dtype == jnp.float32 and params["p_in"]["kernel"].dtype == jnp.bfloat16
-    )
+    native_amp = resolve_native_amp(x, params["p_in"]["kernel"], native_amp)
     x = _layer_norm(x, params["norm_in"]["scale"], params["norm_in"]["bias"], eps)
     out_dtype = x.dtype
     x_in = x

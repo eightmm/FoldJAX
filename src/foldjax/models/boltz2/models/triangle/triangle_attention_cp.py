@@ -49,13 +49,16 @@ def triangle_attention_forward(
     q_chunk_size: int | None = None,
     matmul_precision: str = "highest",
     triangle_backend: str = "xla",
+    native_amp: bool | None = None,
 ) -> jnp.ndarray:
     """Dispatch Boltz triangle attention to serial/1-D or the 2-D ring.
 
     ``chunk_size`` and ``q_chunk_size`` are intentionally unused on the ring
     path: the local ``N/sqrt(P)`` key tile is the score-memory bound, and
     splitting that tile would add launch overhead without reducing global
-    communication.
+    communication. ``native_amp`` is likewise unused there: the ring applies
+    its own query scale in the caller's dtype and has no autocast branch to
+    select.
     """
 
     if cp_layout() != "2d":
@@ -70,6 +73,7 @@ def triangle_attention_forward(
             q_chunk_size=q_chunk_size,
             matmul_precision=matmul_precision,
             triangle_backend=triangle_backend,
+            native_amp=native_amp,
         )
     if triangle_backend != "xla":
         raise ValueError(

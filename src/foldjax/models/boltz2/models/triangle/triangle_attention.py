@@ -21,6 +21,9 @@ from foldjax.models.boltz2.models.primitives._common import (
 )
 from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
 from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
+from foldjax.models.boltz2.models.triangle.triangle import (
+    resolve_native_amp as _resolve_native_amp,
+)
 
 TriangleAttentionParams = Mapping[
     str, Mapping[str, jnp.ndarray | Mapping[str, jnp.ndarray]]
@@ -91,12 +94,20 @@ def triangle_attention_forward(
     q_chunk_size: int | None = None,
     matmul_precision: str = "highest",
     triangle_backend: str = "xla",
+    native_amp: bool | None = None,
 ) -> jnp.ndarray:
     """Run Boltz TriangleAttention starting or ending node.
 
     ``triangle_backend``: ``"xla"`` (default, bit-exact dense/chunked path),
     ``"pallas"`` (opt-in GPU flash kernel), or ``"cueq"`` (Torch-compatible
     cuEquivariance CUDA kernel).
+
+    ``native_amp`` answers the autocast-configuration question for the query
+    scale only; ``None`` (default) infers it from the activation width. The
+    entry LayerNorm deliberately keeps reading the width instead: upstream has
+    its own BF16-input exception there (``boltz/model/layers/
+    triangular_attention/primitives.py:138-147``), so a narrowed pair residual
+    should take it.
     """
 
     precision = resolve_matmul_precision(matmul_precision)
@@ -124,6 +135,7 @@ def triangle_attention_forward(
             q_chunk_size=q_chunk_size,
             precision=precision,
             local_backend=triangle_backend,
+            native_amp=native_amp,
         )
 
     if mask is None:
@@ -167,6 +179,7 @@ def triangle_attention_forward(
         q_chunk_size=q_chunk_size,
         precision=precision,
         triangle_backend=triangle_backend,
+        native_amp=native_amp,
     )
 
     if not starting:
@@ -186,6 +199,7 @@ def _triangle_attention_cp(
     q_chunk_size: int | None,
     precision: jax.lax.Precision,
     local_backend: str = "xla",
+    native_amp: bool | None = None,
 ) -> jnp.ndarray:
     """Triangle attention with the row axis sharded across the ``cp`` mesh.
 
@@ -264,6 +278,7 @@ def _triangle_attention_cp(
             # Inside `shard_map` each device holds whole rows, so the cueq
             # kernel runs unchanged on the local shard.
             triangle_backend=local_backend,
+            native_amp=native_amp,
         )
 
     # Rows only, whichever layout is active. Attention stays row-sharded even
@@ -365,12 +380,15 @@ def _attention(
     q_chunk_size: int | None = None,
     precision: jax.lax.Precision = jax.lax.Precision.HIGHEST,
     triangle_backend: str = "xla",
+    native_amp: bool | None = None,
 ) -> jnp.ndarray:
     no_heads = tri_bias.shape[2]
     c_hidden = params["linear_g"]["kernel"].shape[-1] // no_heads
-    native_amp = (
-        q_x.dtype == jnp.float32 and params["linear_q"]["kernel"].dtype == jnp.bfloat16
-    )
+    # Upstream scales with `q /= math.sqrt(c_hidden)` on a BF16 tensor, which
+    # CUDA computes in FP32 and rounds once. Rounding the divisor to BF16
+    # first (5.65625 for c_hidden=32) is the FP32-model path, so the question
+    # is the precision policy, not the activation width.
+    native_amp = _resolve_native_amp(q_x, params["linear_q"]["kernel"], native_amp)
 
     qg = _linear(
         q_x,

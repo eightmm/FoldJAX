@@ -25,6 +25,9 @@ from foldjax.models.boltz2.models.diffusion.diffusion_conditioning import (
 )
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
+from foldjax.models.boltz2.models.primitives._common import (
+    residual_cast as _residual_cast,
+)
 from foldjax.models.boltz2.models.triangle.triangle_attention import (
     resolve_triangle_attention_chunk,
     resolve_triangle_attention_q_chunk,
@@ -280,6 +283,53 @@ def _cast_trunk_params(params: Params, dtype: jnp.dtype) -> Params:
     return jax.tree_util.tree_map_with_path(cast, params)
 
 
+#: Why the pair residual is a knob and not a default.
+#:
+#: `compute_dtype="bfloat16"` already narrows every trunk GEMM. What stays
+#: FP32 is the *storage* of the pair stream: `z_init` picks up float32 from
+#: ContactConditioning's `encoding_unspecified` parameter -- an `nn.Parameter`,
+#: not a Linear kernel, so `_cast_trunk_params` leaves it alone -- and above
+#: 384 tokens OuterProductMean re-promotes on every MSA layer. Upstream stores
+#: it FP32 for a second, independent reason: eval-mode `get_dropout_mask`
+#: returns an FP32 tensor (`boltz/model/layers/dropout.py:42-43`) and it
+#: multiplies all four Pairformer pair updates
+#: (`boltz/model/layers/pairformer.py:77,82,87,95`), so torch promotes the sum.
+#:
+#: Narrowing it therefore moves the AMP boundary away from upstream's, in the
+#: one port where AMP *placement* has already been shown to move coordinates
+#: (upstream's own kernels-off toggle moves 5SAK by 2.91 A). AlphaFold 3 stores
+#: its trunk pair activations in bfloat16, so the deviation is not unheard of
+#: -- but it is a deviation, it is unmeasured on GPU here, and it ships off.
+
+
+def _resolve_pair_residual_dtype(
+    value: jnp.dtype | str | None,
+    kernel_dtype: jnp.dtype,
+) -> jnp.dtype | None:
+    """Validate the pair-residual storage request against the trunk's AMP arm."""
+
+    if value is None:
+        return None
+    dtype = jnp.dtype(value)
+    if dtype != jnp.dtype(jnp.bfloat16):
+        # float32 is deliberately not spellable: it is what the released trunk
+        # already stores, so a second spelling for the shipped behaviour would
+        # make "explicit" and "omitted" indistinguishable in a provenance
+        # record without naming a different arm.
+        raise ValueError(
+            "pair_residual_dtype must be bfloat16 or null; got "
+            f"{dtype.name!r}. The released pair residual is float32 already "
+            "and null is its spelling."
+        )
+    if jnp.dtype(kernel_dtype) != jnp.dtype(jnp.bfloat16):
+        raise ValueError(
+            "pair_residual_dtype='bfloat16' requires a bfloat16 trunk "
+            "(compute_dtype='bfloat16'); the trunk kernels are "
+            f"{jnp.dtype(kernel_dtype).name}"
+        )
+    return dtype
+
+
 #: Diffusion score-model subtrees that stay FP32 under `diffusion_compute_dtype`.
 #:
 #: Both are the denoiser's coordinate I/O boundary: `r_to_q_trans` reads the
@@ -440,6 +490,11 @@ def boltz2_sample_forward(
     #: `structure_module.sample`); `bfloat16` is opt-in and keeps the residual
     #: stream, the sampler state and the coordinate I/O boundary in FP32.
     diffusion_compute_dtype: jnp.dtype | str = jnp.float32,
+    #: Storage width of the trunk's pair residual stream. `None` is the
+    #: released float32; `bfloat16` is opt-in and requires
+    #: `compute_dtype=bfloat16`. See the note above
+    #: `_resolve_pair_residual_dtype`.
+    pair_residual_dtype: jnp.dtype | str | None = None,
     mesh: object | None = None,
     token_axis: str = "tok",
     shard_tokens: bool = True,
@@ -570,6 +625,7 @@ def boltz2_sample_forward(
             mesh=mesh,
             token_axis=token_axis,
             shard_tokens=shard_tokens,
+            pair_residual_dtype=pair_residual_dtype,
         )
     if low_precision:
         # Sampling uses FP32 trunk activations. Conditioning below separately
@@ -1123,6 +1179,10 @@ def boltz2_trunk_forward(
     token_axis: str = "tok",
     shard_tokens: bool = True,
     use_template: bool | None = None,
+    #: Storage width of the trunk's pair residual stream. `None` is the
+    #: released float32; `bfloat16` is opt-in. See the note above
+    #: `_resolve_pair_residual_dtype`.
+    pair_residual_dtype: jnp.dtype | str | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Run the non-template Boltz-2 trunk in eval mode.
 
@@ -1205,7 +1265,13 @@ def boltz2_trunk_forward(
         ),
     )
     if stop_after_inputs:
+        # The input stage never builds a pair tensor, and callers that stop
+        # here hand in a partial parameter tree, so the pin is resolved below
+        # against a weight that only the full trunk is guaranteed to carry.
         return {"s_inputs": s_inputs}
+    pair_residual_dtype = _resolve_pair_residual_dtype(
+        pair_residual_dtype, params["z_recycle"]["kernel"].dtype
+    )
     s_init = _linear(s_inputs, params["s_init"]["kernel"])
     z_init = (
         _linear(s_inputs, params["z_init_1"]["kernel"])[:, :, None, :]
@@ -1234,6 +1300,11 @@ def boltz2_trunk_forward(
 
     s_init = _shard_single(s_init, mesh, token_axis, shard_tokens)
     z_init = _shard_pair(z_init, mesh, token_axis, shard_tokens)
+    # ContactConditioning's `encoding_unspecified` is an nn.Parameter, not a
+    # Linear kernel, so `_cast_trunk_params` leaves it FP32 and `z_init` is
+    # FP32 at every token count. Pinning it here is what makes the recycle
+    # carry, and with it every pair buffer the stacks below allocate, BF16.
+    z_init = _residual_cast(z_init, pair_residual_dtype)
     # Pairformer returns its single residual in FP32. Keep that scan carry
     # dtype, but do not widen s_init: native adds the two BF16 recycle terms
     # before entering the autocast-disabled single branch.
@@ -1280,17 +1351,21 @@ def boltz2_trunk_forward(
         s = _shard_single(s, mesh, token_axis, shard_tokens)
         z = _shard_pair(z, mesh, token_axis, shard_tokens)
         if use_template:
-            z = z + template_module_forward(
-                params["template_module"],
-                z,
-                feats,
-                pair_mask,
-                eps=eps,
-                chunk_size=chunk_size,
-                triangle_attention_chunk=triangle_attention_chunk,
-                triangle_attention_q_chunk=triangle_attention_q_chunk,
-                transition_hidden_chunk=transition_hidden_chunk,
-                triangle_backend=triangle_backend,
+            z = _residual_cast(
+                z
+                + template_module_forward(
+                    params["template_module"],
+                    z,
+                    feats,
+                    pair_mask,
+                    eps=eps,
+                    chunk_size=chunk_size,
+                    triangle_attention_chunk=triangle_attention_chunk,
+                    triangle_attention_q_chunk=triangle_attention_q_chunk,
+                    transition_hidden_chunk=transition_hidden_chunk,
+                    triangle_backend=triangle_backend,
+                ),
+                pair_residual_dtype,
             )
         z = z + msa_module_forward(
             params["msa_module"],
@@ -1310,7 +1385,9 @@ def boltz2_trunk_forward(
             num_subsampled_msa=num_subsampled_msa,
             msa_key=step_key,
             msa_rows=step_rows,
+            pair_residual_dtype=pair_residual_dtype,
         )
+        z = _residual_cast(z, pair_residual_dtype)
         s, z = pairformer_module_forward(
             params["pairformer_module"],
             s.astype(jnp.float32),
@@ -1327,9 +1404,12 @@ def boltz2_trunk_forward(
             attention_backend=attention_backend,
             triangle_backend=triangle_backend,
             glu_backend=glu_backend,
+            pair_residual_dtype=pair_residual_dtype,
         )
         s = _shard_single(s, mesh, token_axis, shard_tokens)
-        z = _shard_pair(z, mesh, token_axis, shard_tokens)
+        z = _residual_cast(
+            _shard_pair(z, mesh, token_axis, shard_tokens), pair_residual_dtype
+        )
         return s, z
 
     # Recycling is a uniform fixed-point iteration over the (s, z) carry; the
@@ -1376,7 +1456,14 @@ def boltz2_trunk_forward(
     return {
         "s_inputs": s_inputs,
         "s": s,
-        "z": z,
+        # The knob's blast radius stops at the trunk: the diffusion
+        # conditioner, the confidence module and the affinity head keep the
+        # FP32 pair they are released with, so nothing outside this function
+        # changes dtype. The values are already BF16-rounded, so this recovers
+        # no precision -- it buys an audit boundary, and it costs one
+        # widening, which `boltz2_graph_sample_forward` was performing here
+        # anyway (as a no-op) for exactly the same reason.
+        "z": z if pair_residual_dtype is None else z.astype(jnp.float32),
         "relative_position_encoding": relative_position_encoding,
     }
 
