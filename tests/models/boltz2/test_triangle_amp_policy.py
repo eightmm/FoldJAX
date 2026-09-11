@@ -86,7 +86,7 @@ def test_cueq_mixed_path_has_native_internal_casts(monkeypatch, direction, batch
 
     monkeypatch.setattr(
         cueq,
-        "_load_cueq",
+        "load_cueq",
         lambda: SimpleNamespace(
             TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
             triangle_multiplicative_update=unexpected,
@@ -119,7 +119,7 @@ def test_cueq_homogeneous_path_still_uses_public_api(monkeypatch, dtype):
 
     monkeypatch.setattr(
         cueq,
-        "_load_cueq",
+        "load_cueq",
         lambda: SimpleNamespace(
             TriMulPrecision=SimpleNamespace(DEFAULT="DEFAULT", IEEE="IEEE"),
             triangle_multiplicative_update=public,

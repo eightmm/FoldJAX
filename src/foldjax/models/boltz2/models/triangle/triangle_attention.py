@@ -428,6 +428,13 @@ def _attention(
             cueq_attention_core,
         )
 
+        # `precision` is passed rather than left to the shared wrapper's
+        # default, which derives it from `jax_default_matmul_precision`. This
+        # port's two precision surfaces deliberately disagree -- the neutral
+        # knob ships "high", the op-level string ships "highest" -- so deriving
+        # it here would move the fused kernel from IEEE to TF32 and shift the
+        # whole trunk capture. `resolve_matmul_precision` refusing the spelling
+        # "high" is the tripwire for the edit that would do it.
         out = cueq_attention_core(
             q,
             k,

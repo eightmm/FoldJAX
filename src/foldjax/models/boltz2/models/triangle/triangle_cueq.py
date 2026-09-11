@@ -2,48 +2,18 @@
 
 from __future__ import annotations
 
-import ctypes
-import importlib.util
-import sys
-from pathlib import Path
-
-import jax
 import jax.numpy as jnp
 
-from foldjax.models._cueq import triangle_multiplication_precision
+from foldjax.models._cueq import (
+    cueq_attention_core,
+    load_cueq,
+    triangle_multiplication_precision,
+)
 from foldjax.models.boltz2.models.triangle.triangle import (
     TriangleDirection,
     TriangleMultiplicationParams,
     resolve_native_amp,
 )
-
-
-def _preload_bundled_nvrtc() -> None:
-    """Expose pip-bundled CUDA 13 NVRTC to cuEquivariance's shared library."""
-
-    if "cuequivariance_jax" in sys.modules:
-        return
-    spec = importlib.util.find_spec("nvidia")
-    if spec is None or spec.submodule_search_locations is None:
-        return
-    for root in spec.submodule_search_locations:
-        library = Path(root) / "cu13" / "lib" / "libnvrtc.so.13"
-        if library.is_file():
-            ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
-            return
-
-
-def _load_cueq():
-    _preload_bundled_nvrtc()
-    try:
-        import cuequivariance_jax as cuex
-    except (ImportError, OSError) as error:
-        msg = (
-            "cuEquivariance JAX is unavailable; install the matching "
-            "cuequivariance-jax and cuequivariance-ops-jax CUDA packages"
-        )
-        raise RuntimeError(msg) from error
-    return cuex
 
 
 def _load_cueq_amp_primitives():
@@ -56,31 +26,6 @@ def _load_cueq_amp_primitives():
     )
 
     return layer_norm_transpose, sigmoid_gated_dual_gemm, sigmoid_gated_dual_gemm_dual_x
-
-
-def cueq_attention_core(
-    q: jnp.ndarray,
-    k: jnp.ndarray,
-    v: jnp.ndarray,
-    tri_bias: jnp.ndarray,
-    mask_bias: jnp.ndarray,
-    *,
-    scale: float,
-    precision: jax.lax.Precision | None,
-) -> jnp.ndarray:
-    """Run the Torch-compatible cuEquivariance triangle-attention core."""
-
-    cuex = _load_cueq()
-    output, _, _ = cuex.triangle_attention(
-        q=q,
-        k=k,
-        v=v,
-        bias=tri_bias,
-        mask=mask_bias == 0,
-        scale=scale,
-        precision=precision,
-    )
-    return output
 
 
 def cueq_triangle_multiplication_forward(
@@ -98,7 +43,7 @@ def cueq_triangle_multiplication_forward(
     Fallback is disabled to keep benchmark and production behavior explicit.
     """
 
-    cuex = _load_cueq()
+    cuex = load_cueq()
 
     if resolve_native_amp(x, params["p_in"]["kernel"], native_amp):
         # A BF16 pair residual is still the autocast configuration, so it
@@ -210,3 +155,14 @@ def _cueq_triangle_native_amp(cuex, params, x, mask, direction, *, eps):
         fallback=False,
     )
     return out.reshape((*batch_shape, n, n, out.shape[-1]))
+
+
+# Re-exported: the kernel wrapper moved to `models/_cueq.py`, which Protenix and
+# OpenFold3 already used. Kept importable from here so existing call sites do
+# not move. `triangle_attention._attention` keeps passing its own `precision`
+# to it, because this port's op-level string and its neutral knob deliberately
+# disagree; the shared wrapper's docstring records what deriving it would cost.
+__all__ = [
+    "cueq_attention_core",
+    "cueq_triangle_multiplication_forward",
+]
