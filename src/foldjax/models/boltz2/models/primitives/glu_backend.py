@@ -7,50 +7,14 @@ rounding for low-precision activations. The opt-in ``"tokamax"`` path runs the
 fused Triton GLU kernel; it only pays off in low precision (fp16/bf16) on a
 supported GPU and is verified numerically against the xla path on GPU.
 
-tokamax weight layout is ``[K, 2, N]``: index 0 is the activated (gate) branch,
-index 1 the linear (value) branch, so the kernel computes
-``activation(x @ w[:, 0]) * (x @ w[:, 1])``.
+The implementation moved to :mod:`foldjax.models._glu` when the other four
+ports gained the same option. This module keeps the name Boltz-2's call sites
+import, and the arithmetic is unchanged: the shared function is this one,
+lifted.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from foldjax.models._glu import gated_linear_unit
 
-import jax
-import jax.numpy as jnp
-
-
-def gated_linear_unit(
-    x: jnp.ndarray,
-    w_gate: jnp.ndarray,
-    w_value: jnp.ndarray,
-    activation: Callable[[jax.Array], jax.Array],
-    *,
-    backend: str = "xla",
-) -> jnp.ndarray:
-    """Return ``activation(x @ w_gate) * (x @ w_value)``.
-
-    ``w_gate`` / ``w_value`` are ``[K, N]`` kernels. ``backend="xla"`` keeps the
-    plain elementwise gate; ``backend="tokamax"`` fuses via the Triton kernel.
-    """
-    if w_gate.dtype in (jnp.bfloat16, jnp.float16):
-        x = x.astype(w_gate.dtype)
-    if backend == "xla":
-        gate = x @ w_gate
-        if gate.dtype in (jnp.bfloat16, jnp.float16):
-            activated = activation(gate.astype(jnp.float32)).astype(gate.dtype)
-        else:
-            activated = activation(gate)
-        return activated * (x @ w_value)
-    if backend == "tokamax":
-        import tokamax
-        from absl import flags
-
-        if not flags.FLAGS.is_parsed():
-            flags.FLAGS(["foldjax.models.boltz2"], known_only=True)
-        weights = jnp.stack([w_gate, w_value], axis=1)  # [K, 2, N]
-        return tokamax.gated_linear_unit(
-            x=x, weights=weights, activation=activation, implementation="triton"
-        )
-    msg = f"Unsupported glu backend: {backend!r}"
-    raise ValueError(msg)
+__all__ = ["gated_linear_unit"]
