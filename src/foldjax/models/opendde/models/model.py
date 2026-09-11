@@ -57,6 +57,10 @@ from foldjax.models.protenix.models.heads.confidence import (
     confidence_head,
 )
 from foldjax.models.protenix.models.heads.head import DistogramParams, distogram_head
+from foldjax.models.protenix.models.input_precision import (
+    native_confidence_autocast_params,
+)
+from foldjax.models.protenix.models.primitives.primitives import AutocastLinearParams
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
@@ -101,7 +105,9 @@ def cast_trunk_params(
 
     The diffusion module, distogram, and confidence heads keep FP32 weights.
     The sampler already upcasts its inputs at the boundary, so the cast stops
-    where the coordinates start.
+    where the coordinates start. The confidence head has its own opt-in
+    narrowing in :func:`cast_confidence_params`, kept separate from this one so
+    that the trunk and the scores are two decisions rather than one.
     """
 
     def cast_leaf(value):
@@ -115,6 +121,102 @@ def cast_trunk_params(
         structural_expander=jax.tree.map(cast_leaf, params.structural_expander),
         structural_refiner=jax.tree.map(cast_leaf, params.structural_refiner),
     )
+
+
+#: The only width :func:`cast_confidence_params` can realise. Named here so the
+#: model, the preparer and the guard all refuse the same set of values.
+CONFIDENCE_DTYPES = ("float32", "bfloat16")
+
+
+def cast_confidence_params(
+    params: OpenDDEInferenceParams,
+    dtype: jnp.dtype,
+) -> OpenDDEInferenceParams:
+    """Narrow the confidence head's re-embedding stack; keep its logits wide.
+
+    AlphaFold 3's released confidence head is the boundary this reproduces.
+    In ``model/network/confidence_head.py``, with ``global_config.bfloat16 ==
+    'all'`` -- the default at ``model_config.py:34`` -- the pair and single
+    activations are cast to bfloat16 at :121-130 and the whole re-embedding
+    Pairformer runs narrow; ``pair_act`` is widened again at :163 before the
+    distance-error logits and ``single_act`` at :244 before the pLDDT logits.
+    Narrow stack, wide output heads, and not a blanket cast of the subtree.
+
+    This is the safest dtype change in the port. The head reads the trunk and
+    the sampler's finished coordinates and emits scores; nothing downstream of
+    it is a coordinate, so narrowing it cannot move a structure. Protenix
+    measured the same boundary at 3,012 tokens: coordinates bitwise unchanged,
+    atom pLDDT moved at most 0.0099, chain pTM/ipTM at most 1.9e-4, PAE means
+    at most 0.005.
+
+    The parameter work is Protenix's ``native_confidence_autocast_params``
+    unchanged, because ``params.confidence`` is literally a
+    ``ConfidenceHeadParams`` and its three groups are the same three groups
+    here: the pairformer blocks and ``input_strunk_ln`` take a plain narrow
+    weight, the two distance projections and ``linear_s1``/``linear_s2``
+    become autocast projections that narrow their own FP32 operands, and
+    ``output`` -- the four logit projections plus the bins -- stays FP32.
+
+    The activation side differs from Protenix, deliberately. Protenix's flag
+    reproduces a torch autocast *context*, so its stage inherits whatever the
+    trunk produced and an FP32 trunk leaves nothing to narrow. OpenDDE widens
+    every trunk output to FP32 before its heads (``as_float32`` in
+    :func:`opendde_infer_static`), so this option casts the head's three
+    activations itself, as AF3 does. ``--trunk-dtype fp32 --confidence-dtype
+    bf16`` is therefore a real combination here and a no-op in Protenix.
+    """
+
+    name = jnp.dtype(dtype).name
+    if name != "bfloat16":
+        allowed = ", ".join(CONFIDENCE_DTYPES)
+        raise ValueError(
+            f"confidence dtype must be one of {allowed}; got {name!r} "
+            "(float32 is spelled by not calling this at all)"
+        )
+    return params._replace(
+        confidence=native_confidence_autocast_params(params.confidence)
+    )
+
+
+def _require_realised_confidence_params(
+    params: OpenDDEInferenceParams,
+    confidence_dtype: jnp.dtype | None,
+) -> None:
+    """Refuse a dtype the confidence parameters were not rebuilt for.
+
+    Same split and the same silent failure as Protenix's
+    ``_require_realised_amp_params``: the keyword decides activation dtypes
+    and the parameter subtree decides weight dtypes. Out of step, BF16
+    activations meet FP32 weights, every matmul promotes back to FP32, and the
+    run is indistinguishable from one that never asked for the option. One
+    structural check at trace time turns that into an error.
+
+    Partial parameter trees are supported: a ``stop_after`` run and tests that
+    build one field carry no confidence head, and an absent stage cannot
+    disagree with a dtype it never runs.
+    """
+
+    embedding = getattr(getattr(params, "confidence", None), "distance_embedding", None)
+    marker = getattr(embedding, "linear_d", None)
+    if marker is None:
+        if confidence_dtype is not None:
+            raise ValueError(
+                "confidence_dtype was requested but these parameters carry no "
+                "confidence head to apply it to"
+            )
+        return
+    prepared = isinstance(marker, AutocastLinearParams)
+    if prepared != (confidence_dtype is not None):
+        state = "narrowed" if prepared else "left FP32"
+        raise ValueError(
+            f"confidence_dtype={confidence_dtype} but the confidence "
+            f"parameters were {state}; pass params through cast_confidence_params"
+        )
+    if prepared and jnp.dtype(marker.weight.dtype) != jnp.dtype(confidence_dtype):
+        raise ValueError(
+            f"confidence_dtype={jnp.dtype(confidence_dtype).name} but the "
+            f"confidence parameters are {jnp.dtype(marker.weight.dtype).name}"
+        )
 
 
 def _with_cueq_triangle_defaults(function):
@@ -655,6 +757,15 @@ def opendde_infer_static(
     stop_after_inputs: bool = False,
     capture_names: tuple[str, ...] = (),
     trunk_dtype: jnp.dtype | None = None,
+    #: Element width of the confidence head's re-embedding Pairformer, and of
+    #: the three activations that enter it. ``None`` is FP32 and the released
+    #: default; ``jnp.bfloat16`` reproduces AlphaFold 3's confidence boundary,
+    #: with the output logit heads still FP32. Separate from ``trunk_dtype``
+    #: on purpose -- the trunk decides coordinates and this decides only
+    #: scores -- so the two combine freely. The matching parameter subtree has
+    #: to have been rebuilt by :func:`cast_confidence_params`, which
+    #: :func:`_require_realised_confidence_params` checks rather than assumes.
+    confidence_dtype: jnp.dtype | None = None,
     #: Context-parallel shard count. More than one requires an active
     #: `foldjax.models._cp.context_parallel` mesh of the same size; the value
     #: is also a static argument so a mesh change is a retrace, never a stale
@@ -683,6 +794,7 @@ def opendde_infer_static(
             f"{_active_cp_shards()} shard(s); run through "
             "opendde_infer_compiled or activate context_parallel() yourself"
         )
+    _require_realised_confidence_params(params, confidence_dtype)
     input_feature_dict = _restore_ref_atom_category_one_hot(input_feature_dict)
     # Triangle backends are NOT overridden for context parallelism. Attention
     # keeps whatever kernel is configured -- `_triangle_attention_cp` runs it
@@ -1011,6 +1123,21 @@ def opendde_infer_static(
     if run_confidence:
         from foldjax.models.opendde.postprocess import opendde_confidence_scores
 
+        # AF3's boundary, cast here rather than inherited from the trunk. Its
+        # confidence head narrows the pair and single activations on entry
+        # (`confidence_head.py:121-130`) and widens the logits again before
+        # the output heads (:163, :244) -- which `confidence_output_logits`
+        # already does with its own `astype(float32)`, so only the entry side
+        # is missing. The distogram head keeps the FP32 copies: it sits
+        # outside AF3's narrowed region and this option does not move it.
+        conf_s_inputs = head_s_inputs
+        conf_s_trunk = head_s_trunk
+        conf_z_trunk = head_z_trunk
+        if confidence_dtype is not None:
+            conf_s_inputs = head_s_inputs.astype(confidence_dtype)
+            conf_s_trunk = head_s_trunk.astype(confidence_dtype)
+            conf_z_trunk = head_z_trunk.astype(confidence_dtype)
+
         def _confidence(sample_coordinates):
             """Head and summaries for one sample's coordinates.
 
@@ -1028,9 +1155,9 @@ def opendde_infer_static(
             """
             logits = confidence_head(
                 input_feature_dict,
-                head_s_inputs,
-                head_s_trunk,
-                head_z_trunk,
+                conf_s_inputs,
+                conf_s_trunk,
+                conf_z_trunk,
                 # The explicit pair mask historically affects the residue
                 # trunk only. Confidence needs the padding mask to exclude
                 # dummy tokens, while retaining that default/custom-mask API.
@@ -1106,6 +1233,7 @@ GRAPH_STATIC_ARGNAMES = (
     "atom_decoder_heads",
     "atom_encoder_heads",
     "compact_confidence_distance_bins",
+    "confidence_dtype",
     "confidence_triangle_attention_backend",
     "cp_layout",
     "cp_shards",

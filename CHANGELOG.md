@@ -26,6 +26,39 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **An opt-in bfloat16 confidence head for OpenDDE**, off by default.
+  `--confidence-dtype bf16` narrows the head's re-embedding Pairformer, and
+  the pair, single and input activations entering it, while the pLDDT, PAE,
+  PDE and resolved logits stay float32. That boundary is AlphaFold 3's own:
+  with `global_config.bfloat16 == 'all'`, its default, AF3 casts the pair and
+  single activations to bfloat16 on entry to the confidence head, runs the
+  whole re-embedding stack narrow, and widens both back before the output
+  logits. It is not a blanket cast of the subtree.
+
+  The head runs after the sampler and emits scores, never coordinates, so
+  narrowing it cannot move a structure. Protenix measured the same boundary at
+  3,012 tokens: coordinates bitwise unchanged, atom pLDDT moved at most
+  0.0099, chain pTM/ipTM at most 1.9e-4, PAE means at most 0.005.
+
+  Separate from `--trunk-dtype` on purpose, and independent of it: OpenDDE
+  widens every trunk output to float32 before its heads, so this option casts
+  the head's activations itself and `--trunk-dtype fp32 --confidence-dtype
+  bf16` is a real combination. The default is `fp32`, the value joins the
+  compilation-cache identity, and an unrecognised width is refused naming the
+  allowed ones. Supported under context parallelism. Asking for the dtype
+  without rebuilding the weights, or the reverse, is now an error rather than
+  a run that silently promotes back to float32.
+- **Fixed the compact confidence distance binning widening a realised bfloat16
+  policy.** `_compact_confidence_bin_projection` typed its result by promoting
+  against the float32 distances, so an autocast bin projection returned
+  float32 where the dense path returns bfloat16. Because both compiled
+  wrappers resolve compact binning to True on any released checkpoint, that
+  promoted the confidence head's pair tensor and every Pairformer block after
+  it back to float32 under Protenix's `--amp-policy bf16` -- a run
+  indistinguishable from one that never asked for the policy. The result now
+  follows the weight, as the dense path does; the compact and dense paths are
+  bitwise equal again in both precisions. This changes what Protenix's
+  shipped bfloat16 confidence policy computes.
 - **An opt-in fused gated linear unit for ESMFold2**, off by default.
   `--option glu_backend=tokamax` runs the twelve transitions in the diffusion
   token transformer through one fused Triton kernel instead of materialising
