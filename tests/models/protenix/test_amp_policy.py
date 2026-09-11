@@ -1,10 +1,13 @@
-"""The token gate, and the dtypes it actually produces.
+"""The two policy tables, and the dtypes they actually produce.
 
-The resolver is arithmetic and is pinned at its boundaries. Everything below
-that reads the traced program or records the operands a stage was handed,
-never the option string that produced them: a test asserting that
-``--amp-policy bf16`` was requested proves nothing about whether a matmul
-narrowed, which is the whole property this feature delivers.
+There are two: upstream's token gate (``--amp-policy upstream``) and the
+port's released default (``auto``), which narrows the confidence head at every
+size and keeps upstream's 3,840 gate on the diffusion sampler. Both resolvers
+are arithmetic and are pinned at their boundaries. Everything below that reads
+the traced program or records the operands a stage was handed, never the
+option string that produced them: a test asserting that ``--amp-policy bf16``
+was requested proves nothing about whether a matmul narrowed, which is the
+whole property this feature delivers.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from foldjax.models.protenix.amp_policy import (
     DEFAULT_AMP_POLICY,
     AmpPolicy,
     amp_policy_for_tokens,
+    default_amp_policy_for_tokens,
     realise_amp_policy,
     requested_amp_policy,
 )
@@ -34,6 +38,10 @@ from foldjax.models.protenix.models import model as model_module
 from foldjax.models.protenix.models import predict as predict_impl
 from foldjax.models.protenix.models.diffusion import diffusion as diffusion_module
 from foldjax.models.protenix.models.heads import confidence as confidence_module
+from foldjax.models.protenix.models.heads.confidence import (
+    ConfidenceDistanceEmbeddingParams,
+    can_compact_confidence_distance_embedding,
+)
 from foldjax.models.protenix.models.input_precision import (
     native_confidence_autocast_params,
     native_diffusion_autocast_params,
@@ -53,6 +61,7 @@ from foldjax.models.protenix.models.trunk_blocks.pairformer import PairformerSta
 from foldjax.schema import PredictionRequest
 
 from .test_model import _toy_features, _toy_params
+from .test_trunk import _zero_pairformer_block
 
 # ---------------------------------------------------------------- resolver --
 
@@ -70,7 +79,49 @@ from .test_model import _toy_features, _toy_params
     ],
 )
 def test_the_gate_turns_at_the_upstream_thresholds(n_token, expected) -> None:
+    """`amp_policy_for_tokens` is upstream's table and only upstream's table.
+
+    It is no longer what `auto` resolves; it stays because `--amp-policy
+    upstream` has to reproduce a native capture's configuration at any size.
+    """
     assert amp_policy_for_tokens(n_token) == expected
+    assert requested_amp_policy("upstream", n_token) == expected
+
+
+@pytest.mark.parametrize(
+    ("n_token", "expected"),
+    [
+        # The confidence half no longer turns: it is on from zero tokens up.
+        (0, AmpPolicy(True, False)),
+        (2560, AmpPolicy(True, False)),
+        (2561, AmpPolicy(True, False)),
+        # The diffusion half keeps upstream's threshold, and keeps it exclusive.
+        (3840, AmpPolicy(True, False)),
+        (3841, AmpPolicy(True, True)),
+    ],
+)
+def test_the_released_default_moves_only_the_confidence_half(n_token, expected) -> None:
+    """`auto` narrows the head everywhere and leaves 3,840 where it was.
+
+    Below 2,561 tokens this is the whole difference from upstream, and the
+    pair at 3840/3841 is the half that must not have moved: that stage owns
+    the coordinates.
+    """
+    assert default_amp_policy_for_tokens(n_token) == expected
+    assert requested_amp_policy("auto", n_token) == expected
+
+
+def test_the_diffusion_threshold_has_exactly_one_owner() -> None:
+    """Both tables read `DIFFUSION_AUTOCAST_ABOVE_TOKENS`, never two copies.
+
+    Re-spelling the surviving half of the gate in the new resolver is how the
+    two tables would drift apart on the stage they agree about.
+    """
+    for n_token in (0, 2560, 2561, 3840, 3841, 8192):
+        assert (
+            default_amp_policy_for_tokens(n_token).diffusion_autocast
+            == amp_policy_for_tokens(n_token).diffusion_autocast
+        )
 
 
 def test_protenix_v2_runs_its_confidence_head_under_autocast_at_every_size() -> None:
@@ -82,9 +133,25 @@ def test_protenix_v2_runs_its_confidence_head_under_autocast_at_every_size() -> 
     assert amp_policy_for_tokens(2561, "protenix-v2") == amp_policy_for_tokens(2561)
 
 
-def test_the_base_model_keeps_an_fp32_confidence_head_below_the_gate() -> None:
+def test_upstream_keeps_the_base_models_confidence_head_fp32_below_the_gate() -> None:
     for name in (None, "protenix_base_default_v1.0.0", "protenix_mini_esm_v0.5.0"):
         assert amp_policy_for_tokens(2560, name) == AmpPolicy(False, False)
+
+
+def test_the_model_name_stops_deciding_the_confidence_half_under_auto() -> None:
+    """`protenix-v2` was the one variant already narrowing below the gate.
+
+    Under the released default every variant does, so the name can only still
+    reach the diffusion half -- and there it never mattered.
+    """
+    for name in (
+        None,
+        "protenix-v2",
+        "protenix_base_default_v1.0.0",
+        "protenix_mini_esm_v0.5.0",
+    ):
+        assert default_amp_policy_for_tokens(2560, name) == AmpPolicy(True, False)
+        assert default_amp_policy_for_tokens(4096, name) == AmpPolicy(True, True)
 
 
 def test_the_resolver_does_not_own_the_protenix_v2_token_limit() -> None:
@@ -98,15 +165,23 @@ def test_pinned_policies_ignore_the_token_count() -> None:
         assert requested_amp_policy("bf16", n_token) == AmpPolicy(True, True)
 
 
-def test_auto_is_the_default_and_reproduces_the_gate() -> None:
+def test_auto_is_the_default_and_upstreams_gate_keeps_a_spelling() -> None:
+    """Four values, and the one a parity run needs is still reachable."""
     assert DEFAULT_AMP_POLICY == "auto"
-    assert set(AMP_POLICY_CHOICES) == {"auto", "fp32", "bf16"}
+    assert set(AMP_POLICY_CHOICES) == {"auto", "upstream", "fp32", "bf16"}
     for n_token in (16, 2561, 4096):
-        assert requested_amp_policy("auto", n_token) == amp_policy_for_tokens(n_token)
+        assert requested_amp_policy("auto", n_token) == default_amp_policy_for_tokens(
+            n_token
+        )
+        assert requested_amp_policy("upstream", n_token) == amp_policy_for_tokens(
+            n_token
+        )
+    # Below the gate the two spellings are the change this default made.
+    assert requested_amp_policy("auto", 2560) != requested_amp_policy("upstream", 2560)
 
 
 def test_an_unknown_policy_names_the_ones_that_exist() -> None:
-    with pytest.raises(ValueError, match="auto, fp32, bf16"):
+    with pytest.raises(ValueError, match="auto, upstream, fp32, bf16"):
         requested_amp_policy("bfloat16", 100)
 
 
@@ -492,15 +567,19 @@ def test_a_policy_the_parameters_were_not_rebuilt_for_is_refused() -> None:
 
 
 def test_the_resolved_fp32_policy_is_the_same_program_as_passing_nothing() -> None:
-    """Below the gate `auto` resolves to FP32, and FP32 must add no arithmetic.
+    """Below the gate `upstream` resolves to FP32, and FP32 adds no arithmetic.
 
-    This is the in-suite half of the claim; both arms run this branch's code,
-    so it pins that the resolved policy adds nothing on top of the defaults.
-    That the defaults themselves still match `main` is a two-snapshot check --
-    one process on each source tree -- which no single-tree test can make.
+    This used to be `auto`; the released default narrows the confidence head
+    here now, and `upstream` is the spelling that still reproduces the wide
+    program. Both arms run this branch's code, so it pins that the resolved
+    policy adds nothing on top of the defaults. That the defaults themselves
+    still match `main` is a two-snapshot check -- one process on each source
+    tree -- which no single-tree test can make.
     """
     params = _bf16_trunk_params()
-    policy = realise_amp_policy(requested_amp_policy("auto", 2560), trunk_is_bf16=True)
+    policy = realise_amp_policy(
+        requested_amp_policy("upstream", 2560), trunk_is_bf16=True
+    )
     assert policy == AmpPolicy(False, False)
 
     before = _infer(params, trunk_dtype=jnp.bfloat16)
@@ -513,6 +592,205 @@ def test_the_resolved_fp32_policy_is_the_same_program_as_passing_nothing() -> No
     assert set(before) == set(after)
     for name, value in before.items():
         assert np.array_equal(np.asarray(value), np.asarray(after[name])), name
+
+
+def _compactable_confidence(params):
+    """Give the toy head a released-shaped bin table and a nonempty stack.
+
+    The fixture ships one bin, which `can_compact_confidence_distance_embedding`
+    rejects (`lower.size <= 1`), and an empty Pairformer stack. Forcing the
+    compact path onto either would exercise code no released checkpoint
+    reaches, which is the failure mode this helper exists to avoid.
+    """
+    bins = jnp.asarray([0.0, 5.0, 10.0, 15.0, 20.0], dtype=jnp.float32)
+    return params._replace(
+        confidence=params.confidence._replace(
+            distance_embedding=ConfidenceDistanceEmbeddingParams(
+                lower_bins=bins[:-1],
+                upper_bins=bins[1:],
+                linear_d=LinearParams(
+                    weight=jnp.asarray(
+                        np.random.default_rng(0).normal(size=(2, 4)), jnp.float32
+                    ),
+                    bias=None,
+                ),
+                linear_d_wo_onehot=LinearParams(
+                    weight=jnp.zeros((2, 1), jnp.float32), bias=None
+                ),
+            ),
+            pairformer_stack=PairformerStackParams(
+                blocks=(_zero_pairformer_block(2, 2),)
+            ),
+        )
+    )
+
+
+def test_auto_realises_a_bf16_confidence_head_at_the_old_fp32_boundary(
+    monkeypatch,
+) -> None:
+    """2,560 tokens: upstream's last FP32 size, and the port's first BF16 one.
+
+    Everything here is recorded at an execution boundary rather than read off
+    a parameter tree, because the defect this stage keeps producing is a
+    silent promotion: BF16 storage whose matmul runs FP32 anyway looks exactly
+    like a policy that was never applied.
+
+    The compact bin projection is included deliberately. It once returned FP32
+    from a fully realised BF16 policy -- `jnp.result_type(distance.dtype,
+    weight.dtype)` promoted against the FP32 distances -- which widened
+    `z_pair` and every confidence Pairformer block after it. That path was
+    only ever reached above 2,560 tokens before this default; here it runs at
+    a size it never ran at.
+    """
+    policy = realise_amp_policy(requested_amp_policy("auto", 2560), trunk_is_bf16=True)
+    assert policy == AmpPolicy(True, False)
+
+    params = cast_trunk_params(_compactable_confidence(_toy_params()), jnp.bfloat16)
+    realised = params._replace(
+        confidence=native_confidence_autocast_params(params.confidence)
+    )
+    assert can_compact_confidence_distance_embedding(
+        realised.confidence.distance_embedding
+    )
+
+    seen: dict[str, list] = {"entry": [], "stack": [], "linear": [], "compact": []}
+    original_head = model_module.confidence_head
+    original_stack = confidence_module.pairformer_stack
+    original_linear = confidence_module.linear
+    original_compact = confidence_module._compact_confidence_bin_projection
+
+    def head(
+        features, s_inputs, s_trunk, z_trunk, pair_mask, coords, head_params, **kw
+    ):
+        seen["entry"].append(
+            {
+                "s_inputs": str(s_inputs.dtype),
+                "s_trunk": str(s_trunk.dtype),
+                "z_trunk": str(z_trunk.dtype),
+                "coords": str(coords.dtype),
+            }
+        )
+        return original_head(
+            features, s_inputs, s_trunk, z_trunk, pair_mask, coords, head_params, **kw
+        )
+
+    def stack(s, z, pair_mask, stack_params, **kw):
+        out = original_stack(s, z, pair_mask, stack_params, **kw)
+        seen["stack"].append(
+            (str(s.dtype), str(z.dtype), str(out[0].dtype), str(out[1].dtype))
+        )
+        return out
+
+    def linear(x, linear_params):
+        result = original_linear(x, linear_params)
+        seen["linear"].append(
+            (
+                str(x.dtype),
+                type(linear_params).__name__,
+                str(linear_params.weight.dtype),
+                str(result.dtype),
+            )
+        )
+        return result
+
+    def compact(distance, embedding_params):
+        out = original_compact(distance, embedding_params)
+        seen["compact"].append((str(distance.dtype), str(out.dtype)))
+        return out
+
+    monkeypatch.setattr(model_module, "confidence_head", head)
+    monkeypatch.setattr(confidence_module, "pairformer_stack", stack)
+    monkeypatch.setattr(confidence_module, "linear", linear)
+    monkeypatch.setattr(
+        confidence_module, "_compact_confidence_bin_projection", compact
+    )
+    out = _infer(
+        realised,
+        trunk_dtype=jnp.bfloat16,
+        compact_confidence_distance_bins=True,
+        confidence_autocast=policy.confidence_autocast,
+        diffusion_autocast=policy.diffusion_autocast,
+    )
+    jax.block_until_ready(out)
+
+    for boundary, records in seen.items():
+        assert records, f"{boundary} was not exercised"
+
+    # The trunk representations reach the head unwidened; `s_inputs` does not,
+    # because it never was BF16 -- the input embedder concatenates raw
+    # reference features, and `confidence_s_inputs = s_inputs` under autocast
+    # only stops widening an array that is already FP32.
+    assert seen["entry"] == [
+        {
+            "s_inputs": "float32",
+            "s_trunk": "bfloat16",
+            "z_trunk": "bfloat16",
+            "coords": "float32",
+        }
+    ]
+    assert out["s_inputs"].dtype == jnp.float32
+
+    # The compact projection follows the weight, not the FP32 distances.
+    assert seen["compact"] == [("float32", "bfloat16")]
+    # ...so the pair tensor it built stays narrow through every block.
+    assert seen["stack"] == [("bfloat16", "bfloat16", "bfloat16", "bfloat16")]
+
+    # `linear_s1`/`linear_s2` are the FP32-fed pair: an autocast node narrows
+    # its own operand, which is what keeps an FP32 `s_inputs` from promoting
+    # the outer-sum initialiser and the stack behind it.
+    narrowing = ("float32", "AutocastLinearParams", "bfloat16", "bfloat16")
+    assert [row for row in seen["linear"] if row[1] == "AutocastLinearParams"] == [
+        narrowing
+    ] * 3
+    # The output stage is FP32 under every policy, including this one.
+    assert [row for row in seen["linear"] if row[1] == "LinearParams"] == [
+        ("float32", "LinearParams", "float32", "float32")
+    ] * 2
+    for name in ("plddt", "pae", "pde", "resolved"):
+        assert out[name].dtype == jnp.float32
+        assert np.isfinite(np.asarray(out[name])).all()
+
+
+def test_auto_leaves_the_diffusion_stage_untouched_below_the_gate() -> None:
+    """The half of the gate that did not move, proved on the coordinates.
+
+    Nothing the confidence head computes feeds the sampler, so a BF16 head and
+    an FP32 head must produce the same structure to the bit. The two flags are
+    traced arguments rather than an environment variable, so one process runs
+    both arms without a compile cache deciding the answer.
+    """
+    policy = realise_amp_policy(requested_amp_policy("auto", 2560), trunk_is_bf16=True)
+    assert policy.diffusion_autocast is False
+
+    params = cast_trunk_params(_compactable_confidence(_toy_params()), jnp.bfloat16)
+    realised = params._replace(
+        confidence=native_confidence_autocast_params(params.confidence)
+    )
+    # The realisation rebuilt one subtree, and it was not this one.
+    assert realised.diffusion is params.diffusion
+    assert not isinstance(
+        realised.diffusion.conditioning.linear_z, Fp32PrecisionLinearParams
+    )
+    assert _float_leaf_dtypes(realised.diffusion) == {"float32"}
+
+    narrow_head = _infer(
+        realised,
+        trunk_dtype=jnp.bfloat16,
+        compact_confidence_distance_bins=True,
+        confidence_autocast=True,
+        diffusion_autocast=False,
+    )
+    wide_head = _infer(
+        params,
+        trunk_dtype=jnp.bfloat16,
+        compact_confidence_distance_bins=True,
+        confidence_autocast=False,
+        diffusion_autocast=False,
+    )
+    assert narrow_head["coordinate"].dtype == jnp.float32
+    np.testing.assert_array_equal(
+        np.asarray(narrow_head["coordinate"]), np.asarray(wide_head["coordinate"])
+    )
 
 
 def test_the_two_stages_are_part_of_the_compiled_programs_identity() -> None:
@@ -575,27 +853,40 @@ def test_asking_for_the_released_default_is_the_same_namespace_as_not_asking(
     unset = backend.cache_profile(request())
     assert backend.cache_profile(request(amp_policy="auto")) == unset
     assert backend.cache_profile(request(amp_policy="bf16")) != unset
+    # `upstream` is a different program below 2,560 tokens, so it must not
+    # collapse into the default's namespace.
+    assert backend.cache_profile(request(amp_policy="upstream")) != unset
 
 
 @pytest.mark.parametrize(
     ("argv", "n_token", "expected"),
     (
-        ((), 2, AmpPolicy(False, False)),
-        # The gate, driven only by the job's own size.
+        # The released default narrows the head at every size; only the
+        # diffusion half is still driven by the job's own size.
+        ((), 2, AmpPolicy(True, False)),
         ((), 3000, AmpPolicy(True, False)),
         ((), 4000, AmpPolicy(True, True)),
+        # Upstream's gate, still reachable, still turning at 2560.
+        (("--amp-policy", "upstream"), 2, AmpPolicy(False, False)),
+        (("--amp-policy", "upstream"), 3000, AmpPolicy(True, False)),
+        (("--amp-policy", "upstream"), 4000, AmpPolicy(True, True)),
         (("--amp-policy", "bf16"), 2, AmpPolicy(True, True)),
         (("--amp-policy", "fp32"), 4000, AmpPolicy(False, False)),
-        # An FP32 trunk opens no autocast, so the gate has nothing to move.
+        # An FP32 trunk opens no autocast, so no table has anything to move.
         (("--trunk-dtype", "fp32"), 4000, AmpPolicy(False, False)),
+        (("--trunk-dtype", "fp32"), 2, AmpPolicy(False, False)),
     ),
     ids=(
         "small",
         "gated-confidence",
         "gated-both",
+        "upstream-small",
+        "upstream-gated-confidence",
+        "upstream-gated-both",
         "pinned-bf16",
         "pinned-fp32",
         "fp32-trunk",
+        "fp32-trunk-small",
     ),
 )
 def test_the_cli_resolves_the_policy_per_job_and_threads_it(

@@ -36,8 +36,10 @@ _CLI_OPTIONS = {
     "esm_checkpoint_dir",
     "trunk_dtype",
     # Which stages run under the BF16 autocast. Released default `auto`
-    # reproduces upstream's token gate, so it is resolved from the job
-    # rather than from this table; the table only carries the request.
+    # narrows the confidence head at every size and keeps upstream's 3,840
+    # gate on the diffusion sampler, so it is resolved from the job rather
+    # than from this table; the table only carries the request. `upstream`
+    # is the spelling that reproduces the native gate on both stages.
     "amp_policy",
     "max_msa_depth",
     "diffusion_attention_backend",
