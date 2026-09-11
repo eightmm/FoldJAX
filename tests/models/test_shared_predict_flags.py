@@ -317,6 +317,7 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--triangle-mul-chunk-size", "--triangle-att-q-chunk-size",
     "--single-att-q-chunk-size", "--token-q-chunk-size",
     "--chunk-policy", "--trunk-dtype",
+    "--confidence-dtype", "--diffusion-dtype",
     "--include-raw",
     "--representations-dir", "--stop-after", "--representations",
     "--cpu-only",
