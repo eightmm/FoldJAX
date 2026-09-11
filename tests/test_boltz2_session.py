@@ -354,14 +354,20 @@ def _patch_primary_runtime(monkeypatch, tmp_path: Path, counts: dict[str, int]) 
 
 def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
     signature = inspect.signature(native_api.predict)
-    actual = {
-        name: signature.parameters[name].default
-        for name in backend_module._RELEASED_COMPILE_DEFAULTS
-    }
+    released = dict(backend_module._RELEASED_COMPILE_DEFAULTS)
+    # `matmul_precision` is the one released default the native signature does
+    # not carry: no model takes it as an argument, the scope carries it, so its
+    # authority is the module constant. It is checked below against that
+    # constant for the same reason the rest are checked against the signature
+    # -- so the backend's copy cannot drift from what the port actually runs.
+    assert released.pop("matmul_precision") == native_api.MATMUL_PRECISION
+    assert "matmul_precision" not in signature.parameters
 
-    for name, expected in backend_module._RELEASED_COMPILE_DEFAULTS.items():
+    actual = {name: signature.parameters[name].default for name in released}
+
+    for name, expected in released.items():
         assert type(actual[name]) is type(expected)
-    assert actual == backend_module._RELEASED_COMPILE_DEFAULTS
+    assert actual == released
     for cp_devices in (1, 2, 4, 9):
         assert native_api._resolve_cp_layout("auto", cp_devices) == "1d"
         assert native_api._resolve_cp_layout("1d", cp_devices) == "1d"

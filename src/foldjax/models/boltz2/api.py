@@ -56,11 +56,74 @@ ATTENTION_BACKENDS = ("flash", "tokamax", "xla")
 TRUNK_ATOM_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 DIFFUSION_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 
-#: Matmul precision this port runs under. Boltz-2 is the one model here whose
-#: upstream asks for true float32 -- `main.py:1096` is
-#: `torch.set_float32_matmul_precision("highest")`, where OpenFold3, Protenix and
-#: OpenDDE all select TF32 -- so "highest" is upstream parity, not caution.
-MATMUL_PRECISION = "highest"
+#: Matmul precision this port runs under.
+#:
+#: Boltz-2 is the one model here whose upstream asks for true float32 --
+#: `main.py:1096` is `torch.set_float32_matmul_precision("highest")`, where
+#: OpenFold3, Protenix and OpenDDE all select TF32 -- and until 2026-09-11 this
+#: port followed it, on the reasoning that matching upstream's configuration is
+#: what faithfulness means.
+#:
+#: It is not. The acceptance criterion for these defaults is accuracy
+#: equivalence, and TF32 meets it here while upstream's float32 costs several
+#: percent of the wall clock. Measured on GPU over the released schedule,
+#: warm after prefill, one RTX PRO 6000 Blackwell:
+#:
+#:   1,003 tokens   88.31 -> 82.17 s   (-7.0%)   peak 9,216 MiB, unchanged
+#:   2,096 tokens   ~313.94 -> 287.62 s (~-8.4%) peak 21,778 MiB, unchanged
+#:
+#: **This buys wall clock and no memory at all.** An earlier reading of these
+#: rows put the 1,003-token pair at 90.98 -> 82.17 s with peak 12,612 -> 9,216
+#: MiB; that baseline was source `72116ac3`, which predates the fused-GLU
+#: default. The whole 12,612 -> 9,216 belongs to `glu_backend="tokamax"` and
+#: is already recorded at that parameter below, as is the 317.91 -> 313.94 s
+#: the 2,096-token baseline moved with it. The only same-source control run
+#: for this change is the 1,003-token 88.31 s; the 2,096-token control is the
+#: GLU note's post-flip 313.94 s rather than a control run beside 287.62, so
+#: read that row as approximate.
+#:
+#: Accuracy at 2,096 tokens on 5DEI (homotetramer, five samples): per-chain
+#: RMSD to the deposited chain 0.34-0.40 A on both arms chain for chain, TM
+#: 0.998 on both, sample 4 selecting the same alternative basin in both;
+#: same-index residual between the arms 0.038 A median / 0.135 A max against
+#: a 0.238 A within-set spread.
+#:
+#: Upstream's float32 stays one option away -- `--option matmul_precision=highest`
+#: selects exactly the program this port shipped before -- because the parity
+#: harnesses compare against upstream's rounding and need it.
+#:
+#: **This is one of two precision surfaces, and the flip moved only this one.**
+#: The other is the `matmul_precision` string at `models/predict.py:284` and
+#: `:425`, which becomes an explicit `precision=` on triangle attention's four
+#: projections and therefore beats the scope this constant opens rather than
+#: inheriting it. `predict` below never puts that key in `predict_kwargs`, so
+#: it stays at its signature default `"highest"` -- including under
+#: `--option matmul_precision=high`, which is exactly how the measurement
+#: above was taken, so the shipped default is that measured arm and nothing
+#: more.
+#:
+#: **At the released `compute_dtype="bfloat16"` that disagreement is inert**,
+#: and the reason is worth spelling out, because the next reader to see
+#: `Precision.HIGHEST` on those matmuls will assume it is doing something.
+#: Two narrowings meet there. `_cast_trunk_params`
+#: (`models/trunk_blocks/trunk.py:246`) narrows every `*/kernel` in the trunk
+#: except four subtrees -- `input_embedder/atom_encoder`,
+#: `template_module/a_proj`,
+#: `input_embedder/atom_attention_encoder/atom_to_token_trans`, and each
+#: Pairformer layer's `pre_norm_s`/`attention`/`transition_s` -- and
+#: `tri_att_start`/`tri_att_end` are in none of them, so their kernels are
+#: bfloat16. `triangle_attention._linear` then casts the activation to the
+#: kernel's width before the matmul, so the float32 pair residual never meets
+#: a float32 kernel there either. Both operands are bfloat16 and the
+#: attribute has no float32 accumulation to choose between. The
+#: cuEquivariance attention FFI agrees independently: `use_tf32` returns
+#: False for any non-float32 dtype before it reads the precision at all.
+#:
+#: Under `--option dtype=float32` it is live and those four projections keep
+#: float32 while the rest of the graph runs TF32. Unifying the two surfaces
+#: was measured to buy nothing at the shipped dtype; `docs/cli.md` carries
+#: what it would be worth under `dtype=float32` and what it would cost.
+MATMUL_PRECISION = "high"
 
 
 def _require_triton_attention_device(

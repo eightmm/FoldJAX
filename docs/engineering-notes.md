@@ -252,7 +252,7 @@ executes the float32 matmuls that remain. A model can be bfloat16 and
 | model | element width | matmul precision | knob |
 |---|---|---|---|
 | AlphaFold 3 | bfloat16 | — | none; upstream is `bfloat16: 'all'` |
-| Boltz-2 | bfloat16 | `highest` | `--option dtype=float32` |
+| Boltz-2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
 | Protenix / v2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
 | OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
 | OpenFold3 | float32 | `high` (TF32) | `--option dtype=bfloat16`, opt-in, ≤ ~2,000 tokens |
@@ -262,17 +262,33 @@ The matmul column names the model-level scope. A fused backend can own the
 precision of its internal contractions: OpenFold3's cuEquivariance triangle
 path explicitly pins `lax.Precision.DEFAULT`, which is why its shipped GPU
 route has a separate numerical envelope from the strict `highest`/XLA gate.
+Boltz-2's triangle attention owns its own in the same way, and there the two
+**do** disagree: its four projections take an explicit `precision=` from a
+string `api.predict` never sets, so they stay `highest` while the scope ships
+`high`. That is inert at the released bfloat16 trunk, where the operands are
+too narrow for the attribute to act on, and live under `dtype=float32`. See
+`docs/cli.md`.
 
-Read against upstream, **two rows diverge from what their publisher ships**,
-and only one of them was a decision. The four that match: AlphaFold 3
-`model_config.py:34`, Boltz-2 `main.py:1262` (`precision="bf16-mixed"`) with
-`main.py:1096` asking for `highest` matmuls, Protenix `configs_base.py:135`,
-and OpenFold3 `entry_points/validator.py:127` — its `bf16-mixed` YAMLs are
-training configs, not inference, and it additionally pins the confidence
-Pairformer wide with a `pairformer_dtype` defaulting to `torch.float32`
+Read against upstream, **three rows diverge from what their publisher ships**,
+and two of them were decisions. The three that match: AlphaFold 3
+`model_config.py:34`, Protenix `configs_base.py:135`, and OpenFold3
+`entry_points/validator.py:127` — its `bf16-mixed` YAMLs are training configs,
+not inference, and it additionally pins the confidence Pairformer wide with a
+`pairformer_dtype` defaulting to `torch.float32`
 (`heads/prediction_heads.py:192`).
 
-**OpenDDE** is the declared one: upstream runs float32
+**Boltz-2** is a declared departure, from 2026-09-11. Upstream is
+`main.py:1262` (`precision="bf16-mixed"`) with `main.py:1096` asking for
+`highest` matmuls, and this port followed until then. It now ships `high`,
+because the criterion for a default here is accuracy equivalence rather than
+agreement with upstream's configuration: -7.0% wall at 1,003 tokens against a
+same-source control and about -8.4% at 2,096, no change in peak at either
+size, and a 5DEI residual between the two arms of 0.038 Å median against a
+0.238 Å within-arm spread. `docs/cli.md` carries the full row, including why
+an earlier reading of it credited this change with the fused GLU's memory
+saving.
+
+**OpenDDE** is the other declared one: upstream runs float32
 (`opendde/config/model_base.py:37`), FoldJAX ships bfloat16 since 2026-08-28,
 and the rest of this section is the measurement that justified it.
 
@@ -290,8 +306,9 @@ language-model execution and diffusion pair conditioning. Do not use the old
 single-autocast claim or rounded-score timings as current precision admission.
 See `esmfold2-msa-entry-observer-2026-09-09.md` for the matched-tape corrections.
 
-**ESMFold2 is the undeclared one, found 2026-08-28.** Upstream has exactly one
-autocast in the whole model — `transformers/models/esmfold2/modeling_esmfold2.py:2021`:
+**ESMFold2 is the undeclared one, found 2026-08-28.** It diverges on element
+width rather than matmul precision; the matmul column has no entry for it.
+Upstream has exactly one autocast in the whole model — `transformers/models/esmfold2/modeling_esmfold2.py:2021`:
 
     use_amp = next(self.esmc.parameters()).dtype == torch.bfloat16
     with torch.autocast(device_type=..., dtype=torch.bfloat16, enabled=use_amp):

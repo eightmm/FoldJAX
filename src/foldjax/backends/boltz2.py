@@ -286,6 +286,10 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "diffusion_attention_backend": None,
     "diffusion_compute_dtype": "float32",
     "pair_residual_dtype": None,
+    # `api.MATMUL_PRECISION`, in the neutral vocabulary. Naming it here is what
+    # makes an explicit `matmul_precision=high` share the namespace an omitted
+    # one selects, while `highest` keeps its own.
+    "matmul_precision": "high",
     "triangle_backend": "cueq",
     "glu_backend": "tokamax",
     "bucket": False,
@@ -375,6 +379,11 @@ class Boltz2Backend(Backend):
         "token_attention_chunk",
         "bucket",
         "deterministic",
+        # Two policies, two programs: it sets the `precision` attribute on
+        # every float32 dot in the graph, the cuEquivariance triangle-
+        # multiplication FFI mode, and which dot-algorithm preset Tokamax
+        # selects for float32 operands.
+        "matmul_precision",
         # Both values compile the same executable -- only three MSA feature
         # arrays differ -- so this is not shape identity. It is here because a
         # cache entry stands for the prediction, not just the program: a
