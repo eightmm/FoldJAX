@@ -174,9 +174,16 @@ def confidence_head(
 
     `confidence_dtype` narrows the re-embedding that runs before the head's own
     trunk, at AlphaFold 3's boundary rather than as a blanket cast; float32,
-    which changes nothing, is the default. It is deliberately separate from
-    `trunk_dtype`: that one targets the region upstream's own autocast covers,
-    while this opens a region upstream keeps in float32.
+    which changes nothing, is the default here and in `ModelSettings`. It is
+    deliberately separate from `trunk_dtype`: that one targets the region
+    upstream's own autocast covers, while this one opens a region upstream
+    keeps in float32 -- upstream's `ConfidenceHead.forward` runs outside
+    every autocast region (`modeling_esmfold2.py:172-221`; the model-level
+    context opened at `:936` closes at `:1030`, before the head is called at
+    `:1061`), and only its own `folding_trunk` is wrapped, at `:223`, taking
+    a float32 pair and returning `pair.add_(pair_delta.float())`. So the
+    float32 re-embedding this option narrows is deliberate, not an island
+    nobody chose.
 
     What stays wide under it, and why, since a list of exclusions is the only
     part of a dtype option that is not self-evident from the code:
@@ -302,7 +309,7 @@ def confidence_head(
     # A bfloat16 pair handed to the native-autocast trunk carries a bfloat16
     # residual stream through every block while that branch's own boundaries
     # keep each exponential input float32 -- the four sigmoid gates and the
-    # SwiGLU, at `trunk.py:125`, `:148` and `:161`. The storage-cast branch
+    # SwiGLU, at `trunk.py:120`, `:148` and `:164`. The storage-cast branch
     # does not: with bfloat16 parameters all five receive bfloat16, which is
     # why `confidence_dtype` never selects it. Under context parallelism, and
     # under a float32 `trunk_dtype`, the cast below is what the pair meets, so

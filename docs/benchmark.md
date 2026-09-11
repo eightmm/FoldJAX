@@ -139,8 +139,8 @@ peak then *falls* at 3,012 is the chunk-size search described under
 **ESMFold2 has two rows and no upstream column.** No torch ESMFold2
 environment is provisioned on this host, so there is nothing to compare against
 -- the same reason AlphaFold 3's column is blank, arrived at differently. It
-runs the same schedule as every other row. It stops at 1,003 tokens because its
-peak is one `num_samples * L^2 * 4*c_z` arena and the larger sizes were not
+runs the same schedule as every other row. It stops at 1,003 tokens because
+its peak is one quadratic folding-trunk arena and the larger sizes were not
 attempted, and it is absent from the figure for that reason: two of six sizes
 is a gap in a panel, not a series. Its rows are here rather than dropped,
 because a reader cannot otherwise tell "not measured" from "left out".

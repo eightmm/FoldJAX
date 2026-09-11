@@ -730,10 +730,11 @@ same reason it is on Boltz-2, which spells it the same way.
 
 What it removes is the `2 * hidden` projection each of those blocks
 materialises before gating -- temporary traffic, once per block per denoising
-step. What it does not touch is ESMFold2's peak, which is one
-`num_samples x tokens^2 x 4 * c_z` arena; expect this option to buy time, not
-headroom, and do not reach for it to fit a longer input. `structure_sample_sequential`
-above is the option that divides the sample axis.
+step. What it does not touch is ESMFold2's peak, which is a folding-trunk
+arena quadratic in tokens and carrying no sample axis at all; expect this
+option to buy time, not headroom, and do not reach for it to fit a longer
+input. `structure_sample_sequential` above divides the sample axis, which is
+a different term and not this peak.
 
 Three limits. The kernel is Triton, so it needs a GPU and there is no
 fallback: a card that cannot run it says so rather than running XLA under a
@@ -750,12 +751,41 @@ Narrows the confidence head's re-embedding to bfloat16, following AlphaFold
 and returns to float32 at `:163` before the distogram-error logits and at
 `:244` before pLDDT. `float32` is the default and no released number changes.
 
-**This is the safest dtype change the port offers.** The confidence head makes
-scores and never coordinates, so nothing narrowed inside it can move the
-structure. Protenix measured the equivalent change at 3,012 tokens:
-coordinates bitwise unchanged, atom pLDDT moved at most 0.0099, chain pTM and
-ipTM at most 1.9e-4, PAE means at most 0.005. Read those as the scale to
-expect, not as this port's numbers.
+**Measured, and on its own it buys nothing.** GPU rows 1111/1112, this port,
+against the released default:
+
+| tokens | wall, float32 -> bfloat16 | peak, float32 -> bfloat16 |
+|---|---|---|
+| 1,003 | 155.16 -> 160.92 s (+3.7%) | 14,733.3 -> 14,733.3 MiB |
+| 2,096 | 450.88 -> 450.05 s (-0.2%) | 46,041.8 -> 46,042.3 MiB |
+
+The arm fires -- the 2,096-token peak moves 0.5 MiB, so it is not a dead
+branch -- and it moves nothing else: no peak change at either size, and no
+wall change outside noise. The reason is structural. This port's peak is a
+single folding-trunk temp arena, and the confidence head contributes no term
+to it, so a knob inside that head has nothing to shrink. **Do not reach for
+this option alone.** It is here for combination arms, where it is the one
+region of this port that can be narrowed without risking a structure.
+
+**float32 here is upstream's own width, not an accidental island.** Upstream's
+`ConfidenceHead.forward` runs outside every autocast region --
+`modeling_esmfold2.py:172-221`, called at `:1061`, after the model-level
+bfloat16 context opened at `:936` has closed at `:1030`. The only autocast
+inside the head wraps its own `folding_trunk` alone, at `:223`, and it
+receives a float32 pair and gives back `pair.add_(pair_delta.float())`. So
+upstream's re-embedding and residual stream are float32, and the bfloat16
+Linear operands inside the head's trunk are what `:223` already gives under
+either value of this option.
+
+The rows above are wall and peak. **Accuracy is the part still unmeasured
+here**: every recorded ESMFold2 pLDDT, pTM and PAE number describes the
+float32 default, and no row on this port reads the narrowed one back. What
+exists is a sibling's measurement of the same narrowing: Protenix at 3,012
+tokens moved coordinates not at all, atom pLDDT by at most 0.0099, chain pTM
+and ipTM by at most 1.9e-4, and PAE means by at most 0.005. Read that as the
+scale to expect, not as this port's number. The confidence head makes scores
+and never coordinates, so nothing narrowed inside it can move a structure --
+which is why this is the safest dtype change the port offers.
 
 What it narrows: the five projections that build the pair from the single
 input, the distance-bin embedding gather, and the residual stream those feed
@@ -766,13 +796,31 @@ row-attention pooling and all four output heads. Two of those are load-bearing
 rather than cautious: the pooling projection's output is the score tensor of a
 softmax, and the PAE head's output is what pTM and ipTM are read off, through
 a softmax with no float32 guard of its own. Nothing that feeds a softmax or an
-exponential is rounded.
+exponential is rounded, and every returned score is float32 in both arms.
+
+**Read off the trace, not off the setting.** A jaxpr census of
+`confidence_head` on CPU, counting `dot_general` operand dtypes and casts
+through every sub-jaxpr including the `platform_dependent` branches:
+
+| | `(f32,f32)->f32` | `(bf16,bf16)->bf16` | `(bf16,bf16)->f32` | branch points |
+|---|---|---|---|---|
+| `float32` | 17 | 8 | 10 | 8 |
+| `bfloat16` | 12 | 13 | 15 | 13 |
+
+Exactly five float32 matmuls disappear and exactly five branch points appear:
+the five `s_to_z*` projections, routed through `_autocast_linear`. Read those
+two counts as the signal. The bfloat16 dots gain ten rather than five because
+the tracer keeps both platform branches of each narrowed Linear -- the CUDA
+one accumulating to bfloat16 and the fallback to float32 -- so that column
+double-counts. The stored parameters are not touched either way:
+`_autocast_linear` narrows its operands inside the call, and the checkpoint
+arrays stay float32 and uncopied.
 
 It is separate from `trunk_dtype`, and deliberately so. `trunk_dtype` targets
 the region upstream's own autocast covers, and it already reaches *inside*
 this head: the head reopens that autocast for its own trunk the way upstream
 does, so that stack runs with bfloat16 Linear operands at the released
-default. What was still float32 is the re-embedding in front of it. Setting
+default. What is still float32 is the re-embedding in front of it. Setting
 `confidence_dtype=bfloat16` under `trunk_dtype=float32` narrows the
 re-embedding and leaves the head's trunk in float32.
 

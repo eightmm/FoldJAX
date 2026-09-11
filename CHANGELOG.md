@@ -76,16 +76,72 @@ unless it says so here, in its own paragraph.
   follows the weight, as the dense path does; the compact and dense paths are
   bitwise equal again in both precisions. This changes what Protenix's
   shipped bfloat16 confidence policy computes.
+- **Fixed ESMFold2's triangle contraction promoting its operands to float32
+  on the released path.** `_autocast_triangle` multiplied its bfloat16
+  `routed` by a float32 `pair_mask` (`model.py:1310`) without casting the
+  mask down, and then cast the product to float32 explicitly -- promoting
+  `[batch, N, N, 2 * c_z]`, the widest tensor the block owns, on the way into
+  a contraction whose operands it immediately narrowed back to bfloat16.
+  Both lines are gone; the mask is cast to `routed`'s dtype and the split
+  runs narrow. The float32 accumulation is unchanged, kept by the
+  `preferred_element_type` the einsum already carried.
+
+  **Bit-identical, not merely exact.** float32 represents every bfloat16
+  value, so the round-trip was the identity, and `pair_mask` is 0.0/1.0, so
+  the multiply is exact at either width. The test asserts bitwise equality
+  and separately shows that a non-0/1 mask would break it, so the claim
+  rests on the caller's mask values rather than on luck.
+
+  **The reusable part: this is `63dd96e`'s third fix, which never reached the
+  released path.** That commit narrowed three arena tenants on 2026-08-28 and
+  measured 23.47 -> 21.08 GiB at 1,003 tokens. `e1316e2` (2026-09-09) then
+  introduced the native-autocast redirect, and only two of the three followed
+  it: `_autocast_transition` carries its own chunk loop and
+  `outer_product_mean` blocks on both arms of its branch, but the dtype fix
+  stayed in `triangle_multiplicative`'s body, which
+  `trunk_dtype="bfloat16"` off a mesh -- the released default -- never
+  reaches. The gate test missed it for the same reason: it called
+  `triangle_multiplicative` without `native_autocast`. A dtype guard has to
+  name the branch the default takes, not the function that dispatches to it.
+
+  Sized from the arena table in `docs/engineering-notes.md`: `[N², 2*c_z]`
+  doubled, 982 -> 1,965 MiB at 1,003 tokens, so 4,290 -> 8,580 MiB at 2,096,
+  per live buffer and two triangle engines per block. **How much of that
+  reaches the peak is not yet measured** -- an arena is a packing rather than
+  a sum, and the change is bit-identical, so it can simply be run.
+
 - **An opt-in bfloat16 confidence head for ESMFold2**, off by default.
   `--option confidence_dtype=bfloat16` narrows the confidence head's
   re-embedding -- the five `s_to_z*` projections, the distance-bin gather and
   the residual stream they feed into the head's own trunk -- at AlphaFold 3's
   boundary: narrow re-embedding, float32 output heads. `float32` stays the
-  default, so every released run is unchanged. It is the safest dtype change
-  the port offers, because the confidence head produces scores and never
-  coordinates, so nothing inside it can move the structure; Protenix measured
-  the equivalent narrowing at 3,012 tokens as bitwise-identical coordinates,
-  at most 0.0099 of atom pLDDT and at most 1.9e-4 of chain pTM and ipTM. The
+  default, so every released run is unchanged.
+
+  **It is measured, and on its own it buys nothing.** GPU rows 1111/1112
+  against the released default: at 1,003 tokens wall 155.16 -> 160.92 s
+  (+3.7%) with peak 14,733.3 -> 14,733.3 MiB, and at 2,096 tokens wall
+  450.88 -> 450.05 s (-0.2%) with peak 46,041.8 -> 46,042.3 MiB. The arm
+  fires -- the 2,096-token peak moves 0.5 MiB -- and moves nothing else,
+  because this port's peak is a single folding-trunk temp arena that the
+  confidence head contributes no term to. The option is documented as one for
+  combination arms and is not recommended alone; that, and not upstream
+  fidelity, is why the default stays float32.
+
+  **float32 here is upstream's own width**, newly written down: upstream's
+  `ConfidenceHead.forward` runs outside every autocast region
+  (`modeling_esmfold2.py:172-221`, called at `:1061`, after the model-level
+  bfloat16 context opened at `:936` has closed at `:1030`), and the only
+  autocast inside the head wraps its own `folding_trunk` at `:223`, taking a
+  float32 pair and returning `pair.add_(pair_delta.float())`. So the float32
+  re-embedding this option narrows is deliberate rather than an island nobody
+  chose, and the bfloat16 Linear operands already inside the head's trunk come
+  from `:223` under either value.
+
+  It is the safest dtype change the port offers, because the confidence head
+  produces scores and never coordinates, so nothing inside it can move the
+  structure; Protenix measured the equivalent narrowing at 3,012 tokens as
+  bitwise-identical coordinates, at most 0.0099 of atom pLDDT and at most
+  1.9e-4 of chain pTM and ipTM. Accuracy is unmeasured on this port. The
   pooling and pTM softmaxes, the four output heads, the representative
   distances and the bin comparison against them all stay float32. Unlike the
   fused kernels, it composes with context parallelism, where it narrows the

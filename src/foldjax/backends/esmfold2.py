@@ -83,7 +83,8 @@ _FIXED_COMPILE_DEFAULTS = {
     # value is independent of the checkpoint: no `config.json` key reaches it.
     "glu_backend": "xla",
     # A float32 confidence re-embedding is what every released number
-    # describes, and no `config.json` key reaches it either.
+    # describes, it is upstream's own width, and no `config.json` key reaches
+    # it either.
     "confidence_dtype": "float32",
 }
 
@@ -909,7 +910,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # no context-parallel restriction to add: this narrows arithmetic
         # under a sharding constraint rather than introducing a custom call
         # GSPMD has no partitioner for.
-        _checked_confidence_dtype(options.get("confidence_dtype", "float32"))
+        _checked_confidence_dtype(
+            options.get("confidence_dtype", _FIXED_COMPILE_DEFAULTS["confidence_dtype"])
+        )
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(

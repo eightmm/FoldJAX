@@ -231,11 +231,33 @@ def _run(params, confidence_dtype, *, trunk_dtype=jnp.bfloat16, **extra):
     )
 
 
-def test_the_released_default_leaves_the_confidence_tree_in_float32(recorder) -> None:
-    """No parameter is copied and no operand narrows without the option."""
+def _shipped_dtype() -> object:
+    """The width the port ships, resolved rather than spelled.
+
+    Every test that means "the default" goes through this, so the default is
+    asserted by what it makes the arrays do and a later flip is one edit
+    rather than a rewrite of every assertion that named a literal.
+    """
+    return jnp.dtype(structure_model.ModelSettings().confidence_dtype)
+
+
+def test_the_shipped_default_leaves_the_confidence_tree_in_float32(recorder) -> None:
+    """The default is read off arrays, not off `ModelSettings`.
+
+    Asserting `confidence_dtype == "float32"` would pass on a port that
+    carries the string and hands the head something else, which is this
+    port's recorded failure mode, and it would have to be rewritten rather
+    than simply fail if the default ever moved. So the default is resolved
+    through `_shipped_dtype` and then read back off the operands: no
+    parameter is copied and nothing narrows.
+
+    This is also the arm every recorded ESMFold2 confidence number describes,
+    and the one upstream runs -- its `ConfidenceHead.forward` sits outside
+    every autocast region.
+    """
     params = _params()
     original = dict(params)
-    _run(params, jnp.float32)
+    _run(params, _shipped_dtype())
 
     assert recorder.linears, "the recorder saw no linear at all"
     assert recorder.matmuls, "the recorder saw no matmul at all"
@@ -450,9 +472,21 @@ def test_the_accepted_values_are_the_two_spellings() -> None:
     assert CONFIDENCE_DTYPES == ("float32", "bfloat16")
 
 
-def test_the_released_default_is_float32() -> None:
-    """Nothing about any recorded ESMFold2 number changes with this merged."""
-    assert structure_model.ModelSettings().confidence_dtype == "float32"
+def test_the_backend_and_the_port_default_to_the_same_width() -> None:
+    """One default spelled in two layers, and they must agree.
+
+    `_FIXED_COMPILE_DEFAULTS` is a literal so option planning stays free of
+    JAX, which means nothing but this test stops it drifting from the field
+    it mirrors. Drift here is silent and specific: the backend would strip an
+    explicitly spelled value that the port does not actually resolve to, and
+    answer that run out of the wrong compilation namespace.
+    """
+    from foldjax.backends.esmfold2 import _FIXED_COMPILE_DEFAULTS
+
+    assert (
+        _FIXED_COMPILE_DEFAULTS["confidence_dtype"]
+        == structure_model.ModelSettings().confidence_dtype
+    )
 
 
 @pytest.mark.parametrize("asked", CONFIDENCE_DTYPES)

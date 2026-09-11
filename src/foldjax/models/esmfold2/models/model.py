@@ -107,9 +107,12 @@ class ModelSettings:
     #: `bf16[32, L^2, 2048]` -- 122.8 GiB against a 95.6 GiB device. This note
     #: used to say "off by default", and was correct until that flip.
     #:
-    #: Worth asking for near a memory limit: this model's peak is one temp
-    #: arena sized `num_samples * L^2 * 4*c_z`, and this head is where the
-    #: sample factor enters it. Measured at 1,003 tokens with five samples on
+    #: Worth asking for near a memory limit, though not because it divides
+    #: the peak: this head's own term is `num_samples * L^2 * 4*c_z`, and
+    #: that is the term this option divides -- but the *peak* is a
+    #: folding-trunk arena with no sample axis in it, as the
+    #: `structure_sample_sequential` note below says at length. Measured at
+    #: 1,003 tokens with five samples on
     #: a 96 GB card at the released schedule, peak falls 56.0 to 30.2 GiB and
     #: the arena 35.99 to 11.31, with warm time unchanged -- 28.3-28.6 s
     #: either way. Read that 45% as a property of that measurement rather than
@@ -261,19 +264,35 @@ class ModelSettings:
     #:
     #: `trunk_dtype` already reaches the *inside* of this head: its own
     #: `folding_trunk` reopens upstream's autocast the way upstream does, so
-    #: that stack runs with bfloat16 Linear operands today. What stays float32
-    #: is the re-embedding in front of it -- the five `s_to_z*` projections,
-    #: the distance-bin gather -- and the residual stream those feed. This
-    #: field narrows that, following AlphaFold 3's boundary exactly: narrow
-    #: re-embedding, float32 output heads (`confidence_head.py:121-127`,
-    #: `:163`, `:244`).
+    #: that stack runs with bfloat16 Linear operands under either value. What
+    #: stays float32 is the re-embedding in front of it -- the five `s_to_z*`
+    #: projections, the distance-bin gather -- and the residual stream those
+    #: feed. This field narrows that, following AlphaFold 3's boundary
+    #: exactly: narrow re-embedding, float32 output heads
+    #: (`confidence_head.py:121-127`, `:163`, `:244`).
     #:
-    #: It is the safest dtype change this port offers, because the confidence
-    #: head makes scores and never coordinates. Nothing inside it can move the
-    #: structure, and a GPU run should assert that rather than assume it.
-    #: Protenix measured the equivalent narrowing at 3,012 tokens: coordinates
-    #: bitwise unchanged, atom pLDDT moved at most 0.0099, chain pTM and ipTM
-    #: at most 1.9e-4, PAE means at most 0.005.
+    #: **float32 is upstream's own width, not an accidental island.**
+    #: Upstream's `ConfidenceHead.forward` runs outside every autocast region
+    #: (`modeling_esmfold2.py:172-221`; the model-level bf16 context at `:936`
+    #: closes at `:1030`, before the head is called at `:1061`), and the only
+    #: autocast inside the head wraps its `folding_trunk` alone at `:223`,
+    #: taking a float32 pair and returning `pair.add_(pair_delta.float())`.
+    #: The bfloat16 Linear operands already inside the head's trunk are what
+    #: `:223` gives under either value of this field.
+    #:
+    #: **Measured, and it buys nothing alone.** GPU rows 1111/1112 against the
+    #: released default: at 1,003 tokens wall 155.16 -> 160.92 s and peak
+    #: 14,733.3 -> 14,733.3 MiB; at 2,096 tokens wall 450.88 -> 450.05 s and
+    #: peak 46,041.8 -> 46,042.3 MiB. The arm fires -- the 2,096-token peak
+    #: moves 0.5 MiB -- and moves nothing else, because this port's peak is a
+    #: folding-trunk arena the confidence head has no term in. So this is a
+    #: knob for combination arms, not a recommendation on its own.
+    #:
+    #: It is still the safest dtype change this port offers, because the
+    #: confidence head makes scores and never coordinates. Nothing inside it
+    #: can move the structure. Protenix measured the equivalent narrowing at
+    #: 3,012 tokens: coordinates bitwise unchanged, atom pLDDT moved at most
+    #: 0.0099, chain pTM and ipTM at most 1.9e-4, PAE means at most 0.005.
     #:
     #: Independent of `confidence_sample_sequential`. That option maps the
     #: head over the sample axis; this is a trace-time constant inside the
