@@ -82,9 +82,11 @@ _FIXED_COMPILE_DEFAULTS = {
     # The unfused transition is what every released number describes, and the
     # value is independent of the checkpoint: no `config.json` key reaches it.
     "glu_backend": "xla",
-    # A float32 confidence re-embedding is what every released number
-    # describes, and no `config.json` key reaches it either.
-    "confidence_dtype": "float32",
+    # The port's own default since 2026-09-11, and no `config.json` key
+    # reaches it, so naming it explicitly must not fork a namespace. Unlike
+    # the entries above, it is *not* what the recorded numbers describe:
+    # `float32` is upstream's realised width and keeps its own namespace.
+    "confidence_dtype": "bfloat16",
 }
 
 #: The values `glu_backend` accepts, spelled here rather than imported.
@@ -427,9 +429,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             # rather than a neutral knob: no other port spells a GLU choice
             # the neutral vocabulary could rename, and Boltz-2's is native too.
             "glu_backend",
-            # Opt-in bfloat16 confidence re-embedding. Native for the same
-            # reason `trunk_dtype` is: it names a region of this port's own
-            # arrangement, and the neutral vocabulary has no word for it.
+            # The confidence re-embedding's width, bfloat16 by default.
+            # Native for the same reason `trunk_dtype` is: it names a region
+            # of this port's own arrangement, and the neutral vocabulary has
+            # no word for it.
             "confidence_dtype",
             "no_language_model",
             # Spelled through rather than renamed: the port's own settings
@@ -477,8 +480,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # traced against, so a fused run must not be answered out of the
         # default executable's cache entry.
         "glu_backend",
-        # Traced into the confidence head's re-embedding, so a narrowed run
-        # must not be answered out of the float32 executable's cache entry.
+        # Traced into the confidence head's re-embedding, so a float32
+        # opt-out must not be answered out of the narrowed executable's
+        # cache entry, or the reverse.
         "confidence_dtype",
     )
 
@@ -909,7 +913,9 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # no context-parallel restriction to add: this narrows arithmetic
         # under a sharding constraint rather than introducing a custom call
         # GSPMD has no partitioner for.
-        _checked_confidence_dtype(options.get("confidence_dtype", "float32"))
+        _checked_confidence_dtype(
+            options.get("confidence_dtype", _FIXED_COMPILE_DEFAULTS["confidence_dtype"])
+        )
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
@@ -982,7 +988,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         if "glu_backend" in options:
             overrides["glu_backend"] = _checked_glu_backend(options.pop("glu_backend"))
         # Absent means unasked, for the same reason: the port's own default is
-        # already `float32`.
+        # already `bfloat16`.
         if "confidence_dtype" in options:
             overrides["confidence_dtype"] = _checked_confidence_dtype(
                 options.pop("confidence_dtype")

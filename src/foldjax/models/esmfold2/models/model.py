@@ -256,17 +256,27 @@ class ModelSettings:
     #: fixed-tape structure or raw-confidence parity; see the dated native
     #: tape and MSA-entry observer reports for the outstanding gates.
     trunk_dtype: str = "bfloat16"
-    #: The confidence head's re-embedding width, opt-in and independent of
-    #: `trunk_dtype`. `"float32"` is the released default and changes nothing.
+    #: The confidence head's re-embedding width, independent of `trunk_dtype`.
+    #: `"bfloat16"` since 2026-09-11; `"float32"` restores upstream's shape.
     #:
     #: `trunk_dtype` already reaches the *inside* of this head: its own
     #: `folding_trunk` reopens upstream's autocast the way upstream does, so
-    #: that stack runs with bfloat16 Linear operands today. What stays float32
-    #: is the re-embedding in front of it -- the five `s_to_z*` projections,
-    #: the distance-bin gather -- and the residual stream those feed. This
-    #: field narrows that, following AlphaFold 3's boundary exactly: narrow
+    #: that stack runs with bfloat16 Linear operands under either value. What
+    #: this field governs is the re-embedding in front of it -- the five
+    #: `s_to_z*` projections, the distance-bin gather -- and the residual
+    #: stream those feed, at AlphaFold 3's boundary exactly: narrow
     #: re-embedding, float32 output heads (`confidence_head.py:121-127`,
     #: `:163`, `:244`).
+    #:
+    #: **The bfloat16 default diverges from pinned upstream.** Upstream's
+    #: `ConfidenceHead.forward` runs outside every autocast region
+    #: (`modeling_esmfold2.py:172-221`; the model-level bf16 context at `:936`
+    #: closes before the head is called at `:1061`), and the only autocast
+    #: inside the head wraps its `folding_trunk` alone at `:223`, taking a
+    #: float32 pair and returning `pair.add_(pair_delta.float())`. So float32
+    #: here is upstream's realised width, and it is what every recorded
+    #: ESMFold2 confidence number describes. This default is AlphaFold 3's
+    #: shape instead, and is unmeasured on this port.
     #:
     #: It is the safest dtype change this port offers, because the confidence
     #: head makes scores and never coordinates. Nothing inside it can move the
@@ -278,7 +288,7 @@ class ModelSettings:
     #: Independent of `confidence_sample_sequential`. That option maps the
     #: head over the sample axis; this is a trace-time constant inside the
     #: mapped body, so the two compose without interacting.
-    confidence_dtype: str = "float32"
+    confidence_dtype: str = "bfloat16"
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings
     )

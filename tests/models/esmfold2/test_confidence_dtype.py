@@ -1,4 +1,4 @@
-"""The opt-in bfloat16 confidence re-embedding, at AlphaFold 3's boundary.
+"""The bfloat16 confidence re-embedding, at AlphaFold 3's boundary.
 
 Every assertion here reads a realised array dtype rather than a config
 spelling. A test that asserts `settings.confidence_dtype == "bfloat16"` passes
@@ -231,8 +231,13 @@ def _run(params, confidence_dtype, *, trunk_dtype=jnp.bfloat16, **extra):
     )
 
 
-def test_the_released_default_leaves_the_confidence_tree_in_float32(recorder) -> None:
-    """No parameter is copied and no operand narrows without the option."""
+def test_the_float32_opt_out_leaves_the_confidence_tree_in_float32(recorder) -> None:
+    """`confidence_dtype="float32"` restores upstream's width exactly.
+
+    No parameter is copied and no operand narrows. This is the arm every
+    recorded ESMFold2 confidence number describes, and the one upstream runs:
+    its `ConfidenceHead.forward` sits outside every autocast region.
+    """
     params = _params()
     original = dict(params)
     _run(params, jnp.float32)
@@ -450,9 +455,77 @@ def test_the_accepted_values_are_the_two_spellings() -> None:
     assert CONFIDENCE_DTYPES == ("float32", "bfloat16")
 
 
-def test_the_released_default_is_float32() -> None:
-    """Nothing about any recorded ESMFold2 number changes with this merged."""
-    assert structure_model.ModelSettings().confidence_dtype == "float32"
+def _shipped_dtype() -> object:
+    """The width the port ships, read from the settings rather than spelled.
+
+    Every test below that means "the default" resolves it through this, so a
+    later flip is one edit and none of them can pass by naming a literal the
+    port no longer uses.
+    """
+    return jnp.dtype(structure_model.ModelSettings().confidence_dtype)
+
+
+def test_the_shipped_default_realises_a_narrowed_reembedding(recorder) -> None:
+    """The default is read off arrays, not off `ModelSettings`.
+
+    Asserting `confidence_dtype == "bfloat16"` would pass on a port that
+    carries the string and hands the head float32 anyway, which is this
+    port's recorded failure mode. So the default is resolved and then the
+    same realised-dtype assertions the explicit bfloat16 arm makes are made
+    of it.
+    """
+    _run(_params(), _shipped_dtype())
+
+    for name in REEMBEDDING_PROJECTIONS:
+        assert recorder.weight_dtypes(name) == {"bfloat16"}, name
+        assert recorder.output_dtypes(name) == {"bfloat16"}, name
+    assert recorder.input_dtypes("s_to_z_prod_out") == {"bfloat16"}
+    # The residual stream the re-embedding feeds, all four trunk blocks.
+    assert recorder.trunk_entry == ["bfloat16"]
+
+
+def test_the_shipped_default_keeps_the_output_heads_float32(recorder) -> None:
+    """AlphaFold 3's `:163` and `:244` hold at the default, not just opt-in."""
+    result = _run(_params(), _shipped_dtype())
+
+    assert recorder.pooling_entry == ["float32"], "the float32 boundary moved"
+    for name in (*OUTPUT_PROJECTIONS, "row_attention_pooling.attn_proj"):
+        assert recorder.weight_dtypes(name) == {"float32"}, name
+        assert recorder.output_dtypes(name) == {"float32"}, name
+    for value in result.values():
+        assert value.dtype == jnp.float32
+
+
+def test_the_shipped_default_differs_from_the_float32_opt_out() -> None:
+    """The tripwire on the flip itself.
+
+    If the default ever resolved to float32 again, every assertion above
+    would still pass -- `_shipped_dtype` follows the settings. This is the
+    one test that fails, and it fails on realised numbers rather than on a
+    spelling: the two arms must not agree bit for bit.
+    """
+    params = _params()
+    shipped = np.asarray(_run(params, _shipped_dtype())["plddt"])
+    opt_out = np.asarray(_run(params, jnp.float32)["plddt"])
+
+    assert not np.array_equal(shipped, opt_out)
+
+
+def test_the_backend_and_the_port_default_to_the_same_width() -> None:
+    """One default spelled in two layers, and they must agree.
+
+    `_FIXED_COMPILE_DEFAULTS` is a literal so option planning stays free of
+    JAX, which means nothing but this test stops it drifting from the field
+    it mirrors. Drift here is silent and specific: the backend would strip an
+    explicitly spelled value that the port does not actually resolve to, and
+    answer that run out of the wrong compilation namespace.
+    """
+    from foldjax.backends.esmfold2 import _FIXED_COMPILE_DEFAULTS
+
+    assert (
+        _FIXED_COMPILE_DEFAULTS["confidence_dtype"]
+        == structure_model.ModelSettings().confidence_dtype
+    )
 
 
 @pytest.mark.parametrize("asked", CONFIDENCE_DTYPES)
