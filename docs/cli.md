@@ -776,15 +776,15 @@ upstream's re-embedding and residual stream are float32, and the bfloat16
 Linear operands inside the head's trunk are what `:223` already gives under
 either value of this option.
 
-**It is unmeasured for accuracy.** The timing rows above are wall and peak
-only; no accuracy row exists for it on this port, and every recorded ESMFold2
-pLDDT, pTM and PAE number describes the float32 default. What exists is a
-sibling's measurement of the same narrowing: Protenix at 3,012 tokens moved
-coordinates not at all, atom pLDDT by at most 0.0099, chain pTM and ipTM by at
-most 1.9e-4, and PAE means by at most 0.005. Read that as the scale to expect,
-not as this port's number. The confidence head makes scores and never
-coordinates, so nothing narrowed inside it can move a structure -- which is
-why this is the safest dtype change the port offers.
+The rows above are wall and peak. **Accuracy is the part still unmeasured
+here**: every recorded ESMFold2 pLDDT, pTM and PAE number describes the
+float32 default, and no row on this port reads the narrowed one back. What
+exists is a sibling's measurement of the same narrowing: Protenix at 3,012
+tokens moved coordinates not at all, atom pLDDT by at most 0.0099, chain pTM
+and ipTM by at most 1.9e-4, and PAE means by at most 0.005. Read that as the
+scale to expect, not as this port's number. The confidence head makes scores
+and never coordinates, so nothing narrowed inside it can move a structure --
+which is why this is the safest dtype change the port offers.
 
 What it narrows: the five projections that build the pair from the single
 input, the distance-bin embedding gather, and the residual stream those feed
@@ -796,6 +796,24 @@ rather than cautious: the pooling projection's output is the score tensor of a
 softmax, and the PAE head's output is what pTM and ipTM are read off, through
 a softmax with no float32 guard of its own. Nothing that feeds a softmax or an
 exponential is rounded, and every returned score is float32 in both arms.
+
+**Read off the trace, not off the setting.** A jaxpr census of
+`confidence_head` on CPU, counting `dot_general` operand dtypes and casts
+through every sub-jaxpr including the `platform_dependent` branches:
+
+| | `(f32,f32)->f32` | `(bf16,bf16)->bf16` | `(bf16,bf16)->f32` | branch points |
+|---|---|---|---|---|
+| `float32` | 17 | 8 | 10 | 8 |
+| `bfloat16` | 12 | 13 | 15 | 13 |
+
+Exactly five float32 matmuls disappear and exactly five branch points appear:
+the five `s_to_z*` projections, routed through `_autocast_linear`. Read those
+two counts as the signal. The bfloat16 dots gain ten rather than five because
+the tracer keeps both platform branches of each narrowed Linear -- the CUDA
+one accumulating to bfloat16 and the fallback to float32 -- so that column
+double-counts. The stored parameters are not touched either way:
+`_autocast_linear` narrows its operands inside the call, and the checkpoint
+arrays stay float32 and uncopied.
 
 It is separate from `trunk_dtype`, and deliberately so. `trunk_dtype` targets
 the region upstream's own autocast covers, and it already reaches *inside*
