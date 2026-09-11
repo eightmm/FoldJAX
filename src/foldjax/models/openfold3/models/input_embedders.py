@@ -29,7 +29,7 @@ low-level parity tests.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -96,6 +96,8 @@ def msa_embedder(
     batch: Mapping[str, jnp.ndarray],
     s_input: jnp.ndarray,
     params: MSAEmbedderParams,
+    *,
+    dtype: Any = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Embed the MSA and add the single representation.
 
@@ -104,6 +106,12 @@ def msa_embedder(
             ``deletion_value`` ``[..., N_msa, N_token]``, and ``msa_mask``.
         s_input: ``[..., N_token, C_s_input]`` single representation.
         params: mapped parameters.
+        dtype: element type of the MSA representation this returns, or ``None``
+            to keep the features' own. This is the trunk's entry boundary for
+            the MSA track: ``s_input`` stays float32 because the input embedder
+            it comes from does (models/openfold3/dtype.py), so without a cast
+            here one float32 operand would promote ``m`` and, through the MSA
+            module's carry, the pair representation with it.
 
     Returns:
         ``(m, msa_mask)``: ``[..., N_msa, N_token, C_m]`` MSA embedding and the
@@ -117,10 +125,15 @@ def msa_embedder(
         ],
         axis=-1,
     )
+    msa_mask = batch["msa_mask"]
+    if dtype is not None:
+        msa_feat = msa_feat.astype(dtype)
+        s_input = s_input.astype(dtype)
+        msa_mask = msa_mask.astype(dtype)
     m = linear(msa_feat, params.linear_m)
     # The single representation is shared across every MSA row.
     m = m + linear(s_input, params.linear_s_input)[..., None, :, :]
-    return m, batch["msa_mask"]
+    return m, msa_mask
 
 
 class InputEmbedderParams(NamedTuple):

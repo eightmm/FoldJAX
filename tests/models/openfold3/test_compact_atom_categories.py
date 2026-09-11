@@ -681,6 +681,8 @@ def test_managed_raw_and_archive_paths_compact_only_the_model_copy(
                 msa_depth=1024, num_recycles=4
             ),
             compile_predict=fake_compile,
+            resolve_dtypes=lambda config: (None, None),
+            cast_narrow_params=lambda params, dtype, confidence: params,
         ),
         "foldjax.models.openfold3.output": SimpleNamespace(
             write_prediction_outputs=fake_write

@@ -49,6 +49,11 @@ from foldjax.models.openfold3.data.compact_categories import (
     validate_compact_ref_atom_categories,
 )
 from foldjax.models.openfold3.data.featurize import _MSA_CYCLE_INDICES
+from foldjax.models.openfold3.dtype import (
+    DEFAULT_DTYPE,
+    narrow_dtype,
+    narrow_floats,
+)
 from foldjax.models.openfold3.models.augmentation import (
     AugmentationTape,
     centre_random_augmentation,
@@ -214,6 +219,27 @@ class InferenceConfig(NamedTuple):
     #: opt-in. Part of the config, so the two never share a compiled
     #: program. See :mod:`foldjax.models._glu`.
     glu_backend: str = "xla"
+    #: Element type of the token/pair representation track: ``"float32"``, the
+    #: released profile and upstream's own inference precision, or
+    #: ``"bfloat16"``. What the narrow value reaches, and what it deliberately
+    #: leaves float32, is models/openfold3/dtype.py. Part of the
+    #: config rather than a runtime flag so it rides into
+    #: ``_PredictGraphIdentity`` and the persistent cache namespace: two runs
+    #: that differ here compile different programs and must never share one.
+    dtype: str = DEFAULT_DTYPE
+    #: The confidence head's re-embedding Pairformer, separately. ``None``
+    #: follows ``dtype``, which is the shape both upstreams ship; a value
+    #: overrides it in either direction.
+    #:
+    #: Separate because the two regions carry different evidence and will be
+    #: decided at different times. The trunk's narrowing has a measurement on
+    #: this port (pLDDT -0.001 at 1,003 tokens, 2026-08-10); the confidence
+    #: head's does not, and it is the one that can be bisected out without
+    #: touching the trunk. It also cannot move a structure: this head consumes
+    #: predicted coordinates and emits scores, never coordinates. Boltz-2's
+    #: ``diffusion_compute_dtype`` is the same idea -- a native, region-scoped
+    #: companion to the neutral knob rather than a third neutral value.
+    confidence_dtype: str | None = None
 
 
 class InferenceParams(NamedTuple):
@@ -228,6 +254,115 @@ class InferenceParams(NamedTuple):
     pde_head: PairHeadParams
     distogram_head: PairHeadParams
     experimentally_resolved_head: AtomHeadParams | None = None
+
+
+def resolve_dtypes(config: InferenceConfig) -> tuple[Any, Any]:
+    """Return ``(trunk, confidence)`` narrow dtypes, each ``None`` for float32.
+
+    One place resolves ``confidence_dtype``'s "follow ``dtype``" default, so a
+    caller cannot narrow the trunk in one file and read the unresolved ``None``
+    as float32 in another.
+    """
+
+    return (
+        narrow_dtype(config.dtype),
+        narrow_dtype(
+            config.dtype if config.confidence_dtype is None
+            else config.confidence_dtype
+        ),
+    )
+
+
+def cast_narrow_params(
+    params: InferenceParams, dtype: Any, confidence_dtype: Any
+) -> InferenceParams:
+    """Narrow the parameter subtrees the two dtypes cover, and only those.
+
+    Two narrowing groups, each with its own dtype, both as
+    :func:`~foldjax.models.openfold3.dtype.narrow_dtype` returns them, so
+    ``None`` means "leave this group alone" -- the released profile carries no
+    cast at all, not a float32-to-float32 one. :func:`resolve_dtypes` turns a
+    config into the pair. ``dtype`` covers the trunk and the diffusion
+    conditioning; ``confidence_dtype`` covers the confidence head's
+    re-embedding Pairformer and nothing else.
+
+    The split, with its source in models/openfold3/dtype.py:
+
+    * **narrowed** -- the trunk below its input embedder (MSA embedder, MSA
+      module, Pairformer, both recycling projections and the template tower),
+      the *pair* branch of the diffusion conditioning, and the confidence
+      head's Pairformer stack.
+    * **left float32** -- ``trunk.input_embedder``, which upstream pins even
+      while training bf16-mixed and which this port measured collapsing; the
+      whole ``denoiser``, matching AlphaFold 3, where the atom encoder, the
+      atom decoder and the 24-block token transformer all run float32; the
+      *single* branch of the diffusion conditioning, including its Fourier
+      noise embedding, which AlphaFold 3 promotes to float32 at the same place;
+      the confidence head's ``embed_zij`` projections; and every output head.
+
+    Every head reads a bfloat16 representation against float32 parameters,
+    which promotes, so every output logit is float32 in both profiles. Note
+    what that does *not* say: the attention softmaxes inside the narrowed
+    Pairformers, MSA module and template tower run bfloat16 with a bfloat16
+    pair bias. Both upstreams do the same deliberately -- OpenFold3's
+    `softmax_no_cast` (`primitives/attention.py:107-122`) disables autocast so
+    a bfloat16 softmax stays bfloat16. The one place that shape is known to be
+    fatal is a diffusion token transformer's pair bias, and that transformer is
+    float32 here.
+    """
+
+    # `_replace` builds a new tuple even when every field is unchanged, so a
+    # group whose dtype is None is never rebuilt: it is left as the object it
+    # arrived as. That is what makes "untouched" assertable by identity rather
+    # than by a dtype a round trip through float32 would also satisfy.
+    replacements: dict[str, Any] = {}
+
+    if dtype is not None:
+
+        def cast(tree):
+            return narrow_floats(tree, dtype)
+
+        replacements["trunk"] = params.trunk._replace(
+            msa_module_embedder=cast(params.trunk.msa_module_embedder),
+            msa_module=cast(params.trunk.msa_module),
+            pairformer_stack=cast(params.trunk.pairformer_stack),
+            layer_norm_z=cast(params.trunk.layer_norm_z),
+            linear_z=cast(params.trunk.linear_z),
+            layer_norm_s=cast(params.trunk.layer_norm_s),
+            linear_s=cast(params.trunk.linear_s),
+            template_embedder=(
+                None
+                if params.trunk.template_embedder is None
+                else cast(params.trunk.template_embedder)
+            ),
+        )
+        # The pair branch alone. The single branch reads `s_input`, which the
+        # input embedder leaves float32, and adds a Fourier embedding of the
+        # noise level built from float32 scalars -- AlphaFold 3's `single_cond`
+        # is float32 from that same addition onwards
+        # (`diffusion_head.py:192-196`). Narrowing these weights would round
+        # the Fourier frequencies without narrowing anything.
+        replacements["diffusion_conditioning"] = (
+            params.diffusion_conditioning._replace(
+                layer_norm_z=cast(params.diffusion_conditioning.layer_norm_z),
+                linear_z=cast(params.diffusion_conditioning.linear_z),
+                transition_z=cast(params.diffusion_conditioning.transition_z),
+            )
+        )
+
+    if confidence_dtype is not None:
+        replacements["pairformer_embedding"] = (
+            params.pairformer_embedding._replace(
+                pairformer_stack=narrow_floats(
+                    params.pairformer_embedding.pairformer_stack,
+                    confidence_dtype,
+                ),
+            )
+        )
+
+    # `_replace()` with nothing to replace still builds a new tuple, and the
+    # released profile must hand back the tree it was given.
+    return params._replace(**replacements) if replacements else params
 
 
 class Prediction(NamedTuple):
@@ -277,6 +412,12 @@ def auto_pair_chunk_size(
     *,
     no_heads: int,
     budget_bytes: int = PAIR_SCORE_BUDGET_BYTES,
+    # Four even under `dtype="bfloat16"`, and `released_config` does not vary
+    # it. A narrowed trunk's score tensor is half this wide, so the resolved
+    # chunk is tighter than the budget requires: conservative on peak, possibly
+    # slower. Halving it is not obviously right either -- a bigger block can
+    # raise the peak rather than lower it -- so it stays a swept question
+    # rather than an inferred one.
     dtype_bytes: int = 4,
 ) -> int | None:
     """Largest row chunk whose triangle-attention scores stay inside the budget.
@@ -769,6 +910,7 @@ def predict(
         opm_first=config.opm_first,
         chunk_size=config.pair_chunk_size,
         glu_backend=config.glu_backend,
+        dtype=resolve_dtypes(config)[0],
     )
     return _predict_from_trunk(
         key, batch, params, config, representative_atoms,
@@ -808,6 +950,7 @@ def _predict_from_trunk(
     s_input, s_trunk, z = trunk_output
     # This axis indexes recycling, not batch: it must not reach sample expansion.
     batch = {name: value for name, value in batch.items() if name != _MSA_CYCLE_INDICES}
+    narrow, confidence_narrow = resolve_dtypes(config)
 
     schedule = noise_schedule(
         config.num_steps,
@@ -850,7 +993,15 @@ def _predict_from_trunk(
             params.diffusion_conditioning,
             max_relative_idx=config.max_relative_idx,
             max_relative_chain=config.max_relative_chain,
-            token_mask=batch["token_mask"],
+            # The mask multiplies each transition's output
+            # (`swiglu_transition`), so a float32 one promotes the conditioned
+            # pair representation straight back. `relpos` already follows
+            # `zij_trunk`'s dtype, so this is the branch's only leak.
+            token_mask=(
+                batch["token_mask"]
+                if narrow is None
+                else batch["token_mask"].astype(narrow)
+            ),
             glu_backend=config.glu_backend,
         )
     )
@@ -1009,6 +1160,7 @@ def _predict_from_trunk(
             no_bin=config.confidence_no_bin,
             chunk_size=config.pair_chunk_size,
             glu_backend=config.glu_backend,
+            dtype=confidence_narrow,
         )
         # The pair heads are evaluated here rather than outside so the re-embedded
         # pair representation never has to exist at sample rank. PAE is either a
@@ -1165,6 +1317,8 @@ def released_config(
     stop_after_inputs: bool = False,
     has_atomized_tokens: bool = True,
     glu_backend: str = "xla",
+    dtype: str = DEFAULT_DTYPE,
+    confidence_dtype: str | None = None,
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
@@ -1199,6 +1353,12 @@ def released_config(
             "context parallelism requires glu_backend='xla'; a fused GLU "
             "cannot be partitioned"
         )
+    # Reject an unknown spelling here rather than at the first cast: a config is
+    # built once and traced many times, and `narrow_dtype` names the accepted
+    # values in its message.
+    narrow_dtype(dtype)
+    if confidence_dtype is not None:
+        narrow_dtype(confidence_dtype)
     return InferenceConfig(
         n_token=n_token,
         n_atom=n_atom,
@@ -1247,6 +1407,8 @@ def released_config(
         stop_after_inputs=stop_after_inputs,
         has_atomized_tokens=has_atomized_tokens,
         glu_backend=glu_backend,
+        dtype=dtype,
+        confidence_dtype=confidence_dtype,
     )
 
 

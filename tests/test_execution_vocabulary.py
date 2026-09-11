@@ -40,12 +40,13 @@ def test_one_dtype_spelling_reaches_every_model_that_has_one(request_with) -> No
     """
     spelled = {
         model: get_backend(model).apply_sampling(request_with(dtype="bfloat16"))
-        for model in ("boltz2", "protenix", "opendde")
+        for model in ("boltz2", "protenix", "opendde", "openfold3")
     }
 
     assert spelled["boltz2"]["compute_dtype"] == "bfloat16"
     assert spelled["protenix"]["trunk_dtype"] == "bf16"
     assert spelled["opendde"]["trunk_dtype"] == "bf16"
+    assert spelled["openfold3"]["dtype"] == "bfloat16"
 
 
 def test_one_kernel_spelling_reaches_every_model_that_has_one(request_with) -> None:
@@ -65,16 +66,33 @@ def test_one_kernel_spelling_reaches_every_model_that_has_one(request_with) -> N
 def test_a_knob_a_model_does_not_have_is_an_error(request_with) -> None:
     """Not a silent no-op.
 
-    OpenFold3 has no trunk dtype -- upstream runs `precision="32-true"` and a
-    bfloat16 trunk destroys the prediction -- and OpenDDE exposes no triangle
-    kernel. A request that asked for either and got a float32 cueq run anyway
-    would be reporting something it did not measure.
-    """
-    with pytest.raises(ValueError, match="openfold3 does not support dtype"):
-        get_backend("openfold3").apply_sampling(request_with(dtype="bfloat16"))
+    OpenDDE exposes no triangle kernel. A request that asked for one and got
+    its only kernel anyway would be reporting something it did not measure.
 
+    OpenFold3 used to be the example on the other side of this test: it had no
+    `dtype` at all, because a whole-trunk bfloat16 cast destroys its prediction
+    and upstream infers at `precision="32-true"`. It has one now -- a partial
+    profile that narrows the token/pair track and leaves the input embedder,
+    the denoiser and every head float32 -- so the knob is real and the
+    assertion moved to `test_openfold3_dtype_is_a_partial_profile` below.
+    """
     with pytest.raises(ValueError, match="opendde does not support triangle_kernel"):
         get_backend("opendde").apply_sampling(request_with(triangle_kernel="cueq"))
+
+
+def test_openfold3_dtype_is_a_partial_profile(request_with) -> None:
+    """One spelling, and a value the port can actually run.
+
+    `float32` stays the default, which is upstream's inference precision; the
+    neutral name reaches OpenFold3's own `dtype` rather than a fourth spelling.
+    """
+    of3 = get_backend("openfold3")
+    assert (
+        of3.apply_sampling(request_with(dtype="bfloat16"))["dtype"] == "bfloat16"
+    )
+    assert "dtype" not in of3.apply_sampling(request_with())
+    with pytest.raises(ValueError, match=r"dtype must be one of"):
+        of3.apply_sampling(request_with(dtype="bf16"))
 
 
 def test_a_value_a_model_does_not_have_is_an_error(request_with) -> None:

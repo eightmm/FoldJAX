@@ -73,6 +73,38 @@ unless it says so here, in its own paragraph.
   distances and the bin comparison against them all stay float32. Unlike the
   fused kernels, it composes with context parallelism, where it narrows the
   re-embedding and leaves the head's trunk unchanged.
+
+- **An opt-in partial bfloat16 profile for OpenFold3**, off by default.
+  `--option dtype=bfloat16` narrows the token/pair representation track -- the
+  trunk below its input embedder, the diffusion conditioning's pair branch and
+  the confidence head's Pairformer -- and leaves everything atom- or
+  coordinate-shaped in float32: the input embedder, the whole denoiser
+  including its 24-block token transformer, the conditioning's single branch,
+  the confidence head's geometry re-embedding and every output head. Every head
+  therefore reads a narrow representation against float32 parameters, so every
+  output logit is float32 in both profiles. Attention softmaxes inside the
+  narrowed regions do run bfloat16 with a bfloat16 pair bias, which is what
+  both upstreams do; the diffusion token transformer, where that same shape
+  cost Protenix a chain, is float32 here. `float32` stays the default and every
+  released run is unchanged.
+
+  The confidence head is a second, separable narrowing group:
+  `--option confidence_dtype=...` overrides it in either direction and it
+  follows `dtype` unset. Its re-embedding Pairformer narrows while both edges
+  stay float32 -- upstream OpenFold3's `embed_zij` on the way in, and
+  AlphaFold 3's restore on the way out, which lands before the logit heads'
+  layer norms so their statistics are float32. Split off because this head
+  emits scores and never coordinates, so narrowing it cannot move a structure,
+  and because it is the region with no measurement on this port.
+
+  **This is not the profile upstream OpenFold3 validates.** Upstream infers at
+  `precision: "32-true"`, and a whole-trunk cast destroys the prediction
+  (pLDDT 0.858 to 0.466). The shape implemented here is AlphaFold 3's released
+  inference shape, and its two float32 islands are the two upstream OpenFold3
+  pins itself while training this checkpoint under `bf16-mixed`. **It is
+  unmeasured for accuracy**: no GPU row exists for it yet. The option is part
+  of the compilation-cache identity and is accepted under context parallelism.
+
 - **An opt-in fused gated linear unit for ESMFold2**, off by default.
   `--option glu_backend=tokamax` runs the twelve transitions in the diffusion
   token transformer through one fused Triton kernel instead of materialising

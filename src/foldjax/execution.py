@@ -8,11 +8,15 @@ two value vocabularies --
     boltz2     compute_dtype=bfloat16  triangle_backend=cueq
     protenix   trunk_dtype=bf16        trunk_triangle_attention_backend=cueq_jit
     opendde    trunk_dtype=bf16        (no triangle kernel option)
-    openfold3  (no dtype option)       OPENFOLD3_TRIANGLE_BACKEND=cueq
+    openfold3  (no dtype option)*      OPENFOLD3_TRIANGLE_BACKEND=cueq
 
 -- which means a script that runs one model cannot run another without knowing
 which port it is talking to, and a benchmark comparing them has to encode all
 four spellings to say one thing.
+
+(*OpenFold3 has grown one since; it spells the neutral name natively. The row
+above is the state this module was written to fix, kept as written because it
+is the argument, not a status table.)
 
 This module holds the neutral names, the values they take, and the aliases the
 old spellings keep. A backend declares `execution_options` mapping each neutral

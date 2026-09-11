@@ -221,6 +221,50 @@ _PARITY_PROBE = textwrap.dedent(
         with pytest.raises(ValueError, match="supports the XLA and"):
             triangle_attention(z, t_params, no_heads=HEADS, backend="tokamax")
 
+    # A bfloat16 trunk is an option now (`dtype=bfloat16`), and the mesh has to
+    # accept it. The known trap is not the math: `replicate_tree` used to filter
+    # leaves with `np.issubdtype(..., np.number)`, which is False for bfloat16
+    # because its kind is 'V', so a narrowed tree lost leaves on the way into
+    # `shard_map`. Guarded at `_cp.py`'s kind check, and this is what notices if
+    # that guard is ever narrowed again.
+    #
+    # No value comparison here, deliberately. `shard_map` reorders accumulation
+    # and bfloat16 keeps three decimal digits, so two pairformer blocks put the
+    # sharded and unsharded results 4% apart on entries of order 10 -- a
+    # tolerance loose enough to pass that would be loose enough to pass a real
+    # defect. What is asserted instead is the part that is exact: the sharded
+    # program really was traced under the mesh, it accepted the narrowed tree,
+    # and it came back bfloat16 and finite.
+    from foldjax.models._cp import cp_layout
+    from foldjax.models.openfold3.dtype import narrow_dtype, narrow_floats
+
+    narrow = narrow_dtype("bfloat16")
+    narrow_params = narrow_floats(params, narrow)
+    traced_layouts = []
+
+    def run_narrow(s_in, z_in):
+        traced_layouts.append(cp_layout())
+        return pairformer_stack(
+            s_in, z_in, narrow_params,
+            single_mask=single_mask.astype(narrow),
+            pair_mask=pair_mask.astype(narrow),
+            no_heads_pair=HEADS, no_heads_pair_bias=HEADS,
+            chunk_size=5,
+        )
+
+    jax.clear_caches()
+    with context_parallel(4):
+        cp_bf_s, cp_bf_z = map(
+            jax.device_get, jax.jit(run_narrow)(s.astype(narrow), z.astype(narrow))
+        )
+    # Positive evidence that the mesh was live while tracing, not merely while
+    # executing a jaxpr cached from an unsharded run.
+    assert traced_layouts == ["1d"], traced_layouts
+    assert cp_bf_s.dtype == jnp.bfloat16, cp_bf_s.dtype
+    assert cp_bf_z.dtype == jnp.bfloat16, cp_bf_z.dtype
+    assert np.isfinite(np.asarray(cp_bf_z, dtype=np.float32)).all()
+    assert np.isfinite(np.asarray(cp_bf_s, dtype=np.float32)).all()
+
     print("CP_PARITY_OK")
     """
 )
