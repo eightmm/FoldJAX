@@ -24,7 +24,12 @@ import numpy as np
 import pytest
 
 from foldjax.models.openfold3 import inference as inference_module
-from foldjax.models.openfold3.dtype import DTYPES, narrow_dtype, narrow_floats
+from foldjax.models.openfold3.dtype import (
+    DEFAULT_DTYPE,
+    DTYPES,
+    narrow_dtype,
+    narrow_floats,
+)
 from foldjax.models.openfold3.inference import cast_narrow_params, released_config
 from foldjax.models.openfold3.models import trunk as trunk_module
 from foldjax.models.openfold3.models.attention import AttentionParams
@@ -184,10 +189,26 @@ def _leaf_dtypes(tree) -> set:
 # ---------------------------------------------------------------- the default
 
 
-def test_the_released_default_is_float32() -> None:
-    """The shipped profile is upstream's inference precision, not the new one."""
-    assert released_config(n_token=8, n_atom=32).dtype == "float32"
-    assert narrow_dtype("float32") is None
+def test_the_released_default_narrows_nothing() -> None:
+    """The shipped profile is upstream's 32-true; bfloat16 is opt-in.
+
+    models/openfold3/dtype.py records why: the narrow profile is 23-35%
+    faster and 24-40% smaller at every size measured, and at 3,012 tokens it
+    moves the structure 4.65-5.80 A against a 0.619 A control spread.
+
+    Asserted as the resolved pair rather than as config strings, because the
+    strings are what a dead branch would also still carry. Both entries,
+    because ``confidence_dtype`` follows ``dtype``: a default that narrowed
+    only the head would still satisfy a one-sided assertion.
+    """
+    from foldjax.models.openfold3.inference import resolve_dtypes
+
+    assert resolve_dtypes(released_config(n_token=8, n_atom=32)) == (None, None)
+    assert narrow_dtype(DEFAULT_DTYPE) is None
+    assert narrow_dtype("bfloat16") is jnp.bfloat16
+    assert resolve_dtypes(
+        released_config(n_token=8, n_atom=32, dtype="bfloat16")
+    ) == (jnp.bfloat16, jnp.bfloat16)
 
 
 def test_an_unknown_dtype_is_refused_naming_the_allowed_values() -> None:
@@ -199,9 +220,15 @@ def test_an_unknown_dtype_is_refused_naming_the_allowed_values() -> None:
 
 
 def test_a_default_run_returns_the_parameter_tree_it_was_given() -> None:
-    """Not "equal to": the same object, so a default run cannot pay for a copy."""
+    """Not "equal to": the same object, so a default run cannot pay for a copy.
+
+    The shipped profile must emit no cast at all rather than a tree of
+    float32-to-float32 converts that a reader would have to prove are free.
+    """
     params = _confidence(_rng())
     assert cast_narrow_params(params, *_both("float32")) is params
+    shipped = inference_module.resolve_dtypes(released_config(n_token=8, n_atom=32))
+    assert cast_narrow_params(params, *shipped) is params
 
 
 # ------------------------------------------------- which parameters are cast
@@ -291,6 +318,26 @@ def test_the_cast_narrows_exactly_the_named_subtrees() -> None:
         assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.bfloat16)}, path
     for path in _LEFT_WIDE:
         assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.float32)}, path
+
+
+def test_the_opt_in_profile_narrows_the_classified_subtrees() -> None:
+    """What ``--option dtype=bfloat16`` pays for, and what it leaves alone.
+
+    Driven through :func:`released_config` rather than by handing
+    ``cast_narrow_params`` two literals, so the option's own resolution is in
+    the path. Identity on the float32 side, not "still float32", because a
+    tree cast to float32 and back would also be float32.
+    """
+    params = _synthetic_inference_params()
+    config = released_config(n_token=8, n_atom=32, dtype="bfloat16")
+    narrowed = cast_narrow_params(params, *inference_module.resolve_dtypes(config))
+
+    for path in _NARROWED:
+        assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.bfloat16)}, path
+    for path in _LEFT_WIDE:
+        assert _select(narrowed, path) is _select(params, path), path
+    assert narrowed.denoiser is params.denoiser
+    assert narrowed.distogram_head is params.distogram_head
 
 
 def test_the_input_embedder_is_untouched() -> None:
@@ -423,9 +470,10 @@ def _narrowed_confidence_params():
 def test_the_confidence_head_runs_narrow_between_two_float32_boundaries() -> None:
     """Both edges of AlphaFold 3's confidence boundary, asserted separately.
 
-    Entering, upstream OpenFold3's ``embed_zij`` island
-    (``heads/prediction_heads.py:88-89``) falls out of the float32 parameters
-    on ``linear_i``/``linear_j``/``linear_distance``.
+    Entering, upstream's ``embed_zij`` runs before its autocast context
+    opens (``heads/prediction_heads.py:193`` against ``:224``), and the port
+    gets the same float32 entry for free from the parameters on
+    ``linear_i``/``linear_j``/``linear_distance``.
 
     Leaving, AlphaFold 3 restores float32 at ``confidence_head.py:163`` and
     ``:244``, and it does so *before* the logit heads' layer norms. Relying on
@@ -678,9 +726,10 @@ def _request(tmp_path, **options):
 def test_the_dtype_partitions_the_compilation_cache(tmp_path) -> None:
     """Two dtypes are two executables and must not share a namespace.
 
-    The float32 case is the other half: an explicitly repeated default names
-    the same program an unasked run gets, so it must land in the same scope
-    rather than forking a second one that also splits the in-process JIT pool.
+    The repeated-default case is the other half: an explicit ``float32``
+    names the program an unasked run gets, so it must land in the same scope
+    rather than forking a second one that also splits the in-process JIT
+    pool.
     """
     from foldjax.registry import get_backend
 
@@ -792,34 +841,133 @@ def test_the_whole_program_traces_under_bfloat16_on_real_weights() -> None:
 # ------------------------------------------- the confidence head, separately
 
 
-def test_confidence_dtype_follows_dtype_unless_it_is_set() -> None:
+def test_the_confidence_dtype_follows_dtype_unless_it_is_set() -> None:
     """One default, stated once, so two files cannot disagree about it.
 
-    The released shape narrows both regions together, which is what both
-    upstreams ship. The knob exists so the two decisions can be separated
-    later, not so they start apart.
+    The consequence worth naming: because the head follows ``dtype``, opting
+    into a bfloat16 trunk already narrows it, and ``confidence_dtype`` is not
+    a second thing to turn on. It exists to hold this one region *wide*
+    against a narrowed trunk, or narrow it against a wide one.
+
+    Every cell of the 2x2 is asserted, because "follows ``dtype``" and
+    "ignores ``dtype``" agree on the diagonal and differ only off it.
     """
     from foldjax.models.openfold3.inference import resolve_dtypes
 
     def config(**options):
         return released_config(n_token=8, n_atom=32, **options)
 
+    # Unset, the head is wide because the trunk is: not a separate default.
     assert resolve_dtypes(config()) == (None, None)
-    assert resolve_dtypes(config(dtype="bfloat16")) == (
-        jnp.bfloat16,
-        jnp.bfloat16,
+    assert config(confidence_dtype="float32") == config()
+    # Opting into the narrow trunk narrows the head with it, which is why
+    # there is no second value to set.
+    assert resolve_dtypes(config(dtype="bfloat16")) == (jnp.bfloat16, jnp.bfloat16)
+    assert config(dtype="bfloat16", confidence_dtype="bfloat16") == config(
+        dtype="bfloat16"
     )
+
+    # Off the diagonal, the knob wins in both directions.
+    assert resolve_dtypes(config(confidence_dtype="bfloat16")) == (None, jnp.bfloat16)
     assert resolve_dtypes(config(dtype="bfloat16", confidence_dtype="float32")) == (
         jnp.bfloat16,
         None,
     )
-    assert resolve_dtypes(config(dtype="float32", confidence_dtype="bfloat16")) == (
-        None,
-        jnp.bfloat16,
-    )
 
     with pytest.raises(ValueError, match=r"must be one of float32, bfloat16"):
         config(confidence_dtype="bf16")
+
+
+def test_the_confidence_option_is_realized_as_bfloat16_activations() -> None:
+    """The option has to reach the arrays, not only the config.
+
+    Everything here is driven through :func:`released_config`, so the
+    option's own resolution is in the path rather than two literals handed
+    to the cast. Three separate claims, because the first two are each true
+    of a program that runs entirely float32 inside:
+
+    * the head's parameters are bfloat16;
+    * its two boundaries are float32, so the returned representations are
+      float32 whatever ran inside;
+    * the lowered program contains bfloat16 matmul operands, which only the
+      narrowed stack can produce, and contains none when the knob is set
+      back to float32.
+    """
+    from foldjax.models.openfold3.inference import resolve_dtypes
+
+    config = released_config(n_token=8, n_atom=32, dtype="bfloat16")
+    confidence = resolve_dtypes(config)[1]
+    shipped = cast_narrow_params(
+        _synthetic_inference_params()._replace(
+            pairformer_embedding=_confidence(_rng())
+        ),
+        *resolve_dtypes(config),
+    ).pairformer_embedding
+
+    assert _leaf_dtypes(shipped.pairformer_stack) == {jnp.dtype(jnp.bfloat16)}
+    for entry in ("linear_i", "linear_j", "linear_distance"):
+        assert _leaf_dtypes(getattr(shipped, entry)) == {jnp.dtype(jnp.float32)}, entry
+
+    s_conf, z_conf = _confidence_call(shipped, confidence)
+    assert s_conf.dtype == jnp.float32
+    assert z_conf.dtype == jnp.float32
+
+    lowered = jax.jit(_confidence_call, static_argnums=1).lower(shipped, confidence)
+    assert "bf16" in _dot_operand_dtypes(lowered.as_text())
+
+    wide_config = released_config(n_token=8, n_atom=32)
+    wide = cast_narrow_params(
+        _synthetic_inference_params()._replace(
+            pairformer_embedding=_confidence(_rng())
+        ),
+        *resolve_dtypes(wide_config),
+    ).pairformer_embedding
+    wide_lowered = jax.jit(_confidence_call, static_argnums=1).lower(
+        wide, resolve_dtypes(wide_config)[1]
+    )
+    assert _dot_operand_dtypes(wide_lowered.as_text()) == {"f32"}
+
+
+def test_the_entry_projections_run_before_the_narrowing_cast() -> None:
+    """``_project_distance_bins`` is asked for ``zij``'s *pre-cast* dtype.
+
+    Its ``jnp.result_type(dtype, weight.dtype)`` (models/heads.py:208) is the
+    kind of site that has silently promoted a realised bfloat16 policy back
+    to float32 on another port. It cannot here, and this pins why: the helper
+    runs at models/heads.py:296-315, before the cast at :319, so the float32
+    it returns is the intended entry island rather than a lost narrowing --
+    which is why the separate lowered-program assertion above is the one that
+    proves the stack narrowed.
+    """
+    from foldjax.models.openfold3.inference import resolve_dtypes
+    from foldjax.models.openfold3.models import heads as heads_module
+
+    seen: dict[str, object] = {}
+    original = heads_module._project_distance_bins
+
+    def spy(squared_distance, params, *, dtype, **kwargs):
+        output = original(squared_distance, params, dtype=dtype, **kwargs)
+        seen["asked"] = dtype
+        seen["returned"] = output.dtype
+        return output
+
+    config = released_config(n_token=8, n_atom=32, dtype="bfloat16")
+    shipped = cast_narrow_params(
+        _synthetic_inference_params()._replace(
+            pairformer_embedding=_confidence(_rng())
+        ),
+        *resolve_dtypes(config),
+    ).pairformer_embedding
+
+    heads_module._project_distance_bins = spy
+    try:
+        _confidence_call(shipped, resolve_dtypes(config)[1])
+    finally:
+        heads_module._project_distance_bins = original
+
+    assert seen, "the distance-bin projection never ran"
+    assert jnp.dtype(seen["asked"]) == jnp.float32
+    assert seen["returned"] == jnp.float32
 
 
 def test_each_group_narrows_without_the_other() -> None:
@@ -850,32 +998,68 @@ def test_each_group_narrows_without_the_other() -> None:
 def test_the_confidence_knob_partitions_the_cache_only_when_it_differs(
     tmp_path,
 ) -> None:
-    """An explicit value equal to the resolved one is the same program.
+    """Spelling the resolved value names the namespace an unasked run names.
 
-    `confidence_dtype` follows `dtype`, so `dtype=bfloat16
-    confidence_dtype=bfloat16` must land in the same namespace as
-    `dtype=bfloat16` alone rather than forking a second one.
+    Both halves of the invariant, on every trunk dtype: the value the request
+    would have resolved to is the same program as saying nothing, and the
+    other one is a different program that keeps its own scope.
     """
     from foldjax.registry import get_backend
 
     backend = get_backend("openfold3")
-    narrow = backend.cache_profile(_request(tmp_path, dtype="bfloat16"))
-    repeated = backend.cache_profile(
-        _request(tmp_path, dtype="bfloat16", confidence_dtype="bfloat16")
+    # The third arm is the one a literal comparison would get wrong: under
+    # `dtype=bfloat16` the alias to strip is `bfloat16`, not the shipped
+    # `float32`.
+    arms = (
+        ({}, "float32", "bfloat16"),
+        ({"dtype": "float32"}, "float32", "bfloat16"),
+        ({"dtype": "bfloat16"}, "bfloat16", "float32"),
     )
-    split = backend.cache_profile(
-        _request(tmp_path, dtype="bfloat16", confidence_dtype="float32")
-    )
+    for trunk, alias, other in arms:
+        base = backend.cache_profile(_request(tmp_path, **trunk))
+        repeated = backend.cache_profile(
+            _request(tmp_path, **trunk, confidence_dtype=alias)
+        )
+        split = backend.cache_profile(
+            _request(tmp_path, **trunk, confidence_dtype=other)
+        )
 
-    assert "confidence_dtype" not in narrow
-    assert repeated == narrow
-    assert split["confidence_dtype"] == "float32"
-    assert split != narrow
+        assert "confidence_dtype" not in base, trunk
+        assert repeated == base, trunk
+        assert split["confidence_dtype"] == other, trunk
+        assert split != base, trunk
 
     with pytest.raises(
         ValueError, match=r"confidence_dtype must be one of float32, bfloat16"
     ):
         backend.validate_native_options({"confidence_dtype": "bf16"})
+
+
+def test_the_resolved_confidence_dtype_does_not_fork_the_jit_owner() -> None:
+    """The config is a field of ``_PredictGraphIdentity``, so it counts too.
+
+    ``cache_profile`` unifying the persistent directory is only half of it. A
+    ``None`` sentinel left on the config -- which is what this field used to
+    carry -- makes two unequal configs, and therefore two in-process JIT
+    owners, out of one program. ``released_config`` resolves it instead, so
+    the omitted and the spelled-out request build the same object.
+    """
+    omitted = released_config(n_token=8, n_atom=32)
+    assert omitted.confidence_dtype == DEFAULT_DTYPE
+    assert omitted == released_config(
+        n_token=8, n_atom=32, confidence_dtype=DEFAULT_DTYPE
+    )
+    assert omitted != released_config(
+        n_token=8, n_atom=32, confidence_dtype="bfloat16"
+    )
+
+    # The same must hold on the other trunk dtype, where the resolved value
+    # is `bfloat16` and the literal default is the wrong thing to compare to.
+    narrow = released_config(n_token=8, n_atom=32, dtype="bfloat16")
+    assert narrow.confidence_dtype == "bfloat16"
+    assert narrow == released_config(
+        n_token=8, n_atom=32, dtype="bfloat16", confidence_dtype="bfloat16"
+    )
 
 
 # --------------------------------------- the streamed route takes both knobs

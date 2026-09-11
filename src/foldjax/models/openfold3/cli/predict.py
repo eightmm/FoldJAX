@@ -201,9 +201,11 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
         prepare_msa_cycle_features,
     )
     from foldjax.models.openfold3.inference import (
+        cast_narrow_params,
         compile_predict,
         predict,
         released_config,
+        resolve_dtypes,
     )
     from foldjax.models.openfold3.output import (
         DEFAULT_ARRAY_BUDGET_BYTES,
@@ -292,6 +294,13 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
     model_prefix = resolve_model_prefix(state, args.prefix)
     prune_sample_diffusion_aliases(state, prefix=model_prefix)
     params = map_inference_params(state, model_prefix)
+    # The same cast the managed backend applies when it loads weights. Without
+    # it a narrowed region would cast its *activations* down and then meet
+    # float32 parameters at the first matmul, which promotes: the entry
+    # rounding is paid and nothing runs narrow. `confidence_dtype` defaults to
+    # bfloat16, so this entry point needs it even when nothing narrows the
+    # trunk.
+    params = cast_narrow_params(params, *resolve_dtypes(config))
     print(
         f"mapped {len(params.trunk.pairformer_stack.blocks)} Pairformer / "
         f"{len(params.denoiser.diffusion_transformer.blocks)} diffusion blocks"

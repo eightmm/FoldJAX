@@ -152,7 +152,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         normalize_asym_ids,
         prepare_msa_cycle_features,
     )
-    from foldjax.models.openfold3.inference import predict, released_config
+    from foldjax.models.openfold3.inference import (
+        cast_narrow_params,
+        predict,
+        released_config,
+        resolve_dtypes,
+    )
 
     config = released_config(
         n_token=n_token,
@@ -169,6 +174,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     batch_np, n_chain = normalize_asym_ids(batch_np)
     batch = {key: jnp.asarray(value) for key, value in batch_np.items()}
+    # The same cast the managed backend and the predict CLI apply after
+    # loading weights. Without it a narrowed region casts its activations
+    # down and meets float32 parameters at the first matmul, which promotes:
+    # this command would then report a program no entry point runs.
+    params = cast_narrow_params(params, *resolve_dtypes(config))
     print(f"\nrunning predict on {jax.devices()[0]} ...")
     prediction = predict(
         jax.random.key(0),

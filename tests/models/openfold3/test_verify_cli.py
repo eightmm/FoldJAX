@@ -19,12 +19,14 @@ import pytest
 
 from foldjax.models.openfold3.cli.verify_checkpoint import _parser, main
 from foldjax.models.openfold3.data import save_features
+from foldjax.models.openfold3.dtype import narrow_dtype
 from foldjax.models.openfold3.inference import RELEASED_BLOCK_COUNTS
 from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
 )
 
 from .feature_fixture import minimal_features
+from .test_dtype_is_realized import _synthetic_inference_params
 
 
 def _save(tmp_path: Path, state: dict) -> Path:
@@ -125,19 +127,10 @@ def test_verifier_passes_normalized_static_chain_count(
         "atom_mask": np.asarray([[1, 1]], dtype=np.float32),
         "asym_id": np.asarray([[10, 30, 999]], dtype=np.int64),
     }
-    params = SimpleNamespace(
-        trunk=SimpleNamespace(
-            pairformer_stack=SimpleNamespace(blocks=()),
-            msa_module=SimpleNamespace(blocks=()),
-            template_embedder=None,
-        ),
-        denoiser=SimpleNamespace(
-            diffusion_transformer=SimpleNamespace(blocks=())
-        ),
-        pairformer_embedding=SimpleNamespace(
-            pairformer_stack=SimpleNamespace(blocks=())
-        ),
-    )
+    # A real `InferenceParams` tree with synthetic leaves: this command
+    # narrows the loaded weights the way the predict CLI and the managed
+    # backend do, and that walks named subtrees and calls `_replace` on them.
+    params = _synthetic_inference_params()
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(data, "load_features", lambda path: (raw, object()))
@@ -157,11 +150,29 @@ def test_verifier_passes_normalized_static_chain_count(
     monkeypatch.setattr(
         inference,
         "released_config",
-        lambda **kwargs: SimpleNamespace(msa_depth=1024, num_recycles=4),
+        # `bfloat16` rather than the shipped `float32`: this command has no
+        # dtype flag, so under the default the narrowing cast is the identity
+        # and the assertion at the end would hold whether or not the command
+        # called it. Naming the narrow value is what makes it able to fail.
+        lambda **kwargs: SimpleNamespace(
+            msa_depth=1024,
+            num_recycles=4,
+            dtype=kwargs.get("dtype", "bfloat16"),
+            confidence_dtype=kwargs.get(
+                "confidence_dtype", kwargs.get("dtype", "bfloat16")
+            ),
+        ),
     )
 
     def fake_predict(key, batch, params, config, table, *, n_chain=None):
-        seen.update(n_chain=n_chain, asym_id=np.asarray(batch["asym_id"]))
+        seen.update(
+            n_chain=n_chain,
+            asym_id=np.asarray(batch["asym_id"]),
+            trunk_dtype={
+                leaf.dtype
+                for leaf in jax.tree.leaves(params.trunk.pairformer_stack)
+            },
+        )
         values = {"coordinates": np.zeros((1, 2, 3), dtype=np.float32)}
         return SimpleNamespace(_asdict=lambda: values)
 
@@ -178,3 +189,8 @@ def test_verifier_passes_normalized_static_chain_count(
     assert main([str(weights), "--batch", str(batch)]) == 0
     assert seen["n_chain"] == 2
     np.testing.assert_array_equal(seen["asym_id"], [[0, 1, 0]])
+    # This command exists to report what a real run does, so it has to narrow
+    # the weights the real entry points narrow. Left uncast, the config would
+    # ask for bfloat16 activations against float32 parameters and every
+    # matmul would promote back -- a program nothing runs.
+    assert seen["trunk_dtype"] == {np.dtype(narrow_dtype("bfloat16"))}

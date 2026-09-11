@@ -255,7 +255,7 @@ executes the float32 matmuls that remain. A model can be bfloat16 and
 | Boltz-2 | bfloat16 | `highest` | `--option dtype=float32` |
 | Protenix / v2 | bfloat16 | `high` (TF32) | `--option dtype=float32` |
 | OpenDDE | **bfloat16** | `high` (TF32) | `--option dtype=float32` |
-| OpenFold3 | float32 | `high` (TF32) | none |
+| OpenFold3 | float32 | `high` (TF32) | `--option dtype=bfloat16`, opt-in, ≤ ~2,000 tokens |
 | ESMFold2 | **bfloat16** trunk, float32 sampler | — | none |
 
 The matmul column names the model-level scope. A fused backend can own the
@@ -267,12 +267,21 @@ Read against upstream, **two rows diverge from what their publisher ships**,
 and only one of them was a decision. The four that match: AlphaFold 3
 `model_config.py:34`, Boltz-2 `main.py:1262` (`precision="bf16-mixed"`) with
 `main.py:1096` asking for `highest` matmuls, Protenix `configs_base.py:135`,
-and OpenFold3 `import_utils.py:33` — its `bf16-mixed` YAMLs are training
-configs, not inference.
+and OpenFold3 `entry_points/validator.py:127` — its `bf16-mixed` YAMLs are
+training configs, not inference, and it additionally pins the confidence
+Pairformer wide with a `pairformer_dtype` defaulting to `torch.float32`
+(`heads/prediction_heads.py:192`).
 
 **OpenDDE** is the declared one: upstream runs float32
 (`opendde/config/model_base.py:37`), FoldJAX ships bfloat16 since 2026-08-28,
 and the rest of this section is the measurement that justified it.
+
+OpenFold3's bfloat16 profile was measured on 2026-09-11 and **not** promoted
+to the default, because the answer depends on the size: 23–35% faster and
+24–40% smaller at 1,003 / 2,096 / 3,012 tokens, with per-chain structures
+identical to float32 at 2,096 and a 4.65–5.80 Å same-index drift at 3,012
+against a 0.619 Å control spread. `--option dtype=bfloat16` is opt-in and
+`models/openfold3/dtype.py` carries the table.
 
 **Historical source scope, superseded for the current pin (2026-09-09):**
 The following August ESMFold2 account does not describe the currently pinned

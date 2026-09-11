@@ -343,6 +343,43 @@ unless it says so here, in its own paragraph.
   run against a native capture should pass, and it is its own compilation
   cache namespace, so it never receives the executable built for the default.
   `fp32` and `bf16` are unchanged and still pin both stages at every size.
+- **OpenFold3's bfloat16 profile is measured, and stays opt-in because the
+  answer depends on the size.** `--option dtype=bfloat16` is unchanged as a
+  spelling and `float32` remains the default. Measured on GPU 2026-09-11,
+  each arm against a same-source control: at 1,003 tokens 98.65 -> 75.70 s
+  wall (-23.3%) and 9,274 -> 5,553 MiB peak (-40.1%); at 2,096 tokens
+  403.29 -> 262.33 s (-35.0%) and 25,067 -> 19,107 MiB (-23.8%); at 3,012
+  tokens 950.84 -> 664.61 s (-30.1%) and 50,412 -> 34,893 MiB (-30.8%).
+
+  The speed and memory hold at every size; the structure does not. At 2,096
+  tokens on 5DEI, four chains by five samples, per-chain deposited RMSD is
+  0.45-0.51 A on both arms chain for chain, TM 0.996-0.997 on both, and
+  sample 3 picks the same alternative basin on both -- identical to 0.01 A.
+  At 3,012 tokens on 6ZTX, same-index RMSD against the float32 arm is
+  4.65 / 4.68 / 5.64 / 5.80 / 5.26 A against a float32 within-set spread of
+  0.619 A, which is 8.5x the control's own spread, and the bfloat16 arm's
+  internal spread is inflated 2.8x to 1.729 A. **Take the option at or below
+  roughly 2,000 tokens; do not take it above that.** The failure is uniform
+  drift, not a lost region -- on 6ZTX all four chains move by the same amount
+  (sample 0: A 4.50 / B 4.63 / C 4.51 / D 4.54; sample 3: 5.63 / 5.65 / 5.64
+  / 5.63) with complex TM holding at 0.978-0.980 -- which reads as
+  accumulation over 48 Pairformer blocks times 10 cycles.
+  `models/openfold3/dtype.py` records a leading hypothesis for it: upstream's
+  `LayerNorm` upcasts a bfloat16 input to float32, normalises there and
+  rounds once on the way out
+  (`core/model/primitives/normalization.py:54-70`), while this port's
+  `layer_norm` rounds the mean and the variance back to bfloat16 before the
+  subtraction and applies scale and bias at bfloat16. Not fixed here.
+
+  Two other measurements worth recording. `--option confidence_dtype=bfloat16`
+  alone buys nothing (+0.4% wall / -0.1% peak at 1,003 tokens, -1.1% / -0.0%
+  at 2,096) and is fully subsumed when the trunk is narrowed, where
+  `dtype=bfloat16` and `dtype=bfloat16 confidence_dtype=bfloat16` reported
+  byte-identical peaks and walls within 0.3%; the knob's remaining purpose is
+  the reverse one, holding the head wide against a narrowed trunk. And
+  `--option glu_backend=tokamax` does *not* compose with the narrow trunk on
+  this port: it turns -23.3% wall into -1.3% and raises peak from 5,553 to
+  5,775 MiB at 1,003 tokens, and turns -35.0% into -30.8% at 2,096.
 
 - **Boltz-2 runs the fused gated linear unit by default.** `glu_backend` now
   defaults to `tokamax`, so the transitions and the triangle-multiplication
@@ -2244,6 +2281,35 @@ unless it says so here, in its own paragraph.
   and kernel-performance checks remain deployment gates.
 
 ### Fixed
+
+- **Every OpenFold3 entry point that loads a checkpoint now narrows its
+  weights.** `cast_narrow_params` lived only in the managed backend, so
+  `openfold3-jax-predict` and `openfold3-jax-verify-checkpoint` built a
+  config that could ask for a narrow region and then handed it float32
+  parameters. That program casts its activations down and promotes straight
+  back at the first matmul: the entry rounding is paid and every matmul still
+  runs float32. Harmless while no default narrows anything, wrong the moment
+  one does. Verified on CPU by lowering both trees -- float32 parameters with
+  a bfloat16 config give dot operands `{f32}`, the cast tree gives
+  `{bf16, f32}`. The torch-gated smoke tests that build their own parameters
+  were given the same cast for the same reason.
+
+- **OpenFold3's `confidence_dtype` no longer survives onto `InferenceConfig`
+  as a `None` sentinel.** `released_config` resolves it to `dtype`, so an
+  omitted request and one that spells out the value it resolves to build the
+  same config object. That object is a field of `_PredictGraphIdentity`, so
+  the sentinel forked the in-process JIT owner for one program even where
+  `cache_profile` had already unified the persistent cache directory.
+
+- **Corrected two upstream citations in OpenFold3's precision notes.** They
+  said upstream pins `embed_zij` with an autocast at
+  `heads/prediction_heads.py:88-89`, restoring at `:118`; in v0.50
+  `embed_zij` (`:79-113`) runs at the ambient dtype before the context opens
+  at `:224`, and what the context wraps is the Pairformer stack. They also
+  said `primitives/normalization.py` disables autocast so that a bfloat16
+  layer norm stays bfloat16; it disables autocast for the opposite reason, to
+  force float32 (`:54-70`). The `softmax_no_cast` half of that claim was
+  correct (`primitives/attention.py:111-127`).
 
 - **ESMFold2's bfloat16 trunk is FoldJAX's own choice, and three files said it
   was upstream's.** Upstream ESMFold2 has exactly one autocast in the whole

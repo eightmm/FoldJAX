@@ -71,8 +71,12 @@ _COMPILE_OPTIONS = (
     "confidence_dtype",
 )
 
-#: ``released_config``'s dtype. Named rather than spelled `"float32"` twice so
-#: the namespace-stripping rule below cannot drift from the model's default.
+#: ``released_config``'s dtype, which `confidence_dtype` follows when unset.
+#: Named rather than spelled twice so the namespace-stripping rule below
+#: cannot drift from the model's default. Copied rather than imported for the
+#: same reason as `_GLU_BACKENDS` -- resolving a cache directory must not
+#: import the model package or JAX -- and a test pins the copy to
+#: `released_config`'s signature.
 _DEFAULT_DTYPE = "float32"
 
 # ``released_config``'s model-side MSA subsampling depth. The public
@@ -245,27 +249,38 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # into that variable in `predict` below, so a caller says the same thing here
     # as anywhere else.
     #
-    # `dtype` defaults to `float32` and that is upstream's released inference
-    # precision (`entry_points/validator.py:127` `precision: "32-true"`).
-    # `bfloat16` does **not** narrow the whole model -- a whole-trunk cast takes
-    # pLDDT from 0.858 to 0.466. It narrows the token/pair representation track
-    # and leaves everything atom- or coordinate-shaped float32: the input
-    # embedder, the entire denoiser (atom encoder, atom decoder and the 24-block
-    # token transformer), the diffusion conditioning's single branch, the
-    # confidence head's geometry re-embedding, and every output head -- so every
-    # output logit is float32 in both profiles, while attention softmaxes inside
-    # the narrowed regions do run bfloat16, as they do in both upstreams. That is
-    # AlphaFold 3's released inference shape, and its two float32 islands are
-    # ones upstream OpenFold3 pins itself while training this checkpoint under
-    # `bf16-mixed`. models/openfold3/dtype.py carries the reading with line
-    # numbers. It remains unvalidated at inference by upstream and unmeasured
-    # for accuracy here.
+    # `dtype` defaults to `float32`, upstream's released inference precision
+    # (`entry_points/validator.py:127`). `bfloat16` is opt-in and its value
+    # depends on the size: 23-35% faster and 24-40% smaller at every size
+    # measured, with per-chain structures identical to float32 at 2,096
+    # tokens but a 4.7-5.8 A same-index drift at 3,012 against a 0.6 A
+    # control spread. models/openfold3/dtype.py carries the table and the
+    # leading hypothesis for the drift.
     #
-    # The confidence head is a second narrowing group with its own native knob,
-    # `confidence_dtype`, which follows `dtype` unless set. It is not a third
-    # neutral value, for the same reason Boltz-2's `diffusion_compute_dtype` is
-    # not: the neutral vocabulary names what every port means by "dtype", and a
-    # region only one port has does not belong in it.
+    # `bfloat16` does **not** narrow the whole model -- a whole-trunk cast,
+    # input embedder included, takes pLDDT from 0.858 to 0.466. It narrows the
+    # token/pair representation track and leaves everything atom- or
+    # coordinate-shaped float32: the input embedder, the entire denoiser (atom
+    # encoder, atom decoder and the 24-block token transformer), the diffusion
+    # conditioning's single branch, the confidence head's geometry
+    # re-embedding, and every output head -- so every output logit is float32
+    # in both profiles, while attention softmaxes inside the narrowed regions
+    # do run bfloat16, as they do in both upstreams. That is AlphaFold 3's
+    # released inference shape, and its two float32 islands are ones upstream
+    # OpenFold3 pins itself while training this checkpoint under `bf16-mixed`.
+    # `inference.cast_narrow_params` is the parameter split and
+    # models/openfold3/dtype.py carries the reading with line numbers.
+    #
+    # The confidence head is a second narrowing group with its own native
+    # knob, `confidence_dtype`, which follows `dtype` unless set -- so opting
+    # into a narrow trunk narrows it too, and the knob is there to hold that
+    # one region wide against a narrowed trunk, or narrow it against a wide
+    # one. Narrowing it alone measures as nothing (+0.4% wall / -0.1% peak at
+    # 1,003 tokens), which is why it is not its own default. It is
+    # not a third neutral value, for the same reason Boltz-2's
+    # `diffusion_compute_dtype` is not: the neutral vocabulary names what
+    # every port means by "dtype", and a region only one port has does not
+    # belong in it.
     #
     # Annotated because the shared deterministic entry carries `bool` native
     # values rather than the `str` the rest of this table maps to.
@@ -333,14 +348,16 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 # that ``predict`` passes into ``released_config``.
                 profile[name] = resolved
         # `dtype` is a string, so it misses the int/bool coercion above. An
-        # explicitly repeated `float32` names the same program an unasked run
+        # explicitly repeated default names the same program an unasked run
         # gets, and a second namespace for it would also split the in-process
         # JIT pool.
         if profile.get("dtype") == _DEFAULT_DTYPE:
             profile.pop("dtype", None)
         # `confidence_dtype` follows `dtype` when unset, so an explicit value
         # equal to the resolved one names the same program. Compared against
-        # the request's `dtype` rather than against a literal for that reason.
+        # the request's `dtype` rather than against a literal for that reason:
+        # under `dtype=float32` the alias to strip is `float32`, not the
+        # shipped `bfloat16`.
         if profile.get("confidence_dtype") == options.get("dtype", _DEFAULT_DTYPE):
             profile.pop("confidence_dtype", None)
         cp_shards = int(options.get("cp_devices", 1))
@@ -577,9 +594,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             overrides["glu_backend"] = str(glu_backend)
         dtype = str(options.pop("dtype", _DEFAULT_DTYPE))
         overrides["dtype"] = dtype
-        confidence_dtype = options.pop("confidence_dtype", None)
-        if confidence_dtype is not None:
-            confidence_dtype = str(confidence_dtype)
+        # Resolved to `dtype` here rather than left as `None`: this value is
+        # also the weight-cache key below, and two spellings of one program
+        # must not name two cached parameter trees. `released_config` applies
+        # the same rule for direct callers.
+        confidence_dtype = str(options.pop("confidence_dtype", dtype))
         overrides["confidence_dtype"] = confidence_dtype
         available = _representations.specs_for("openfold3")
         if request.stop_after == "inputs":
