@@ -185,6 +185,7 @@ def _predict(
     cp_shards: int = 1,
     cp_layout: str = "auto",
     trunk_dtype: Any = None,
+    confidence_dtype: Any = None,
     # The summaries come out of the graph; the raw logits only when a raw dump
     # was asked for. `_score` passes precomputed summaries straight through.
     run_confidence_scores: bool = True,
@@ -340,6 +341,7 @@ def _predict(
         cp_shards=cp_shards,
         cp_layout=cp_layout,
         trunk_dtype=trunk_dtype,
+        confidence_dtype=confidence_dtype,
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
         return_confidence_details=return_confidence_details,
@@ -512,6 +514,16 @@ def main(
         "sampler and the output heads stay FP32 either way. Defaults to native "
         "FP32; BF16 is an opt-in candidate, not validated native equivalence",
     )
+    parser.add_argument(
+        "--confidence-dtype",
+        choices=("fp32", "bf16"),
+        default="fp32",
+        help="element width of the confidence head's re-embedding Pairformer "
+        "and the three activations entering it. 'bf16' reproduces AlphaFold "
+        "3's confidence boundary: narrow stack, FP32 pLDDT/PAE/PDE/resolved "
+        "logits. It moves scores only -- the head runs after the sampler and "
+        "emits no coordinates -- and is independent of --trunk-dtype",
+    )
     # Native OpenDDE defaults to FP32. The five-sample, fixed-tape native
     # precision panel rejects BF16 on 5SAK/1URN; memory savings and a matched
     # best-ranked sample cannot authorize lowering every sample's precision.
@@ -677,10 +689,15 @@ def main(
         if not jobs:
             raise ValueError("input JSON must contain at least one job")
         trunk_dtype = None
+        confidence_dtype = None
         if args.trunk_dtype == "bf16":
             import jax.numpy as jnp
 
             trunk_dtype = jnp.bfloat16
+        if args.confidence_dtype == "bf16":
+            import jax.numpy as jnp
+
+            confidence_dtype = jnp.bfloat16
         # The callback is backend-internal. It receives the parser-validated
         # weight path and compute dtype; direct callers keep the native loader.
         params_loader = _prepared_params_loader or _load_prepared_params
@@ -688,6 +705,14 @@ def main(
             params = params_loader(args.weights, args.trunk_dtype)
         else:
             params = params_loader(args.weights, args.trunk_dtype, True)
+        if confidence_dtype is not None:
+            # After the loader on purpose: `cast_confidence_params` refuses an
+            # already-narrowed tree, and the trunk cast never reaches the
+            # confidence field, so the two preparations compose in this order
+            # and only in this order.
+            from foldjax.models.opendde.models.model import cast_confidence_params
+
+            params = cast_confidence_params(params, confidence_dtype)
         for job in jobs:
             job_name = str(job.get("name") or args.input_json.stem)
             for seed in _job_seeds(job, args.seed):
@@ -817,6 +842,7 @@ def main(
                         args.structural_single_attention_backend
                     ),
                     trunk_dtype=trunk_dtype,
+                    confidence_dtype=confidence_dtype,
                     chunk_policy=args.chunk_policy,
                     chunk_overrides={
                         "diffusion_chunk_size": args.diffusion_chunk_size,

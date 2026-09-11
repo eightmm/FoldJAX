@@ -12,6 +12,7 @@ import numpy as np
 from foldjax.models._cp import cp_shards as _active_cp_shards
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.protenix.models.primitives.primitives import (
+    AutocastLinearParams,
     LayerNormParams,
     LinearParams,
     layer_norm,
@@ -1236,14 +1237,28 @@ def _compact_confidence_bin_projection(
     # ``linear`` stores weights as [out, in].  A dense dot over a one-hot row
     # selects this same [out] row, while its multi-term reduction canonicalises
     # a selected -0 to +0.  Preserve that last detail explicitly.
-    dtype = jnp.result_type(distance.dtype, params.linear_d.weight.dtype)
+    #
+    # The dtype has to be the one the dense path would have produced, and for
+    # an :class:`AutocastLinearParams` that is the weight's: ``linear`` narrows
+    # the one-hot operand before the dot, so the result is BF16 however wide
+    # the distances are.  Promoting against ``distance`` instead returned FP32
+    # from a fully realised BF16 confidence policy, which promoted ``z_pair``
+    # and every pairformer block after it back to FP32 -- and this is the path
+    # both compiled wrappers take, since they resolve ``compact_bins`` to True
+    # on any released checkpoint.
+    if isinstance(params.linear_d, AutocastLinearParams):
+        dtype = jnp.dtype(params.linear_d.weight.dtype)
+    else:
+        dtype = jnp.result_type(distance.dtype, params.linear_d.weight.dtype)
     table = jnp.swapaxes(params.linear_d.weight, -1, -2).astype(dtype)
     selected = table[safe_index]
     positive_zero = jnp.asarray(0.0, dtype=dtype)
     selected = jnp.where(selected == 0, positive_zero, selected)
     projected = jnp.where(valid[..., None], selected, positive_zero)
     if params.linear_d.bias is not None:
-        projected = projected + params.linear_d.bias
+        # ``linear`` narrows an autocast bias to the weight dtype too; under
+        # every other node this cast is the identity the promotion already gave.
+        projected = projected + params.linear_d.bias.astype(dtype)
     return projected
 
 

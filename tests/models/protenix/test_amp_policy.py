@@ -211,6 +211,34 @@ def test_the_confidence_distance_projections_become_autocast_projections() -> No
         assert node.weight.dtype == jnp.bfloat16, name
 
 
+def test_compact_binning_keeps_the_dense_paths_realised_dtype() -> None:
+    """The compact bin projection must not widen what the dense one narrows.
+
+    Both compiled wrappers resolve ``compact_distance_bins`` to True on any
+    released checkpoint, so this is the path the policy actually runs. It
+    promoted against the FP32 distances instead of following the weight, which
+    handed the head an FP32 pair tensor under a fully realised BF16 policy and
+    promoted every pairformer block after it -- invisible in the output and
+    invisible to a test that traces only the dense path.
+    """
+    embedding = native_confidence_autocast_params(
+        _toy_params().confidence
+    ).distance_embedding
+    coords = jnp.asarray(
+        np.random.default_rng(3).normal(size=(4, 3)) * 8.0, jnp.float32
+    )
+
+    dense = confidence_module.confidence_distance_embedding(
+        coords, embedding, compact_bins=False
+    )
+    compact = confidence_module.confidence_distance_embedding(
+        coords, embedding, compact_bins=True
+    )
+    assert dense.dtype == jnp.bfloat16
+    assert compact.dtype == dense.dtype
+    np.testing.assert_array_equal(np.asarray(compact), np.asarray(dense))
+
+
 def test_the_confidence_stack_takes_the_trunks_realisation() -> None:
     """BF16 activations reach it, so a BF16 weight is enough -- as in the trunk."""
     realised = native_confidence_autocast_params(_toy_params().confidence)

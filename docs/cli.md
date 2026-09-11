@@ -263,6 +263,49 @@ equivalent is `compute_dtype`, default `bfloat16`; OpenFold3 has no trunk
 dtype: upstream runs `32-true` and a bf16 trunk destroys its prediction.
 Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
+### A bfloat16 OpenDDE confidence head (`--confidence-dtype bf16`)
+
+OpenDDE's trunk dtype above stops at the trunk: `cast_trunk_params` narrows the
+embedder and both trunks and leaves the diffusion module, the distogram and the
+confidence head in float32. This opt-in flag narrows the confidence head alone,
+and only the part of it AlphaFold 3 narrows.
+
+AF3's released confidence head is the boundary. With `global_config.bfloat16 ==
+'all'`, its default, the pair and single activations are cast to bfloat16 on
+entry and the whole re-embedding Pairformer runs narrow; the pair
+representation is widened again before the distance-error logits and the single
+representation before the pLDDT logits. This flag reproduces that: narrow
+re-embedding stack, float32 pLDDT, PAE, PDE and resolved logits. It is not a
+blanket cast of the subtree.
+
+It is the safest dtype change in the repo, and the reason is structural. The
+confidence head runs after the sampler, reads its finished coordinates, and
+emits scores; nothing downstream of it is a coordinate, so narrowing it cannot
+move a structure. Protenix measured the same boundary at 3,012 tokens:
+coordinates bitwise unchanged, atom pLDDT moved at most 0.0099, chain pTM and
+ipTM at most 1.9e-4, PAE means at most 0.005.
+
+Three things stay wide, each for its own reason. The four output projections
+stay float32 because their logits feed softmaxes, which is the one rounding
+this port has measured as harmful elsewhere. The distance bins stay float32
+because they are compared against float32 distances, never multiplied by them.
+The two distance projections and the outer-sum initialiser `linear_s1`/
+`linear_s2` narrow their own operands instead of inheriting a dtype, because
+what reaches them is float32 geometry rather than a trunk representation.
+
+The default is `fp32` and no released run changes. The value joins the
+compilation-cache identity, so a run that narrows the head never receives the
+executable built without it, and an unrecognised width is refused naming
+`fp32` and `bf16` rather than falling back. It is independent of
+`--trunk-dtype`: OpenDDE widens every trunk output to float32 before its heads,
+so this flag casts the head's activations itself and `--trunk-dtype fp32
+--confidence-dtype bf16` is a real combination. Protenix's nearest equivalent,
+`--amp-policy`, works the other way -- it reproduces a torch autocast context,
+so its confidence stage inherits the trunk's dtype and a float32 trunk leaves
+it nothing to narrow. Context parallelism is supported: the narrowing is three
+casts and a parameter tree, with no kernel or collective of its own, and the
+released bfloat16 trunk already runs the same Pairformer code under a mesh.
+
 ### A bfloat16 Boltz-2 diffusion (`--option diffusion_compute_dtype=bfloat16`)
 
 Boltz-2's trunk dtype above stops at the trunk. Upstream wraps
