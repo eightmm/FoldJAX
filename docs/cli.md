@@ -430,6 +430,32 @@ drawn batched, from the same key; the result is arithmetically the same
 prediction on a narrower array and not a bitwise one. Details and the cost:
 [docs/esmfold2.md](esmfold2.md#denoising-the-samples-one-at-a-time).
 
+### `--option glu_backend=tokamax` (ESMFold2)
+
+Runs the twelve transitions in ESMFold2's diffusion token transformer through
+`tokamax.gated_linear_unit`, one fused Triton kernel, instead of the widened
+matmul and split the port takes by default. `xla` is the default and is what
+every released number describes; the option is opt-in on this port for the
+same reason it is on Boltz-2, which spells it the same way.
+
+What it removes is the `2 * hidden` projection each of those blocks
+materialises before gating -- temporary traffic, once per block per denoising
+step. What it does not touch is ESMFold2's peak, which is one
+`num_samples x tokens^2 x 4 * c_z` arena; expect this option to buy time, not
+headroom, and do not reach for it to fit a longer input. `structure_sample_sequential`
+above is the option that divides the sample axis.
+
+Three limits. The kernel is Triton, so it needs a GPU and there is no
+fallback: a card that cannot run it says so rather than running XLA under a
+name that claims otherwise. Context parallelism refuses it, because a Pallas
+custom call carries no partitioner for the sharded pair state. And a backend
+change is a numerics change -- read a switched run against this port's own
+rerun floor, not against the default as if it were exact.
+
+Only the diffusion token transformer is fused. The atom encoder and decoder
+feed-forwards inside the same denoiser, the trunk's SwiGLU and transition
+layers, and the ESMC language model's MLP all stay on XLA.
+
 ### Weights and setup
 
 Upstreams publish several formats. `foldjax weights` downloads public files,
