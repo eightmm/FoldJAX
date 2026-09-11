@@ -200,6 +200,61 @@ def test_context_parallel_does_not_enter_cuda_kernel(monkeypatch):
         layer_norm(x, scale, bias, 1e-5),
     )
     np.testing.assert_array_equal(native_amp_norm.amp_affine(x, scale, bias), x)
+    np.testing.assert_array_equal(
+        native_amp_norm.amp_affine(x, scale, bias, jnp.bfloat16),
+        x.astype(jnp.bfloat16),
+    )
+
+
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("width", [16, 64, 128, 256])
+def test_amp_affine_out_dtype_is_one_rounding_not_two(width, jit):
+    # Narrowing inside the affine must be the same single round-nearest-even
+    # convert the caller would apply to an FP32 result, not a second rounding.
+    rng = np.random.default_rng(width)
+    args = [
+        jnp.asarray(rng.normal(size=shape), jnp.float32)
+        for shape in ((3, 5, width), (width,), (width,))
+    ]
+    wrap = jax.jit if jit else (lambda f: f)
+    direct = wrap(lambda x, s, b: native_amp_norm.amp_affine(x, s, b, jnp.bfloat16))(
+        *args
+    )
+    staged = wrap(
+        lambda x, s, b: native_amp_norm.amp_affine(x, s, b).astype(jnp.bfloat16)
+    )(*args)
+    assert direct.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(direct, staged)
+
+
+@pytest.mark.parametrize("out_dtype", [jnp.float32, jnp.bfloat16])
+def test_cuda_affine_stores_out_dtype_after_a_single_convert(out_dtype):
+    # Tracing needs no GPU: assert the kernel keeps its FP32 FMA and narrows
+    # exactly once on the way to the store, so the output buffer is the only
+    # thing ``out_dtype`` changes.
+    traced = jax.make_jaxpr(
+        lambda x, s, b: native_amp_norm._cuda_affine(x, s, b, out_dtype)
+    )(
+        jnp.zeros((2, 128), jnp.float32),
+        jnp.ones(128, jnp.float32),
+        jnp.zeros(128, jnp.float32),
+    )
+    call = next(e for e in traced.jaxpr.eqns if e.primitive.name == "pallas_call")
+    assert all(v.aval.dtype == out_dtype for v in call.outvars)
+    kernel = call.params["jaxpr"]
+    kernel = getattr(kernel, "jaxpr", kernel)
+    (fma,) = [
+        e for e in kernel.eqns if e.params.get("asm") == "fma.rn.f32 $0, $1, $2, $3;"
+    ]
+    assert all(v.aval.dtype == jnp.float32 for v in fma.invars)
+    assert fma.outvars[0].aval.dtype == jnp.float32
+    converts = [e for e in kernel.eqns if e.primitive.name == "convert_element_type"]
+    if out_dtype == jnp.float32:
+        assert converts == []
+    else:
+        (convert,) = converts
+        assert convert.invars[0] is fma.outvars[0]
+        assert convert.params["new_dtype"] == out_dtype
 
 
 @pytest.mark.parametrize("dtype", [None, jnp.float32, jnp.bfloat16])

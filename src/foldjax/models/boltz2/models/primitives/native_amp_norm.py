@@ -31,20 +31,39 @@ def amp_layer_norm(x, scale, bias, eps):
     )
 
 
-def amp_affine(x, scale, bias):
+def amp_affine(x, scale, bias, out_dtype=jnp.float32):
+    """Apply the pinned CUDA affine FMA and deliver the result in ``out_dtype``.
+
+    The FMA always runs in FP32, on every path. ``out_dtype`` only chooses the
+    width the result is stored at, and narrowing it is bit-exact by
+    construction: FP32 storage followed by one round-nearest-even convert and
+    direct ``out_dtype`` storage perform the same FMA and the same single RNE
+    rounding. Emitting the narrow width from the kernel removes an FP32 buffer
+    that can never be fused away, because a ``pallas_call`` output is a real
+    buffer and a following dot cannot consume it in place.
+
+    The default stays FP32 so any future caller keeps the historical result.
+    ESMFold2 and OpenFold3 share this module but call ``_cuda_layer_norm``, not
+    this function. Every path honours ``out_dtype``, including the non-CUDA
+    fallbacks, so the delivered width is the same on all platforms.
+    """
     if (
         x.shape[-1] not in (16, 128, 256)
         or x.dtype != jnp.float32
         or cp_mesh() is not None
     ):
-        return x * scale + bias
+        return (x * scale + bias).astype(out_dtype)
     scale, bias = scale.astype(jnp.float32), bias.astype(jnp.float32)
     return jax.lax.platform_dependent(
-        x, scale, bias, cuda=_cuda_affine, default=lambda x, s, b: x * s + b
+        x,
+        scale,
+        bias,
+        cuda=lambda x, s, b: _cuda_affine(x, s, b, out_dtype),
+        default=lambda x, s, b: (x * s + b).astype(out_dtype),
     )
 
 
-def _cuda_affine(x, scale, bias):
+def _cuda_affine(x, scale, bias, out_dtype=jnp.float32):
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pt
 
@@ -59,11 +78,11 @@ def _cuda_affine(x, scale, bias):
             constraints="=f,f,f,f",
             pack=1,
             result_shape_dtypes=[jax.ShapeDtypeStruct((width,), jnp.float32)],
-        )[0]
+        )[0].astype(out_dtype)
 
     out = pl.pallas_call(
         kernel,
-        out_shape=jax.ShapeDtypeStruct((rows, width), jnp.float32),
+        out_shape=jax.ShapeDtypeStruct((rows, width), out_dtype),
         grid=(rows,),
         in_specs=(
             pl.BlockSpec((1, width), lambda i: (i, 0)),

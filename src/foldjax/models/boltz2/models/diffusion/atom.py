@@ -357,6 +357,8 @@ def diffusion_transformer_forward(
     bias_normed_input: jnp.ndarray | None = None,
     bias_compute_dtype: jnp.dtype | None = None,
     bias_out_dtype: jnp.dtype | None = None,
+    bias_multiplicity: int = 1,
+    bias_num_windows: int | None = None,
     precomputed_s_terms: tuple[jnp.ndarray, ...] | None = None,
     precomputed_s_terms_multiplicity: int = 1,
     precomputed_s_terms_num_windows: int | None = None,
@@ -372,10 +374,20 @@ def diffusion_transformer_forward(
     is never fully materialized. It is bit-exact (softmax reduces over the full
     key axis within each query block). Used for the token transformer at large
     N; left ``None`` for the windowed atom transformer.
+
+    ``bias_multiplicity`` (with ``bias_num_windows``) accepts an explicit
+    ``bias`` that is still compact over diffusion samples and broadcasts it per
+    layer inside the loop. Sample-repeating it up front would cost a scan
+    operand ``multiplicity`` times larger, because the reshape that follows the
+    repeat merges the sample axis into the window axis and so cannot be a
+    bitcast. The bias reaches the score through an elementwise add, so moving
+    the broadcast past the per-layer split changes placement and not bits.
     """
 
     layers = take_layers(params["layers"], layer_limit)
     num_layers = len(layers)
+    if bias_multiplicity != 1 and bias is None:
+        raise ValueError("bias_multiplicity requires an explicit bias")
     if bias is None:
         if bias_params is None or (bias_input is None and bias_normed_input is None):
             msg = (
@@ -419,6 +431,20 @@ def diffusion_transformer_forward(
             num_windows=precomputed_s_terms_num_windows,
         )
 
+    def expand_bias(layer_bias):
+        if bias_multiplicity == 1:
+            return layer_bias
+        if bias_num_windows is None:
+            raise ValueError(
+                "bias_num_windows is required when a compact bias is reused "
+                "across multiplicity"
+            )
+        return _broadcast_window_axis(
+            layer_bias,
+            multiplicity=bias_multiplicity,
+            num_windows=bias_num_windows,
+        )
+
     if not use_scan:
         for i, layer_params in enumerate(layers):
             s_terms_i = jax.tree.map(lambda x, i=i: x[i], s_terms_stacked)
@@ -433,7 +459,7 @@ def diffusion_transformer_forward(
                     out_dtype=bias_out_dtype,
                 )
                 if bias_per_layer is None
-                else bias_per_layer[i]
+                else expand_bias(bias_per_layer[i])
             )
             a = diffusion_transformer_layer_apply(
                 layer_params,
@@ -463,6 +489,7 @@ def diffusion_transformer_forward(
             )
         else:
             layer_params, layer_bias, layer_s_terms_i = layer
+            layer_bias = expand_bias(layer_bias)
         layer_s_terms_i = expand_s_terms(layer_s_terms_i)
         a_c = diffusion_transformer_layer_apply(
             layer_params,
@@ -522,23 +549,41 @@ def _broadcast_window_s_terms(
     if multiplicity == 1:
         return s_terms
 
-    def expand(value: jnp.ndarray) -> jnp.ndarray:
-        compact_windows = value.shape[0]
-        if compact_windows % num_windows:
-            raise ValueError(
-                "compact s-term batch is not divisible by num_windows: "
-                f"{compact_windows} vs {num_windows}"
-            )
-        feature_batch = compact_windows // num_windows
-        tail = value.shape[1:]
-        grouped = value.reshape(feature_batch, num_windows, *tail)
-        broadcast = jnp.broadcast_to(
-            grouped[:, None, ...],
-            (feature_batch, multiplicity, num_windows, *tail),
-        )
-        return broadcast.reshape(feature_batch * multiplicity * num_windows, *tail)
+    return jax.tree.map(
+        lambda value: _broadcast_window_axis(
+            value, multiplicity=multiplicity, num_windows=num_windows
+        ),
+        s_terms,
+    )
 
-    return jax.tree.map(expand, s_terms)
+
+def _broadcast_window_axis(
+    value: jnp.ndarray,
+    *,
+    multiplicity: int,
+    num_windows: int,
+) -> jnp.ndarray:
+    """Insert a sample axis into a compact window-major ``[B*K, ...]`` batch.
+
+    Reproduces ``jnp.repeat(v, multiplicity, axis=0).reshape(B*M*K, ...)`` on
+    the unflattened ``[B, K, ...]`` form, so the result is batch-major,
+    sample-major, window-major exactly as the atom activations are.
+    """
+
+    compact_windows = value.shape[0]
+    if compact_windows % num_windows:
+        raise ValueError(
+            "compact window batch is not divisible by num_windows: "
+            f"{compact_windows} vs {num_windows}"
+        )
+    feature_batch = compact_windows // num_windows
+    tail = value.shape[1:]
+    grouped = value.reshape(feature_batch, num_windows, *tail)
+    broadcast = jnp.broadcast_to(
+        grouped[:, None, ...],
+        (feature_batch, multiplicity, num_windows, *tail),
+    )
+    return broadcast.reshape(feature_batch * multiplicity * num_windows, *tail)
 
 
 def _projection_layer_forward(
@@ -566,7 +611,10 @@ def _projection_layer_forward(
                 raise ValueError("x is required when normed_input is None")
             normed = amp_layer_norm(x, scale, bias, eps)
         else:
-            normed = amp_affine(normed_input, scale, bias)
+            # The kernel stores the affine result at the width the following
+            # GEMM consumes. Its FP32 output would otherwise be a whole extra
+            # [1, N, N, C] buffer that no fusion can remove, for the same bits.
+            normed = amp_affine(normed_input, scale, bias, out_dtype=compute_dtype)
         return _linear(
             normed, params["linear"]["kernel"], compute_dtype=compute_dtype
         ).astype(jnp.float32 if out_dtype is None else out_dtype)
@@ -634,7 +682,9 @@ def atom_transformer_forward(
     q = jnp.reshape(q, (batch * num_windows, w, dim))
     c = jnp.reshape(c, (batch * num_windows, w, c.shape[-1]))
     mask = jnp.reshape(mask, (batch * num_windows, w))
-    bias = jnp.repeat(bias, multiplicity, axis=0)
+    # The bias is sample-invariant. Keep it compact here and let each layer
+    # broadcast it; repeating it now would be carried, multiplicity-sized,
+    # through the whole layer scan.
     bias = jnp.reshape(
         bias,
         (bias.shape[0] * num_windows, w, h_keys, bias.shape[-1]),
@@ -654,6 +704,8 @@ def atom_transformer_forward(
         multiplicity=1,
         eps=eps,
         attention_backend=attention_backend,
+        bias_multiplicity=multiplicity,
+        bias_num_windows=num_windows,
         precomputed_s_terms=precomputed_s_terms,
         precomputed_s_terms_multiplicity=multiplicity,
         precomputed_s_terms_num_windows=num_windows,

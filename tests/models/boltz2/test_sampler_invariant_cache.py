@@ -8,8 +8,13 @@ import numpy as np
 import pytest
 
 from foldjax.models.boltz2.models.diffusion.atom import (
+    _broadcast_window_axis,
     _broadcast_window_s_terms,
+    atom_transformer_forward,
+    diffusion_transformer_forward,
     diffusion_transformer_s_terms,
+    get_indexing_matrix,
+    single_to_keys,
 )
 from foldjax.models.boltz2.models.diffusion.diffusion import (
     diffusion_score_model_forward,
@@ -427,3 +432,166 @@ def test_sampler_leaves_projection_inside_context_parallel_loop(
         atom_context_parallel=True,
     )
     assert result["sample_atom_coords"].shape == (1, 4, 3)
+
+
+@pytest.mark.parametrize("multiplicity", [1, 5])
+def test_window_bias_broadcast_matches_batched_repeat_bitwise(
+    multiplicity: int,
+) -> None:
+    batch = 2
+    windows = 3
+    width = 2
+    keys = 4
+    channels = 2
+    size = batch * windows * width * keys * channels
+    values = np.arange(size, dtype=np.float32)
+    values[0] = -0.0
+    values[1] = np.nan
+    values[2] = np.inf
+    values[3] = -np.inf
+    bias = jnp.asarray(values.reshape(batch, windows, width, keys, channels))
+    compact = bias.reshape(batch * windows, width, keys, channels)
+
+    actual = _broadcast_window_axis(
+        compact,
+        multiplicity=multiplicity,
+        num_windows=windows,
+    )
+    expected = jnp.repeat(bias, multiplicity, axis=0).reshape(
+        batch * multiplicity * windows,
+        width,
+        keys,
+        channels,
+    )
+
+    actual_np = np.asarray(actual)
+    expected_np = np.asarray(expected)
+    np.testing.assert_array_equal(
+        actual_np.view(np.uint32),
+        expected_np.view(np.uint32),
+    )
+    np.testing.assert_array_equal(np.isnan(actual_np), np.isnan(expected_np))
+    np.testing.assert_array_equal(np.signbit(actual_np), np.signbit(expected_np))
+
+
+def _bias_scan_params(layers: int, dim: int, heads: int) -> dict[str, object]:
+    """Distinct transformer layers on the released schema, at test scale."""
+
+    template = _native_params()["score_model"]["atom_attention_encoder"]
+    template = template["atom_encoder"]["diffusion_transformer"]["layers"][0]
+    assert template["adaln"]["s_scale"]["kernel"].shape == (dim, dim)
+    assert template["pair_bias_attn"]["num_heads"] == heads
+
+    def scaled(value, factor):
+        if isinstance(value, dict):
+            return {k: scaled(v, factor) for k, v in value.items()}
+        if isinstance(value, int):
+            return value
+        return value * factor
+
+    return {"layers": [scaled(template, 1.0 + i) for i in range(layers)]}
+
+
+@pytest.mark.parametrize("use_scan", [True, False])
+def test_compact_pair_bias_matches_a_sample_repeated_bias_bitwise(
+    use_scan: bool,
+) -> None:
+    # Broadcasting the sample axis per layer must reproduce, bit for bit, the
+    # sample-repeated bias the layer loop used to be handed.
+    batch, multiplicity, windows = 2, 3, 2
+    width, keys, dim, heads, layers = 4, 4, 8, 2, 3
+    params = _bias_scan_params(layers, dim, heads)
+    rng = np.random.default_rng(20260911)
+
+    def draw(*shape):
+        return jnp.asarray(rng.normal(size=shape), jnp.float32)
+
+    rows = batch * multiplicity * windows
+    a = draw(rows, width, dim)
+    s = draw(rows, width, dim)
+    mask = jnp.ones((rows, width), jnp.float32)
+    compact = draw(batch, windows, width, keys, layers * heads)
+    repeated = jnp.reshape(
+        jnp.repeat(compact, multiplicity, axis=0),
+        (rows, width, keys, layers * heads),
+    )
+    flat = jnp.reshape(compact, (batch * windows, width, keys, layers * heads))
+
+    def run(bias, bias_multiplicity, num_windows):
+        return diffusion_transformer_forward(
+            params,
+            a=a,
+            s=s,
+            bias=bias,
+            mask=mask,
+            to_keys=None,
+            multiplicity=1,
+            use_scan=use_scan,
+            bias_multiplicity=bias_multiplicity,
+            bias_num_windows=num_windows,
+        )
+
+    reference = jax.jit(lambda: run(repeated, 1, None))()
+    actual = jax.jit(lambda: run(flat, multiplicity, windows))()
+    np.testing.assert_array_equal(np.asarray(reference), np.asarray(actual))
+
+    # A sample-major/window-major ordering slip has to be visible, or the
+    # comparison above proves nothing about the broadcast's index map.
+    permuted = jnp.reshape(
+        compact[::-1], (batch * windows, width, keys, layers * heads)
+    )
+    wrong = jax.jit(lambda: run(permuted, multiplicity, windows))()
+    assert float(jnp.max(jnp.abs(reference - wrong))) > 1e-4
+
+
+def test_compact_pair_bias_shrinks_the_scan_operand() -> None:
+    # The scan carries every layer's bias at once, so the sample axis must not
+    # reach it: the repeat is what the merging reshape would make un-bitcastable.
+    batch, multiplicity, windows = 2, 3, 2
+    width, keys, dim, heads, layers = 4, 8, 8, 2, 3
+    params = {
+        "diffusion_transformer": _bias_scan_params(layers, dim, heads),
+    }
+    rng = np.random.default_rng(20260911)
+
+    def draw(*shape):
+        return jnp.asarray(rng.normal(size=shape), jnp.float32)
+
+    rows = batch * multiplicity
+    atoms = windows * width
+    indexing = get_indexing_matrix(k=windows, w=width, h_keys=keys)
+    bias = draw(batch, windows, width, keys, layers * heads)
+
+    jaxpr = jax.make_jaxpr(
+        lambda bias: atom_transformer_forward(
+            params,
+            q=draw(rows, atoms, dim),
+            c=draw(rows, atoms, dim),
+            bias=bias,
+            to_keys=lambda x: single_to_keys(x, indexing, w=width, h_keys=keys),
+            mask=jnp.ones((rows, atoms), jnp.float32),
+            attn_window_queries=width,
+            attn_window_keys=keys,
+            multiplicity=multiplicity,
+        )
+    )(bias)
+
+    scan = next(e for e in jaxpr.jaxpr.eqns if e.primitive.name == "scan")
+    # The pair bias is the only rank-5 operand the layer scan takes.
+    (operand,) = [v for v in scan.invars if v.aval.ndim == 5]
+    assert operand.aval.shape == (layers, batch * windows, width, keys, heads)
+
+    # Nothing between the caller's bias and that operand may grow it.
+    producers = {v: eqn for eqn in jaxpr.jaxpr.eqns for v in eqn.outvars}
+    chain, cursor = [], operand
+    while cursor in producers:
+        eqn = producers[cursor]
+        chain.append(eqn.primitive.name)
+        cursor = eqn.invars[0]
+    assert set(chain) <= {"reshape", "transpose"}, chain
+    assert cursor is jaxpr.jaxpr.invars[0]
+    assert int(np.prod(cursor.aval.shape)) == int(np.prod(operand.aval.shape))
+
+    body = scan.params["jaxpr"]
+    body = getattr(body, "jaxpr", body)
+    assert "broadcast_in_dim" in {eqn.primitive.name for eqn in body.eqns}

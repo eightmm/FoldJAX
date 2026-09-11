@@ -80,6 +80,23 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2's diffusion score model drops two materialised buffers, bit for
+  bit.** Nothing about the arithmetic changes; both are buffers XLA could not
+  remove on its own. The pinned CUDA affine now stores its result at the width
+  the following GEMM consumes instead of storing FP32 and letting XLA convert:
+  a `pallas_call` output is a real buffer, so that convert could never be
+  fused, and the kernel's FMA plus one round-nearest-even rounding is the same
+  rounding either way. At 3,000 tokens that is a 4.29 GiB FP32 buffer per BF16
+  token-bias layer, on 24 layers across 200 sampler steps. Separately, the
+  windowed atom transformer now carries its pair bias compact over diffusion
+  samples and broadcasts it inside the layer scan. Repeating it up front was
+  free only until the following reshape merged the sample axis into the window
+  axis, which cannot be a bitcast, so the transpose copied a
+  `f32[3, M*K, 32, 128, 4]` scan operand: 0.68 GiB per transformer, 1.36 GiB
+  for encoder plus decoder, per step, against 0.27 GiB compact. `amp_affine`
+  lives in a module ESMFold2 and OpenFold3 share, but they call the layer-norm
+  helper beside it and never this function; its default is FP32 regardless.
+
 - **Boltz-2 can run its diffusion score model in BF16 and select that module's
   attention on its own.** Two opt-in native options, both defaulting to the
   released behaviour: `diffusion_compute_dtype` (`float32` or `bfloat16`) casts
