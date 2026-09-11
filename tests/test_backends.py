@@ -267,6 +267,33 @@ def test_boltz_rejects_a_single_diffusion_step_before_loading_model(
         Boltz2Backend().validate_request(request)
 
 
+def test_boltz_accepts_a_pinned_token_attention_block_including_dense(
+    tmp_path: Path,
+) -> None:
+    """0 is the unblocked score buffer, and null is the built-in rung."""
+    for block in (None, 0, 64, 128, 256):
+        request = dataclasses.replace(
+            _request(tmp_path, "boltz2"),
+            input_format="native",
+            options={"token_attention_chunk": block},
+        )
+
+        Boltz2Backend().validate_request(request)
+
+
+def test_boltz_rejects_a_negative_token_attention_block_before_compiling(
+    tmp_path: Path,
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        options={"token_attention_chunk": -1},
+    )
+
+    with pytest.raises(ValueError, match="token_attention_chunk must be non-negative"):
+        Boltz2Backend().validate_request(request)
+
+
 @pytest.mark.parametrize(
     "representations",
     [("single", "pair"), ("single,pair",), ("all",)],

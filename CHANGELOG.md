@@ -193,6 +193,23 @@ unless it says so here, in its own paragraph.
   for encoder plus decoder, per step, against 0.27 GiB compact. `amp_affine`
   lives in a module ESMFold2 and OpenFold3 share, but they call the layer-norm
   helper beside it and never this function; its default is FP32 regardless.
+- **Boltz-2 bounds its diffusion token attention below 2,048 tokens.** The
+  chunk policy only blocked the token transformer's query axis above 2,048
+  tokens, so everything at or below that ran a dense float32 score buffer that
+  grew as `2 * samples * heads * N^2 * 4` bytes: 640 MiB at 1,024 tokens and
+  2.50 GiB at 2,048, against 80 MiB one token later, where the long-shape
+  branch already blocked at 64. A very common input size sat at the worst
+  point of the curve. Above 1,024 tokens the query axis is now blocked at 128,
+  the width the trunk Pairformer's own single-attention has always used, and
+  the buffer grows linearly: 160 MiB at 2,048. The new
+  `token_attention_chunk` native option pins a width for every shape, with `0`
+  restoring the unblocked buffer. Each query row's softmax still reduces over
+  the whole key axis, so this is exact arithmetic but not bitwise: at a
+  128-wide block, 200 and 256 tokens differ from the single-shot path by
+  3.1e-07 on values of order 1. Inputs at or below the block width, the
+  115-token Boltz-2 parity fixture among them, short-circuit to the same
+  single-shot program and are bit-identical. Only the XLA attention path
+  honours the block; the fused kernels never build the buffer.
 
 - **Boltz-2 can run its diffusion score model in BF16 and select that module's
   attention on its own.** Two opt-in native options, both defaulting to the

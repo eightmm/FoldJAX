@@ -371,9 +371,16 @@ def diffusion_transformer_forward(
 
     ``chunk_size`` (default ``None``) enables query-axis blocking of the
     per-layer pair-bias self-attention so the ``[b, heads, N, N]`` score buffer
-    is never fully materialized. It is bit-exact (softmax reduces over the full
-    key axis within each query block). Used for the token transformer at large
-    N; left ``None`` for the windowed atom transformer.
+    is never fully materialized. Every output row sees the same summands --
+    the softmax reduces over the full key axis within each query block, and
+    only independent query rows are split -- so this is exact arithmetic, but
+    it is NOT bitwise: XLA retiles the remaining work and picks a different
+    reduction schedule for a narrow query axis. Measured on CPU at 128-wide
+    blocks, 256 and 200 tokens differ in ~90% of output words (max 3.1e-07 on
+    values of order 1), while 2,000 and 2,048 tokens happened to come back
+    identical. ``N <= chunk_size`` short-circuits to the single-shot path and
+    is bit-identical to passing ``None``. Used for the token transformer at
+    large N; left ``None`` for the windowed atom transformer.
 
     ``bias_multiplicity`` (with ``bias_num_windows``) accepts an explicit
     ``bias`` that is still compact over diffusion samples and broadcasts it per

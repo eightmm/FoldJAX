@@ -530,6 +530,41 @@ The default is unchunked for the released five-sample schedules; the automatic
 width engages only above five samples. Per-model measurements:
 [docs/engineering-notes.md](engineering-notes.md).
 
+### `--option token_attention_chunk=N` (Boltz-2)
+
+Sets the query block the Boltz-2 diffusion token transformer's pair-bias
+attention runs in. Unset takes the built-in rung, which is what production
+wants; pass an integer to pin one width for every shape, and `0` to restore
+the unblocked score buffer.
+
+The buffer is what the knob is about. The token transformer keeps its logits
+and their softmax in float32, so the pair costs `2 * samples * heads * N^2 * 4`
+bytes: at the released five samples and sixteen heads that is 640 MiB at 1,024
+tokens and 2.50 GiB at 2,048. Above 2,048 the long-sequence policy already
+blocked it at 64, which brings the same buffer down to 80 MiB, so a
+2,048-token input sat at the worst point of the curve and a 2,049-token input
+did not. The rung removes that cliff: above 1,024 tokens the query axis is
+blocked at 128, the same width the trunk Pairformer's own single-attention has
+always used, and the buffer grows linearly rather than quadratically -- 160 MiB
+at 2,048 instead of 2.50 GiB. Under bucketed padding the rung reaches exactly
+two token buckets, 1,536 and 2,048; 1,024 and everything below it is on the
+same program as before.
+
+Blocking splits independent query rows and each row's softmax still reduces
+over the whole key axis, so the arithmetic is exact -- but it is not bitwise,
+because XLA reschedules a narrow query axis. Measured on CPU at a 128-wide
+block, 200 and 256 tokens differ from the single-shot path in about 90% of
+output words, at 3.1e-07 on values of order 1. Inputs at or below the block
+width are untouched: that path short-circuits to the single-shot program and
+is bit-identical.
+
+Only the XLA attention path honours the block. A fused attention kernel
+ignores it -- `attention_kernel=tokamax`, or a `diffusion_attention_backend`
+that resolves to one -- because those kernels never materialise the score
+buffer in the first place, and so does the 2-D context-parallel layout, which
+splits both pair axes across devices instead. `null` is the same as leaving
+the option unset.
+
 ### `--option structure_sample_sequential=true` (ESMFold2)
 
 Denoises ESMFold2's diffusion samples one at a time rather than together, and

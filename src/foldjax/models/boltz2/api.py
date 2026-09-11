@@ -556,6 +556,13 @@ def predict(
     # 1,003 against a 1.0-2.9 A spread). Passing "xla" restores the previous
     # arithmetic exactly; see `foldjax.models._glu` for how the two round.
     glu_backend: str = "tokamax",
+    #: Query block for the diffusion token transformer's pair-bias attention.
+    #: `None` takes the rung policy in `resolve_long_sequence_chunks`, which
+    #: is what production wants; an integer pins the block for every shape,
+    #: and `0` restores the unblocked FP32 score buffer. Pinning changes
+    #: rounding wherever it changes the block, so it is a measurement and
+    #: memory knob, not a parity one.
+    token_attention_chunk: int | None = None,
     #: Context parallelism: shard the pair representations across this many
     #: JAX devices (the JAX form of OpenDDE's Fold-CP). Needs that many
     #: visible devices; the default "cueq" triangle kernel and the default
@@ -971,6 +978,9 @@ def predict(
             # explicit request is refused where it is still distinguishable
             # from the default, which is the adapter's option dict, not here.
             "xla" if cp_devices > 1 and glu_backend == "tokamax" else glu_backend
+        ),
+        "token_attention_chunk": (
+            None if token_attention_chunk is None else int(token_attention_chunk)
         ),
         "confidence_sequentially": num_samples > 1,
         # Resolved from the sample count, at the width every port in this

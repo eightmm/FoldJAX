@@ -322,6 +322,7 @@ class Boltz2Backend(Backend):
             "msa_server_username",
             "return_confidence_logits",
             "steering_args",
+            "token_attention_chunk",
             "trunk_atom_attention_backend",
             "use_msa_server",
             "write_fmt",
@@ -368,6 +369,7 @@ class Boltz2Backend(Backend):
         "diffusion_compute_dtype",
         "triangle_backend",
         "glu_backend",
+        "token_attention_chunk",
         "bucket",
         "deterministic",
         # Both values compile the same executable -- only three MSA feature
@@ -613,6 +615,16 @@ class Boltz2Backend(Backend):
                 options["diffusion_chunk_size"],
                 name="diffusion_chunk_size",
                 minimum=1,
+            )
+        if options.get("token_attention_chunk") is not None:
+            # 0 is the unblocked score buffer, which is what every shape at or
+            # below 2,048 tokens used to get; it is a legitimate request and
+            # the measurement baseline for the rung, so the floor is 0, not 1.
+            # `null` is left to the rung, as it is on every other option here.
+            _strict_integer(
+                options["token_attention_chunk"],
+                name="token_attention_chunk",
+                minimum=0,
             )
         if "cp_layout" in options and options["cp_layout"] not in {
             "auto",
