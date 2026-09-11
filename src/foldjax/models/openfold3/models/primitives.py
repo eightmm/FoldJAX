@@ -85,7 +85,39 @@ def linear(x: jnp.ndarray, params: LinearParams) -> jnp.ndarray:
 def layer_norm(
     x: jnp.ndarray, params: LayerNormParams, *, eps: float = 1e-5
 ) -> jnp.ndarray:
-    """Apply layer norm over the final axis with optional scale and offset."""
+    """Apply layer norm over the final axis with optional scale and offset.
+
+    Upstream disables autocast here for the *reverse* of the usual reason --
+    to force float32 rather than to hold bfloat16. ``LayerNorm.forward``
+    (``core/model/primitives/normalization.py:54-70``) takes ``x.float()``
+    with ``weight.float()`` and ``bias.float()``, normalises in float32 and
+    rounds once on the way out, under the comment "LayerNorm should be
+    upcasted to fp32 anyway in torch / This enforces it if not running with
+    autocast context". Accumulating narrow instead rounds the mean and the
+    variance back before ``x - mean`` and applies the affine narrow as well:
+    four extra roundings per norm against upstream's one, at every layer norm
+    in a narrowed region. Protenix's ``layer_norm`` already does this and its
+    bfloat16 arm holds at 3,012 tokens where OpenFold3's drifts.
+
+    The arrangement is Protenix's; the guard reads the *promoted* dtype rather
+    than ``x.dtype`` alone, and the difference is forced by this port's
+    parameter split. Protenix narrows parameters and activations together per
+    region, so there ``x.dtype`` settles both questions. Here they come apart:
+    the diffusion conditioning's pair branch is narrowed while the whole
+    denoiser is pinned float32, so a bfloat16 ``zij_trunk`` reaches float32
+    norm parameters at ``atom_features.py:170``. Reading the promotion
+    normalises that site wide too -- it is narrow today, and it is the one
+    place where rounding the *output* to bfloat16, as upstream's
+    ``out.to(dtype=d)`` would, narrows a region this port pins wide. So the
+    accumulation widens everywhere and no realised dtype moves anywhere.
+    """
+    operands = (x, *(value for value in params if value is not None))
+    output_dtype = jnp.result_type(*operands)
+    if any(value.dtype == jnp.bfloat16 for value in operands):
+        x = x.astype(jnp.float32)
+        params = LayerNormParams(
+            *(None if value is None else value.astype(jnp.float32) for value in params)
+        )
     mean = jnp.mean(x, axis=-1, keepdims=True)
     variance = jnp.mean(jnp.square(x - mean), axis=-1, keepdims=True)
     y = (x - mean) * jax_rsqrt(variance + eps)
@@ -93,7 +125,7 @@ def layer_norm(
         y = y * params.weight
     if params.bias is not None:
         y = y + params.bias
-    return y
+    return y if y.dtype == output_dtype else y.astype(output_dtype)
 
 
 def jax_rsqrt(x: jnp.ndarray) -> jnp.ndarray:

@@ -100,22 +100,62 @@ casting to fp32 when the input is of type bfloat16") disables autocast so a
 bfloat16 softmax stays bfloat16, overriding torch's float32 default, and
 AlphaFold 3's evoformer is the same shape.
 
-**Layer norm is the opposite, and this port does not follow it.** Upstream's
+**Layer norm is the opposite.** Upstream's
 ``primitives/normalization.py:54-70`` disables autocast for the reverse
 reason -- to *force* float32: it takes ``x.float()`` with ``weight.float()``
 and ``bias.float()`` (``:61-64``), normalises in float32, and rounds once on
 the way out (``:70``), with the comment "LayerNorm should be upcasted to fp32
 anyway in torch / This enforces it if not running with autocast context"
-(``:57-58``). This port's ``models/primitives.py`` ``layer_norm`` does not: ``jnp.mean``
-accumulates in float32 but rounds the mean and the variance back to bfloat16
-before ``x - mean`` and the rsqrt multiply, and the scale and bias are
-applied at bfloat16 too. That is four extra roundings per
-layer norm against upstream's one, at every layer norm in a narrowed region.
-Against a float64 reference on a [64, 128] normal input, the port's
-arrangement carries 2.95x upstream's RMS error per layer norm (0.00503
-against 0.00170; peak 0.0345 against 0.0084). It is the leading hypothesis
-for the 3,012-token drift recorded below -- 48 Pairformer blocks times 10
-cycles, several layer norms each -- and it is **not** fixed here.
+(``:57-58``). This port's ``models/primitives.py`` ``layer_norm`` used not to:
+``jnp.mean`` accumulates in float32 but rounds the mean and the variance back
+to bfloat16 before ``x - mean`` and the rsqrt multiply, and the scale and bias
+were applied at bfloat16 too -- four extra roundings per layer norm against
+upstream's one, at every layer norm in a narrowed region. It now upcasts, as
+Protenix's ``layer_norm`` already did. Against a float64 reference on the
+exact bfloat16 input values, per layer norm, eager on CPU:
+
+====================  ================  ================  =====================
+[4096, 128] input     narrow (before)   wide (now)        upstream, fp32 affine
+====================  ================  ================  =====================
+N(0, 1)               0.00461 / 0.0617  0.00244 / 0.0298  0.00165 / 0.0155
+N(5, 1)               0.01001 / 0.0546  0.00245 / 0.0253  0.00165 / 0.0155
+N(50, 1)              0.06767 / 0.1966  0.00245 / 0.0274  0.00165 / 0.0154
+====================  ================  ================  =====================
+
+RMS / peak absolute error; widths 64 and 384 track 128 to the third digit.
+The regime matters more than the width: a zero-mean slab understates this by
+an order of magnitude, and a pair residual after 48 blocks and ten cycles is
+not zero-mean. The new arrangement is **bit-identical** to upstream's spelled
+directly when both are handed the same affine; the residual 1.5x against the
+last column is the bfloat16 *weight*, which ``cast_narrow_params`` narrows
+with the rest of the trunk and which upstream's ``weight.float()`` never
+rounds because its module parameters stay float32. With an identity affine,
+exactly representable in bfloat16, the two columns are bit-identical.
+Excluding layer-norm affine parameters from the narrowing would close that
+1.5x at negligible memory cost; it is a parameter-split decision, not a
+``layer_norm`` one, and it is **not** taken here.
+
+Two things this does not settle. It is the leading hypothesis for the
+3,012-token drift recorded below -- 48 Pairformer blocks times 10 cycles,
+several layer norms each -- but only a GPU row at 3,012 tokens can say how
+much of that drift it removes, and a row showing no improvement is evidence
+about the cause, not about this arrangement. And it does not reach the two
+triangle-multiplication norms under ``triangle_kernel=cueq-full``, where
+``layer_norm_in``/``layer_norm_out`` are passed into cuEquivariance's fused
+kernel (``models/triangle.py:180-220``) rather than computed here; the
+default serial kernel is ``cueq``, which keeps that multiplication in XLA,
+and the 3,012-token rows below were measured on it.
+
+One caution for whoever measures that row. Under ``jax.jit`` on CPU the two
+arrangements were bit-identical at ``[20000, 128]`` while differing at
+``[64, 128]``, and the new arrangement's jitted result differs from its own
+eager result at ``[20000, 128]`` as well -- XLA is not honouring the declared
+widths there in either direction, and every number above is therefore eager,
+cross-checked bit for bit against a numpy/``ml_dtypes`` emulation of the
+jaxpr. Whether the GPU compiler does the same at trunk shapes was not
+established, and it is the one reading under which this change is a no-op on
+GPU. A jit-against-eager byte comparison of one norm at a trunk-shaped slab
+settles it before the 3,012-token row is spent.
 
 What is *not* narrowed anywhere is an output logit: the heads keep
 float32 parameters, so distogram, PAE, PDE, pLDDT and experimentally-resolved
@@ -153,7 +193,8 @@ gives A 4.50 / B 4.63 / C 4.51 / D 4.54 and sample 3 gives 5.63 / 5.65 / 5.64
 and the fold survives, which is the signature of accumulation rather than of
 the rounded-bias failure Protenix had. 48 Pairformer blocks times 10 cycles is
 where that becomes visible, and the layer-norm reading above is the leading
-hypothesis for it.
+hypothesis for it. Those rows predate the upcast and have not been remeasured
+with it, so the size limit below still stands as written.
 
 So the option is worth taking at or below roughly 2,000 tokens and is not
 safe above it. Two upstream facts, for the record, both read out of

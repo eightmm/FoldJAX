@@ -2341,6 +2341,44 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3's layer norm now accumulates in float32 under
+  `dtype=bfloat16`.** Upstream disables autocast inside `LayerNorm.forward`
+  to *force* float32 -- `x.float()`, `weight.float()`, `bias.float()`, one
+  cast on the way out
+  (`core/model/primitives/normalization.py:54-70`, comment at `:57-58`) --
+  and this port did not: `jnp.mean` accumulated wide but rounded the mean and
+  the variance back to bfloat16 before the centring and the rsqrt multiply,
+  and the affine was applied narrow as well. Four extra roundings per norm,
+  at every layer norm in a narrowed region. It now upcasts, in the shape
+  Protenix's `layer_norm` already used. Against a float64 reference on the
+  exact bfloat16 input values, per norm at `[4096, 128]`: RMS error falls
+  from 0.00461 to 0.00244 on a zero-mean input, from 0.01001 to 0.00245 at
+  mean 5, and from 0.06767 to 0.00245 at mean 50 -- the regime a pair
+  residual is in after 48 blocks and ten cycles, and the reason a zero-mean
+  spot check understates this twenty-fold. The result is bit-identical to
+  upstream's arrangement spelled directly when both hold the same affine.
+  The guard reads the *promoted* dtype rather than the activation's alone,
+  which matters at one site: the diffusion conditioning's pair branch is
+  narrowed while the whole denoiser is pinned float32, so a bfloat16
+  `zij_trunk` reaches float32 norm parameters at `atom_features.py:170`,
+  where promotion used to widen only the affine and leave the mean, variance
+  and centring narrow. That norm is now wide too and still returns float32,
+  so no realised dtype moves anywhere and the denoiser is not narrowed by
+  the repair. **The released float32 profile is unchanged and proven so:**
+  the same lowered program, to the byte, and the same output bytes, for all
+  three affine shapes, against the same script run on `main`. The mixed site
+  changes by design -- that is the repair -- and keeps its float32 output.
+  Two limits. This is the
+  leading hypothesis for the 3,012-token drift documented in
+  `models/openfold3/dtype.py`, not a demonstrated cause; that drift has not
+  been remeasured on GPU, the documented size limit for `dtype=bfloat16`
+  still stands as written, and a GPU row showing no improvement is evidence
+  about the cause rather than about this arrangement. And it does not reach
+  the two triangle-multiplication norms under `triangle_kernel=cueq-full`,
+  which are passed into cuEquivariance's fused kernel instead of computed
+  here; the default serial kernel is `cueq`, which keeps that multiplication
+  in XLA.
+
 - **Every OpenFold3 entry point that loads a checkpoint now narrows its
   weights.** `cast_narrow_params` lived only in the managed backend, so
   `openfold3-jax-predict` and `openfold3-jax-verify-checkpoint` built a

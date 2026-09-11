@@ -396,6 +396,15 @@ sample 0 gives A 4.50 / B 4.63 / C 4.51 / D 4.54 and sample 3 gives 5.63 /
 move together and the fold survives. That is the signature of accumulation
 over 48 Pairformer blocks times 10 cycles, not of one region breaking.
 
+Those rows were measured **before** the port's layer norm was changed to
+accumulate in float32, which it now does, as upstream's and Protenix's both
+do. That removes 47% of the per-norm error against a float64 reference on a
+zero-mean input and 96% on one whose mean is 50 standard deviations out --
+the regime a pair residual is in deep in the trunk -- and it is the leading
+hypothesis for the 3,012-token drift. It has **not** been remeasured on GPU,
+so the table above and the 2,000-token advice stand exactly as written until
+a 3,012-token row says otherwise.
+
 "Partial" is the other load-bearing word. A whole-trunk bfloat16 cast, input
 embedder included, destroys the prediction outright -- pLDDT 0.858 to 0.466,
 with the error already the size of `s_input` before a Pairformer block runs --
