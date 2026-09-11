@@ -281,10 +281,12 @@ not inference, and it additionally pins the confidence Pairformer wide with a
 `main.py:1262` (`precision="bf16-mixed"`) with `main.py:1096` asking for
 `highest` matmuls, and this port followed until then. It now ships `high`,
 because the criterion for a default here is accuracy equivalence rather than
-agreement with upstream's configuration: -7.2% wall at 1,003 tokens against a
-same-snapshot control and about -8.4% at 2,096, no change in peak at either
+agreement with upstream's configuration: -7.2% wall at 1,003 tokens and -4.5%
+at 2,096, both against same-snapshot controls, no change in peak at either
 size, and a 5DEI residual between the two arms of 0.038 Å median against a
-0.238 Å within-arm spread. `docs/cli.md` carries the full row, including why
+0.238 Å within-arm spread. The saving shrinks with length where
+`pair_residual_dtype`'s grows, so the two levers on this port scale in
+opposite directions. `docs/cli.md` carries the full row, including why
 an earlier reading of it credited this change with the fused GLU's memory
 saving.
 

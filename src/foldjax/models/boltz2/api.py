@@ -75,12 +75,15 @@ DIFFUSION_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 #: warm after prefill, one RTX PRO 6000 Blackwell:
 #:
 #:   1,003 tokens   88.31 -> 81.96 s   (-7.2%)   peak 9,216 MiB, unchanged
-#:   2,096 tokens   ~313.94 -> 287.62 s (~-8.4%) peak 21,778 MiB, unchanged
+#:   2,096 tokens   301.32 -> 287.71 s (-4.5%)   peak 21,778 MiB, unchanged
 #:
-#: The 1,003-token pair is one snapshot with only `matmul_precision` between
-#: the rows. The 2,096-token `highest` figure is the fused-GLU note's
-#: post-flip number standing in for a control that was not run beside
-#: 287.62, so that row is approximate.
+#: Both rows are same-source pairs, one option between them. The saving
+#: shrinks with length, and no memory comes with it at either size --
+#: `pair_residual_dtype` below is the lever that scales the other way. The
+#: 2,096 row was first estimated at ~-8.4% by borrowing the `highest` figure
+#: from the `glu_backend` note below; its measured control came back twelve
+#: seconds lower, so read a number lifted from elsewhere in this file as an
+#: estimate and not a control.
 #:
 #: **This buys wall clock and no memory at all.** An earlier reading of these
 #: rows put the 1,003-token pair at 90.98 -> 82.17 s with peak 12,612 -> 9,216
