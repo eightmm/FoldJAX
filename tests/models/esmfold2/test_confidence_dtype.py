@@ -1,4 +1,4 @@
-"""The bfloat16 confidence re-embedding, at AlphaFold 3's boundary.
+"""The opt-in bfloat16 confidence re-embedding, at AlphaFold 3's boundary.
 
 Every assertion here reads a realised array dtype rather than a config
 spelling. A test that asserts `settings.confidence_dtype == "bfloat16"` passes
@@ -231,16 +231,33 @@ def _run(params, confidence_dtype, *, trunk_dtype=jnp.bfloat16, **extra):
     )
 
 
-def test_the_float32_opt_out_leaves_the_confidence_tree_in_float32(recorder) -> None:
-    """`confidence_dtype="float32"` restores upstream's width exactly.
+def _shipped_dtype() -> object:
+    """The width the port ships, resolved rather than spelled.
 
-    No parameter is copied and no operand narrows. This is the arm every
-    recorded ESMFold2 confidence number describes, and the one upstream runs:
-    its `ConfidenceHead.forward` sits outside every autocast region.
+    Every test that means "the default" goes through this, so the default is
+    asserted by what it makes the arrays do and a later flip is one edit
+    rather than a rewrite of every assertion that named a literal.
+    """
+    return jnp.dtype(structure_model.ModelSettings().confidence_dtype)
+
+
+def test_the_shipped_default_leaves_the_confidence_tree_in_float32(recorder) -> None:
+    """The default is read off arrays, not off `ModelSettings`.
+
+    Asserting `confidence_dtype == "float32"` would pass on a port that
+    carries the string and hands the head something else, which is this
+    port's recorded failure mode, and it would have to be rewritten rather
+    than simply fail if the default ever moved. So the default is resolved
+    through `_shipped_dtype` and then read back off the operands: no
+    parameter is copied and nothing narrows.
+
+    This is also the arm every recorded ESMFold2 confidence number describes,
+    and the one upstream runs -- its `ConfidenceHead.forward` sits outside
+    every autocast region.
     """
     params = _params()
     original = dict(params)
-    _run(params, jnp.float32)
+    _run(params, _shipped_dtype())
 
     assert recorder.linears, "the recorder saw no linear at all"
     assert recorder.matmuls, "the recorder saw no matmul at all"
@@ -453,62 +470,6 @@ def test_context_parallelism_narrows_the_reembedding_and_not_the_trunk(
 
 def test_the_accepted_values_are_the_two_spellings() -> None:
     assert CONFIDENCE_DTYPES == ("float32", "bfloat16")
-
-
-def _shipped_dtype() -> object:
-    """The width the port ships, read from the settings rather than spelled.
-
-    Every test below that means "the default" resolves it through this, so a
-    later flip is one edit and none of them can pass by naming a literal the
-    port no longer uses.
-    """
-    return jnp.dtype(structure_model.ModelSettings().confidence_dtype)
-
-
-def test_the_shipped_default_realises_a_narrowed_reembedding(recorder) -> None:
-    """The default is read off arrays, not off `ModelSettings`.
-
-    Asserting `confidence_dtype == "bfloat16"` would pass on a port that
-    carries the string and hands the head float32 anyway, which is this
-    port's recorded failure mode. So the default is resolved and then the
-    same realised-dtype assertions the explicit bfloat16 arm makes are made
-    of it.
-    """
-    _run(_params(), _shipped_dtype())
-
-    for name in REEMBEDDING_PROJECTIONS:
-        assert recorder.weight_dtypes(name) == {"bfloat16"}, name
-        assert recorder.output_dtypes(name) == {"bfloat16"}, name
-    assert recorder.input_dtypes("s_to_z_prod_out") == {"bfloat16"}
-    # The residual stream the re-embedding feeds, all four trunk blocks.
-    assert recorder.trunk_entry == ["bfloat16"]
-
-
-def test_the_shipped_default_keeps_the_output_heads_float32(recorder) -> None:
-    """AlphaFold 3's `:163` and `:244` hold at the default, not just opt-in."""
-    result = _run(_params(), _shipped_dtype())
-
-    assert recorder.pooling_entry == ["float32"], "the float32 boundary moved"
-    for name in (*OUTPUT_PROJECTIONS, "row_attention_pooling.attn_proj"):
-        assert recorder.weight_dtypes(name) == {"float32"}, name
-        assert recorder.output_dtypes(name) == {"float32"}, name
-    for value in result.values():
-        assert value.dtype == jnp.float32
-
-
-def test_the_shipped_default_differs_from_the_float32_opt_out() -> None:
-    """The tripwire on the flip itself.
-
-    If the default ever resolved to float32 again, every assertion above
-    would still pass -- `_shipped_dtype` follows the settings. This is the
-    one test that fails, and it fails on realised numbers rather than on a
-    spelling: the two arms must not agree bit for bit.
-    """
-    params = _params()
-    shipped = np.asarray(_run(params, _shipped_dtype())["plddt"])
-    opt_out = np.asarray(_run(params, jnp.float32)["plddt"])
-
-    assert not np.array_equal(shipped, opt_out)
 
 
 def test_the_backend_and_the_port_default_to_the_same_width() -> None:

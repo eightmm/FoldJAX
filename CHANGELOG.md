@@ -76,37 +76,42 @@ unless it says so here, in its own paragraph.
   follows the weight, as the dense path does; the compact and dense paths are
   bitwise equal again in both precisions. This changes what Protenix's
   shipped bfloat16 confidence policy computes.
-- **A bfloat16 confidence head for ESMFold2, on by default.** The head's
+- **An opt-in bfloat16 confidence head for ESMFold2**, off by default.
+  `--option confidence_dtype=bfloat16` narrows the confidence head's
   re-embedding -- the five `s_to_z*` projections, the distance-bin gather and
-  the residual stream they feed into the head's own trunk -- now runs
-  bfloat16, at AlphaFold 3's boundary: narrow re-embedding, float32 output
-  heads. `--option confidence_dtype=float32` opts out.
+  the residual stream they feed into the head's own trunk -- at AlphaFold 3's
+  boundary: narrow re-embedding, float32 output heads. `float32` stays the
+  default, so every released run is unchanged.
 
-  **This changes what ESMFold2 reports for confidence, and it diverges from
-  upstream.** Upstream's `ConfidenceHead.forward` runs outside every autocast
-  region (`modeling_esmfold2.py:172-221`, called at `:1061`, after the
-  model-level bfloat16 context opened at `:936` has closed); the only
+  **It is measured, and on its own it buys nothing.** GPU rows 1111/1112
+  against the released default: at 1,003 tokens wall 155.16 -> 160.92 s
+  (+3.7%) with peak 14,733.3 -> 14,733.3 MiB, and at 2,096 tokens wall
+  450.88 -> 450.05 s (-0.2%) with peak 46,041.8 -> 46,042.3 MiB. The arm
+  fires -- the 2,096-token peak moves 0.5 MiB -- and moves nothing else,
+  because this port's peak is a single folding-trunk temp arena that the
+  confidence head contributes no term to. The option is documented as one for
+  combination arms and is not recommended alone; that, and not upstream
+  fidelity, is why the default stays float32.
+
+  **float32 here is upstream's own width**, newly written down: upstream's
+  `ConfidenceHead.forward` runs outside every autocast region
+  (`modeling_esmfold2.py:172-221`, called at `:1061`, after the model-level
+  bfloat16 context opened at `:936` has closed at `:1030`), and the only
   autocast inside the head wraps its own `folding_trunk` at `:223`, taking a
-  float32 pair and returning `pair.add_(pair_delta.float())`. So float32 is
-  upstream's realised width and is what `--option confidence_dtype=float32`
-  restores. The bfloat16 Linear operands inside the head's trunk come from
-  `:223` and are unaffected either way.
+  float32 pair and returning `pair.add_(pair_delta.float())`. So the float32
+  re-embedding this option narrows is deliberate rather than an island nobody
+  chose, and the bfloat16 Linear operands already inside the head's trunk come
+  from `:223` under either value.
 
-  **It is unmeasured on this port**: there is no GPU row for it, and every
-  recorded ESMFold2 pLDDT, pTM and PAE number describes the float32 arm. The
-  case for shipping it anyway is that the confidence head produces scores and
-  never coordinates, so nothing inside it can move a structure, and that
-  Protenix measured the equivalent narrowing at 3,012 tokens as
+  It is the safest dtype change the port offers, because the confidence head
+  produces scores and never coordinates, so nothing inside it can move the
+  structure; Protenix measured the equivalent narrowing at 3,012 tokens as
   bitwise-identical coordinates, at most 0.0099 of atom pLDDT and at most
-  1.9e-4 of chain pTM and ipTM.
-
-  The pooling and pTM softmaxes, the four output heads, the representative
-  distances and the bin comparison against them all stay float32, so every
-  returned score is float32 in both arms. Unlike the fused kernels, it
-  composes with context parallelism, where it narrows the re-embedding and
-  leaves the head's trunk unchanged. The value joins the compilation-cache
-  identity: spelling `bfloat16` names the same namespace as leaving it unset,
-  and `float32` forks its own.
+  1.9e-4 of chain pTM and ipTM. Accuracy is unmeasured on this port. The
+  pooling and pTM softmaxes, the four output heads, the representative
+  distances and the bin comparison against them all stay float32. Unlike the
+  fused kernels, it composes with context parallelism, where it narrows the
+  re-embedding and leaves the head's trunk unchanged.
 
 - **An opt-in partial bfloat16 profile for OpenFold3**, off by default.
   `--option dtype=bfloat16` narrows the token/pair representation track -- the

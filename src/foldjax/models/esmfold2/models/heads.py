@@ -173,16 +173,17 @@ def confidence_head(
     which is why its cost scales with the sample count rather than amortising.
 
     `confidence_dtype` narrows the re-embedding that runs before the head's own
-    trunk, at AlphaFold 3's boundary rather than as a blanket cast. The
-    keyword default here is float32, the value that changes nothing, the way
-    `trunk_dtype`'s is: what this port *ships* is carried by
-    `ModelSettings.confidence_dtype`, which is bfloat16, and the port's only
-    caller passes it explicitly. It is deliberately separate from
-    `trunk_dtype`: that one targets the region upstream's own autocast covers,
-    while this one opens a region upstream keeps in float32 -- upstream's
-    `ConfidenceHead.forward` runs outside every autocast region
-    (`modeling_esmfold2.py:172-221`, called at `:1061`), and only its own
-    `folding_trunk` is wrapped, at `:223`.
+    trunk, at AlphaFold 3's boundary rather than as a blanket cast; float32,
+    which changes nothing, is the default here and in `ModelSettings`. It is
+    deliberately separate from `trunk_dtype`: that one targets the region
+    upstream's own autocast covers, while this one opens a region upstream
+    keeps in float32 -- upstream's `ConfidenceHead.forward` runs outside
+    every autocast region (`modeling_esmfold2.py:172-221`; the model-level
+    context opened at `:936` closes at `:1030`, before the head is called at
+    `:1061`), and only its own `folding_trunk` is wrapped, at `:223`, taking
+    a float32 pair and returning `pair.add_(pair_delta.float())`. So the
+    float32 re-embedding this option narrows is deliberate, not an island
+    nobody chose.
 
     What stays wide under it, and why, since a list of exclusions is the only
     part of a dtype option that is not self-evident from the code:

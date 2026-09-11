@@ -194,7 +194,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
             "max_msa_depth": 1024,
             "structure_sample_sequential": False,
             "glu_backend": "xla",
-            "confidence_dtype": "bfloat16",
+            "confidence_dtype": "float32",
         },
     )
 
@@ -218,10 +218,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
         ("structure_sample_sequential", True),
         ("structure_sample_sequential", 0),
         ("glu_backend", "tokamax"),
-        # The opt-out, not the default: spelling the shipped `bfloat16`
-        # shares the omitted namespace in the test above, and asking for
-        # upstream's float32 width must fork its own.
-        ("confidence_dtype", "float32"),
+        ("confidence_dtype", "bfloat16"),
     ],
 )
 def test_esmfold2_unproven_defaults_and_lookalikes_stay_distinct(

@@ -256,39 +256,45 @@ class ModelSettings:
     #: fixed-tape structure or raw-confidence parity; see the dated native
     #: tape and MSA-entry observer reports for the outstanding gates.
     trunk_dtype: str = "bfloat16"
-    #: The confidence head's re-embedding width, independent of `trunk_dtype`.
-    #: `"bfloat16"` since 2026-09-11; `"float32"` restores upstream's shape.
+    #: The confidence head's re-embedding width, opt-in and independent of
+    #: `trunk_dtype`. `"float32"` is the released default and changes nothing.
     #:
     #: `trunk_dtype` already reaches the *inside* of this head: its own
     #: `folding_trunk` reopens upstream's autocast the way upstream does, so
     #: that stack runs with bfloat16 Linear operands under either value. What
-    #: this field governs is the re-embedding in front of it -- the five
-    #: `s_to_z*` projections, the distance-bin gather -- and the residual
-    #: stream those feed, at AlphaFold 3's boundary exactly: narrow
-    #: re-embedding, float32 output heads (`confidence_head.py:121-127`,
-    #: `:163`, `:244`).
+    #: stays float32 is the re-embedding in front of it -- the five `s_to_z*`
+    #: projections, the distance-bin gather -- and the residual stream those
+    #: feed. This field narrows that, following AlphaFold 3's boundary
+    #: exactly: narrow re-embedding, float32 output heads
+    #: (`confidence_head.py:121-127`, `:163`, `:244`).
     #:
-    #: **The bfloat16 default diverges from pinned upstream.** Upstream's
-    #: `ConfidenceHead.forward` runs outside every autocast region
+    #: **float32 is upstream's own width, not an accidental island.**
+    #: Upstream's `ConfidenceHead.forward` runs outside every autocast region
     #: (`modeling_esmfold2.py:172-221`; the model-level bf16 context at `:936`
-    #: closes before the head is called at `:1061`), and the only autocast
-    #: inside the head wraps its `folding_trunk` alone at `:223`, taking a
-    #: float32 pair and returning `pair.add_(pair_delta.float())`. So float32
-    #: here is upstream's realised width, and it is what every recorded
-    #: ESMFold2 confidence number describes. This default is AlphaFold 3's
-    #: shape instead, and is unmeasured on this port.
+    #: closes at `:1030`, before the head is called at `:1061`), and the only
+    #: autocast inside the head wraps its `folding_trunk` alone at `:223`,
+    #: taking a float32 pair and returning `pair.add_(pair_delta.float())`.
+    #: The bfloat16 Linear operands already inside the head's trunk are what
+    #: `:223` gives under either value of this field.
     #:
-    #: It is the safest dtype change this port offers, because the confidence
-    #: head makes scores and never coordinates. Nothing inside it can move the
-    #: structure, and a GPU run should assert that rather than assume it.
-    #: Protenix measured the equivalent narrowing at 3,012 tokens: coordinates
-    #: bitwise unchanged, atom pLDDT moved at most 0.0099, chain pTM and ipTM
-    #: at most 1.9e-4, PAE means at most 0.005.
+    #: **Measured, and it buys nothing alone.** GPU rows 1111/1112 against the
+    #: released default: at 1,003 tokens wall 155.16 -> 160.92 s and peak
+    #: 14,733.3 -> 14,733.3 MiB; at 2,096 tokens wall 450.88 -> 450.05 s and
+    #: peak 46,041.8 -> 46,042.3 MiB. The arm fires -- the 2,096-token peak
+    #: moves 0.5 MiB -- and moves nothing else, because this port's peak is a
+    #: folding-trunk arena the confidence head has no term in. So this is a
+    #: knob for combination arms, not a recommendation on its own.
+    #:
+    #: It is still the safest dtype change this port offers, because the
+    #: confidence head makes scores and never coordinates. Nothing inside it
+    #: can move the structure. Protenix measured the equivalent narrowing at
+    #: 3,012 tokens: coordinates bitwise unchanged, atom pLDDT moved at most
+    #: 0.0099, chain pTM and ipTM at most 1.9e-4, PAE means at most 0.005.
     #:
     #: Independent of `confidence_sample_sequential`. That option maps the
     #: head over the sample axis; this is a trace-time constant inside the
     #: mapped body, so the two compose without interacting.
-    confidence_dtype: str = "bfloat16"
+    confidence_dtype: str = "float32"
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings
     )

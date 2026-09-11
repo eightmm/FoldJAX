@@ -742,36 +742,53 @@ custom call carries no partitioner for the sharded pair state. And a backend
 change is a numerics change -- read a switched run against this port's own
 rerun floor, not against the default as if it were exact.
 
-### A bfloat16 ESMFold2 confidence head (`--option confidence_dtype`, on by default)
+### `--option confidence_dtype=bfloat16` (ESMFold2)
 
-The confidence head's re-embedding runs bfloat16, following AlphaFold 3's
-boundary: AF3 casts the pair and single activations at
+Narrows the confidence head's re-embedding to bfloat16, following AlphaFold
+3's boundary: its confidence head casts the pair and single activations at
 `confidence_head.py:121-127`, runs the whole re-embedding Pairformer narrow,
 and returns to float32 at `:163` before the distogram-error logits and at
-`:244` before pLDDT. `--option confidence_dtype=float32` opts out.
+`:244` before pLDDT. `float32` is the default and no released number changes.
 
-**The default diverges from pinned upstream, and float32 is what restores
-it.** Upstream's `ConfidenceHead.forward` runs outside every autocast region
--- `modeling_esmfold2.py:172-221`, called at `:1061`, after the model-level
-bfloat16 context opened at `:936` has closed. The only autocast inside the
-head wraps its own `folding_trunk` alone, at `:223`, and it receives a float32
-pair and gives back `pair.add_(pair_delta.float())`. So upstream's re-embedding
-and residual stream are float32, and the bfloat16 Linear operands inside the
-head's trunk are what `:223` already gives under either value here.
+**Measured, and on its own it buys nothing.** GPU rows 1111/1112, this port,
+against the released default:
 
-**It is unmeasured on this port.** There is no GPU row for it, and every
-recorded ESMFold2 pLDDT, pTM and PAE number describes the float32 arm. What
-exists is a sibling's measurement of the same narrowing: Protenix at 3,012
-tokens moved coordinates not at all, atom pLDDT by at most 0.0099, chain pTM
-and ipTM by at most 1.9e-4, and PAE means by at most 0.005. Read that as the
-scale to expect, not as this port's number. The confidence head makes scores
-and never coordinates, so nothing narrowed inside it can move a structure --
-which is why this is the safest dtype change the port offers, and why an
-unmeasured default is tolerable here and would not be in the trunk.
+| tokens | wall, float32 -> bfloat16 | peak, float32 -> bfloat16 |
+|---|---|---|
+| 1,003 | 155.16 -> 160.92 s (+3.7%) | 14,733.3 -> 14,733.3 MiB |
+| 2,096 | 450.88 -> 450.05 s (-0.2%) | 46,041.8 -> 46,042.3 MiB |
 
-What narrows: the five projections that build the pair from the single input,
-the distance-bin embedding gather, and the residual stream those feed into the
-head's own trunk. What stays float32: both entry normalisations, the
+The arm fires -- the 2,096-token peak moves 0.5 MiB, so it is not a dead
+branch -- and it moves nothing else: no peak change at either size, and no
+wall change outside noise. The reason is structural. This port's peak is a
+single folding-trunk temp arena, and the confidence head contributes no term
+to it, so a knob inside that head has nothing to shrink. **Do not reach for
+this option alone.** It is here for combination arms, where it is the one
+region of this port that can be narrowed without risking a structure.
+
+**float32 here is upstream's own width, not an accidental island.** Upstream's
+`ConfidenceHead.forward` runs outside every autocast region --
+`modeling_esmfold2.py:172-221`, called at `:1061`, after the model-level
+bfloat16 context opened at `:936` has closed at `:1030`. The only autocast
+inside the head wraps its own `folding_trunk` alone, at `:223`, and it
+receives a float32 pair and gives back `pair.add_(pair_delta.float())`. So
+upstream's re-embedding and residual stream are float32, and the bfloat16
+Linear operands inside the head's trunk are what `:223` already gives under
+either value of this option.
+
+**It is unmeasured for accuracy.** The timing rows above are wall and peak
+only; no accuracy row exists for it on this port, and every recorded ESMFold2
+pLDDT, pTM and PAE number describes the float32 default. What exists is a
+sibling's measurement of the same narrowing: Protenix at 3,012 tokens moved
+coordinates not at all, atom pLDDT by at most 0.0099, chain pTM and ipTM by at
+most 1.9e-4, and PAE means by at most 0.005. Read that as the scale to expect,
+not as this port's number. The confidence head makes scores and never
+coordinates, so nothing narrowed inside it can move a structure -- which is
+why this is the safest dtype change the port offers.
+
+What it narrows: the five projections that build the pair from the single
+input, the distance-bin embedding gather, and the residual stream those feed
+into the head's own trunk. What stays float32: both entry normalisations, the
 representative coordinates and the distances built from them, the comparison
 that picks a distance bin, every mask, and everything past the trunk -- the
 row-attention pooling and all four output heads. Two of those are load-bearing
@@ -783,21 +800,19 @@ exponential is rounded, and every returned score is float32 in both arms.
 It is separate from `trunk_dtype`, and deliberately so. `trunk_dtype` targets
 the region upstream's own autocast covers, and it already reaches *inside*
 this head: the head reopens that autocast for its own trunk the way upstream
-does, so that stack runs with bfloat16 Linear operands either way. What this
-option governs is the re-embedding in front of it and the residual stream it
-feeds. Setting `confidence_dtype=bfloat16` under `trunk_dtype=float32` narrows
-the re-embedding and leaves the head's trunk in float32.
+does, so that stack runs with bfloat16 Linear operands at the released
+default. What is still float32 is the re-embedding in front of it. Setting
+`confidence_dtype=bfloat16` under `trunk_dtype=float32` narrows the
+re-embedding and leaves the head's trunk in float32.
 
 Unlike the fused kernels above, it composes with context parallelism: this is
 arithmetic under a sharding constraint rather than a custom call GSPMD has no
 partitioner for. Under a mesh the head's trunk takes its storage-cast branch,
 which the option does not select, so there it narrows the re-embedding only.
 
-The value joins the compilation-cache identity, so a float32 run never
-receives the narrowed executable or the reverse. Spelling `bfloat16`
-explicitly names the same namespace as leaving it unset, because it is what
-the port resolves to anyway; `float32` forks its own. The two spellings are
-exact: `bf16` is refused, naming `float32` and `bfloat16`.
+The value joins the compilation-cache identity, so a narrowed run never
+receives the executable built without it, and the two spellings are exact:
+`bf16` is refused, naming `float32` and `bfloat16`.
 
 Only the diffusion token transformer is fused. The atom encoder and decoder
 feed-forwards inside the same denoiser, the trunk's SwiGLU and transition

@@ -528,8 +528,8 @@ def predict(
     #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
     glu_backend: str | None = None,
     #: The confidence head's re-embedding width. `None` leaves the
-    #: checkpoint's value, which is `"bfloat16"` -- AlphaFold 3's narrowed
-    #: re-embedding; `"float32"` restores upstream's own width. Scores only
+    #: checkpoint's value, which is `"float32"` -- upstream's own width;
+    #: `"bfloat16"` opens AlphaFold 3's narrowed re-embedding. Scores only
     #: -- the head cannot reach the coordinates.
     confidence_dtype: str | None = None,
     language_model_tokens: int | None = None,
