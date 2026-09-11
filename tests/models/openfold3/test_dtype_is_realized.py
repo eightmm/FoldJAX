@@ -53,6 +53,7 @@ from foldjax.models.openfold3.models.primitives import (
     LinearParams,
     SwiGLUParams,
     SwiGLUTransitionParams,
+    layer_norm,
 )
 from foldjax.models.openfold3.models.triangle import TriangleMultiplicationParams
 from foldjax.models.openfold3.models.triangle_attention import TriangleAttentionParams
@@ -206,9 +207,10 @@ def test_the_released_default_narrows_nothing() -> None:
     assert resolve_dtypes(released_config(n_token=8, n_atom=32)) == (None, None)
     assert narrow_dtype(DEFAULT_DTYPE) is None
     assert narrow_dtype("bfloat16") is jnp.bfloat16
-    assert resolve_dtypes(
-        released_config(n_token=8, n_atom=32, dtype="bfloat16")
-    ) == (jnp.bfloat16, jnp.bfloat16)
+    assert resolve_dtypes(released_config(n_token=8, n_atom=32, dtype="bfloat16")) == (
+        jnp.bfloat16,
+        jnp.bfloat16,
+    )
 
 
 def test_an_unknown_dtype_is_refused_naming_the_allowed_values() -> None:
@@ -1049,9 +1051,7 @@ def test_the_resolved_confidence_dtype_does_not_fork_the_jit_owner() -> None:
     assert omitted == released_config(
         n_token=8, n_atom=32, confidence_dtype=DEFAULT_DTYPE
     )
-    assert omitted != released_config(
-        n_token=8, n_atom=32, confidence_dtype="bfloat16"
-    )
+    assert omitted != released_config(n_token=8, n_atom=32, confidence_dtype="bfloat16")
 
     # The same must hold on the other trunk dtype, where the resolved value
     # is `bfloat16` and the literal default is the wrong thing to compare to.
@@ -1124,3 +1124,204 @@ def test_the_streamed_route_forwards_both_keywords(monkeypatch) -> None:
     for stage, kwargs in seen.items():
         assert kwargs["glu_backend"] == "tokamax", stage
         assert kwargs["dtype"] == jnp.bfloat16, stage
+
+
+# ------------------------------------ the layer norm accumulates in float32 --
+#
+# These run EAGER, without ``jax.jit``, and that is not incidental. Under
+# ``jax.jit`` on CPU the narrow and the wide arrangement were measured
+# bit-identical at ``[20000, 128]`` -- the same comparison at ``[64, 128]``,
+# and eager at both shapes, separates them. A jitted CPU A/B would therefore
+# have certified "no difference" for a change that removes 96% of the error.
+# Eager agrees bit-for-bit with an independent numpy/``ml_dtypes`` emulation of
+# the jaxpr, so it is the faithful instrument for this property on CPU.
+
+LN_EPS = 1e-5
+LN_WIDTH = 128
+
+
+def _ln_inputs(*, mean: float, std: float, rows: int = 512):
+    """A slab shaped like a narrowed pair row: bfloat16 x, float32 affine."""
+    rng = np.random.default_rng(0xC0FFEE)
+    x = jnp.asarray(
+        (rng.normal(size=(rows, LN_WIDTH)) * std + mean).astype(np.float32),
+        jnp.bfloat16,
+    )
+    weight = jnp.asarray(rng.normal(size=(LN_WIDTH,)) * 0.1 + 1.0, jnp.float32)
+    bias = jnp.asarray(rng.normal(size=(LN_WIDTH,)) * 0.05, jnp.float32)
+    return x, weight, bias
+
+
+def _float64_layer_norm(x, weight, bias):
+    """The reference: float64 on the exact bfloat16 input values.
+
+    Input quantisation is common to every arrangement, so folding it into the
+    reference would hide what is being compared.
+    """
+    values = np.asarray(x, np.float64)
+    centred = values - values.mean(-1, keepdims=True)
+    variance = (centred**2).mean(-1, keepdims=True)
+    return centred / np.sqrt(variance + LN_EPS) * np.asarray(
+        weight, np.float64
+    ) + np.asarray(bias, np.float64)
+
+
+def _rms(actual, expected) -> float:
+    return float(np.sqrt(((np.asarray(actual, np.float64) - expected) ** 2).mean()))
+
+
+def _upstream_layer_norm(x, weight, bias, *, out_dtype):
+    """``normalization.py:54-70`` spelled directly: upcast, normalise, cast."""
+    values = x.astype(jnp.float32)
+    mean = jnp.mean(values, axis=-1, keepdims=True)
+    variance = jnp.mean(jnp.square(values - mean), axis=-1, keepdims=True)
+    normed = (values - mean) * jnp.reciprocal(jnp.sqrt(variance + LN_EPS))
+    return (normed * weight.astype(jnp.float32) + bias.astype(jnp.float32)).astype(
+        out_dtype
+    )
+
+
+@pytest.mark.parametrize(
+    "with_weight,with_bias", [(True, True), (True, False), (False, False)]
+)
+def test_a_float32_layer_norm_emits_no_conversions(with_weight, with_bias) -> None:
+    """The released profile is float32, so the upcast must be invisible to it.
+
+    The property rather than the spelling: a float32 layer norm's program
+    holds no ``convert_element_type`` at all. That is the same promise
+    ``narrow_dtype`` keeps by returning ``None`` instead of ``jnp.float32`` --
+    the released profile emits no casts, not casts that a reader has to prove
+    are free. All three affine shapes are checked because AdaLN uses all
+    three.
+    """
+    rng = _rng()
+    x = jnp.asarray(rng.normal(size=(6, LN_WIDTH)), jnp.float32)
+    params = LayerNormParams(
+        weight=(
+            jnp.asarray(rng.normal(size=(LN_WIDTH,)), jnp.float32)
+            if with_weight
+            else None
+        ),
+        bias=(
+            jnp.asarray(rng.normal(size=(LN_WIDTH,)), jnp.float32)
+            if with_bias
+            else None
+        ),
+    )
+    jaxpr = jax.make_jaxpr(lambda a, p: layer_norm(a, p, eps=LN_EPS))(x, params).jaxpr
+    assert [
+        equation.primitive.name
+        for equation in jaxpr.eqns
+        if equation.primitive.name == "convert_element_type"
+    ] == []
+
+
+def test_a_bfloat16_layer_norm_reduces_and_scales_in_float32() -> None:
+    """Every operand of the normalisation is float32; one cast leaves.
+
+    Reading the realised program, not the source: the reduction, the
+    centring, the variance, the rsqrt and the affine all take float32
+    operands, and exactly one conversion narrows the result on the way out.
+    """
+    x, weight, bias = _ln_inputs(mean=0.0, std=1.0, rows=8)
+    params = LayerNormParams(
+        weight=weight.astype(jnp.bfloat16), bias=bias.astype(jnp.bfloat16)
+    )
+    jaxpr = jax.make_jaxpr(lambda a, p: layer_norm(a, p, eps=LN_EPS))(x, params).jaxpr
+    arithmetic = {
+        "reduce_sum",
+        "div",
+        "sub",
+        "square",
+        "add",
+        "sqrt",
+        "integer_pow",
+        "mul",
+    }
+    for equation in jaxpr.eqns:
+        if equation.primitive.name not in arithmetic:
+            continue
+        assert all(
+            variable.aval.dtype == jnp.float32 for variable in equation.invars
+        ), equation
+    narrowing = [
+        equation
+        for equation in jaxpr.eqns
+        if equation.primitive.name == "convert_element_type"
+        and equation.outvars[0].aval.dtype == jnp.bfloat16
+    ]
+    assert len(narrowing) == 1
+    assert jaxpr.outvars[0].aval.dtype == jnp.bfloat16
+
+
+def test_a_bfloat16_layer_norm_matches_upstreams_arithmetic() -> None:
+    """Bitwise upstream, given the affine this port stores.
+
+    ``cast_narrow_params`` narrows the affine with the rest of the trunk, so
+    the port's norm holds a bfloat16 weight where upstream's holds the float32
+    one its module never cast. That is the only difference left, and this
+    pins it: with the same operands the two arrangements agree bit for bit.
+    """
+    x, weight, bias = _ln_inputs(mean=5.0, std=1.0)
+    narrow_weight, narrow_bias = (
+        weight.astype(jnp.bfloat16),
+        bias.astype(jnp.bfloat16),
+    )
+    port = layer_norm(
+        x, LayerNormParams(weight=narrow_weight, bias=narrow_bias), eps=LN_EPS
+    )
+    upstream = _upstream_layer_norm(
+        x, narrow_weight, narrow_bias, out_dtype=jnp.bfloat16
+    )
+    assert port.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(np.asarray(port), np.asarray(upstream))
+
+
+@pytest.mark.parametrize("mean,ceiling", [(0.0, 0.0030), (50.0, 0.0030)])
+def test_a_bfloat16_layer_norm_stays_near_the_float64_reference(mean, ceiling) -> None:
+    """What the upcast buys, against float64, at both ends of the regime.
+
+    The shipped arrangement is 1.9x the reference error on a zero-mean input
+    and 28x on one whose mean is 50 standard deviations out -- the regime a
+    pair residual is in after 48 blocks and ten cycles, and the reason a
+    zero-mean spot check understates this. The ceiling here is set between
+    the two: the narrow arrangement measured 0.0046 and 0.068, the wide one
+    0.0024 at both.
+    """
+    x, weight, bias = _ln_inputs(mean=mean, std=1.0)
+    narrow_weight, narrow_bias = (
+        weight.astype(jnp.bfloat16),
+        bias.astype(jnp.bfloat16),
+    )
+    expected = _float64_layer_norm(x, weight, bias)
+    actual = layer_norm(
+        x, LayerNormParams(weight=narrow_weight, bias=narrow_bias), eps=LN_EPS
+    )
+    assert _rms(actual, expected) < ceiling
+
+
+def test_a_narrow_activation_against_wide_parameters_normalises_wide() -> None:
+    """The denoiser's atom encoder, which the guard exists for.
+
+    ``cast_narrow_params`` narrows the diffusion conditioning's *pair* branch
+    and pins the whole denoiser float32, so ``atom_features.py:170`` takes a
+    bfloat16 ``zij_trunk`` against a float32 ``layer_norm_z``. Promotion alone
+    left the mean, the variance and the centring narrow there and widened only
+    the affine. Two things are asserted: the normalisation now runs wide --
+    it is exact against float64, because nothing rounds the result -- and the
+    realised output dtype is still float32, so widening the accumulation did
+    not narrow a region this port pins wide. Nothing rounds the result here,
+    so the only error left is float32's own -- four orders of magnitude below
+    the 0.068 the narrow arrangement carried at this mean.
+    """
+    x, weight, bias = _ln_inputs(mean=50.0, std=1.0)
+    actual = layer_norm(x, LayerNormParams(weight=weight, bias=bias), eps=LN_EPS)
+    assert actual.dtype == jnp.float32
+    expected = _float64_layer_norm(x, weight, bias)
+    np.testing.assert_array_equal(
+        np.asarray(actual, np.float64),
+        np.asarray(
+            _upstream_layer_norm(x, weight, bias, out_dtype=jnp.float32), np.float64
+        ),
+    )
+    assert _rms(actual, expected) < 1e-6

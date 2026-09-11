@@ -396,6 +396,27 @@ sample 0 gives A 4.50 / B 4.63 / C 4.51 / D 4.54 and sample 3 gives 5.63 /
 move together and the fold survives. That is the signature of accumulation
 over 48 Pairformer blocks times 10 cycles, not of one region breaking.
 
+Those rows were measured **before** the port's layer norm was changed to
+accumulate in float32, which it now does, as upstream's and Protenix's both
+do. Remeasured at 3,012 tokens after that change, on the same target and
+against the same control:
+
+| arrangement | same-index vs f32 | arm's own spread | TM | wall |
+| --- | --- | --- | --- | --- |
+| before the upcast | 5.265 A | 1.729 | 0.978 | 664.61 s |
+| after the upcast | **1.121 A** | **0.747** | **0.996** | 655.17 s |
+| float32 control | — | 0.619 | — | 950.84 s |
+
+A 4.7x reduction in drift, the arm's own sample scatter back from 2.8x the
+control's to 1.2x, and no cost: slightly faster, and a byte-identical peak.
+At 2,096 tokens the change is not measurable at all — 0.047-0.049 A residual
+on every arm, spreads 0.162-0.163 against a 0.163 control.
+
+**The advice above does not change.** 1.121 A is still 1.8x the control's own
+spread, so `float32` stays the default and `dtype=bfloat16` stays opt-in at
+3,012 tokens. What it does change is the size of the penalty you take if you
+select it there anyway.
+
 "Partial" is the other load-bearing word. A whole-trunk bfloat16 cast, input
 embedder included, destroys the prediction outright -- pLDDT 0.858 to 0.466,
 with the error already the size of `s_input` before a Pairformer block runs --

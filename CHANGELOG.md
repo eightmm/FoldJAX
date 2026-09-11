@@ -2341,6 +2341,58 @@ unless it says so here, in its own paragraph.
 
 ### Fixed
 
+- **OpenFold3's layer norm now accumulates in float32 under
+  `dtype=bfloat16`.** Upstream disables autocast inside `LayerNorm.forward`
+  to *force* float32 -- `x.float()`, `weight.float()`, `bias.float()`, one
+  cast on the way out
+  (`core/model/primitives/normalization.py:54-70`, comment at `:57-58`) --
+  and this port did not: `jnp.mean` accumulated wide but rounded the mean and
+  the variance back to bfloat16 before the centring and the rsqrt multiply,
+  and the affine was applied narrow as well. Four extra roundings per norm,
+  at every layer norm in a narrowed region. It now upcasts, in the shape
+  Protenix's `layer_norm` already used. Against a float64 reference on the
+  exact bfloat16 input values, per norm at `[4096, 128]`: RMS error falls
+  from 0.00461 to 0.00244 on a zero-mean input, from 0.01001 to 0.00245 at
+  mean 5, and from 0.06767 to 0.00245 at mean 50 -- the regime a pair
+  residual is in after 48 blocks and ten cycles, and the reason a zero-mean
+  spot check understates this twenty-fold. The result is bit-identical to
+  upstream's arrangement spelled directly when both hold the same affine.
+  The guard reads the *promoted* dtype rather than the activation's alone,
+  which matters at one site: the diffusion conditioning's pair branch is
+  narrowed while the whole denoiser is pinned float32, so a bfloat16
+  `zij_trunk` reaches float32 norm parameters at `atom_features.py:170`,
+  where promotion used to widen only the affine and leave the mean, variance
+  and centring narrow. That norm is now wide too and still returns float32,
+  so no realised dtype moves anywhere and the denoiser is not narrowed by
+  the repair. **The released float32 profile is unchanged and proven so:**
+  the same lowered program, to the byte, and the same output bytes, for all
+  three affine shapes, against the same script run on `main`. The mixed site
+  changes by design -- that is the repair -- and keeps its float32 output.
+  Measured on GPU at 3,012 tokens on 6ZTX, five samples, against a float32
+  control whose own within-set spread is 0.619 A: same-index drift falls
+  from 5.265 to 1.121 A, the arm's own sample spread from 1.729 to 0.747,
+  and complex TM rises from 0.978 to 0.996 — at 655.17 s against 664.61 and
+  a byte-identical 34,893 MiB peak, so the repair is free. At 2,096 tokens
+  no arm is distinguishable from another. **The default does not change:**
+  1.121 A is still 1.8x the control's own spread, so `dtype=bfloat16` stays
+  opt-in with the size limit documented in `docs/cli.md`.
+
+  Two further changes were tried on top of this one and reverted, and the
+  reason is written up in `models/openfold3/dtype.py` because it generalises:
+  excluding the layer-norm affine from the narrowing makes `layer_norm`
+  bit-identical to upstream in all twelve rows of the float64 table and made
+  the model *less* stable at 3,012 tokens (1.214 A, spread 1.823). A census
+  of all 62 trunk norm calls under both arrangements found no site whose
+  output width changed, so the cause is the affine arithmetic itself, not a
+  dtype boundary. A float64 error table per operation did not predict the
+  sign of the model's response in either direction.
+
+  One limit. This change does not reach
+  the two triangle-multiplication norms under `triangle_kernel=cueq-full`,
+  which are passed into cuEquivariance's fused kernel instead of computed
+  here; the default serial kernel is `cueq`, which keeps that multiplication
+  in XLA.
+
 - **Every OpenFold3 entry point that loads a checkpoint now narrows its
   weights.** `cast_narrow_params` lived only in the managed backend, so
   `openfold3-jax-predict` and `openfold3-jax-verify-checkpoint` built a
