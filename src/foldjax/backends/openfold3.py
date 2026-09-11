@@ -206,6 +206,13 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     native_options = frozenset(
         {
             "ccd_file_path",
+            # The confidence head's own dtype. `dtype` reaches this set through
+            # `execution_options`; `confidence_dtype` has no neutral spelling,
+            # so without naming it here `validate_request` rejects the one
+            # option `predict` below is written to consume -- the same shape of
+            # gap the `sampling_options` comment records, where a knob the
+            # backend advertised could only ever fail.
+            "confidence_dtype",
             "cp_devices",
             "cp_layout",
             "glu_backend",

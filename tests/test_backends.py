@@ -2212,3 +2212,41 @@ assert "torch" not in sys.modules
         stderr=subprocess.STDOUT,
     )
     assert completed.returncode == 0, completed.stdout
+
+
+def test_every_compile_option_is_reachable_through_validate_request():
+    """A name in `compile_options` a request cannot carry is a dead knob.
+
+    `compile_options` decides the compilation-cache namespace, so a name is
+    put there precisely because a user is expected to pass it. But
+    `validate_request` accepts only `native_options`, the `sampling_options`
+    values and the native halves of `execution_options`; a name in the first
+    list and none of the others is advertised and then refused. OpenFold3's
+    `confidence_dtype` shipped that way -- `predict` consumed it, the cache
+    namespace split on it, and every managed run that passed it died in
+    `validate_request` before a model loaded. The `sampling_options` comment
+    in that backend records an earlier instance of the same gap, which is why
+    this asserts the invariant for every port rather than for one option.
+    """
+
+    backends = (
+        AlphaFold3Backend(),
+        Boltz2Backend(),
+        ESMFold2Backend(),
+        OpenDDEBackend(),
+        OpenFold3Backend(),
+        ProtenixBackend(),
+    )
+    for backend in backends:
+        if backend.native_options is None:
+            continue
+        reachable = set(backend.native_options)
+        reachable.update(backend.sampling_options.values())
+        reachable.update(
+            native for native, _values in backend.execution_options.values()
+        )
+        unreachable = sorted(set(backend.compile_options) - reachable)
+        assert not unreachable, (
+            f"{backend.name} names {unreachable} in compile_options but "
+            "validate_request would reject them"
+        )
