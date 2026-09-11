@@ -248,6 +248,7 @@ def pairformer_embedding(
     eps: float = 1e-5,
     chunk_size: int | None = None,
     glu_backend: str = "xla",
+    dtype: object = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Embed the predicted geometry into the confidence representations.
 
@@ -259,8 +260,31 @@ def pairformer_embedding(
     one pair representation per sample, while positive values remain token
     thresholds and ``None`` keeps the batched path.
 
+    ``dtype`` narrows the Pairformer stack and nothing on either side of it.
+    Both boundaries are upstream's, one from each upstream.
+
+    *Entering*: the re-embedding this function opens with is upstream
+    OpenFold3's ``embed_zij``, which it pins to float32 with
+    ``autocast(dtype=torch.float32)`` (``heads/prediction_heads.py:88-89``) and
+    restores to the incoming dtype at ``:118`` -- the one island it keeps
+    inside this head while training under ``bf16-mixed``. It falls out for free
+    here: ``linear_i``, ``linear_j`` and ``linear_distance`` keep float32
+    parameters, so a bfloat16 ``zij`` promotes through them, and the narrowing
+    cast below is upstream's restore.
+
+    *Leaving*: AlphaFold 3 casts both representations back to float32 the
+    moment the stack returns -- ``confidence_head.py:163`` for the pair track
+    and ``:244`` for the single track -- and both casts land *before* the logit
+    heads' own layer norms (``logits_ln``, ``plddt_logits_ln``). That ordering
+    is the whole reason this restore is explicit rather than left to the heads'
+    float32 parameters: a float32 weight promotes at the matmul, which is after
+    the layer norm, so without the cast three of the five heads would take
+    their mean and variance in bfloat16 where AlphaFold 3 takes them in
+    float32. The distogram head is the exception that shows the rule -- it has
+    no layer norm, so promotion alone would have been enough for it.
+
     Returns:
-        ``(si, zij)`` for the confidence heads.
+        ``(si, zij)``, float32 in both profiles.
     """
     zij = (
         zij
@@ -291,7 +315,13 @@ def pairformer_embedding(
         )
     )
 
-    return pairformer_stack(
+    if dtype is not None:
+        zij = zij.astype(dtype)
+        si = si.astype(dtype)
+        single_mask = single_mask.astype(dtype)
+        pair_mask = pair_mask.astype(dtype)
+
+    si, zij = pairformer_stack(
         si,
         zij,
         params.pairformer_stack,
@@ -304,3 +334,7 @@ def pairformer_embedding(
         chunk_size=chunk_size,
         glu_backend=glu_backend,
     )
+    if dtype is not None:
+        si = si.astype(jnp.float32)
+        zij = zij.astype(jnp.float32)
+    return si, zij

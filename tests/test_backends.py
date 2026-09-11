@@ -1888,6 +1888,8 @@ def test_openfold3_backend_passes_normalized_static_chain_count(
             normalize_asym_ids=normalize_asym_ids,
         ),
         "foldjax.models.openfold3.inference": SimpleNamespace(
+            resolve_dtypes=lambda config: (None, None),
+            cast_narrow_params=lambda params, dtype, confidence: params,
             released_config=fake_released_config,
             compile_predict=fake_compile,
             predict=fake_predict,
@@ -2046,6 +2048,8 @@ def test_openfold3_backend_executes_the_lazy_padding_noise_mask_path(
             normalize_asym_ids=lambda batch: (batch, 1),
         ),
         "foldjax.models.openfold3.inference": SimpleNamespace(
+            resolve_dtypes=lambda config: (None, None),
+            cast_narrow_params=lambda params, dtype, confidence: params,
             released_config=lambda **kwargs: SimpleNamespace(
                 msa_depth=1024,
                 num_samples=2,

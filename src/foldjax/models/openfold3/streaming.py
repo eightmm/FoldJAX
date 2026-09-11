@@ -84,6 +84,10 @@ class HostMSACycles:
 class _StreamedGraph:
     def __init__(self, identity, *, compiled=True):
         config = identity.config
+        # Only the trunk half. The confidence half rides on `_predict_from_trunk`
+        # below, which resolves it from the same config; a second copy here
+        # would be a second place for the two to disagree.
+        trunk_dtype = inf.resolve_dtypes(config)[0]
 
         def inputs(batch, params):
             return inf._predict_inputs(
@@ -101,6 +105,7 @@ class _StreamedGraph:
                 max_relative_idx=config.max_relative_idx,
                 max_relative_chain=config.max_relative_chain,
                 glu_backend=config.glu_backend,
+                dtype=trunk_dtype,
             )
             return initial, (
                 shard_single(jnp.zeros_like(initial[1])),
@@ -120,6 +125,7 @@ class _StreamedGraph:
                 opm_first=config.opm_first,
                 chunk_size=config.pair_chunk_size,
                 glu_backend=config.glu_backend,
+                dtype=trunk_dtype,
             )
 
         def finish(key, batch, params, table, output, tape, mask, augmentation):

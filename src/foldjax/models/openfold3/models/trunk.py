@@ -21,6 +21,7 @@ import jax.numpy as jnp
 
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.openfold3.data.featurize import _MSA_CYCLE_INDICES
+from foldjax.models.openfold3.dtype import narrow_floats
 from foldjax.models.openfold3.models.input_embedders import (
     InputEmbedderParams,
     MSAEmbedderParams,
@@ -79,8 +80,21 @@ def initialize_trunk(
     inf=1e9,
     eps=1e-5,
     glu_backend="xla",
+    dtype=None,
 ):
-    """Compute the invariant embeddings once, without retaining MSA rows."""
+    """Compute the invariant embeddings once, without retaining MSA rows.
+
+    ``dtype`` narrows the trunk's state, not the embedder that produces it. The
+    input embedder runs float32 in every profile: upstream pins its atom encoder
+    with ``autocast(dtype=torch.float32)``
+    (``feature_embedders/input_embedders.py:129-131``) even while training under
+    ``bf16-mixed``, and this port measured the same island from the other side --
+    a whole-trunk bfloat16 cast takes pLDDT from 0.858 to 0.466 and the error is
+    already the size of ``s_input`` before a Pairformer block runs. So the cast
+    lands on the embedder's *outputs*, where upstream's own ``a.to(...)`` at
+    ``:137`` lands. ``s_input`` itself stays float32, which is both what upstream
+    returns and what ``--representations single_inputs`` has always written.
+    """
     s_input, s_init, z_init = input_embedder(
         batch,
         params.input_embedder,
@@ -94,6 +108,10 @@ def initialize_trunk(
         eps=eps,
         glu_backend=glu_backend,
     )
+
+    if dtype is not None:
+        s_init = s_init.astype(dtype)
+        z_init = z_init.astype(dtype)
 
     # Shard the pair state from its first materialization: `z_init` stays live
     # across every recycle as the recycling residual, so its layout decides
@@ -119,13 +137,39 @@ def trunk_cycle(
     chunk_size=None,
     glu_backend="xla",
     scan_blocks=True,
+    dtype=None,
 ):
-    """One native recycle; the caller owns row selection and carry lifetime."""
+    """One native recycle; the caller owns row selection and carry lifetime.
+
+    ``dtype`` narrows this whole body. Three kinds of float32 would otherwise
+    leak back in and promote the carry, which is what makes each cast below
+    load-bearing rather than defensive:
+
+    * the masks, built here from ``token_mask``. ``swiglu_transition`` ends with
+      ``y * mask[..., None]`` (models/primitives.py), so one float32 mask is
+      enough to widen every transition in the trunk. AlphaFold 3 casts the same
+      mask for the same reason (``evoformer.py:331``).
+    * ``s_input``, which stays float32 by design -- narrowed inside
+      :func:`msa_embedder`, at the projection that reads it.
+    * the template features, which the template tower reads straight out of
+      ``batch``. Its parameters follow ``z``'s dtype already, so handing it a
+      narrowed feature mapping is all it needs; the alternative, casting its
+      result, would leave the tower's own pair stack running float32. Every
+      float leaf is cast rather than a chosen list of names -- the unread ones
+      are dead on arrival and XLA removes them, while a name list here would be
+      a second copy of the template module's feature contract, kept correct by
+      nobody.
+    """
     s_input, s_init, z_init = initial
     s, z = carry
     token_mask = batch["token_mask"]
     pair_mask = token_mask[..., :, None] * token_mask[..., None, :]
-    m, msa_mask = msa_embedder(msa_batch, s_input, params.msa_module_embedder)
+    if dtype is not None:
+        token_mask = token_mask.astype(dtype)
+        pair_mask = pair_mask.astype(dtype)
+    m, msa_mask = msa_embedder(
+        msa_batch, s_input, params.msa_module_embedder, dtype=dtype
+    )
     # Initial embedding plus a projection of the previous cycle, not a sum.
     z = shard_pair_rows(
         z_init + linear(layer_norm(z, params.layer_norm_z, eps=eps), params.linear_z)
@@ -135,7 +179,7 @@ def trunk_cycle(
     # module, matching upstream's run_trunk ordering.
     if params.template_embedder is not None:
         z = z + template_embedder(
-            batch,
+            narrow_floats(batch, dtype),
             z,
             params.template_embedder,
             pair_mask=pair_mask,
@@ -199,6 +243,7 @@ def trunk(
     glu_backend: str = "xla",
     scan_blocks: bool = True,
     scan_cycles: bool = True,
+    dtype: object = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run the trunk for ``num_recycles`` recycling iterations.
 
@@ -225,9 +270,14 @@ def trunk(
         scan_blocks: run the Pairformer blocks as a scan rather than unrolling.
         scan_cycles: run recycling as one loop rather than emitting the body once
             per cycle. Same arithmetic; a quarter of the graph at four cycles.
+        dtype: element type of the recycled single and pair state, or ``None``
+            for the features' own float32. See models/openfold3/dtype.py for
+            which parts of the model this reaches and which it deliberately
+            does not.
 
     Returns:
-        ``(s_input, s, z)``.
+        ``(s_input, s, z)``. ``s_input`` is float32 whatever ``dtype`` says;
+        ``s`` and ``z`` carry ``dtype``.
     """
     if num_recycles < 1:
         raise ValueError("num_recycles must be at least 1")
@@ -244,6 +294,7 @@ def trunk(
         inf=inf,
         eps=eps,
         glu_backend=glu_backend,
+        dtype=dtype,
     )
     s_input, s_init, z_init = initial
     s, z = jnp.zeros_like(s_init), jnp.zeros_like(z_init)
@@ -286,6 +337,7 @@ def trunk(
             chunk_size=chunk_size,
             glu_backend=glu_backend,
             scan_blocks=scan_blocks,
+            dtype=dtype,
         )
 
     # Every cycle is the same computation on a different carry -- same weights, same

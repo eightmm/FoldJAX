@@ -264,7 +264,9 @@ def test_trunk_consumes_distinct_msa_each_cycle_without_torch(monkeypatch, scan_
     monkeypatch.setattr(module, "shard_pair_rows", lambda x: x)
     monkeypatch.setattr(module, "layer_norm", lambda x, *a, **k: x)
     monkeypatch.setattr(module, "linear", lambda x, *a, **k: x)
-    monkeypatch.setattr(module, "msa_embedder", lambda b, *a: (b["msa"], b["msa_mask"]))
+    monkeypatch.setattr(
+        module, "msa_embedder", lambda b, *a, **k: (b["msa"], b["msa_mask"])
+    )
     monkeypatch.setattr(
         module, "msa_module_stack", lambda m, z, *a, **k: z * 10 + m.sum()
     )

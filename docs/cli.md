@@ -259,8 +259,7 @@ Protenix defaults to `bf16` (its upstream ships bf16-mixed). OpenDDE shipped
 `fp32` with its upstream until 2026-08-28 and now defaults to `bf16` too;
 `--option dtype=float32` restores upstream's precision -- at 1,531
 tokens it is the difference between completing and OOM on both sides. Boltz-2's
-equivalent is `compute_dtype`, default `bfloat16`; OpenFold3 has no trunk
-dtype: upstream runs `32-true` and a bf16 trunk destroys its prediction.
+equivalent is `compute_dtype`, default `bfloat16`.
 Details and measurements: [docs/engineering-notes.md](engineering-notes.md).
 
 ### A bfloat16 OpenDDE confidence head (`--confidence-dtype bf16`)
@@ -305,6 +304,61 @@ so its confidence stage inherits the trunk's dtype and a float32 trunk leaves
 it nothing to narrow. Context parallelism is supported: the narrowing is three
 casts and a parameter tree, with no kernel or collective of its own, and the
 released bfloat16 trunk already runs the same Pairformer code under a mesh.
+
+### A partial bfloat16 OpenFold3 (`--option dtype=bfloat16`)
+
+OpenFold3 defaults to `float32` and that is what every published row here was
+measured at. **This profile is not what upstream OpenFold3 validates.**
+Upstream infers at `precision: "32-true"`, and a whole-trunk bfloat16 cast
+destroys the prediction -- pLDDT 0.858 to 0.466, with the error already the
+size of `s_input` before a Pairformer block runs.
+
+What the option narrows is the token/pair representation track; everything
+atom- or coordinate-shaped stays float32. In full: the trunk below its input
+embedder, the diffusion conditioning's pair branch, and the confidence head's
+Pairformer narrow. The input embedder, the entire denoiser -- atom encoder,
+atom decoder and the 24-block token diffusion transformer -- the diffusion
+conditioning's single branch, the confidence head's geometry re-embedding and
+every output head stay float32, so every output logit -- distogram, PAE, PDE,
+pLDDT, experimentally-resolved -- is float32 in both profiles.
+
+The attention softmaxes *inside* the narrowed regions do run bfloat16, with a
+bfloat16 pair bias. That is deliberate and it is what both upstreams do:
+OpenFold3's `softmax_no_cast` disables autocast specifically so bfloat16
+softmax stays bfloat16, and AlphaFold 3's evoformer runs the same way. It is
+also the shape that cost Protenix a chain when it was applied to the *diffusion
+token transformer's* pair bias -- which is why that transformer is float32
+here. The trunk's bfloat16 softmax is the region the 2026-08-10 island already
+measured at pLDDT -0.001; **the confidence Pairformer's is not measured on this
+port at all**, and it is the first thing a GPU run should look at. The nearest
+evidence is Protenix, where the same change at 3,012 tokens left coordinates
+bitwise unchanged and moved atom pLDDT by at most 0.0099, chain pTM and ipTM by
+at most 1.9e-4, and PAE means by at most 0.005. That is a sibling's number, not
+this port's.
+
+That shape is AlphaFold 3's released inference shape, read out of its source
+rather than borrowed by analogy: AF3's bfloat16 context narrows only what
+enters it already narrow, and its atom cross-attention is driven by float32
+reference positions. Its two float32 islands are also the two that upstream
+OpenFold3 pins itself -- the input embedder's atom encoder and the confidence
+head's `embed_zij` -- while training this checkpoint under `bf16-mixed`, which
+all four released training configs do.
+
+The confidence head has its own knob. `--option confidence_dtype=float32`
+keeps its Pairformer wide while the trunk narrows, and
+`--option dtype=float32 --option confidence_dtype=bfloat16` does the reverse;
+unset, it follows `dtype`, which is the shape both upstreams ship. The split
+exists because the two regions carry different evidence and because this head
+consumes predicted coordinates and emits scores, never coordinates, so
+narrowing it cannot move a structure. Boltz-2's `diffusion_compute_dtype` is
+the same idea. Both knobs are part of the compilation-cache identity, and an
+explicit value that equals the one it would have resolved to names the same
+namespace rather than forking a second.
+
+**It is unmeasured for accuracy.** No GPU row exists for it. The option is part
+of the compilation-cache identity, so a narrowed run never receives the float32
+executable, and it is accepted under context parallelism. Treat it as an
+experiment until a measured row says otherwise.
 
 ### A bfloat16 Boltz-2 diffusion (`--option diffusion_compute_dtype=bfloat16`)
 
