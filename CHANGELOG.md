@@ -2368,24 +2368,30 @@ unless it says so here, in its own paragraph.
   the same lowered program, to the byte, and the same output bytes, for all
   three affine shapes, against the same script run on `main`. The mixed site
   changes by design -- that is the repair -- and keeps its float32 output.
-  Measured on GPU at 3,012 tokens on 6ZTX, five samples, against a float32
-  control whose own within-set spread is 0.619 A: same-index drift falls
-  from 5.265 to 1.121 A, the arm's own sample spread from 1.729 to 0.747,
-  and complex TM rises from 0.978 to 0.996 — at 655.17 s against 664.61 and
-  a byte-identical 34,893 MiB peak, so the repair is free. At 2,096 tokens
-  no arm is distinguishable from another. **The default does not change:**
-  1.121 A is still 1.8x the control's own spread, so `dtype=bfloat16` stays
-  opt-in with the size limit documented in `docs/cli.md`.
+  It is free in time and memory — 655.17 s against 664.61 un-upcast and
+  950.84 float32 at 3,012 tokens, with a byte-identical 34,893 MiB peak —
+  and it emits no instruction at all under the released float32 default.
+  **It is kept on those terms and not on an accuracy win.** At 2,096 tokens
+  two seeds agree with float32. At 3,012 the outcome is *seed-dependent*
+  with the upcast in place: 1.121 A residual at one seed and 25.09 A at
+  another, the latter with complex TM 0.853 and all four chains of the
+  homotetramer displaced by 21.2 A together, against a control that is
+  healthy at both seeds (spread 0.619 and 0.569). `dtype=bfloat16` therefore
+  stays opt-in, and the size limit in `docs/cli.md` stands for a stronger
+  reason than before.
 
-  Two further changes were tried on top of this one and reverted, and the
-  reason is written up in `models/openfold3/dtype.py` because it generalises:
-  excluding the layer-norm affine from the narrowing makes `layer_norm`
-  bit-identical to upstream in all twelve rows of the float64 table and made
-  the model *less* stable at 3,012 tokens (1.214 A, spread 1.823). A census
-  of all 62 trunk norm calls under both arrangements found no site whose
-  output width changed, so the cause is the affine arithmetic itself, not a
-  dtype boundary. A float64 error table per operation did not predict the
-  sign of the model's response in either direction.
+  Two corrections to what an earlier version of this entry said, both worth
+  keeping. A within-set spread estimated from five samples **ranks nothing**:
+  its ordering between variants reversed under the second seed, and a
+  conclusion drawn from one draw of it ("the affine exclusion made the model
+  less stable") has been withdrawn. And a float64 error table per operation
+  did not predict the sign of the model's response in either direction. The
+  affine exclusion — which closes the last 1.5x, is bit-identical to upstream
+  in twelve of twelve rows, costs 0.381 MiB, and moves no site's output width
+  (censused over all 62 trunk norm calls) — is not in the tree and is not
+  ranked either way by the two seeds. `models/openfold3/dtype.py` carries the
+  full reading, including why 6ZTX at 3,012 tokens is the likely bistable
+  case rather than 3,012 tokens being a threshold.
 
   One limit. This change does not reach
   the two triangle-multiplication norms under `triangle_kernel=cueq-full`,

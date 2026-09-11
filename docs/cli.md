@@ -379,7 +379,7 @@ Measured on GPU 2026-09-11, each arm against a same-source control:
 | --- | --- | --- | --- |
 | 1,003 | 98.65 -> 75.70 s (-23.3%) | 9,274 -> 5,553 MiB (-40.1%) | — |
 | 2,096 | 403.29 -> 262.33 s (-35.0%) | 25,067 -> 19,107 MiB (-23.8%) | identical to 0.01 A |
-| 3,012 | 950.84 -> 664.61 s (-30.1%) | 50,412 -> 34,893 MiB (-30.8%) | **4.65-5.80 A drift** |
+| 3,012 | 950.84 -> 664.61 s (-30.1%) | 50,412 -> 34,893 MiB (-30.8%) | **4.65-5.80 A drift**, before the upcast and at seed 101 only -- read it with the two-seed table below |
 
 The speed and the memory hold at every size. The structure does not. At 2,096
 tokens on 5DEI, four chains by five samples, per-chain deposited RMSD is
@@ -396,26 +396,38 @@ sample 0 gives A 4.50 / B 4.63 / C 4.51 / D 4.54 and sample 3 gives 5.63 /
 move together and the fold survives. That is the signature of accumulation
 over 48 Pairformer blocks times 10 cycles, not of one region breaking.
 
-Those rows were measured **before** the port's layer norm was changed to
-accumulate in float32, which it now does, as upstream's and Protenix's both
-do. Remeasured at 3,012 tokens after that change, on the same target and
-against the same control:
+Those rows predate the layer-norm upcast, which the port now does as
+upstream's and Protenix's both do. What remeasuring showed is that **the
+3,012-token number is seed-dependent**, and that is the finding rather than
+any single row. Two seeds, five samples each, 6ZTX, each arm against a
+float32 control run at the same seed:
 
-| arrangement | same-index vs f32 | arm's own spread | TM | wall |
-| --- | --- | --- | --- | --- |
-| before the upcast | 5.265 A | 1.729 | 0.978 | 664.61 s |
-| after the upcast | **1.121 A** | **0.747** | **0.996** | 655.17 s |
-| float32 control | — | 0.619 | — | 950.84 s |
+| arrangement | seed 101 residual / spread | seed 202 residual / spread |
+| --- | --- | --- |
+| before the upcast | 5.265 A / 1.729 | — |
+| after the upcast | 1.121 A / 0.747 | **25.09 A** / 1.492 |
+| float32 control | — / 0.619 | — / 0.569 |
 
-A 4.7x reduction in drift, the arm's own sample scatter back from 2.8x the
-control's to 1.2x, and no cost: slightly faster, and a byte-identical peak.
-At 2,096 tokens the change is not measurable at all — 0.047-0.049 A residual
-on every arm, spreads 0.162-0.163 against a 0.163 control.
+At seed 202 the bfloat16 arm sits 25 A from the control with complex TM at
+0.853 and the per-chain breakdown flat at 21.2 A across all four chains,
+almost without sample-to-sample variation — the whole assembly arriving
+somewhere else, not scatter. The control is healthy at that seed, its own
+spread 0.569 against 0.619 at seed 101, so this is the arm and not the
+harness. **So the honest statement at 3,012 tokens is not "1.8x the floor".
+It is "seed-dependent, between about 1 A and 25 A".**
 
-**The advice above does not change.** 1.121 A is still 1.8x the control's own
-spread, so `float32` stays the default and `dtype=bfloat16` stays opt-in at
-3,012 tokens. What it does change is the size of the penalty you take if you
-select it there anyway.
+The within-set spread does not rank anything either: its ordering between
+variants flipped between the two seeds. It is an estimate from five samples,
+one draw per arm, and two such estimates differing by a factor of two is
+within what that estimator does.
+
+**The advice above stands, and now for a stronger reason.** Take
+`dtype=bfloat16` at or below roughly 2,000 tokens, where **both seeds agree
+with float32**; do not take it above that, where the outcome depends on the
+seed. The upcast is kept because it is right on its own terms — bit-identical
+to upstream where the old code was four roundings wider, free in time, a
+byte-identical peak, and no instruction at all under the float32 default —
+not because it fixed the 3k drift, which at seed 202 it did not.
 
 "Partial" is the other load-bearing word. A whole-trunk bfloat16 cast, input
 embedder included, destroys the prediction outright -- pLDDT 0.858 to 0.466,

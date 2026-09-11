@@ -136,66 +136,139 @@ Excluding layer-norm affine parameters from the narrowing would close that
 ``layer_norm`` one, it was **tried and reverted**, and the reason is the
 closing note below.
 
-What the upcast bought, on GPU at 3,012 tokens on 6ZTX, five samples,
-against a float32 control whose own within-set spread is 0.619 A:
+**What the upcast changes on GPU is size- and seed-dependent, and the
+3,012-token number is not a number.** Two seeds, five samples each, 6ZTX,
+each arm against a float32 control run at the same seed:
 
-=====================  =================  ==========  =====  =========
-arrangement            same-index vs f32  own spread  TM     wall
-=====================  =================  ==========  =====  =========
-narrow accumulation    5.265 A            1.729       0.978  664.61 s
-wide accumulation      1.121 A            0.747       0.996  655.17 s
-=====================  =================  ==========  =====  =========
+======================  ====  ===============  ==========
+arrangement             seed  residual vs f32  own spread
+======================  ====  ===============  ==========
+narrow accumulation     101   5.265 A          1.729
+wide accumulation       101   1.121 A          0.747
+wide + affine excluded  101   1.214 A          1.823
+float32 control         101   --               0.619
+wide accumulation       202   25.09 A          1.492
+wide + affine excluded  202   24.93 A          0.775
+float32 control         202   --               0.569
+======================  ====  ===============  ==========
 
-Against the float32 arm's 950.84 s, and peak byte-identical at 34,893 MiB,
-so the repair is free. At 2,096 tokens every arm is indistinguishable:
-0.047-0.049 A residual, spreads 0.162-0.163 against a 0.163 control. The
-drift is down 4.7x and the arm's own scatter is back from 2.8x the control's
-to 1.2x, which is the signature of a removed noise source. It is still 1.8x
-that control spread, so :data:`DEFAULT_DTYPE` stays float32 and the size
-limit below stands.
+Read this carefully, because two things follow and neither is "the upcast
+fixed the drift".
 
-**Closing note, and the part worth keeping.** Two further changes were made
-on top of this one and both were reverted. The first excluded the layer-norm
-affine from the narrowing, which made ``layer_norm`` *strictly better* per
-operation -- bit-identical to upstream's arrangement in all twelve rows of
-the float64 table, closing the 1.5x above completely -- and made the model
-measurably less stable at 3,012 tokens: same-index 1.121 -> 1.214 A, own
-spread 0.747 -> 1.823. The second chased that regression into the denoiser
-and changed nothing (1.214 A, 1.834), which the lowering had already said it
-would: the denoiser's program is byte-identical StableHLO with and without
-the guard change that the affine exclusion forced.
+* **The residual at 3,012 tokens is seed-dependent, between about 1 A and
+  25 A, with the upcast in place.** At seed 202 both bfloat16 arms sit 25 A
+  from the control with complex TM pinned at 0.853 and the per-chain
+  breakdown flat at A 21.2 / B 21.2 / C 21.2 / D 21.2, almost without
+  sample-to-sample variation. That is the whole assembly arriving somewhere
+  else, not scatter. The control is healthy at that seed -- its own spread
+  is 0.569 against 0.619 at seed 101 -- so it is the arm, not the harness.
+  The honest statement about ``dtype=bfloat16`` at 3,012 tokens is not
+  "1.8x the floor"; it is "seed-dependent, 1 A to 25 A".
+* **The within-set spread ranks nothing.** Its ordering between the two
+  arrangements flips with the seed: 0.747 against 1.823 at seed 101,
+  1.492 against 0.775 at seed 202. It is estimated from five samples, one
+  draw per arm, and two such estimates differing by a factor of two is
+  within what that estimator does. Any sentence of the form "arrangement X
+  is more stable" that rests on one draw of it should be deleted, and one
+  was.
 
-Excluding the affine also forces the guard from the promoted dtype to
-``x.dtype``, so the obvious reading is that some site's output width moved.
-It did not. Censused across ``trunk_cycle`` at the released widths, 62 calls
-at 13 distinct sites -- ``msa.py:83``/``:139``/``:143``,
-``triangle.py:119``/``:148``, ``triangle_attention.py:189``,
-``attention_pair_bias.py:63``/``:72``, ``primitives.py`` (AdaLN and the
-SwiGLU transition), ``template_module.py:91``/``:150``,
-``trunk.py:175``/``:208`` -- **every one of them takes bfloat16 and returns
-bfloat16 under both guards**, and the confidence stack runs the same code.
-The only column that differs is the affine: bfloat16 against float32. So
-the cause is not a dtype boundary. It is that every trunk norm multiplies by
-an *unrounded* scale where it used to multiply by a bfloat16-rounded one --
-a change that is closer to float32 at every single norm and left the model
-further from the float32 arm.
+At **2,096 tokens both seeds agree with float32**, and that is the result
+this option rests on. Wall and memory are not in question at any size:
+655.17 s for the wide accumulation against 664.61 narrow and 950.84
+float32, with a byte-identical 34,893 MiB peak.
 
-Two readings, and the second is not excluded. Either a 3,012-token bfloat16
-trunk is chaotic enough that a perturbation of this size moves the ensemble
-by about this much in whichever direction, or the spread statistic is being
-over-read: it is estimated from five samples, one draw per arm, while the
-residual -- the steadier of the two numbers -- moved only 8%. This
-repository has already recorded kernel-selection variance masquerading as
-20 A of model noise, and a "floor" that was one draw. A second draw of each
-arm would separate the two, and until someone takes it, "the affine
-exclusion is harmful" is not established -- only that it did not help.
+So the upcast is kept on its own terms, not on an accuracy win. It is
+bit-identical to upstream's arrangement where the old code was four
+roundings wider, it is free in time, byte-identical in peak, and it emits
+not one instruction under the released float32 profile. :data:`DEFAULT_DTYPE`
+stays float32 and the size limit below stands, now for a stronger reason
+than before: above roughly 2,000 tokens the outcome is seed-dependent.
 
-The reusable part: **a float64 error table per operation did not predict the
-sign of the model's response, in either direction.** It said the upcast
-would help, and it did; it said excluding the affine would help more, and
-the model got worse. Per-op error is not per-model error, and an
-arrangement that is bit-identical to upstream is not automatically the one
-to ship on a port whose other operations are not.
+**What was learned about the affine exclusion, which is not in the tree.**
+Excluding ``LayerNormParams`` from ``narrow_floats`` closes the last 1.5x
+above -- twelve of twelve float64 rows bit-identical to upstream -- for
+0.381 MiB of float32 parameters, and it forces the guard in
+:func:`~foldjax.models.openfold3.models.primitives.layer_norm` from the
+promoted dtype to ``x.dtype``. It was reverted on a seed-101 spread reading
+that the second seed did not reproduce; on the two seeds together it is not
+ranked either way, and if anything it is weakly favoured. Two facts about
+it that a future attempt should not have to rediscover:
+
+* **No site's output width moves.** Censused across ``trunk_cycle`` at the
+  released widths, 62 calls at 13 distinct sites --
+  ``msa.py:83``/``:139``/``:143``, ``triangle.py:119``/``:148``,
+  ``triangle_attention.py:189``, ``attention_pair_bias.py:63``/``:72``,
+  ``primitives.py`` (AdaLN and the SwiGLU transition),
+  ``template_module.py:91``/``:150``, ``trunk.py:175``/``:208`` -- every one
+  takes bfloat16 and returns bfloat16 under both guards, and the confidence
+  stack runs the same code. Only the affine column differs. The guard change
+  is therefore not a boundary move; the whole difference is that each trunk
+  norm multiplies by an unrounded scale instead of a bfloat16-rounded one.
+* **It changes what ``triangle_kernel=cueq-full`` hands cuEquivariance.**
+  ``norm_in_weight``/``norm_out_weight`` become float32 against a bfloat16
+  ``x``. The wrapper neither validates nor casts the pair and its pure-JAX
+  fallback promotes correctly, but the compiled kernel's behaviour on the
+  mix was never read. That is the one thing a restoration owes a GPU row.
+* **At 3,012 tokens the affine choice is not what moved the assembly.** At
+  seed 202 both bfloat16 arms sit about 25 A from the control, 25.09 without
+  the exclusion and 24.93 with it, so whatever relocated the complex is
+  upstream of the affine and insensitive to it. The two arms were never
+  compared against each other, so this says they are equally far from the
+  control, not that they landed in the same place.
+
+**The reusable part.** A float64 error table per operation did not predict
+the sign of the model's response in either direction, and then a
+single-draw spread statistic reversed under a second seed. Per-operation
+error is not per-model error; an arrangement bit-identical to upstream is
+not automatically the one to ship on a port whose other operations are
+not; and a five-sample spread cannot rank two variants. What the ranking
+needed, and never had, was more draws than the instrument could afford per
+candidate -- which is itself the argument for judging an arithmetic change
+on its arithmetic.
+
+**Why 3,012 tokens and not 2,096, as far as source can say.** Nothing in
+the port keys on token count between the two. ``auto_pair_chunk_size`` is
+smooth rather than stepped (502 rows at 1,003 tokens, 117 at 2,096, 58 at
+3,012), ``per_sample_token_cutoff`` defaults to 0 and its own docstring
+records the per-sample branch as bitwise identical on coordinates,
+cuEquivariance's ``CUEQ_TRIMUL_FALLBACK_THRESHOLD`` is 100 and below both
+sizes -- and irrelevant under the default ``cueq``, which keeps that
+multiplication in XLA -- and no bin edge, clamp or mask is conditioned on
+``n_token``. The MSA row cap is not a discriminator either: both targets
+are far above it, 17,542 rows for 6ZTX and 13,280 for 5DEI against
+``inference.RELEASED_MSA_DEPTH``'s 1,024, so it engages for both. The two sizes
+run the same program shape with different constants.
+
+What differs is the *case*. The two points are two complexes, not one
+complex at two sizes: 2,096 is 5DEI and 3,012 is 6ZTX, and both are single
+entities in four chains -- 6ZTX is catalase HPII, 4 x 753 residues, one
+sequence repeated four times in ``jobs/L3000_6ztx.json``. One recorded
+rounding-route change did move this exact case, in a different model family:
+Protenix at 6ZTX/3,012 moved 5.1-6.8 A (permutation-aware) when
+``deterministic-ops`` routed its GEMMs from Triton to cuBLAS. That is
+weaker evidence than it first looks. Protenix's ordinary runs on the same
+target are tight -- the port matched native-A at 0.05-0.40 A per sample and
+the two natives sat 0.76-0.91 A apart -- so the 5.1-6.8 A belongs to one
+route landing outside the floor, not to a case that is generically on a
+knife edge. It supports "this case can be moved by a rounding change"; it
+does not support "this case is bistable", and the 25 A at seed 202 is a
+different magnitude and a different question. What source settles here is
+only the negative: **no token-count-keyed threshold separates 3,012 from
+2,096**, so what differs is the case and not the size. A third target near
+3,000 tokens, or a second homotetramer of that size, is what would separate
+them, and no source reading can.
+
+One thing to check before reading the 25 A as geometry, and it costs no GPU
+time: a homotetramer scored chain-for-chain by label reads a relabelling as
+a large uniform per-chain displacement with the complex fold intact, which
+is the seed-202 signature exactly. ``bench.structures`` scores
+permutation-aware and reports a ``permuted`` count per block. A nonzero
+count on the seed-202 cross block settles it: the 25 A was a label swap and
+not geometry. A zero count is the weaker half of the test -- it says no
+relabelling improves the match, which fits a genuinely different assembly
+but equally fits a swap the four-chain search tried and rejected because the
+chains rotated as well as moved. So nonzero answers the question and zero
+only fails to answer it.
 
 One more thing this does not reach: the two
 triangle-multiplication norms under ``triangle_kernel=cueq-full``, where
@@ -226,13 +299,13 @@ bfloat16 profile is opt-in, and the reason is that it is measured and the
 result depends on the size (2026-09-11, GPU, each against a same-source
 control):
 
-======  ==========================  ============================
-tokens  wall float32 -> bfloat16    peak float32 -> bfloat16
-======  ==========================  ============================
-1,003   98.65 -> 75.70 s (-23.3%)   9,274 -> 5,553 MiB (-40.1%)
-2,096   403.29 -> 262.33 s (-35.0%) 25,067 -> 19,107 MiB (-23.8%)
-3,012   950.84 -> 664.61 s (-30.1%) 50,412 -> 34,893 MiB (-30.8%)
-======  ==========================  ============================
+======  ===========================  =============================
+tokens  wall float32 -> bfloat16     peak float32 -> bfloat16
+======  ===========================  =============================
+1,003   98.65 -> 75.70 s (-23.3%)    9,274 -> 5,553 MiB (-40.1%)
+2,096   403.29 -> 262.33 s (-35.0%)  25,067 -> 19,107 MiB (-23.8%)
+3,012   950.84 -> 664.61 s (-30.1%)  50,412 -> 34,893 MiB (-30.8%)
+======  ===========================  =============================
 
 The speed and memory hold at every size. The structure does not:
 
