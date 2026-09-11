@@ -166,6 +166,7 @@ def single_template_embedding(
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply one-template Protenix template embedding path."""
 
@@ -180,6 +181,7 @@ def single_template_embedding(
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
         triangle_attention_backend=triangle_attention_backend,
+        glu_backend=glu_backend,
     )
     return layer_norm(v, params.layernorm_v)
 
@@ -193,6 +195,7 @@ def template_embedder(
     triangle_mul_chunk_size: int | None = None,
     triangle_att_q_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply Protenix ``TemplateEmbedder`` in inference mode."""
 
@@ -218,6 +221,7 @@ def template_embedder(
             triangle_mul_chunk_size=triangle_mul_chunk_size,
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
+            glu_backend=glu_backend,
         )
         if multiplicity is not None:
             contribution = contribution * multiplicity[template_id].astype(

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import warnings
 from functools import partial
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from foldjax.models._cp import cp_identity
+from foldjax.models._cp import cp_identity, cp_mesh
+from foldjax.models._glu import gated_linear_unit
 
 
 class LinearParams(NamedTuple):
@@ -195,6 +197,13 @@ def sigmoid(x: jnp.ndarray) -> jnp.ndarray:
 # TF32 precision and 3e-7 under `float32` precision, i.e. the same order as any
 # other shape change. There is no knob to trade here, only kernel launches, and
 # only on tensors already large enough for that to be cheap.
+#
+# Blocking bounds those three buffers; it does not stop paying for them. The
+# `glu_backend="tokamax"` route is the other answer to the same sentence -- the
+# fused kernel computes `silu(a) * b` without ever writing `a`, `b` or the
+# product -- so the two are alternatives rather than complements, and a run
+# that asks for both takes the fused one. Unmeasured on this port; see
+# `docs/cli.md`.
 _TRANSITION_WIDE_BUDGET_BYTES = 512 * 1024**2
 
 
@@ -212,8 +221,75 @@ def _transition_chunk_rows(x: jnp.ndarray, params: TransitionParams) -> int | No
     return max(1, _TRANSITION_WIDE_BUDGET_BYTES // per_row)
 
 
-def _transition_block(x: jnp.ndarray, params: TransitionParams) -> jnp.ndarray:
+def reject_fused_glu_under_cp(glu_backend: str) -> None:
+    """Refuse the fused kernel under a context-parallel mesh, at the site.
+
+    `protenix_predict_static` already refuses the combination, but it is the
+    entry point, not the only door: a library caller can open a mesh and call
+    a transition directly. The fused kernel is one Triton call over the whole
+    operand and the partitioner cannot split it, so saying so here beats a
+    lowering error several frames down -- the same argument, and the same
+    shape, as `attention._reject_tokamax_under_cp`.
+    """
+
+    if glu_backend != "xla" and cp_mesh() is not None:
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
+
+
+def _gate_kernel(
+    params: LinearParams | AutocastLinearParams | Fp32PrecisionLinearParams,
+    name: str,
+) -> jnp.ndarray:
+    """One gated branch's kernel in the ``[in, out]`` layout the kernel wants.
+
+    The ports store PyTorch's ``[out, in]``; :func:`linear` transposes at every
+    call and this does the same, on a weight rather than on an activation.
+
+    Only projections whose whole arithmetic is "narrow the operand, multiply"
+    can be handed over. :class:`AutocastLinearParams` is one -- narrowing to
+    the weight dtype is exactly what
+    :func:`foldjax.models._glu.gated_linear_unit` already does. The two FP32
+    node types are not: they widen the operand and round the *result*, and the
+    fused kernel has nowhere to put either half of that. Refused rather than
+    run at a width nobody asked for.
+    """
+
+    if isinstance(params, (AutocastLinearF32OutParams, Fp32PrecisionLinearParams)):
+        msg = (
+            f"the fused GLU cannot run a {type(params).__name__} {name} "
+            "projection: its FP32 widen-and-narrow is not the kernel's "
+            "arithmetic"
+        )
+        raise ValueError(msg)
+    if params.bias is not None:
+        msg = f"the fused GLU needs a bias-free {name} projection"
+        raise ValueError(msg)
+    return jnp.swapaxes(params.weight, -1, -2)
+
+
+def _transition_block(
+    x: jnp.ndarray,
+    params: TransitionParams,
+    *,
+    glu_backend: str = "xla",
+) -> jnp.ndarray:
     y = layer_norm(x, params.layer_norm)
+    if glu_backend != "xla":
+        reject_fused_glu_under_cp(glu_backend)
+        # `jax.nn.silu` rather than this module's `silu`: the same arithmetic,
+        # but the fused kernel matches activations by identity and has no entry
+        # for a local spelling of x * sigmoid(x).
+        hidden = gated_linear_unit(
+            y,
+            _gate_kernel(params.linear_a, "linear_a"),
+            _gate_kernel(params.linear_b, "linear_b"),
+            jax.nn.silu,
+            backend=glu_backend,
+        )
+        return linear(hidden, params.linear_out)
     a = linear(y, params.linear_a)
     b = linear(y, params.linear_b)
     return linear(silu(a) * b, params.linear_out)
@@ -262,14 +338,58 @@ def _concatenated_transition(
     )
 
 
+_WARNED_FUSED_UNCHUNKABLE = False
+
+
+def _warn_fused_unchunkable(chunk_size: int) -> None:
+    """Say once that a requested block size is not used, and why nothing is lost.
+
+    The two techniques are alternatives, not complements. Blocking bounds the
+    widened intermediate by making it one block tall at a time; the fused
+    kernel never writes it at all, so a block size has nothing left to bound
+    and no parameter to reach -- ``tokamax.gated_linear_unit`` takes the whole
+    operand. A caller who asked for both gets the strictly smaller of the two
+    and is told which one it got.
+
+    Not an exception, for the reason the triangle and attention stacks give:
+    the automatic size is emitted without knowing which backend will run. It
+    warns only for a size a caller passed explicitly -- the internal budget in
+    :func:`_transition_chunk_rows` is this module's own choice, never a
+    request, and warning about it would fire on every large tensor.
+    """
+
+    global _WARNED_FUSED_UNCHUNKABLE
+    if _WARNED_FUSED_UNCHUNKABLE:
+        return
+    _WARNED_FUSED_UNCHUNKABLE = True
+    warnings.warn(
+        f"transition chunk_size={chunk_size} is not used by the 'tokamax' GLU "
+        "backend, which never forms the widened intermediate the chunk size "
+        "exists to bound. Nothing is lost; pass glu_backend='xla' for the "
+        "blocked path that honours it.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def _transition_for_runtime(
     x: jnp.ndarray,
     params: TransitionParams,
     *,
     chunk_size: int | None,
     runtime_identity: tuple[str, int, tuple[int, int], tuple[str, ...]],
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply one transition using the proven execution route for this runtime."""
+
+    if glu_backend != "xla":
+        # Before the block resolution below, not after: the fused kernel is
+        # the reason there is no widened intermediate to block. The blocked
+        # helpers are therefore only ever reached on the "xla" backend, which
+        # is why they carry no backend of their own.
+        if chunk_size is not None and 0 < chunk_size < x.shape[0]:
+            _warn_fused_unchunkable(chunk_size)
+        return _transition_block(x, params, glu_backend=glu_backend)
 
     if chunk_size is None:
         chunk_size = _transition_chunk_rows(x, params)
@@ -313,11 +433,20 @@ def transition(
     params: TransitionParams,
     *,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply the Protenix transition block, blocking the widened intermediates.
 
     ``chunk_size`` overrides the automatic block size; ``0`` disables blocking
     and materialises the wide form whole.
+
+    ``glu_backend="tokamax"`` replaces both the blocking and the intermediate:
+    the gate and value projections and their product run as one fused Triton
+    kernel, which never writes the widened form that the block size exists to
+    bound. It is an opt-in numerics change on a GPU -- see
+    :mod:`foldjax.models._glu` -- and the two are alternatives, so a run that
+    asks for both is warned that the block size is unused. ``"xla"``, the
+    default, is this function's historical arithmetic unchanged.
     """
 
     return _transition_for_runtime(
@@ -325,12 +454,13 @@ def transition(
         params,
         chunk_size=chunk_size,
         runtime_identity=_transition_runtime_identity(),
+        glu_backend=glu_backend,
     )
 
 
 @partial(
     jax.jit,
-    static_argnames=("chunk_size", "runtime_identity"),
+    static_argnames=("chunk_size", "runtime_identity", "glu_backend"),
 )
 def _compiled_transition(
     x: jnp.ndarray,
@@ -338,12 +468,14 @@ def _compiled_transition(
     *,
     chunk_size: int | None,
     runtime_identity: tuple[str, int, tuple[int, int], tuple[str, ...]],
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     return _transition_for_runtime(
         x,
         params,
         chunk_size=chunk_size,
         runtime_identity=runtime_identity,
+        glu_backend=glu_backend,
     )
 
 
@@ -352,14 +484,24 @@ def compiled_transition(
     params: TransitionParams,
     *,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
-    """Apply the transition through a topology-keyed, platform-aware JIT."""
+    """Apply the transition through a topology-keyed, platform-aware JIT.
+
+    ``glu_backend`` is a static argument of its own rather than a fifth field
+    of ``runtime_identity``. The identity tuple means one thing -- the context
+    parallel topology -- and two backends that share a topology must still
+    compile two programs, so this is a separate key: the cache entry is
+    ``(chunk_size, runtime_identity, glu_backend)`` and neither backend can be
+    answered out of the other's executable.
+    """
 
     return _compiled_transition(
         x,
         params,
         chunk_size=chunk_size,
         runtime_identity=_transition_runtime_identity(),
+        glu_backend=glu_backend,
     )
 
 

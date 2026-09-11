@@ -384,6 +384,7 @@ def msa_block(
     triangle_att_q_chunk_size: int | None = None,
     opm_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray | None, jnp.ndarray]:
     """Apply one inference-mode MSA block of the Protenix family.
 
@@ -419,7 +420,9 @@ def msa_block(
         )
         if msa_mask is not None:
             m_out = m_out * msa_mask.astype(m_out.dtype)[..., None]
-        m_out = m_out + transition(m_out, params.msa_transition)
+        m_out = m_out + transition(
+            m_out, params.msa_transition, glu_backend=glu_backend
+        )
         if msa_mask is not None:
             m_out = m_out * msa_mask.astype(m_out.dtype)[..., None]
         return m_out
@@ -444,6 +447,7 @@ def msa_block(
         triangle_mul_chunk_size=triangle_mul_chunk_size,
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
         triangle_attention_backend=triangle_attention_backend,
+        glu_backend=glu_backend,
     )
     if params.msa_pair_weighted_averaging is None:
         return None, z
@@ -461,6 +465,7 @@ def msa_module(
     triangle_att_q_chunk_size: int | None = None,
     opm_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
     use_scan: bool = True,
     msa_stack_first: bool = False,
 ) -> jnp.ndarray:
@@ -495,6 +500,7 @@ def msa_module(
         triangle_att_q_chunk_size=triangle_att_q_chunk_size,
         opm_chunk_size=opm_chunk_size,
         triangle_attention_backend=triangle_attention_backend,
+        glu_backend=glu_backend,
     )
     # Protenix drops the MSA path from its *last* block, so the stack is uniform
     # only up to that point. Scanning the uniform prefix and looping the remainder

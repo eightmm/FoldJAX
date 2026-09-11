@@ -153,6 +153,7 @@ def pairformer_output_from_s_inputs(
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
     cycle_msa_features: tuple[dict[str, jnp.ndarray], ...] | None = None,
     cycle_msa_index_tape: MSACycleIndexTape | None = None,
     cycle_pair_dropout_keep_masks: jnp.ndarray | None = None,
@@ -305,6 +306,7 @@ def pairformer_output_from_s_inputs(
             triangle_mul_chunk_size=triangle_mul_chunk_size,
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
+            glu_backend=glu_backend,
         )
         z = msa_module(
             msa_features,
@@ -317,6 +319,7 @@ def pairformer_output_from_s_inputs(
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             opm_chunk_size=opm_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
+            glu_backend=glu_backend,
         )
         if params.pairformer_stack.blocks:
             s, z = pairformer_stack(
@@ -330,6 +333,7 @@ def pairformer_output_from_s_inputs(
                 single_att_q_chunk_size=single_att_q_chunk_size,
                 single_attention_backend=single_attention_backend,
                 triangle_attention_backend=triangle_attention_backend,
+                glu_backend=glu_backend,
             )
         # The template and MSA embedders read integer features and build their
         # own float32 intermediates, so the state can come back wider than it

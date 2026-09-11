@@ -253,6 +253,7 @@ def test_default_lookalikes_with_another_type_stay_distinct(
         {"trunk_single_attention_backend": "xla"},
         {"trunk_triangle_attention_backend": "cueq_jit"},
         {"confidence_triangle_attention_backend": "cueq_jit"},
+        {"glu_backend": "tokamax"},
         {"chunk_policy": "manual"},
         {"chunk_policy": "off"},
         {"triangle_mul_chunk_size": 512},

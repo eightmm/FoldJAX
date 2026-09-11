@@ -1340,6 +1340,7 @@ def confidence_head_single_sample(
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> dict[str, jnp.ndarray]:
     """Run the ConfidenceHead inference path for one predicted sample."""
 
@@ -1373,6 +1374,7 @@ def confidence_head_single_sample(
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             single_att_q_chunk_size=single_att_q_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
+            glu_backend=glu_backend,
         )
         if s_single is None:
             raise ValueError("ConfidenceHead requires PairformerStack single output")
@@ -1403,6 +1405,7 @@ def confidence_head(
     triangle_att_q_chunk_size: int | None = None,
     single_att_q_chunk_size: int | None = None,
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> dict[str, jnp.ndarray]:
     """Run the Protenix confidence head over the sample axis.
 
@@ -1438,6 +1441,7 @@ def confidence_head(
             triangle_att_q_chunk_size=triangle_att_q_chunk_size,
             single_att_q_chunk_size=single_att_q_chunk_size,
             triangle_attention_backend=triangle_attention_backend,
+            glu_backend=glu_backend,
         )
 
     if _active_cp_shards() == 1 and num_samples > 1:

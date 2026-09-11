@@ -284,6 +284,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--diffusion-attention-backend", "--trunk-single-attention-backend",
     "--trunk-triangle-attention-backend",
     "--confidence-triangle-attention-backend",
+    "--glu-backend",
     "--confidence-scan", "--no-confidence-scan",
     "--no-confidence", "--no-confidence-scores",
     "--no-graph-jit",
@@ -324,6 +325,12 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--template-mmcif-dir", "--template-release-dates",
     "--template-obsolete-map", "--kalign-binary",
 )
+
+#: The fused gated linear unit is Protenix's alone. OpenDDE reaches the very
+#: same transitions through Protenix's primitives, so the absence here is the
+#: whole mechanism keeping the kernel off a port nobody measured it on --
+#: there is no guard downstream to catch it, only this omission.
+_GLU_BACKEND_PORTS: tuple[str, ...] = ("protenix",)
 
 _PORTS: tuple[tuple[str, Callable[..., Any], tuple[str, ...]], ...] = (
     ("protenix", protenix_predict.main, _PROTENIX_FLAG_ORDER),
@@ -391,3 +398,27 @@ def test_attention_backend_choices_are_pinned_per_port(
             port,
             option_strings,
         )
+
+
+@pytest.mark.parametrize(("port", "main", "_expected_order"), _PORTS)
+def test_the_fused_glu_is_offered_on_protenix_only(
+    port: str,
+    main: Callable[..., Any],
+    _expected_order: Sequence[str],
+) -> None:
+    """One port declares it; the other must not grow it by inheritance.
+
+    Both parsers are assembled from the same shared builders, and argparse
+    does not check a default against a flag's `choices`, so a value added to
+    a shared builder would reach OpenDDE as a working default rather than as
+    a rejection. Asserting the absence is what makes that a test failure.
+    """
+    declared = _by_option_strings(capture_parser(main))
+    spec = declared.get(("--glu-backend",))
+    if port not in _GLU_BACKEND_PORTS:
+        assert spec is None, f"{port} must not declare --glu-backend"
+        return
+    assert spec is not None, f"{port} no longer declares --glu-backend"
+    assert spec["dest"] == "glu_backend"
+    assert spec["default"] == "xla"
+    assert spec["choices"] == ("xla", "tokamax")

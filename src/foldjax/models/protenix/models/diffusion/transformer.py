@@ -7,6 +7,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._glu import gated_linear_unit
 from foldjax.models._stacking import stacked_or_stack
 from foldjax.models.protenix.models.primitives.attention import (
     AttentionPairBiasParams,
@@ -16,8 +17,10 @@ from foldjax.models.protenix.models.primitives.attention import (
 from foldjax.models.protenix.models.primitives.primitives import (
     AdaptiveLayerNormParams,
     LinearParams,
+    _gate_kernel,
     adaptive_layer_norm,
     linear,
+    reject_fused_glu_under_cp,
     sigmoid,
     silu,
 )
@@ -50,15 +53,36 @@ def conditioned_transition_block(
     a: jnp.ndarray,
     s: jnp.ndarray,
     params: ConditionedTransitionParams,
+    *,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
-    """Apply Protenix ``ConditionedTransitionBlock``."""
+    """Apply Protenix ``ConditionedTransitionBlock``.
+
+    ``glu_backend="tokamax"`` runs the SwiGLU as one fused Triton kernel
+    instead of two matmuls and a product, which never writes the two widened
+    branches. Opt-in, GPU-only and a numerics change; ``"xla"``, the default,
+    is the historical arithmetic unchanged. See :mod:`foldjax.models._glu`.
+    """
 
     a = adaptive_layer_norm(a, s, params.adaln)
-    hidden = silu(linear(a, params.linear_a1)) * linear(a, params.linear_a2)
+    if glu_backend != "xla":
+        reject_fused_glu_under_cp(glu_backend)
+        hidden = gated_linear_unit(
+            a,
+            _gate_kernel(params.linear_a1, "linear_a1"),
+            _gate_kernel(params.linear_a2, "linear_a2"),
+            jax.nn.silu,
+            backend=glu_backend,
+        )
+    else:
+        hidden = silu(linear(a, params.linear_a1)) * linear(a, params.linear_a2)
     return sigmoid(linear(s, params.linear_s)) * linear(hidden, params.linear_b)
 
 
-_compiled_conditioned_transition_block = jax.jit(conditioned_transition_block)
+_compiled_conditioned_transition_block = jax.jit(
+    conditioned_transition_block,
+    static_argnames=("glu_backend",),
+)
 
 
 def diffusion_transformer_block(
@@ -72,6 +96,7 @@ def diffusion_transformer_block(
     n_keys: int | None = None,
     global_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     z_is_normalized: bool = False,
     extra_attn_bias: jnp.ndarray | None = None,
     sequence_mask: jnp.ndarray | None = None,
@@ -133,7 +158,7 @@ def diffusion_transformer_block(
         if attention_backend == "xla_jit"
         else conditioned_transition_block
     )
-    a = a + transition_fn(a, s, params.conditioned_transition)
+    a = a + transition_fn(a, s, params.conditioned_transition, glu_backend=glu_backend)
     if gate is not None:
         a = a * gate
     return a
@@ -151,6 +176,7 @@ def diffusion_transformer_stack(
     use_scan: bool = False,
     global_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     z_is_normalized: bool = False,
     extra_attn_bias: jnp.ndarray | None = None,
     sequence_mask: jnp.ndarray | None = None,
@@ -171,6 +197,7 @@ def diffusion_transformer_stack(
                 n_keys=n_keys,
                 global_q_chunk_size=global_q_chunk_size,
                 attention_backend=attention_backend,
+                glu_backend=glu_backend,
                 z_is_normalized=z_is_normalized,
                 extra_attn_bias=extra_attn_bias,
                 sequence_mask=sequence_mask,
@@ -207,6 +234,7 @@ def diffusion_transformer_stack(
                 n_keys=n_keys,
                 global_q_chunk_size=global_q_chunk_size,
                 attention_backend=attention_backend,
+                glu_backend=glu_backend,
                 z_is_normalized=z_is_normalized,
                 extra_attn_bias=extra_attn_bias,
                 sequence_mask=sequence_mask,
