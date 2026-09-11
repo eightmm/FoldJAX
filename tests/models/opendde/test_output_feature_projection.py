@@ -28,6 +28,7 @@ from foldjax.models.opendde.postprocess import (
 )
 from foldjax.models.protenix.data.template_features import dedup_templates
 from foldjax.schema import PaddingConfig
+from tests.models.opendde.toy_params import inference_params
 
 
 class _ReaderPoison(Mapping[str, Any]):
@@ -339,7 +340,9 @@ def test_padded_cli_projection_never_reaches_model_bound_features(
             "4",
         ],
         padding=padding,
-        _prepared_params_loader=lambda _path, _dtype, _cacheable: (),
+        _prepared_params_loader=lambda _path, _dtype, _cacheable: (
+            inference_params()
+        ),
     )
 
     assert set(captured["writer"]) == {
@@ -461,7 +464,9 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
             "--include-raw",
         ],
         padding=PaddingConfig(msa=msa_capacity),
-        _prepared_params_loader=lambda _path, _dtype, _cacheable: (),
+        _prepared_params_loader=lambda _path, _dtype, _cacheable: (
+            inference_params()
+        ),
     )
 
     assert writes[0]["include_raw"] is True
@@ -514,5 +519,7 @@ def test_trunk_only_cli_does_not_build_an_output_projection(
             "--n-keys",
             "4",
         ],
-        _prepared_params_loader=lambda _path, _dtype, _cacheable: (),
+        _prepared_params_loader=lambda _path, _dtype, _cacheable: (
+            inference_params()
+        ),
     )

@@ -32,6 +32,7 @@ from foldjax.models.opendde import postprocess as postprocess_impl
 from foldjax.models.opendde.cli import predict as predict_cli
 from foldjax.models.opendde.models import model as model_impl
 from foldjax.models.opendde.models import shape_complementarity as shape_comp
+from tests.models.opendde.toy_params import inference_params
 
 _STATIC_ARGNAMES = (
     *model_impl.GRAPH_STATIC_ARGNAMES,
@@ -352,7 +353,9 @@ def test_the_cli_threads_the_flag_to_both_stages(
     monkeypatch.setattr(predict_cli, "_load_jobs", lambda _path: [job])
     monkeypatch.setattr(predict_cli, "_featurize", lambda *_a, **_k: features)
     monkeypatch.setattr(
-        predict_cli, "_load_prepared_params", lambda _path, _dtype: object()
+        predict_cli,
+        "_load_prepared_params",
+        lambda _path, _dtype: inference_params(),
     )
 
     def capture_predict(*_args: Any, **kwargs: Any) -> dict[str, Any]:

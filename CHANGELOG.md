@@ -43,7 +43,8 @@ unless it says so here, in its own paragraph.
   requires the bfloat16 trunk, is refused under context parallelism, and
   joins the compilation-cache identity. `trunk_dtype` is unaffected and keeps
   its own meaning.
-- **An opt-in bfloat16 confidence head for OpenDDE**, off by default.
+- **A bfloat16 confidence head for OpenDDE.** Added opt-in and made the
+  default in the same release -- the flip is its own entry under *Changed*.
   `--confidence-dtype bf16` narrows the head's re-embedding Pairformer, and
   the pair, single and input activations entering it, while the pLDDT, PAE,
   PDE and resolved logits stay float32. That boundary is AlphaFold 3's own:
@@ -60,9 +61,8 @@ unless it says so here, in its own paragraph.
   Separate from `--trunk-dtype` on purpose, and independent of it: OpenDDE
   widens every trunk output to float32 before its heads, so this option casts
   the head's activations itself and `--trunk-dtype fp32 --confidence-dtype
-  bf16` is a real combination. The default is `fp32`, the value joins the
-  compilation-cache identity, and an unrecognised width is refused naming the
-  allowed ones. Supported under context parallelism. Asking for the dtype
+  bf16` is a real combination. The value joins the compilation-cache identity,
+  and an unrecognised width is refused naming the allowed ones. Supported under context parallelism. Asking for the dtype
   without rebuilding the weights, or the reverse, is now an error rather than
   a run that silently promotes back to float32.
 - **Fixed the compact confidence distance binning widening a realised bfloat16
@@ -3397,10 +3397,37 @@ mask-aware padding for reusable JAX executables. See the git history and
   the `bf16` arm it already had is 13-39% faster and 33-52% lighter on all
   eight panel cases with no accuracy cost that any instrument shows. The cast
   reaches only the four trunk subtrees (`input_embedder`, `pairformer_output`,
-  `structural_expander`, `structural_refiner`); the diffusion module, the
-  distogram and the confidence head stay float32, which is the same shape
-  AlphaFold 3 ships. Against the same upstream rows the `bf16` arm is no
+  `structural_expander`, `structural_refiner`); under that cast the diffusion
+  module, the distogram and the confidence head stay float32, which is the
+  same shape AlphaFold 3 ships. (The confidence head has since acquired a
+  bfloat16 default of its own, through its own preparer -- see below.) Against the same upstream rows the `bf16` arm is no
   further away than `fp32` was, and marginally closer on three of the four
   cases read (1UBQ 0.274 vs 0.301 A, 5SAK 7.455 vs 7.471, 7ST3 0.398 vs
   0.420, 7R6R 2.886 vs 3.008). `--trunk-dtype fp32` pins upstream's policy
   back.
+
+- OpenDDE's released confidence dtype is now `bf16`. The head's re-embedding
+  Pairformer and the three activations entering it run bfloat16 unless
+  `--confidence-dtype fp32` pins them wide; the pLDDT, PAE, PDE and resolved
+  logits stay float32 either way, as do the distance geometry and the bins.
+  That is AlphaFold 3's own released boundary, not a new one.
+
+  What makes this a safe default is structural rather than measured. The head
+  runs after the sampler, reads its finished coordinates and emits scores;
+  nothing downstream of it is a coordinate, so narrowing it cannot move a
+  structure, and a recorded command's `.cif` is unchanged. The scores move by
+  the amount Protenix measured on the same shared module at 3,012 tokens:
+  atom pLDDT at most 0.0099, chain pTM/ipTM at most 1.9e-4, PAE means at most
+  0.005.
+
+  **No OpenDDE-specific GPU row measures this.** The eight-case panel was
+  taken with the head float32, and its confidence columns are the comparison
+  this flip moves. `--confidence-dtype fp32` reproduces those rows exactly and
+  keeps its own compilation-cache namespace.
+
+  Two consequences worth naming. The rebuild happens outside the backend's
+  weight session -- that session memoizes on `trunk_dtype` alone, so a cast
+  inside it would serve a second policy the first one's tree -- which means a
+  default run now holds the checkpoint's float32 confidence subtree and a
+  bfloat16 copy of it at once. And `--stop-after inputs|trunk` pays for that
+  copy without running the head.

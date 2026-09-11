@@ -10,20 +10,19 @@ import pytest
 
 from foldjax.models.opendde.cli import predict as predict_impl
 from foldjax.schema import PredictionError
+from tests.models.opendde.toy_params import inference_params
 
 
 def _params_double():
     """A weights stand-in shaped like the real parameter tree.
 
-    Explicit BF16 still exercises `cast_trunk_params`, even though FP32 is
-    the native default. Empty subtrees keep both routes cheap, and `_replace`
-    is what the optional cast needs.
+    Explicit BF16 still exercises `cast_trunk_params`, even though the trunk
+    already defaults to it, and the confidence head is rebuilt on every
+    default run -- so the stand-in carries a real one and empty subtrees
+    elsewhere. `_replace` is what both casts need.
     """
-    from foldjax.models.opendde.models.model import OpenDDEInferenceParams
 
-    return OpenDDEInferenceParams(
-        **{name: {} for name in OpenDDEInferenceParams._fields}
-    )
+    return inference_params()
 
 
 def _predict_kwargs() -> dict[str, object]:
@@ -286,11 +285,17 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert write_calls[0][1]["features"] is features
     assert features["ref_element"].dtype == np.int64
     assert features["ref_atom_name_chars"].dtype == np.int64
-    assert calls[0][1] == params
-    # The released default is bf16 since 2026-09-11, so the CLI applies the
-    # cast rather than leaving the tree float32. `None` here would mean a
-    # pinned `--trunk-dtype fp32`.
+    # The stages no preparation owns arrive as the loader's own objects; the
+    # confidence head does not, because the released default rebuilds it.
+    assert calls[0][1].input_embedder is params.input_embedder
+    assert calls[0][1].diffusion is params.diffusion
+    assert calls[0][1].distogram is params.distogram
+    assert calls[0][1].confidence is not params.confidence
+    # Both released defaults are bf16 since 2026-08-28 and 2026-09-11, so the
+    # CLI applies both casts rather than leaving the tree float32. `None` for
+    # either would mean the caller pinned that stage back to fp32.
     assert calls[0][2]["trunk_dtype"] == jnp.bfloat16
+    assert calls[0][2]["confidence_dtype"] == jnp.bfloat16
     assert calls[0][2]["seed"] == 101
     assert calls[0][2]["num_samples"] == 1
     assert calls[0][2]["num_steps"] == 2
@@ -327,7 +332,13 @@ def test_predict_cli_runs_native_json_to_ranked_output(
         _prepared_params_loader=lambda _path, _dtype, _cacheable: params,
     )
     assert len(calls) == 1
-    assert calls[0][1] is params
+    # Field identity, not tree identity: the released confidence default
+    # rebuilds `params.confidence`, so `main` hands the model a `_replace`
+    # of the injected tree rather than the tree itself. Every stage the
+    # preparations do not own is still the injected object.
+    assert calls[0][1].input_embedder is params.input_embedder
+    assert calls[0][1].diffusion is params.diffusion
+    assert calls[0][1].distogram is params.distogram
 
     calls.clear()
     predict_impl.main(
