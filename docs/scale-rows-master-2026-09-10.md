@@ -497,6 +497,27 @@ arm all three carry bfloat16 (`bf16[2096,16,24]` trunk single,
 no float32 warning fires; in the fp32 arm the two diffusion sites arrive as
 f32 and the one-time warning fires exactly once, as designed.
 
+### Protenix, 3,012 tokens (6ZTX), timed
+
+| arm | wall s | vs released | peak MiB | pLDDT | same-index vs released |
+| --- | ---: | ---: | ---: | ---: | --- |
+| released (`auto`, fp32 diffusion at this size) | 579.47 | – | 42219 | 94.269 | – |
+| `--amp-policy bf16`, before the fix | 527.22 | −9.0% | 38791 | 94.218 | median 0.309 |
+| `--amp-policy bf16`, after the fix | 525.83 | −9.3% | 38854 | 94.287 | median 0.268 / max 0.306 |
+| the same plus `tokamax` at all three sites | 513.99 | −11.3% | 38816 | 94.291 | median 0.258 / max 0.298 |
+
+At this size the fix is free: the fixed arm is 1.4 s faster than the unfixed
+one, inside noise, while its coordinates sit at the released arm's own
+sample spread (0.286 within-set against 0.300) and its pLDDT is marginally
+higher. The cost profile across the three sizes -- 5.8 of 8.8 points at 1k,
+1.2 of 10.1 at 2k, none at 3k -- is one fp32 tensor held against denoiser
+work that grows quadratically.
+
+Adding the fused kernel on top is worth another 2.0 points at this size
+(11.3% in total) for coordinates that move no further, and the kernel log
+again names bfloat16 at all three sites (`bf16[3012,16,24]`,
+`bf16[3715,32,4,32]`, `bf16[5,3012,16,48]`).
+
 ### Protenix, 3,012 tokens (6ZTX), tape-pinned
 
 | pair | same-index permutation-aware RMSD, five samples |
@@ -507,3 +528,31 @@ f32 and the one-time warning fires exactly once, as designed.
 At 3k the policy moves the coordinates five to ten times less than upstream
 moves between two of its own processes. The 2k chain loss was case-specific,
 which is why it needed a homotetramer with a deposited structure to see.
+
+### What to switch on, by size
+
+Nothing here changes a default; this is what the measurements support if
+someone asks for the fast path.
+
+| port | 1k tokens | 2k tokens |
+| --- | --- | --- |
+| Protenix | `tokamax` alone (5% time, 10% peak, pLDDT unchanged). The bf16 policy keeps only 3% after the fix and is not worth the deviation. | both: 11% time, 8% peak, coordinates 0.05 Å from the released arm |
+| Boltz-2 | both: 14.7% time, coordinates at the process floor | both: 15.1% time, same |
+
+At 3,012 tokens Protenix repeats its 2k answer: both levers, 11.3% of wall
+time and 8% of peak, coordinates inside the released arm's own sample
+spread.
+
+Two size-dependent facts behind that. The fp32 pair bias the Protenix fix
+adds is a fixed cost against a denoiser whose work grows with the square of
+the token count, so it eats 5.8 of the policy's 8.8 points at 1k and only 1.2
+of its 10.1 at 2k. And the fused kernel's memory win is the score tensor it
+does not build, which is also quadratic: 9.5% of the whole process peak at 2k
+on Protenix, nothing measurable on Boltz-2 at either size, because Boltz-2's
+peak is a trunk arena that neither lever touches.
+
+One caveat that is not about size: sm120 has no Mosaic GPU kernel and no
+cuDNN in this install, so every tokamax number here is the Triton path, and
+there is no shipped autotuning cache for this card (the heuristics config is
+used and a cache-miss warning is logged on every trace). A different card can
+reorder these.

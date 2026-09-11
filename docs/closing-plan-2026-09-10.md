@@ -151,3 +151,20 @@ tape-pinned 3k replay puts the bf16 arm 0.14-0.41 Å from the fp32 arm against
 a 0.76-3.27 Å native floor, and the per-chain deposited TM is what caught the
 2k defect that whole-complex TM and pLDDT alone would have missed.
 
+Against the acceptance criterion, cell by cell: wall and peak gain at 1k-3k
+is met for both ports except Protenix's dtype lever at 1k, where the fix
+leaves only 3%; the tape-pinned residual with `deterministic=on` is inside
+native's floor by five to ten times at 3k; and the deposited TM is unchanged
+on every arm that ships. The recommendation is per size and per port, in the
+X9 section of `scale-rows-master-2026-09-10.md`. sm120 is Triton-only for
+tokamax and has no shipped autotuning cache, so none of the kernel numbers
+generalise to another card without a re-run.
+
+What the exercise cost and returned: it found a real accuracy defect in a
+shipped opt-in (`--amp-policy bf16` lost a chain at 2k), retired a
+three-month-old verdict that had been keeping fused attention out of Boltz-2
+on the strength of one mis-attributed measurement, and left both ports with
+opt-in levers worth 11-15% of wall time. The defect was only visible through
+per-chain deposited RMSD on a homomer; whole-complex TM, pLDDT and the
+sample-to-sample spread all looked healthy.
+
