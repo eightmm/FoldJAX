@@ -27,6 +27,7 @@ from foldjax.models.openfold3.data.compact_categories import (
     COMPACT_REF_ATOM_NAME_CHAR_IDS,
     COMPACT_REF_ELEMENT_IDS,
 )
+from foldjax.models.openfold3.dtype import narrow_dtype
 from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
 )
@@ -39,6 +40,27 @@ from foldjax.models.openfold3.output import (
 )
 
 from .feature_fixture import minimal_features
+from .test_dtype_is_realized import _synthetic_inference_params
+
+
+def _param_dtypes(params) -> dict:
+    """One dtype per group the raw CLI's cast is supposed to reach or skip."""
+    import jax
+
+    def only(tree):
+        dtypes = {leaf.dtype for leaf in jax.tree.leaves(tree)}
+        assert len(dtypes) == 1, dtypes
+        return dtypes.pop()
+
+    return {
+        "trunk.pairformer_stack": only(params.trunk.pairformer_stack),
+        "pairformer_embedding.pairformer_stack": only(
+            params.pairformer_embedding.pairformer_stack
+        ),
+        "trunk.input_embedder": only(params.trunk.input_embedder),
+        "denoiser": only(params.denoiser),
+        "distogram_head": only(params.distogram_head),
+    }
 
 
 class _Device:
@@ -260,12 +282,11 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
             ((0, 0), (0, 1), (0, 0), (0, 0)),
         ),
     }
-    params = SimpleNamespace(
-        trunk=SimpleNamespace(pairformer_stack=SimpleNamespace(blocks=())),
-        denoiser=SimpleNamespace(
-            diffusion_transformer=SimpleNamespace(blocks=())
-        ),
-    )
+    # A real `InferenceParams` tree with synthetic leaves, not a namespace:
+    # the CLI applies the same `cast_narrow_params` the managed backend does,
+    # and that walks named subtrees and calls `_replace` on them. A stub would
+    # make the call impossible to reach, which is the thing being asserted.
+    params = _synthetic_inference_params()
     coordinates = np.zeros((1, 3, 3), dtype=np.float32)
     coordinates[0, 2, 0] = np.nan
     prediction = SimpleNamespace(coordinates=coordinates)
@@ -317,6 +338,16 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
             num_steps=200,
             num_recycles=4,
             pair_chunk_size=None,
+            # `bfloat16` rather than the shipped `float32`: the raw CLI
+            # has no dtype flag, so under the default the narrowing cast is
+            # the identity and an assertion on its result would hold whether
+            # or not the CLI called it. Naming the narrow value here is what
+            # makes the assertion below able to fail. `confidence_dtype`
+            # follows `dtype`, the way `released_config` resolves it.
+            dtype=kwargs.get("dtype", "bfloat16"),
+            confidence_dtype=kwargs.get(
+                "confidence_dtype", kwargs.get("dtype", "bfloat16")
+            ),
         )
 
     monkeypatch.setattr(
@@ -330,6 +361,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
             n_chain=n_chain,
             asym_id=np.asarray(features["asym_id"]),
             model_features=features,
+            param_dtypes=_param_dtypes(params),
         )
         return prediction
 
@@ -341,6 +373,7 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
                 n_chain=n_chain,
                 asym_id=np.asarray(features["asym_id"]),
                 model_features=features,
+                param_dtypes=_param_dtypes(params),
             )
             return prediction
 
@@ -417,6 +450,19 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     assert main(argv) == 0
     assert seen["n_chain"] == 2
     assert seen["has_atomized_tokens"] is False
+    # The raw entry point must narrow the weights, not only the config. A
+    # narrowed region whose parameters stayed float32 casts its activations
+    # down and promotes straight back at the first matmul: the entry rounding
+    # is paid and nothing runs narrow. Both groups, and the float32 islands
+    # beside them, so a cast that reached too far fails here too.
+    narrow = np.dtype(narrow_dtype("bfloat16"))
+    assert seen["param_dtypes"] == {
+        "trunk.pairformer_stack": narrow,
+        "pairformer_embedding.pairformer_stack": narrow,
+        "trunk.input_embedder": np.dtype(np.float32),
+        "denoiser": np.dtype(np.float32),
+        "distogram_head": np.dtype(np.float32),
+    }
     if not eager:
         assert seen["compile_options"] == {
             "cache_scope": None,

@@ -45,8 +45,14 @@ inside the model, and both agree with AlphaFold 3's shape:
 
 * ``feature_embedders/input_embedders.py:129-131`` wraps the input embedder's
   ``atom_attn_enc`` in ``autocast(dtype=torch.float32)``;
-* ``heads/prediction_heads.py:88-89`` wraps the confidence head's ``embed_zij``
-  in the same, restoring the incoming dtype at ``:118``.
+* ``heads/prediction_heads.py:223-224`` opens
+  ``autocast(device_type="cuda", dtype=pairformer_dtype)`` around the
+  confidence head's *Pairformer stack* and restores the incoming dtype at
+  ``:241``; ``pairformer_dtype`` defaults to ``torch.float32``
+  (``:131``, ``:192``, ``:261`` and ``heads/head_modules.py:106``) and no
+  released config overrides it. Read against ``openfold3-v050``: the island is
+  the stack, not ``embed_zij``, which runs before the context opens
+  (``:193``).
 
 The port measured the first island independently: a whole-trunk bfloat16 cast
 takes pLDDT from 0.858 to 0.466 and the damage starts in the input embedder,
@@ -54,13 +60,23 @@ while keeping the embedder float32 recovers it (pLDDT -0.001, CA RMSD 0.040 A
 against a 0.005 A rerun floor, at 1,003 tokens on 2026-08-10).
 
 The confidence head is therefore its own narrowing group, with its own knob
-(``confidence_dtype``, following ``dtype`` unless set). It is separable for a
-reason: it consumes predicted coordinates and emits scores, never coordinates,
-so narrowing it cannot move a structure, and it is the region with no
-measurement on this port. Protenix measured the same change at 3,012 tokens --
-coordinates bitwise unchanged, atom pLDDT at most 0.0099, chain pTM/ipTM at
-most 1.9e-4, PAE means at most 0.005 -- which is evidence from a sibling, not
-from here.
+(``confidence_dtype``). That knob *follows* ``dtype`` when unset, so opting
+into a bfloat16 trunk narrows the head with it and there is no second value
+to set; what the knob is for is holding this one region wide against a
+narrowed trunk (``confidence_dtype="float32"``), or narrowing it against a
+wide one. Narrowing it alone buys nothing measurable -- +0.4% wall and -0.1%
+peak at 1,003 tokens, -1.1% and -0.0% at 2,096 -- and under a narrowed trunk
+it is already subsumed: ``dtype=bfloat16`` and ``dtype=bfloat16
+confidence_dtype=bfloat16`` reported byte-identical peaks (5,553 MiB at 1k,
+19,107 MiB at 2k) and walls within 0.3%.
+
+It is separable for a reason: it consumes predicted coordinates and emits
+scores, never coordinates, so narrowing it cannot move a structure -- which
+is also why the 3,012-token drift recorded below is a property of ``dtype``
+and not of this knob. Protenix measured the same
+change at 3,012 tokens -- coordinates bitwise unchanged, atom pLDDT at most
+0.0099, chain pTM/ipTM at most 1.9e-4, PAE means at most 0.005 -- which is
+evidence from a sibling, not from here.
 
 What the option narrows in *this* port, which is the same shape stated as a
 parameter split, is :func:`~foldjax.models.openfold3.inference.cast_narrow_params`
@@ -77,20 +93,77 @@ departures from the readings above:
   but it gets there by being handed a narrowed feature mapping rather than by
   a cast inside the tower.
 
-A narrowed region's attention softmax runs bfloat16, pair bias included. Both
-upstreams do that on purpose -- ``core/model/primitives/attention.py:107-122``
-(``softmax_no_cast``) and ``primitives/normalization.py:66-78`` disable
-autocast specifically so bfloat16 softmax and layer norm stay bfloat16,
-overriding torch's float32 default for both, and AlphaFold 3's evoformer is the
-same shape. What is *not* narrowed anywhere is an output logit: the heads keep
+A narrowed region's attention softmax runs bfloat16, pair bias included.
+Upstream does that on purpose: ``core/model/primitives/attention.py:111-127``
+(``softmax_no_cast``, whose docstring is "Softmax, but without automatic
+casting to fp32 when the input is of type bfloat16") disables autocast so a
+bfloat16 softmax stays bfloat16, overriding torch's float32 default, and
+AlphaFold 3's evoformer is the same shape.
+
+**Layer norm is the opposite, and this port does not follow it.** Upstream's
+``primitives/normalization.py:54-70`` disables autocast for the reverse
+reason -- to *force* float32: it takes ``x.float()`` with ``weight.float()``
+and ``bias.float()`` (``:61-64``), normalises in float32, and rounds once on
+the way out (``:70``), with the comment "LayerNorm should be upcasted to fp32
+anyway in torch / This enforces it if not running with autocast context"
+(``:57-58``). This port's ``models/primitives.py`` ``layer_norm`` does not: ``jnp.mean``
+accumulates in float32 but rounds the mean and the variance back to bfloat16
+before ``x - mean`` and the rsqrt multiply, and the scale and bias are
+applied at bfloat16 too. That is four extra roundings per
+layer norm against upstream's one, at every layer norm in a narrowed region.
+Against a float64 reference on a [64, 128] normal input, the port's
+arrangement carries 2.95x upstream's RMS error per layer norm (0.00503
+against 0.00170; peak 0.0345 against 0.0084). It is the leading hypothesis
+for the 3,012-token drift recorded below -- 48 Pairformer blocks times 10
+cycles, several layer norms each -- and it is **not** fixed here.
+
+What is *not* narrowed anywhere is an output logit: the heads keep
 float32 parameters, so distogram, PAE, PDE, pLDDT and experimentally-resolved
 logits are float32 in both profiles. The one place a bfloat16 pair bias into a
 softmax is known to be fatal on a port is the diffusion token transformer,
 which is float32 here.
 
-What this module does **not** claim: that upstream OpenFold3 validates this at
-inference. It does not -- it ships ``32-true``. Nothing here has a GPU accuracy
-row yet.
+:data:`DEFAULT_DTYPE` **stays float32, which is what upstream ships.** The
+bfloat16 profile is opt-in, and the reason is that it is measured and the
+result depends on the size (2026-09-11, GPU, each against a same-source
+control):
+
+======  ==========================  ============================
+tokens  wall float32 -> bfloat16    peak float32 -> bfloat16
+======  ==========================  ============================
+1,003   98.65 -> 75.70 s (-23.3%)   9,274 -> 5,553 MiB (-40.1%)
+2,096   403.29 -> 262.33 s (-35.0%) 25,067 -> 19,107 MiB (-23.8%)
+3,012   950.84 -> 664.61 s (-30.1%) 50,412 -> 34,893 MiB (-30.8%)
+======  ==========================  ============================
+
+The speed and memory hold at every size. The structure does not:
+
+* at 2,096 tokens on 5DEI, four chains by five samples, per-chain deposited
+  RMSD is 0.45-0.51 A on both arms chain for chain, TM 0.996-0.997 on both,
+  and sample 3 selects the same alternative basin on both -- identical to
+  0.01 A;
+* at 3,012 tokens on 6ZTX, same-index RMSD against the float32 arm is
+  4.65 / 4.68 / 5.64 / 5.80 / 5.26 A, against a float32 within-set spread of
+  0.619 A. That is 8.5x the control's own spread, and the bfloat16 arm's
+  internal spread is inflated 2.8x to 1.729 A.
+
+The 3k failure is uniform drift, not a lost region: per chain on 6ZTX sample 0
+gives A 4.50 / B 4.63 / C 4.51 / D 4.54 and sample 3 gives 5.63 / 5.65 / 5.64
+/ 5.63, with complex TM holding at 0.978-0.980. All four chains move together
+and the fold survives, which is the signature of accumulation rather than of
+the rounded-bias failure Protenix had. 48 Pairformer blocks times 10 cycles is
+where that becomes visible, and the layer-norm reading above is the leading
+hypothesis for it.
+
+So the option is worth taking at or below roughly 2,000 tokens and is not
+safe above it. Two upstream facts, for the record, both read out of
+``openfold3-v050``: inference runs 32-true
+(``openfold3/entry_points/validator.py:127``,
+``examples/reference_full_config/full_config.yml:29``), and the confidence
+Pairformer additionally carries its own ``pairformer_dtype`` defaulting to
+``torch.float32`` (``heads/prediction_heads.py:131``, ``:192``, ``:261``,
+``heads/head_modules.py:106``), so upstream pins that region wide rather than
+merely leaving it wide.
 """
 
 from __future__ import annotations
@@ -106,6 +179,11 @@ import jax.numpy as jnp
 DTYPES: tuple[str, ...] = ("float32", "bfloat16")
 
 #: What a request that says nothing gets: upstream's inference precision.
+#: One value rather than two -- ``confidence_dtype`` follows it when unset, so
+#: this single definition sets both regions. Every other layer reads it: the
+#: config fields, ``released_config``'s signature and the backend's
+#: cache-namespace strip. The bfloat16 profile is opt-in; the module docstring
+#: carries the measurement and the size above which it is not safe.
 DEFAULT_DTYPE = "float32"
 
 

@@ -370,20 +370,58 @@ activations itself and combines with a float32 trunk.
 
 ### A partial bfloat16 OpenFold3 (`--option dtype=bfloat16`)
 
-OpenFold3 defaults to `float32` and that is what every published row here was
-measured at. **This profile is not what upstream OpenFold3 validates.**
-Upstream infers at `precision: "32-true"`, and a whole-trunk bfloat16 cast
-destroys the prediction -- pLDDT 0.858 to 0.466, with the error already the
-size of `s_input` before a Pairformer block runs.
+OpenFold3 defaults to `float32`, which is upstream's inference precision
+(`openfold3/entry_points/validator.py:127`). `--option dtype=bfloat16` is
+opt-in, and **whether it is a good idea depends on the size of your target.**
+Measured on GPU 2026-09-11, each arm against a same-source control:
+
+| tokens | wall f32 -> bf16 | peak f32 -> bf16 | structure vs the f32 arm |
+| --- | --- | --- | --- |
+| 1,003 | 98.65 -> 75.70 s (-23.3%) | 9,274 -> 5,553 MiB (-40.1%) | — |
+| 2,096 | 403.29 -> 262.33 s (-35.0%) | 25,067 -> 19,107 MiB (-23.8%) | identical to 0.01 A |
+| 3,012 | 950.84 -> 664.61 s (-30.1%) | 50,412 -> 34,893 MiB (-30.8%) | **4.65-5.80 A drift** |
+
+The speed and the memory hold at every size. The structure does not. At 2,096
+tokens on 5DEI, four chains by five samples, per-chain deposited RMSD is
+0.45-0.51 A on both arms chain for chain, TM 0.996-0.997 on both, and sample 3
+picks the same alternative basin on both. At 3,012 tokens on 6ZTX, same-index
+RMSD against the float32 arm is 4.65 / 4.68 / 5.64 / 5.80 / 5.26 A against a
+float32 within-set spread of 0.619 A -- 8.5x the control's own spread -- and
+the bfloat16 arm's internal spread is inflated 2.8x to 1.729 A.
+
+**So: take it at or below roughly 2,000 tokens, and do not take it above
+that.** The 3k failure is uniform drift rather than a lost region -- on 6ZTX
+sample 0 gives A 4.50 / B 4.63 / C 4.51 / D 4.54 and sample 3 gives 5.63 /
+5.65 / 5.64 / 5.63, with complex TM holding at 0.978-0.980, so all four chains
+move together and the fold survives. That is the signature of accumulation
+over 48 Pairformer blocks times 10 cycles, not of one region breaking.
+
+"Partial" is the other load-bearing word. A whole-trunk bfloat16 cast, input
+embedder included, destroys the prediction outright -- pLDDT 0.858 to 0.466,
+with the error already the size of `s_input` before a Pairformer block runs --
+so the option narrows a named set of subtrees and no others.
 
 What the option narrows is the token/pair representation track; everything
-atom- or coordinate-shaped stays float32. In full: the trunk below its input
-embedder, the diffusion conditioning's pair branch, and the confidence head's
-Pairformer narrow. The input embedder, the entire denoiser -- atom encoder,
-atom decoder and the 24-block token diffusion transformer -- the diffusion
-conditioning's single branch, the confidence head's geometry re-embedding and
-every output head stay float32, so every output logit -- distogram, PAE, PDE,
-pLDDT, experimentally-resolved -- is float32 in both profiles.
+atom- or coordinate-shaped stays float32. The split is
+`inference.cast_narrow_params` (`models/openfold3/inference.py:281`), and it
+is a list of named subtrees rather than a rule, so a new parameter group is
+wide until someone classifies it:
+
+**bfloat16** -- `trunk.msa_module_embedder`, `trunk.msa_module`,
+`trunk.pairformer_stack`, `trunk.layer_norm_z`/`linear_z`,
+`trunk.layer_norm_s`/`linear_s`, `trunk.template_embedder`; the diffusion
+conditioning's *pair* branch (`layer_norm_z`, `linear_z`, `transition_z`);
+and `pairformer_embedding.pairformer_stack`.
+
+**float32** -- `trunk.input_embedder` (this is the island that collapsed the
+prediction when it was narrowed, and upstream pins it too at
+`feature_embedders/input_embedders.py:129-131`); the entire `denoiser`, atom
+encoder, atom decoder and 24-block token diffusion transformer alike; the
+diffusion conditioning's *single* branch including its Fourier noise
+embedding; the confidence head's geometry re-embedding
+(`pairformer_embedding.linear_i`/`linear_j`/`linear_distance`); and every
+output head. So every output logit -- distogram, PAE, PDE, pLDDT,
+experimentally-resolved -- is float32 in both profiles.
 
 The attention softmaxes *inside* the narrowed regions do run bfloat16, with a
 bfloat16 pair bias. That is deliberate and it is what both upstreams do:
@@ -403,25 +441,48 @@ That shape is AlphaFold 3's released inference shape, read out of its source
 rather than borrowed by analogy: AF3's bfloat16 context narrows only what
 enters it already narrow, and its atom cross-attention is driven by float32
 reference positions. Its two float32 islands are also the two that upstream
-OpenFold3 pins itself -- the input embedder's atom encoder and the confidence
-head's `embed_zij` -- while training this checkpoint under `bf16-mixed`, which
-all four released training configs do.
+OpenFold3 pins itself while training this checkpoint under `bf16-mixed`, which
+all four released training configs do: the input embedder's atom encoder
+(`feature_embedders/input_embedders.py:129-131`), which this port keeps wide
+too, and the confidence head's Pairformer stack
+(`heads/prediction_heads.py:224`, whose `pairformer_dtype` defaults to
+`torch.float32`), which `--option dtype=bfloat16` narrows here unless
+`confidence_dtype=float32` says otherwise.
 
-The confidence head has its own knob. `--option confidence_dtype=float32`
-keeps its Pairformer wide while the trunk narrows, and
-`--option dtype=float32 --option confidence_dtype=bfloat16` does the reverse;
-unset, it follows `dtype`, which is the shape both upstreams ship. The split
-exists because the two regions carry different evidence and because this head
-consumes predicted coordinates and emits scores, never coordinates, so
-narrowing it cannot move a structure. Boltz-2's `diffusion_compute_dtype` is
-the same idea. Both knobs are part of the compilation-cache identity, and an
-explicit value that equals the one it would have resolved to names the same
-namespace rather than forking a second.
+### Separating OpenFold3's confidence head (`--option confidence_dtype=...`)
 
-**It is unmeasured for accuracy.** No GPU row exists for it. The option is part
-of the compilation-cache identity, so a narrowed run never receives the float32
-executable, and it is accepted under context parallelism. Treat it as an
-experiment until a measured row says otherwise.
+The confidence head has its own knob, and it is **not** a second thing to
+turn on: `confidence_dtype` follows `dtype` when unset, so `--option
+dtype=bfloat16` already narrows the head, and narrowing the head alone
+measures as nothing (+0.4% wall / -0.1% peak at 1,003 tokens, -1.1% / -0.0%
+at 2,096). Under a narrowed trunk it is fully subsumed: `dtype=bfloat16` and
+`dtype=bfloat16 confidence_dtype=bfloat16` reported byte-identical peaks
+(5,553 MiB at 1,003 tokens, 19,107 MiB at 2,096) and walls within 0.3%. What
+the knob buys is separating the two regions after the fact --
+
+* `--option confidence_dtype=float32` keeps the head wide against the
+  narrowed trunk, which is upstream's shape for that region;
+* `--option dtype=float32 --option confidence_dtype=bfloat16` does the
+  reverse.
+
+The region is separable because it consumes predicted coordinates and emits
+scores, never coordinates, so narrowing it cannot move a structure -- which
+is also why the 3,012-token drift above is a property of `dtype` and not of
+this knob. Upstream
+pins it wide with a dedicated `pairformer_dtype` defaulting to
+`torch.float32` (`openfold3/core/model/heads/prediction_heads.py:192`, used at
+`:224`, restoring the incoming dtype at `:241`) on top of running 32-true
+overall, so `confidence_dtype=float32` is the closest single option to
+upstream's arrangement of this head. Boltz-2's `diffusion_compute_dtype` is
+the same idea of a region-scoped knob.
+
+The nearest direct evidence for narrowing this region is a sibling's:
+Protenix at 3,012 tokens left coordinates bitwise unchanged and moved atom
+pLDDT by at most 0.0099, chain pTM/ipTM by at most 1.9e-4 and PAE means by at
+most 0.005. Both knobs are part of the compilation-cache identity, so a
+narrowed run never receives the float32 executable, an explicit value equal to
+the one the request would have resolved to names the same namespace rather
+than forking a second, and the option is accepted under context parallelism.
 
 ### A bfloat16 Boltz-2 diffusion (`--option diffusion_compute_dtype=bfloat16`)
 
@@ -617,9 +678,12 @@ Every transition in OpenFold3 is a SwiGLU: two projections widened to four
 times the channel count, multiplied together and projected back. XLA writes
 both widened tensors out before multiplying them. `tokamax` runs the same
 product in one fused Triton kernel, which never materializes them. The saving
-is the intermediate, not the precision, which is why the value is offered on a
-port that runs float32 throughout. Boltz-2 spells the same option the same
-way; this adds it to OpenFold3.
+is the intermediate, not the precision. Note that it does not compose with
+`--option dtype=bfloat16` on this port: measured 2026-09-11, adding
+`glu_backend=tokamax` to the bfloat16 arm turns -23.3% wall into -1.3% and
+raises peak from 5,553 to 5,775 MiB at 1,003 tokens, and turns -35.0% into
+-30.8% at 2,096. The fused kernel loses at both sizes under bfloat16. Boltz-2
+spells the same option the same way; this adds it to OpenFold3.
 
 It reaches every SwiGLU the model has: the Pairformer's pair and single
 transitions, the MSA module, the template pair stack, the confidence

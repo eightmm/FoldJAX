@@ -13,7 +13,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from foldjax.models.openfold3.inference import InferenceConfig, InferenceParams, predict
+from foldjax.models.openfold3.inference import (
+    InferenceConfig,
+    InferenceParams,
+    cast_narrow_params,
+    predict,
+    resolve_dtypes,
+)
 
 pytestmark = pytest.mark.torch_parity
 
@@ -264,52 +270,59 @@ def _params(torch, randomized) -> InferenceParams:
         )
     )
 
-    return InferenceParams(
-        trunk=trunk_params,
-        diffusion_conditioning=map_diffusion_conditioning(cond_state),
-        denoiser=denoiser,
-        plddt_head=map_atom_logit_head(
-            dict(
-                randomized(
-                    PerResidueLDDTAllAtom(
-                        c_s=C_S, c_out=PLDDT_BINS,
-                        max_atoms_per_token=MAX_ATOMS_PER_TOKEN,
-                    )
-                ).state_dict()
-            )
+    # Narrowed the way both entry points narrow a loaded checkpoint. Without
+    # it the default `dtype` casts activations down against float32
+    # parameters, which promotes at every matmul: this file would then check
+    # that a program nothing ships produces finite numbers.
+    return cast_narrow_params(
+        InferenceParams(
+            trunk=trunk_params,
+            diffusion_conditioning=map_diffusion_conditioning(cond_state),
+            denoiser=denoiser,
+            plddt_head=map_atom_logit_head(
+                dict(
+                    randomized(
+                        PerResidueLDDTAllAtom(
+                            c_s=C_S, c_out=PLDDT_BINS,
+                            max_atoms_per_token=MAX_ATOMS_PER_TOKEN,
+                        )
+                    ).state_dict()
+                )
+            ),
+            pae_head=map_pair_head(
+                dict(
+                    randomized(
+                        PredictedAlignedErrorHead(c_z=C_Z, c_out=PAE_BINS)
+                    ).state_dict()
+                )
+            ),
+            pde_head=map_pair_head(
+                dict(
+                    randomized(
+                        PredictedDistanceErrorHead(c_z=C_Z, c_out=PAE_BINS)
+                    ).state_dict()
+                )
+            ),
+            distogram_head=map_pair_head(
+                dict(randomized(DistogramHead(c_z=C_Z, c_out=PAE_BINS)).state_dict()),
+                layer_norm=False,
+            ),
+            pairformer_embedding=map_pairformer_embedding(
+                dict(pairformer_embedding_module.state_dict())
+            ),
+            experimentally_resolved_head=map_atom_logit_head(
+                dict(
+                    randomized(
+                        ExperimentallyResolvedHeadAllAtom(
+                            c_s=C_S,
+                            c_out=2,
+                            max_atoms_per_token=MAX_ATOMS_PER_TOKEN,
+                        )
+                    ).state_dict()
+                )
+            ),
         ),
-        pae_head=map_pair_head(
-            dict(
-                randomized(
-                    PredictedAlignedErrorHead(c_z=C_Z, c_out=PAE_BINS)
-                ).state_dict()
-            )
-        ),
-        pde_head=map_pair_head(
-            dict(
-                randomized(
-                    PredictedDistanceErrorHead(c_z=C_Z, c_out=PAE_BINS)
-                ).state_dict()
-            )
-        ),
-        distogram_head=map_pair_head(
-            dict(randomized(DistogramHead(c_z=C_Z, c_out=PAE_BINS)).state_dict()),
-            layer_norm=False,
-        ),
-        pairformer_embedding=map_pairformer_embedding(
-            dict(pairformer_embedding_module.state_dict())
-        ),
-        experimentally_resolved_head=map_atom_logit_head(
-            dict(
-                randomized(
-                    ExperimentallyResolvedHeadAllAtom(
-                        c_s=C_S,
-                        c_out=2,
-                        max_atoms_per_token=MAX_ATOMS_PER_TOKEN,
-                    )
-                ).state_dict()
-            )
-        ),
+        *resolve_dtypes(_config()),
     )
 
 

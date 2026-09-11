@@ -219,27 +219,34 @@ class InferenceConfig(NamedTuple):
     #: opt-in. Part of the config, so the two never share a compiled
     #: program. See :mod:`foldjax.models._glu`.
     glu_backend: str = "xla"
-    #: Element type of the token/pair representation track: ``"float32"``, the
-    #: released profile and upstream's own inference precision, or
-    #: ``"bfloat16"``. What the narrow value reaches, and what it deliberately
-    #: leaves float32, is models/openfold3/dtype.py. Part of the
-    #: config rather than a runtime flag so it rides into
-    #: ``_PredictGraphIdentity`` and the persistent cache namespace: two runs
-    #: that differ here compile different programs and must never share one.
+    #: Element type of the token/pair representation track: ``"float32"``,
+    #: the shipped profile and upstream's own inference precision, or
+    #: ``"bfloat16"``, which is opt-in and safe only up to roughly 2,000
+    #: tokens. What the narrow value reaches, and what it deliberately leaves
+    #: float32, is :func:`cast_narrow_params`; models/openfold3/dtype.py
+    #: carries the per-size measurement. Part of the config rather than a
+    #: runtime flag so it rides into ``_PredictGraphIdentity`` and the
+    #: persistent cache namespace: two runs that differ here compile
+    #: different programs and must never share one.
     dtype: str = DEFAULT_DTYPE
-    #: The confidence head's re-embedding Pairformer, separately. ``None``
-    #: follows ``dtype``, which is the shape both upstreams ship; a value
-    #: overrides it in either direction.
-    #:
-    #: Separate because the two regions carry different evidence and will be
-    #: decided at different times. The trunk's narrowing has a measurement on
-    #: this port (pLDDT -0.001 at 1,003 tokens, 2026-08-10); the confidence
-    #: head's does not, and it is the one that can be bisected out without
-    #: touching the trunk. It also cannot move a structure: this head consumes
-    #: predicted coordinates and emits scores, never coordinates. Boltz-2's
+    #: The confidence head's re-embedding Pairformer, separately. It follows
+    #: ``dtype`` when a caller says nothing, so opting into a narrow trunk
+    #: narrows it too and this knob exists to hold the head *wide* against a
+    #: narrowed trunk --
+    #: ``confidence_dtype="float32"`` -- or to narrow it alone against a wide
+    #: one. It is the region that can be bisected out without touching the
+    #: trunk, and it cannot move a structure: this head consumes predicted
+    #: coordinates and emits scores, never coordinates. Boltz-2's
     #: ``diffusion_compute_dtype`` is the same idea -- a native, region-scoped
     #: companion to the neutral knob rather than a third neutral value.
-    confidence_dtype: str | None = None
+    #:
+    #: Always a resolved string here; :func:`released_config` is where the
+    #: "follow ``dtype``" default is applied. A ``None`` surviving onto the
+    #: config would put two unequal objects -- the sentinel and the spelling
+    #: it resolves to -- behind one persistent cache namespace while still
+    #: forking the in-process JIT owner, because this whole object is a field
+    #: of ``_PredictGraphIdentity``.
+    confidence_dtype: str = DEFAULT_DTYPE
 
 
 class InferenceParams(NamedTuple):
@@ -259,18 +266,13 @@ class InferenceParams(NamedTuple):
 def resolve_dtypes(config: InferenceConfig) -> tuple[Any, Any]:
     """Return ``(trunk, confidence)`` narrow dtypes, each ``None`` for float32.
 
-    One place resolves ``confidence_dtype``'s "follow ``dtype``" default, so a
-    caller cannot narrow the trunk in one file and read the unresolved ``None``
-    as float32 in another.
+    Both fields are already resolved strings -- :func:`released_config`
+    applies ``confidence_dtype``'s "follow ``dtype``" default -- so this is
+    only the string-to-dtype step, and no second file can resolve a sentinel
+    differently. The released profile is ``(None, None)``.
     """
 
-    return (
-        narrow_dtype(config.dtype),
-        narrow_dtype(
-            config.dtype if config.confidence_dtype is None
-            else config.confidence_dtype
-        ),
-    )
+    return (narrow_dtype(config.dtype), narrow_dtype(config.confidence_dtype))
 
 
 def cast_narrow_params(
@@ -280,11 +282,14 @@ def cast_narrow_params(
 
     Two narrowing groups, each with its own dtype, both as
     :func:`~foldjax.models.openfold3.dtype.narrow_dtype` returns them, so
-    ``None`` means "leave this group alone" -- the released profile carries no
-    cast at all, not a float32-to-float32 one. :func:`resolve_dtypes` turns a
-    config into the pair. ``dtype`` covers the trunk and the diffusion
-    conditioning; ``confidence_dtype`` covers the confidence head's
-    re-embedding Pairformer and nothing else.
+    ``None`` means "leave this group alone" -- no float32-to-float32 cast is
+    ever emitted. :func:`resolve_dtypes` turns a config into the pair.
+    ``dtype`` covers the trunk and the diffusion conditioning;
+    ``confidence_dtype`` covers the confidence head's re-embedding Pairformer
+    and nothing else. The released profile narrows neither and returns the
+    tree it was given; ``--option dtype=bfloat16`` narrows both, because
+    ``confidence_dtype`` follows ``dtype``, and every field outside the two
+    groups is still handed back as the object it arrived as.
 
     The split, with its source in models/openfold3/dtype.py:
 
@@ -293,15 +298,20 @@ def cast_narrow_params(
       the *pair* branch of the diffusion conditioning, and the confidence
       head's Pairformer stack.
     * **left float32** -- ``trunk.input_embedder``, which upstream pins even
-      while training bf16-mixed and which this port measured collapsing; the
+      while training bf16-mixed (``input_embedders.py:129-131``) and which
+      this port measured collapsing; the
       whole ``denoiser``, matching AlphaFold 3, where the atom encoder, the
       atom decoder and the 24-block token transformer all run float32; the
       *single* branch of the diffusion conditioning, including its Fourier
       noise embedding, which AlphaFold 3 promotes to float32 at the same place;
-      the confidence head's ``embed_zij`` projections; and every output head.
+      the confidence head's ``embed_zij`` projections, which upstream also
+      runs before its autocast context opens
+      (``heads/prediction_heads.py:193`` against ``:224``); and every output
+      head.
 
-    Every head reads a bfloat16 representation against float32 parameters,
-    which promotes, so every output logit is float32 in both profiles. Note
+    Every head reads a float32 representation -- the stack's own exit cast
+    restores it (``models/heads.py:337-339``) -- against float32 parameters,
+    so every output logit is float32 in every profile. Note
     what that does *not* say: the attention softmaxes inside the narrowed
     Pairformers, MSA module and template tower run bfloat16 with a bfloat16
     pair bias. Both upstreams do the same deliberately -- OpenFold3's
@@ -1357,8 +1367,15 @@ def released_config(
     # built once and traced many times, and `narrow_dtype` names the accepted
     # values in its message.
     narrow_dtype(dtype)
-    if confidence_dtype is not None:
-        narrow_dtype(confidence_dtype)
+    # The only place the "follow ``dtype``" default is applied. Resolved here
+    # rather than on the config so that omitting the argument and spelling the
+    # value it resolves to build the *same* ``InferenceConfig`` -- which is a
+    # field of ``_PredictGraphIdentity``, so an unresolved sentinel would fork
+    # the in-process JIT owner even where ``cache_profile`` has already
+    # unified the persistent cache directory.
+    if confidence_dtype is None:
+        confidence_dtype = dtype
+    narrow_dtype(confidence_dtype)
     return InferenceConfig(
         n_token=n_token,
         n_atom=n_atom,

@@ -264,13 +264,14 @@ def pairformer_embedding(
     Both boundaries are upstream's, one from each upstream.
 
     *Entering*: the re-embedding this function opens with is upstream
-    OpenFold3's ``embed_zij``, which it pins to float32 with
-    ``autocast(dtype=torch.float32)`` (``heads/prediction_heads.py:88-89``) and
-    restores to the incoming dtype at ``:118`` -- the one island it keeps
-    inside this head while training under ``bf16-mixed``. It falls out for free
-    here: ``linear_i``, ``linear_j`` and ``linear_distance`` keep float32
-    parameters, so a bfloat16 ``zij`` promotes through them, and the narrowing
-    cast below is upstream's restore.
+    OpenFold3's ``embed_zij``, which runs *before* its autocast context opens
+    (``heads/prediction_heads.py:193`` against ``:224``, read in
+    ``openfold3-v050``) and therefore at the ambient dtype -- float32 under
+    the released 32-true inference. It falls out for free here:
+    ``linear_i``, ``linear_j`` and ``linear_distance`` keep float32
+    parameters, so a bfloat16 ``zij`` promotes through them. The cast below is
+    this port's entry into the narrowed region, matching where upstream's
+    context begins.
 
     *Leaving*: AlphaFold 3 casts both representations back to float32 the
     moment the stack returns -- ``confidence_head.py:163`` for the pair track

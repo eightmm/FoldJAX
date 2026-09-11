@@ -99,6 +99,14 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
         "deterministic": False,
     }
 
+    # `dtype` is a string, so it misses the int/bool coercion above and is
+    # stripped from the namespace by its own comparison; it needs the same
+    # pin. `confidence_dtype` has no default of its own to pin -- it follows
+    # `dtype`, and the sentinel that says so is the thing to hold, because a
+    # literal here would silently stop following.
+    assert openfold3_backend._DEFAULT_DTYPE == signature["dtype"].default
+    assert signature["confidence_dtype"].default is None
+
 
 def test_released_default_aliases_share_one_backend_jit_owner(
     tmp_path,

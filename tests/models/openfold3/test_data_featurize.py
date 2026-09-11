@@ -252,7 +252,12 @@ def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -
 
     from foldjax.models.openfold3.bridge.chemistry import representative_atom_table
     from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
-    from foldjax.models.openfold3.inference import predict, released_config
+    from foldjax.models.openfold3.inference import (
+        cast_narrow_params,
+        predict,
+        released_config,
+        resolve_dtypes,
+    )
 
     from .test_composite_parity_trunk import COMPOSITE_SCALE, _reduced_config
 
@@ -265,6 +270,10 @@ def test_features_drive_predict_end_to_end(openfold3_source: Path, randomized) -
     params = map_inference_params(dict(model.state_dict()))
 
     config = released_config(n_token=n_token, n_atom=n_atom, num_samples=1, num_steps=2)
+    # Narrow the weights the way both entry points do. Skipping it would run
+    # bfloat16 activations against float32 parameters, which promotes at every
+    # matmul -- a program nothing ships, checked here for finiteness.
+    params = cast_narrow_params(params, *resolve_dtypes(config))
     prediction = predict(
         jax.random.key(0),
         {name: jnp.asarray(value) for name, value in features.items()},
