@@ -100,6 +100,29 @@ def _prefix_atom_normal(
     )
 
 
+#: Token count above which the diffusion token transformer blocks its query
+#: axis by default. Below the long-shape branch there used to be no rung at
+#: all, so the FP32 score buffer stayed dense and grew as N^2. At the released
+#: five samples and sixteen heads the logits and their softmax together cost
+#: ``2 * 5 * 16 * N^2 * 4`` bytes: 640 MiB at 1,024 tokens and 2.50 GiB at
+#: 2,048 -- the worst point of the curve, one token before the long-shape
+#: branch's block of 64 brings the same buffer down to 80 MiB. The floor is
+#: where that buffer starts to dominate; under it the blocked loop would
+#: perturb rounding (see ``TOKEN_ATTENTION_CHUNK``) for no useful saving.
+TOKEN_ATTENTION_DENSE_TOKEN_LIMIT = 1024
+
+#: Query block the rung above uses. Provisional -- the GPU sweep sets it, and
+#: a tighter block does not always lower the peak -- and deliberately the same
+#: width the trunk Pairformer's own single-attention has always run at
+#: (``chunk_size=128``), so the two token-axis attentions in one graph block
+#: alike. Blocking is exact per query row but NOT bitwise: XLA retiles the
+#: remaining work, which on CPU moved ~90% of the output words at 200 and 256
+#: tokens while leaving 2,000 and 2,048 identical. That is why the rung has a
+#: floor and why callers can pin it. ``token_attention_chunk=0`` restores the
+#: unblocked buffer.
+TOKEN_ATTENTION_CHUNK = 128
+
+
 def resolve_long_sequence_chunks(
     num_tokens: int,
     *,
@@ -113,6 +136,8 @@ def resolve_long_sequence_chunks(
     Caller-provided values win unless the general ``chunk_size`` is larger than
     the long-shape cap. The policy is based on the Stage13/14 synthetic probes:
     2048 tokens fits with 128-class chunks, while 3072 needs smaller chunks.
+    Shapes between ``TOKEN_ATTENTION_DENSE_TOKEN_LIMIT`` and 2048 take the
+    token-attention rung only; their triangle chunks are unchanged.
     """
 
     effective_chunk_size = chunk_size
@@ -136,6 +161,11 @@ def resolve_long_sequence_chunks(
         effective_triangle_q_chunk = resolve_triangle_attention_q_chunk(
             num_tokens, effective_triangle_q_chunk
         )
+        if (
+            effective_token_chunk is None
+            and num_tokens > TOKEN_ATTENTION_DENSE_TOKEN_LIMIT
+        ):
+            effective_token_chunk = TOKEN_ATTENTION_CHUNK
 
     return {
         "chunk_size": effective_chunk_size,

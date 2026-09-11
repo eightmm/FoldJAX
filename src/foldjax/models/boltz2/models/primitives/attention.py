@@ -33,9 +33,14 @@ def attention_pair_bias_forward(
 
     ``chunk_size`` enables query-axis (i) blocking: scores/softmax/@v are
     computed one query block at a time and concatenated over the query axis.
-    The softmax denominator is over the FULL key axis within each query row, so
-    this is bit-exact; only independent query rows are blocked. ``None`` (default)
-    or ``N <= chunk_size`` falls back to the single-shot path.
+    The softmax denominator is over the FULL key axis within each query row and
+    only independent query rows are blocked, so the arithmetic is exact -- but
+    the result is NOT bitwise equal to the single-shot path, because XLA
+    schedules a narrow query axis differently. Treat it as agreeing to a tight
+    tolerance, never as reproducing the same words; see
+    ``tests/models/boltz2/test_attention_chunk_parity.py``. ``None`` (default)
+    or ``N <= chunk_size`` falls back to the single-shot path, which *is*
+    bit-identical because it is the same program.
     """
 
     if k_in is None:
