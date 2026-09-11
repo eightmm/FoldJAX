@@ -12,6 +12,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models.protenix.models.diffusion.diffusion import inference_noise_schedule
 from foldjax.models.protenix.models.model import (
     ProtenixInferenceParams,
@@ -64,6 +65,10 @@ def protenix_predict_static(
     trunk_triangle_attention_backend: str | None = None,
     #: ``None`` follows the trunk backend; see model.py for why this exists.
     confidence_triangle_attention_backend: str | None = None,
+    #: Which gated-linear-unit implementation every transition runs. ``"xla"``
+    #: is the released arithmetic and the only value a context-parallel run
+    #: accepts; see :mod:`foldjax.models._glu`.
+    glu_backend: str = "xla",
     use_confidence_embedding: bool = True,
     run_confidence: bool = True,
     run_confidence_scores: bool = True,
@@ -155,6 +160,18 @@ def protenix_predict_static(
             sigma_data=sigma_data,
         )
         guided = guidance_config is not None and guidance_config.get("enable")
+        if glu_backend not in GLU_BACKENDS:
+            raise ValueError(
+                f"glu_backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
+            )
+        if cp_shards > 1 and glu_backend != "xla":
+            # The kernel is a Triton call over the whole operand; the SPMD
+            # partitioner cannot split it, and the widened intermediate it
+            # exists to remove is already divided across devices.
+            raise ValueError(
+                "context parallelism requires glu_backend='xla'; a fused GLU "
+                "cannot be partitioned"
+            )
         if cp_shards > 1 and (not graph_jit or guided):
             raise ValueError(
                 "context parallelism requires the compiled graph; drop "
@@ -219,6 +236,7 @@ def protenix_predict_static(
             trunk_single_attention_backend=trunk_single_attention_backend,
             trunk_triangle_attention_backend=trunk_triangle_attention_backend,
             confidence_triangle_attention_backend=confidence_triangle_attention_backend,
+            glu_backend=glu_backend,
             use_confidence_embedding=use_confidence_embedding,
             run_confidence=run_confidence,
             run_confidence_scores=run_confidence_scores,

@@ -341,6 +341,7 @@ def sample_diffusion_with_module(
     #: dtype of the prediction handed back -- see ``denoise_fn``.
     denoiser_autocast: bool = False,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     token_q_chunk_size: int | None = None,
     diffusion_chunk_size: int | None = None,
     gamma0: float = 0.8,
@@ -420,6 +421,7 @@ def sample_diffusion_with_module(
             use_efficient_fusion=use_efficient_fusion,
             token_q_chunk_size=token_q_chunk_size,
             attention_backend=attention_backend,
+            glu_backend=glu_backend,
             token_mask=token_padding_mask,
             atom_mask=atom_padding_mask,
         )
@@ -458,6 +460,8 @@ def diffusion_conditioning_prepare_cache(
     relp_feature: jnp.ndarray,
     z_trunk: jnp.ndarray,
     params: DiffusionConditioningParams,
+    *,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Build diffusion pair conditioning cache."""
 
@@ -466,8 +470,10 @@ def diffusion_conditioning_prepare_cache(
         axis=-1,
     )
     pair_z = linear(layer_norm(pair_z, params.layernorm_z), params.linear_z)
-    pair_z = pair_z + transition(pair_z, params.transition_z1)
-    return pair_z + transition(pair_z, params.transition_z2)
+    pair_z = pair_z + transition(pair_z, params.transition_z1, glu_backend=glu_backend)
+    return pair_z + transition(
+        pair_z, params.transition_z2, glu_backend=glu_backend
+    )
 
 
 def diffusion_conditioning(
@@ -481,6 +487,7 @@ def diffusion_conditioning(
     pair_z: jnp.ndarray | None = None,
     sigma_data: float = 16.0,
     use_conditioning: bool = True,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Apply Protenix ``DiffusionConditioning`` in inference mode."""
 
@@ -488,7 +495,9 @@ def diffusion_conditioning(
         if not use_conditioning:
             s_trunk = jnp.zeros_like(s_trunk)
             z_trunk = jnp.zeros_like(z_trunk)
-        pair_z = diffusion_conditioning_prepare_cache(relp_feature, z_trunk, params)
+        pair_z = diffusion_conditioning_prepare_cache(
+            relp_feature, z_trunk, params, glu_backend=glu_backend
+        )
 
     single_s = jnp.concatenate([s_trunk, s_inputs], axis=-1)
     single_s = linear(layer_norm(single_s, params.layernorm_s), params.linear_s)
@@ -496,8 +505,12 @@ def diffusion_conditioning(
     noise = fourier_embedding(noise, params.fourier).astype(single_s.dtype)
     noise = linear(layer_norm(noise, params.layernorm_n), params.linear_n)
     single_s = single_s[..., None, :, :] + noise[..., :, None, :]
-    single_s = single_s + transition(single_s, params.transition_s1)
-    single_s = single_s + transition(single_s, params.transition_s2)
+    single_s = single_s + transition(
+        single_s, params.transition_s1, glu_backend=glu_backend
+    )
+    single_s = single_s + transition(
+        single_s, params.transition_s2, glu_backend=glu_backend
+    )
     return single_s, pair_z
 
 
@@ -537,6 +550,7 @@ def diffusion_module_f_forward(
     use_efficient_fusion: bool = False,
     token_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
@@ -553,6 +567,7 @@ def diffusion_module_f_forward(
             pair_z=pair_z,
             sigma_data=sigma_data,
             use_conditioning=use_conditioning,
+            glu_backend=glu_backend,
         )
     else:
         if pair_z is None:
@@ -586,6 +601,7 @@ def diffusion_module_f_forward(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        glu_backend=glu_backend,
         atom_mask=atom_mask,
     )
     a_token = a_token.astype(jnp.float32)
@@ -602,6 +618,7 @@ def diffusion_module_f_forward(
         use_scan=use_scan,
         global_q_chunk_size=token_q_chunk_size,
         attention_backend=attention_backend,
+        glu_backend=glu_backend,
         z_is_normalized=use_efficient_fusion,
         extra_attn_bias=extra_attn_bias,
         sequence_mask=token_mask,
@@ -619,6 +636,7 @@ def diffusion_module_f_forward(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        glu_backend=glu_backend,
         atom_mask=atom_mask,
     )
 
@@ -658,6 +676,7 @@ def diffusion_module_forward(
     use_efficient_fusion: bool = False,
     token_q_chunk_size: int | None = None,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
@@ -699,6 +718,7 @@ def diffusion_module_forward(
         use_efficient_fusion=use_efficient_fusion,
         token_q_chunk_size=token_q_chunk_size,
         attention_backend=attention_backend,
+        glu_backend=glu_backend,
         token_mask=token_mask,
         atom_mask=atom_mask,
     )

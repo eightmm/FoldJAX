@@ -333,6 +333,7 @@ def atom_attention_encoder(
     n_keys: int,
     use_scan: bool = False,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     atom_mask: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run Protenix AtomAttentionEncoder in input or diffusion mode."""
@@ -385,6 +386,7 @@ def atom_attention_encoder(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        glu_backend=glu_backend,
         sequence_mask=atom_mask,
     )
     a = aggregate_atom_to_token(
@@ -410,6 +412,7 @@ def atom_attention_decoder(
     n_keys: int,
     use_scan: bool = False,
     attention_backend: str = "xla",
+    glu_backend: str = "xla",
     atom_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Run Protenix ``AtomAttentionDecoder`` in inference mode."""
@@ -426,6 +429,7 @@ def atom_attention_decoder(
         n_keys=n_keys,
         use_scan=use_scan,
         attention_backend=attention_backend,
+        glu_backend=glu_backend,
         sequence_mask=atom_mask,
     )
     output = linear(layer_norm(q, params.layernorm_q), params.linear_out)

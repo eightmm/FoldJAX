@@ -235,6 +235,11 @@ def _run_trunk(features: Mapping[str, Any], cycles: Any) -> dict[str, np.ndarray
         stop_after_trunk=True,
         capture_names=tuple(TRUNK_ARRAYS),
         run_confidence=False,
+        # Spelled out, not inherited. The capture ran the split-matmul GLU and
+        # these tolerances are calibrated against it; the fused kernel is a
+        # different rounding, so the shipped arm has to be written down rather
+        # than follow whatever the wrapper's default becomes.
+        glu_backend="xla",
     )
     output = jax.block_until_ready(output)
     return {
@@ -283,6 +288,8 @@ def _replay_coordinates(
         run_confidence=False,
         return_confidence_logits=False,
         return_trunk=False,
+        # As at Tier A: the shipped GLU, written down rather than defaulted.
+        glu_backend="xla",
     )
     output = jax.block_until_ready(output)
     # A patch that never fired would leave the CPU-generated schedule in place

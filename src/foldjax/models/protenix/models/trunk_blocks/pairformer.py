@@ -57,6 +57,7 @@ def pairformer_block(
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray | None, jnp.ndarray]:
     """Apply one inference-mode Protenix Pairformer block.
 
@@ -144,7 +145,7 @@ def pairformer_block(
         if (triangle_attention_backend or "").endswith("_jit")
         else transition
     )
-    z = z + pair_transition_fn(z, params.pair_transition)
+    z = z + pair_transition_fn(z, params.pair_transition, glu_backend=glu_backend)
     if pair_gate is not None:
         z = z * pair_gate
 
@@ -173,7 +174,9 @@ def pairformer_block(
         single_transition_fn = (
             compiled_transition if single_attention_backend == "xla_jit" else transition
         )
-        s = s + single_transition_fn(s, params.single_transition)
+        s = s + single_transition_fn(
+            s, params.single_transition, glu_backend=glu_backend
+        )
         if single_gate is not None:
             s = s * single_gate.astype(s.dtype)
 
@@ -192,6 +195,7 @@ def pairformer_stack(
     single_att_q_chunk_size: int | None = None,
     single_attention_backend: str = "xla",
     triangle_attention_backend: str | None = None,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray | None, jnp.ndarray]:
     """Apply a Protenix PairformerStack in inference mode."""
 
@@ -210,6 +214,7 @@ def pairformer_stack(
                 single_att_q_chunk_size=single_att_q_chunk_size,
                 single_attention_backend=single_attention_backend,
                 triangle_attention_backend=triangle_attention_backend,
+                glu_backend=glu_backend,
             )
         return s, z
 
@@ -227,6 +232,7 @@ def pairformer_stack(
             single_att_q_chunk_size=single_att_q_chunk_size,
             single_attention_backend=single_attention_backend,
             triangle_attention_backend=triangle_attention_backend,
+            glu_backend=glu_backend,
         )
         return (s_c, z_c), None
 

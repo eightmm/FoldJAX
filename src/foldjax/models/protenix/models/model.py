@@ -376,6 +376,12 @@ def protenix_infer_static(
     #: which is the allocation that killed the target after the compute had
     #: already finished.
     confidence_triangle_attention_backend: str | None = None,
+    #: Which gated-linear-unit implementation every transition in the model
+    #: runs. ``"xla"`` is the released arithmetic; ``"tokamax"`` is the opt-in
+    #: fused Triton kernel, one value for the whole model because the trunk,
+    #: the MSA stack, the diffusion conditioner, the denoiser and the
+    #: confidence head all reach the same two primitives.
+    glu_backend: str = "xla",
     use_confidence_embedding: bool = True,
     compact_confidence_distance_bins: bool = False,
     run_confidence: bool = True,
@@ -528,6 +534,7 @@ def protenix_infer_static(
         opm_chunk_size=opm_chunk_size,
         single_attention_backend=trunk_single_attention_backend,
         triangle_attention_backend=trunk_triangle_attention_backend,
+        glu_backend=glu_backend,
         cycle_msa_features=cycle_msa_features,
         cycle_msa_index_tape=cycle_msa_index_tape,
         cycle_pair_dropout_keep_masks=cycle_pair_dropout_keep_masks,
@@ -615,6 +622,7 @@ def protenix_infer_static(
             use_efficient_fusion=use_diffusion_efficient_fusion,
             denoiser_autocast=diffusion_autocast,
             attention_backend=diffusion_attention_backend,
+            glu_backend=glu_backend,
             token_q_chunk_size=token_q_chunk_size,
             diffusion_chunk_size=diffusion_chunk_size,
             gamma0=gamma0,
@@ -690,6 +698,7 @@ def protenix_infer_static(
                     if confidence_triangle_attention_backend is None
                     else confidence_triangle_attention_backend
                 ),
+                glu_backend=glu_backend,
             )
             piece = dict(logits) if return_confidence_logits else {}
             if run_confidence_scores:
@@ -760,6 +769,7 @@ GRAPH_STATIC_ARGNAMES = (
     "diffusion_chunk_size",
     "gamma0",
     "gamma_min",
+    "glu_backend",
     "input_atom_heads",
     "num_recycles",
     "n_keys",

@@ -14,6 +14,7 @@ from typing import Any
 
 from foldjax.models import _predict_flags, _representations
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models.protenix.amp_policy import (
     AMP_POLICY_CHOICES,
     DEFAULT_AMP_POLICY,
@@ -307,6 +308,20 @@ def _run(
         # arena at 2030 tokens. Overriding it separately is still allowed,
         # because the head and the trunk do not have to fit at the same moment.
         default=None,
+    )
+    parser.add_argument(
+        "--glu-backend",
+        choices=GLU_BACKENDS,
+        default="xla",
+        # Declared here rather than in `_predict_flags`, which is for flags
+        # both ports already spelled identically. OpenDDE reaches these same
+        # transitions through Protenix's primitives, so a flag added to the
+        # shared builder would offer the kernel on a port nobody has measured
+        # it on; the attention builder's docstring makes the same argument.
+        help="which gated-linear-unit implementation every transition runs; "
+        "'tokamax' is an opt-in fused Triton kernel that never writes the "
+        "widened intermediate, unmeasured on this port and unavailable under "
+        "context parallelism",
     )
     confidence_scan_group = parser.add_mutually_exclusive_group()
     confidence_scan_group.add_argument(
@@ -1079,6 +1094,7 @@ def _run(
                 confidence_triangle_attention_backend=(
                     args.confidence_triangle_attention_backend
                 ),
+                glu_backend=args.glu_backend,
                 run_confidence=not args.no_confidence,
                 run_confidence_scores=not args.no_confidence_scores,
                 stop_after_trunk=args.stop_after == "trunk",

@@ -532,6 +532,50 @@ be partitioned either, so under context parallelism the default resolves to
 with `--option cp_devices=N` for N greater than 1 is refused rather than
 silently downgraded.
 
+### Fused gated linear unit (`--glu-backend tokamax`, Protenix)
+
+Protenix has two gated transitions -- the `Transition` block the trunk, the
+MSA stack, the diffusion conditioner and the confidence head all share, and
+the diffusion transformer's `ConditionedTransitionBlock` -- and both compute
+`silu(x @ Wa) * (x @ Wb)`. Spelled as two matmuls and an elementwise product,
+XLA writes both widened branches and their product before narrowing the
+result: three copies of the wide form, 7,866 MiB of a 10,914 MiB temp arena on
+OpenDDE's structural pair tensor at 946 tokens, which is the measurement the
+blocking in the shared `Transition` was added for. `--glu-backend tokamax`
+runs the same arithmetic in one fused Triton kernel that writes none of them,
+at both sites at once.
+
+Blocking and fusing are alternatives, not complements: blocking *bounds* that
+tensor by doing it a few rows at a time, fusing *removes* it. So a run that
+passes both a transition chunk size and the fused backend gets the fused one
+and is told once that the chunk size is unused -- the same shape of warning
+the triangle and attention stacks give for their own fused kernels, and for
+the same reason.
+
+The default is `xla` and a released run is unchanged, bit for bit -- the
+released value keeps the port's existing code, rather than routing it through
+a shared function that rounds differently. The fused route is a numerics
+change as well as a memory one, in two places: the kernel applies its
+activation at its own width, and it is handed `jax.nn.silu` where the port
+spells the same function as `x * (1 + exp(-x))^-1`. On float32 activations
+that is an ulp; on a bfloat16 stage it need not be. There is no
+fallback -- the implementation is pinned to Triton, so a card that cannot run
+the kernel raises instead of running XLA under the tokamax name -- and the
+backend is refused under context parallelism, where the kernel cannot be
+partitioned and the widened tensor is already divided across devices. The
+FP32-exempt projections of the bfloat16 diffusion policy are refused too:
+their widen-then-narrow is not arithmetic the kernel can express. No
+transition is on that exemption list today, so `--amp-policy bf16` and
+`--glu-backend tokamax` combine.
+
+**Neither port has a GPU measurement for this kernel.** The arena numbers
+above are what the *unfused* transition costs, not what fusing saves. OpenDDE
+reaches these same two transitions through Protenix's primitives and is
+deliberately not offered the value -- asking for it is an error there, not a
+silent no-op -- because a kernel is offered on the port whose numbers were
+measured. OpenDDE is the natural next port to measure: the arena that
+motivated the blocking in the first place is OpenDDE's.
+
 ### `--option deterministic=on`
 
 Compiles this run's executables for reduction orders that repeat, so two

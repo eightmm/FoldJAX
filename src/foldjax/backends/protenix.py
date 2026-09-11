@@ -48,6 +48,12 @@ _CLI_OPTIONS = {
     # to a different kernel than the trunk -- it used to, and that was a 39 GiB
     # temp arena at 2030 tokens.
     "confidence_triangle_attention_backend",
+    # Which gated-linear-unit implementation the transitions run. Protenix
+    # only: OpenDDE reaches the same primitives, so the value must not be
+    # reachable from its own option set -- argparse does not validate a
+    # default against `choices`, and a shared default would run an unmeasured
+    # kernel there under a name nobody chose.
+    "glu_backend",
     "chunk_policy",
     "triangle_mul_chunk_size",
     "triangle_att_q_chunk_size",
@@ -92,6 +98,27 @@ _FLAG_OPTIONS = frozenset({"strict_token_limit"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
+#: Spelled out rather than imported from :data:`foldjax.models._glu.GLU_BACKENDS`,
+#: which cannot be read without importing JAX -- and cache planning runs before
+#: any model runtime is loaded, which is the reason this module carries its own
+#: copies of the native defaults at all. `tests/models/protenix/test_glu_backend.py`
+#: asserts the two tuples are equal, so a value added there and not here fails
+#: rather than drifts.
+_GLU_BACKENDS = ("xla", "tokamax")
+
+
+def _strict_cp_devices(value: Any) -> int:
+    """The requested device count, or 1 when it is not a number at all.
+
+    Malformed values are somebody else's error -- the native parser's -- so
+    this only has to avoid crashing the cross-check in `validate_native_options`
+    on the way there.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
+
 
 def _render_switch(key: str, value: Any) -> list[str]:
     """One switch option as the native CLI wants it: the flag, or nothing."""
@@ -134,6 +161,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "cp_devices": 1,
     "cp_layout": "auto",
     "deterministic_ops": "off",
+    "glu_backend": "xla",
 }
 
 
@@ -264,6 +292,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "trunk_single_attention_backend",
         "trunk_triangle_attention_backend",
         "confidence_triangle_attention_backend",
+        "glu_backend",
         "chunk_policy",
         "triangle_mul_chunk_size",
         "triangle_att_q_chunk_size",
@@ -336,6 +365,20 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         if output_format not in {"npz", "protenix", "both"}:
             raise ValueError(
                 "output_format must be one of 'npz', 'protenix', or 'both'"
+            )
+        glu_backend = options.get("glu_backend", "xla")
+        if glu_backend not in _GLU_BACKENDS:
+            # Rejected here rather than left to the parser: argparse answers a
+            # bad choice with the whole usage dump, which does not say which
+            # argument was wrong.
+            raise ValueError(
+                f"glu_backend must be one of {_GLU_BACKENDS}; got {glu_backend!r}"
+            )
+        cp_devices = options.get("cp_devices", 1)
+        if glu_backend != "xla" and _strict_cp_devices(cp_devices) > 1:
+            raise ValueError(
+                "context parallelism requires glu_backend='xla'; a fused GLU "
+                "cannot be partitioned"
             )
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:

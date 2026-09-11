@@ -152,6 +152,19 @@ unless it says so here, in its own paragraph.
   fused run never receives the executable built without it while an explicit
   `xla` names the namespace an omitted option already named.
 
+- **An opt-in fused gated linear unit for Protenix**, off by default.
+  `--glu-backend tokamax` (adapter: `--option glu_backend=tokamax`) runs both
+  of the port's gated transitions -- the chunked `Transition` used by the
+  trunk, the MSA stack, the diffusion conditioner and the confidence head, and
+  the diffusion transformer's `ConditionedTransitionBlock` -- through one fused
+  Triton kernel that never writes the widened gate and value branches. The
+  released default `xla` is bit-identical to previous releases. Blocking and
+  fusing are alternatives rather than complements, so a run that also passes a
+  transition chunk size is warned once that the chunk size is unused. The value
+  is part of the compilation-cache identity and of the compiled program's
+  identity, and is refused under context parallelism and for unknown spellings.
+  Unmeasured on GPU on either port; OpenDDE reaches the same transitions and is
+  deliberately not offered the option. See [docs/cli.md](docs/cli.md).
 - **A `tokamax` attention backend for Protenix's two pair-bias sites**, opt-in
   and off by default. `--diffusion-attention-backend tokamax` routes the
   windowed atom attention of the diffusion encoder and decoder, and
