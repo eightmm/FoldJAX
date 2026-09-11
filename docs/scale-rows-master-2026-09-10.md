@@ -411,6 +411,17 @@ The process floor on this case is 0.05 / 0.31 Å and the within-set sample
 spread is 1.0-2.9 Å, so every arm's coordinates are at floor. Peak does not
 move: Boltz-2's peak is a trunk arena, not the denoiser.
 
+### Boltz-2, 2,096 tokens (5DEI)
+
+| cell | wall s | vs released | peak MiB | same-index RMSD vs released |
+| --- | ---: | ---: | ---: | --- |
+| released | 317.91 | – | 21808 | – |
+| `attention_backend=tokamax` (fp32 operands, `highest`) | 586.15 | +84% | 21778 | at floor |
+| `diffusion_compute_dtype=bfloat16` + `diffusion_attention_backend=tokamax` | **270.03** | **−15.1%** | 21778 | median 0.065 / max 0.183 |
+
+The same 15% at both sizes, and the per-chain deposited RMSD of the fast arm
+(0.34-0.39 A) is the released arm's own (0.34-0.40 A).
+
 The earlier verdict that tokamax regresses on this port was the precision pin,
 not the kernel. `tokamax/_src/precision.py` maps a float32 result type to
 `F32_F32_F32` under this port's pinned `matmul_precision=highest`, which is
@@ -463,6 +474,28 @@ float32 accumulator whatever the operands are.
 The port now delivers every denoiser pair bias in float32 while keeping the
 bf16 GEMM. That keeps 82% of the policy's wall-time gain and all of its
 memory gain.
+
+### Protenix, 2,096 tokens: the 2x2 after the fix
+
+Wall seconds and peak MiB, with the per-chain deposited RMSD of every arm in
+the 0.38-0.45 A band the released arm itself occupies.
+
+| diffusion compute | XLA attention | tokamax attention |
+| --- | --- | --- |
+| fp32 (released) | 210.32 s / 23440 MiB / pLDDT 95.16 | 199.25 s / 21216 MiB / pLDDT 95.16 |
+| bf16, pair bias fp32 | 191.41 s / 21636 MiB / pLDDT 94.98 | 187.14 s / 21636 MiB / pLDDT 94.99 |
+
+Each lever pays on its own and they compose: the fused kernel alone is 5.3%
+faster and, by never building the score tensor, 9.5% lighter with an
+identical pLDDT; the dtype alone is 8.9% faster and 7.7% lighter; together
+11.0% faster. Same-index RMSD of the bf16 arm against the released arm is
+0.051 A median against a 0.185 A within-set spread, which is the pass band.
+
+The kernel log confirms which sites the fused backend reached. In the bf16
+arm all three carry bfloat16 (`bf16[2096,16,24]` trunk single,
+`bf16[2460,32,4,32]` atom window, `bf16[5,2096,16,48]` diffusion token) and
+no float32 warning fires; in the fp32 arm the two diffusion sites arrive as
+f32 and the one-time warning fires exactly once, as designed.
 
 ### Protenix, 3,012 tokens (6ZTX), tape-pinned
 
