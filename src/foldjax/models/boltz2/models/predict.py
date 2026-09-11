@@ -40,6 +40,7 @@ from foldjax.models.boltz2.models.trunk_blocks.input_embedder import (
     input_embedder_forward,
 )
 from foldjax.models.boltz2.models.trunk_blocks.trunk import (
+    PAIR_RESIDUAL_DTYPE_DEFAULT,
     _cast_trunk_params,
     _resolve_pair_residual_dtype,
     boltz2_sample_forward,
@@ -251,7 +252,8 @@ def boltz2_predict(
     # Leaving it in `sample_kwargs` keeps it on the sampler's signature too,
     # which is what makes the two entry points compile the same trunk.
     pair_residual_dtype = _resolve_pair_residual_dtype(
-        sample_kwargs.get("pair_residual_dtype"), compute_dtype
+        sample_kwargs.get("pair_residual_dtype", PAIR_RESIDUAL_DTYPE_DEFAULT),
+        compute_dtype,
     )
     trunk_params = params["trunk"]
     trunk_feats = feats

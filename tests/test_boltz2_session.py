@@ -373,6 +373,49 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
         assert native_api._resolve_cp_layout("1d", cp_devices) == "1d"
 
 
+def test_pair_residual_namespace_records_the_width_not_the_spelling(
+    tmp_path: Path,
+) -> None:
+    """Two names for one program, one namespace -- and absence means "before".
+
+    The key reaches the profile resolved, never as the policy that asked for
+    it, and it is spelled even for float32. It was missing from
+    ``compile_options`` while the option was opt-in, so every run recorded
+    before this one omits it whichever arm it ran; leaving float32 to spell
+    itself by absence would quietly make that ambiguity permanent. Absence
+    now means "recorded before the width was recorded", and nothing else.
+    """
+
+    backend = Boltz2Backend()
+    base = _request(tmp_path)
+
+    def profile(**options):
+        return backend.cache_profile(
+            dataclasses.replace(base, options={**base.options, **options})
+        )
+
+    released = profile()
+    assert released["pair_residual_dtype"] == "bfloat16"
+    assert profile(pair_residual_dtype="auto") == released
+    assert profile(pair_residual_dtype="bfloat16") == released
+    assert profile(compute_dtype="bfloat16") == released
+
+    wide = profile(pair_residual_dtype="float32")
+    assert wide["pair_residual_dtype"] == "float32"
+    assert wide != released
+    # An FP32 trunk carries an FP32 residual without being asked, and says so.
+    assert profile(compute_dtype="float32")["pair_residual_dtype"] == "float32"
+
+    # The namespace, not just the profile: a scope that ignored the width
+    # would answer a narrow request out of a wide run's directory.
+    assert resolve_cache_dir(
+        dataclasses.replace(
+            base, options={**base.options, "pair_residual_dtype": "float32"}
+        ),
+        backend,
+    ) != resolve_cache_dir(base, backend)
+
+
 def test_released_default_cache_aliases_reuse_one_native_runner(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -394,14 +437,22 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             "attention_backend": "xla",
             "triangle_backend": "cueq",
             "glu_backend": "tokamax",
+            "pair_residual_dtype": "auto",
             "bucket": False,
             "msa_deletions": "released",
         },
+    )
+    # The released pair-residual spelling resolves to a width, so the width
+    # it resolves to is a third name for this one program.
+    resolved = dataclasses.replace(
+        explicit,
+        options={**explicit.options, "pair_residual_dtype": "bfloat16"},
     )
     backend = Boltz2Backend()
     omitted_scope = resolve_cache_dir(request, backend)
     explicit_scope = resolve_cache_dir(explicit, backend)
     assert explicit_scope == omitted_scope
+    assert resolve_cache_dir(resolved, backend) == omitted_scope
     counts = {"loads": 0, "traces": 0}
     _patch_primary_runtime(monkeypatch, tmp_path, counts)
 
@@ -431,9 +482,13 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             attention_backend="xla",
             triangle_backend="cueq",
             glu_backend="tokamax",
+            pair_residual_dtype="auto",
             bucket=False,
             msa_deletions="released",
         )
+        # Same program, named by the width instead of by the policy: it must
+        # not trace a second time.
+        narrow = native_api.predict(**common, pair_residual_dtype="bfloat16")
 
         assert counts == {"loads": 1, "traces": 1}
         assert set(backend._runners) == {"primary"}
@@ -441,6 +496,7 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
         assert native_runner._cache_size() == 1
         np.testing.assert_array_equal(omitted["coords"], pinned["coords"])
         np.testing.assert_array_equal(omitted["plddt"], pinned["plddt"])
+        np.testing.assert_array_equal(omitted["coords"], narrow["coords"])
 
 
 def test_runner_identity_keeps_raw_representations_and_trunk_routes_distinct(

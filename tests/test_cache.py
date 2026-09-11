@@ -376,6 +376,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "diffusion_compute_dtype": "float32",
             "triangle_backend": "cueq",
             "glu_backend": "tokamax",
+            "pair_residual_dtype": "auto",
             "bucket": False,
             "matmul_precision": "high",
         },
@@ -400,7 +401,14 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
         },
     )
 
-    assert backend.cache_profile(omitted) == {"num_recycles": 5}
+    # The pair-residual width is recorded rather than stripped: it is the one
+    # released default whose absence has to keep meaning "recorded before this
+    # width was recorded". See `test_pair_residual_namespace_records_the_width
+    # _not_the_spelling`.
+    assert backend.cache_profile(omitted) == {
+        "num_recycles": 5,
+        "pair_residual_dtype": "bfloat16",
+    }
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(native, backend) == resolve_cache_dir(omitted, backend)
@@ -489,7 +497,11 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         },
     )
 
-    assert backend.cache_profile(cp_omitted) == {"cp_devices": 4, "num_recycles": 5}
+    assert backend.cache_profile(cp_omitted) == {
+        "cp_devices": 4,
+        "num_recycles": 5,
+        "pair_residual_dtype": "bfloat16",
+    }
     assert backend.cache_profile(cp_auto) == backend.cache_profile(cp_omitted)
     assert backend.cache_profile(cp_rows) == backend.cache_profile(cp_omitted)
     assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_rows, backend)

@@ -26,42 +26,6 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
-- **An opt-in bfloat16 pair residual for the Boltz-2 trunk**, off by default.
-  `compute_dtype=bfloat16` already narrows every trunk GEMM; what stayed
-  float32 was the width the pair representation is *stored* at between them,
-  and from roughly 2,000 tokens up that tensor is the largest tenant of the
-  peak -- 4.326 GiB at 3,012 tokens against 2.163 GiB in bfloat16.
-  `--option pair_residual_dtype=bfloat16` stores it narrow. It requires
-  `compute_dtype=bfloat16`, joins the compilation-cache identity, and refuses
-  the spelling `float32`, which the default already means. Every block still runs
-  the program it ran: a narrowed residual is declared to be the autocast
-  configuration rather than inferred from the activation width -- without
-  that, triangle multiplication reads a bfloat16 pair as "not autocast" and
-  runs its contraction in float32, which is wider than the default -- so the
-  contraction stays bfloat16 on both the cuEquivariance and XLA backends and
-  triangle attention keeps its float32 query scale. Three normalisations do
-  narrow, each because upstream's own code follows the input dtype there:
-  triangle attention's entry LayerNorm takes upstream's bfloat16-input
-  exception, and cuEquivariance's fused input norm returns the width it is
-  given, so on the released backend the pair normalisation inside triangle
-  multiplication runs bfloat16 where it runs float32 today. Plain XLA
-  triangle multiplication keeps float32 there, so the two backends diverge
-  more under the pin than they do today. Neither pair bias entering a softmax
-  picks up a rounding it did not have. The single track stays float32 -- upstream runs it inside
-  `torch.autocast(enabled=False)`, and it is 4.4 MiB against the pair
-  tensor's 4,430 MiB -- and the trunk returns its pair representation in
-  float32, so the diffusion conditioner, confidence module and affinity head
-  are untouched. Upstream stores this residual in float32: its eval-mode
-  dropout mask is a float32 tensor that multiplies all four Pairformer pair
-  updates, so torch promotes every residual sum. Deviating from that is the
-  point of the knob and the reason it ships off. **Unmeasured on GPU, for
-  both memory and accuracy.** Nothing the program receives or returns changes
-  width, so the whole saving is temp space and subject to repacking, and one
-  widening that is free today -- PairWeightedAveraging's pair normalisation
-  through the pinned CUDA kernel, whose operand cannot be fused -- becomes a
-  real float32 copy per MSA layer. The released default is unchanged and
-  proven so: the same lowered program, to the byte, as before this change.
-
 - **An opt-in bfloat16 denoising network for OpenDDE**, off by default.
   `--option diffusion_dtype=bf16` runs the diffusion module's matmuls in
   bfloat16 with the float32 boundary drawn where AlphaFold 3 and upstream
@@ -343,6 +307,65 @@ unless it says so here, in its own paragraph.
   inert at the released `dtype=bfloat16` -- every operand it reaches is
   bfloat16 -- and live under `--option dtype=float32`; `docs/cli.md` says what
   unifying the two would cost.
+
+- **Boltz-2 stores its trunk pair residual in bfloat16.** `compute_dtype`
+  (released: `bfloat16`) already narrowed every trunk GEMM; what stayed
+  float32 was the width the pair representation is *stored* at between them,
+  and from roughly 760 tokens up that tensor dominates the peak -- 4.326 GiB
+  at 3,012 tokens against 2.163 GiB in bfloat16. It shipped opt-in, unmeasured
+  on GPU. Measured on one RTX PRO 6000 Blackwell, warm after prefill, each arm
+  against a control from the same source: at 2,096 tokens wall 313.94 ->
+  273.77 s (-12.8%) and peak 21,778 -> 18,511 MiB (-15.0%); at 3,012 tokens
+  wall 781.45 -> 717.50 s (-8.2%) and peak 40,748 -> 29,416 MiB (-27.8%). It is
+  the only lever measured on this port that moves the peak at all -- the
+  precision pin contributes zero peak at every size and the fused GLU's -26.9%
+  exists only at 1,003 tokens -- and because it narrows the arena's largest
+  tenant rather than a temp beside it, its saving grows with size instead of
+  shrinking away. So it is now the default. The two levers do not add: with
+  the `matmul_precision` default also applied the pair is wall -16.1% and peak
+  -15.0% at 2,096 tokens and wall -10.6% and peak -27.8% at 3,012, so the peak
+  is entirely this option's and the wall overlaps.
+  **This changes what a recorded Boltz-2 command predicts.** At 2,096 tokens
+  on 5DEI, a homotetramer, five samples: per-chain RMSD to the deposited chain
+  is 0.34-0.40 A on both arms, TM 0.998 on both, and 19 of 20 chain-sample
+  cells agree to two decimals; the exception is sample 4 choosing a different
+  basin on one chain, inside the case's own 0.238 A within-set spread.
+  `--option pair_residual_dtype=float32` keeps the previous stream and is the
+  same lowered program, byte for byte, that the default was -- it emits no
+  cast at all rather than a numerically-equal one. That spelling used to be
+  refused because omitting the option meant float32; now omission means
+  bfloat16, so the wide arm has a name and `null` is refused in its place,
+  since it spelled float32 while float32 was the default and would now read as
+  "the default". `auto` is the released spelling and follows `compute_dtype`,
+  so `compute_dtype=float32` still gets a float32 residual without asking.
+  The realised width -- never the spelling -- joins the compilation-cache
+  identity, which it had been missing while the option was opt-in, so recorded
+  runs now say which arm they ran and **Boltz-2 cache directories from before
+  this change are not reused.** Every block still runs the program it ran: a
+  narrowed residual is declared to be the autocast configuration rather than
+  inferred from the activation width, so the triangle contraction stays
+  bfloat16 on both backends and triangle attention keeps its float32 query
+  scale, and neither pair bias entering a softmax picks up a rounding it did
+  not have. Two normalisations do narrow, each because upstream's own code
+  follows the input dtype there: triangle attention's entry LayerNorm takes
+  upstream's bfloat16-input exception, and cuEquivariance's fused input norm
+  returns the width it is given, so on the released `triangle_backend=cueq`
+  the pair normalisation inside triangle multiplication is bfloat16 where
+  plain XLA triangle multiplication keeps float32 -- the two backends diverge
+  further from each other by default than they did under the opt-in. The
+  single track stays float32 (upstream disables autocast around it, and it is
+  4.4 MiB against the pair tensor's 4,430 MiB) and the trunk still returns its
+  pair representation in float32, so the diffusion conditioner, confidence
+  module and affinity head are untouched. Upstream stores this residual in
+  float32 -- its eval-mode dropout mask is a float32 tensor that multiplies
+  all four Pairformer pair updates, so torch promotes every residual sum -- so
+  this is a deviation from upstream's AMP placement, which is why it needed
+  the accuracy row before it became a default and why the float32 stream stays
+  exactly reachable. The named way it could have lost did not bite at either
+  size: PairWeightedAveraging widens the pair tensor into a pinned CUDA kernel
+  whose operand cannot be fused, so the narrow carry was expected to
+  materialise a fresh float32 pair copy per MSA layer. Context parallelism
+  inherits the default and was measured only on one card.
 
 - **Protenix runs its confidence head in bfloat16 at every token count.**
   `--amp-policy auto`, the released default, used to reproduce upstream's
