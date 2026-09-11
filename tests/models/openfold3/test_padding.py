@@ -287,11 +287,9 @@ def test_sampler_mask_preserves_existing_storage_stride_across_samples() -> None
 def test_template_padding_rows_are_neutral_in_both_reduction_paths(
     monkeypatch, scan_templates: bool
 ) -> None:
-    values = jnp.asarray([2.0, 4.0, 100.0], dtype=jnp.float32).reshape(
-        1, 3, 1, 1, 1
-    )
+    values = jnp.asarray([2.0, 4.0, 100.0], dtype=jnp.float32).reshape(1, 3, 1, 1)
     batch = {
-        "template_values": values,
+        "template_restype": values,
         "template_padding_mask": jnp.asarray([[1.0, 1.0, 0.0]]),
     }
     params = SimpleNamespace(
@@ -299,10 +297,19 @@ def test_template_padding_rows_are_neutral_in_both_reduction_paths(
         template_pair_stack=object(),
         linear_t=object(),
     )
+    # The embedding is built one template at a time inside the scan, so the
+    # stub has to be per-template too: it reads back the value this step's
+    # `template_restype` row carries, which is what makes the scan path
+    # actually see three different templates rather than one repeated.
     monkeypatch.setattr(
         template_module,
-        "template_pair_embedder",
-        lambda batch, _z, _params, **_kwargs: batch["template_values"],
+        "_embed_pair_state",
+        lambda _z, _params, **_kwargs: jnp.zeros((1, 1, 1, 1), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(
+        template_module,
+        "_template_pair_features",
+        lambda batch, _z, _params, **_kwargs: batch["template_restype"][..., None],
     )
     monkeypatch.setattr(
         template_module,
@@ -329,19 +336,26 @@ def test_template_padding_rows_are_neutral_in_both_reduction_paths(
 def test_template_reduction_without_padding_mask_keeps_legacy_average(
     monkeypatch, scan_templates: bool
 ) -> None:
-    values = jnp.asarray([2.0, 4.0, 99.0], dtype=jnp.float32).reshape(
-        1, 3, 1, 1, 1
-    )
-    batch = {"template_values": values}
+    values = jnp.asarray([2.0, 4.0, 99.0], dtype=jnp.float32).reshape(1, 3, 1, 1)
+    batch = {"template_restype": values}
     params = SimpleNamespace(
         template_pair_embedder=object(),
         template_pair_stack=object(),
         linear_t=object(),
     )
+    # The embedding is built one template at a time inside the scan, so the
+    # stub has to be per-template too: it reads back the value this step's
+    # `template_restype` row carries, which is what makes the scan path
+    # actually see three different templates rather than one repeated.
     monkeypatch.setattr(
         template_module,
-        "template_pair_embedder",
-        lambda batch, _z, _params, **_kwargs: batch["template_values"],
+        "_embed_pair_state",
+        lambda _z, _params, **_kwargs: jnp.zeros((1, 1, 1, 1), dtype=jnp.float32),
+    )
+    monkeypatch.setattr(
+        template_module,
+        "_template_pair_features",
+        lambda batch, _z, _params, **_kwargs: batch["template_restype"][..., None],
     )
     monkeypatch.setattr(
         template_module,
