@@ -553,8 +553,15 @@ they are not.
 The two levers do not add up. With the bfloat16 pair residual and the
 `matmul_precision` default both applied, the pair is wall -16.1% and peak
 -15.0% at 2,096 tokens, and wall -10.6% and peak -27.8% at 3,012. The peak is
-entirely this option's; the wall overlaps, so -12.8% here and -9.5% there come
-to -16.1% together rather than to the -21% a reader would get by adding them.
+entirely this option's: the precision pin contributes none of it at any size.
+The wall almost is not. At 2,096 the two are -12.8% here and -4.5% there,
+which come to -17.3% added and -16.7% composed as if independent, against the
+-16.1% measured together -- a small overlap and no more. Read the measured
+row, not the arithmetic.
+
+The two also point opposite ways as the input grows. The precision pin shrinks
+with length (-7.2% wall at 1,003 tokens, -4.5% at 2,096); this option grows
+(-15.0% peak at 2,096, -27.8% at 3,012).
 
 Accuracy at 2,096 tokens on 5DEI, a homotetramer, five samples, per-chain
 RMSD to the deposited chain: 0.34-0.40 A on both arms, TM 0.998 on both, and
@@ -671,6 +678,26 @@ even while it paid in the Pairformer stack. It did not bite at either size
 measured. The mechanism is written down because it is the reason this could
 have failed, and the next port trying the same thing has to check the same
 site.
+
+#### The CPU parity replay runs the other arm
+
+`tests/parity/test_boltz2.py` pins `pair_residual_dtype="float32"`. That suite
+asks one question -- does the port round where upstream rounds -- and its
+tolerances are calibrated against the single policy its captures were taken
+under, which is upstream's float32 residual. Inheriting the released default
+there is not a stricter test, it is a different one: tier A's `z` lands at
+relative RMSE 1.7405e-02 against a 5.0e-03 tolerance, 3.5x over, next to a
+2.7360e-03 calibration. Pinned, the replay lowers to the program those
+residuals were calibrated on, byte for byte.
+
+**That pin routes around a hole in the tier-A tripwire; it does not close
+it.** The tripwire reads `cyclic_pos_enc` and `fix_sym_check` and nothing
+else, so a trunk default that changes the output -- as this one does --
+passes it silently and surfaces only as a residual over tolerance, if the
+tolerance happens to be tight enough to catch it. The next trunk default to
+move will meet the same gap. Whether the released default is close enough to
+upstream is a GPU-panel question, answered there (5DEI above), not by
+widening a tolerance here.
 
 Still unverified: context parallelism (`cp_devices>1`) inherits the default
 and was measured only on one card, and the pinned `(1, 437, 437, 128)` norm

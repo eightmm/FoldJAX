@@ -110,9 +110,18 @@ TRIANGLE_MULTIPLICATION_ENV = "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"
 #: against this capture under the default would compare two policies and
 #: charge the difference to the port. The pinned spelling emits no cast at
 #: all, so it lowers to the same program, byte for byte, that these residuals
-#: were calibrated on. Whether the released default is close enough to
-#: upstream is a GPU-panel question and was answered there (5DEI at 2,096
-#: tokens; see ``docs/cli.md``), not by widening a tolerance here.
+#: were calibrated on. Unpinned, tier A's ``z`` lands at relative RMSE
+#: 1.7405e-02 against this case's 5.0e-03 tolerance -- 3.5x over, next to a
+#: 2.7360e-03 calibration -- so this is measured, not precautionary. Whether
+#: the released default is close enough to upstream is a GPU-panel question
+#: and was answered there (5DEI at 2,096 tokens; see ``docs/cli.md``), not by
+#: widening a tolerance here.
+#:
+#: The pin routes around a hole in the tripwire below rather than closing it:
+#: ``assert_tripwire`` reads ``cyclic_pos_enc`` and ``fix_sym_check`` and
+#: nothing else, so a trunk default that changes the output does not trip it.
+#: It surfaced here only because the tolerance was tight enough. The next
+#: trunk default to move will meet the same gap.
 SHARED_OPTIONS: Mapping[str, Any] = {
     "chunk_size": 128,
     "matmul_precision": "highest",
