@@ -547,7 +547,7 @@ def test_the_default_keeps_the_fused_cueq_native_amp_branch(monkeypatch) -> None
         "foldjax.models.boltz2.models.triangle.triangle_cueq"
     )
     try:
-        cueq._load_cueq()
+        cueq.load_cueq()
     except RuntimeError as error:  # no cuEquivariance in this environment
         pytest.skip(str(error))
     monkeypatch.delenv("BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND", raising=False)

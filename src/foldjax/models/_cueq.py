@@ -122,6 +122,7 @@ def cueq_attention_core(
     mask_bias: jnp.ndarray,
     *,
     scale: float,
+    precision: lax.Precision | None = None,
 ) -> jnp.ndarray:
     """Apply cuEq attention with upstream Torch mask and scaling semantics.
 
@@ -137,6 +138,16 @@ def cueq_attention_core(
     ``scale`` is applied inside the kernel, so the caller must *not* pre-divide
     the queries the way the XLA path does.
 
+    ``precision`` is the FFI's float32 strategy. ``None``, the default, derives
+    it from the active JAX policy, which is what Protenix and OpenFold3 want:
+    their trunks have one precision surface. Boltz-2 has two that deliberately
+    disagree -- a neutral ``jax_default_matmul_precision`` of ``"high"`` and an
+    op-level ``matmul_precision`` string of ``"highest"``, the latter being what
+    its triangle attention ships and what its capture was taken under -- so it
+    passes its own resolved value here. Deriving it instead would move that
+    kernel from IEEE to TF32 and shift the whole trunk; the difference belongs
+    in the call, not in a second implementation of this function.
+
     Leading axes beyond those are folded into ``B`` and restored afterwards. The
     kernel takes exactly five dimensions and unpacks them positionally, so a
     sixth -- which the confidence head produces, one pair representation per
@@ -144,7 +155,8 @@ def cueq_attention_core(
     as anything that names the problem.
     """
 
-    precision = triangle_attention_precision()
+    if precision is None:
+        precision = triangle_attention_precision()
     cuex = load_cueq()
     # Everything before the (N_row, H, N_col, D) suffix is batch. The three
     # operands carry it in different amounts (the bias has a 1 where q has rows),
