@@ -91,6 +91,30 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 builds the template pair embedding inside the template scan.**
+  The embedding used to be built for all four template rows at once and handed
+  to the scan as its `xs`; each step now slices its own template out of the raw
+  features and builds one embedding. At 3,012 tokens that replaces a
+  `float32[4, N, N, 64]` of 8.58 GiB with a `float32[1, N, N, 64]` of 2.15 GiB,
+  against a pair-state projection of the same 2.15 GiB now live for the whole
+  scan; on CPU at 192 tokens and the released 64 channels the compiled
+  temporary fell from 127.6 MiB to 91.7 MiB, the stacked embedding's 36.0 MiB
+  landing whole. The GPU peak is not measured here. Only the raw features are
+  read per step, so the scan carries `int32[4]` indices rather than a
+  quadratic tensor.
+
+  This is **not bit-exact on the dense path**. The arithmetic is unchanged --
+  every term is bitwise equal to the all-at-once form when materialised -- but
+  XLA fuses the eight projections into the addition chain differently once the
+  leading template extent is one, and from about 64 tokens up the CPU result
+  moves by a single unit in the last place on roughly 11% of elements. Error
+  against a float64 reference is identical either way, and which side is closer
+  splits evenly. The compact zero-template path, which has no quadratic dot to
+  fuse, stays bitwise at every size, and so does a query with no templates:
+  `collapse_identical_templates` reduces its four interchangeable rows to one
+  before the model, and a single template never enters the scan. GPU bitwise
+  status is unverified.
+
 - **Boltz-2 can run its diffusion score model in BF16 and select that module's
   attention on its own.** Two opt-in native options, both defaulting to the
   released behaviour: `diffusion_compute_dtype` (`float32` or `bfloat16`) casts
