@@ -80,6 +80,27 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Boltz-2 runs the fused gated linear unit by default.** `glu_backend` now
+  defaults to `tokamax`, so the transitions and the triangle-multiplication
+  gate go through one Triton kernel instead of materialising the widened gate
+  and value tensors. Measured on one RTX PRO 6000 Blackwell, warm after
+  prefill, one input file and one schedule per size, against the previous
+  `xla` arm: 90.98 -> 90.00 s and 12,612 -> 9,216 MiB at 1,003 tokens,
+  317.91 -> 313.94 s and 21,808 -> 21,778 MiB at 2,096, and 806.01 -> 803.94 s
+  and 40,844 -> 40,749 MiB at 3,012. Never slower at any size; the 26.9% peak
+  saving is a small-input effect and does not generalise, because the pre-gate
+  intermediate stops being the peak's largest tenant once the pair arena
+  dominates above roughly 760 tokens. Coordinates move -- the XLA path
+  evaluates the activation in float32 and casts back, the fused kernel applies
+  it at its own width -- by median 0.012 / maximum 0.238 A at 1,003 tokens and
+  median 0.007 / maximum 0.145 A at 2,096, against per-case sample spreads of
+  1.0-2.9 A and 0.24 A. `--option glu_backend=xla` restores the previous
+  arithmetic exactly and keeps its own compile-cache namespace. Under context
+  parallelism the default resolves to `xla`, the way the `cueq` triangle
+  default already does, because a fused kernel cannot be partitioned;
+  explicitly asking for `tokamax` together with `cp_devices > 1` is refused
+  rather than silently downgraded.
+
 - **Boltz-2 can run its diffusion score model in BF16 and select that module's
   attention on its own.** Two opt-in native options, both defaulting to the
   released behaviour: `diffusion_compute_dtype` (`float32` or `bfloat16`) casts

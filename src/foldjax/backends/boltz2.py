@@ -286,7 +286,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "diffusion_attention_backend": None,
     "diffusion_compute_dtype": "float32",
     "triangle_backend": "cueq",
-    "glu_backend": "xla",
+    "glu_backend": "tokamax",
     "bucket": False,
     "deterministic": False,
     "msa_deletions": "released",
@@ -692,6 +692,22 @@ class Boltz2Backend(Backend):
             raise ValueError(
                 "context parallelism requires "
                 "trunk_atom_attention_backend='xla' or null"
+            )
+        # The released GLU default is the fused kernel, which the partitioner
+        # cannot split, so a context-parallel run resolves it to the XLA path.
+        # An omitted knob is the caller accepting that resolution; an option
+        # dict that names the fused kernel is a request the run cannot honour,
+        # and this is the one layer that can still tell the two apart -- the
+        # native signature sees the same string either way.
+        if (
+            type(options.get("cp_devices", 1)) is int
+            and options.get("cp_devices", 1) > 1
+            and "glu_backend" in options
+            and options["glu_backend"] != "xla"
+        ):
+            raise ValueError(
+                "context parallelism requires glu_backend='xla'; a fused GLU "
+                "cannot be partitioned"
             )
         for name in (
             "affinity_mw_correction",

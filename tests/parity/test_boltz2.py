@@ -8,6 +8,13 @@ was stripped from the mirror. The capture is ``native-A``: upstream ``b1ebfc4``,
 cuEquivariance torch kernels, bf16-mixed, ``float32_matmul_precision=highest``,
 no MSA subsampling, n=5 x 200 steps x 3 recycles, seed 101.
 
+This module deliberately pins the **legacy** ``glu_backend="xla"`` arm, which
+is no longer the product default -- ``tokamax`` is. The fused kernel is pinned
+to Triton with no fallback, so it cannot run on CPU, and every residual below
+was calibrated against the XLA gate. What is certified here is therefore the
+XLA gated linear unit; the fused default is a GPU-panel question. See
+``SHARED_OPTIONS``.
+
 Two tiers, split at the trunk boundary, because that is where the case's known
 defect lives:
 
@@ -86,6 +93,15 @@ TRIANGLE_MULTIPLICATION_ENV = "BOLTZ_JAX_TRIANGLE_MULTIPLICATION_BACKEND"
 #: what the GPU capture ran; the fused kernel is a CUDA FFI call, so the CPU
 #: replay is a third implementation on this axis and the residuals below are
 #: calibrated as such (memory: fusion-decisions-are-backend-specific).
+#:
+#: ``glu_backend="xla"`` is now the *legacy* arm: the product default is
+#: ``tokamax``. It is pinned deliberately and no second arm is added, for two
+#: reasons. The fused path is pinned to Triton with no fallback, so it cannot
+#: run in a CPU replay at all; and the residuals asserted below were
+#: calibrated against the XLA gate, whose activation rounds in float32 where
+#: the kernel rounds at its own width. A tokamax arm therefore belongs to the
+#: GPU panel, not here. See ``docs/cli.md`` for the measurement that made it
+#: the default.
 SHARED_OPTIONS: Mapping[str, Any] = {
     "chunk_size": 128,
     "matmul_precision": "highest",
