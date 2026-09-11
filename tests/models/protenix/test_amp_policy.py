@@ -802,6 +802,27 @@ def test_the_two_stages_are_part_of_the_compiled_programs_identity() -> None:
 # ------------------------------------------------------------- option path --
 
 
+def test_preparing_a_tree_without_the_stage_leaves_the_named_error_to_the_model() -> (
+    None
+):
+    """Now that `auto` narrows at every size, every run reaches the preparer.
+
+    A tree with no confidence stage is not a checkpoint any release ships,
+    and the model already refuses it with a sentence that names the stage.
+    Reaching through it here would replace that sentence with an
+    `AttributeError` naming a tuple, and would do it on the default path.
+    """
+    assert predict_cli._amp_realised_params((), AmpPolicy(True, True), {}) == ()
+    params = _bf16_trunk_params()
+    stripped = params._replace(confidence=None)
+    assert (
+        predict_cli._amp_realised_params(stripped, AmpPolicy(True, False), {})
+        is stripped
+    )
+    with pytest.raises(ValueError, match="carry no confidence stage"):
+        _infer(stripped, trunk_dtype=jnp.bfloat16, confidence_autocast=True)
+
+
 def test_the_cli_flag_reads_its_vocabulary_from_the_policy_module() -> None:
     """One list of values, so a new policy cannot exist in only one of them."""
     parser = _parser()

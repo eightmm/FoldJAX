@@ -72,6 +72,14 @@ def _amp_realised_params(params, policy, cache):
     the checkpoint is loaded once, so the realisations are memoised rather than
     rebuilt for every job. A run whose jobs all land on the same side of the
     gate holds exactly one tree, as it did before this option existed.
+
+    A stage the tree does not carry is left alone rather than reached through.
+    Every released checkpoint carries both, and the model refuses the
+    mismatch that a partial tree would produce -- ``confidence_autocast=True
+    but these parameters carry no confidence stage to apply it to``, from
+    ``_require_realised_amp_params``. That check owns the error, so preparing
+    on top of it would only replace a sentence that names the stage with an
+    ``AttributeError`` that names a tuple.
     """
     from foldjax.models.protenix.models.input_precision import (
         native_confidence_autocast_params,
@@ -81,11 +89,11 @@ def _amp_realised_params(params, policy, cache):
     if policy in cache:
         return cache[policy]
     realised = params
-    if policy.confidence_autocast:
+    if policy.confidence_autocast and getattr(realised, "confidence", None) is not None:
         realised = realised._replace(
             confidence=native_confidence_autocast_params(realised.confidence)
         )
-    if policy.diffusion_autocast:
+    if policy.diffusion_autocast and getattr(realised, "diffusion", None) is not None:
         realised = realised._replace(
             diffusion=native_diffusion_autocast_params(realised.diffusion)
         )
