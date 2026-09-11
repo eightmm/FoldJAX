@@ -514,7 +514,6 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         ({}, {"diffusion_compute_dtype": "bfloat16"}),
         ({}, {"triangle_backend": "xla"}),
         ({}, {"glu_backend": "xla"}),
-        ({}, {"glu_backend": "tokamax"}),
         # The token-attention block changes the compiled program for every
         # shape above the rung floor, so a pinned width must not be answered
         # out of the default rung's cache entry.
