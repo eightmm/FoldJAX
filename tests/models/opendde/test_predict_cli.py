@@ -4,6 +4,7 @@ import json
 import os
 import sys
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -286,7 +287,10 @@ def test_predict_cli_runs_native_json_to_ranked_output(
     assert features["ref_element"].dtype == np.int64
     assert features["ref_atom_name_chars"].dtype == np.int64
     assert calls[0][1] == params
-    assert calls[0][2]["trunk_dtype"] is None
+    # The released default is bf16 since 2026-09-11, so the CLI applies the
+    # cast rather than leaving the tree float32. `None` here would mean a
+    # pinned `--trunk-dtype fp32`.
+    assert calls[0][2]["trunk_dtype"] == jnp.bfloat16
     assert calls[0][2]["seed"] == 101
     assert calls[0][2]["num_samples"] == 1
     assert calls[0][2]["num_steps"] == 2

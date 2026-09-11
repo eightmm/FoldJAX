@@ -3128,3 +3128,18 @@ mask-aware padding for reusable JAX executables. See the git history and
   result matters. The fix restores every chain to the released arm's own
   distance and keeps 82% of the policy's wall-time gain and all of its memory
   gain. Detail in `docs/scale-rows-master-2026-09-10.md`.
+
+### Changed
+
+- OpenDDE's released trunk dtype is now `bf16`. The port was shipping
+  upstream's `fp32`, which on this hardware dies near 1,400 residues, while
+  the `bf16` arm it already had is 13-39% faster and 33-52% lighter on all
+  eight panel cases with no accuracy cost that any instrument shows. The cast
+  reaches only the four trunk subtrees (`input_embedder`, `pairformer_output`,
+  `structural_expander`, `structural_refiner`); the diffusion module, the
+  distogram and the confidence head stay float32, which is the same shape
+  AlphaFold 3 ships. Against the same upstream rows the `bf16` arm is no
+  further away than `fp32` was, and marginally closer on three of the four
+  cases read (1UBQ 0.274 vs 0.301 A, 5SAK 7.455 vs 7.471, 7ST3 0.398 vs
+  0.420, 7R6R 2.886 vs 3.008). `--trunk-dtype fp32` pins upstream's policy
+  back.

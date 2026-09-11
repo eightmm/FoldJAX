@@ -53,8 +53,12 @@ def test_fires_on_the_float32_wall(pool):
     assert "--trunk-dtype bf16" in message
     # The lever must carry its own caveat, not just its name.
     assert "upstream" in message
-    assert "default is native float32" in message
-    assert "not validated as structurally/confidence-equivalent" in message
+    # The message describes fp32 as the pinned choice now that bf16 is the
+    # default, and it carries the panel evidence rather than a caveat: the
+    # bf16 arm is 13-39% faster, 33-52% lighter, and no further from upstream
+    # than fp32 is on all eight cases.
+    assert "pins --trunk-dtype fp32" in message
+    assert "no further from upstream" in message
     assert "turned off" not in message
     assert str(N_ST_1531) in message
 

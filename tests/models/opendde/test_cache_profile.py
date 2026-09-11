@@ -54,7 +54,7 @@ def test_cache_defaults_track_the_native_parser_and_cp_resolver(monkeypatch) -> 
     for name, expected in backend_impl._RELEASED_COMPILE_DEFAULTS.items():
         assert type(actual[name]) is type(expected)
     assert actual == backend_impl._RELEASED_COMPILE_DEFAULTS
-    assert actual["trunk_dtype"] == "fp32"
+    assert actual["trunk_dtype"] == "bf16"
     assert actual["deterministic_ops"] == "off"
     assert set(actual) <= set(OpenDDEBackend.compile_options)
     assert model_impl._resolve_cp_layout("auto") == "1d"

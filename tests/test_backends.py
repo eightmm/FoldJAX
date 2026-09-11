@@ -600,7 +600,7 @@ def test_opendde_adapter_invokes_cli_in_process_and_normalizes_scores(
     ("model", "backend_type", "backend_module", "default_dtype"),
     [
         ("protenix", ProtenixBackend, "foldjax.backends.protenix", "bf16"),
-        ("opendde", OpenDDEBackend, "foldjax.backends.opendde", "fp32"),
+        ("opendde", OpenDDEBackend, "foldjax.backends.opendde", "bf16"),
     ],
 )
 @pytest.mark.parametrize("invalidate_between", [False, True])
