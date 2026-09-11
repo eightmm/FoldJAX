@@ -123,3 +123,31 @@ tape-pinned 1k replay residual of the bf16 arm stays inside native's process
 floor with `deterministic=on` on both arms, AND TM to the deposited structure
 unchanged within sample scatter. sm120 (this host) is Triton-only for
 tokamax; a win here is not a fleet-wide win and is recorded as such.
+
+### X9 verdict (2026-09-11)
+
+Both levers work, and the dtype lever found a real defect on the way.
+
+**Boltz-2** gained two opt-in options scoped to the diffusion score model:
+`diffusion_compute_dtype` and `diffusion_attention_backend`. Together at
+1,003 tokens they are 14.7% faster than the released arm with coordinates at
+the process floor; the dtype alone buys 8.4% and the fused kernel another
+6.9%. Peak does not move, because this port's peak is a trunk arena. The
+older "tokamax regresses 9-11%" verdict is retired: that was the port's
+pinned `matmul_precision=highest` selecting tokamax's three-pass
+`F32_F32_F32`, not the kernel. At `high` the same call beats XLA, and the
+bfloat16 branch never reads the pin.
+
+**Protenix** gained `tokamax` at the trunk single attention and both
+diffusion attention sites, the three pair-bias attentions cuEquivariance does
+not cover. Its `--amp-policy bf16` was 10% faster and 8% lighter at 2,096
+tokens and misfolded one chain of the 5DEI homotetramer in every sample; the
+cause was one projection rounding one tensor, and the fix (pair bias
+delivered in float32, GEMM still bfloat16) keeps 82% of the gain. See the X9
+section of `scale-rows-master-2026-09-10.md` for the bisection.
+
+Two things the acceptance criterion asked for and this work supplies: the
+tape-pinned 3k replay puts the bf16 arm 0.14-0.41 Å from the fp32 arm against
+a 0.76-3.27 Å native floor, and the per-chain deposited TM is what caught the
+2k defect that whole-complex TM and pLDDT alone would have missed.
+

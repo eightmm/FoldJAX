@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models.protenix.models.primitives.primitives import (
+    AutocastLinearF32OutParams,
     AutocastLinearParams,
     Fp32PrecisionLinearParams,
     LayerNormParams,
@@ -97,6 +98,32 @@ def native_input_autocast_params(params):
     return result._replace(atom_encoder=result.atom_encoder._replace(cache=cache))
 
 
+def _pair_bias_in_fp32(stack):
+    """Deliver every per-head pair bias in one transformer stack in FP32.
+
+    The GEMM stays BF16; only the result escapes the narrowing. See
+    :class:`~foldjax.models.protenix.models.primitives.primitives.AutocastLinearF32OutParams`
+    for the measurement that motivates it. Applied to all three denoiser
+    stacks -- the token transformer and the two atom transformers -- because
+    the argument is about what a softmax does to a quantized bias, not about
+    which stack it sits in.
+    """
+
+    return stack._replace(
+        blocks=tuple(
+            block._replace(
+                attention_pair_bias=block.attention_pair_bias._replace(
+                    linear_z=AutocastLinearF32OutParams(
+                        block.attention_pair_bias.linear_z.weight,
+                        block.attention_pair_bias.linear_z.bias,
+                    )
+                )
+            )
+            for block in stack.blocks
+        )
+    )
+
+
 def native_confidence_autocast_params(params):
     """Realise ``skip_amp.confidence_head = False`` on the confidence head.
 
@@ -168,6 +195,7 @@ def native_diffusion_autocast_params(params):
     )
     atom_encoder = result.atom_encoder._replace(
         cache=cache,
+        atom_transformer=_pair_bias_in_fp32(result.atom_encoder.atom_transformer),
         # transformer.py:668-690 -- the has_coords conditioning projections.
         linear_s=exempt(encoder.linear_s),
         linear_z=exempt(encoder.linear_z),
@@ -184,8 +212,10 @@ def native_diffusion_autocast_params(params):
         atom_encoder=atom_encoder,
         # diffusion.py:302-307 -- Algorithm 20 line 4.
         linear_s=exempt(params.linear_s),
+        diffusion_transformer=_pair_bias_in_fp32(result.diffusion_transformer),
         atom_decoder=result.atom_decoder._replace(
             # transformer.py:988-990 -- the coordinate update.
             linear_out=exempt(params.atom_decoder.linear_out),
+            atom_transformer=_pair_bias_in_fp32(result.atom_decoder.atom_transformer),
         ),
     )

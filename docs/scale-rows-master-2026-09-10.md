@@ -384,3 +384,93 @@ draw at n=5 rather than a systematic offset (cross median 0.93 Å).
 swaps them in 10-14 of 25 cross pairs.
 The Protenix 4k protein row is the first pair where FoldJAX is not faster
 (2206 vs 2193 s) while still 15% lighter (73.5 vs 86.4 GiB).
+
+## X9 (2026-09-11): bf16 diffusion compute and fused pair-bias attention
+
+Two opt-in levers, measured against the released arm on the same input file,
+seed and schedule. Neither changes a default. Rows are warm-after-prefill on
+one RTX PRO 6000 Blackwell (sm120, tokamax runs Triton there; Mosaic GPU is
+sm90/sm100 only).
+
+### Boltz-2, 1,003 tokens (3OG2)
+
+The diffusion score model is the one module upstream runs outside autocast, so
+the port ships it in float32 whatever `compute_dtype` says. The two new knobs
+open the other three cells.
+
+| cell | wall s | vs released | peak MiB | same-index RMSD vs released |
+| --- | ---: | ---: | ---: | --- |
+| released (fp32 score model, XLA, `matmul_precision=highest`) | 90.98 | – | 12612 | – |
+| `attention_backend=tokamax` (fp32 operands) | 158.89 | +75% | 12588 | at floor |
+| `attention_backend=tokamax matmul_precision=high` | 82.71 | −9.1% | 12588 | median 0.043 / max 0.063 |
+| `matmul_precision=high` alone (XLA) | 85.33 | −6.2% | 12588 | – |
+| `diffusion_compute_dtype=bfloat16` (XLA) | 83.36 | −8.4% | 12588 | median 0.094 / max 0.355 |
+| `diffusion_compute_dtype=bfloat16` + `diffusion_attention_backend=tokamax` | **77.61** | **−14.7%** | 12604 | median 0.104 / max 0.373 |
+
+The process floor on this case is 0.05 / 0.31 Å and the within-set sample
+spread is 1.0-2.9 Å, so every arm's coordinates are at floor. Peak does not
+move: Boltz-2's peak is a trunk arena, not the denoiser.
+
+The earlier verdict that tokamax regresses on this port was the precision pin,
+not the kernel. `tokamax/_src/precision.py` maps a float32 result type to
+`F32_F32_F32` under this port's pinned `matmul_precision=highest`, which is
+three-pass emulation; at `high` the same call is `TF32_TF32_F32` and beats XLA
+by 3.1%. The bfloat16 branch never reads the pin at all, which is why the
+bf16 cell is the one that pays: the kernel log confirms both diffusion sites
+receiving bf16 q/k/v **and** a bf16 bias with `logits_dtype float32`.
+
+### Protenix, 2,096 tokens (5DEI homotetramer)
+
+`--amp-policy bf16` forces the policy upstream ships only above 3,840 tokens.
+It was 10% faster and 8% lighter, and it lost a chain.
+
+| arm | wall s | peak MiB | pLDDT | chain A vs deposited |
+| --- | ---: | ---: | ---: | --- |
+| released (`auto` → fp32 diffusion at this size) | 210.32 | 23440 | 95.16 | TM 0.998, 0.40 Å |
+| `--amp-policy bf16`, as first written | 189.04 | 21630 | 94.07 | **TM 0.75, 16.2 Å** |
+| same, second process | 201.91 | 21623 | 94.06 | TM 0.75, 16.2 Å |
+| upstream with `PROTENIX_FORCE_AMP=all` | 240.76 | 28815 | 95.12 | TM 0.998, 0.39 Å |
+| `--amp-policy bf16` with the pair bias in fp32 | 193.04 | 21639 | 94.99 | TM 0.998, 0.40 Å |
+
+Chains B-D stayed at 0.4-1.2 Å throughout; only chain A moved, in all five
+samples, in three separate processes. Upstream's own forced-bf16 diffusion at
+the same size keeps all four chains, so this was the port's realisation and
+not a property of bf16.
+
+A seven-arm bisection over the parameter tree found one projection. Keeping
+the atom encoder and decoder, the conditioner, the AdaLN projections or the
+conditioned transition in fp32 changed nothing; keeping the 24-block token
+transformer in fp32 fixed it, and inside that stack the whole effect is
+`linear_z`, the per-head pair-bias projection. Decomposing that projection's
+three roundings separates them cleanly:
+
+| operands | bias result | chain A |
+| --- | --- | --- |
+| bf16 / bf16 | bf16 | 16.2 Å |
+| fp32 activation / bf16 weight | bf16 | 16.2 Å |
+| bf16 activation / fp32 weight | bf16 | 16.2 Å |
+| bf16 / bf16 | **fp32** | **0.40 Å** |
+| fp32 / fp32 | fp32 | 0.40 Å |
+
+Narrowing the operands is free; rounding the result is fatal. The pair bias is
+not an ordinary activation: it is added to attention logits and exponentiated
+over every token, so eight mantissa bits there is a different class of error
+than eight bits on a tensor that feeds another GEMM. AlphaFold 3 reaches the
+same shape from the other direction, casting q, k and the bias to float32
+before its diffusion attention, and tokamax's kernel adds the bias into a
+float32 accumulator whatever the operands are.
+
+The port now delivers every denoiser pair bias in float32 while keeping the
+bf16 GEMM. That keeps 82% of the policy's wall-time gain and all of its
+memory gain.
+
+### Protenix, 3,012 tokens (6ZTX), tape-pinned
+
+| pair | same-index permutation-aware RMSD, five samples |
+| --- | --- |
+| bf16 diffusion vs fp32 diffusion, both deterministic, same tape | 0.148 / 0.279 / 0.194 / 0.411 / 0.142 |
+| native-A vs native-B, same tape (upstream's own floor) | 2.451 / 0.918 / 0.760 / 2.111 / 3.269 |
+
+At 3k the policy moves the coordinates five to ten times less than upstream
+moves between two of its own processes. The 2k chain loss was case-specific,
+which is why it needed a homotetramer with a deposited structure to see.

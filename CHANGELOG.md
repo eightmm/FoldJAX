@@ -3103,3 +3103,17 @@ FoldJAX became one standalone package: AlphaFold 3, Boltz-2, ESMFold2, OpenDDE,
 OpenFold3 and Protenix inference with no sibling repository, plus opt-in
 mask-aware padding for reusable JAX executables. See the git history and
 `docs/ports/` for how each port got there.
+
+### Fixed
+
+- Protenix: under `--amp-policy bf16` (and under `auto` above 3,840 tokens)
+  the denoiser's per-head pair-bias projection now delivers its result in
+  float32 while keeping the bfloat16 GEMM. Rounding that one result cost a
+  chain: on 5DEI at 2,096 tokens one chain of the homotetramer left its fold
+  in all five samples, in three separate processes (TM 0.75, 16 Å from the
+  deposited chain) while the other three stayed at 0.4 Å. Upstream's own
+  forced-bfloat16 diffusion keeps all four chains, and a decomposition of the
+  projection's three roundings shows the operands are free and only the
+  result matters. The fix restores every chain to the released arm's own
+  distance and keeps 82% of the policy's wall-time gain and all of its memory
+  gain. Detail in `docs/scale-rows-master-2026-09-10.md`.

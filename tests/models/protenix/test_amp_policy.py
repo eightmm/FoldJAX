@@ -43,6 +43,7 @@ from foldjax.models.protenix.models.model import (
     protenix_infer_static,
 )
 from foldjax.models.protenix.models.primitives.primitives import (
+    AutocastLinearF32OutParams,
     AutocastLinearParams,
     Fp32PrecisionLinearParams,
     LinearParams,
@@ -281,6 +282,43 @@ def test_the_rest_of_the_diffusion_narrows_its_own_operands() -> None:
     ):
         assert isinstance(node, AutocastLinearParams)
         assert node.weight.dtype == jnp.bfloat16
+
+
+def test_every_denoiser_pair_bias_is_delivered_in_fp32() -> None:
+    """The one result in the stage that is not rounded back down.
+
+    All three denoiser stacks -- the token transformer and the two atom
+    transformers -- project their per-head attention bias with a BF16 GEMM and
+    keep the result FP32. Measured on 5DEI at 2,096 tokens: rounding it loses
+    one chain of the homotetramer in every sample.
+    """
+    realised = native_diffusion_autocast_params(_toy_params().diffusion)
+    stacks = {
+        "diffusion_transformer": realised.diffusion_transformer,
+        "atom_encoder.atom_transformer": realised.atom_encoder.atom_transformer,
+        "atom_decoder.atom_transformer": realised.atom_decoder.atom_transformer,
+    }
+    seen = 0
+    for name, stack in stacks.items():
+        assert stack.blocks, name
+        for index, block in enumerate(stack.blocks):
+            node = block.attention_pair_bias.linear_z
+            assert isinstance(node, AutocastLinearF32OutParams), f"{name}[{index}]"
+            assert node.weight.dtype == jnp.bfloat16, f"{name}[{index}]"
+            seen += 1
+    assert seen == sum(len(stack.blocks) for stack in stacks.values())
+
+
+def test_a_bf16_pair_bias_projection_returns_fp32() -> None:
+    """The operands narrow, the result does not."""
+    weight = jnp.arange(6, dtype=jnp.float32).reshape(2, 3) / 7.0
+    x = jnp.arange(3, dtype=jnp.float32).reshape(1, 3) / 3.0
+    narrowed = AutocastLinearParams(weight.astype(jnp.bfloat16))
+    widened = AutocastLinearF32OutParams(weight.astype(jnp.bfloat16))
+    assert linear(x, narrowed).dtype == jnp.bfloat16
+    out = linear(x, widened)
+    assert out.dtype == jnp.float32
+    assert jnp.allclose(out.astype(jnp.bfloat16), linear(x, narrowed), atol=0)
 
 
 def test_layer_norm_affine_values_are_left_alone_in_the_diffusion() -> None:

@@ -42,6 +42,31 @@ class AutocastLinearParams(NamedTuple):
     bias: jnp.ndarray | None = None
 
 
+class AutocastLinearF32OutParams(NamedTuple):
+    """Autocast projection whose result is delivered in FP32.
+
+    The operands are narrowed exactly as :class:`AutocastLinearParams` narrows
+    them -- this is a BF16 GEMM and keeps the speed that makes the policy worth
+    running -- but the result is not rounded back down.
+
+    One tensor in the denoiser needs this: the per-head pair bias
+    ``linear_z`` projects. Its values are added to attention logits and then
+    exponentiated over every token, so an 8-bit mantissa there is not the same
+    class of error as an 8-bit mantissa on an activation that feeds another
+    GEMM. Measured on 5DEI at 2,096 tokens with ``--amp-policy bf16``
+    (jobs 1052/1060/1074-1076): rounding this one result to BF16 misfolds one
+    chain of the homotetramer in all five samples (TM 0.74, 16 A from the
+    deposited chain) while every other rounding in the stage is harmless, and
+    delivering it in FP32 restores all four chains to 0.38-0.43 A -- the
+    released FP32 arm's own distance, and upstream's under forced AMP. It
+    costs about a fifth of the policy's wall-time gain and none of its memory
+    gain.
+    """
+
+    weight: jnp.ndarray
+    bias: jnp.ndarray | None = None
+
+
 class Fp32PrecisionLinearParams(NamedTuple):
     """Upstream ``Linear(precision=torch.float32)``: fp32 matmul, narrow output.
 
@@ -92,6 +117,15 @@ def linear(
         if params.bias is not None:
             y = y + params.bias
         return y.astype(input_dtype)
+    if isinstance(params, AutocastLinearF32OutParams):
+        y = jnp.matmul(
+            x.astype(params.weight.dtype),
+            jnp.swapaxes(params.weight, -1, -2),
+            preferred_element_type=jnp.float32,
+        )
+        if params.bias is not None:
+            y = y + params.bias.astype(jnp.float32)
+        return y
     if isinstance(params, AutocastLinearParams):
         x = x.astype(params.weight.dtype)
     y = jnp.matmul(x, jnp.swapaxes(params.weight, -1, -2))
