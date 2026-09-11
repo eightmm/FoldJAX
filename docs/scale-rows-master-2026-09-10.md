@@ -540,12 +540,19 @@ again names bfloat16 at all three sites (`bf16[3012,16,24]`,
 
 | pair | same-index permutation-aware RMSD, five samples |
 | --- | --- |
-| bf16 diffusion vs fp32 diffusion, both deterministic, same tape | 0.148 / 0.279 / 0.194 / 0.411 / 0.142 |
+| bf16 diffusion vs fp32, both deterministic, same tape, **after the fix** | 0.088 / 0.156 / 0.107 / 0.204 / 0.121 |
+| the same **before the fix** (job 1057, pre-202b109 source) | 0.148 / 0.279 / 0.194 / 0.411 / 0.142 |
 | native-A vs native-B, same tape (upstream's own floor) | 2.451 / 0.918 / 0.760 / 2.111 / 3.269 |
 
-At 3k the policy moves the coordinates five to ten times less than upstream
-moves between two of its own processes. The 2k chain loss was case-specific,
-which is why it needed a homotetramer with a deposited structure to see.
+At 3k the policy moves the coordinates an order of magnitude less than
+upstream moves between two of its own processes, and the pair-bias fix
+roughly halves what remains. The 2k chain loss was case-specific, which is
+why it needed a homotetramer with a deposited structure to see: at 3k the
+unfixed arm looked healthy on this measurement.
+
+The pre-fix row is kept because it is the honest history of this table: the
+first version of this section quoted it as the bf16 policy's validation, and
+it was measured on source that lost a chain at 2,096 tokens.
 
 ### What to switch on, by size
 
