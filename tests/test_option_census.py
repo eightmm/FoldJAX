@@ -109,7 +109,7 @@ def accepted_names(backend) -> set[str]:
     return generated_names(backend) | set(backend.native_options or ())
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def native_parser(port: str):
     """The argparse parser an argv-driven port's `main` builds."""
     from tests._parser_capture import capture_parser
