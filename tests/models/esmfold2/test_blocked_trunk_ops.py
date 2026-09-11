@@ -2,13 +2,21 @@
 
 `swiglu` widens `[..., C]` to `[..., 2 * hidden]` and holds the split halves
 and their product at once; `outer_product_mean` builds `[B, N, N, c, d]` before
-a projection narrows it to `[B, N, N, C_z]`. At 1,003 tokens XLA's arena
-accounting named seven of the first at 3,930 MiB and four of the second at
-1,965 MiB -- the top two tenants of this model's peak.
+a projection narrows it to `[B, N, N, C_z]`. At 1,003 tokens, and at the
+2026-08-28 arrangement these two were measured in, XLA's arena accounting named
+seven of the first at 3,930 MiB and four of the second at 1,965 MiB -- the top
+two tenants of that model's peak.
 
 Both are blocked along an axis nothing reduces over, so the result is the same
 value computed in smaller pieces. These tests pin that, and pin that the block
 only engages when it is worth engaging.
+
+Only one of the two is still on the released path. `trunk_dtype="bfloat16"`
+routes every transition to `trunk._autocast_transition`, whose own 64-row chunk
+loop replaces `swiglu` entirely; `outer_product_mean` blocks on both arms of
+its `native_autocast` branch and is untouched. The last test here pins that
+routing, because it is the fact the `swiglu` docstring's arena numbers no
+longer describe.
 """
 
 from __future__ import annotations
@@ -198,3 +206,47 @@ def test_triangle_multiplication_keeps_its_operand_width():
     operands, result = signature.split("->")
     assert operands.count("bf16") == 2, signature
     assert "f32" in result, signature
+
+
+def test_the_released_pair_trunk_never_reaches_the_blocked_swiglu(monkeypatch):
+    """`trunk_dtype="bfloat16"` sends every transition past `swiglu`.
+
+    The `swiglu` docstring's arena numbers were measured before the
+    native-autocast redirect existed, and a reader who trusts them picks this
+    function as the place to change the trunk's memory. It is not: at the
+    released default `transition` dispatches to `_autocast_transition`, whose
+    own 64-row chunk loop owns that tenant. Asserted on which function runs,
+    not on the value of `trunk_dtype`, so a redirect that moves keeps failing
+    here rather than leaving the prose to rot again.
+    """
+    from foldjax.models.esmfold2.models import model as structure_model
+
+    settings = structure_model.ModelSettings()
+    # The condition `predict` and `confidence_head` both spell for themselves.
+    assert jnp.dtype(settings.trunk_dtype) == jnp.bfloat16
+
+    reached: list[str] = []
+
+    def record(name):
+        def stand_in(x, *args, **kwargs):
+            reached.append(name)
+            return x
+
+        return stand_in
+
+    monkeypatch.setattr(trunk, "swiglu", record("swiglu"))
+    monkeypatch.setattr(trunk, "_autocast_transition", record("autocast"))
+
+    params = {
+        "t.norm.weight": jnp.ones((4,)),
+        "t.norm.bias": jnp.zeros((4,)),
+        "t.ffn.w12.weight": jnp.zeros((8, 4)),
+        "t.ffn.w3.weight": jnp.zeros((4, 4)),
+    }
+    x = jnp.zeros((1, 6, 6, 4))
+
+    trunk.transition(x, params, "t", residual=True, native_autocast=True)
+    assert reached == ["autocast"]
+
+    trunk.transition(x, params, "t", residual=True, native_autocast=False)
+    assert reached == ["autocast", "swiglu"]

@@ -140,14 +140,30 @@ def swiglu(x: jnp.ndarray, params: Params, prefix: str = "") -> jnp.ndarray:
     widens `[..., C]` to `[..., 2 * hidden]` and the split halves plus their
     product are all live at once, so on this model's pair representation the
     packed buffer alone is `[N, N, 2048]` -- 3,930 MiB at 1,003 tokens in
-    bfloat16, and XLA's own arena accounting named seven of them. Every
-    operation here contracts over the channel axis only, so dividing any
-    leading axis is exact arithmetic and needs no flag; it is not bit-identical,
-    because the blocked shape gets a different GEMM tiling, which is the same
-    caveat every other blocked path in this repository carries.
+    bfloat16. Every operation here contracts over the channel axis only, so
+    dividing any leading axis is exact arithmetic and needs no flag; it is not
+    bit-identical, because the blocked shape gets a different GEMM tiling,
+    which is the same caveat every other blocked path in this repository
+    carries.
 
-    Nothing is blocked below the budget, which leaves the MSA-shaped callers
-    and every small input on the original single-call route.
+    **Which configurations reach this function.** None of the released ones.
+    All 65 of this checkpoint's `w12` kernels are reached through
+    `trunk.transition`, and `trunk_dtype="bfloat16"` -- the released default --
+    sends every one of them to `trunk._autocast_transition` instead, which
+    spells the same SwiGLU inline over fixed 64-row chunks. What is left here
+    is `trunk_dtype="float32"`, and the bfloat16 pair trunk under context
+    parallelism. The seven co-live 3,930 MiB buffers XLA's arena accounting
+    named, which are why this blocking exists, were measured at `63dd96e`
+    (2026-08-28), before `e1316e2` (2026-09-09) introduced that redirect; the
+    tenant they describe is now `_autocast_transition`'s own chunk loop.
+    `outer_product_mean`'s blocking, added by the same commit, is unaffected
+    -- it sits on both arms of its own `native_autocast` branch.
+
+    Nothing is blocked below the budget, which leaves every small input on the
+    original single-call route. That does *not* include the MSA-shaped
+    callers: at the released `max_msa_depth=1024` an MSA transition is
+    `[1, 1024, N, 128]` with `wide=1024`, which is 2,006 MiB at 1,003 tokens
+    in bfloat16 and divides into four blocks.
     """
     dot = f"{prefix}." if prefix else ""
     axis = _swiglu_row_axis(x)
