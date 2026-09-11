@@ -305,6 +305,64 @@ it nothing to narrow. Context parallelism is supported: the narrowing is three
 casts and a parameter tree, with no kernel or collective of its own, and the
 released bfloat16 trunk already runs the same Pairformer code under a mesh.
 
+### A bfloat16 Protenix confidence head (`--amp-policy`, on by default)
+
+Protenix's trunk is bfloat16 by default and two stages beside it are resolved
+separately, because upstream resolves them separately: it rewrites the policy
+from the token count before the model is built
+(`runner/inference.py:492 update_inference_configs`). `--amp-policy` is where
+the port spells that resolution, and it takes four values.
+
+| value | confidence head | diffusion sampler |
+| --- | --- | --- |
+| `auto` (default) | bfloat16 at every size | bfloat16 above 3,840 tokens |
+| `upstream` | bfloat16 above 2,560 tokens | bfloat16 above 3,840 tokens |
+| `fp32` | float32 at every size | float32 at every size |
+| `bf16` | bfloat16 at every size | bfloat16 at every size |
+
+**`auto` is not upstream's table below 2,560 tokens, deliberately.** Upstream
+keeps the confidence head float32 there; this port narrows it. Upstream's
+2,560 is an OOM heuristic for the configuration it ships, not a measured
+accuracy boundary, and the port does not inherit it as one. `--amp-policy
+upstream` reproduces the native gate at every size and is the spelling a
+parity run against a native capture wants; it is a separate cache namespace,
+so it never receives the executable built for the default.
+
+The diffusion half of the gate did not move. That stage owns the coordinates,
+so every job at or below 3,840 tokens runs the sampler on exactly the
+arithmetic it ran on before this default existed -- one process running both
+policies on the same inputs produces bitwise-identical coordinates, which the
+test suite pins.
+
+What narrows is the head's re-embedding: `input_strunk_ln`, the Pairformer
+blocks, the two distance projections and the outer-sum initialiser
+`linear_s1`/`linear_s2`. The four output projections and the distance bins
+stay float32 under every value, because upstream runs that block inside
+`autocast(enabled=False)` at 76 tokens and at 3,012 alike. `s_inputs` reaches
+the head float32 whatever the policy -- the input embedder concatenates raw
+reference features that autocast does not narrow -- which is why
+`linear_s1`/`linear_s2` are built to narrow their own operands rather than
+inherit a dtype; a merely narrowed weight would promote that matmul back to
+float32 and carry the pair tensor, and every block after it, along.
+
+The measured evidence sits either side of the change. At 3,012 tokens, where
+upstream already narrows the head, it moved atom pLDDT by at most 0.0099,
+chain pTM and ipTM by at most 1.9e-4 and PAE means by at most 0.005 with the
+coordinates bitwise unchanged. At 2,096 tokens -- below upstream's
+threshold -- `--amp-policy bf16`, which narrows the head *and* the sampler and
+so does strictly more than `auto`, lands 0.39-0.45 Å per chain from the
+deposited structure for 11.9% less wall time and 7.7% less peak memory. Those
+savings are the two-stage arm's; `auto` narrows one stage and takes the
+smaller share. **There is no GPU row for the confidence-only change below
+2,560 tokens yet.**
+
+The policy is realised only under a bfloat16 trunk. Upstream's `skip_amp`
+flags choose whether a stage *leaves* the ambient autocast context, and under
+`--trunk-dtype fp32` there is no context to leave, so both stages run float32
+whatever the policy says and `--amp-policy bf16` is not a way around it. This
+is the opposite of OpenDDE's `--confidence-dtype`, which casts the head's
+activations itself and combines with a float32 trunk.
+
 ### A partial bfloat16 OpenFold3 (`--option dtype=bfloat16`)
 
 OpenFold3 defaults to `float32` and that is what every published row here was

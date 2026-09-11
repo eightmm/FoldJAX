@@ -4,6 +4,12 @@ At publisher commit 4c355be4553512f72453ecbfb65e69f4c35d1413,
 ``runner.inference.update_inference_configs`` overrides the base configuration:
 non-v2 inputs with at most 2,560 tokens disable confidence autocast. This is
 not evidence for v2 or longer inputs, whose runner keeps confidence AMP enabled.
+
+Since the port's default moved, ``--amp-policy auto`` no longer selects this
+route below 2,560 tokens -- ``upstream`` and ``fp32`` do. What is pinned here
+is the ``confidence_autocast=False`` program itself, which those two spellings
+have to keep reaching; the released default's own realised dtypes are pinned
+in ``test_amp_policy.py``.
 """
 
 from __future__ import annotations

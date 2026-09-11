@@ -219,6 +219,39 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Protenix runs its confidence head in bfloat16 at every token count.**
+  `--amp-policy auto`, the released default, used to reproduce upstream's
+  token gate, which keeps the confidence head float32 at or below 2,560
+  tokens. It now runs that head under the bfloat16 autocast at every size.
+  **This changes what a recorded `--amp-policy auto` command predicts below
+  2,560 tokens**, in the confidence scores only: the diffusion half of the
+  gate did not move, so the sampler is still float32 up to 3,840 tokens and
+  coordinates at or below that size are bitwise what they were. Runs are
+  still distinguishable after the fact -- every job prints its realised pair,
+  `amp policy confidence=... diffusion=...`, beside the requested value and
+  the token count. Upstream's threshold is an OOM heuristic for the
+  configuration upstream ships, not a measured accuracy boundary, and the
+  port no longer inherits it as one: at 3,012 tokens, where upstream already
+  narrows this head, the same change left coordinates bitwise unchanged and
+  moved atom pLDDT by at most 0.0099, chain pTM/ipTM by at most 1.9e-4 and
+  PAE means by at most 0.005; at 2,096 tokens `--amp-policy bf16`, which
+  narrows the head *and* the sampler and so does strictly more, is 0.39-0.45
+  A per chain from the deposited structure for 11.9% less wall time and 7.7%
+  less peak memory. No GPU row exists yet for the confidence-only change
+  below 2,560 tokens. What narrows is the head's re-embedding -- the
+  Pairformer blocks, `input_strunk_ln`, the two distance projections and the
+  `linear_s1`/`linear_s2` outer-sum initialiser; the four output projections
+  and the distance bins stay float32 under every policy, as they do upstream.
+  The policy is still realised only under a bfloat16 trunk.
+
+- **`--amp-policy upstream` reproduces the native token gate.** A fourth
+  value, added so the configuration upstream ships stays reachable at every
+  size now that `auto` no longer selects it: confidence head bfloat16 above
+  2,560 tokens, diffusion sampler above 3,840. It is the spelling a parity
+  run against a native capture should pass, and it is its own compilation
+  cache namespace, so it never receives the executable built for the default.
+  `fp32` and `bf16` are unchanged and still pin both stages at every size.
+
 - **Boltz-2 runs the fused gated linear unit by default.** `glu_backend` now
   defaults to `tokamax`, so the transitions and the triangle-multiplication
   gate go through one Triton kernel instead of materialising the widened gate

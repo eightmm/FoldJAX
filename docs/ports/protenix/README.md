@@ -211,6 +211,29 @@ The 769–1024 policy is intentionally more memory-bounded than upstream. On the
 measured 952-token production workload, chunk 256 reduced peak memory by 48–54%
 without a material warm-latency regression.
 
+### Mixed precision
+
+The trunk is bfloat16 by default (`--trunk-dtype bf16`), and `--amp-policy`
+decides which of the two stages beside it run under the same autocast:
+
+| `--amp-policy` | confidence head | diffusion sampler |
+| --- | --- | --- |
+| `auto` (default) | bfloat16 at every size | bfloat16 above 3,840 tokens |
+| `upstream` | bfloat16 above 2,560 tokens | bfloat16 above 3,840 tokens |
+| `fp32` | float32 at every size | float32 at every size |
+| `bf16` | bfloat16 at every size | bfloat16 at every size |
+
+`auto` departs from upstream in one place: below 2,560 tokens upstream keeps
+the confidence head float32 and this port does not. That threshold is an
+upstream OOM heuristic rather than a measured accuracy boundary. `upstream`
+reproduces the native gate exactly and is what a parity run against a native
+capture should pass. The diffusion half is unchanged, so coordinates at or
+below 3,840 tokens are bitwise what they were before this default.
+
+The policy is realised only under a bfloat16 trunk: it reproduces a torch
+autocast context, and `--trunk-dtype fp32` opens none for a stage to run in.
+Full description: [docs/cli.md](../../cli.md).
+
 Persistent compilation caching is enabled by default under
 `outputs/compile_cache`. Compilation time is reported separately from warm
 execution; changing tensor shapes or static runtime options can create a new
