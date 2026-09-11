@@ -26,6 +26,42 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **An opt-in bfloat16 pair residual for the Boltz-2 trunk**, off by default.
+  `compute_dtype=bfloat16` already narrows every trunk GEMM; what stayed
+  float32 was the width the pair representation is *stored* at between them,
+  and from roughly 2,000 tokens up that tensor is the largest tenant of the
+  peak -- 4.326 GiB at 3,012 tokens against 2.163 GiB in bfloat16.
+  `--option pair_residual_dtype=bfloat16` stores it narrow. It requires
+  `compute_dtype=bfloat16`, joins the compilation-cache identity, and refuses
+  the spelling `float32`, which the default already means. Every block still runs
+  the program it ran: a narrowed residual is declared to be the autocast
+  configuration rather than inferred from the activation width -- without
+  that, triangle multiplication reads a bfloat16 pair as "not autocast" and
+  runs its contraction in float32, which is wider than the default -- so the
+  contraction stays bfloat16 on both the cuEquivariance and XLA backends and
+  triangle attention keeps its float32 query scale. Three normalisations do
+  narrow, each because upstream's own code follows the input dtype there:
+  triangle attention's entry LayerNorm takes upstream's bfloat16-input
+  exception, and cuEquivariance's fused input norm returns the width it is
+  given, so on the released backend the pair normalisation inside triangle
+  multiplication runs bfloat16 where it runs float32 today. Plain XLA
+  triangle multiplication keeps float32 there, so the two backends diverge
+  more under the pin than they do today. Neither pair bias entering a softmax
+  picks up a rounding it did not have. The single track stays float32 -- upstream runs it inside
+  `torch.autocast(enabled=False)`, and it is 4.4 MiB against the pair
+  tensor's 4,430 MiB -- and the trunk returns its pair representation in
+  float32, so the diffusion conditioner, confidence module and affinity head
+  are untouched. Upstream stores this residual in float32: its eval-mode
+  dropout mask is a float32 tensor that multiplies all four Pairformer pair
+  updates, so torch promotes every residual sum. Deviating from that is the
+  point of the knob and the reason it ships off. **Unmeasured on GPU, for
+  both memory and accuracy.** Nothing the program receives or returns changes
+  width, so the whole saving is temp space and subject to repacking, and one
+  widening that is free today -- PairWeightedAveraging's pair normalisation
+  through the pinned CUDA kernel, whose operand cannot be fused -- becomes a
+  real float32 copy per MSA layer. The released default is unchanged and
+  proven so: the same lowered program, to the byte, as before this change.
+
 - **An opt-in bfloat16 denoising network for OpenDDE**, off by default.
   `--option diffusion_dtype=bf16` runs the diffusion module's matmuls in
   bfloat16 with the float32 boundary drawn where AlphaFold 3 and upstream

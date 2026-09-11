@@ -285,6 +285,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "trunk_atom_attention_backend": None,
     "diffusion_attention_backend": None,
     "diffusion_compute_dtype": "float32",
+    "pair_residual_dtype": None,
     "triangle_backend": "cueq",
     "glu_backend": "tokamax",
     "bucket": False,
@@ -310,6 +311,8 @@ class Boltz2Backend(Backend):
             "diffusion_attention_backend",
             "diffusion_chunk_size",
             "diffusion_compute_dtype",
+        "pair_residual_dtype",
+            "pair_residual_dtype",
             "feature_cache",
             "glu_backend",
             "mols",
@@ -680,6 +683,25 @@ class Boltz2Backend(Backend):
             raise ValueError(
                 "diffusion_attention_backend='triton' requires "
                 "diffusion_compute_dtype='bfloat16'"
+            )
+        if "pair_residual_dtype" in options and options[
+            "pair_residual_dtype"
+        ] not in {None, "bfloat16"}:
+            # "float32" is refused rather than accepted as a synonym for the
+            # default: the released stream is float32, so a second spelling
+            # would leave a provenance record unable to say which arm ran.
+            raise ValueError(
+                "pair_residual_dtype must be 'bfloat16' or null; the "
+                "released pair residual is float32 already and null is its "
+                "spelling"
+            )
+        if (
+            options.get("pair_residual_dtype") == "bfloat16"
+            and options.get("compute_dtype", "bfloat16") != "bfloat16"
+        ):
+            raise ValueError(
+                "pair_residual_dtype='bfloat16' requires "
+                "compute_dtype='bfloat16'"
             )
         scoped_diffusion_backend = options.get("diffusion_attention_backend")
         if scoped_diffusion_backend == options.get("attention_backend", "xla"):

@@ -41,6 +41,7 @@ from foldjax.models.boltz2.models.trunk_blocks.input_embedder import (
 )
 from foldjax.models.boltz2.models.trunk_blocks.trunk import (
     _cast_trunk_params,
+    _resolve_pair_residual_dtype,
     boltz2_sample_forward,
     boltz2_trunk_forward,
 )
@@ -245,6 +246,13 @@ def boltz2_predict(
             "context parallelism requires diffusion_attention_backend='xla' "
             "or null"
         )
+    # The full predict wrapper owns the trunk call, so it -- not
+    # `boltz2_sample_forward` -- validates and applies the pair-residual pin.
+    # Leaving it in `sample_kwargs` keeps it on the sampler's signature too,
+    # which is what makes the two entry points compile the same trunk.
+    pair_residual_dtype = _resolve_pair_residual_dtype(
+        sample_kwargs.get("pair_residual_dtype"), compute_dtype
+    )
     trunk_params = params["trunk"]
     trunk_feats = feats
     if compute_dtype != jnp.float32:
@@ -285,6 +293,7 @@ def boltz2_predict(
         subsample_msa=subsample_msa,
         num_subsampled_msa=num_subsampled_msa,
         use_template=use_template,
+        pair_residual_dtype=pair_residual_dtype,
     )
     if stop_after_inputs:
         s_inputs = _capture.capture("single_inputs", trunk["s_inputs"])

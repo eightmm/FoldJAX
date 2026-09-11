@@ -14,6 +14,7 @@ from foldjax.models._cueq import triangle_multiplication_precision
 from foldjax.models.boltz2.models.triangle.triangle import (
     TriangleDirection,
     TriangleMultiplicationParams,
+    resolve_native_amp,
 )
 
 
@@ -88,6 +89,7 @@ def cueq_triangle_multiplication_forward(
     mask: jnp.ndarray,
     direction: TriangleDirection,
     eps: float = 1e-5,
+    native_amp: bool | None = None,
 ) -> jnp.ndarray:
     """Run the fused cuEquivariance triangle multiplicative update.
 
@@ -98,8 +100,16 @@ def cueq_triangle_multiplication_forward(
 
     cuex = _load_cueq()
 
-    compute_dtype = params["p_in"]["kernel"].dtype
-    if x.dtype == jnp.float32 and compute_dtype == jnp.bfloat16:
+    if resolve_native_amp(x, params["p_in"]["kernel"], native_amp):
+        # A BF16 pair residual is still the autocast configuration, so it
+        # takes this branch rather than the plain fused kernel. Note what
+        # that does and does not preserve: the contraction stays BF16 as
+        # before, but `layer_norm_transpose` returns the width it is given,
+        # so the input normalisation below runs BF16 rather than FP32 -- the
+        # dtype-following behaviour the fused kernel has and `nn.LayerNorm`
+        # does not. Only the CPU reference implementation runs in the unit
+        # suite; `fallback=False` makes a CUDA-side rejection of the narrow
+        # entry width loud on first use rather than silent.
         return _cueq_triangle_native_amp(cuex, params, x, mask, direction, eps=eps)
 
     return cuex.triangle_multiplicative_update(
@@ -121,7 +131,12 @@ def cueq_triangle_multiplication_forward(
 
 
 def _cueq_triangle_native_amp(cuex, params, x, mask, direction, *, eps):
-    """Preserve native cuEq's FP32 norm and BF16 GEMM boundaries."""
+    """Preserve native cuEq's norm and BF16 GEMM boundaries.
+
+    The norm is FP32 whenever the pair arrives FP32, which is every released
+    call. It is the fused kernel's own dtype-following norm, not
+    `nn.LayerNorm`, so a narrowed pair residual normalises at its own width.
+    """
     norm, gemm, gemm_dual = _load_cueq_amp_primitives()
     if direction not in ("incoming", "outgoing"):
         raise ValueError(

@@ -460,6 +460,92 @@ autocast-disabled core keeps that contraction in float32; the `xla` spelling
 keeps the float32 score core and is the upstream-faithful shape. Treat the
 combination as a measurement, not a recommended default.
 
+### A bfloat16 Boltz-2 pair residual (`--option pair_residual_dtype=bfloat16`)
+
+`compute_dtype=bfloat16` narrows every trunk GEMM. It does not narrow what the
+pair representation is *stored* in between them, and above roughly 2,000
+tokens that stored pair tensor -- `[1, N, N, 128]` -- is the largest tenant of
+the peak. At 3,012 tokens one copy of it is 4.326 GiB in float32 and 2.163 GiB
+in bfloat16; at 2,096 tokens, 2.095 and 1.047 GiB.
+
+The residual is float32 today for two independent reasons. In this port
+`z_init` picks it up from ContactConditioning's `encoding_unspecified`, an
+`nn.Parameter` rather than a Linear kernel, so the bfloat16 cast skips it; and
+above 384 tokens OuterProductMean re-promotes on every MSA layer. Upstream
+stores it float32 for a third: eval-mode `get_dropout_mask` returns a float32
+tensor (`boltz/model/layers/dropout.py:41-43`) and multiplies all four
+Pairformer pair updates (`boltz/model/layers/pairformer.py:77,82,87,95`), so
+torch promotes every residual sum.
+
+`--option pair_residual_dtype=bfloat16` stores it narrow. It requires
+`compute_dtype=bfloat16`, it is part of the compilation-cache identity, and
+`float32` is refused rather than accepted as a synonym for the default: the
+released stream is float32 already and omitting the option is its spelling, so
+a second spelling would leave a provenance record unable to say which arm ran.
+
+What it does *not* change is which program each block runs. Every block is
+told that a narrowed residual is still the autocast configuration, instead of
+inferring the precision policy from the activation width: without that,
+triangle multiplication reads a bfloat16 pair as "not autocast" and runs its
+contraction in float32, an arm that fires and measures a *wider* program than
+the default. Told, it keeps the bfloat16 contraction on both the released
+cuEquivariance backend and the XLA one, and triangle attention keeps its
+float32 query scale.
+
+Three normalisations do change width, all of them because upstream's own code
+is written to follow the input dtype at exactly those points. Triangle
+attention's entry LayerNorm takes the bfloat16-input exception upstream writes
+for itself (`boltz/model/layers/triangular_attention/primitives.py:139-147`)
+and returns bfloat16 instead of float32. cuEquivariance's fused input norm
+does the same by construction -- measured here, `layer_norm_transpose` returns
+the dtype it is given -- so on the released backend the pair normalisation
+inside triangle multiplication runs bfloat16 under the pin where it runs
+float32 today. The plain XLA triangle multiplication does *not* follow suit:
+it uses `nn.LayerNorm` semantics, which autocast excludes, so it promotes to
+float32 whatever it is handed. The two backends therefore compute different
+things under the pin, more so than they do today, and the cuEquivariance one
+is the released default.
+
+Neither pair bias that enters a softmax picks up a rounding it did not have.
+The single track's is float32 in both arms -- its projection is inside the
+autocast-disabled parameter island and the layer hands it an explicitly
+widened pair -- and triangle attention's is bfloat16 in both, because that
+projection's kernel is bfloat16 in the released run already.
+
+The single track does not move: upstream runs it inside
+`torch.autocast(enabled=False)` (`boltz/model/layers/pairformer.py:105`) and
+at 3,012 tokens it is 4.4 MiB against the pair tensor's 4,430 MiB. The trunk
+also hands its pair representation back in float32, so the diffusion
+conditioner, the confidence module and the affinity head see exactly the dtype
+they always saw, and the template path is unaffected: its `a_proj` is in the
+float32 exemption list, so the per-template pair stays float32 whatever the
+trunk carry is.
+
+**It is unmeasured, and it has a named way to lose.** Nothing the program
+receives or returns changes width, so every byte this saves is a temp, and
+temps get repacked. Against that, one widening that is free today becomes
+real: PairWeightedAveraging normalises the pair tensor through the pinned CUDA
+kernel (`msa.py:464`), and a custom-call operand cannot be fused, so each MSA
+layer materialises a float32 pair copy the default gets for nothing. The
+Pairformer stack has no such site -- its widenings are ordinary JAX ops. So
+the knob is expected to pay in the Pairformer stack and may not in the MSA
+stack, and only a GPU run at 2,000-3,000 tokens settles which of the two holds
+the peak. Treat it as a measurement, not a recommended default.
+
+Two things are unverified rather than merely unmeasured. cuEquivariance's
+kernels run here as their CPU reference, so a bfloat16 entry width accepted in
+the unit suite is not proof the CUDA kernel accepts it -- `fallback=False`
+makes a rejection loud on first use rather than silent. And the pinned
+`(1, 437, 437, 128)` norm shape inside that branch has not been exercised
+narrow.
+
+Accuracy is likewise unmeasured. Boltz-2 is the port where AMP *placement* has
+already been shown to move coordinates -- upstream's own kernels-off toggle
+moves 5SAK by 2.91 Å -- so a knob that moves the AMP boundary away from
+upstream's needs its own row before it is trusted. AlphaFold 3 does store its
+trunk pair activations in bfloat16, which is why the cell is worth opening at
+all.
+
 ### A bfloat16 OpenDDE denoising network (`--option diffusion_dtype=bf16`)
 
 OpenDDE's `trunk_dtype` above stops at the trunk: the diffusion module keeps

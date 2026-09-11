@@ -10,6 +10,9 @@ import jax.numpy as jnp
 from foldjax.models._cp import shard_pair_rows
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import linear as _linear
+from foldjax.models.boltz2.models.primitives._common import (
+    residual_cast as _residual_cast,
+)
 from foldjax.models.boltz2.models.primitives._scan_utils import stack_layer_params
 from foldjax.models.boltz2.models.primitives.native_amp_norm import amp_layer_norm
 from foldjax.models.boltz2.models.primitives.native_pwa_mma import (
@@ -62,6 +65,7 @@ def msa_module_forward(
     num_subsampled_msa: int = 1024,
     msa_key: jnp.ndarray | None = None,
     msa_rows: jnp.ndarray | None = None,
+    pair_residual_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     """Run Boltz MSAModule.
 
@@ -82,6 +86,12 @@ def msa_module_forward(
     ``num_subsampled_msa`` rows, which is deterministic and reproducible but is
     *not* what upstream computes -- with 2,372 rows and eleven passes it shows
     the model the same top 1,024 eleven times instead of most of the alignment.
+
+    ``pair_residual_dtype`` pins the pair carry ``z``. ``None`` (default)
+    leaves it at whatever width the caller handed in -- float32 in the
+    released trunk, and float32 again from the first OuterProductMean above
+    384 tokens, which adds the original FP32 bias outside its AMP matmuls.
+    The MSA carry ``m`` is not pinned; see ``msa_layer_forward``.
 
     ``msa_rows`` overrides the draw with explicit row indices and takes
     precedence over ``msa_key``. It exists so a matched-tape parity harness can
@@ -131,6 +141,7 @@ def msa_module_forward(
     token_mask = token_mask[:, :, None] * token_mask[:, None, :]
     msa_mask = msa_mask.astype(m.dtype)
 
+    z = _residual_cast(z, pair_residual_dtype)
     layers = params["layers"]
     if not use_scan:
         for layer in layers:
@@ -149,6 +160,7 @@ def msa_module_forward(
                 matmul_precision=matmul_precision,
                 triangle_backend=triangle_backend,
                 glu_backend=glu_backend,
+                pair_residual_dtype=pair_residual_dtype,
             )
         return z
 
@@ -177,6 +189,7 @@ def msa_module_forward(
             matmul_precision=matmul_precision,
             triangle_backend=triangle_backend,
             glu_backend=glu_backend,
+            pair_residual_dtype=pair_residual_dtype,
         )
         return (z_c, m_c), None
 
@@ -246,8 +259,17 @@ def msa_layer_forward(
     matmul_precision: str = "highest",
     triangle_backend: str = "xla",
     glu_backend: str = "xla",
+    pair_residual_dtype: jnp.dtype | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Run one Boltz MSALayer in eval mode."""
+    """Run one Boltz MSALayer in eval mode.
+
+    ``pair_residual_dtype`` pins the pair carry only. ``m`` stays FP32: its
+    promotion is not a storage choice but upstream arithmetic -- eval-mode
+    ``get_dropout_mask`` returns an FP32 tensor
+    (``boltz/model/layers/dropout.py:42-43``) that multiplies every MSA
+    update, so narrowing ``m`` would compute different numbers rather than
+    store the same ones more tightly.
+    """
 
     msa_update = pair_weighted_averaging_forward(
         params["pair_weighted_averaging"],
@@ -276,13 +298,21 @@ def msa_layer_forward(
         m = m + transition_forward(
             params["msa_transition"], m, eps=eps, glu_backend=glu_backend
         )
-    z = z + outer_product_mean_forward(
-        params["outer_product_mean"],
-        m,
-        msa_mask,
-        eps,
-        chunk_size=chunk_size,
-        preserve_native_amp_shape=True,
+    # Above 384 tokens OuterProductMean returns FP32 (it adds the original
+    # FP32 bias outside its AMP matmuls), so this add is the one promoter on
+    # the pair path and the pin has to sit on it or the scan carry changes
+    # width between layers.
+    z = _residual_cast(
+        z
+        + outer_product_mean_forward(
+            params["outer_product_mean"],
+            m,
+            msa_mask,
+            eps,
+            chunk_size=chunk_size,
+            preserve_native_amp_shape=True,
+        ),
+        pair_residual_dtype,
     )
     z = pairformer_no_seq_layer_forward(
         params["pairformer_layer"],
@@ -296,8 +326,9 @@ def msa_layer_forward(
         matmul_precision=matmul_precision,
         triangle_backend=triangle_backend,
         glu_backend=glu_backend,
+        pair_residual_dtype=pair_residual_dtype,
     )
-    return z, m
+    return _residual_cast(z, pair_residual_dtype), m
 
 
 #: Byte budget for one block of PairWeightedAveraging's widened MSA tensors.
@@ -725,65 +756,96 @@ def pairformer_no_seq_layer_forward(
     matmul_precision: str = "highest",
     triangle_backend: str = "xla",
     glu_backend: str = "xla",
+    pair_residual_dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     """Run Boltz PairformerNoSeqLayer in eval mode."""
 
     # Row-sharded under context parallelism; identity otherwise. Same seam as
     # `pairformer_layer_forward`.
-    z = shard_pair_rows(z)
+    z = _residual_cast(shard_pair_rows(z), pair_residual_dtype)
+    # A narrowed pair residual is still the CUDA-autocast configuration, so
+    # the triangle ops are told so rather than reading it off the activation
+    # width and dropping to the FP32-model program.
+    native_amp = None if pair_residual_dtype is None else True
     tri_att_chunk = resolve_triangle_attention_chunk(
         z.shape[1], chunk_size, triangle_attention_chunk
     )
     tri_att_q_chunk = resolve_triangle_attention_q_chunk(
         z.shape[1], triangle_attention_q_chunk
     )
-    z = z + triangle_multiplication_forward(
-        params["tri_mul_out"],
-        z,
-        pair_mask,
-        "outgoing",
-        eps=eps,
-        chunk_size=chunk_size,
-        glu_backend=glu_backend,
+    z = _residual_cast(
+        z
+        + triangle_multiplication_forward(
+            params["tri_mul_out"],
+            z,
+            pair_mask,
+            "outgoing",
+            eps=eps,
+            chunk_size=chunk_size,
+            glu_backend=glu_backend,
+            native_amp=native_amp,
+        ),
+        pair_residual_dtype,
     )
-    z = z + triangle_multiplication_forward(
-        params["tri_mul_in"],
-        z,
-        pair_mask,
-        "incoming",
-        eps=eps,
-        chunk_size=chunk_size,
-        glu_backend=glu_backend,
+    z = _residual_cast(
+        z
+        + triangle_multiplication_forward(
+            params["tri_mul_in"],
+            z,
+            pair_mask,
+            "incoming",
+            eps=eps,
+            chunk_size=chunk_size,
+            glu_backend=glu_backend,
+            native_amp=native_amp,
+        ),
+        pair_residual_dtype,
     )
-    z = z + triangle_attention_forward(
-        params["tri_att_start"],
-        z,
-        pair_mask,
-        starting=True,
-        eps=eps,
-        chunk_size=tri_att_chunk,
-        q_chunk_size=tri_att_q_chunk,
-        matmul_precision=matmul_precision,
-        triangle_backend=triangle_backend,
+    z = _residual_cast(
+        z
+        + triangle_attention_forward(
+            params["tri_att_start"],
+            z,
+            pair_mask,
+            starting=True,
+            eps=eps,
+            chunk_size=tri_att_chunk,
+            q_chunk_size=tri_att_q_chunk,
+            matmul_precision=matmul_precision,
+            triangle_backend=triangle_backend,
+            native_amp=native_amp,
+        ),
+        pair_residual_dtype,
     )
-    z = z + triangle_attention_forward(
-        params["tri_att_end"],
-        z,
-        pair_mask,
-        starting=False,
-        eps=eps,
-        chunk_size=tri_att_chunk,
-        q_chunk_size=tri_att_q_chunk,
-        matmul_precision=matmul_precision,
-        triangle_backend=triangle_backend,
+    z = _residual_cast(
+        z
+        + triangle_attention_forward(
+            params["tri_att_end"],
+            z,
+            pair_mask,
+            starting=False,
+            eps=eps,
+            chunk_size=tri_att_chunk,
+            q_chunk_size=tri_att_q_chunk,
+            matmul_precision=matmul_precision,
+            triangle_backend=triangle_backend,
+            native_amp=native_amp,
+        ),
+        pair_residual_dtype,
     )
-    z = z + transition_forward(
-        params["transition_z"],
-        z,
-        chunk_size=transition_hidden_chunk,
-        eps=eps,
-        row_chunk_size=chunk_size,
-        glu_backend=glu_backend,
-        native_amp_norm=params["transition_z"]["fc1"]["kernel"].dtype == jnp.bfloat16,
+    z = _residual_cast(
+        z
+        + transition_forward(
+            params["transition_z"],
+            z,
+            chunk_size=transition_hidden_chunk,
+            eps=eps,
+            row_chunk_size=chunk_size,
+            glu_backend=glu_backend,
+            native_amp_norm=(
+                params["transition_z"]["fc1"]["kernel"].dtype == jnp.bfloat16
+            ),
+        ),
+        pair_residual_dtype,
     )
     return z
