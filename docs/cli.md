@@ -718,8 +718,14 @@ released schedule, warm after prefill, one RTX PRO 6000 Blackwell:
 
 | tokens | wall, `highest` | wall, `high` | peak |
 |---|---|---|---|
-| 1,003 | 88.31 s | 82.17 s (**-7.0%**) | 9,216 MiB, both arms |
-| 2,096 | ~313.94 s | 287.62 s (**~-8.4%**) | 21,778 MiB, both arms |
+| 1,003 | 88.31 s | 81.96 s (**-7.2%**) | 9,216 MiB, both arms |
+| 2,096 | ~313.94 s | 287.62 s (**~-8.4%**, approximate) | 21,778 MiB, both arms |
+
+The 1,003-token pair is one tree, one option: both rows ran on the same
+snapshot with only `matmul_precision` between them. The 2,096-token
+`highest` figure is not a control run beside 287.62 -- it is the fused-GLU
+note's post-flip number, used as a stand-in -- so that row is marked
+approximate until a same-tree control lands.
 
 **This buys wall clock and no memory at all**, and the peak column is worth a
 paragraph because an earlier reading of these rows got it wrong. That reading
@@ -729,9 +735,6 @@ memory saving, and attributed it here. The 90.98 / 12,612 baseline was source
 belongs to `glu_backend=tokamax` and is recorded under that option, along
 with the 317.91 -> 313.94 s the 2,096-token baseline moved at the same time.
 Against same-source controls the precision change moves no bytes at any size.
-The one control actually run beside this change is the 1,003-token 88.31 s;
-the 2,096-token figure is the GLU note's post-flip number rather than a
-control run beside 287.62, so read that row as approximate.
 
 Accuracy at 2,096 tokens on 5DEI, a homotetramer, five samples: per-chain RMSD
 to the deposited chain is 0.34-0.40 Å on both arms, chain for chain, TM 0.998
@@ -881,12 +884,15 @@ function exempts on purpose:
 A further 1.06 MiB over 84 sites is float32 norm affine, biases and
 embeddings, which are not GEMM operands.
 
-As arithmetic this is small and shrinking. Per Pairformer layer the exempt
-path is 2,506,752 × N (the `transition_s` and attention projections, linear
-in tokens) plus 2,816 × N² (proj_z and the single attention's own scores and
-P@V), against the pair path's 393,216 × N² + 768 × N³ -- **0.45% of the
-layer's MACs at 1,003 tokens, 0.20% at 2,096, 0.13% at 3,012.** It is not a
-lever.
+As arithmetic this is small and shrinking, and it should be written down as
+**not a lever**. Per Pairformer layer the exempt path is 2,506,752 × N (the
+`transition_s` and attention projections, linear in tokens) plus 2,816 × N²
+(proj_z and the single attention's own scores and P@V), against the pair
+path's 393,216 × N² + 768 × N³ -- **0.45% of the layer's MACs at 1,003
+tokens, 0.20% at 2,096, 0.13% at 3,012.** Linear against quadratic and cubic
+competition: the share falls as inputs grow, so narrowing these would be
+worth least exactly where memory and time hurt most. Nobody should spend a
+job on it.
 
 **What is left is storage, and it already has a knob.** The float32 pair
 representation `[1, N, N, 128]` is 4.326 GiB at 3,012 tokens against 2.163

@@ -282,8 +282,9 @@ unless it says so here, in its own paragraph.
   predicts**, so it is a deliberate departure and not an oversight: the
   criterion for a default here is accuracy equivalence, not agreement with
   upstream's configuration. Measured on GPU over the released schedule, warm
-  after prefill, `highest` -> `high`: 88.31 -> 82.17 s at 1,003 tokens
-  (-7.0%) and about 313.94 -> 287.62 s at 2,096 (~-8.4%). **It changes wall
+  after prefill, `highest` -> `high`: 88.31 -> 81.96 s at 1,003 tokens
+  (-7.2%, both rows on one snapshot) and about 313.94 -> 287.62 s at 2,096
+  (~-8.4%, the `highest` figure a stand-in rather than a control). **It changes wall
   clock and no memory**: peak is 9,216 MiB on both arms at 1,003 tokens and
   21,778 MiB on both at 2,096. (An earlier reading of these rows claimed
   -26.9% peak at 1,003 tokens against a 12,612 MiB baseline; that baseline
