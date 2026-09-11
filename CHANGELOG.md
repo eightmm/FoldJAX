@@ -76,6 +76,40 @@ unless it says so here, in its own paragraph.
   follows the weight, as the dense path does; the compact and dense paths are
   bitwise equal again in both precisions. This changes what Protenix's
   shipped bfloat16 confidence policy computes.
+- **Fixed ESMFold2's triangle contraction promoting its operands to float32
+  on the released path.** `_autocast_triangle` multiplied its bfloat16
+  `routed` by a float32 `pair_mask` (`model.py:1310`) without casting the
+  mask down, and then cast the product to float32 explicitly -- promoting
+  `[batch, N, N, 2 * c_z]`, the widest tensor the block owns, on the way into
+  a contraction whose operands it immediately narrowed back to bfloat16.
+  Both lines are gone; the mask is cast to `routed`'s dtype and the split
+  runs narrow. The float32 accumulation is unchanged, kept by the
+  `preferred_element_type` the einsum already carried.
+
+  **Bit-identical, not merely exact.** float32 represents every bfloat16
+  value, so the round-trip was the identity, and `pair_mask` is 0.0/1.0, so
+  the multiply is exact at either width. The test asserts bitwise equality
+  and separately shows that a non-0/1 mask would break it, so the claim
+  rests on the caller's mask values rather than on luck.
+
+  **The reusable part: this is `63dd96e`'s third fix, which never reached the
+  released path.** That commit narrowed three arena tenants on 2026-08-28 and
+  measured 23.47 -> 21.08 GiB at 1,003 tokens. `e1316e2` (2026-09-09) then
+  introduced the native-autocast redirect, and only two of the three followed
+  it: `_autocast_transition` carries its own chunk loop and
+  `outer_product_mean` blocks on both arms of its branch, but the dtype fix
+  stayed in `triangle_multiplicative`'s body, which
+  `trunk_dtype="bfloat16"` off a mesh -- the released default -- never
+  reaches. The gate test missed it for the same reason: it called
+  `triangle_multiplicative` without `native_autocast`. A dtype guard has to
+  name the branch the default takes, not the function that dispatches to it.
+
+  Sized from the arena table in `docs/engineering-notes.md`: `[N², 2*c_z]`
+  doubled, 982 -> 1,965 MiB at 1,003 tokens, so 4,290 -> 8,580 MiB at 2,096,
+  per live buffer and two triangle engines per block. **How much of that
+  reaches the peak is not yet measured** -- an arena is a packing rather than
+  a sum, and the change is bit-identical, so it can simply be run.
+
 - **An opt-in bfloat16 confidence head for ESMFold2**, off by default.
   `--option confidence_dtype=bfloat16` narrows the confidence head's
   re-embedding -- the five `s_to_z*` projections, the distance-bin gather and

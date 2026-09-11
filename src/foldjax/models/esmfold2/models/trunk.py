@@ -120,11 +120,22 @@ def _autocast_triangle(pair, params, prefix, outgoing, mask, eps):
     gate = jax.nn.sigmoid(logits.astype(jnp.float32)).astype(jnp.bfloat16)
     routed = signal * gate
     if mask is not None:
-        routed = routed * mask[..., None]
-    left, right = jnp.split(routed.astype(jnp.float32), 2, axis=-1)
+        # Cast down, the way `triangle_multiplicative`'s own body does and the
+        # way upstream does at `modeling_esmfold2.py:1098` -- "so masking does
+        # not promote the O(N^3) contraction to fp32". `pair_mask` is float32
+        # (`model.py:1310`) and `routed` is bfloat16, so without this the
+        # multiply promotes the widest tensor this block owns.
+        routed = routed * mask[..., None].astype(routed.dtype)
+    left, right = jnp.split(routed, 2, axis=-1)
     equation = "bikd,bjkd->bijd" if outgoing else "bkid,bkjd->bijd"
-    # Pinned native default chunks the output i dimension at 64; autocast
-    # narrows these explicit float() operands and stores the contraction BF16.
+    # Pinned native default chunks the output i dimension at 64. Upstream
+    # spells `routed.float().chunk(2, ...)` here and lets autocast narrow the
+    # operands back at the GEMM; this reproduces the arithmetic without
+    # materialising the float32 in between. Bit-identical, not merely exact:
+    # bfloat16 -> float32 -> bfloat16 is the identity, and `pair_mask` is
+    # 0.0/1.0, so neither step the promotion used to add could change a value.
+    # The float32 accumulation is kept by `preferred_element_type` below, as
+    # it already was.
     chunks = []
     for start in range(0, pair.shape[1], 64):
         operand = (

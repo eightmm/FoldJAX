@@ -21,6 +21,8 @@ longer describe.
 
 from __future__ import annotations
 
+import collections
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -206,6 +208,167 @@ def test_triangle_multiplication_keeps_its_operand_width():
     operands, result = signature.split("->")
     assert operands.count("bf16") == 2, signature
     assert "f32" in result, signature
+
+
+def _triangle_params(channels: int) -> dict:
+    """One `TriangleMultiplicativeBlock`'s weights, at `latent == channels`."""
+    return {
+        "t._engine.norm_start.weight": jnp.ones((channels,)),
+        "t._engine.norm_start.bias": jnp.zeros((channels,)),
+        "t._engine.proj_bundle.weight": jnp.zeros(
+            (4 * channels, channels), dtype=jnp.bfloat16
+        ),
+        "t._engine.norm_mix.weight": jnp.ones((channels,)),
+        "t._engine.norm_mix.bias": jnp.zeros((channels,)),
+        "t._engine.proj_emit.weight": jnp.zeros((channels, channels), jnp.bfloat16),
+        "t._engine.proj_gate.weight": jnp.zeros((channels, channels), jnp.bfloat16),
+    }
+
+
+def _pair_shaped_float32(jaxpr, tokens: int, channels: int) -> collections.Counter:
+    """Which primitives emit a float32 `[b, N, N, channels]`, and how many.
+
+    Width-keyed rather than name-keyed: the two lines this guards promote a
+    `[b, N, N, 2 * latent]` tensor, and the point is which operations produce
+    that width in float32, whatever spelling produced them.
+    """
+    found: collections.Counter = collections.Counter()
+
+    def walk(eqns):
+        for eqn in eqns:
+            for var in eqn.outvars:
+                aval = getattr(var, "aval", None)
+                shape = getattr(aval, "shape", ())
+                if (
+                    len(shape) == 4
+                    and shape[1] == shape[2] == tokens
+                    and shape[3] == channels
+                    and aval.dtype == jnp.float32
+                ):
+                    found[eqn.primitive.name] += 1
+            for value in eqn.params.values():
+                for inner in _sub_jaxprs(value):
+                    walk(inner.eqns)
+
+    walk(jaxpr.jaxpr.eqns)
+    return found
+
+
+def _sub_jaxprs(value):
+    """Open jaxprs reachable from an equation parameter, at any nesting.
+
+    `_autocast_linear` hides its arithmetic in a `platform_dependent`, whose
+    branches are a tuple of closed jaxprs rather than a `.jaxpr` attribute.
+    """
+    inner = getattr(value, "jaxpr", None)
+    if inner is not None:
+        yield inner if not hasattr(inner, "jaxpr") else inner.jaxpr
+    elif hasattr(value, "eqns"):
+        yield value
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _sub_jaxprs(item)
+
+
+def test_the_autocast_triangle_keeps_its_operand_width():
+    """The same guard as above, on the branch the released default takes.
+
+    `test_triangle_multiplication_keeps_its_operand_width` calls
+    `triangle_multiplicative` without `native_autocast`, so it only ever
+    exercised the body at the bottom of that function. The released default
+    is `trunk_dtype="bfloat16"` off a mesh, which dispatches to
+    `_autocast_triangle` instead -- and that copy kept the promotion for
+    another two weeks because no test reached it.
+
+    Two lines are pinned here and they fail differently, so neither can rot
+    behind the other:
+
+    * the mask multiply. `pair_mask` is float32 (`model.py:1310`) and `routed`
+      is bfloat16, so a multiply without the down-cast promotes the widest
+      tensor the block owns. Dropping the cast leaves a float32 `mul` and a
+      float32 `split` at `2 * latent`.
+    * the explicit `routed.astype(jnp.float32)` that used to follow it.
+      Reinstating it leaves a float32 `convert_element_type` at the same
+      width, with the `mul` still bfloat16.
+    """
+    tokens, channels = 8, 4
+    pair = jnp.zeros((1, tokens, tokens, channels), dtype=jnp.bfloat16)
+    # Float32 and 0/1, exactly as `model.py:1310-1312` builds it.
+    mask = jnp.ones((1, tokens, tokens), dtype=jnp.float32)
+    params = _triangle_params(channels)
+
+    jaxpr = jax.make_jaxpr(
+        lambda p, m: trunk.triangle_multiplicative(
+            p, params, "t", outgoing=True, mask=m, native_autocast=True
+        )
+    )(pair, mask)
+
+    # Exactly one float32 tenant of that width survives, and it is the gate:
+    # `logits` is the other half of the same `proj_bundle` output, and an
+    # exponential is never fed a rounded input. An exact census rather than
+    # emptiness, because emptiness would be wrong here and a bare "fewer than
+    # before" would let either line come back alone.
+    #
+    #   mask multiply un-cast   -> a `mul` joins this census
+    #   `.astype(float32)` back -> a second `convert_element_type` joins it
+    assert _pair_shaped_float32(jaxpr, tokens, 2 * channels) == {
+        "convert_element_type": 1,  # logits -> float32, for the sigmoid
+        "logistic": 1,  # the sigmoid itself
+    }
+
+    text = jax.jit(
+        lambda p, m: trunk.triangle_multiplicative(
+            p, params, "t", outgoing=True, mask=m, native_autocast=True
+        )
+    ).lower(pair, mask).as_text()
+    contraction = [
+        line
+        for line in text.splitlines()
+        if "dot_general" in line and "batching_dims" in line
+    ]
+    assert len(contraction) == 1, contraction
+    operands, result = contraction[0].split(":")[-1].split("->")
+    assert operands.count("bf16") == 2, contraction[0]
+    assert "f32" in result, contraction[0]
+
+
+def test_the_down_cast_mask_is_bit_identical_to_the_promotion():
+    """Why the narrowing above may be asserted bitwise rather than to a tolerance.
+
+    The einsum operand used to be `(routed * mask).astype(bfloat16)` with the
+    multiply in float32, and is now `routed * mask.astype(bfloat16)`. Those
+    agree bit for bit on two facts, both of which this checks rather than
+    assumes: float32 represents every bfloat16 value exactly, so the
+    round-trip is the identity; and `pair_mask` is 0.0/1.0, so the multiply
+    is exact at either width.
+
+    The second is a property of the caller, not of this function, so the last
+    assertion shows what a mask that broke it would cost -- without it this
+    test would pass on arithmetic that is merely close.
+    """
+    key = jax.random.key(0)
+    routed = (jax.random.normal(key, (1, 8, 8, 6)) * 3.0).astype(jnp.bfloat16)
+    mask = jnp.asarray(np.random.default_rng(0).integers(0, 2, (1, 8, 8)), jnp.float32)
+
+    promoted = (routed * mask[..., None]).astype(jnp.float32)
+    narrowed = routed * mask[..., None].astype(routed.dtype)
+
+    assert promoted.dtype == jnp.float32 and narrowed.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(
+        np.asarray(promoted.astype(jnp.bfloat16)), np.asarray(narrowed)
+    )
+
+    # A mask that is not 0/1 separates them, so the equality above is carried
+    # by the caller's mask values rather than by bfloat16 happening to round
+    # both orders the same way. Every weight, not one: a single off-grid
+    # value often does round the same, which is exactly how a weak version of
+    # this assertion would pass while proving nothing.
+    weighted = jax.random.uniform(jax.random.key(1), mask.shape, jnp.float32)
+    differing = np.count_nonzero(
+        np.asarray((routed * weighted[..., None]).astype(jnp.bfloat16))
+        != np.asarray(routed * weighted[..., None].astype(routed.dtype))
+    )
+    assert differing > 0, "a weighted mask must separate the two orders"
 
 
 def test_the_released_pair_trunk_never_reaches_the_blocked_swiglu(monkeypatch):

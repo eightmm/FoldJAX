@@ -730,10 +730,11 @@ same reason it is on Boltz-2, which spells it the same way.
 
 What it removes is the `2 * hidden` projection each of those blocks
 materialises before gating -- temporary traffic, once per block per denoising
-step. What it does not touch is ESMFold2's peak, which is one
-`num_samples x tokens^2 x 4 * c_z` arena; expect this option to buy time, not
-headroom, and do not reach for it to fit a longer input. `structure_sample_sequential`
-above is the option that divides the sample axis.
+step. What it does not touch is ESMFold2's peak, which is a folding-trunk
+arena quadratic in tokens and carrying no sample axis at all; expect this
+option to buy time, not headroom, and do not reach for it to fit a longer
+input. `structure_sample_sequential` above divides the sample axis, which is
+a different term and not this peak.
 
 Three limits. The kernel is Triton, so it needs a GPU and there is no
 fallback: a card that cannot run it says so rather than running XLA under a

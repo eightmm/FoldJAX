@@ -107,9 +107,12 @@ class ModelSettings:
     #: `bf16[32, L^2, 2048]` -- 122.8 GiB against a 95.6 GiB device. This note
     #: used to say "off by default", and was correct until that flip.
     #:
-    #: Worth asking for near a memory limit: this model's peak is one temp
-    #: arena sized `num_samples * L^2 * 4*c_z`, and this head is where the
-    #: sample factor enters it. Measured at 1,003 tokens with five samples on
+    #: Worth asking for near a memory limit, though not because it divides
+    #: the peak: this head's own term is `num_samples * L^2 * 4*c_z`, and
+    #: that is the term this option divides -- but the *peak* is a
+    #: folding-trunk arena with no sample axis in it, as the
+    #: `structure_sample_sequential` note below says at length. Measured at
+    #: 1,003 tokens with five samples on
     #: a 96 GB card at the released schedule, peak falls 56.0 to 30.2 GiB and
     #: the arena 35.99 to 11.31, with warm time unchanged -- 28.3-28.6 s
     #: either way. Read that 45% as a property of that measurement rather than
