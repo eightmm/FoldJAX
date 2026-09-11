@@ -74,18 +74,23 @@ DIFFUSION_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 #: percent of the wall clock. Measured on GPU over the released schedule,
 #: warm after prefill, one RTX PRO 6000 Blackwell:
 #:
-#:   1,003 tokens   88.31 -> 82.17 s   (-7.0%)   peak 9,216 MiB, unchanged
-#:   2,096 tokens   ~313.94 -> 287.62 s (~-8.4%) peak 21,778 MiB, unchanged
+#:   1,003 tokens   88.31 -> 81.96 s   (-7.2%)   peak 9,216 MiB, unchanged
+#:   2,096 tokens   301.32 -> 287.71 s (-4.5%)   peak 21,778 MiB, unchanged
+#:
+#: Both rows are same-source pairs, one option between them. The saving
+#: shrinks with length, and no memory comes with it at either size --
+#: `pair_residual_dtype` below is the lever that scales the other way. The
+#: 2,096 row was first estimated at ~-8.4% by borrowing the `highest` figure
+#: from the `glu_backend` note below; its measured control came back twelve
+#: seconds lower, so read a number lifted from elsewhere in this file as an
+#: estimate and not a control.
 #:
 #: **This buys wall clock and no memory at all.** An earlier reading of these
 #: rows put the 1,003-token pair at 90.98 -> 82.17 s with peak 12,612 -> 9,216
 #: MiB; that baseline was source `72116ac3`, which predates the fused-GLU
 #: default. The whole 12,612 -> 9,216 belongs to `glu_backend="tokamax"` and
 #: is already recorded at that parameter below, as is the 317.91 -> 313.94 s
-#: the 2,096-token baseline moved with it. The only same-source control run
-#: for this change is the 1,003-token 88.31 s; the 2,096-token control is the
-#: GLU note's post-flip 313.94 s rather than a control run beside 287.62, so
-#: read that row as approximate.
+#: the 2,096-token baseline moved with it.
 #:
 #: Accuracy at 2,096 tokens on 5DEI (homotetramer, five samples): per-chain
 #: RMSD to the deposited chain 0.34-0.40 A on both arms chain for chain, TM

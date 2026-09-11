@@ -281,6 +281,10 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "affinity_num_steps": 200,
     "affinity_num_samples": 5,
     "compute_dtype": "bfloat16",
+    # `api.MATMUL_PRECISION`, in the neutral vocabulary. Naming it here is what
+    # makes an explicit `matmul_precision=high` share the namespace an omitted
+    # one selects, while `highest` keeps its own.
+    "matmul_precision": "high",
     "attention_backend": "xla",
     "trunk_atom_attention_backend": None,
     "diffusion_attention_backend": None,

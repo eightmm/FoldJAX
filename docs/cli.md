@@ -718,8 +718,31 @@ released schedule, warm after prefill, one RTX PRO 6000 Blackwell:
 
 | tokens | wall, `highest` | wall, `high` | peak |
 |---|---|---|---|
-| 1,003 | 88.31 s | 82.17 s (**-7.0%**) | 9,216 MiB, both arms |
-| 2,096 | ~313.94 s | 287.62 s (**~-8.4%**) | 21,778 MiB, both arms |
+| 1,003 | 88.31 s | 81.96 s (**-7.2%**) | 9,216 MiB, both arms |
+| 2,096 | 301.32 s | 287.71 s (**-4.5%**) | 21,778 MiB, both arms |
+
+Both rows are same-source pairs: one snapshot, one option between them.
+
+**The 2,096 row was estimated before it was measured, and the estimate was
+off by nearly half.** Lacking a control, it was first written as
+~313.94 -> 287.62 s, ~-8.4%, taking the `highest` figure from the fused-GLU
+note at `api.py:598-609` -- a carefully measured number, but of a different
+run. The control, when it was run, came back at 301.32 s, twelve seconds
+below it, and the saving with it: -4.5%, not -8.4%. A figure lifted from a
+record elsewhere in the tree is not a control, however good it was when it
+was taken; card state alone moves a 2,000-token run by more than the effect
+being measured. (The pair above was taken on the snapshot that also unified
+the op-level pin described below. That unification measures as nothing --
+81.96 vs 82.17 s at 1,003, 287.71 vs 287.62 at 2,096 -- so the row describes
+the shipped scope-only default too.)
+
+**Read the two sizes together, because this lever shrinks with length:**
+-7.2% at 1,003 tokens and -4.5% at 2,096, with no memory saving at either.
+`pair_residual_dtype` scales the other way -- -15.0% peak at 2,096 tokens and
+-27.8% at 3,012 -- so on this one port two levers run in opposite directions.
+This one is a small-input win that fades; that one is what decides whether a
+long job runs at all. A reader who sees only the 1,003-token row will size
+this wrong.
 
 **This buys wall clock and no memory at all**, and the peak column is worth a
 paragraph because an earlier reading of these rows got it wrong. That reading
@@ -729,9 +752,6 @@ memory saving, and attributed it here. The 90.98 / 12,612 baseline was source
 belongs to `glu_backend=tokamax` and is recorded under that option, along
 with the 317.91 -> 313.94 s the 2,096-token baseline moved at the same time.
 Against same-source controls the precision change moves no bytes at any size.
-The one control actually run beside this change is the 1,003-token 88.31 s;
-the 2,096-token figure is the GLU note's post-flip number rather than a
-control run beside 287.62, so read that row as approximate.
 
 Accuracy at 2,096 tokens on 5DEI, a homotetramer, five samples: per-chain RMSD
 to the deposited chain is 0.34-0.40 Å on both arms, chain for chain, TM 0.998
@@ -881,12 +901,15 @@ function exempts on purpose:
 A further 1.06 MiB over 84 sites is float32 norm affine, biases and
 embeddings, which are not GEMM operands.
 
-As arithmetic this is small and shrinking. Per Pairformer layer the exempt
-path is 2,506,752 × N (the `transition_s` and attention projections, linear
-in tokens) plus 2,816 × N² (proj_z and the single attention's own scores and
-P@V), against the pair path's 393,216 × N² + 768 × N³ -- **0.45% of the
-layer's MACs at 1,003 tokens, 0.20% at 2,096, 0.13% at 3,012.** It is not a
-lever.
+As arithmetic this is small and shrinking, and it should be written down as
+**not a lever**. Per Pairformer layer the exempt path is 2,506,752 × N (the
+`transition_s` and attention projections, linear in tokens) plus 2,816 × N²
+(proj_z and the single attention's own scores and P@V), against the pair
+path's 393,216 × N² + 768 × N³ -- **0.45% of the layer's MACs at 1,003
+tokens, 0.20% at 2,096, 0.13% at 3,012.** Linear against quadratic and cubic
+competition: the share falls as inputs grow, so narrowing these would be
+worth least exactly where memory and time hurt most. Nobody should spend a
+job on it.
 
 **What is left is storage, and it already has a knob.** The float32 pair
 representation `[1, N, N, 128]` is 4.326 GiB at 3,012 tokens against 2.163
