@@ -781,6 +781,25 @@ def test_openfold3_nondefault_sampling_keeps_distinct_cache_namespace(
     assert resolve_cache_dir(changed, backend) != resolve_cache_dir(request, backend)
 
 
+def test_openfold3_glu_backend_changes_the_cache_namespace(tmp_path: Path) -> None:
+    """The fused unit is a different program, and the default is not a change.
+
+    Both halves matter. A run that asks for the fused kernel must not be
+    answered out of the namespace the released path populated; a run that
+    spells the released default out must not start a second one.
+    """
+
+    backend = OpenFold3Backend()
+    request = dataclasses.replace(_request(tmp_path), model="openfold3")
+    fused = dataclasses.replace(request, options={"glu_backend": "tokamax"})
+    spelled = dataclasses.replace(request, options={"glu_backend": "xla"})
+
+    assert resolve_cache_dir(fused, backend) != resolve_cache_dir(request, backend)
+    assert resolve_cache_dir(spelled, backend) == resolve_cache_dir(request, backend)
+    assert "glu_backend" not in backend.cache_profile(request)
+    assert backend.cache_profile(fused)["glu_backend"] == "tokamax"
+
+
 @pytest.mark.parametrize("name", ("pair_chunk_size", "diffusion_chunk_size"))
 def test_openfold3_chunk_choices_keep_distinct_cache_namespace(
     tmp_path: Path,

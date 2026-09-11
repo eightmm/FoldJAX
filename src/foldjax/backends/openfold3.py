@@ -58,6 +58,7 @@ _COMPILE_OPTIONS = (
     "cp_devices",
     "cp_layout",
     "triangle_kernel",
+    "glu_backend",
     "all_arrays",
     # Two runs that differ only in reduction policy compile different
     # programs, so they must not share one namespace.
@@ -81,6 +82,11 @@ _MANAGED_ARRAY_BUDGET_BYTES = 0
 # Keep the spelling pinned here because the padding planner intentionally runs
 # without importing the model package at module import time.
 _ZERO_TEMPLATE_PAIR_MARKER = "_foldjax_zero_template_pair_features"
+
+#: Values ``glu_backend`` accepts, copied rather than imported: the shared
+#: :mod:`foldjax.models._glu` pulls in JAX, and this module resolves cache
+#: directories without paying that import. A drift test pins the copy.
+_GLU_BACKENDS = ("xla", "tokamax")
 
 #: ``released_config`` values whose explicit spellings are identical to leaving
 #: the public request unset.  Keep these lightweight copies beside the backend
@@ -192,6 +198,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "ccd_file_path",
             "cp_devices",
             "cp_layout",
+            "glu_backend",
             "no_compile",
             "pair_chunk_size",
             "diffusion_chunk_size",
@@ -299,6 +306,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         profile["triangle_kernel"] = resolve_triangle_kernel(
             options.get("triangle_kernel"), cp_shards=cp_shards
         )
+        # The released SwiGLU is the unfused one, so a request that spells
+        # that default out must name the namespace an omitted option names.
+        # The fused value is a different program and keeps its own.
+        if str(profile.get("glu_backend", "xla")) == "xla":
+            profile.pop("glu_backend", None)
         profile["representations"] = _representations.resolve(
             request.representations, _representations.specs_for("openfold3")
         )
@@ -332,6 +344,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 int(options["pair_chunk_size"])
             except (TypeError, ValueError) as error:
                 raise ValueError("pair_chunk_size must be an integer") from error
+        if "glu_backend" in options:
+            backend = options["glu_backend"]
+            if backend not in _GLU_BACKENDS:
+                raise ValueError(
+                    f"glu_backend must be one of {_GLU_BACKENDS}; got {backend!r}"
+                )
 
     def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
         """Translate neutral semantics that differ from OpenFold3's literals."""
@@ -492,6 +510,9 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         cp_layout = options.pop("cp_layout", None)
         if cp_layout is not None:
             overrides["cp_layout"] = str(cp_layout)
+        glu_backend = options.pop("glu_backend", None)
+        if glu_backend is not None:
+            overrides["glu_backend"] = str(glu_backend)
         available = _representations.specs_for("openfold3")
         if request.stop_after == "inputs":
             available = {

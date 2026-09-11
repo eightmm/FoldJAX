@@ -155,6 +155,7 @@ def pair_block(
     tri_mul_first: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply one pair block.
 
@@ -215,7 +216,11 @@ def pair_block(
     if mask_transition:
         return z + map_row_chunks(
             lambda rows, mask: swiglu_transition(
-                rows, params.pair_transition, mask=mask, eps=eps
+                rows,
+                params.pair_transition,
+                mask=mask,
+                eps=eps,
+                glu_backend=glu_backend,
             ),
             z,
             pair_mask,
@@ -224,7 +229,11 @@ def pair_block(
         )
     return z + map_row_chunks(
         lambda rows: swiglu_transition(
-            rows, params.pair_transition, mask=None, eps=eps
+            rows,
+            params.pair_transition,
+            mask=None,
+            eps=eps,
+            glu_backend=glu_backend,
         ),
         z,
         chunk_size=transition_chunk,

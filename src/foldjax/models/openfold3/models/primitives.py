@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
+
+from foldjax.models._cp import cp_mesh
+from foldjax.models._glu import gated_linear_unit
 
 
 class LinearParams(NamedTuple):
@@ -111,12 +115,41 @@ def jax_sigmoid(x: jnp.ndarray) -> jnp.ndarray:
     )
 
 
-def swiglu(x: jnp.ndarray, params: SwiGLUParams) -> jnp.ndarray:
+def swiglu(
+    x: jnp.ndarray, params: SwiGLUParams, *, glu_backend: str = "xla"
+) -> jnp.ndarray:
     """Apply ``swish(linear_a(x)) * linear_b(x)``.
 
     Upstream uses its ordinary SiLU path unless explicitly given
-    ``use_kernel=True``; SwiGLUTransition does not pass that flag.
+    ``use_kernel=True``; SwiGLUTransition does not pass that flag, so ``"xla"``
+    is what the released architecture computes and stays the default here.
+
+    ``glu_backend="tokamax"`` runs the same product through the fused Triton
+    kernel, which never materializes the two widened projections. The kernel
+    applies ``jax.nn.silu`` at its own width, where this path applies the
+    port's :func:`silu`; treat the switch as a numerics change and read it
+    against the port's rerun floor. See :mod:`foldjax.models._glu`.
     """
+    if glu_backend != "xla":
+        if cp_mesh() is not None:
+            raise ValueError(
+                "context parallelism requires glu_backend='xla'; a fused GLU "
+                "cannot be partitioned"
+            )
+        if params.linear_a.bias is not None or params.linear_b.bias is not None:
+            raise ValueError(
+                "the fused GLU takes bias-free projections; upstream's "
+                "swiglu_init builds both of them without a bias"
+            )
+        # ``LinearParams.weight`` is torch's ``[out, in]``; the kernel wants
+        # ``[in, out]`` per branch, with the activated branch first.
+        return gated_linear_unit(
+            x,
+            jnp.swapaxes(params.linear_a.weight, -1, -2),
+            jnp.swapaxes(params.linear_b.weight, -1, -2),
+            jax.nn.silu,
+            backend=glu_backend,
+        )
     return silu(linear(x, params.linear_a)) * linear(x, params.linear_b)
 
 
@@ -136,6 +169,7 @@ def swiglu_transition(
     *,
     mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply the SwiGLU transition (AF3 Algorithm 11).
 
@@ -143,7 +177,7 @@ def swiglu_transition(
     multiplies the output. A missing mask means all-ones, matching upstream.
     """
     y = layer_norm(x, params.layer_norm, eps=eps)
-    y = swiglu(y, params.swiglu)
+    y = swiglu(y, params.swiglu, glu_backend=glu_backend)
     y = linear(y, params.linear_out)
     if mask is not None:
         y = y * mask[..., None]
@@ -170,6 +204,7 @@ def conditioned_transition_block(
     *,
     mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply an AdaLN-conditioned SwiGLU transition with an AdaLN-zero gate.
 
@@ -179,13 +214,14 @@ def conditioned_transition_block(
         params: mapped parameters.
         mask: ``[..., N]`` mask; ``None`` means all ones.
         eps: layer norm epsilon.
+        glu_backend: which gated-linear-unit path the SwiGLU takes.
 
     Returns:
         ``[..., N, C_a]`` update. Unlike ``swiglu_transition`` there is no
         residual here: the gate replaces it.
     """
     normed = adaln(a, s, params.layer_norm, eps=eps)
-    hidden = swiglu(normed, params.swiglu)
+    hidden = swiglu(normed, params.swiglu, glu_backend=glu_backend)
     out = jax_sigmoid(linear(s, params.linear_g)) * linear(hidden, params.linear_out)
     if mask is not None:
         out = out * mask[..., None]

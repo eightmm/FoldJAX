@@ -64,8 +64,8 @@ def test_rejected_transition_control_is_not_dispatched(monkeypatch):
     x = jnp.zeros((1, 2, 2, 64), jnp.float32)
     calls = []
 
-    def controlled(value, params, *, mask, eps):
-        calls.append((mask, eps))
+    def controlled(value, params, *, mask, eps, glu_backend):
+        calls.append((mask, eps, glu_backend))
         return value + 7
 
     def forbidden(*args, **kwargs):
@@ -84,3 +84,6 @@ def test_rejected_transition_control_is_not_dispatched(monkeypatch):
                 x + 7,
             )
     assert len(calls) == 2
+    # Required rather than defaulted above: the pair block owns which gated
+    # linear unit its transition takes, and must say so at every call.
+    assert [backend for _mask, _eps, backend in calls] == ["xla", "xla"]

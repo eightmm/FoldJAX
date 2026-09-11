@@ -321,6 +321,38 @@ the backend is refused under context parallelism, which it has not been
 validated against. OpenDDE reaches the same two sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
+### Fused gated linear unit (`--option glu_backend=tokamax`, OpenFold3)
+
+Every transition in OpenFold3 is a SwiGLU: two projections widened to four
+times the channel count, multiplied together and projected back. XLA writes
+both widened tensors out before multiplying them. `tokamax` runs the same
+product in one fused Triton kernel, which never materializes them. The saving
+is the intermediate, not the precision, which is why the value is offered on a
+port that runs float32 throughout. Boltz-2 spells the same option the same
+way; this adds it to OpenFold3.
+
+It reaches every SwiGLU the model has: the Pairformer's pair and single
+transitions, the MSA module, the template pair stack, the confidence
+re-embedding, the diffusion conditioning, and the conditioned transitions of
+the token and atom transformers inside the rollout.
+
+The default is `xla` and no released run changes. That default is also
+upstream's: `SwiGLU` in `core/model/primitives/activations.py` ships
+`use_kernel: bool = False` and `SwiGLUTransition` never passes the flag, so
+asking for the fused kernel is a deliberate deviation from the architecture
+the released weights were produced under, not a faster spelling of it. The two
+arms do not round identically either -- the fused kernel applies the
+activation at its own width -- so treat the switch as a numerics change and
+read it against the port's own rerun floor.
+
+There is no fallback: the implementation is pinned to Triton, so a card that
+cannot run the kernel raises rather than running XLA under the fused name.
+Context parallelism refuses the value, because a fused kernel cannot be
+partitioned, and an unrecognized value is refused with the two that exist. The
+choice is part of the compilation-cache identity, so a fused run never
+receives the executable built without it, and spelling the default out names
+the same namespace an omitted option does.
+
 ### `--option deterministic=on`
 
 Compiles this run's executables for reduction orders that repeat, so two

@@ -36,6 +36,25 @@ unless it says so here, in its own paragraph.
   traffic rather than peak: ESMFold2's peak is one
   `num_samples x tokens^2 x 4 * c_z` arena that this does not touch. Needs a
   GPU, with no XLA fallback, and is refused under context parallelism.
+- **A fused gated linear unit for OpenFold3**, opt-in and off by default.
+  `--option glu_backend=tokamax` runs every SwiGLU in the model -- the
+  Pairformer's pair and single transitions, the MSA module, the template pair
+  stack, the confidence re-embedding, the diffusion conditioning and the
+  conditioned transitions of both transformer stacks -- through
+  `tokamax.gated_linear_unit`, which computes `silu(x @ w_a) * (x @ w_b)` in
+  one Triton kernel instead of writing both widened projections out. The
+  saving is the intermediate, not the precision, which is why it is offered on
+  a float32 port. Boltz-2 already spelled the option this way; this is the
+  same option on OpenFold3, over the shared implementation both now use. The
+  default stays `xla`, which is also upstream's: its `SwiGLU` ships
+  `use_kernel=False` and `SwiGLUTransition` never passes the flag, so the
+  fused kernel is a deviation from the released architecture rather than a
+  faster spelling of it, and the two arms do not round identically. The
+  implementation is pinned to Triton and raises where that kernel cannot run;
+  context parallelism refuses the value because a fused kernel cannot be
+  partitioned; and the choice is part of the compilation-cache identity, so a
+  fused run never receives the executable built without it while an explicit
+  `xla` names the namespace an omitted option already named.
 
 - **A `tokamax` attention backend for Protenix's two pair-bias sites**, opt-in
   and off by default. `--diffusion-attention-backend tokamax` routes the

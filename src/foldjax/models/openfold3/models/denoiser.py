@@ -72,6 +72,7 @@ def denoise(
     inf: float = 1e9,
     mask_transition: bool = True,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Denoise one set of noisy coordinates.
 
@@ -112,6 +113,7 @@ def denoise(
         zij_trunk=zij,
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
     # The conditioned single representation is added on top of the encoder output.
@@ -127,6 +129,7 @@ def denoise(
         inf=inf,
         mask_transition=mask_transition,
         eps=eps,
+        glu_backend=glu_backend,
     )
     ai = layer_norm(ai, params.layer_norm_a, eps=eps)
 
@@ -142,6 +145,7 @@ def denoise(
         no_heads=atom_heads,
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
     xl_out = combine_denoiser_output(xl_noisy, rl_update, t, sigma_data=sigma_data)

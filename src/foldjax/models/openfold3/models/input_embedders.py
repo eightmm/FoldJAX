@@ -146,6 +146,7 @@ def input_embedder(
     max_relative_chain: int,
     inf: float = 1e9,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Build the input single and pair representations.
 
@@ -178,6 +179,7 @@ def input_embedder(
         n_token=n_token,
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
     s_input = jnp.concatenate(

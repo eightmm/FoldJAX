@@ -58,6 +58,7 @@ def diffusion_transformer_block(
     inf: float = 1e9,
     mask_transition: bool = True,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Apply one diffusion transformer block.
 
@@ -91,6 +92,7 @@ def diffusion_transformer_block(
         params.conditioned_transition,
         mask=mask if mask_transition else None,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
 
@@ -105,6 +107,7 @@ def diffusion_transformer(
     inf: float = 1e9,
     mask_transition: bool = True,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
     scan_blocks: bool = True,
 ) -> jnp.ndarray:
     """Run every diffusion transformer block in order.
@@ -121,6 +124,7 @@ def diffusion_transformer(
         inf=inf,
         mask_transition=mask_transition,
         eps=eps,
+        glu_backend=glu_backend,
     )
     if scan_blocks and can_scan(params.blocks):
         return scan_stack(
@@ -172,6 +176,7 @@ def atom_transformer(
     inf: float = 1e9,
     mask_transition: bool = True,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
     scan_blocks: bool = True,
 ) -> jnp.ndarray:
     """Run the sequence-local atom transformer.
@@ -214,6 +219,7 @@ def atom_transformer(
             block.conditioned_transition,
             mask=mask if mask_transition else None,
             eps=eps,
+            glu_backend=glu_backend,
         )
 
     # This stack runs inside the diffusion rollout, so its body is emitted once per

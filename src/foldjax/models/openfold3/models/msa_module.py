@@ -66,6 +66,7 @@ def msa_module_block(
     mask_transition: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
     opm_eps: float = 1e-3,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Apply one MSA module block.
@@ -116,6 +117,7 @@ def msa_module_block(
             params.msa_transition,
             mask=msa_mask if mask_transition else None,
             eps=eps,
+            glu_backend=glu_backend,
         )
         if not opm_first:
             z = z + outer_product_mean(
@@ -136,6 +138,7 @@ def msa_module_block(
         mask_transition=mask_transition,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
     )
     return m, z
 
@@ -154,6 +157,7 @@ def msa_module_stack(
     mask_transition: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
     opm_eps: float = 1e-3,
 ) -> jnp.ndarray:
     """Run every MSA module block and return the pair representation.
@@ -171,6 +175,7 @@ def msa_module_stack(
         mask_transition=mask_transition,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
         opm_eps=opm_eps,
     )
     # A block configured with ``skip_msa_update`` has no msa_att_row at all, so a

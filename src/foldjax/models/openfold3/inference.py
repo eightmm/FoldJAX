@@ -40,6 +40,7 @@ from foldjax.models._cp import (
 from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
+from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models.openfold3.data.compact_categories import (
     COMPACT_REF_ATOM_CATEGORIES_MARKER,
     COMPACT_REF_ATOM_CATEGORIES_PRIVATE_FEATURES,
@@ -203,6 +204,16 @@ class InferenceConfig(NamedTuple):
     has_atomized_tokens: bool = True
     #: Keep the atom confidence distribution for raw-output parity checks.
     return_plddt_logits: bool = False
+    #: Which gated-linear-unit path every SwiGLU in the model takes.
+    #: ``"xla"`` is the released spelling: two projections and an
+    #: elementwise product, which is also what upstream runs -- its
+    #: ``SwiGLU`` takes ``use_kernel=False`` and ``SwiGLUTransition`` never
+    #: passes the flag. ``"tokamax"`` computes the same product in one
+    #: fused Triton kernel, which never writes the widened gate and value
+    #: tensors out; it needs a GPU and is a numerics change, so it is
+    #: opt-in. Part of the config, so the two never share a compiled
+    #: program. See :mod:`foldjax.models._glu`.
+    glu_backend: str = "xla"
 
 
 class InferenceParams(NamedTuple):
@@ -757,6 +768,7 @@ def predict(
         no_heads_pair_bias=config.no_heads_pair_bias,
         opm_first=config.opm_first,
         chunk_size=config.pair_chunk_size,
+        glu_backend=config.glu_backend,
     )
     return _predict_from_trunk(
         key, batch, params, config, representative_atoms,
@@ -775,6 +787,7 @@ def _predict_inputs(batch, params, config):
         atom_heads=config.atom_heads, n_token=config.n_token,
         max_relative_idx=config.max_relative_idx,
         max_relative_chain=config.max_relative_chain,
+        glu_backend=config.glu_backend,
     )
     return Prediction(
         coordinates=None, plddt=None, ptm=None, iptm=None,
@@ -838,6 +851,7 @@ def _predict_from_trunk(
             max_relative_idx=config.max_relative_idx,
             max_relative_chain=config.max_relative_chain,
             token_mask=batch["token_mask"],
+            glu_backend=config.glu_backend,
         )
     )
 
@@ -854,6 +868,7 @@ def _predict_from_trunk(
                 params.diffusion_conditioning,
                 sigma_data=config.sigma_data,
                 token_mask=batch["token_mask"],
+                glu_backend=config.glu_backend,
             ),
             width,
         )
@@ -871,6 +886,7 @@ def _predict_from_trunk(
             token_heads=config.token_heads,
             n_token=config.n_token,
             sigma_data=config.sigma_data,
+            glu_backend=config.glu_backend,
         )
 
     if config.stop_after_trunk:
@@ -992,6 +1008,7 @@ def _predict_from_trunk(
             max_bin=config.confidence_max_bin,
             no_bin=config.confidence_no_bin,
             chunk_size=config.pair_chunk_size,
+            glu_backend=config.glu_backend,
         )
         # The pair heads are evaluated here rather than outside so the re-embedded
         # pair representation never has to exist at sample rank. PAE is either a
@@ -1147,6 +1164,7 @@ def released_config(
     stop_after_trunk: bool = False,
     stop_after_inputs: bool = False,
     has_atomized_tokens: bool = True,
+    glu_backend: str = "xla",
     max_array_bytes: int | None = DEFAULT_ARRAY_BUDGET_BYTES,
 ) -> InferenceConfig:
     """Return the released OpenFold3 architecture settings.
@@ -1172,6 +1190,15 @@ def released_config(
         if isinstance(pair_chunk_size, str)
         else pair_chunk_size
     )
+    if glu_backend not in GLU_BACKENDS:
+        raise ValueError(
+            f"glu_backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
+        )
+    if cp_shards > 1 and glu_backend != "xla":
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
     return InferenceConfig(
         n_token=n_token,
         n_atom=n_atom,
@@ -1219,6 +1246,7 @@ def released_config(
         stop_after_trunk=stop_after_trunk,
         stop_after_inputs=stop_after_inputs,
         has_atomized_tokens=has_atomized_tokens,
+        glu_backend=glu_backend,
     )
 
 
