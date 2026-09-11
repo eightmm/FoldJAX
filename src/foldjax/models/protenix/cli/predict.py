@@ -72,6 +72,14 @@ def _amp_realised_params(params, policy, cache):
     the checkpoint is loaded once, so the realisations are memoised rather than
     rebuilt for every job. A run whose jobs all land on the same side of the
     gate holds exactly one tree, as it did before this option existed.
+
+    A stage the tree does not carry is left alone rather than reached through.
+    Every released checkpoint carries both, and the model refuses the
+    mismatch that a partial tree would produce -- ``confidence_autocast=True
+    but these parameters carry no confidence stage to apply it to``, from
+    ``_require_realised_amp_params``. That check owns the error, so preparing
+    on top of it would only replace a sentence that names the stage with an
+    ``AttributeError`` that names a tuple.
     """
     from foldjax.models.protenix.models.input_precision import (
         native_confidence_autocast_params,
@@ -81,11 +89,11 @@ def _amp_realised_params(params, policy, cache):
     if policy in cache:
         return cache[policy]
     realised = params
-    if policy.confidence_autocast:
+    if policy.confidence_autocast and getattr(realised, "confidence", None) is not None:
         realised = realised._replace(
             confidence=native_confidence_autocast_params(realised.confidence)
         )
-    if policy.diffusion_autocast:
+    if policy.diffusion_autocast and getattr(realised, "diffusion", None) is not None:
         realised = realised._replace(
             diffusion=native_diffusion_autocast_params(realised.diffusion)
         )
@@ -255,11 +263,13 @@ def _run(
         "--amp-policy",
         choices=AMP_POLICY_CHOICES,
         default=DEFAULT_AMP_POLICY,
-        help="which stages run under the BF16 autocast: 'auto' reproduces "
-        "upstream's token gate (confidence head above 2560 tokens, diffusion "
-        "sampler above 3840), 'fp32' and 'bf16' pin both stages at every "
-        "size; realised only under --trunk-dtype bf16, since an FP32 trunk "
-        "opens no autocast for a stage to run in",
+        help="which stages run under the BF16 autocast: 'auto' (default) "
+        "runs the confidence head under it at every size and gates the "
+        "diffusion sampler above 3840 tokens, 'upstream' reproduces "
+        "upstream's own gate instead (confidence head only above 2560 "
+        "tokens), 'fp32' and 'bf16' pin both stages at every size; realised "
+        "only under --trunk-dtype bf16, since an FP32 trunk opens no "
+        "autocast for a stage to run in",
     )
     parser.add_argument(
         "--chunk-policy",
@@ -1020,9 +1030,10 @@ def _run(
             require_supported_geometry(guidance_features)
         n_token = int(features["restype"].shape[-2])
         # Resolved here, from this job's own token count, because that is what
-        # upstream's `update_inference_configs` keys on -- a run with a small
-        # and a large job in one `--input-json` gets two policies, and two
-        # executables, exactly as upstream would build two configurations.
+        # upstream's `update_inference_configs` keys on and what the port's own
+        # table keys its diffusion half on -- a run with a small and a large
+        # job in one `--input-json` gets two policies, and two executables,
+        # exactly as upstream would build two configurations.
         amp_policy = realise_amp_policy(
             requested_amp_policy(args.amp_policy, n_token, model_name),
             trunk_is_bf16=trunk_dtype is not None,
