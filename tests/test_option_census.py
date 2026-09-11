@@ -434,13 +434,14 @@ def test_every_value_in_the_vocabulary_is_reachable_on_some_port(
                     "below). AlphaFold 3 and Boltz-2 already list it. The fix "
                     "has two halves on the ports that pin a value of their own: "
                     "openfold3 pins 'high' at models/openfold3/inference.py:549 "
-                    "and protenix reads the request at "
-                    "models/protenix/models/predict.py:153, so each needs the "
-                    "name in compile_options *and* an entry in its strip table "
-                    "at that pinned value, or an explicit 'high' forks from an "
-                    "omitted one. esmfold2 and opendde call "
-                    "resolved_matmul_precision nowhere, so they pin nothing and "
-                    "need the compile_options half only."
+                    "and protenix pins 'high' at "
+                    "models/protenix/models/predict.py:103, read at :153 and "
+                    "overridden by no caller (the adapter never renders it -- "
+                    "it is not in _CLI_OPTIONS). So each needs the name in "
+                    "compile_options *and* a strip entry at 'high', or an "
+                    "explicit 'high' forks from an omitted one. esmfold2 and "
+                    "opendde call resolved_matmul_precision nowhere, so they "
+                    "pin nothing and need the compile_options half only."
                 ),
             ),
         )
@@ -490,9 +491,13 @@ def test_the_precision_knob_provably_changes_the_program() -> None:
         with execution.matmul_precision_scope(value):
             lowered[value] = jax.jit(lambda a: a @ a).lower(operand).as_text()
 
-    assert "precision = [HIGH, HIGH]" in lowered["high"]
-    assert "precision = [HIGHEST, HIGHEST]" in lowered["highest"]
+    # The inequality is the property: two values, two programs. The substring
+    # is only a readable witness of *what* differs, matched the loose way
+    # `test_the_scope_also_sets_jax_for_the_ports_that_pin_nothing` does, so a
+    # StableHLO formatting change does not fail this for the wrong reason.
     assert lowered["high"] != lowered["highest"]
+    assert "highest" in lowered["highest"].lower()
+    assert "highest" not in lowered["high"].lower()
 
 
 def test_every_alias_renames_to_a_knob_some_port_actually_declares() -> None:
@@ -568,8 +573,16 @@ def test_every_alias_renames_to_a_knob_some_port_actually_declares() -> None:
         for option in sorted(
             {
                 option
-                for name in BACKENDS
-                for option in accepted_names(get_backend(name))
+                for option in {
+                    name
+                    for backend_name in BACKENDS
+                    for name in accepted_names(get_backend(backend_name))
+                }
+                if sum(
+                    option in accepted_names(get_backend(backend_name))
+                    for backend_name in BACKENDS
+                )
+                > 1
             }
             - {"diffusion_chunk_size", "matmul_precision"}
         )
@@ -640,6 +653,52 @@ def test_the_native_default_of_every_knob_has_a_neutral_spelling(port: str) -> N
         )
 
 
+@pytest.mark.parametrize(
+    ("name", "knob", "value"),
+    [
+        (name, knob, value)
+        for name in BACKENDS
+        for knob, (_native, values) in get_backend(name).execution_options.items()
+        for value in values
+    ],
+)
+def test_every_neutral_value_survives_the_port_s_own_validator(
+    name: str, knob: str, value: str, tmp_path
+) -> None:
+    """The last surface: a value that translates and then dies downstream.
+
+    `execution.translate` checks the value against the port's own table, and
+    then `validate_native_options` checks the *translated* native value again
+    against a second literal -- Boltz-2 keeps one at `backends/boltz2.py:684`,
+    OpenFold3 at `:394`. Two literals for one vocabulary is the same shape as
+    `compile_options` and `native_options` being two lists for one option, and
+    it fails the same way: a value the neutral table advertises, that
+    `apply_sampling` happily produces, and that the port refuses.
+
+    This walks the whole path a planned request takes -- normalize, translate,
+    sampling merge, the unsupported-name check, `validate_native_options` --
+    without loading weights or importing a model runtime, which is exactly the
+    boundary `validate_request` is specified to respect.
+    """
+    backend = get_backend(name)
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    request = PredictionRequest(
+        model="boltz2",
+        input=job,
+        output_dir=tmp_path / "out",
+        # `validate_request` checks the dialect first, and an unresolved
+        # request carries 'auto' -- `api.resolve_request` is what normally
+        # settles it. Naming a format this port declares keeps the failure
+        # this test can produce an option failure and not a dialect one.
+        input_format=sorted(backend.capabilities().input_formats)[0],
+        options={knob: value},
+    )
+    # Raises rather than returns a finding: the failure message the port
+    # produces is the useful output, and wrapping it would hide it.
+    backend.validate_request(request)
+
+
 # ---------------------------------------------------------------------------
 # cache_profile, read behaviourally rather than off a table
 # ---------------------------------------------------------------------------
@@ -664,14 +723,29 @@ def test_spelling_the_value_the_profile_already_resolved_changes_nothing(
     """
     backend = get_backend(name)
     omitted = profile_of(name)
+    forks = []
+    unspellable = []
     for option, value in sorted(omitted.items()):
         spelling, why = spelling_for(backend, option, value)
         if spelling is None:
-            pytest.skip(f"{name}.{option}: {why}")
-        assert profile_of(name, **spelling) == omitted, (
-            f"{name} resolves an omitted {option} to {value!r} but spelling "
-            f"{spelling} selects a different namespace"
-        )
+            # Collected rather than skipped: `pytest.skip` here would abandon
+            # the whole port on its first unspellable option and report a
+            # green skip for every option after it.
+            unspellable.append(f"{option} ({why})")
+            continue
+        if profile_of(name, **spelling) != omitted:
+            forks.append(f"{option}={value!r} spelled as {spelling}")
+    assert not forks, (
+        f"{name} resolves these into every profile but selects a different "
+        f"namespace when they are spelled back: {forks}"
+    )
+    # Recorded, not asserted: a resolved value with no spelling cannot be
+    # mis-aliased by a caller, because no caller can write it.
+    assert unspellable == [], (
+        f"{name} resolves options no request can spell: {unspellable}; that is "
+        "not a defect, but it means this test did not check them -- move them "
+        "to a recorded exemption rather than deleting this assertion"
+    )
 
 
 @pytest.mark.parametrize(
@@ -948,3 +1022,34 @@ def test_the_strip_table_record_notices_an_option_with_no_recorded_reason(
     )
     with pytest.raises(AssertionError, match="invented_option"):
         test_every_compile_option_outside_the_strip_table_has_a_reason("esmfold2")
+
+
+def test_the_validator_invariant_notices_a_value_the_port_refuses(
+    monkeypatch, tmp_path
+) -> None:
+    """Boltz-2's second literal stops accepting a value its table produces.
+
+    `attention_kernel=tokamax` translates to `attention_backend=tokamax`, and
+    the literal set at `backends/boltz2.py:684` is what says yes to it. Narrow
+    that set and the neutral value becomes unreachable with no change to any
+    option table -- the failure this test exists for.
+    """
+    from foldjax.backends.boltz2 import Boltz2Backend
+
+    original = Boltz2Backend.validate_native_options
+
+    def narrowed(self, options):
+        if options.get("attention_backend") == "tokamax":
+            raise ValueError(
+                "attention_backend must be one of 'flash', 'xla'"
+            )
+        return original(self, options)
+
+    test_every_neutral_value_survives_the_port_s_own_validator(
+        "boltz2", "attention_kernel", "tokamax", tmp_path
+    )
+    monkeypatch.setattr(Boltz2Backend, "validate_native_options", narrowed)
+    with pytest.raises(ValueError, match="attention_backend must be one of"):
+        test_every_neutral_value_survives_the_port_s_own_validator(
+            "boltz2", "attention_kernel", "tokamax", tmp_path
+        )
