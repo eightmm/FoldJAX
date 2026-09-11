@@ -52,6 +52,7 @@ def pairformer_block(
     mask_transition: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Apply one Pairformer block.
 
@@ -80,6 +81,7 @@ def pairformer_block(
         mask_transition=mask_transition,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
     )
 
     s = s + attention_pair_bias(
@@ -97,6 +99,7 @@ def pairformer_block(
         params.single_transition,
         mask=single_mask if mask_transition else None,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
     return s, z
@@ -115,6 +118,7 @@ def pairformer_stack(
     mask_transition: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
     scan_blocks: bool = True,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Run every Pairformer block in order.
@@ -138,6 +142,7 @@ def pairformer_stack(
             mask_transition=mask_transition,
             eps=eps,
             chunk_size=chunk_size,
+            glu_backend=glu_backend,
         )
     for block in params.blocks:
         s, z = pairformer_block(
@@ -152,6 +157,7 @@ def pairformer_stack(
             mask_transition=mask_transition,
             eps=eps,
             chunk_size=chunk_size,
+            glu_backend=glu_backend,
         )
     return s, z
 

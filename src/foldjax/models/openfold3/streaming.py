@@ -100,6 +100,7 @@ class _StreamedGraph:
                 n_token=config.n_token,
                 max_relative_idx=config.max_relative_idx,
                 max_relative_chain=config.max_relative_chain,
+                glu_backend=config.glu_backend,
             )
             return initial, (
                 shard_single(jnp.zeros_like(initial[1])),
@@ -118,6 +119,7 @@ class _StreamedGraph:
                 no_heads_pair_bias=config.no_heads_pair_bias,
                 opm_first=config.opm_first,
                 chunk_size=config.pair_chunk_size,
+                glu_backend=config.glu_backend,
             )
 
         def finish(key, batch, params, table, output, tape, mask, augmentation):

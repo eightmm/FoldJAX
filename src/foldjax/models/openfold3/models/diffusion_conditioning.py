@@ -75,6 +75,7 @@ def single_conditioning(
     sigma_data: float,
     token_mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Condition the single representation on the trunk and the noise level.
 
@@ -104,7 +105,9 @@ def single_conditioning(
     ]
 
     for transition in params.transition_s:
-        si = si + swiglu_transition(si, transition, mask=token_mask, eps=eps)
+        si = si + swiglu_transition(
+            si, transition, mask=token_mask, eps=eps, glu_backend=glu_backend
+        )
     return si
 
 
@@ -117,6 +120,7 @@ def pair_conditioning(
     max_relative_chain: int,
     token_mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Condition the pair representation on relative positions.
 
@@ -141,7 +145,9 @@ def pair_conditioning(
         else token_mask[..., :, None] * token_mask[..., None, :]
     )
     for transition in params.transition_z:
-        zij = zij + swiglu_transition(zij, transition, mask=pair_mask, eps=eps)
+        zij = zij + swiglu_transition(
+            zij, transition, mask=pair_mask, eps=eps, glu_backend=glu_backend
+        )
     return zij
 
 
@@ -158,6 +164,7 @@ def diffusion_conditioning(
     max_relative_chain: int,
     token_mask: jnp.ndarray | None = None,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Run both conditioning paths, returning ``(si, zij)``.
 
@@ -173,6 +180,7 @@ def diffusion_conditioning(
         sigma_data=sigma_data,
         token_mask=token_mask,
         eps=eps,
+        glu_backend=glu_backend,
     )
     zij = pair_conditioning(
         batch,
@@ -182,5 +190,6 @@ def diffusion_conditioning(
         max_relative_chain=max_relative_chain,
         token_mask=token_mask,
         eps=eps,
+        glu_backend=glu_backend,
     )
     return si, zij

@@ -247,6 +247,7 @@ def pairformer_embedding(
     inf: float = 1e9,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Embed the predicted geometry into the confidence representations.
 
@@ -301,4 +302,5 @@ def pairformer_embedding(
         inf=inf,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
     )

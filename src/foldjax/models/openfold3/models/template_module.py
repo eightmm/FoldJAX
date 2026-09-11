@@ -53,6 +53,7 @@ def template_pair_stack(
     mask_transition: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Run every template pair block, then the final layer norm.
 
@@ -78,6 +79,7 @@ def template_pair_stack(
         tri_mul_first=tri_mul_first,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
     )
     if can_scan(params.blocks):
         t = scan_stack(
@@ -222,6 +224,7 @@ def template_embedder(
     mask_transition: bool = True,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
     scan_templates: bool = True,
 ) -> jnp.ndarray:
     """Embed templates into a pair update, ``[..., N_token, N_token, C_z]``.
@@ -263,6 +266,7 @@ def template_embedder(
         mask_transition=mask_transition,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
     )
 
     if scan_templates and n_templ > 1:

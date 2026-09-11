@@ -78,6 +78,7 @@ def initialize_trunk(
     max_relative_chain,
     inf=1e9,
     eps=1e-5,
+    glu_backend="xla",
 ):
     """Compute the invariant embeddings once, without retaining MSA rows."""
     s_input, s_init, z_init = input_embedder(
@@ -91,6 +92,7 @@ def initialize_trunk(
         max_relative_chain=max_relative_chain,
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
     # Shard the pair state from its first materialization: `z_init` stays live
@@ -115,6 +117,7 @@ def trunk_cycle(
     inf=1e9,
     eps=1e-5,
     chunk_size=None,
+    glu_backend="xla",
     scan_blocks=True,
 ):
     """One native recycle; the caller owns row selection and carry lifetime."""
@@ -140,6 +143,7 @@ def trunk_cycle(
             inf=inf,
             eps=eps,
             chunk_size=chunk_size,
+            glu_backend=glu_backend,
         )
 
     z = msa_module_stack(
@@ -154,6 +158,7 @@ def trunk_cycle(
         inf=inf,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
     )
 
     s = s_init + linear(layer_norm(s, params.layer_norm_s, eps=eps), params.linear_s)
@@ -168,6 +173,7 @@ def trunk_cycle(
         inf=inf,
         eps=eps,
         chunk_size=chunk_size,
+        glu_backend=glu_backend,
         scan_blocks=scan_blocks,
     )
 
@@ -190,6 +196,7 @@ def trunk(
     inf: float = 1e9,
     eps: float = 1e-5,
     chunk_size: int | None = None,
+    glu_backend: str = "xla",
     scan_blocks: bool = True,
     scan_cycles: bool = True,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -236,6 +243,7 @@ def trunk(
         max_relative_chain=max_relative_chain,
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
     s_input, s_init, z_init = initial
     s, z = jnp.zeros_like(s_init), jnp.zeros_like(z_init)
@@ -276,6 +284,7 @@ def trunk(
             inf=inf,
             eps=eps,
             chunk_size=chunk_size,
+            glu_backend=glu_backend,
             scan_blocks=scan_blocks,
         )
 

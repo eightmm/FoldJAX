@@ -268,6 +268,7 @@ def atom_attention_encoder(
     zij_trunk: jnp.ndarray | None = None,
     inf: float = 1e9,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run the atom attention encoder (AF3 Algorithm 5).
 
@@ -335,6 +336,7 @@ def atom_attention_encoder(
         mask=atom_mask,
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
     ql = ql * atom_mask[..., None]
 
@@ -375,6 +377,7 @@ def atom_attention_decoder(
     no_heads: int,
     inf: float = 1e9,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """Decode token activations back to per-atom coordinate updates.
 
@@ -415,6 +418,7 @@ def atom_attention_decoder(
         mask=batch["atom_mask"],
         inf=inf,
         eps=eps,
+        glu_backend=glu_backend,
     )
 
     return linear(layer_norm(ql, params.layer_norm, eps=eps), params.linear_q_out)
