@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from foldjax.backends.esmfold2 import (
+    _CONFIDENCE_DTYPES,
     DEFAULTS,
     ESMFold2Backend,
     _job_chains,
@@ -288,6 +289,62 @@ def test_an_unasked_glu_backend_is_absent_rather_than_defaulted(
 def test_the_glu_backend_option_refuses_an_unknown_value(tmp_path, monkeypatch) -> None:
     with pytest.raises(ValueError, match="tokamax"):
         _stub_prediction(tmp_path, monkeypatch, {"glu_backend": "triton"})
+
+
+@pytest.mark.parametrize("asked", ["float32", "bfloat16"])
+def test_the_confidence_dtype_option_reaches_the_port(
+    tmp_path, monkeypatch, asked
+) -> None:
+    """Spelled through, like `glu_backend` above.
+
+    Without this the adapter could accept the option, record it in the cache
+    identity, and never hand it to the model -- which would compile a second
+    executable that ran the float32 re-embedding.
+    """
+    seen, result = _stub_prediction(tmp_path, monkeypatch, {"confidence_dtype": asked})
+    assert seen["confidence_dtype"] == asked
+    assert result.raw["overrides"]["confidence_dtype"] == asked
+
+
+def test_an_unasked_confidence_dtype_is_absent_rather_than_defaulted(
+    tmp_path, monkeypatch
+) -> None:
+    seen, result = _stub_prediction(tmp_path, monkeypatch, {})
+    assert "confidence_dtype" not in seen
+    assert "confidence_dtype" not in result.raw["overrides"]
+
+
+def test_the_confidence_dtype_option_refuses_an_unknown_value(
+    tmp_path, monkeypatch
+) -> None:
+    """The refusal names the values it would have taken."""
+    with pytest.raises(ValueError, match="float32, bfloat16"):
+        _stub_prediction(tmp_path, monkeypatch, {"confidence_dtype": "bf16"})
+
+
+def test_the_confidence_dtype_option_survives_context_parallelism(
+    tmp_path, monkeypatch
+) -> None:
+    """Unlike `glu_backend`, which a Pallas custom call makes impossible.
+
+    This narrows arithmetic under a sharding constraint, so the two compose;
+    a refusal added by copying the fused kernel's rule would be wrong.
+    """
+    backend = ESMFold2Backend()
+    backend.validate_native_options({"confidence_dtype": "bfloat16", "cp_devices": 2})
+    with pytest.raises(ValueError, match="glu_backend"):
+        backend.validate_native_options({"glu_backend": "tokamax", "cp_devices": 2})
+
+
+def test_the_backend_confidence_dtypes_match_the_port(tmp_path, monkeypatch) -> None:
+    """The literal tuple in the adapter against the port's authority.
+
+    The adapter spells its own copy so option planning does not import JAX;
+    this is what stops the two drifting.
+    """
+    from foldjax.models.esmfold2.models.model import CONFIDENCE_DTYPES
+
+    assert _CONFIDENCE_DTYPES == CONFIDENCE_DTYPES
 
 
 def test_the_sequential_sampler_option_refuses_text(tmp_path, monkeypatch) -> None:

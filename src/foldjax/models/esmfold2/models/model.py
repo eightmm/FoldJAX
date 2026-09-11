@@ -59,6 +59,14 @@ NUM_RES_TYPES = 33
 MAX_ATOMIC_NUMBER = 128
 CHAR_VOCAB_SIZE = 64
 
+#: The values `ModelSettings.confidence_dtype` accepts.
+#:
+#: Two exact spellings rather than an alias table. The value joins the
+#: compilation-cache identity, so `bf16` alongside `bfloat16` would open a
+#: second namespace for one program and answer neither caller out of the
+#: other's entry.
+CONFIDENCE_DTYPES = ("float32", "bfloat16")
+
 
 @dataclass(frozen=True)
 class ModelSettings:
@@ -248,6 +256,29 @@ class ModelSettings:
     #: fixed-tape structure or raw-confidence parity; see the dated native
     #: tape and MSA-entry observer reports for the outstanding gates.
     trunk_dtype: str = "bfloat16"
+    #: The confidence head's re-embedding width, opt-in and independent of
+    #: `trunk_dtype`. `"float32"` is the released default and changes nothing.
+    #:
+    #: `trunk_dtype` already reaches the *inside* of this head: its own
+    #: `folding_trunk` reopens upstream's autocast the way upstream does, so
+    #: that stack runs with bfloat16 Linear operands today. What stays float32
+    #: is the re-embedding in front of it -- the five `s_to_z*` projections,
+    #: the distance-bin gather -- and the residual stream those feed. This
+    #: field narrows that, following AlphaFold 3's boundary exactly: narrow
+    #: re-embedding, float32 output heads (`confidence_head.py:121-127`,
+    #: `:163`, `:244`).
+    #:
+    #: It is the safest dtype change this port offers, because the confidence
+    #: head makes scores and never coordinates. Nothing inside it can move the
+    #: structure, and a GPU run should assert that rather than assume it.
+    #: Protenix measured the equivalent narrowing at 3,012 tokens: coordinates
+    #: bitwise unchanged, atom pLDDT moved at most 0.0099, chain pTM and ipTM
+    #: at most 1.9e-4, PAE means at most 0.005.
+    #:
+    #: Independent of `confidence_sample_sequential`. That option maps the
+    #: head over the sample axis; this is a trace-time constant inside the
+    #: mapped body, so the two compose without interacting.
+    confidence_dtype: str = "float32"
     diffusion: diffusion.DiffusionSettings = field(
         default_factory=diffusion.DiffusionSettings
     )
@@ -1564,6 +1595,7 @@ def predict(
             n_layers=settings.confidence_n_layers,
             n_chains=n_chains,
             trunk_dtype=compute,
+            confidence_dtype=jnp.dtype(settings.confidence_dtype),
             num_samples=samples,
             relative_position_encoding=rel_pos,
             token_bonds_encoding=token_bonds_encoding,
@@ -1601,6 +1633,7 @@ def with_overrides(
     max_msa_depth: int | None = None,
     structure_sample_sequential: bool | None = None,
     glu_backend: str | None = None,
+    confidence_dtype: str | None = None,
 ) -> ModelSettings:
     """The knobs a caller actually varies, applied without reconstruction.
 
@@ -1617,6 +1650,8 @@ def with_overrides(
         updates["num_samples"] = num_samples
     if max_msa_depth is not None:
         updates["max_msa_depth"] = max_msa_depth
+    if confidence_dtype is not None:
+        updates["confidence_dtype"] = confidence_dtype
     # Collected, then applied once: two separate `replace` calls on
     # `settings.diffusion` would each read the *original* sub-settings, so the
     # second assignment to `updates["diffusion"]` would drop the first.
@@ -1631,6 +1666,7 @@ def with_overrides(
 
 
 __all__ = [
+    "CONFIDENCE_DTYPES",
     "ModelSettings",
     "inputs_embedding",
     "language_model_pair",

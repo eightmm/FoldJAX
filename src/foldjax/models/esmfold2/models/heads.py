@@ -34,7 +34,7 @@ from foldjax.models.esmfold2.models.segments import (
     MAX_ATOMS_PER_TOKEN,
     sum_by_token,
 )
-from foldjax.models.esmfold2.models.trunk import folding_trunk
+from foldjax.models.esmfold2.models.trunk import _autocast_linear, folding_trunk
 
 Params = Mapping[str, jnp.ndarray]
 
@@ -139,6 +139,11 @@ def _scatter_sum(
     return jnp.einsum("ba,bat->bt", values, one_hot)
 
 
+def _as(x: jnp.ndarray, narrow: bool) -> jnp.ndarray:
+    """`x` at the re-embedding's working width."""
+    return x.astype(jnp.bfloat16) if narrow else x
+
+
 def confidence_head(
     s_inputs: jnp.ndarray,
     z: jnp.ndarray,
@@ -156,6 +161,7 @@ def confidence_head(
     n_chains: int,
     num_samples: int = 1,
     trunk_dtype: object = jnp.float32,
+    confidence_dtype: object = jnp.float32,
     relative_position_encoding: jnp.ndarray | None = None,
     token_bonds_encoding: jnp.ndarray | None = None,
     contiguous_atom_groups: bool = False,
@@ -165,8 +171,50 @@ def confidence_head(
     Everything except the pair representation is expanded to
     `batch * num_samples` first: the head genuinely reruns per structure,
     which is why its cost scales with the sample count rather than amortising.
+
+    `confidence_dtype` narrows the re-embedding that runs before the head's own
+    trunk, at AlphaFold 3's boundary rather than as a blanket cast; float32,
+    which changes nothing, is the default. It is deliberately separate from
+    `trunk_dtype`: that one targets the region upstream's own autocast covers,
+    while this opens a region upstream keeps in float32.
+
+    What stays wide under it, and why, since a list of exclusions is the only
+    part of a dtype option that is not self-evident from the code:
+
+    * Both entry norms' statistics and affine parameters. `layer_norm` already
+      reduces in float32 and float32 statistics cannot recover a rounded
+      affine weight.
+    * The representative coordinates, their pairwise distances, and the
+      comparison against `boundaries`. A rounded distance moves a token across
+      a bin edge, which changes a gathered embedding row rather than
+      perturbing a value; Boltz-2's `test_heads_amp_policy` demonstrates
+      exactly that flip on the same arrangement.
+    * Every mask.
+    * Everything past the trunk's float32 boundary: `row_attention_pooling`
+      and all four output heads. Two of those are load-bearing rather than
+      merely conservative. `attn_proj`'s output is the score tensor of the
+      pooling softmax, and `pae_head`'s output reaches `jax.nn.softmax` below
+      with no float32 guard of its own, which is where pTM and ipTM come
+      from. A tensor that feeds a softmax or an exponential is not rounded.
     """
     dot = f"{prefix}." if prefix else ""
+    # AlphaFold 3 casts the pair and single activations at
+    # `confidence_head.py:121-127`, runs the whole re-embedding Pairformer
+    # narrow, and returns to float32 at `:163` before the distogram-error
+    # logits and at `:244` before pLDDT. This reproduces that boundary. The
+    # head produces scores and never coordinates, so no narrowing inside it
+    # can move the structure; Protenix measured the same change at 3,012
+    # tokens as bitwise-identical coordinates, at most 0.0099 of atom pLDDT
+    # and at most 1.9e-4 of chain pTM/ipTM.
+    narrow = jnp.dtype(confidence_dtype) == jnp.bfloat16
+    if narrow:
+        # `_autocast_linear` narrows both operands and accumulates float32,
+        # which is what upstream's `Linear` does under CUDA autocast. Reused
+        # rather than hand-cast so the head's projections round the way every
+        # other narrowed Linear in this port rounds.
+        project = _autocast_linear
+    else:
+        project = linear
 
     def spread(x: jnp.ndarray) -> jnp.ndarray:
         return x if num_samples == 1 else jnp.repeat(x, num_samples, axis=0)
@@ -177,15 +225,32 @@ def confidence_head(
         params[f"{dot}s_inputs_norm.bias"],
     )
     pair = layer_norm(z, params[f"{dot}z_norm.weight"], params[f"{dot}z_norm.bias"])
+    if narrow:
+        # The pair accumulator, AlphaFold 3's `pair_act.astype(dtype)`. Both
+        # entry norms keep float32 statistics and float32 affine parameters --
+        # `layer_norm` upcasts internally and returns its input dtype, so the
+        # narrowing lands on the result and never on the reduction.
+        #
+        # `s_inputs_normed` is deliberately not cast: its only consumers are
+        # the five projections below, and `_autocast_linear` narrows its own
+        # operands, so casting here would round the same value twice.
+        pair = pair.astype(jnp.bfloat16)
     if relative_position_encoding is not None:
-        pair = pair + relative_position_encoding
+        # Cast at the add rather than trusting promotion. These two arrive in
+        # `trunk_dtype`, which is bfloat16 by default but float32 when the
+        # caller asked for a float32 trunk -- and one float32 addend would
+        # promote the accumulator back and silently undo the whole option.
+        pair = pair + _as(relative_position_encoding, narrow)
     if token_bonds_encoding is not None:
-        pair = pair + token_bonds_encoding
-    pair = pair + linear(s_inputs_normed, params, f"{dot}s_to_z")[:, :, None, :]
-    pair = pair + linear(s_inputs_normed, params, f"{dot}s_to_z_transpose")[:, None]
-    pair = pair + linear(
-        linear(s_inputs_normed, params, f"{dot}s_to_z_prod_in1")[:, :, None, :]
-        * linear(s_inputs_normed, params, f"{dot}s_to_z_prod_in2")[:, None, :, :],
+        pair = pair + _as(token_bonds_encoding, narrow)
+    pair = pair + project(s_inputs_normed, params, f"{dot}s_to_z")[:, :, None, :]
+    pair = pair + project(s_inputs_normed, params, f"{dot}s_to_z_transpose")[:, None]
+    # The outer product is the one quadratic tensor in the re-embedding:
+    # `[batch, tokens, tokens, 256]`, the same width as the pair it is added
+    # to. Narrowing it is most of what this option buys before the trunk.
+    pair = pair + project(
+        project(s_inputs_normed, params, f"{dot}s_to_z_prod_in1")[:, :, None, :]
+        * project(s_inputs_normed, params, f"{dot}s_to_z_prod_in2")[:, None, :, :],
         params,
         f"{dot}s_to_z_prod_out",
     )
@@ -201,12 +266,18 @@ def confidence_head(
 
     rep_coords = jnp.take_along_axis(x_pred, rep_idx[..., None], axis=1)
     offsets = rep_coords[:, :, None, :] - rep_coords[:, None, :, :]
+    # Float32 under every policy: the coordinates, the distances built from
+    # them, and the bin index. `confidence_dtype` stops short of all three.
     rep_distances = jnp.sqrt(jnp.sum(offsets * offsets, axis=-1) + 1e-12)
     boundaries = params[f"{dot}boundaries"]
     bins = jnp.sum(rep_distances[..., None] > boundaries, axis=-1)
+    # AlphaFold 3's `distogram_feat_project` in role but a gather rather than
+    # a projection, so it narrows as storage. The table is `[39, 256]` and the
+    # result is quadratic, which is the side that matters.
+    dist_bin_embed = _as(params[f"{dot}dist_bin_pairwise_embed.weight"], narrow)
     # Born sharded under context parallelism, before the head's own trunk:
     # `spread` just repeated it once per sample.
-    pair = shard_pair_rows(pair + params[f"{dot}dist_bin_pairwise_embed.weight"][bins])
+    pair = shard_pair_rows(pair + dist_bin_embed[bins])
 
     pair_mask = mask[:, :, None] * mask[:, None, :]
     # The trunk's own output already contains `pair`; adding it again is
@@ -228,6 +299,20 @@ def confidence_head(
             for name, value in params.items()
         }
     )
+    # A bfloat16 pair handed to the native-autocast trunk carries a bfloat16
+    # residual stream through every block while that branch's own boundaries
+    # keep each exponential input float32 -- the four sigmoid gates and the
+    # SwiGLU, at `trunk.py:125`, `:148` and `:161`. The storage-cast branch
+    # does not: with bfloat16 parameters all five receive bfloat16, which is
+    # why `confidence_dtype` never selects it. Under context parallelism, and
+    # under a float32 `trunk_dtype`, the cast below is what the pair meets, so
+    # the option narrows the re-embedding there and leaves the trunk as it was.
+    #
+    # AlphaFold 3's `:163` is the `astype` on the trunk *result*: it is what
+    # returns the sum to float32 whatever width the accumulator arrived at,
+    # so no second cast is needed on the left operand. Measured, not assumed
+    # -- `test_the_output_heads_stay_float32_under_the_option` reads the dtype
+    # that actually reaches `row_attention_pooling`.
     pair = pair + folding_trunk(
         pair if native_autocast else pair.astype(trunk_dtype),
         trunk_params,
