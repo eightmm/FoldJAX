@@ -242,7 +242,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         ),
         "attention_kernel": (
             "trunk_single_attention_backend",
-            {"auto": "xla_jit", "xla": "xla_jit"},
+            {"auto": "xla_jit", "xla": "xla_jit", "tokamax": "tokamax"},
         ),
         # Repeatable reduction orders, compiled into this run's executables
         # rather than asked for with a process-wide XLA environment variable.

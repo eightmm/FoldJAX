@@ -55,6 +55,14 @@ def _by_option_strings(
 #: ``--seed``, ``--num-steps``, ``--num-recycles``, ``--input-json``,
 #: ``--compile-cache``, ``--template-mmcif-dir`` -- are deliberately absent:
 #: their per-port prose and defaults are the interface, not duplication.
+#:
+#: ``--diffusion-attention-backend`` and ``--trunk-single-attention-backend``
+#: are absent for a different reason and pinned separately below: the two
+#: ports share the declaration and the default but not the choice list.
+#: Protenix additionally offers ``tokamax``. OpenDDE reaches these two sites
+#: through Protenix's own attention primitives, so the value would run there
+#: rather than be rejected -- it is withheld because it has not been measured
+#: on OpenDDE, and an offered kernel is a claim about numbers.
 _SHARED_FLAG_SPECS: dict[tuple[str, ...], dict[str, object]] = {
     ("--weights",): {
         "dest": "weights",
@@ -207,30 +215,6 @@ _SHARED_FLAG_SPECS: dict[tuple[str, ...], dict[str, object]] = {
             "one compiled graph refuses it instead of running without it"
         ),
     },
-    ("--diffusion-attention-backend",): {
-        "dest": "diffusion_attention_backend",
-        "type": None,
-        "default": "xla_jit",
-        "choices": ("xla", "xla_jit", "xla_sdpa"),
-        "required": False,
-        "nargs": None,
-        "metavar": None,
-        "const": None,
-        "action": "_StoreAction",
-        "help": None,
-    },
-    ("--trunk-single-attention-backend",): {
-        "dest": "trunk_single_attention_backend",
-        "type": None,
-        "default": "xla_jit",
-        "choices": ("xla", "xla_jit", "xla_sdpa"),
-        "required": False,
-        "nargs": None,
-        "metavar": None,
-        "const": None,
-        "action": "_StoreAction",
-        "help": None,
-    },
     ("--no-graph-jit",): {
         "dest": "no_graph_jit",
         "type": None,
@@ -375,3 +359,35 @@ def test_shared_predict_flags_match_between_the_two_ports() -> None:
     opendde = _by_option_strings(capture_parser(opendde_predict.main))
     for option_strings in _SHARED_FLAG_SPECS:
         assert protenix[option_strings] == opendde[option_strings], option_strings
+
+
+#: The two attention-kernel flags, per port: same dest, default and shape, one
+#: extra Protenix choice. Pinned as a pair so that adding a kernel to the
+#: shared builder without deciding which ports offer it fails here.
+_ATTENTION_BACKEND_CHOICES: dict[str, tuple[str, ...]] = {
+    "protenix": ("xla", "xla_jit", "xla_sdpa", "tokamax"),
+    "opendde": ("xla", "xla_jit", "xla_sdpa"),
+}
+
+
+@pytest.mark.parametrize(("port", "main", "_expected_order"), _PORTS)
+def test_attention_backend_choices_are_pinned_per_port(
+    port: str,
+    main: Callable[..., Any],
+    _expected_order: Sequence[str],
+) -> None:
+    declared = _by_option_strings(capture_parser(main))
+    for option_strings, dest in (
+        (("--diffusion-attention-backend",), "diffusion_attention_backend"),
+        (
+            ("--trunk-single-attention-backend",),
+            "trunk_single_attention_backend",
+        ),
+    ):
+        spec = declared[option_strings]
+        assert spec["dest"] == dest
+        assert spec["default"] == "xla_jit"
+        assert spec["choices"] == _ATTENTION_BACKEND_CHOICES[port], (
+            port,
+            option_strings,
+        )

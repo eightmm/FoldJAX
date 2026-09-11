@@ -88,16 +88,29 @@ def add_deterministic_ops(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def add_attention_backends(parser: argparse.ArgumentParser) -> None:
-    """The two attention kernels both ports expose, with the shared default."""
+def add_attention_backends(
+    parser: argparse.ArgumentParser,
+    *,
+    extra_backends: tuple[str, ...] = (),
+) -> None:
+    """The two attention kernels both ports expose, with the shared default.
+
+    `extra_backends` appends per-port values to both choice lists. OpenDDE
+    reaches these two sites through Protenix's own attention primitives, so a
+    value added here would run on OpenDDE as well rather than be rejected --
+    which is exactly why the list is a parameter. A kernel is offered on the
+    port whose numbers were measured, not on every port whose code path
+    happens to reach it.
+    """
+    backends = ("xla", "xla_jit", "xla_sdpa") + extra_backends
     parser.add_argument(
         "--diffusion-attention-backend",
-        choices=("xla", "xla_jit", "xla_sdpa"),
+        choices=backends,
         default="xla_jit",
     )
     parser.add_argument(
         "--trunk-single-attention-backend",
-        choices=("xla", "xla_jit", "xla_sdpa"),
+        choices=backends,
         default="xla_jit",
     )
 

@@ -24,6 +24,25 @@ unless it says so here, in its own paragraph.
   [validation audit](docs/preprocessing-contract-audit.md). This main-branch
   checkpoint does not declare a new release or universal scientific parity.
 
+### Added
+
+- **A `tokamax` attention backend for Protenix's two pair-bias sites**, opt-in
+  and off by default. `--diffusion-attention-backend tokamax` routes the
+  windowed atom attention of the diffusion encoder and decoder, and
+  `--trunk-single-attention-backend tokamax` (neutrally,
+  `--option attention_kernel=tokamax`) routes the global token attention,
+  through `tokamax.dot_product_attention` rather than an XLA score tensor --
+  the two sites cuEquivariance does not cover. Both flags still default to
+  `xla_jit`, so an unasked run compiles the program it compiled before. The
+  implementation is pinned to Triton and raises where that kernel cannot run,
+  instead of returning XLA results under the tokamax name; a query chunk size
+  is reported as unused because the kernel takes the whole query axis; float32
+  q/k/v run tokamax's float32 path with a warning, since the kernel is a
+  bfloat16 lever meant with `--amp-policy bf16`; and the backend is refused
+  under context parallelism. OpenDDE reaches the same two sites through
+  Protenix's primitives and does not offer the value, which has not been
+  measured there.
+
 ### Removed
 
 - **OpenFold3 p1/p2 checkpoint compatibility.** The `openfold3` backend now

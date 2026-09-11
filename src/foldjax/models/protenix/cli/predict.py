@@ -285,7 +285,7 @@ def _run(
     parser.set_defaults(sampler_scan=True)
     parser.add_argument("--denoiser-jit", action="store_true")
     _predict_flags.add_deterministic_ops(parser)
-    _predict_flags.add_attention_backends(parser)
+    _predict_flags.add_attention_backends(parser, extra_backends=("tokamax",))
     parser.add_argument(
         "--trunk-triangle-attention-backend",
         choices=("xla", "xla_jit", "tokamax", "cueq", "cueq_jit"),

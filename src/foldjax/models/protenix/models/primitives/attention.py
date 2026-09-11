@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh
 from foldjax.models.protenix.models.primitives.primitives import (
     AdaptiveLayerNormParams,
     LayerNormParams,
@@ -19,6 +21,49 @@ from foldjax.models.protenix.models.primitives.primitives import (
 from foldjax.models.protenix.models.primitives.windows import (
     gather_overlapping_windows,
 )
+
+_WARNED_UNCHUNKABLE = False
+
+
+def _reject_tokamax_under_cp(attention_backend: str) -> None:
+    """Refuse the fused kernel while a context-parallel mesh is active.
+
+    Triangle attention runs its fused kernels inside ``shard_map``, where each
+    device holds whole rows and the kernel sees a complete local problem. These
+    two sites have no such wrapper: the single and atom attentions are reached
+    with the pair representation already sharded, and nothing here has been
+    validated against a mesh. Saying so beats a partitioner error several
+    frames down, or worse, a number nobody checked.
+    """
+
+    if attention_backend == "tokamax" and cp_mesh() is not None:
+        raise ValueError(
+            "the tokamax attention backend is not supported under context "
+            "parallelism; use xla, xla_jit or xla_sdpa with cp_devices > 1"
+        )
+
+
+def _warn_unchunkable_tokamax(q_chunk_size: int) -> None:
+    """Say once that a requested query chunk size does not reach tokamax.
+
+    The fused kernel takes the whole query axis and never forms the
+    ``[..., heads, Q, K]`` score tensor the chunk size exists to bound, so
+    there is nothing left for a chunk to block. Not an exception, because the
+    automatic chunk policy emits a size without knowing which backend runs --
+    the same reason the triangle stack warns rather than raises.
+    """
+
+    global _WARNED_UNCHUNKABLE
+    if _WARNED_UNCHUNKABLE:
+        return
+    _WARNED_UNCHUNKABLE = True
+    warnings.warn(
+        f"attention q_chunk_size={q_chunk_size} is not used by the tokamax "
+        "backend, which takes the whole query axis and never materialises the "
+        "score tensor a chunk size would bound",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class AttentionParams(NamedTuple):
@@ -74,6 +119,7 @@ def attention(
 ) -> jnp.ndarray:
     """Run standard full attention with optional pair bias and gating."""
 
+    _reject_tokamax_under_cp(attention_backend)
     if attention_backend == "xla_jit":
         return _compiled_attention(
             q_x,
@@ -187,6 +233,7 @@ def local_attention(
 ) -> jnp.ndarray:
     """Run local blocked attention used by AtomTransformer."""
 
+    _reject_tokamax_under_cp(attention_backend)
     if attention_backend == "xla_jit":
         return _compiled_local_attention(
             q_x,
@@ -241,7 +288,7 @@ def local_attention(
             v_trunked,
             trunked_attn_bias,
             mask,
-            implementation=_sdpa_implementation(attention_backend),
+            attention_backend=attention_backend,
         )
     out = out.reshape(out.shape[:-4] + (num_heads, -1, out.shape[-1]))
     if q_pad > 0:
@@ -328,6 +375,17 @@ def _attention_qkv(
     attention_backend: str,
 ) -> jnp.ndarray:
     n_q = q.shape[-2]
+    if attention_backend == "tokamax":
+        # The fused kernel takes the whole query axis, so a chunk size cannot
+        # reach it -- the same bypass the triangle stack applies to its fused
+        # backends, and for the same reason: chunking here would call the
+        # kernel once per block and buy nothing, because the score tensor the
+        # chunk bounds is never materialised in the first place.
+        if q_chunk_size is not None and 0 < q_chunk_size < n_q:
+            _warn_unchunkable_tokamax(q_chunk_size)
+        return _attention_qkv_chunk(
+            q, k, v, attn_bias, attention_backend=attention_backend
+        )
     if q_chunk_size is None or q_chunk_size <= 0 or q_chunk_size >= n_q:
         return _attention_qkv_chunk(
             q, k, v, attn_bias, attention_backend=attention_backend
@@ -361,6 +419,27 @@ def _attention_qkv_chunk(
     *,
     attention_backend: str,
 ) -> jnp.ndarray:
+    if attention_backend == "tokamax":
+        from foldjax.models.protenix.models.primitives.attention_tokamax import (
+            tokamax_attention,
+        )
+
+        # The padding mask reaches this site inside `attn_bias` as an additive
+        # term, and it stays there rather than being recovered as a boolean
+        # `mask`. Passing the same numbers the XLA path softmaxes is what makes
+        # the two agree, on padded rows as well as ordinary ones; a boolean
+        # mask would be a second, differently rounded spelling of the same
+        # intent, and these rows are read downstream.
+        bias = None
+        if attn_bias is not None:
+            bias = _normalize_attention_bias(attn_bias, q.ndim)
+        out = tokamax_attention(
+            jnp.swapaxes(q, -3, -2),
+            jnp.swapaxes(k, -3, -2),
+            jnp.swapaxes(v, -3, -2),
+            bias=bias,
+        )
+        return jnp.swapaxes(out, -3, -2)
     if attention_backend != "xla":
         bias = None
         if attn_bias is not None:
@@ -388,8 +467,18 @@ def _local_builtin_sdpa(
     bias: jnp.ndarray | None,
     mask: jnp.ndarray,
     *,
-    implementation: str,
+    attention_backend: str,
 ) -> jnp.ndarray:
+    """Run one block-local window through a built-in or fused kernel.
+
+    Both take the same flattened problem, so the reshaping is shared and only
+    the call differs. Protenix's window is block-local -- every query in a
+    trunk sees the same ``n_keys`` slice -- which the flatten below has already
+    expressed as an ordinary batch of small attentions. Tokamax's
+    ``local_window_size`` is a per-query sliding window and would describe a
+    different problem, so it is deliberately unused.
+    """
+
     q_dpa = jnp.moveaxis(q, -4, -2)
     k_dpa = jnp.moveaxis(k, -4, -2)
     v_dpa = jnp.moveaxis(v, -4, -2)
@@ -407,15 +496,28 @@ def _local_builtin_sdpa(
         bias = jnp.broadcast_to(bias, q.shape[:-1] + (k.shape[-2],))
         bias_dpa = jnp.moveaxis(bias, -4, -3)
         bias_flat = bias_dpa.reshape((-1,) + bias_dpa.shape[-3:])
-    out = jax.nn.dot_product_attention(
-        q_flat,
-        k_flat,
-        v_flat,
-        bias=bias_flat,
-        mask=mask_flat,
-        scale=1.0,
-        implementation=implementation,
-    )
+    if attention_backend == "tokamax":
+        from foldjax.models.protenix.models.primitives.attention_tokamax import (
+            tokamax_attention,
+        )
+
+        out = tokamax_attention(
+            q_flat,
+            k_flat,
+            v_flat,
+            bias=bias_flat,
+            mask=mask_flat,
+        )
+    else:
+        out = jax.nn.dot_product_attention(
+            q_flat,
+            k_flat,
+            v_flat,
+            bias=bias_flat,
+            mask=mask_flat,
+            scale=1.0,
+            implementation=_sdpa_implementation(attention_backend),
+        )
     return jnp.moveaxis(out.reshape(q_dpa.shape), -2, -4)
 
 

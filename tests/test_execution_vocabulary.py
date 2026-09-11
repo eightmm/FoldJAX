@@ -78,9 +78,24 @@ def test_a_knob_a_model_does_not_have_is_an_error(request_with) -> None:
 
 
 def test_a_value_a_model_does_not_have_is_an_error(request_with) -> None:
-    """`tokamax` is a Boltz-2 path; asking Protenix for it must not pick one."""
+    """`tokamax` is a Boltz-2 and Protenix path; OpenDDE must not pick one.
+
+    OpenDDE reaches the single-attention site through Protenix's own
+    primitives, so the kernel would run there. It is still an error, because
+    the value has not been measured on OpenDDE and the vocabulary offers what
+    a port has measured rather than what its imports make reachable.
+    """
     with pytest.raises(ValueError, match="does not support attention_kernel"):
-        get_backend("protenix").apply_sampling(request_with(attention_kernel="tokamax"))
+        get_backend("opendde").apply_sampling(request_with(attention_kernel="tokamax"))
+
+
+def test_the_protenix_fused_attention_value_reaches_its_native_name(
+    request_with,
+) -> None:
+    """`attention_kernel=tokamax` is the neutral spelling of the trunk site."""
+    assert get_backend("protenix").apply_sampling(
+        request_with(attention_kernel="tokamax")
+    )["trunk_single_attention_backend"] == "tokamax"
 
 
 def test_an_unknown_value_names_the_ones_that_exist(request_with) -> None:
