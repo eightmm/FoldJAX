@@ -1600,6 +1600,7 @@ def with_overrides(
     num_steps: int | None = None,
     max_msa_depth: int | None = None,
     structure_sample_sequential: bool | None = None,
+    glu_backend: str | None = None,
 ) -> ModelSettings:
     """The knobs a caller actually varies, applied without reconstruction.
 
@@ -1616,8 +1617,16 @@ def with_overrides(
         updates["num_samples"] = num_samples
     if max_msa_depth is not None:
         updates["max_msa_depth"] = max_msa_depth
+    # Collected, then applied once: two separate `replace` calls on
+    # `settings.diffusion` would each read the *original* sub-settings, so the
+    # second assignment to `updates["diffusion"]` would drop the first.
+    diffusion_updates: dict[str, object] = {}
     if num_steps is not None:
-        updates["diffusion"] = replace(settings.diffusion, num_steps=num_steps)
+        diffusion_updates["num_steps"] = num_steps
+    if glu_backend is not None:
+        diffusion_updates["glu_backend"] = glu_backend
+    if diffusion_updates:
+        updates["diffusion"] = replace(settings.diffusion, **diffusion_updates)  # type: ignore[arg-type]
     return replace(settings, **updates)  # type: ignore[arg-type]
 
 

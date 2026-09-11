@@ -264,6 +264,32 @@ def test_an_unasked_sequential_option_is_absent_rather_than_defaulted(
     assert "structure_sample_sequential" not in result.raw["overrides"]
 
 
+@pytest.mark.parametrize("asked", ["xla", "tokamax"])
+def test_the_glu_backend_option_reaches_the_port(tmp_path, monkeypatch, asked) -> None:
+    """Spelled through, like `structure_sample_sequential` above.
+
+    Without this the adapter could accept the option, record it in the cache
+    identity, and never hand it to the model -- which would compile a second
+    executable that ran the default kernel.
+    """
+    seen, result = _stub_prediction(tmp_path, monkeypatch, {"glu_backend": asked})
+    assert seen["glu_backend"] == asked
+    assert result.raw["overrides"]["glu_backend"] == asked
+
+
+def test_an_unasked_glu_backend_is_absent_rather_than_defaulted(
+    tmp_path, monkeypatch
+) -> None:
+    seen, result = _stub_prediction(tmp_path, monkeypatch, {})
+    assert "glu_backend" not in seen
+    assert "glu_backend" not in result.raw["overrides"]
+
+
+def test_the_glu_backend_option_refuses_an_unknown_value(tmp_path, monkeypatch) -> None:
+    with pytest.raises(ValueError, match="tokamax"):
+        _stub_prediction(tmp_path, monkeypatch, {"glu_backend": "triton"})
+
+
 def test_the_sequential_sampler_option_refuses_text(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "foldjax.backends.esmfold2.import_module", lambda _name: SimpleNamespace()

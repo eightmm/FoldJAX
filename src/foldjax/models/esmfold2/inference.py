@@ -39,6 +39,7 @@ from foldjax.models._cp import (
     cp_shards as _active_cp_shards,
 )
 from foldjax.models._feature_storage import compact_msa_storage
+from foldjax.models._glu import GLU_BACKENDS
 from foldjax.models._jit_pool import BoundedJitPool
 from foldjax.models.esmfold2.bridge import checkpoint as structure_checkpoint
 from foldjax.models.esmfold2.bridge import esmc as esmc_checkpoint
@@ -522,6 +523,9 @@ def predict(
     #: Denoise the diffusion samples one at a time. Off unless asked; the
     #: settings field carries what it costs and what it does not save.
     structure_sample_sequential: bool | None = None,
+    #: Which implementation the diffusion token transformer's packed SwiGLU
+    #: takes. `None` leaves the checkpoint's value, which is `"xla"`.
+    glu_backend: str | None = None,
     language_model_tokens: int | None = None,
     precomputed_lm_states: jnp.ndarray | None = None,
     precomputed_lm_embedding: jnp.ndarray | None = None,
@@ -564,6 +568,18 @@ def predict(
             "deterministic reductions are carried by the compiled graph; "
             "drop compile_it=False or deterministic"
         )
+    if glu_backend is not None and glu_backend not in GLU_BACKENDS:
+        msg = f"glu backend must be one of {GLU_BACKENDS}; got {glu_backend!r}"
+        raise ValueError(msg)
+    if cp_shards > 1 and glu_backend not in (None, "xla"):
+        # The pair state is placed by `with_sharding_constraint`, and a Pallas
+        # custom call brings no partitioner of its own, so GSPMD has no rule
+        # for the fused kernel. Refused here, before any array work, the way
+        # Boltz-2 refuses the same combination.
+        raise ValueError(
+            "context parallelism requires glu_backend='xla'; a fused GLU "
+            "cannot be partitioned"
+        )
     settings = structure_model.with_overrides(
         model.settings,
         num_recycles=num_recycles,
@@ -571,6 +587,7 @@ def predict(
         num_steps=num_steps,
         max_msa_depth=max_msa_depth,
         structure_sample_sequential=structure_sample_sequential,
+        glu_backend=glu_backend,
     )
     # Resolve the process-wide escape hatch before choosing a bounded JIT
     # owner. The same integer is passed into the graph and pins every atom

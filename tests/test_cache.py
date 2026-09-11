@@ -193,6 +193,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
             "no_language_model": False,
             "max_msa_depth": 1024,
             "structure_sample_sequential": False,
+            "glu_backend": "xla",
         },
     )
 
@@ -215,6 +216,7 @@ def test_esmfold2_fixed_defaults_share_the_omitted_cache_namespace(
         ("no_language_model", 0),
         ("structure_sample_sequential", True),
         ("structure_sample_sequential", 0),
+        ("glu_backend", "tokamax"),
     ],
 )
 def test_esmfold2_unproven_defaults_and_lookalikes_stay_distinct(

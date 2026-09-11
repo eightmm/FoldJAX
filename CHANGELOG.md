@@ -26,6 +26,17 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **An opt-in fused gated linear unit for ESMFold2**, off by default.
+  `--option glu_backend=tokamax` runs the twelve transitions in the diffusion
+  token transformer through one fused Triton kernel instead of materialising
+  the `2 * hidden` projection and splitting it; `xla` stays the default, so
+  every released run is unchanged. The stored `lin_swish` kernel is already
+  the packed layout the shared entry point wants, and upstream builds it
+  bias-free, so nothing is rearranged on load. The saving is temporary
+  traffic rather than peak: ESMFold2's peak is one
+  `num_samples x tokens^2 x 4 * c_z` arena that this does not touch. Needs a
+  GPU, with no XLA fallback, and is refused under context parallelism.
+
 - **A `tokamax` attention backend for Protenix's two pair-bias sites**, opt-in
   and off by default. `--diffusion-attention-backend tokamax` routes the
   windowed atom attention of the diffusion encoder and decoder, and

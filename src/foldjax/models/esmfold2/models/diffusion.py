@@ -34,6 +34,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from foldjax.models._cp import shard_pair_rows
+from foldjax.models._glu import gated_linear_unit_packed
 from foldjax.models._random import masked_prefix_draw
 from foldjax.models.esmfold2.models.atom import (
     FLOAT32_EPS,
@@ -87,6 +88,12 @@ class DiffusionSettings:
     p: float = 8.0
     num_steps: int = 68
     max_inference_sigma: float | None = 256.0
+    #: Which implementation the token transformer's packed SwiGLU takes.
+    #: `"xla"` is every released run and the only value `settings_from_config`
+    #: can produce -- this is an execution choice, not checkpoint
+    #: configuration, so no key in `config.json` reaches it. See
+    #: `conditioned_transition_block` for what `"tokamax"` changes.
+    glu_backend: str = "xla"
 
 
 @dataclass(frozen=True)
@@ -201,8 +208,17 @@ def conditioned_transition_block(
     prefix: str = "",
     *,
     eps: float = 1e-5,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
-    """`ConditionedTransitionBlock`: adaLN, packed SwiGLU, gate on raw `s`."""
+    """`ConditionedTransitionBlock`: adaLN, packed SwiGLU, gate on raw `s`.
+
+    `glu_backend="tokamax"` sends the packed SwiGLU through the fused Triton
+    kernel, which never materialises the `2 * hidden` projection; `"xla"`
+    (the default, and what every released run takes) keeps the widened
+    matmul and the split. The stored kernel is already the packed layout that
+    entry point wants -- `lin_swish` is one `[2 * hidden, d_model]`
+    `nn.Linear`, so its transpose is `[K, 2N]` with the silu branch first.
+    """
     dot = f"{prefix}." if prefix else ""
     if s is not None:
         x = adaptive_layer_norm(a, s, params, f"{dot}adaln", eps=eps)
@@ -213,11 +229,30 @@ def conditioned_transition_block(
             params[f"{dot}pre_norm.bias"],
             eps=eps,
         )
-    packed = linear(x, params, f"{dot}lin_swish")
-    half = packed.shape[-1] // 2
-    out = linear(
-        jax.nn.silu(packed[..., :half]) * packed[..., half:], params, f"{dot}lin_out"
-    )
+    if glu_backend != "xla":
+        if f"{dot}lin_swish.bias" in params:
+            # Upstream builds this projection `bias=False` and the released
+            # checkpoint has no such key, so this is a tripwire rather than a
+            # branch: the fused kernel takes a kernel only, and adding the
+            # bias back before the gate would rebuild the tensor the fusion
+            # exists to avoid. Refused rather than quietly run on XLA, for
+            # the reason `foldjax.models._glu` gives for having no fallback.
+            msg = (
+                f"{dot}lin_swish carries a bias, which the fused GLU kernel "
+                "cannot absorb; use glu_backend='xla'"
+            )
+            raise ValueError(msg)
+        hidden = gated_linear_unit_packed(
+            x,
+            params[f"{dot}lin_swish.weight"].T,
+            jax.nn.silu,
+            backend=glu_backend,
+        )
+    else:
+        packed = linear(x, params, f"{dot}lin_swish")
+        half = packed.shape[-1] // 2
+        hidden = jax.nn.silu(packed[..., :half]) * packed[..., half:]
+    out = linear(hidden, params, f"{dot}lin_out")
     if s is not None:
         out = jax.nn.sigmoid(linear(s, params, f"{dot}output_gate")) * out
     return out
@@ -234,6 +269,7 @@ def diffusion_transformer(
     n_heads: int,
     mask: jnp.ndarray | None = None,
     num_samples: int = 1,
+    glu_backend: str = "xla",
 ) -> jnp.ndarray:
     """`DiffusionTransformer`: attention and transition, both residual."""
     dot = f"{prefix}." if prefix else ""
@@ -249,7 +285,11 @@ def diffusion_transformer(
             num_samples=num_samples,
         )
         a = a + conditioned_transition_block(
-            a, s, params, f"{dot}transition_blocks.{index}"
+            a,
+            s,
+            params,
+            f"{dot}transition_blocks.{index}",
+            glu_backend=glu_backend,
         )
     return a
 
@@ -472,6 +512,7 @@ def diffusion_module(
         n_heads=settings.token_n_heads,
         mask=token_mask,
         num_samples=num_samples,
+        glu_backend=settings.glu_backend,
     )
     tokens = layer_norm(
         tokens, params[f"{dot}token_norm.weight"], params[f"{dot}token_norm.bias"]

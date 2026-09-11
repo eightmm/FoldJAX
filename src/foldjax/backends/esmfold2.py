@@ -79,7 +79,28 @@ _FIXED_COMPILE_DEFAULTS = {
     # Off is the run every recorded ESMFold2 number describes, so naming
     # it explicitly must not select a second compilation namespace.
     "deterministic": False,
+    # The unfused transition is what every released number describes, and the
+    # value is independent of the checkpoint: no `config.json` key reaches it.
+    "glu_backend": "xla",
 }
+
+#: The values `glu_backend` accepts, spelled here rather than imported.
+#:
+#: `foldjax.models._glu.GLU_BACKENDS` is the authority, but importing it pulls
+#: JAX into option planning, which this module keeps free of the model
+#: runtime for the same reason `_FIXED_COMPILE_DEFAULTS` is a literal. A drift
+#: test pins this tuple to that one.
+_GLU_BACKENDS = ("xla", "tokamax")
+
+
+def _checked_glu_backend(value: object) -> str:
+    """Reject a misspelled GLU backend before anything is loaded."""
+
+    if value not in _GLU_BACKENDS:
+        raise ValueError(
+            f"glu_backend must be one of {', '.join(_GLU_BACKENDS)}; got {value!r}"
+        )
+    return str(value)
 
 
 def _esmc_asset_paths(directory: Path) -> list[Path] | None:
@@ -381,6 +402,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         {
             "cp_devices",
             "esmc_weights",
+            # Opt-in fused SwiGLU for the diffusion token transformer. Native
+            # rather than a neutral knob: no other port spells a GLU choice
+            # the neutral vocabulary could rename, and Boltz-2's is native too.
+            "glu_backend",
             "no_language_model",
             # Spelled through rather than renamed: the port's own settings
             # field has this name, so there is no translation entry to get
@@ -423,6 +448,10 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Compiled into the executable, on both the structure graph and
         # ESMC's blocks, so it selects its own namespace for the same reason.
         "deterministic",
+        # Selects which kernel the twelve token-transformer transitions are
+        # traced against, so a fused run must not be answered out of the
+        # default executable's cache entry.
+        "glu_backend",
     )
 
     def __init__(self) -> None:
@@ -838,6 +867,16 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
             options.get("structure_sample_sequential", False),
             name="structure_sample_sequential",
         )
+        glu_backend = _checked_glu_backend(options.get("glu_backend", "xla"))
+        # Refused here as well as in the port: this runs before the 939 MB
+        # structure checkpoint is opened, and the reason is the same one
+        # Boltz-2 gives -- the pair state is placed by a sharding constraint
+        # and a Pallas custom call carries no partitioner for GSPMD to use.
+        if glu_backend != "xla" and int(options.get("cp_devices", 1)) > 1:
+            raise ValueError(
+                "context parallelism requires glu_backend='xla'; a fused GLU "
+                "cannot be partitioned"
+            )
 
     def capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
@@ -904,6 +943,11 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         }
         if sequential_samples is not None:
             overrides["structure_sample_sequential"] = sequential_samples
+        # Absent means unasked, for the reason above: the port's own default
+        # is already `xla`, and naming it for every caller would put a value
+        # nobody requested into the recorded overrides.
+        if "glu_backend" in options:
+            overrides["glu_backend"] = _checked_glu_backend(options.pop("glu_backend"))
         # `translate` has already turned `off`/`on` into this port's own bool,
         # so an absent key means unasked. Written into `overrides` only when
         # asked, for the reason `structure_sample_sequential` above is: an
