@@ -189,7 +189,7 @@ The CUDA 13 install defaults both triangle kernels to Torch-compatible cuEq;
 | `attention_backend` | `xla` / `tokamax` | fused tokamax attention |
 | `triangle_backend` | `xla` / `tokamax` / `pallas` / `cueq` | triangle-attention kernel |
 | `--triangle-multiplication-backend` | `xla` / `cueq` | triangle-multiplication kernel |
-| `glu_backend` | `xla` / `tokamax` | transition & triangle-mult GLU |
+| `glu_backend` | `tokamax` (default) / `xla` | transition & triangle-mult GLU; the fused kernel is the released default, and resolves to `xla` under context parallelism |
 
 ### Compilation-cache prewarming
 

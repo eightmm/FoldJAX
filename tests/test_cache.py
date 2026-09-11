@@ -373,7 +373,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "diffusion_attention_backend": "xla",
             "diffusion_compute_dtype": "float32",
             "triangle_backend": "cueq",
-            "glu_backend": "xla",
+            "glu_backend": "tokamax",
             "bucket": False,
         },
     )
@@ -391,7 +391,7 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "dtype": "bfloat16",
             "attention_kernel": "auto",
             "triangle_kernel": "auto",
-            "glu_backend": "xla",
+            "glu_backend": "tokamax",
             "bucket": False,
         },
     )
@@ -511,7 +511,7 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         ({}, {"diffusion_attention_backend": "tokamax"}),
         ({}, {"diffusion_compute_dtype": "bfloat16"}),
         ({}, {"triangle_backend": "xla"}),
-        ({}, {"glu_backend": "tokamax"}),
+        ({}, {"glu_backend": "xla"}),
         ({}, {"bucket": True}),
     ],
 )

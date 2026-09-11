@@ -352,6 +352,45 @@ partitioned, and an unrecognized value is refused with the two that exist. The
 choice is part of the compilation-cache identity, so a fused run never
 receives the executable built without it, and spelling the default out names
 the same namespace an omitted option does.
+### Fused gated linear unit (`--option glu_backend`, Boltz-2, on by default)
+
+Boltz-2's transitions and its triangle-multiplication gate compute
+`activation(x @ w_gate) * (x @ w_value)`. Written as two matmuls and a
+product, XLA writes the widened gate and value tensors out before multiplying
+them; the fused Triton kernel runs the same arithmetic and never materialises
+them. This is the released default. `--option glu_backend=xla` restores the
+previous arithmetic exactly and gets its own compile-cache namespace.
+
+Measured on one RTX PRO 6000 Blackwell, warm after prefill, the same input
+file and schedule on both arms, released `xla` -> `tokamax`:
+
+| tokens | wall (s) | peak (MiB) |
+| ------ | -------------- | ---------------- |
+| 1,003 | 90.98 -> 90.00 | 12,612 -> 9,216 |
+| 2,096 | 317.91 -> 313.94 | 21,808 -> 21,778 |
+| 3,012 | 806.01 -> 803.94 | 40,844 -> 40,749 |
+
+Read the memory column honestly. The 26.9% saving at 1,003 tokens is a
+small-input effect and does not generalise: what the kernel removes is the
+transition's pre-gate intermediate, which stops being the peak's largest
+tenant once the pair arena dominates above roughly 760 tokens, which is why
+the two larger sizes save 0.1% and 0.2%. The durable claim is the wall-time
+column -- never slower at any size.
+
+Coordinates move, because the two paths do not round identically: the XLA path
+evaluates the activation in float32 and casts back, the way the torch model
+this ports from does, while the fused kernel applies the activation at the
+kernel's own width. Same-index RMSD against the released arm is median 0.012 /
+maximum 0.238 A at 1,003 tokens and median 0.007 / maximum 0.145 A at 2,096,
+against per-case sample spreads of 1.0-2.9 A and 0.24 A -- far inside the
+model's own scatter. The 3,012-token structures were not compared.
+
+The kernel is pinned to Triton with no fallback, so a card that cannot run it
+says so instead of running XLA under the tokamax name. A fused kernel cannot
+be partitioned either, so under context parallelism the default resolves to
+`xla` and the run proceeds; naming `--option glu_backend=tokamax` together
+with `--option cp_devices=N` for N greater than 1 is refused rather than
+silently downgraded.
 
 ### `--option deterministic=on`
 

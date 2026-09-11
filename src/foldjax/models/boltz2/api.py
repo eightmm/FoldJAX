@@ -543,11 +543,24 @@ def predict(
     #: the trunk and confidence Pairformers on their own setting.
     diffusion_attention_backend: str | None = None,
     triangle_backend: str = "cueq",
-    glu_backend: str = "xla",
+    # The transition and triangle-multiplication gated linear units run
+    # through the fused Triton kernel, which never materialises the widened
+    # pre-gate intermediate. Measured on one RTX PRO 6000 Blackwell,
+    # warm-after-prefill, against the released "xla" arm: 90.98 -> 90.00 s and
+    # 12,612 -> 9,216 MiB at 1,003 tokens, 317.91 -> 313.94 s and 21,808 ->
+    # 21,778 MiB at 2,096, 806.01 -> 803.94 s and 40,844 -> 40,749 MiB at
+    # 3,012. Never slower at any size; the memory saving is a small-input
+    # effect, because the intermediate stops being the peak's largest tenant
+    # once the pair arena dominates above ~760 tokens. Coordinates stay far
+    # inside each case's own sample spread (median 0.012 / max 0.238 A at
+    # 1,003 against a 1.0-2.9 A spread). Passing "xla" restores the previous
+    # arithmetic exactly; see `foldjax.models._glu` for how the two round.
+    glu_backend: str = "tokamax",
     #: Context parallelism: shard the pair representations across this many
     #: JAX devices (the JAX form of OpenDDE's Fold-CP). Needs that many
-    #: visible devices; the default "cueq" triangle kernel resolves to the
-    #: blocked XLA path because a fused FFI call cannot be partitioned.
+    #: visible devices; the default "cueq" triangle kernel and the default
+    #: fused GLU both resolve to the blocked XLA path, because neither a
+    #: fused FFI call nor a fused Triton kernel can be partitioned.
     cp_devices: int = 1,
     #: How those devices are arranged. "1d" splits pair rows only; "2d" is
     #: Fold-CP's square grid, which splits both pair axes and runs the triangle
@@ -680,11 +693,6 @@ def predict(
     cp_atom_active = cp_devices > 1 and cp_atom_windows and stop_after == "full"
     cp_rows = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else cp_devices
     cp_cols = int(math.isqrt(cp_devices)) if resolved_cp_layout == "2d" else 1
-    if cp_devices > 1 and glu_backend != "xla":
-        raise ValueError(
-            "context parallelism requires glu_backend='xla'; a fused GLU "
-            "cannot be partitioned"
-        )
     if (
         cp_devices > 1
         and resolved_trunk_atom_attention_backend not in (None, "xla")
@@ -957,7 +965,13 @@ def predict(
             # resolves to the blocked XLA path under context parallelism.
             "xla" if cp_devices > 1 and triangle_backend == "cueq" else triangle_backend
         ),
-        "glu_backend": glu_backend,
+        "glu_backend": (
+            # The fused default cannot be partitioned either; unset-equivalent
+            # resolves to the blocked XLA path under context parallelism. An
+            # explicit request is refused where it is still distinguishable
+            # from the default, which is the adapter's option dict, not here.
+            "xla" if cp_devices > 1 and glu_backend == "tokamax" else glu_backend
+        ),
         "confidence_sequentially": num_samples > 1,
         # Resolved from the sample count, at the width every port in this
         # repository resolves it at. The released five-sample run keeps the

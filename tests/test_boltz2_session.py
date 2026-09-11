@@ -159,6 +159,11 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
 
         def predict(params, feats, key, **kwargs):
             counts["traces"] += 1
+            # Neither call below names the knob, so the released default is
+            # the fused kernel. Under this mesh it must have been resolved to
+            # the XLA path before it reached the model -- if the resolution
+            # ever stops happening, the requested spelling arrives here.
+            assert kwargs["glu_backend"] == "xla", kwargs["glu_backend"]
             assert "token_to_rep_atom" not in feats
             assert feats[COMPACT_TOKEN_TO_REP_ATOM].dtype == jnp.uint8
             assert feats[TOKEN_TO_REP_ATOM_INDEX].dtype == jnp.int32
@@ -219,7 +224,6 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                     cp_atom_windows=False,
                     attention_backend="xla",
                     triangle_backend="xla",
-                    glu_backend="xla",
                 )
                 values.append(float(output["coords"][0, 0]))
             assert counts == {"loads": 1, "traces": 1}, counts
@@ -241,7 +245,6 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                 cp_atom_windows=False,
                 attention_backend="xla",
                 triangle_backend="xla",
-                glu_backend="xla",
             )
             assert counts == {"loads": 2, "traces": 2}, counts
             assert placements["params"] == 2, placements
@@ -384,7 +387,7 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             "compute_dtype": "bfloat16",
             "attention_backend": "xla",
             "triangle_backend": "cueq",
-            "glu_backend": "xla",
+            "glu_backend": "tokamax",
             "bucket": False,
             "msa_deletions": "released",
         },
@@ -421,7 +424,7 @@ def test_released_default_cache_aliases_reuse_one_native_runner(
             compute_dtype="bfloat16",
             attention_backend="xla",
             triangle_backend="cueq",
-            glu_backend="xla",
+            glu_backend="tokamax",
             bucket=False,
             msa_deletions="released",
         )
