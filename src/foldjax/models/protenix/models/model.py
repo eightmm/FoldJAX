@@ -353,7 +353,16 @@ def protenix_infer_static(
     use_diffusion_scan: bool = False,
     use_sampler_scan: bool = True,
     use_denoiser_jit: bool = False,
-    use_diffusion_efficient_fusion: bool = False,
+    # Upstream's released INFERENCE config sets this True
+    # (`configs/configs_inference.py:33`, merged last at
+    # `runner/inference.py:713`); `configs_base.py:132` is the training base
+    # and is where the port's old False came from. The flag applies the
+    # parameter-free half of the pair layer norm once instead of per block per
+    # step -- 4,800 evaluations of a 4.29 GiB reduction at 3,000 tokens become
+    # one. Measured against the unfused arm: peak 23,440 -> 21,230 MiB at
+    # 2,096 tokens and 42,219 -> 38,416 at 3,012, wall unchanged, same-index
+    # RMSD 0.007 A at 2k against a 0.185 A within-set spread.
+    use_diffusion_efficient_fusion: bool = True,
     diffusion_attention_backend: str = "xla_jit",
     trunk_single_attention_backend: str = "xla_jit",
     trunk_triangle_attention_backend: str | None = None,

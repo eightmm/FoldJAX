@@ -67,7 +67,11 @@ def parse_args() -> argparse.Namespace:
         dest="no_diffusion_efficient_fusion",
         action="store_true",
     )
-    parser.set_defaults(no_diffusion_efficient_fusion=True)
+    # Follows the shipped default, which since 2026-09-11 is upstream's
+    # released inference value. This script defaulted the opposite way, so
+    # every published Protenix benchmark number described a different program
+    # from the one the parity harness certifies.
+    parser.set_defaults(no_diffusion_efficient_fusion=False)
     parser.add_argument("--full-depth-msa", dest="full_depth_msa", action="store_true")
     parser.add_argument(
         "--sample-msa-per-cycle", dest="full_depth_msa", action="store_false"

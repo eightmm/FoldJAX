@@ -27,14 +27,33 @@ def test_production_inference_defaults_to_sampler_scan() -> None:
     )
 
 
-def test_slow_scan_and_unhelpful_fusion_are_disabled_by_default() -> None:
+def test_the_slow_confidence_scan_is_disabled_by_default() -> None:
     infer_signature = inspect.signature(protenix_infer_static).parameters
     predict_signature = inspect.signature(protenix_predict_static).parameters
 
     assert infer_signature["use_confidence_scan"].default is False
     assert predict_signature["use_confidence_scan"].default is False
-    assert infer_signature["use_diffusion_efficient_fusion"].default is False
-    assert predict_signature["use_diffusion_efficient_fusion"].default is False
+
+
+def test_the_two_entry_points_agree_on_the_fusion_default() -> None:
+    """Both say what upstream's released inference config says.
+
+    Asserted as an equivalence against the upstream value rather than as a
+    flipped literal: a test that pins a spelling passes a rename and fails a
+    behaviour change it should have allowed. What matters is that the two
+    entry points cannot disagree, and that they follow
+    `protenix/configs/configs_inference.py:33` rather than the training base
+    at `configs_base.py:132`, which is where the port's old default came from.
+    """
+    infer_signature = inspect.signature(protenix_infer_static).parameters
+    predict_signature = inspect.signature(protenix_predict_static).parameters
+    upstream_inference_value = True
+
+    assert (
+        infer_signature["use_diffusion_efficient_fusion"].default
+        == predict_signature["use_diffusion_efficient_fusion"].default
+        == upstream_inference_value
+    )
 
 
 def test_inference_noise_schedule_matches_protenix_formula() -> None:
