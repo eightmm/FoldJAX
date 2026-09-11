@@ -2368,12 +2368,26 @@ unless it says so here, in its own paragraph.
   the same lowered program, to the byte, and the same output bytes, for all
   three affine shapes, against the same script run on `main`. The mixed site
   changes by design -- that is the repair -- and keeps its float32 output.
-  Two limits. This is the
-  leading hypothesis for the 3,012-token drift documented in
-  `models/openfold3/dtype.py`, not a demonstrated cause; that drift has not
-  been remeasured on GPU, the documented size limit for `dtype=bfloat16`
-  still stands as written, and a GPU row showing no improvement is evidence
-  about the cause rather than about this arrangement. And it does not reach
+  Measured on GPU at 3,012 tokens on 6ZTX, five samples, against a float32
+  control whose own within-set spread is 0.619 A: same-index drift falls
+  from 5.265 to 1.121 A, the arm's own sample spread from 1.729 to 0.747,
+  and complex TM rises from 0.978 to 0.996 — at 655.17 s against 664.61 and
+  a byte-identical 34,893 MiB peak, so the repair is free. At 2,096 tokens
+  no arm is distinguishable from another. **The default does not change:**
+  1.121 A is still 1.8x the control's own spread, so `dtype=bfloat16` stays
+  opt-in with the size limit documented in `docs/cli.md`.
+
+  Two further changes were tried on top of this one and reverted, and the
+  reason is written up in `models/openfold3/dtype.py` because it generalises:
+  excluding the layer-norm affine from the narrowing makes `layer_norm`
+  bit-identical to upstream in all twelve rows of the float64 table and made
+  the model *less* stable at 3,012 tokens (1.214 A, spread 1.823). A census
+  of all 62 trunk norm calls under both arrangements found no site whose
+  output width changed, so the cause is the affine arithmetic itself, not a
+  dtype boundary. A float64 error table per operation did not predict the
+  sign of the model's response in either direction.
+
+  One limit. This change does not reach
   the two triangle-multiplication norms under `triangle_kernel=cueq-full`,
   which are passed into cuEquivariance's fused kernel instead of computed
   here; the default serial kernel is `cueq`, which keeps that multiplication
