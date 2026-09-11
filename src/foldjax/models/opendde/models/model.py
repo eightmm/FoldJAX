@@ -60,7 +60,10 @@ from foldjax.models.protenix.models.heads.head import DistogramParams, distogram
 from foldjax.models.protenix.models.input_precision import (
     native_confidence_autocast_params,
 )
-from foldjax.models.protenix.models.primitives.primitives import AutocastLinearParams
+from foldjax.models.protenix.models.primitives.primitives import (
+    AutocastLinearParams,
+    Fp32PrecisionLinearParams,
+)
 from foldjax.models.protenix.models.trunk_blocks.embedders import (
     InputFeatureEmbedderParams,
     input_feature_embedder,
@@ -217,6 +220,52 @@ def _require_realised_confidence_params(
             f"confidence_dtype={jnp.dtype(confidence_dtype).name} but the "
             f"confidence parameters are {jnp.dtype(marker.weight.dtype).name}"
         )
+
+
+def _require_realised_diffusion_params(params: Any, diffusion_autocast: bool) -> None:
+    """Refuse a denoiser policy the parameter tree was not rebuilt for.
+
+    ``diffusion_autocast`` decides activation dtypes; the parameter subtree
+    decides weight dtypes, and it is rebuilt on the host by
+    :func:`foldjax.models.opendde.models.diffusion_precision.native_diffusion_autocast_params`.
+    Split like that, the failure mode of getting them out of step is silent:
+    BF16 activations against FP32 weights promote back to an FP32 matmul, and
+    the run looks exactly like a policy that was never applied.
+
+    The marker is OpenDDE's own compression projection rather than one of the
+    ten Protenix shares, so this also catches a tree passed through Protenix's
+    function, which narrows that projection instead of exempting it.
+    """
+    marker = params
+    for name in ("diffusion", "conditioning", "linear_z_trunk"):
+        marker = getattr(marker, name, None)
+        if marker is None:
+            # Partial trees are supported: a `stop_after` run or a test
+            # namespace need not carry a stage it never reaches.
+            if diffusion_autocast and name == "diffusion":
+                raise ValueError(
+                    "diffusion_autocast=True but these parameters carry no "
+                    "diffusion stage to apply it to"
+                )
+            return
+    prepared = isinstance(marker, Fp32PrecisionLinearParams)
+    if prepared == diffusion_autocast:
+        return
+    if diffusion_autocast:
+        state = (
+            "narrowed by Protenix's function, which has no compression "
+            "projection to exempt"
+            if isinstance(marker, AutocastLinearParams)
+            else "left FP32"
+        )
+    else:
+        state = "prepared for autocast"
+    raise ValueError(
+        f"diffusion_autocast={diffusion_autocast} but the diffusion "
+        f"parameters were {state}; pass them through "
+        "foldjax.models.opendde.models.diffusion_precision."
+        "native_diffusion_autocast_params"
+    )
 
 
 def _with_cueq_triangle_defaults(function):
@@ -766,6 +815,16 @@ def opendde_infer_static(
     #: to have been rebuilt by :func:`cast_confidence_params`, which
     #: :func:`_require_realised_confidence_params` checks rather than assumes.
     confidence_dtype: jnp.dtype | None = None,
+    #: Run the denoising network under the bfloat16 autocast -- upstream's
+    #: `skip_amp.sample_diffusion = False`. A sibling of `trunk_dtype`, not a
+    #: second spelling of it: `trunk_dtype` narrows four whole subtrees, while
+    #: this one narrows only what upstream's autocast narrows and leaves the
+    #: eleven `precision=torch.float32` projections FP32. It is the activation
+    #: half of the policy; the weight half is
+    #: `foldjax.models.opendde.models.diffusion_precision`, and the two are
+    #: checked against each other below because getting them out of step fails
+    #: silently.
+    diffusion_autocast: bool = False,
     #: Context-parallel shard count. More than one requires an active
     #: `foldjax.models._cp.context_parallel` mesh of the same size; the value
     #: is also a static argument so a mesh change is a retrace, never a stale
@@ -784,6 +843,13 @@ def opendde_infer_static(
     model function.
     """
 
+    if diffusion_autocast and cp_shards != 1:
+        raise ValueError(
+            "diffusion_autocast is not supported under context parallelism "
+            f"(cp_shards={cp_shards}). Single-GPU comes first and the sharded "
+            "denoiser is deliberately deferred: run one device, or leave the "
+            "denoising network FP32."
+        )
     if cp_layout != (_active_cp_layout() or "1d"):
         raise RuntimeError(
             f"cp_layout={cp_layout!r} but the active mesh is {_active_cp_layout()!r}"
@@ -795,6 +861,7 @@ def opendde_infer_static(
             "opendde_infer_compiled or activate context_parallel() yourself"
         )
     _require_realised_confidence_params(params, confidence_dtype)
+    _require_realised_diffusion_params(params, diffusion_autocast)
     input_feature_dict = _restore_ref_atom_category_one_hot(input_feature_dict)
     # Triangle backends are NOT overridden for context parallelism. Attention
     # keeps whatever kernel is configured -- `_triangle_attention_cp` runs it
@@ -956,9 +1023,17 @@ def opendde_infer_static(
     def as_float32(value: jnp.ndarray) -> jnp.ndarray:
         return value if value.dtype == jnp.float32 else value.astype(jnp.float32)
 
-    diffusion_s_inputs = as_float32(s_inputs_structural)
-    diffusion_s_trunk = as_float32(s_structural)
-    diffusion_z_trunk = as_float32(z_structural)
+    # Under the autocast the denoiser reads the trunk's own representations at
+    # the trunk's own width, exactly as upstream's does: `sample_diffusion`
+    # runs *inside* the forward's autocast context rather than with casting
+    # disabled (`opendde/model/opendde.py:1332`), so nothing widens them on the
+    # way in. The FP32 copies below are the released path and stay the default;
+    # a run with the policy off computes exactly the arrays it computed before.
+    diffusion_s_inputs = (
+        s_inputs_structural if diffusion_autocast else as_float32(s_inputs_structural)
+    )
+    diffusion_s_trunk = s_structural if diffusion_autocast else as_float32(s_structural)
+    diffusion_z_trunk = z_structural if diffusion_autocast else as_float32(z_structural)
     # The released relp has four categorical values per structural-token pair.
     # Project them directly so the float32 [N_s, N_s, 139] one-hot never exists;
     # the resulting 128-channel value is born pair-row sharded under CP.
@@ -1033,6 +1108,7 @@ def opendde_infer_static(
             attention_backend=diffusion_attention_backend,
             token_mask=structural_token_mask,
             atom_mask=atom_mask,
+            denoiser_autocast=diffusion_autocast,
         )
 
     def sample(key, init_noise, step_noises, rotations, translations, count):
@@ -1242,6 +1318,7 @@ GRAPH_STATIC_ARGNAMES = (
     "return_confidence_logits",
     "return_confidence_details",
     "diffusion_attention_backend",
+    "diffusion_autocast",
     # Static: it sets how many rollout calls the graph contains, the same way
     # the query chunk sizes below set how many blocks each attention contains.
     "diffusion_chunk_size",

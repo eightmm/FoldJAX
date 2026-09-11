@@ -144,8 +144,28 @@ def diffusion_module_forward(
     attention_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
+    denoiser_autocast: bool = False,
 ) -> jnp.ndarray:
-    """Run one OpenDDE EDM denoising step."""
+    """Run one OpenDDE EDM denoising step.
+
+    ``denoiser_autocast`` states that the network above was narrowed, and its
+    only effect is on the way out. The EDM blend below ends
+    ``.astype(r_update.dtype)`` because upstream's does
+    (``opendde/model/modules/diffusion.py:1701``), so with a BF16 network the
+    prediction leaves at BF16 and the sampler's FP32 state would carry it.
+    Upstream's own state survives that because torch promotes the BF16
+    prediction against the FP32 coordinates inside the Euler step; this
+    restores the same type at the boundary instead of relying on JAX's
+    promotion further away. It is a type restoration, not a second chance at
+    the precision: the blend is already rounded, here and upstream both.
+
+    OpenDDE keeps the guard here rather than at the caller, where Protenix
+    keeps its copy (``protenix/models/diffusion/diffusion.py:429``), because
+    OpenDDE already owns this wrapper and one owner of the boundary is
+    directly testable. Guarded rather than unconditional: with no policy in
+    flight the network returns FP32 already, and an added convert would be a
+    change to the program this port has its parity numbers for.
+    """
 
     scale = jnp.sqrt(sigma_data**2 + t_hat_noise_level**2)[..., None, None]
     r_noisy = x_noisy / scale
@@ -193,4 +213,4 @@ def diffusion_module_forward(
     ).astype(r_update.dtype)
     if atom_mask is not None:
         output = output * jnp.asarray(atom_mask, dtype=output.dtype)[..., None]
-    return output
+    return output.astype(x_noisy.dtype) if denoiser_autocast else output

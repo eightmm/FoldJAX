@@ -79,6 +79,40 @@ def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
     return _load_weights(path)
 
 
+#: Accepted ``--diffusion-dtype`` values. ``fp32`` is the released default and
+#: leaves the diffusion parameter tree exactly as the checkpoint stores it.
+DIFFUSION_DTYPE_CHOICES = ("fp32", "bf16")
+
+
+def _resolve_diffusion_autocast(diffusion_dtype: str, trunk_dtype: str) -> bool:
+    """Whether the denoising network runs under the bfloat16 autocast.
+
+    Refuses a BF16 denoiser on an FP32 trunk. Upstream opens its autocast
+    context from the *global* ``configs.dtype``
+    (``runner/inference.py:1389-1397``) and ``skip_amp.sample_diffusion``
+    only chooses whether a stage sits inside it, so "FP32 everywhere except
+    the denoiser" is a configuration upstream cannot express and no
+    measurement describes. An explicit request deserves an error rather than
+    the silent downgrade Protenix's ``realise_amp_policy`` performs for its
+    token gate, which has no request to honour.
+    """
+    if diffusion_dtype not in DIFFUSION_DTYPE_CHOICES:
+        choices = ", ".join(DIFFUSION_DTYPE_CHOICES)
+        raise ValueError(
+            f"diffusion_dtype must be one of {choices}; got {diffusion_dtype!r}"
+        )
+    if diffusion_dtype == "fp32":
+        return False
+    if trunk_dtype != "bf16":
+        raise ValueError(
+            "--diffusion-dtype bf16 needs --trunk-dtype bf16: upstream opens "
+            "one autocast context from the global dtype, so a bfloat16 "
+            "denoiser under a float32 trunk is not a configuration upstream "
+            f"can run. This run has --trunk-dtype {trunk_dtype}."
+        )
+    return True
+
+
 #: Arena size per structural-token pair, in MiB, measured 2026-08-23 on a
 #: 95.6 GiB card at HEAD 9af2892 and validated at a second size to 0.2%.
 #:
@@ -186,6 +220,7 @@ def _predict(
     cp_layout: str = "auto",
     trunk_dtype: Any = None,
     confidence_dtype: Any = None,
+    diffusion_autocast: bool = False,
     # The summaries come out of the graph; the raw logits only when a raw dump
     # was asked for. `_score` passes precomputed summaries straight through.
     run_confidence_scores: bool = True,
@@ -342,6 +377,7 @@ def _predict(
         cp_layout=cp_layout,
         trunk_dtype=trunk_dtype,
         confidence_dtype=confidence_dtype,
+        diffusion_autocast=diffusion_autocast,
         run_confidence_scores=run_confidence_scores,
         return_confidence_logits=return_confidence_logits,
         return_confidence_details=return_confidence_details,
@@ -528,6 +564,19 @@ def main(
     # Native OpenDDE defaults to FP32. The five-sample, fixed-tape native
     # precision panel rejects BF16 on 5SAK/1URN; memory savings and a matched
     # best-ranked sample cannot authorize lowering every sample's precision.
+    parser.add_argument(
+        "--diffusion-dtype",
+        choices=DIFFUSION_DTYPE_CHOICES,
+        default="fp32",
+        help="element width of the denoising network's matmuls -- upstream's "
+        "skip_amp.sample_diffusion. A sibling of --trunk-dtype, not a second "
+        "spelling of it: this narrows only what upstream's autocast narrows "
+        "and keeps eleven geometry and conditioning projections FP32, the "
+        "sampler state FP32, and every per-head pair bias delivered in FP32. "
+        "Defaults to FP32, which is what upstream runs here and what every "
+        "OpenDDE accuracy row was measured on; bf16 is opt-in, needs "
+        "--trunk-dtype bf16, and is unsupported under context parallelism",
+    )
     parser.add_argument("--include-raw", action="store_true")
     parser.add_argument(
         "--representations-dir",
@@ -699,6 +748,11 @@ def main(
             import jax.numpy as jnp
 
             confidence_dtype = jnp.bfloat16
+        # Resolved before the weight load so a refused combination fails
+        # without first reading the checkpoint.
+        diffusion_autocast = _resolve_diffusion_autocast(
+            args.diffusion_dtype, args.trunk_dtype
+        )
         # The callback is backend-internal. It receives the parser-validated
         # weight path and compute dtype; direct callers keep the native loader.
         params_loader = _prepared_params_loader or _load_prepared_params
@@ -714,6 +768,22 @@ def main(
             from foldjax.models.opendde.models.model import cast_confidence_params
 
             params = cast_confidence_params(params, confidence_dtype)
+        if diffusion_autocast:
+            # After the loader for the same reason, and independent of the
+            # cast above: the two rebuild disjoint fields and each refuses an
+            # already-narrowed tree by inspecting only its own, so they
+            # compose in either order. Neither may move inside the loader --
+            # the backend's weight session memoizes on `("trunk_dtype",
+            # trunk_dtype)` alone, so a second policy in one session would be
+            # served the first one's tree. `_replace` leaves that session tree
+            # intact.
+            from foldjax.models.opendde.models.diffusion_precision import (
+                native_diffusion_autocast_params,
+            )
+
+            params = params._replace(
+                diffusion=native_diffusion_autocast_params(params.diffusion)
+            )
         for job in jobs:
             job_name = str(job.get("name") or args.input_json.stem)
             for seed in _job_seeds(job, args.seed):
@@ -844,6 +914,7 @@ def main(
                     ),
                     trunk_dtype=trunk_dtype,
                     confidence_dtype=confidence_dtype,
+                    diffusion_autocast=diffusion_autocast,
                     chunk_policy=args.chunk_policy,
                     chunk_overrides={
                         "diffusion_chunk_size": args.diffusion_chunk_size,

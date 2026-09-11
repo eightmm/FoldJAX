@@ -397,6 +397,49 @@ autocast-disabled core keeps that contraction in float32; the `xla` spelling
 keeps the float32 score core and is the upstream-faithful shape. Treat the
 combination as a measurement, not a recommended default.
 
+### A bfloat16 OpenDDE denoising network (`--option diffusion_dtype=bf16`)
+
+OpenDDE's `trunk_dtype` above stops at the trunk: the diffusion module keeps
+float32 weights and the three trunk representations are widened on their way
+into the sampler, whatever the trunk and the confidence head are set to.
+`--option diffusion_dtype=bf16` narrows the denoising network instead. It is a
+sibling of the trunk dtype rather than a second spelling of it -- `trunk_dtype`
+casts four whole parameter subtrees, while this one reproduces a boundary and
+narrows only what upstream's autocast narrows -- and it is independent of
+`--confidence-dtype`, which owns a different stage and its own default.
+
+**Upstream runs float32 here and this is a deviation.** Upstream OpenDDE's
+released `dtype` is `fp32` (`opendde/config/model_base.py:37`), so its autocast
+context never opens and the denoiser is float32 at every size, whatever the
+`skip_amp.sample_diffusion` token gate at `runner/inference.py:1501-1509`
+selects. **It is unmeasured for accuracy.** No OpenDDE GPU row exists for it;
+every published OpenDDE coordinate number was taken with the denoiser in
+float32. Treat it as an experiment, not a recommendation.
+
+The boundary follows a tensor's origin rather than its stage, which is where
+AlphaFold 3 and upstream Protenix both draw it. Eleven projections stay
+float32 because upstream constructs them `precision=torch.float32`: the atom
+encoder's reference position and pair distance, its three coordinate
+conditioning projections, the decoder's coordinate update, Algorithm 20's
+single projection, and all four conditioner projections. The eleventh is
+OpenDDE's own -- the projection that compresses the 384-channel trunk pair
+representation to 128 channels before conditioning -- and Protenix has no
+equivalent, so OpenDDE does not simply reuse Protenix's realisation. Every
+per-head pair bias delivers its result in float32 while still multiplying in
+bfloat16, inherited from a Protenix measurement on 5DEI and unmeasured here.
+The sampler's state, its noise schedule and its rigid augmentation stay
+float32, and a guard restores the denoiser's prediction to that width at the
+boundary.
+
+`--option diffusion_dtype=bf16` requires `dtype=bfloat16` (the released
+OpenDDE default) and is refused on a float32 trunk: upstream opens one
+autocast context from the global dtype, so "float32 everywhere except the
+denoiser" is not a configuration it can run. It is refused under context
+parallelism as well. **Context-parallel support is deliberately deferred**:
+single-GPU comes first, and the sharded denoiser would need its own evidence.
+The value is part of the compilation-cache identity, so a non-default value
+never receives the executable built without it.
+
 ### Fused pair-bias attention (`--option attention_kernel=tokamax`, Protenix)
 
 cuEquivariance covers Protenix's triangle attention; the global token

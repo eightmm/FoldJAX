@@ -26,6 +26,23 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **An opt-in bfloat16 denoising network for OpenDDE**, off by default.
+  `--option diffusion_dtype=bf16` runs the diffusion module's matmuls in
+  bfloat16 with the float32 boundary drawn where AlphaFold 3 and upstream
+  Protenix both draw it: by a tensor's origin rather than its stage. Eleven
+  projections stay float32 because upstream builds them
+  `precision=torch.float32` -- the geometry and coordinate edges, Algorithm
+  20's single projection, and all four conditioner projections, one of which
+  is OpenDDE's own pair-compression projection and has no Protenix
+  equivalent. Every per-head pair bias still multiplies in bfloat16 but
+  delivers its result in float32, and the sampler's state, noise schedule and
+  rigid augmentation stay float32, with a guard restoring the denoiser's
+  prediction to that width. Upstream OpenDDE runs float32 here -- its
+  released `dtype` is `fp32`, so its autocast context never opens -- so this
+  is a deviation, and it is unmeasured for accuracy until GPU rows exist. It
+  requires the bfloat16 trunk, is refused under context parallelism, and
+  joins the compilation-cache identity. `trunk_dtype` is unaffected and keeps
+  its own meaning.
 - **An opt-in bfloat16 confidence head for OpenDDE**, off by default.
   `--confidence-dtype bf16` narrows the head's re-embedding Pairformer, and
   the pair, single and input activations entering it, while the pLDDT, PAE,
