@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import inspect
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
@@ -55,8 +56,24 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     with pytest.raises(_DefaultsCapturedError):
         predict_cli.main([])
 
+    # Every released default but one is a flag on that parser. `matmul_precision`
+    # is not: the adapter pops it and carries it in a ContextVar, and the value
+    # an omitted knob runs is the model function's own default, read back
+    # through `resolved_matmul_precision`. So it has a second authority rather
+    # than an exemption, pinned below.
+    from_the_signature = {"matmul_precision"}
+    assert from_the_signature <= set(backend_impl._RELEASED_COMPILE_DEFAULTS)
+    assert not from_the_signature & set(captured)
+    assert backend_impl._RELEASED_COMPILE_DEFAULTS["matmul_precision"] == (
+        inspect.signature(predict_impl.protenix_predict_static)
+        .parameters["matmul_precision"]
+        .default
+    )
+
     actual = {
-        name: captured[name] for name in backend_impl._RELEASED_COMPILE_DEFAULTS
+        name: captured[name]
+        for name in backend_impl._RELEASED_COMPILE_DEFAULTS
+        if name not in from_the_signature
     }
     assert actual["max_msa_depth"] is None
     actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None, None)
@@ -65,10 +82,17 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
     assert predict_cli._resolve_msa_depth(None, PaddingConfig()) == 1024
     assert predict_cli._resolve_msa_depth(None, PaddingConfig(msa=64)) == 64
     assert predict_cli._resolve_msa_depth(128, PaddingConfig()) == 128
-    for name, expected in backend_impl._RELEASED_COMPILE_DEFAULTS.items():
+    expected_from_parser = {
+        name: value
+        for name, value in backend_impl._RELEASED_COMPILE_DEFAULTS.items()
+        if name not in from_the_signature
+    }
+    for name, expected in expected_from_parser.items():
         assert type(actual[name]) is type(expected)
-    assert actual == backend_impl._RELEASED_COMPILE_DEFAULTS
-    assert set(actual) <= set(ProtenixBackend.compile_options)
+    assert actual == expected_from_parser
+    assert set(backend_impl._RELEASED_COMPILE_DEFAULTS) <= set(
+        ProtenixBackend.compile_options
+    )
 
     # The backend imports the native policy authority rather than copying its
     # base/mini schedules. Every parser-recognized model therefore has exactly
@@ -160,6 +184,12 @@ def test_known_model_released_defaults_share_the_omitted_cache_namespace(
         output="explicit",
         options={
             **backend_impl._RELEASED_COMPILE_DEFAULTS,
+            # After the spread, because the table's own released default is
+            # `auto` and this test is about a model named explicitly. The
+            # `auto` case is `test_unresolved_model_schedules_remain_distinct`
+            # and the alias it now shares with an omitted option is
+            # `test_the_parser_default_model_name_shares_the_omitted_namespace`.
+            "model_name": model_name,
             "num_steps": schedule["num_steps"],
             "num_recycles": schedule["num_recycles"],
             "cp_layout": "1d",
@@ -200,6 +230,38 @@ def test_neutral_released_defaults_share_the_native_and_omitted_namespace(
 
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
     assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
+
+
+def test_the_parser_default_model_name_shares_the_omitted_namespace(
+    tmp_path: Path,
+) -> None:
+    """`--model-name auto` is what the parser does when nobody asks for one.
+
+    `cli/predict.py:414` defaults the flag to `auto`, so the two spellings are
+    one run. Before this they were two namespaces, and it was the only
+    non-`None` parser default on either argv port that nothing stripped.
+
+    The literal, not the name it resolves to. `:553` resolves `auto` by
+    reading the model name off the weight filename, and
+    `api.resolve_cache_dir` already digests `weight_identity(request.weights)`
+    beside this profile -- so two runs that both say `auto` and mean two
+    models are two namespaces already, and stripping the literal cannot merge
+    them. A model named explicitly keeps its own namespace, which is one
+    missed alias rather than a collision; resolving instead would also start
+    firing the known-model schedule strip below for `auto` requests, a second
+    namespace change for no correctness gain.
+    """
+    backend = ProtenixBackend()
+    spelled = _request(tmp_path, model_name="auto")
+    omitted = dataclasses.replace(
+        spelled, options={}, output_dir=tmp_path / "omitted"
+    )
+    named = _request(tmp_path, output="named")
+
+    assert "model_name" not in backend.cache_profile(omitted)
+    assert backend.cache_profile(spelled) == backend.cache_profile(omitted)
+    assert resolve_cache_dir(spelled, backend) == resolve_cache_dir(omitted, backend)
+    assert resolve_cache_dir(named, backend) != resolve_cache_dir(omitted, backend)
 
 
 @pytest.mark.parametrize("model_name", ("auto", "unknown"))
@@ -420,6 +482,9 @@ def test_released_default_aliases_reuse_one_real_bounded_native_owner(
         options={
             **fixed_routes,
             **backend_impl._RELEASED_COMPILE_DEFAULTS,
+            # After the spread, for the same reason as above: this route is
+            # the mini model named explicitly, not the `auto` the table holds.
+            "model_name": "protenix_mini_default_v0.5.0",
             "num_steps": 5,
             "num_recycles": 4,
             "cp_layout": "1d",

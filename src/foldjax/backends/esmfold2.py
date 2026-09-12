@@ -481,6 +481,15 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
         # Traced into the confidence head's re-embedding, so a narrowed run
         # must not be answered out of the float32 executable's cache entry.
         "confidence_dtype",
+        # Two policies, two programs: the value becomes the `precision`
+        # attribute on every float32 dot XLA lowers, so a `highest` run and a
+        # `high` run are two executables and must not share one namespace.
+        #
+        # There is no strip entry to go with it, because this port calls
+        # `resolved_matmul_precision` nowhere: with no request in flight it
+        # inherits whatever JAX is set to rather than pinning a released
+        # value, so no spelling is the alias of an omitted option.
+        "matmul_precision",
     )
 
     def __init__(self) -> None:

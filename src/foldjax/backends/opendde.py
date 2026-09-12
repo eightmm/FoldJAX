@@ -126,7 +126,14 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         # its own predict parser and every argv port renders the same strings.
         **DETERMINISTIC_ARGV_OPTION,
     }
-    compile_options = tuple(sorted(_CLI_OPTIONS))
+    # `_CLI_OPTIONS` plus the one generated name that is not a flag:
+    # `matmul_precision` travels in a ContextVar and is popped before the flag
+    # loop renders argv (`backends/base.py:123`), so deriving the cache
+    # identity from the flag list alone left a `highest` run and a `high` run
+    # sharing one namespace for two programs. This port calls
+    # `resolved_matmul_precision` nowhere, so it pins no released value and
+    # there is no spelling for `_RELEASED_COMPILE_DEFAULTS` to alias.
+    compile_options = tuple(sorted(_CLI_OPTIONS | {"matmul_precision"}))
 
     def __init__(self) -> None:
         self._weights = PreparedWeightSession(self.name)

@@ -151,10 +151,31 @@ _MANAGED_ASSET_PROFILES = {
 #: recycle counts unset, then :data:`MODEL_INFERENCE_DEFAULTS` resolves them
 #: from the explicit model name.  Keeping these lightweight scalar values here
 #: lets cache planning stay free of the JAX model runtime.  A drift test reads
-#: the parser defaults and pins every value and exact type.
+#: the parser defaults and pins every value and exact type; ``matmul_precision``
+#: is the one entry with no flag behind it, and that test pins it to the model
+#: function's signature instead.
 _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "num_samples": 5,
     "max_msa_depth": 16384,
+    # The parser's own default, and the value it leaves alone: `auto` asks the
+    # native CLI to read the model name off the weight filename
+    # (`cli/predict.py:553`). Naming it here is what keeps
+    # `--option model_name=auto` in the namespace an omitted option selects.
+    #
+    # The literal rather than what it resolves to. Two runs that both say
+    # `auto` and mean two models are two namespaces already: `api.py:1342`,
+    # inside `resolve_cache_dir`, digests `weight_identity(request.weights)`
+    # beside this profile, and the resolution reads that same path. A model
+    # named explicitly keeps its own namespace -- one alias not taken rather
+    # than a collision.
+    "model_name": "auto",
+    # `protenix_predict_static`'s own default, in the neutral vocabulary:
+    # `models/predict.py:103`, read at :153 through
+    # `resolved_matmul_precision`, and overridden by no caller -- the adapter
+    # never renders it, because it is not a flag. So `high` is what an omitted
+    # knob runs, and naming it here is what keeps the two in one namespace
+    # while `highest` keeps its own.
+    "matmul_precision": "high",
     "trunk_dtype": "bf16",
     "amp_policy": "auto",
     "diffusion_attention_backend": "xla_jit",
@@ -304,6 +325,12 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "diffusion_chunk_size",
         "deterministic_ops",
         "cli_args",
+        # Two policies, two programs: the value becomes the `precision`
+        # attribute on every float32 dot XLA lowers, it selects the
+        # cuEquivariance triangle FFI's float32 mode (`models/_cueq.py:69`),
+        # and it decides which dot-algorithm preset Tokamax picks. The strip
+        # table above neutralises the pinned value, so only a departure forks.
+        "matmul_precision",
     )
 
     def __init__(self) -> None:

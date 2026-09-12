@@ -66,11 +66,20 @@ from typing import Any
 #: speed: it asks the compiler for reduction orders that do not vary between
 #: runs, which costs wall time. It is off everywhere, because the run every
 #: measurement in this repository describes is the one without it.
+#:
+#: `attention_kernel` has no `cueq`, and the asymmetry with `triangle_kernel`
+#: is the point: the cuEquivariance attention in this repository is triangle
+#: attention. Every caller of `models/_cueq.py:cueq_attention_core` is a
+#: triangle path, and `models/_predict_flags.py:105` builds the single- and
+#: diffusion-attention choice lists out of `xla`/`xla_jit`/`xla_sdpa` plus
+#: Protenix's `tokamax`, so no port's parser would take the value either. It
+#: was in this table for a while, refusing every request that spelled it --
+#: advertised vocabulary no model could run.
 KNOBS: dict[str, tuple[str, ...]] = {
     "dtype": ("float32", "bfloat16"),
     "matmul_precision": ("highest", "high"),
     "triangle_kernel": ("auto", "cueq", "cueq-full", "xla"),
-    "attention_kernel": ("auto", "cueq", "tokamax", "xla"),
+    "attention_kernel": ("auto", "tokamax", "xla"),
     "deterministic": ("off", "on"),
 }
 

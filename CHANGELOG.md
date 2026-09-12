@@ -240,6 +240,25 @@ unless it says so here, in its own paragraph.
 
 ### Removed
 
+- **`attention_kernel=cueq` leaves the neutral vocabulary.** No backend
+  mapped it, so every request that spelled it was refused -- advertised
+  vocabulary no model could run. The asymmetry with `triangle_kernel`, which
+  keeps `cueq`, is the fact behind it: the cuEquivariance attention in this
+  repository *is* triangle attention. Every caller of
+  `models/_cueq.py:cueq_attention_core` is a triangle path, and
+  `models/_predict_flags.py:105` builds the single- and diffusion-attention
+  choice lists out of `xla`/`xla_jit`/`xla_sdpa` plus Protenix's `tokamax`,
+  so no port's own parser would take the value either. Giving a port the
+  mapping would have meant writing a cuEq single-attention path, not wiring
+  up an existing one.
+
+  The refusal reads better afterwards. A value outside the vocabulary now
+  fails the vocabulary check first -- `attention_kernel must be one of
+  ('auto', 'tokamax', 'xla'), got 'cueq'` -- while a value the vocabulary has
+  and a port lacks still names that port's own options, as `tokamax` on
+  AlphaFold 3 does.
+
+
 - **OpenFold3 p1/p2 checkpoint compatibility.** The `openfold3` backend now
   targets only upstream v0.5.0's default OpenBind checkpoint,
   `of3-ob-2025-06-30-174k.pt`. The managed asset, mapper contract, upstream
@@ -2340,6 +2359,74 @@ unless it says so here, in its own paragraph.
   and kernel-performance checks remain deployment gates.
 
 ### Fixed
+
+- **`matmul_precision` now selects its own compilation-cache namespace on
+  every port.** AlphaFold 3 and Boltz-2 named it in `compile_options`;
+  ESMFold2, OpenDDE, OpenFold3 and Protenix declared the knob and left it
+  out, so a `highest` run and a `high` run resolved to the same persistent
+  cache directory on those four. Nothing returned wrong numbers for it --
+  JAX's own cache key includes the HLO, so a `highest` run is never served a
+  `high` executable, and the `resume` result-reuse path validates against the
+  persisted request rather than against this profile. What it cost was
+  compiles thrown away into a directory holding two programs, and provenance:
+  a namespace that could not say which of the two policies a recorded run
+  had, which is exactly the question a float32 parity arm is opened to
+  answer.
+
+  The fix has two halves on the ports that pin a value of their own.
+  OpenFold3 pins `high` at `models/openfold3/inference.py:549` and Protenix
+  pins it at `models/protenix/models/predict.py:103`, both read through
+  `resolved_matmul_precision`, so on those two an explicitly spelled `high`
+  is the run an omitted knob already gets and is neutralised -- OpenFold3 in
+  its `cache_profile` override beside `dtype`, Protenix by a strip-table
+  entry beside Boltz-2's. Adding only the first half would have forked the
+  shipped run from itself. ESMFold2 and OpenDDE call
+  `resolved_matmul_precision` nowhere, so they pin nothing, an omitted knob
+  is whatever JAX is set to, and there is no released value to alias.
+
+  No released-default namespace moves: an omitted request resolves to the
+  same directory it did before on all six ports, and on OpenFold3 and
+  Protenix so does an explicit `high`.
+
+- **Boltz-2's `diffusion_chunk_size` joins the compilation-cache identity,
+  as the resolved width rather than the spelling.** OpenDDE, OpenFold3 and
+  Protenix all treat it as compile-relevant and Boltz-2 did not, while
+  `models/boltz2/api.py:578` takes it, `:1099` resolves it against the sample
+  count and `_runner_identity` at `:522` already forked the retained jit
+  wrapper on it -- two programs, one namespace, and no record of which width
+  a directory holds.
+
+  The spelling is not the program twice over, so the profile records what the
+  run does. `api.py:1099` resolves an omitted option from the sample count,
+  and `:522-546` folds a width at or above the multiplicity back to `None`
+  because the rollout chunks only below it. And one spelling resolves twice:
+  once against `num_samples` for the primary run and again against
+  `affinity_num_samples` at `:1351`. At the released five affinity samples,
+  `diffusion_chunk_size=3` and `=7` are both no-ops for a one-sample primary
+  run while 3 chunks the affinity rollout and 7 does not, so the profile
+  carries both widths.
+
+  This does move every Boltz-2 namespace, the way `pair_residual_dtype` did
+  and for the same reason: the keys were absent from every run recorded
+  before this, so absence has to keep meaning "recorded before the widths
+  were recorded" rather than becoming a third name for one of the arms. The
+  cost is one cold compile per shape.
+
+- **Protenix's `--option model_name=auto` names the namespace omitting it
+  names.** `auto` is the native parser's own default
+  (`models/protenix/cli/predict.py:414`), nothing stripped it, and it was the
+  only non-`None` parser default on either argv-driven port left unaliased --
+  the inverse of the `pair_residual_dtype` defect, which stripped a default
+  that had never entered the profile.
+
+  The strip entry is the literal `auto`, not the model name it resolves to.
+  `:552` resolves it by reading the name off the weight filename, and
+  `resolve_cache_dir` already digests `weight_identity(request.weights)`
+  beside the option profile, so two runs that both say `auto` and mean two
+  models are two namespaces already and the literal cannot merge them. A
+  model named explicitly keeps its own namespace: one alias not taken rather
+  than a collision.
+
 
 - **OpenFold3's layer norm now accumulates in float32 under
   `dtype=bfloat16`.** Upstream disables autocast inside `LayerNorm.forward`
