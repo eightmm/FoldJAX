@@ -339,9 +339,14 @@ The exact runner and environment are documented in
 [`bench/README.md`](../bench/README.md) and
 [`bench/upstream-environments.md`](../bench/upstream-environments.md).
 
-Storage remains fp32 and prediction runs inside the shipped
-`openfold3_precision` scope at matmul precision `high` (TF32), matching
-upstream's `torch.set_float32_matmul_precision("high")` for ordinary matmuls.
+Prediction runs inside the shipped `openfold3_precision` scope at matmul
+precision `high` (TF32), matching upstream's
+`torch.set_float32_matmul_precision("high")` for ordinary matmuls. Element
+storage is the partial bfloat16 track since 2026-09-12 — the token/pair
+representation narrows and everything atom- or coordinate-shaped stays fp32;
+`--option dtype=float32` restores upstream's `32-true` storage, and the
+verification gates below are run on that arm. `models/openfold3/dtype.py`
+carries the split and the measurement.
 The fused cuEquivariance triangle contractions explicitly pin
 `lax.Precision.DEFAULT`, so the surrounding scope does not make every
 accelerator contraction identical to upstream Torch. Pairformer accelerator

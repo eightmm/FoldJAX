@@ -106,6 +106,11 @@ def _run_pair(model, params, config, features: dict, n_token: int, n_atom: int):
             num_samples=SAMPLES,
             num_steps=STEPS,
             num_recycles=config.architecture.shared.num_recycles + 1,
+            # Upstream runs this comparison in float32 (`precision: "32-true"`)
+            # and `params` above is its float32 state dict, uncast. The port's
+            # own default is the partial bfloat16 profile, so the pin is what
+            # keeps both sides of the comparison the same arithmetic.
+            dtype="float32",
         ),
         representative_atom_table(),
         noise_fn=lambda step, shape: jnp.asarray(draws[step].numpy()).reshape(shape),

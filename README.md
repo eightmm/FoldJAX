@@ -110,10 +110,31 @@ source-bound final GPU gate, and cold-autotuning caveats are in
 [docs/alphafold3.md](docs/alphafold3.md), and
 [docs/openfold3.md](docs/openfold3.md).
 
-### Two defaults are FoldJAX's own
+### Four defaults are FoldJAX's own
 
-Four ports run the precision their upstream runs — AlphaFold 3, Boltz-2 and
-Protenix on bfloat16, OpenFold3 on float32. Two do not, and both are measured.
+AlphaFold 3 and Protenix run exactly the precision their publisher ships. Four
+ports do not, and each departure is measured: the criterion for an execution
+default here is whether the structure holds, not whether the arithmetic matches
+upstream's.
+
+**OpenFold3 defaults its partial token/pair track to bfloat16 where upstream
+ships `32-true`**, from 2026-09-12. A 28-row panel over three targets measured
+it faster and smaller at every size — 98.7 → 76.2 s and 9,273 → 5,552 MiB at
+1,003 tokens, 954 → 661 s and 50,412 → 34,893 MiB at 3,012 — with per-chain
+deposited RMSD the same on both arms at all three sizes. The one 3,012-token
+outlier appears in **both** dtypes, one seed of six each, and the catalase core
+folds correctly in all twelve arms, so it is the target's and not the width's.
+`--option dtype=float32` restores the publisher's precision, and the benchmark
+matrix pins exactly that. See
+[the evidence note](docs/openfold3-bf16-default-evidence-2026-09-12.md).
+
+**Boltz-2 narrows two things upstream keeps wide**, from 2026-09-11: its
+float32 matmul scope drops to TF32 where `main.py:1096` asks for `highest`,
+and its trunk pair *residual* is stored bfloat16 where torch's autocast keeps
+a float32 residual around bfloat16 GEMMs. Together at 3,012 tokens: 781.5 s /
+40,748 MiB → 717.5 s / 29,416 MiB, with per-chain deposited RMSD 0.34–0.40 Å
+on both arms. `--option dtype=float32` and
+`--option matmul_precision=highest` put each back.
 
 **OpenDDE defaults to a bfloat16 trunk where upstream ships float32**, measured
 at 1,003 tokens over two runs per arm: peak 42.96 → 19.18 GiB, wall 280.4 →

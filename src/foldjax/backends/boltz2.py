@@ -293,10 +293,6 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     # resolves to rather than the spelling, so two names for one program do
     # not name two namespaces.
     "pair_residual_dtype": "auto",
-    # `api.MATMUL_PRECISION`, in the neutral vocabulary. Naming it here is what
-    # makes an explicit `matmul_precision=high` share the namespace an omitted
-    # one selects, while `highest` keeps its own.
-    "matmul_precision": "high",
     "triangle_backend": "cueq",
     "glu_backend": "tokamax",
     "bucket": False,
@@ -561,14 +557,27 @@ class Boltz2Backend(Backend):
                 _RELEASED_COMPILE_DEFAULTS["affinity_num_samples"],
             ),
         )
-        # ... and keep it out of the strip, which would otherwise put the
-        # released spelling back to absent the moment it equals a default.
-        # The two widths need no `skip`: the native option's default is `None`
-        # rather than a value, so the strip table never names them.
+        # The matmul scope, for the third time and the same reason. This port
+        # shipped `highest` until 2026-09-11 and `matmul_precision` was not in
+        # `compile_options` at all then, so absence in a recorded run means
+        # `highest`. Stripping the new `high` would give absence a second
+        # meaning; spelling the resolved value keeps the old one and still
+        # aliases, because an omitted knob leaves the port on
+        # `api.MATMUL_PRECISION`, which is what the released default names.
+        profile["matmul_precision"] = str(
+            profile.get(
+                "matmul_precision",
+                _RELEASED_COMPILE_DEFAULTS["matmul_precision"],
+            )
+        )
+        # ... and keep the three out of the strip, which would otherwise put
+        # the released spelling back to absent the moment it equals a default.
+        # The two diffusion widths need no `skip`: the native option's default
+        # is `None` rather than a value, so the strip table never names them.
         self._strip_released_defaults(
             profile,
             _RELEASED_COMPILE_DEFAULTS,
-            skip=("pair_residual_dtype",),
+            skip=("pair_residual_dtype", "matmul_precision"),
         )
         if profile.get("cp_layout") == "1d":
             profile.pop("cp_layout")

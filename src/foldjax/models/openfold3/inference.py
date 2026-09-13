@@ -219,24 +219,24 @@ class InferenceConfig(NamedTuple):
     #: opt-in. Part of the config, so the two never share a compiled
     #: program. See :mod:`foldjax.models._glu`.
     glu_backend: str = "xla"
-    #: Element type of the token/pair representation track: ``"float32"``,
-    #: the shipped profile and upstream's own inference precision, or
-    #: ``"bfloat16"``, which is opt-in and safe only up to roughly 2,000
-    #: tokens. What the narrow value reaches, and what it deliberately leaves
-    #: float32, is :func:`cast_narrow_params`; models/openfold3/dtype.py
-    #: carries the per-size measurement. Part of the config rather than a
-    #: runtime flag so it rides into ``_PredictGraphIdentity`` and the
+    #: Element type of the token/pair representation track: ``"bfloat16"``,
+    #: the shipped profile, or ``"float32"``, upstream's own inference
+    #: precision and the value that reproduces its arithmetic in one
+    #: spelling. What the narrow value reaches, and what it deliberately
+    #: leaves float32, is :func:`cast_narrow_params`. Part of the config rather
+    #: than a runtime flag so it rides into ``_PredictGraphIdentity`` and the
     #: persistent cache namespace: two runs that differ here compile
     #: different programs and must never share one.
     dtype: str = DEFAULT_DTYPE
     #: The confidence head's re-embedding Pairformer, separately. It follows
-    #: ``dtype`` when a caller says nothing, so opting into a narrow trunk
-    #: narrows it too and this knob exists to hold the head *wide* against a
-    #: narrowed trunk --
-    #: ``confidence_dtype="float32"`` -- or to narrow it alone against a wide
-    #: one. It is the region that can be bisected out without touching the
-    #: trunk, and it cannot move a structure: this head consumes predicted
-    #: coordinates and emits scores, never coordinates. Boltz-2's
+    #: ``dtype`` when a caller says nothing -- which is why
+    #: ``dtype="float32"`` alone restores the upstream FP32 precision for both
+    #: regions
+    #: -- and this knob exists to hold the head *wide* against the shipped
+    #: narrow trunk (``confidence_dtype="float32"``), or to narrow it alone
+    #: against ``dtype="float32"``. It is the region that can be bisected out
+    #: without touching the trunk. It cannot move a structure: this head consumes
+    #: predicted coordinates and emits scores, never coordinates. Boltz-2's
     #: ``diffusion_compute_dtype`` is the same idea -- a native, region-scoped
     #: companion to the neutral knob rather than a third neutral value.
     #:
@@ -269,7 +269,8 @@ def resolve_dtypes(config: InferenceConfig) -> tuple[Any, Any]:
     Both fields are already resolved strings -- :func:`released_config`
     applies ``confidence_dtype``'s "follow ``dtype``" default -- so this is
     only the string-to-dtype step, and no second file can resolve a sentinel
-    differently. The released profile is ``(None, None)``.
+    differently. The shipped profile is ``(bfloat16, bfloat16)``;
+    ``dtype="float32"`` is the pair ``(None, None)``, which narrows nothing.
     """
 
     return (narrow_dtype(config.dtype), narrow_dtype(config.confidence_dtype))
@@ -286,10 +287,19 @@ def cast_narrow_params(
     ever emitted. :func:`resolve_dtypes` turns a config into the pair.
     ``dtype`` covers the trunk and the diffusion conditioning;
     ``confidence_dtype`` covers the confidence head's re-embedding Pairformer
-    and nothing else. The released profile narrows neither and returns the
-    tree it was given; ``--option dtype=bfloat16`` narrows both, because
-    ``confidence_dtype`` follows ``dtype``, and every field outside the two
-    groups is still handed back as the object it arrived as.
+    and nothing else. The shipped profile narrows both, because
+    ``confidence_dtype`` follows ``dtype``; ``--option dtype=float32``
+    narrows neither and returns the tree it was given. Every field outside
+    the two groups is handed back as the object it arrived as either way.
+
+    **Every entry point that loads a checkpoint has to call this.** A config
+    that narrows meeting float32 parameters is not a wide run: the
+    activations round down at the region boundary and promote straight back
+    at the first matmul, so the entry rounding is paid and nothing runs
+    narrow. The three are the managed backend's weight loader
+    (``backends/openfold3.py``), ``cli/predict.py`` and
+    ``cli/verify_checkpoint.py``. This was an identity while the default
+    narrowed nothing; under the shipped default it is load-bearing.
 
     The split, with its source in models/openfold3/dtype.py:
 

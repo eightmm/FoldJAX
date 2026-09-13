@@ -82,7 +82,7 @@ _COMPILE_OPTIONS = (
 #: same reason as `_GLU_BACKENDS` -- resolving a cache directory must not
 #: import the model package or JAX -- and a test pins the copy to
 #: `released_config`'s signature.
-_DEFAULT_DTYPE = "float32"
+_DEFAULT_DTYPE = "bfloat16"
 
 #: The float32 matmul precision this port pins for itself, which is upstream's
 #: TF32 (`models/openfold3/inference.py:549`, read at :577 through
@@ -262,13 +262,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # into that variable in `predict` below, so a caller says the same thing here
     # as anywhere else.
     #
-    # `dtype` defaults to `float32`, upstream's released inference precision
-    # (`entry_points/validator.py:127`). `bfloat16` is opt-in and its value
-    # depends on the size: 23-35% faster and 24-40% smaller at every size
-    # measured, with per-chain structures identical to float32 at 2,096
-    # tokens but a 4.7-5.8 A same-index drift at 3,012 against a 0.6 A
-    # control spread. models/openfold3/dtype.py carries the table and the
-    # leading hypothesis for the drift.
+    # `dtype` defaults to `bfloat16`; `float32` selects the upstream inference
+    # precision (`entry_points/validator.py:127`). The selection controls the
+    # compiled program and its parameter cache; numerical validation is kept
+    # separate from this option translation.
     #
     # `bfloat16` does **not** narrow the whole model -- a whole-trunk cast,
     # input embedder included, takes pLDDT from 0.858 to 0.466. It narrows the
@@ -285,8 +282,8 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # models/openfold3/dtype.py carries the reading with line numbers.
     #
     # The confidence head is a second narrowing group with its own native
-    # knob, `confidence_dtype`, which follows `dtype` unless set -- so opting
-    # into a narrow trunk narrows it too, and the knob is there to hold that
+    # knob, `confidence_dtype`, which follows `dtype` unless set -- so a narrow
+    # trunk narrows it too, and the knob is there to hold that
     # one region wide against a narrowed trunk, or narrow it against a wide
     # one. Narrowing it alone measures as nothing (+0.4% wall / -0.1% peak at
     # 1,003 tokens), which is why it is not its own default. It is
@@ -360,19 +357,25 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 # Native options accept integer spellings; use the same value
                 # that ``predict`` passes into ``released_config``.
                 profile[name] = resolved
-        # `dtype` is a string, so it misses the int/bool coercion above. An
-        # explicitly repeated default names the same program an unasked run
-        # gets, and a second namespace for it would also split the in-process
-        # JIT pool.
-        if profile.get("dtype") == _DEFAULT_DTYPE:
-            profile.pop("dtype", None)
-        # `confidence_dtype` follows `dtype` when unset, so an explicit value
-        # equal to the resolved one names the same program. Compared against
-        # the request's `dtype` rather than against a literal for that reason:
-        # under `dtype=float32` the alias to strip is `float32`, not the
-        # shipped `bfloat16`.
-        if profile.get("confidence_dtype") == options.get("dtype", _DEFAULT_DTYPE):
-            profile.pop("confidence_dtype", None)
+        # Both widths are recorded as the value the run resolves to, never as
+        # the spelling and never stripped. Aliasing still holds -- an omitted
+        # `dtype` and an explicit `bfloat16` both write `"bfloat16"`, so they
+        # name one namespace and do not split the in-process JIT pool -- but
+        # stripping the default instead would make *absence* the signature for
+        # the shipped width, and absence already means `float32`: it is what
+        # every run recorded before 2026-09-12 wrote, when the default was
+        # upstream's `32-true`. Two programs, one name. Spelling the resolved
+        # value pins absence to "this record predates the widths being
+        # written", the way Boltz-2's `pair_residual_dtype` does for the same
+        # reason.
+        #
+        # `confidence_dtype` follows `dtype` when unset, so its resolved value
+        # is the request's `dtype` unless the knob is spelled -- read from the
+        # request rather than from a literal, because under `dtype=float32`
+        # the head is float32 too.
+        trunk_dtype = str(options.get("dtype", _DEFAULT_DTYPE))
+        profile["dtype"] = trunk_dtype
+        profile["confidence_dtype"] = str(options.get("confidence_dtype", trunk_dtype))
         # Same shape again: a string, so it misses the int/bool coercion, and
         # this port pins its own value rather than inheriting JAX's. An
         # omitted knob runs `_MATMUL_PRECISION`, so spelling it must not open
@@ -417,8 +420,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         for name in ("dtype", "confidence_dtype"):
             if name in options and str(options[name]) not in allowed:
                 raise ValueError(
-                    f"{name} must be one of {', '.join(allowed)}; "
-                    f"got {options[name]!r}"
+                    f"{name} must be one of {', '.join(allowed)}; got {options[name]!r}"
                 )
         for name in ("num_samples", "num_steps", "num_recycles"):
             if name in options:
@@ -633,17 +635,18 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         overrides["returned_representations"] = wanted
         overrides["stop_after_inputs"] = request.stop_after == "inputs"
         overrides["stop_after_trunk"] = request.stop_after == "trunk"
-        overrides["has_atomized_tokens"] = (
-            request.stop_after not in ("trunk", "inputs")
-            and data.has_atomized_tokens(features)
-        )
+        overrides["has_atomized_tokens"] = request.stop_after not in (
+            "trunk",
+            "inputs",
+        ) and data.has_atomized_tokens(features)
         # PredictionResult exposes structures and normalized scores, so native
         # PAE/PDE/distogram bin distributions are opt-in. Decide this before
         # tracing: XLA can then DCE the unused PDE/distogram heads and keep PAE only
         # as long as pTM/ipTM need it. The raw CLI and direct inference API retain
         # their historical DEFAULT_ARRAY_BUDGET_BYTES / all-arrays behaviour.
-        retain_pair_arrays = (
-            all_arrays and request.stop_after not in ("trunk", "inputs")
+        retain_pair_arrays = all_arrays and request.stop_after not in (
+            "trunk",
+            "inputs",
         )
         array_budget_bytes = None if retain_pair_arrays else _MANAGED_ARRAY_BUDGET_BYTES
         overrides["max_array_bytes"] = array_budget_bytes
@@ -678,7 +681,8 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             n_token = padding_plan.target["tokens"]
             n_atom = padding_plan.target["atoms"]
             config = inference.released_config(
-                n_token=n_token, n_atom=n_atom,
+                n_token=n_token,
+                n_atom=n_atom,
                 **{**overrides, "msa_depth": padding_plan.target["msa"]},
             )
         features, n_chain = data.normalize_asym_ids(features)
@@ -732,9 +736,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             Path(request.weights),
             load_params,
             prepare_key=(
-                "prefix", requested_prefix,
-                "dtype", dtype,
-                "confidence_dtype", confidence_dtype,
+                "prefix",
+                requested_prefix,
+                "dtype",
+                dtype,
+                "confidence_dtype",
+                confidence_dtype,
             ),
         )
         kernel = options.pop("triangle_kernel", None)
@@ -783,7 +790,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
                 from foldjax.models.openfold3.streaming import compile_streamed_predict
 
                 streamed = compile_streamed_predict(
-                    config, table, n_chain=n_chain, triangle_kernel=kernel,
+                    config,
+                    table,
+                    n_chain=n_chain,
+                    triangle_kernel=kernel,
                     cache_scope=(
                         None if request.cache_dir is None else str(request.cache_dir)
                     ),

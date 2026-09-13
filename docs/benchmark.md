@@ -126,6 +126,14 @@ the thing nobody remembers to pass. So these columns keep measuring the same
 program upstream runs, and the numbers above are what a default `foldjax
 predict --model opendde` now does instead.
 
+**The OpenFold3 row is pinned the same way, since 2026-09-12**, and for the
+same reason: its default is now the partial bfloat16 track while upstream runs
+`32-true`. A default `foldjax predict --model openfold3` is therefore faster
+and smaller than this table's OpenFold3 row shows -- 98.7 -> 76.2 s and
+9,273 -> 5,552 MiB at 1,003 tokens, 954 -> 661 s and 50,412 -> 34,893 MiB at
+3,012, with per-chain deposited RMSD unchanged. `docs/cli.md` and
+`docs/openfold3-bf16-default-evidence-2026-09-12.md` carry the panel.
+
 **2,096 tokens is the last size most of these upstreams reach.** Upstream
 Boltz-2 and upstream Protenix v2 both complete here and neither survives 3,012
 -- one runs out of memory, the other refuses by assertion. OpenDDE is already

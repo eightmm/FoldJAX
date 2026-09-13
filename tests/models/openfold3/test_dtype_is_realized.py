@@ -190,12 +190,8 @@ def _leaf_dtypes(tree) -> set:
 # ---------------------------------------------------------------- the default
 
 
-def test_the_released_default_narrows_nothing() -> None:
-    """The shipped profile is upstream's 32-true; bfloat16 is opt-in.
-
-    models/openfold3/dtype.py records why: the narrow profile is 23-35%
-    faster and 24-40% smaller at every size measured, and at 3,012 tokens it
-    moves the structure 4.65-5.80 A against a 0.619 A control spread.
+def test_the_shipped_default_narrows_the_representation_track() -> None:
+    """The shipped profile is the partial bfloat16 one; float32 is the opt-out.
 
     Asserted as the resolved pair rather than as config strings, because the
     strings are what a dead branch would also still carry. Both entries,
@@ -204,12 +200,15 @@ def test_the_released_default_narrows_nothing() -> None:
     """
     from foldjax.models.openfold3.inference import resolve_dtypes
 
-    assert resolve_dtypes(released_config(n_token=8, n_atom=32)) == (None, None)
-    assert narrow_dtype(DEFAULT_DTYPE) is None
-    assert narrow_dtype("bfloat16") is jnp.bfloat16
-    assert resolve_dtypes(released_config(n_token=8, n_atom=32, dtype="bfloat16")) == (
+    assert resolve_dtypes(released_config(n_token=8, n_atom=32)) == (
         jnp.bfloat16,
         jnp.bfloat16,
+    )
+    assert narrow_dtype(DEFAULT_DTYPE) is jnp.bfloat16
+    assert narrow_dtype("float32") is None
+    assert resolve_dtypes(released_config(n_token=8, n_atom=32, dtype="float32")) == (
+        None,
+        None,
     )
 
 
@@ -221,16 +220,21 @@ def test_an_unknown_dtype_is_refused_naming_the_allowed_values() -> None:
     assert DTYPES == ("float32", "bfloat16")
 
 
-def test_a_default_run_returns_the_parameter_tree_it_was_given() -> None:
-    """Not "equal to": the same object, so a default run cannot pay for a copy.
+def test_the_float32_profile_returns_the_parameter_tree_it_was_given() -> None:
+    """Not "equal to": the same object, so ``dtype=float32`` cannot pay a copy.
 
-    The shipped profile must emit no cast at all rather than a tree of
+    The wide profile must emit no cast at all rather than a tree of
     float32-to-float32 converts that a reader would have to prove are free.
+    Asserted through ``released_config`` as well as through the pair, because
+    ``dtype=float32`` is now the spelling that opts *out* and a follow rule
+    that stopped following would leave the head narrowing here.
     """
     params = _confidence(_rng())
     assert cast_narrow_params(params, *_both("float32")) is params
-    shipped = inference_module.resolve_dtypes(released_config(n_token=8, n_atom=32))
-    assert cast_narrow_params(params, *shipped) is params
+    wide = inference_module.resolve_dtypes(
+        released_config(n_token=8, n_atom=32, dtype="float32")
+    )
+    assert cast_narrow_params(params, *wide) is params
 
 
 # ------------------------------------------------- which parameters are cast
@@ -322,8 +326,8 @@ def test_the_cast_narrows_exactly_the_named_subtrees() -> None:
         assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.float32)}, path
 
 
-def test_the_opt_in_profile_narrows_the_classified_subtrees() -> None:
-    """What ``--option dtype=bfloat16`` pays for, and what it leaves alone.
+def test_the_bfloat16_profile_narrows_the_classified_subtrees() -> None:
+    """What the ``bfloat16`` profile narrows, and what it leaves alone.
 
     Driven through :func:`released_config` rather than by handing
     ``cast_narrow_params`` two literals, so the option's own resolution is in
@@ -698,8 +702,8 @@ def test_the_narrowed_weights_reach_a_matmul() -> None:
 def test_the_config_carries_the_dtype_into_the_graph_identity() -> None:
     """Two dtypes are two programs; sharing one cache entry would be wrong."""
     base = released_config(n_token=8, n_atom=32)
-    narrow = released_config(n_token=8, n_atom=32, dtype="bfloat16")
-    assert base != narrow
+    wide = released_config(n_token=8, n_atom=32, dtype="float32")
+    assert base != wide
     identity = inference_module._PredictGraphIdentity
     assert "config" in identity.__dataclass_fields__
 
@@ -728,22 +732,28 @@ def _request(tmp_path, **options):
 def test_the_dtype_partitions_the_compilation_cache(tmp_path) -> None:
     """Two dtypes are two executables and must not share a namespace.
 
-    The repeated-default case is the other half: an explicit ``float32``
-    names the program an unasked run gets, so it must land in the same scope
-    rather than forking a second one that also splits the in-process JIT
-    pool.
+    Three properties, and the third is the one the default flip introduced.
+    An explicit ``bfloat16`` names the program an unasked run gets, so it must
+    land in the same scope rather than forking a second one that also splits
+    the in-process JIT pool. ``float32`` is the value that has to fork.
+
+    And the resolved width is *recorded* rather than stripped, because a strip
+    would make absence the signature for the shipped width -- while absence
+    already means ``float32``, which is what every run recorded before the
+    2026-09-12 flip wrote. Asserting the key is present is what keeps a future
+    "the default aliases to omitted" simplification from re-opening that.
     """
     from foldjax.registry import get_backend
 
     backend = get_backend("openfold3")
     unasked = backend.cache_profile(_request(tmp_path))
-    repeated = backend.cache_profile(_request(tmp_path, dtype="float32"))
-    narrow = backend.cache_profile(_request(tmp_path, dtype="bfloat16"))
+    repeated = backend.cache_profile(_request(tmp_path, dtype="bfloat16"))
+    wide = backend.cache_profile(_request(tmp_path, dtype="float32"))
 
-    assert "dtype" not in unasked
+    assert unasked["dtype"] == "bfloat16"
     assert repeated == unasked
-    assert narrow["dtype"] == "bfloat16"
-    assert narrow != unasked
+    assert wide["dtype"] == "float32"
+    assert wide != unasked
 
 
 def test_a_native_dtype_spelling_is_refused_by_name(tmp_path) -> None:
@@ -846,10 +856,10 @@ def test_the_whole_program_traces_under_bfloat16_on_real_weights() -> None:
 def test_the_confidence_dtype_follows_dtype_unless_it_is_set() -> None:
     """One default, stated once, so two files cannot disagree about it.
 
-    The consequence worth naming: because the head follows ``dtype``, opting
-    into a bfloat16 trunk already narrows it, and ``confidence_dtype`` is not
-    a second thing to turn on. It exists to hold this one region *wide*
-    against a narrowed trunk, or narrow it against a wide one.
+    The consequence worth naming: because the head follows ``dtype``, a
+    bfloat16 trunk already narrows it, and ``confidence_dtype`` is not a
+    second thing to turn on. It exists to hold this one region *wide* against
+    a narrowed trunk, or narrow it against a wide one.
 
     Every cell of the 2x2 is asserted, because "follows ``dtype``" and
     "ignores ``dtype``" agree on the diagonal and differ only off it.
@@ -859,21 +869,21 @@ def test_the_confidence_dtype_follows_dtype_unless_it_is_set() -> None:
     def config(**options):
         return released_config(n_token=8, n_atom=32, **options)
 
-    # Unset, the head is wide because the trunk is: not a separate default.
-    assert resolve_dtypes(config()) == (None, None)
-    assert config(confidence_dtype="float32") == config()
-    # Opting into the narrow trunk narrows the head with it, which is why
-    # there is no second value to set.
-    assert resolve_dtypes(config(dtype="bfloat16")) == (jnp.bfloat16, jnp.bfloat16)
-    assert config(dtype="bfloat16", confidence_dtype="bfloat16") == config(
-        dtype="bfloat16"
+    # Unset, the head is narrow because the trunk is: not a separate default.
+    assert resolve_dtypes(config()) == (jnp.bfloat16, jnp.bfloat16)
+    assert config(confidence_dtype="bfloat16") == config()
+    # Opting out to the wide trunk widens the head with it, which is why
+    # ``--option dtype=float32`` alone restores upstream's shape.
+    assert resolve_dtypes(config(dtype="float32")) == (None, None)
+    assert config(dtype="float32", confidence_dtype="float32") == config(
+        dtype="float32"
     )
 
     # Off the diagonal, the knob wins in both directions.
-    assert resolve_dtypes(config(confidence_dtype="bfloat16")) == (None, jnp.bfloat16)
-    assert resolve_dtypes(config(dtype="bfloat16", confidence_dtype="float32")) == (
-        jnp.bfloat16,
+    assert resolve_dtypes(config(confidence_dtype="float32")) == (jnp.bfloat16, None)
+    assert resolve_dtypes(config(dtype="float32", confidence_dtype="bfloat16")) == (
         None,
+        jnp.bfloat16,
     )
 
     with pytest.raises(ValueError, match=r"must be one of float32, bfloat16"):
@@ -917,7 +927,7 @@ def test_the_confidence_option_is_realized_as_bfloat16_activations() -> None:
     lowered = jax.jit(_confidence_call, static_argnums=1).lower(shipped, confidence)
     assert "bf16" in _dot_operand_dtypes(lowered.as_text())
 
-    wide_config = released_config(n_token=8, n_atom=32)
+    wide_config = released_config(n_token=8, n_atom=32, dtype="float32")
     wide = cast_narrow_params(
         _synthetic_inference_params()._replace(
             pairformer_embedding=_confidence(_rng())
@@ -1009,11 +1019,11 @@ def test_the_confidence_knob_partitions_the_cache_only_when_it_differs(
     from foldjax.registry import get_backend
 
     backend = get_backend("openfold3")
-    # The third arm is the one a literal comparison would get wrong: under
-    # `dtype=bfloat16` the alias to strip is `bfloat16`, not the shipped
-    # `float32`.
+    # The second arm is the one a literal comparison would get wrong: under
+    # `dtype=float32` the value that aliases is `float32`, not the shipped
+    # `bfloat16`.
     arms = (
-        ({}, "float32", "bfloat16"),
+        ({}, "bfloat16", "float32"),
         ({"dtype": "float32"}, "float32", "bfloat16"),
         ({"dtype": "bfloat16"}, "bfloat16", "float32"),
     )
@@ -1026,7 +1036,10 @@ def test_the_confidence_knob_partitions_the_cache_only_when_it_differs(
             _request(tmp_path, **trunk, confidence_dtype=other)
         )
 
-        assert "confidence_dtype" not in base, trunk
+        # Recorded as the resolved width rather than stripped, for the reason
+        # `dtype` is: this head followed a float32 trunk before the flip, so
+        # absence has to keep meaning "recorded before the widths were".
+        assert base["confidence_dtype"] == alias, trunk
         assert repeated == base, trunk
         assert split["confidence_dtype"] == other, trunk
         assert split != base, trunk
@@ -1051,14 +1064,14 @@ def test_the_resolved_confidence_dtype_does_not_fork_the_jit_owner() -> None:
     assert omitted == released_config(
         n_token=8, n_atom=32, confidence_dtype=DEFAULT_DTYPE
     )
-    assert omitted != released_config(n_token=8, n_atom=32, confidence_dtype="bfloat16")
+    assert omitted != released_config(n_token=8, n_atom=32, confidence_dtype="float32")
 
     # The same must hold on the other trunk dtype, where the resolved value
-    # is `bfloat16` and the literal default is the wrong thing to compare to.
-    narrow = released_config(n_token=8, n_atom=32, dtype="bfloat16")
-    assert narrow.confidence_dtype == "bfloat16"
-    assert narrow == released_config(
-        n_token=8, n_atom=32, dtype="bfloat16", confidence_dtype="bfloat16"
+    # is `float32` and the literal default is the wrong thing to compare to.
+    wide = released_config(n_token=8, n_atom=32, dtype="float32")
+    assert wide.confidence_dtype == "float32"
+    assert wide == released_config(
+        n_token=8, n_atom=32, dtype="float32", confidence_dtype="float32"
     )
 
 

@@ -150,10 +150,13 @@ def test_verifier_passes_normalized_static_chain_count(
     monkeypatch.setattr(
         inference,
         "released_config",
-        # `bfloat16` rather than the shipped `float32`: this command has no
-        # dtype flag, so under the default the narrowing cast is the identity
-        # and the assertion at the end would hold whether or not the command
-        # called it. Naming the narrow value is what makes it able to fail.
+        # Spelled rather than inherited from the shipped default, which is
+        # now `bfloat16` too: this fake stands in for `released_config`, so
+        # reading the default through it would make the assertion at the end
+        # restate the default instead of this command's own behaviour. The
+        # narrow value is named because only a narrow one can fail -- under
+        # float32 the cast is the identity and the assertion would hold
+        # whether or not the command called it.
         lambda **kwargs: SimpleNamespace(
             msa_depth=1024,
             num_recycles=4,

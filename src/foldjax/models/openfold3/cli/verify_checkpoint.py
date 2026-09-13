@@ -177,7 +177,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The same cast the managed backend and the predict CLI apply after
     # loading weights. Without it a narrowed region casts its activations
     # down and meets float32 parameters at the first matmul, which promotes:
-    # this command would then report a program no entry point runs.
+    # this command would then report a program no entry point runs. The
+    # shipped `dtype` narrows, so this is on the default path.
     params = cast_narrow_params(params, *resolve_dtypes(config))
     print(f"\nrunning predict on {jax.devices()[0]} ...")
     prediction = predict(

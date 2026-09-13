@@ -248,10 +248,16 @@ def main(argv=None):
         features = streamed_host_features(features)
         host_steps = HOST_FEATURE_STEPS
     budget = array_budget_bytes(streamed=args.streamed, all_arrays=args.all_arrays)
+    # `dtype="float32"` because every capture this replays is a float32
+    # native run and `map_inference_params` above hands back float32
+    # parameters uncast: under the port's partial-bfloat16 default the
+    # activations would narrow, meet those parameters and promote back, so
+    # the replay would pay an entry rounding and run nothing narrow.
+    # tests/parity/test_openfold3.py copies this call and pins the same value.
     config = released_config(
         n_token=features["token_mask"].shape[-1],
         n_atom=features["atom_mask"].shape[-1],
-        num_recycles=4, num_samples=5, num_steps=200,
+        num_recycles=4, num_samples=5, num_steps=200, dtype="float32",
         msa_depth=tape.msa_indices.shape[1], max_array_bytes=budget,
         returned_representations=(
             ("single_inputs", "single", "pair") if args.capture_trunk else ()

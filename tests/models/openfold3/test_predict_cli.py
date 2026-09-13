@@ -338,12 +338,15 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
             num_steps=200,
             num_recycles=4,
             pair_chunk_size=None,
-            # `bfloat16` rather than the shipped `float32`: the raw CLI
-            # has no dtype flag, so under the default the narrowing cast is
-            # the identity and an assertion on its result would hold whether
-            # or not the CLI called it. Naming the narrow value here is what
-            # makes the assertion below able to fail. `confidence_dtype`
-            # follows `dtype`, the way `released_config` resolves it.
+            # Spelled rather than inherited from the shipped default, which
+            # is now `bfloat16` too: this fake stands in for
+            # `released_config`, so reading the default through it would make
+            # the assertion below restate whatever the default happens to be
+            # instead of the CLI's own behaviour. The narrow value is named
+            # because only a narrow one can fail -- under float32 the cast is
+            # the identity and the assertion would hold whether or not the
+            # CLI called it. `confidence_dtype` follows `dtype`, the way
+            # `released_config` resolves it.
             dtype=kwargs.get("dtype", "bfloat16"),
             confidence_dtype=kwargs.get(
                 "confidence_dtype", kwargs.get("dtype", "bfloat16")

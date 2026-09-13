@@ -126,6 +126,12 @@ def _config(n_atom: int, blocks: int = 1, n_token: int = 12) -> InferenceConfig:
         confidence_max_bin=heads.pairformer_embedding.max_bin,
         confidence_no_bin=heads.pairformer_embedding.no_bin,
         experimentally_resolved_bins=heads.experimentally_resolved.c_out,
+        # Both spelled, because this builds `InferenceConfig` directly and so
+        # bypasses `released_config`, which is the only place the
+        # "`confidence_dtype` follows `dtype`" rule is applied. The reference
+        # is upstream's float32 forward.
+        dtype="float32",
+        confidence_dtype="float32",
     )
 
 

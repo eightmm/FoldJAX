@@ -10,6 +10,46 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Changed
+
+- **OpenFold3 now defaults its partial token/pair track to bfloat16.**
+  `--option dtype=float32` restores upstream's `32-true` inference precision.
+  A [28-row panel over three targets](docs/openfold3-bf16-default-evidence-2026-09-12.md)
+  measured bfloat16 faster and smaller at every size — 98.7 → 76.2 s and
+  9,273 → 5,552 MiB at 1,003 tokens, 954 → 661 s and 50,412 → 34,893 MiB at
+  3,012 — with per-chain deposited RMSD the same on both arms at all three
+  sizes.
+
+  The 3,012-token result that had kept this option opt-in was read wrongly,
+  twice, and the correction is the substance of this entry. It was measured as
+  a same-index residual between the bfloat16 arm and a float32 arm at the same
+  seed — 25 Å at seed 202 — and the float32 arm's healthy within-set spread
+  (0.569 Å) was taken as evidence that the bfloat16 arm was the one that moved.
+  A residual between two arms cannot say which of them moved, and a within-arm
+  spread cannot see a basin the whole arm is sitting in. Scored against the
+  deposited structure instead, on a permutation-aware chain assignment and with
+  the catalase core (122–753) and the N-terminal arm (27–121) read separately:
+  the core is 0.55–1.03 Å in all twelve 3,012-token arms, and the arm misses
+  its basin in exactly two — **float32 at seed 202 and bfloat16 at seed 404**,
+  each in all five samples of that seed. Each dtype misses at one seed in six,
+  and neither misses at a seed the other one makes.
+
+  Six seeds per arm do not estimate a rate, and the mechanism is not measured;
+  it is consistent with this port's per-recycle MSA resubsampling
+  (`backends/openfold3.py:636`). The FoldJAX-versus-upstream benchmark matrix
+  pins `dtype=float32` so both columns run one precision.
+
+  **Every OpenFold3 compilation-cache namespace moves once.** `cache_profile`
+  now records `dtype` and `confidence_dtype` as the widths the run resolves
+  to, always, instead of stripping a value equal to the default. Stripping
+  would have made *absence* the signature for the shipped bfloat16 — and
+  absence already means float32, which is what every run recorded before this
+  wrote. Two programs, one name. Spelling the resolved value pins absence to
+  "this record predates the widths being written", the way Boltz-2's
+  `pair_residual_dtype` does. The aliasing this replaces still holds: an
+  omitted `dtype` and an explicit `bfloat16` name one namespace. The cost is
+  one cold compile per shape.
+
 ### Validation checkpoint (2026-09-05)
 
 - Recorded independent preprocessing across 202 comparable model/input cells,
@@ -2384,9 +2424,21 @@ unless it says so here, in its own paragraph.
   `resolved_matmul_precision` nowhere, so they pin nothing, an omitted knob
   is whatever JAX is set to, and there is no released value to alias.
 
-  No released-default namespace moves: an omitted request resolves to the
-  same directory it did before on all six ports, and on OpenFold3 and
-  Protenix so does an explicit `high`.
+  Five of the six keep their released-default namespace: an omitted request
+  resolves to the directory it did before, and on OpenFold3 and Protenix so
+  does an explicit `high`. Both of those pin `high` and always have, so
+  absence meant `high` before this and means `high` after it.
+
+  **Boltz-2 is the exception, and its namespace moves**, because it is the one
+  port whose pinned value changed: it shipped `highest` until 2026-09-11 and
+  did not name the knob in `compile_options` at all then. Stripping the new
+  `high` would give absence a second meaning while it already carries
+  `highest` in every run recorded before that date. `cache_profile` therefore
+  spells the resolved scope rather than stripping it, the way it does for
+  `pair_residual_dtype` and the two diffusion widths — the aliasing is
+  unchanged, an omitted knob and an explicit `high` still name one namespace,
+  and this costs nothing extra because the diffusion widths above already move
+  every Boltz-2 namespace in this same change.
 
 - **Boltz-2's `diffusion_chunk_size` joins the compilation-cache identity,
   as the resolved width rather than the spelling.** OpenDDE, OpenFold3 and

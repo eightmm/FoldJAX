@@ -411,11 +411,18 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     # released five-sample affinity run both resolve to -- a single unchunked
     # rollout -- and neither is spelled by any option above, which is the
     # point: the profile says what the run does, not what the caller typed.
+    #
+    # `matmul_precision` too: this port shipped `highest` until 2026-09-11 and
+    # did not name the knob in `compile_options` at all, so absence in a
+    # recorded run means `highest` and cannot be reused for the new `high`.
+    # The three arms below spell it and still share one namespace, which is
+    # the aliasing the strip used to provide.
     assert backend.cache_profile(omitted) == {
         "num_recycles": 5,
         "pair_residual_dtype": "bfloat16",
         "diffusion_chunk_size": None,
         "affinity_diffusion_chunk_size": None,
+        "matmul_precision": "high",
     }
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
@@ -511,6 +518,7 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         "pair_residual_dtype": "bfloat16",
         "diffusion_chunk_size": None,
         "affinity_diffusion_chunk_size": None,
+        "matmul_precision": "high",
     }
     assert backend.cache_profile(cp_auto) == backend.cache_profile(cp_omitted)
     assert backend.cache_profile(cp_rows) == backend.cache_profile(cp_omitted)

@@ -145,11 +145,15 @@ def released_prediction(released_reference):
 
     params = map_inference_params(state)
     # The released preset is what is under test here, not a hand-built config.
+    # `dtype` is the one field pinned against it: the reference side is
+    # upstream's float32 forward on an uncast float32 state dict, and the
+    # port's default is the partial bfloat16 profile.
     config = released_config(
         n_token=N_TOKEN,
         n_atom=n_atom,
         num_samples=SAMPLES,
         num_steps=STEPS,
+        dtype="float32",
     )
     assert len(params.trunk.pairformer_stack.blocks) == 48
     assert len(params.trunk.msa_module.blocks) == 4

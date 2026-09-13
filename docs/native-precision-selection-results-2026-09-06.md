@@ -50,7 +50,12 @@ separate isolation. These maxima are not additive causal decompositions.
   target remains native FP32/TF32-on. ABAG is a distinct checkpoint and is not
   covered by these measurements.
 - OpenFold3 v0.5/OpenBind: do not admit optional BF16; retain native `32-true`
-  as the target, with the failed repeat floor explicitly unresolved.
+  as the target, with the failed repeat floor explicitly unresolved. This is a
+  statement about the **comparison target**, and it still stands: `bench/spec.py`
+  pins `dtype=float32` on the FoldJAX side so both columns run `32-true`. It is
+  not a verdict on FoldJAX's own execution default, which became the partial
+  bfloat16 track on 2026-09-12 on a separate 28-row panel
+  (`openfold3-bf16-default-evidence-2026-09-12.md`).
 - ESMFold2: correction to earlier classification. Its checkpoint has FP32
   weights, but pinned CUDA forward explicitly enables BF16 autocast for trunk,
   selected conditioning and confidence operations. It belongs with native

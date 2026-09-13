@@ -297,9 +297,10 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
     # The same cast the managed backend applies when it loads weights. Without
     # it a narrowed region would cast its *activations* down and then meet
     # float32 parameters at the first matmul, which promotes: the entry
-    # rounding is paid and nothing runs narrow. `confidence_dtype` defaults to
-    # bfloat16, so this entry point needs it even when nothing narrows the
-    # trunk.
+    # rounding is paid and nothing runs narrow. The shipped `dtype` narrows,
+    # and `confidence_dtype` follows it, so this call is load-bearing on the
+    # default path rather than only under `--option dtype=bfloat16`; it is
+    # the identity only under `dtype=float32`.
     params = cast_narrow_params(params, *resolve_dtypes(config))
     print(
         f"mapped {len(params.trunk.pairformer_stack.blocks)} Pairformer / "

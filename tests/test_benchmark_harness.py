@@ -93,6 +93,17 @@ def _successful_record(identity: dict[str, object]) -> dict[str, object]:
     }
 
 
+def test_comparison_options_pin_openfold3_to_publisher_fp32() -> None:
+    """The shared matrix must not compare FoldJAX BF16 against upstream FP32."""
+    from bench.spec import COMPARISON_OPTIONS
+
+    assert COMPARISON_OPTIONS["openfold3"] == {"dtype": "float32"}
+    assert drive._comparison_options("openfold3") == [
+        "--option",
+        "dtype=float32",
+    ]
+
+
 def test_artifact_fingerprints_are_deterministic_and_path_free(
     tmp_path: Path,
 ) -> None:

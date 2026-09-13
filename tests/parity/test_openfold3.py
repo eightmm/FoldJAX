@@ -153,6 +153,15 @@ def replay_config(features, tape, effective, *, stop_after_trunk: bool):
     ``max_array_bytes=None`` is what ``array_budget_bytes`` returns off the
     streamed path, and the sampling knobs come from the capture, not from a
     default that could drift away from what the native run did.
+
+    ``dtype="float32"`` for the same reason, and it is load-bearing rather
+    than decorative: the capture is a float32 native run, and the port's own
+    default is the partial bfloat16 profile. Pinned here *and* in
+    ``bench/openbind_core_replay.py``, which this function copies.
+    ``inference_params`` below deliberately skips ``cast_narrow_params``, so
+    an unpinned narrow config would cast activations down to meet float32
+    parameters and promote straight back -- the entry rounding paid and
+    nothing running narrow, which is a program no entry point ships.
     """
     from foldjax.models.openfold3.inference import released_config
 
@@ -162,6 +171,7 @@ def replay_config(features, tape, effective, *, stop_after_trunk: bool):
         num_recycles=4,
         num_samples=5,
         num_steps=200,
+        dtype="float32",
         msa_depth=tape.msa_indices.shape[1],
         max_array_bytes=None,
         returned_representations=(
