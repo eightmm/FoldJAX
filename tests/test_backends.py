@@ -2315,7 +2315,7 @@ def test_every_stripped_default_is_part_of_the_compile_identity():
     # hiding behind this test's own exemption. Settling it needs a GPU
     # compile of both values with the released weights; until someone runs
     # that, this entry is a deferral rather than a finding.
-    OUTSIDE_THE_IDENTITY = {"alphafold3": {"kernel_autotuning"}}
+    outside_the_identity = {"alphafold3": {"kernel_autotuning"}}
 
     for name, (backend, defaults) in tables.items():
         # `sampling_options` values reach the profile by their own route, and
@@ -2323,10 +2323,10 @@ def test_every_stripped_default_is_part_of_the_compile_identity():
         routed = set(backend.compile_options)
         routed.update(backend.sampling_options)
         routed.update(backend.execution_options)
-        routed.update(OUTSIDE_THE_IDENTITY.get(name, ()))
+        routed.update(outside_the_identity.get(name, ()))
         orphaned = sorted(set(defaults) - routed)
         assert not orphaned, (
             f"{name} strips {orphaned} from a cache profile they never enter; "
-            "add them to compile_options, or to OUTSIDE_THE_IDENTITY above "
+            "add them to compile_options, or to outside_the_identity above "
             "with the code that justifies it"
         )

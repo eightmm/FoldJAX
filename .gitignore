@@ -66,3 +66,6 @@ src/foldjax/models/alphafold3/_upstream/share/
 # recorded in EXPERIMENT_LOG.md, and the job scripts live in the session
 # scratchpad rather than in the package.
 /cluster/
+
+# Agent worktrees created by the Claude Code harness; never part of a commit.
+.claude/
