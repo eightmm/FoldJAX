@@ -120,6 +120,34 @@ deterministic -- 23.47 twice, 21.08 twice. Switching the outer product's chunk
 back off, with the other two in place, gives 21.87 GiB, so it is worth 0.79 GiB
 and the SwiGLU and the dtype are worth 1.60 together.
 
+**The same dtype fix on the branch the default actually takes is worth
+nothing on GPU, and that is the interesting half.** The table above measures
+`triangle_multiplicative`'s own body. `trunk.py:186` dispatches to
+`_autocast_triangle` whenever `trunk_dtype` is bfloat16 and there is no CP
+mesh, which is the released default, and that copy kept the promotion until
+`8e5a246`. The scale-row harness ran both sides -- snapshots `f08dab2` and
+`6fabb08`, whose only ESMFold2 difference is those two lines:
+
+| tokens | before | after |
+|---|---|---|
+| 1,003 | 154.00 s, 14,733.3 MiB | 157.27 s, 14,733.3 MiB |
+| 2,096 | 448.76 s, 46,041.8 MiB | 443.18 s, 46,050.2 MiB |
+
+**Byte-identical at 1,003 and 8.4 MiB larger at 2,096**, with the wall moving
+in opposite directions at the two sizes against a same-snapshot floor of 0.35%
+(156.56 / 157.10 at 1,003). So XLA had already fused the convert away on this
+path and the predicted 4,290 -> 8,580 MiB per live buffer never existed: a CPU
+reading of the jaxpr said the buffer was there and the GPU compiler disagreed,
+which is the failure mode `fusion-decisions-are-backend-specific` describes.
+The fix stays, because it is bit-identical and it makes the two branches spell
+the same thing, but it is a source-fidelity change and not a memory one. This
+row is recorded so nobody spends a GPU slot on it twice.
+
+At 1,003 tokens the scale-row peak is byte-identical -- 14,733.3 MiB -- across
+seven arms: both snapshots, `deterministic` on and off, `glu_backend=tokamax`,
+and `confidence_dtype=bfloat16`. Whatever sets this port's peak, none of those
+touch it.
+
 **A tighter block is worse, which is worth knowing before anyone tunes it.**
 The budget is 512 MiB, the same figure Protenix uses for the transition it
 shares this shape with. At 128 MiB the peak is 22.55 GiB and at 32 MiB it is
