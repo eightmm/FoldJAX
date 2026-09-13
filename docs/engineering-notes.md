@@ -148,6 +148,46 @@ seven arms: both snapshots, `deterministic` on and off, `glu_backend=tokamax`,
 and `confidence_dtype=bfloat16`. Whatever sets this port's peak, none of those
 touch it.
 
+**Where it is instead: after the folding trunk.** `stop_after` partitions the
+run without any attribution machinery, because the backend runs the language
+model only past `inputs` (`backends/esmfold2.py:625`) and returns before the
+structure module and the confidence head at `trunk`. One process per arm,
+since `peak_bytes_in_use` is a process high-water mark, each returning the
+smallest representation its stage has so nothing large is held live past the
+boundary being measured. At 2,096 tokens on 5DEI:
+
+| stopped after | what has run | peak |
+|---|---|---|
+| `inputs` | featurisation, no language model | **1,388.6 MiB** |
+| `trunk` | + language model + folding trunk | **17,336.5 MiB** |
+
+The scale-row full run at the same size is 46,041.8 MiB. That is a different
+harness -- a bench row rather than a direct `predict` -- so the two are not
+subtractable to the byte, but the order of magnitude is not in doubt: **the
+folding trunk everyone has been optimising is about a third of this port's
+peak, and the structure module and confidence head together are the rest.**
+Which is why seven arms of trunk-side levers all reported the same number.
+
+The confidence head is the larger suspect of the two, because the sample axis
+is not: peak moves ~1.0x from one sample to sixteen (the table further down).
+It runs `folding_trunk` a second time at full N (`models/heads.py:323`) and
+holds a float32 `[N, N, c_z]` accumulator across it and both logit heads --
+4,497 MiB at 2,096 tokens -- because upstream's `pair.add_(pair_delta.float())`
+casts the trunk result up before the residual add. `confidence_dtype=bfloat16`
+narrows the re-embedding that feeds it and cannot narrow the accumulator
+itself: bfloat16 plus float32 promotes, and the `.astype(jnp.float32)` on the
+trunk result is unconditional. `test_the_output_heads_stay_float32_under_the_option`
+pins that boundary deliberately, so moving it is a decision and not a bug fix.
+
+**3,012 tokens is a size wall, not a fragmentation one.** Rematerialization
+reports it cannot get the module below 80.07 GiB (down from 87.96, reaching
+83.56) and the allocation that fails asks for 86.15 GiB. Run again with a
+preallocated contiguous pool at 0.95 of the card -- 90.2 GiB, which removes
+fragmentation as an explanation -- and it still fails, needing 87.0 GiB at
+that moment. So the lever this port needs is a smaller module and not a better
+allocator, and by the partition above the place to look is past the trunk.
+
+
 **A tighter block is worse, which is worth knowing before anyone tunes it.**
 The budget is 512 MiB, the same figure Protenix uses for the transition it
 shares this shape with. At 128 MiB the peak is 22.55 GiB and at 32 MiB it is
