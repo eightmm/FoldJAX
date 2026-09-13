@@ -405,9 +405,17 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
     # released default whose absence has to keep meaning "recorded before this
     # width was recorded". See `test_pair_residual_namespace_records_the_width
     # _not_the_spelling`.
+    #
+    # The two diffusion widths are recorded the same way and for the same
+    # reason. `None` is what the released one-sample primary run and the
+    # released five-sample affinity run both resolve to -- a single unchunked
+    # rollout -- and neither is spelled by any option above, which is the
+    # point: the profile says what the run does, not what the caller typed.
     assert backend.cache_profile(omitted) == {
         "num_recycles": 5,
         "pair_residual_dtype": "bfloat16",
+        "diffusion_chunk_size": None,
+        "affinity_diffusion_chunk_size": None,
     }
     assert backend.cache_profile(native) == backend.cache_profile(omitted)
     assert backend.cache_profile(neutral) == backend.cache_profile(omitted)
@@ -501,6 +509,8 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         "cp_devices": 4,
         "num_recycles": 5,
         "pair_residual_dtype": "bfloat16",
+        "diffusion_chunk_size": None,
+        "affinity_diffusion_chunk_size": None,
     }
     assert backend.cache_profile(cp_auto) == backend.cache_profile(cp_omitted)
     assert backend.cache_profile(cp_rows) == backend.cache_profile(cp_omitted)
@@ -510,6 +520,72 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
     # an explicitly requested XLA route separate until that conditional alias
     # has its own whole-control-flow proof.
     assert resolve_cache_dir(cp_xla, backend) != resolve_cache_dir(cp_rows, backend)
+
+
+def test_boltz2_diffusion_namespace_records_the_width_not_the_spelling(
+    tmp_path: Path,
+) -> None:
+    """One option, two rollouts, and only the resolved widths in the profile.
+
+    `models/boltz2/api.py:1099` resolves an omitted width from the primary
+    sample count and `:1349` resolves the same option again from the affinity
+    sample count, then `_runner_identity` at `:522-546` folds a width at or
+    above its rollout's multiplicity back to `None`. So the spelling is not
+    the program: three of the four assertions below are pairs that spell
+    different things and run one program, and the fourth is a pair that spells
+    nothing different in the primary run and two different affinity programs.
+    """
+
+    backend = Boltz2Backend()
+
+    def profile(**options):
+        return backend.cache_profile(_request(tmp_path, **options))
+
+    # Above the auto threshold the resolved width is real, and spelling it is
+    # the same program as letting the sample count resolve it.
+    assert profile(num_samples=6)["diffusion_chunk_size"] == 5
+    assert profile(num_samples=6, diffusion_chunk_size=5) == profile(num_samples=6)
+    # `_strict_integer` resolves the width here, and it is the same function
+    # `validate_native_options` gates the request with, so the profile folds
+    # exactly what a real run can carry: a NumPy integer is admitted there and
+    # `int()`-ed by the API, so it is one program and one namespace.
+    assert profile(num_samples=6, diffusion_chunk_size=np.int64(5)) == profile(
+        num_samples=6
+    )
+    # A narrower width is the chunked rollout loop: a different program.
+    assert profile(num_samples=6, diffusion_chunk_size=2) != profile(num_samples=6)
+    # At or above the multiplicity the loop takes the same `sample(key)`
+    # branch `None` takes, which is why the rule is `>=` and not `>`: at six
+    # samples the widths 6 and 9 are one unchunked program, and both differ
+    # from the omitted option, which resolves to the chunked width 5.
+    assert profile(num_samples=6, diffusion_chunk_size=9) == profile(
+        num_samples=6, diffusion_chunk_size=6
+    )
+    assert profile(num_samples=6, diffusion_chunk_size=9) != profile(num_samples=6)
+    unchunked = profile(num_samples=6, diffusion_chunk_size=9)
+    assert unchunked["diffusion_chunk_size"] is None
+    # The pair that needs both keys. At the released one primary sample and
+    # five affinity samples, widths 3 and 7 are both no-ops for the primary
+    # rollout; for the affinity rollout 3 chunks and 7 does not. One number
+    # would file two programs under one namespace.
+    assert profile(diffusion_chunk_size=3)["diffusion_chunk_size"] is None
+    assert profile(diffusion_chunk_size=7)["diffusion_chunk_size"] is None
+    assert profile(diffusion_chunk_size=3)["affinity_diffusion_chunk_size"] == 3
+    assert profile(diffusion_chunk_size=7)["affinity_diffusion_chunk_size"] is None
+    assert profile(diffusion_chunk_size=3) != profile(diffusion_chunk_size=7)
+    # So only a width at or above *both* multiplicities is the released run
+    # everywhere, and that one shares the omitted namespace.
+    assert profile(diffusion_chunk_size=7) == profile()
+    assert profile(diffusion_chunk_size=3) != profile()
+
+    # A spelling the validator refuses keeps its own namespace rather than
+    # being filed under a width it will never run. Both of these reach
+    # `raise ValueError` in `validate_native_options`, so neither can be a
+    # real run and neither may inherit a real run's entry.
+    for refused in ("5", "wide"):
+        assert profile(diffusion_chunk_size=refused)["diffusion_chunk_size"] == refused
+        with pytest.raises(ValueError, match="diffusion_chunk_size"):
+            backend.validate_native_options({"diffusion_chunk_size": refused})
 
 
 @pytest.mark.parametrize(

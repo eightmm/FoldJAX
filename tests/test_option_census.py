@@ -37,6 +37,12 @@ strict=True)` naming that specific defect, one parameter per gap, so fixing
 one port turns one xfail into a failure rather than closing silently. Nothing
 in this file changes behaviour; a fix belongs on a branch that can measure it.
 
+The eight this file landed with are closed and their markers are gone, so
+there are none right now. The mechanism stays for the next one -- and so does
+the rule that closing a gap deletes the marker *and* whatever exclusion kept
+the fixed parameter out of the generic list below it, because a marker
+removed on its own leaves the case untested rather than passing.
+
 Where a disagreement is legitimate it is an entry in an explicit allow-list
 with the code that justifies it, never a softened assertion -- and an entry
 whose justification could not be verified says so, the way
@@ -370,32 +376,7 @@ def test_every_backend_declares_every_surface(name: str) -> None:
 @pytest.mark.parametrize(
     ("knob", "value"),
     [
-        pytest.param(
-            knob,
-            value,
-            marks=(
-                [
-                    pytest.mark.xfail(
-                        strict=True,
-                        reason=(
-                            "GAP: execution.py:73 offers attention_kernel='cueq' "
-                            "and no backend's execution_options maps it to "
-                            "anything. AlphaFold 3 maps auto/xla, Boltz-2 and "
-                            "Protenix map auto/tokamax/xla, OpenDDE maps "
-                            "auto/xla; the other two declare no attention "
-                            "kernel at all. Every request spelling it is "
-                            "refused with 'does not support attention_kernel=', "
-                            "so the value is advertised vocabulary no model can "
-                            "run. Either a port gains the mapping or the value "
-                            "leaves KNOBS -- both are behaviour changes, so "
-                            "neither happens here."
-                        ),
-                    )
-                ]
-                if (knob, value) == ("attention_kernel", "cueq")
-                else []
-            ),
-        )
+        (knob, value)
         for knob, values in execution.KNOBS.items()
         for value in values
     ],
@@ -418,45 +399,9 @@ def test_every_value_in_the_vocabulary_is_reachable_on_some_port(
 @pytest.mark.parametrize(
     ("name", "native"),
     [
-        pytest.param(
-            name,
-            "matmul_precision",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    f"GAP: {name} declares the matmul_precision knob and leaves "
-                    "it out of compile_options, so a run at 'highest' and a run "
-                    "at 'high' share one compilation-cache namespace. This is "
-                    "measured, not argued: lowering `a @ a` under each scope "
-                    "emits `precision = [HIGH, HIGH]` and `precision = "
-                    "[HIGHEST, HIGHEST]` -- two programs (see "
-                    "test_the_precision_knob_provably_changes_the_program "
-                    "below). AlphaFold 3 and Boltz-2 already list it. The fix "
-                    "has two halves on the ports that pin a value of their own: "
-                    "openfold3 pins 'high' at models/openfold3/inference.py:549 "
-                    "and protenix pins 'high' at "
-                    "models/protenix/models/predict.py:103, read at :153 and "
-                    "overridden by no caller (the adapter never renders it -- "
-                    "it is not in _CLI_OPTIONS). So each needs the name in "
-                    "compile_options *and* a strip entry at 'high', or an "
-                    "explicit 'high' forks from an omitted one. esmfold2 and "
-                    "opendde call resolved_matmul_precision nowhere, so they "
-                    "pin nothing and need the compile_options half only."
-                ),
-            ),
-        )
-        for name in ("esmfold2", "opendde", "openfold3", "protenix")
-    ]
-    + [
-        pytest.param(name, native)
+        (name, native)
         for name in BACKENDS
         for _knob, (native, _values) in get_backend(name).execution_options.items()
-        if (name, native) not in {
-            ("esmfold2", "matmul_precision"),
-            ("opendde", "matmul_precision"),
-            ("openfold3", "matmul_precision"),
-            ("protenix", "matmul_precision"),
-        }
     ],
 )
 def test_a_declared_knob_forks_the_compile_identity(name: str, native: str) -> None:
@@ -529,64 +474,19 @@ def test_every_alias_renames_to_a_knob_some_port_actually_declares() -> None:
 
 @pytest.mark.parametrize(
     "option",
-    [
-        pytest.param(
-            "diffusion_chunk_size",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "GAP: boltz2 accepts diffusion_chunk_size and leaves it out "
-                    "of compile_options; opendde, openfold3 and protenix all "
-                    "put it in. It is NOT unconsumed -- a survey said so and "
-                    "the source says otherwise: models/boltz2/api.py:578 takes "
-                    "it, :1099 resolves it against auto_diffusion_chunk_size, "
-                    "and _runner_identity at :522 already forks the retained "
-                    "jit wrapper on it. So the port compiles two programs for "
-                    "two widths and files them under one namespace. The fix "
-                    "should record the *resolved* width rather than the "
-                    "spelling, the way cache_profile already does for "
-                    "pair_residual_dtype, because :534 proves chunk >= "
-                    "multiplicity is the same program as None."
-                ),
-            ),
-        ),
-        pytest.param(
-            "matmul_precision",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "GAP: alphafold3 and boltz2 cache on matmul_precision; "
-                    "esmfold2, opendde, openfold3 and protenix accept it and do "
-                    "not. Same defect as the four parameters of "
-                    "test_a_declared_knob_forks_the_compile_identity, seen from "
-                    "the other direction -- that one asks each port against the "
-                    "vocabulary's promise, this one asks the ports against each "
-                    "other. Both stay: a port could satisfy one and not the "
-                    "other, and it is the disagreement itself that says which "
-                    "of the two answers is the mistake."
-                ),
-            ),
-        ),
-    ]
-    + [
-        pytest.param(option)
-        for option in sorted(
-            {
-                option
-                for option in {
-                    name
-                    for backend_name in BACKENDS
-                    for name in accepted_names(get_backend(backend_name))
-                }
-                if sum(
-                    option in accepted_names(get_backend(backend_name))
-                    for backend_name in BACKENDS
-                )
-                > 1
-            }
-            - {"diffusion_chunk_size", "matmul_precision"}
+    sorted(
+        option
+        for option in {
+            name
+            for backend_name in BACKENDS
+            for name in accepted_names(get_backend(backend_name))
+        }
+        if sum(
+            option in accepted_names(get_backend(backend_name))
+            for backend_name in BACKENDS
         )
-    ],
+        > 1
+    ),
 )
 def test_ports_that_share_a_native_name_agree_about_caching_on_it(
     option: str,
@@ -748,32 +648,7 @@ def test_spelling_the_value_the_profile_already_resolved_changes_nothing(
     )
 
 
-@pytest.mark.parametrize(
-    "port",
-    [
-        pytest.param(
-            "protenix",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "GAP: protenix names model_name in compile_options, its "
-                    "native parser defaults --model-name to 'auto', and neither "
-                    "_RELEASED_COMPILE_DEFAULTS nor the cache_profile override "
-                    "neutralises that value. So `--option model_name=auto` and "
-                    "omitting it are the same run in two namespaces -- the "
-                    "inverse of the pair_residual_dtype defect, which stripped "
-                    "a default that had never entered the profile. Every other "
-                    "non-None parser default on both argv ports is stripped; "
-                    "this is the only one left. The fix is one strip-table "
-                    "entry, but 'auto' resolves to a checkpoint-dependent model "
-                    "name, so whether the entry should be 'auto' or the "
-                    "resolved name is a measurement, not an edit."
-                ),
-            ),
-        ),
-        pytest.param("opendde"),
-    ],
-)
+@pytest.mark.parametrize("port", ARGV_PORTS)
 def test_spelling_a_released_default_selects_the_namespace_omitting_it_selects(
     port: str, profile_of
 ) -> None:
@@ -814,6 +689,15 @@ _WHY_NO_STRIP_ENTRY = {
         "max_msa_depth": "no released default a request can spell",
         # api.py:1090 keeps `None` as `None` rather than resolving a width.
         "token_attention_chunk": "no released default a request can spell",
+        # Written unconditionally by the cache_profile override, which records
+        # the width each rollout denoises at rather than the spelling that
+        # asked for it: api.py:1099 resolves an omitted option from the sample
+        # count and api.py:522-546 folds a width at or above that count back
+        # to `None`. The same spelling resolves twice -- once against
+        # `num_samples` and once against `affinity_num_samples` -- so the
+        # override writes both and a flat strip entry could not express
+        # either.
+        "diffusion_chunk_size": "resolved into every profile",
     },
     "esmfold2": {
         # Injected into every effective request at backends/esmfold2.py:875,
@@ -832,6 +716,12 @@ _WHY_NO_STRIP_ENTRY = {
         # resolves to 32 when the file decides.
         "num_samples": "checkpoint-dependent resolution",
         "num_steps": "checkpoint-dependent resolution",
+        # ESMFold2 calls `resolved_matmul_precision` nowhere -- only
+        # boltz2/api.py:259, openfold3/inference.py:577 and
+        # protenix/models/predict.py:153 do -- so this port pins nothing and
+        # an omitted knob is JAX's default rather than a released value.
+        # AlphaFold 3's entry above is the same reason on the same knob.
+        "matmul_precision": "no released default a request can spell",
     },
     "openfold3": {
         # Popped by the override when they equal the released value:
@@ -842,6 +732,12 @@ _WHY_NO_STRIP_ENTRY = {
         "confidence_dtype": "neutralised in the cache_profile override",
         "dtype": "neutralised in the cache_profile override",
         "glu_backend": "neutralised in the cache_profile override",
+        # Popped at :380 against `backends/openfold3.py:_MATMUL_PRECISION`,
+        # the copy of the value this port pins for itself at
+        # `models/openfold3/inference.py:549`. It is outside the strip table
+        # for the same reason `dtype` is: that table's loop coerces to `int`
+        # or `bool` and this value is a string.
+        "matmul_precision": "neutralised in the cache_profile override",
         # Written unconditionally at :363-374, so the resolved value is in
         # every profile and spelling it back is the same digest.
         "cp_devices": "resolved into every profile",

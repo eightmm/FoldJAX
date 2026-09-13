@@ -129,6 +129,71 @@ def test_matmul_precision_translates_on_every_backend(backend: str, value: str) 
     ) == {"matmul_precision": value}
 
 
+#: The ports that open a `jax.default_matmul_precision` scope of their own,
+#: and the value each pins. Each value has a drift test of its own against the
+#: port's authority: `models/boltz2/api.py:MATMUL_PRECISION`,
+#: `models/openfold3/inference.py:_MATMUL_PRECISION` and
+#: `protenix_predict_static`'s signature. The other three call
+#: `resolved_matmul_precision` nowhere, so an omitted knob is whatever JAX is
+#: set to and no spelling can be its alias.
+PINNED_MATMUL_PRECISION = {
+    "boltz2": "high",
+    "openfold3": "high",
+    "protenix": "high",
+}
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_matmul_precision_forks_the_cache_namespace_on_every_backend(
+    backend: str, tmp_path
+) -> None:
+    """Two policies are two programs, so two namespaces.
+
+    The knob sets the `precision` attribute on every float32 dot XLA lowers,
+    it selects the cuEquivariance triangle FFI's float32 mode, and it decides
+    which dot-algorithm preset Tokamax picks. `translate` above proves the
+    value reaches the port; this proves the port files it under its own
+    entry, which four of the six did not -- a `highest` parity arm and the
+    shipped TF32 run shared one directory, so the namespace could not say
+    which of the two a recorded run had.
+
+    The second half is the other error, and the one that made this a fix in
+    two parts: on a port that pins a value, spelling that value is the run an
+    omitted knob already gets, so it must *not* fork. Getting only the first
+    half would have been `pair_residual_dtype` in reverse.
+    """
+    from foldjax.registry import get_backend
+    from foldjax.schema import PredictionRequest
+
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    port = get_backend(backend)
+
+    def profile(**options):
+        return port.cache_profile(
+            PredictionRequest(
+                model=backend,
+                input=job,
+                output_dir=tmp_path / "out",
+                options=options,
+            )
+        )
+
+    omitted = profile()
+    for value in KNOBS["matmul_precision"]:
+        spelled = profile(matmul_precision=value)
+        if PINNED_MATMUL_PRECISION.get(backend) == value:
+            assert spelled == omitted, (
+                f"{backend} pins {value!r}, so spelling it is the run an "
+                "omitted knob gets and must name one namespace"
+            )
+        else:
+            assert spelled != omitted, (
+                f"{backend} does not run {value!r} unless asked, so the two "
+                "programs must not share a namespace"
+            )
+
+
 def test_the_shared_entry_is_one_object_not_six_copies() -> None:
     """Six literals would be six chances to diverge; this is the same dict."""
     from foldjax.backends.base import MATMUL_PRECISION_OPTION

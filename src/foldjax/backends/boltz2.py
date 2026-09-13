@@ -14,7 +14,7 @@ import numpy as np
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
-from foldjax.execution import DETERMINISTIC_API_OPTION
+from foldjax.execution import DETERMINISTIC_API_OPTION, auto_diffusion_chunk_size
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
 from foldjax.models.boltz2.weights import resolve_native_weight_bundle
@@ -305,6 +305,34 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
 }
 
 
+def _resolved_diffusion_width(chunk: Any, multiplicity: Any) -> Any:
+    """The width one rollout actually denoises at, for `chunk` spelled or not.
+
+    Two steps of the native API, reproduced rather than restated. First
+    ``models/boltz2/api.py:1099`` resolves an omitted option from the sample
+    count -- through the same :func:`auto_diffusion_chunk_size` imported here,
+    so the adapter and the model cannot drift. Then ``api.py:522-546`` folds a
+    width at or above the multiplicity back to ``None``, because
+    ``boltz2_predict`` chunks only when the width is below it and takes the
+    exact ``sample(key)`` branch otherwise.
+
+    A malformed spelling is returned untouched so it keeps its own namespace:
+    ``validate_native_options`` is what refuses it, and a profile must not
+    quietly file it under a width it will never run.
+    """
+
+    try:
+        samples = _strict_integer(multiplicity, name="multiplicity", minimum=1)
+        width = (
+            auto_diffusion_chunk_size(samples)
+            if chunk is None
+            else _strict_integer(chunk, name="diffusion_chunk_size", minimum=1)
+        )
+    except ValueError:
+        return chunk
+    return None if width is not None and width >= samples else width
+
+
 class Boltz2Backend(Backend):
     name = "boltz2"
     session_reuse = True
@@ -384,6 +412,15 @@ class Boltz2Backend(Backend):
         # was opt-in, which left every recorded run unable to say which pair
         # width it ran; `cache_profile` now spells the resolved width always.
         "pair_residual_dtype",
+        # A pinned width is a different rollout loop, so it is a different
+        # program. A survey called it unconsumed and the source says
+        # otherwise: `models/boltz2/api.py:578` takes it, `:1099` resolves it
+        # against the sample count, and `_runner_identity` at `:522` already
+        # forks the retained jit wrapper on it -- so the port was compiling
+        # two programs and filing them under one namespace. `cache_profile`
+        # records the resolved widths rather than the spelling, for the same
+        # reason it does for `pair_residual_dtype`.
+        "diffusion_chunk_size",
         "triangle_backend",
         "glu_backend",
         "token_attention_chunk",
@@ -499,8 +536,35 @@ class Boltz2Backend(Backend):
                 else "float32"
             )
         profile["pair_residual_dtype"] = residual
+        # One spelling, two rollouts. `predict` resolves `diffusion_chunk_size`
+        # separately for the primary run against `num_samples` (api.py:1099)
+        # and for the affinity run against `affinity_num_samples`
+        # (api.py:1351), so a single width can be a no-op for one and a real
+        # chunk loop for the other: at the released five affinity samples,
+        # `diffusion_chunk_size=3` and `=7` are both `None` for a one-sample
+        # primary run and are 3 and `None` for the affinity run. Recording one
+        # number would put those two programs in one namespace.
+        #
+        # Always spelled, for the reason `pair_residual_dtype` is: the keys
+        # were absent from every run recorded before this, so absence keeps
+        # meaning "this record predates the widths being recorded" rather than
+        # becoming a third name for one of the arms.
+        chunk = profile.pop("diffusion_chunk_size", None)
+        profile["diffusion_chunk_size"] = _resolved_diffusion_width(
+            chunk,
+            profile.get("num_samples", _RELEASED_COMPILE_DEFAULTS["num_samples"]),
+        )
+        profile["affinity_diffusion_chunk_size"] = _resolved_diffusion_width(
+            chunk,
+            profile.get(
+                "affinity_num_samples",
+                _RELEASED_COMPILE_DEFAULTS["affinity_num_samples"],
+            ),
+        )
         # ... and keep it out of the strip, which would otherwise put the
         # released spelling back to absent the moment it equals a default.
+        # The two widths need no `skip`: the native option's default is `None`
+        # rather than a value, so the strip table never names them.
         self._strip_released_defaults(
             profile,
             _RELEASED_COMPILE_DEFAULTS,

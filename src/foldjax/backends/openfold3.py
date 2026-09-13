@@ -69,6 +69,11 @@ _COMPILE_OPTIONS = (
     # Same for the confidence head's own knob: it is a second element type in
     # the same program, not a runtime branch.
     "confidence_dtype",
+    # Two policies, two programs: the value becomes the `precision` attribute
+    # on every float32 dot XLA lowers, and the cuEquivariance triangle FFI
+    # reads it to pick its float32 mode (`models/_cueq.py:69`). The override
+    # below strips the pinned value, so only a departure from it forks.
+    "matmul_precision",
 )
 
 #: ``released_config``'s dtype, which `confidence_dtype` follows when unset.
@@ -78,6 +83,14 @@ _COMPILE_OPTIONS = (
 #: import the model package or JAX -- and a test pins the copy to
 #: `released_config`'s signature.
 _DEFAULT_DTYPE = "float32"
+
+#: The float32 matmul precision this port pins for itself, which is upstream's
+#: TF32 (`models/openfold3/inference.py:549`, read at :577 through
+#: `resolved_matmul_precision`). Spelling it is therefore the same program as
+#: omitting the knob, and the override below drops it for that reason. Copied
+#: rather than imported for the same reason as `_DEFAULT_DTYPE`, and a drift
+#: test pins the copy to the model's own constant.
+_MATMUL_PRECISION = "high"
 
 # ``released_config``'s model-side MSA subsampling depth. The public
 # ``max_msa_depth`` knob is a cap, so asking for more cannot widen the released
@@ -360,6 +373,12 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # shipped `bfloat16`.
         if profile.get("confidence_dtype") == options.get("dtype", _DEFAULT_DTYPE):
             profile.pop("confidence_dtype", None)
+        # Same shape again: a string, so it misses the int/bool coercion, and
+        # this port pins its own value rather than inheriting JAX's. An
+        # omitted knob runs `_MATMUL_PRECISION`, so spelling it must not open
+        # a second namespace; `highest` departs from the pin and keeps one.
+        if profile.get("matmul_precision") == _MATMUL_PRECISION:
+            profile.pop("matmul_precision", None)
         cp_shards = int(options.get("cp_devices", 1))
         requested_layout = str(options.get("cp_layout", "auto"))
         profile["cp_devices"] = cp_shards

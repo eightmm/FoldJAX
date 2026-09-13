@@ -107,6 +107,13 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
     assert openfold3_backend._DEFAULT_DTYPE == signature["dtype"].default
     assert signature["confidence_dtype"].default is None
 
+    # `matmul_precision` is not a `released_config` parameter either: the port
+    # pins it around the whole inference call rather than in the model config,
+    # and the adapter's copy is what says an explicitly spelled `high` is the
+    # run an omitted knob already gets. Pinned to that constant for the same
+    # reason `_DEFAULT_DTYPE` is pinned to the signature.
+    assert openfold3_backend._MATMUL_PRECISION == inference._MATMUL_PRECISION
+
 
 def test_released_default_aliases_share_one_backend_jit_owner(
     tmp_path,
