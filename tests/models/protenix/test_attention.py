@@ -589,7 +589,9 @@ def test_both_backend_options_reach_the_tokamax_sites(monkeypatch) -> None:
     watches the module the branch imports: `diffusion_attention_backend`
     reaches the atom encoder/decoder window and the diffusion transformer's
     global attention, `single_attention_backend` reaches the Pairformer's
-    single attention, and neither fires for the default.
+    single attention, and the non-tokamax spellings fire neither. Since 845971e
+    the released diffusion default is tokamax, so omitting the kwarg is the
+    tokamax arm -- that is the third call below, not a negative control.
     """
 
     import jax
@@ -660,7 +662,13 @@ def test_both_backend_options_reach_the_tokamax_sites(monkeypatch) -> None:
     schedule = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
 
     reached.clear()
-    protenix_infer_static(_toy_features(), _toy_params(), schedule, **infer)
+    protenix_infer_static(
+        _toy_features(),
+        _toy_params(),
+        schedule,
+        diffusion_attention_backend="xla_jit",
+        **infer,
+    )
     assert reached == []
 
     coordinate = protenix_infer_static(
@@ -672,3 +680,14 @@ def test_both_backend_options_reach_the_tokamax_sites(monkeypatch) -> None:
     )["coordinate"]
     assert reached, "diffusion_attention_backend=tokamax reached no fused site"
     assert bool(jnp.isfinite(coordinate).all())
+    explicit = list(reached)
+
+    # 845971e made tokamax the released diffusion default, so omitting the
+    # kwarg has to be the arm above rather than the one before it. Comparing
+    # the reached shapes instead of just asserting non-empty is what would
+    # notice a default that reached some other subset of the fused sites.
+    reached.clear()
+    protenix_infer_static(_toy_features(), _toy_params(), schedule, **infer)
+    assert reached == explicit, (
+        "the released diffusion default did not reach the tokamax sites"
+    )

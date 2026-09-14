@@ -444,6 +444,9 @@ def _bf16_trunk_params():
 
 
 def _infer(params, **kwargs):
+    # 845971e made tokamax the released diffusion default and it has no CPU
+    # kernel; every subject in this file is the dtype policy, not the backend.
+    kwargs.setdefault("diffusion_attention_backend", "xla_jit")
     return protenix_infer_static(
         _toy_features(),
         params,

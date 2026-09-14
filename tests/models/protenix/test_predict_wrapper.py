@@ -45,6 +45,10 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
             rotations=rotations,
             translations=translations,
             graph_jit=graph_jit,
+            # 845971e made tokamax the released diffusion default and it has
+            # no CPU kernel; the subject here is the wrapper's argument
+            # plumbing, and the direct call below shares this pin.
+            diffusion_attention_backend="xla_jit",
         )
 
     # What this pins is the wrapper's argument plumbing, so it compares against
@@ -71,6 +75,9 @@ def test_predict_wrapper_matches_static_infer_direct_call() -> None:
         n_keys=4,
         sigma_data=4.0,
         centre_each_step=True,
+        # Same pin as the wrapper above, for the same reason (845971e): these
+        # two must be the same program apart from the wrapper itself.
+        diffusion_attention_backend="xla_jit",
     )
 
     assert actual.keys() == expected.keys()
@@ -212,6 +219,11 @@ def test_the_matmul_precision_pin_is_a_scope_not_a_latch() -> None:
         init_noise=jnp.ones((1, 3, 3), dtype=jnp.float32),
         step_noises=(jnp.zeros((1, 3, 3), dtype=jnp.float32),),
         graph_jit=False,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel; the subject here is the matmul-precision scope. The call
+        # still has to be a real one, which is why it is pinned rather than
+        # removed.
+        diffusion_attention_backend="xla_jit",
     )
 
     assert jax.config.jax_default_matmul_precision == before
@@ -251,6 +263,10 @@ def test_confidence_sample_sequential_matches_batched() -> None:
             sigma_data=4.0,
             centre_each_step=False,
             confidence_sample_sequential=sequential,
+            # 845971e made tokamax the released diffusion default and it has
+            # no CPU kernel; both arms share this pin, so what varies stays
+            # the confidence loop and not the backend.
+            diffusion_attention_backend="xla_jit",
         )
 
     sequential = run(True)

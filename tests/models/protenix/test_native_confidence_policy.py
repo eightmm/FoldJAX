@@ -93,6 +93,10 @@ def test_released_small_input_confidence_keeps_fp32_operators(
         centre_each_step=False,
         run_confidence_scores=False,
         trunk_dtype=trunk_dtype,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel; the subject here is the confidence stack's fp32
+        # operators, not the denoiser's attention backend.
+        diffusion_attention_backend="xla_jit",
     )
     jax.block_until_ready(output)
 
@@ -130,6 +134,9 @@ def test_mixed_trunk_preserves_raw_fp32_conditioning_tail():
         centre_each_step=False,
         run_confidence=False,
         trunk_dtype=jnp.bfloat16,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel; the subject here is the fp32 conditioning tail.
+        diffusion_attention_backend="xla_jit",
     )
     expected = jnp.concatenate(
         [features["restype"], features["profile"], features["deletion_mean"][:, None]],

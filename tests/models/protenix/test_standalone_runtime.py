@@ -73,6 +73,11 @@ def test_predict_native_runtime_imports_no_torch_or_protenix(tmp_path, monkeypat
             "--sigma-data",
             "4.0",
             "--cpu-only",
+            # 845971e made tokamax the released diffusion default and it has
+            # no CPU kernel; the subject here is which modules the runtime
+            # imports, not the denoiser's attention backend.
+            "--diffusion-attention-backend",
+            "xla_jit",
         ]
     )
 
@@ -135,6 +140,11 @@ def test_predict_direct_json_to_output_imports_no_torch_or_protenix(
             "--sigma-data",
             "4.0",
             "--cpu-only",
+            # 845971e made tokamax the released diffusion default and it has
+            # no CPU kernel; the subject here is which modules the runtime
+            # imports, not the denoiser's attention backend.
+            "--diffusion-attention-backend",
+            "xla_jit",
         ]
     )
 

@@ -96,6 +96,10 @@ def test_confidence_receives_explicit_ligand_identity(monkeypatch, identity) -> 
         n_keys=4,
         sigma_data=4.0,
         centre_each_step=False,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel; the subject here is the ligand identity handed to the
+        # confidence head, not the denoiser's attention backend.
+        diffusion_attention_backend="xla_jit",
     )
     assert seen
     np.testing.assert_array_equal(seen[0]["atom_is_polymer"], [1, 0, 0])
@@ -127,6 +131,9 @@ def test_protenix_infer_static_returns_core_outputs() -> None:
         n_keys=4,
         sigma_data=4.0,
         centre_each_step=False,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel; the subject here is the output shapes, not the backend.
+        diffusion_attention_backend="xla_jit",
     )
 
     assert out["s_inputs"].shape == (2, 67)
@@ -246,6 +253,10 @@ def test_protenix_infer_sampler_scan_matches_loop() -> None:
         "sigma_data": 4.0,
         "centre_each_step": False,
         "run_confidence": False,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel. Both arms below share this pin, so the comparison is
+        # still one variable; the backend is not what either arm varies.
+        "diffusion_attention_backend": "xla_jit",
     }
 
     loop = protenix_infer_static(
@@ -289,6 +300,10 @@ def test_protenix_infer_diffusion_efficient_fusion_matches_standard() -> None:
         "sigma_data": 4.0,
         "centre_each_step": False,
         "run_confidence": False,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel. Both arms below share this pin, so the comparison is
+        # still one variable; the backend is not what either arm varies.
+        "diffusion_attention_backend": "xla_jit",
     }
 
     standard = protenix_infer_static(
@@ -332,6 +347,10 @@ def test_protenix_infer_denoiser_jit_matches_eager() -> None:
         "sigma_data": 4.0,
         "centre_each_step": False,
         "run_confidence": False,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel. Both arms below share this pin, so the comparison is
+        # still one variable; the backend is not what either arm varies.
+        "diffusion_attention_backend": "xla_jit",
     }
 
     eager = protenix_infer_static(

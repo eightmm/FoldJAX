@@ -146,6 +146,10 @@ def _realized(trunk_dtype, **chunk):
             centre_each_step=False,
             run_confidence=False,
             trunk_dtype=trunk_dtype,
+            # 845971e made tokamax the released diffusion default and it has
+            # no CPU kernel; the subject here is the realized trunk dtype,
+            # not the denoiser's attention backend.
+            diffusion_attention_backend="xla_jit",
             **chunk,
         )
     return params, recorded

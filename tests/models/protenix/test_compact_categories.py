@@ -302,6 +302,10 @@ def test_full_compiled_toy_prediction_is_byte_identical() -> None:
         "step_noises": (jnp.zeros((1, 3, 3), dtype=jnp.float32),),
         "graph_jit": True,
         "trunk_dtype": jnp.bfloat16,
+        # 845971e made tokamax the released diffusion default and it has no
+        # CPU kernel; both arms share this pin, so the only thing that varies
+        # is dense versus compact category storage.
+        "diffusion_attention_backend": "xla_jit",
     }
 
     expected = protenix_predict_static(_toy_params(), dense, **kwargs)
