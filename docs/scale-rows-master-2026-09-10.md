@@ -719,11 +719,44 @@ structure measurements and they do not depend on this trace accounting. What a
 defeated tracing cache would cost is compile time across repeated requests in
 one process, which a warm-after-prefill wall measurement is designed not to see.
 
-So the next step is not the `_jit` split. It is to fire the fused kernel on
-Boltz-2 deliberately -- the bench harness does, the unit tests do not -- and
-count the reports there. If Boltz-2 also reports 37, this is a tokamax property
-and belongs upstream; if it reports zero, the difference is in how Protenix
-presents the call and that is where to look.
+#### Answered: it is tokamax's own closures, on both ports
+
+Firing the kernel deliberately settles it. One port, one backend, a `lax.scan`
+body traced twice in one process, at token-transformer shapes rather than unit
+test shapes -- the earlier control was vacuous precisely because small shapes
+let tokamax pick an XLA implementation and the Triton kernel never fires, so the
+autotuning-miss count is carried here as proof that it did.
+
+| Boltz-2 arm | kernel fired | reports | where they land |
+| --- | ---: | ---: | --- |
+| `xla` | 0 | 2 | both in the probe's own closures |
+| `tokamax` | 2 | **15** | the same 2, plus 3 in tokamax's `_src/batching.py:210`, 1 in `_src/ops/attention/pallas_triton.py:299`, and 9 unlocated |
+
+**Every added report is inside tokamax.** None lands on our code here; the three
+that landed on `diffusion/transformer.py:245` under Protenix are the same thing
+seen from the scan body that happens to enclose the call. So this is a property
+of `tokamax.dot_product_attention` at 0.0.13 rebuilding closures per trace, not
+a Protenix defect, and not the `_jit` boundary.
+
+That changes what the Protenix blocker is. The failing test asserts that two
+requests share **one** traced program, and tokamax's per-trace closures make
+that unreachable while the fused kernel is in the graph. The assertion and the
+kernel are incompatible by construction, so the choice is to accept two traces
+with the reason recorded, or to keep the default off -- not to fix something in
+this repository.
+
+And the consistency point: **the landed Boltz-2 default already has this
+property.** It ships the fused denoiser attention and would report the same way.
+It measures -4.49 / -8.01 / -6.42% at three sizes with the peak byte-identical
+at two of them, so on the evidence that decides defaults here the property costs
+nothing that shows.
+
+What remains unmeasured is the only place it could cost: the **wall of a second
+prediction in the same process**. Every bench row is one prediction per process,
+so a retrace per request would not appear in any number in this document. That
+is one measurement -- two predictions in one process, fused against unfused,
+reading the second -- and it decides whether Protenix's -6.22% is free or
+whether both ports are paying a per-request trace that nobody has priced.
 
 The accuracy reading stands either way. Protenix's 1.93x is one sample of five
 -- the other four are 0.0069-0.0092 Å, at its 0.0082 Å floor -- and 0.0158 Å is
