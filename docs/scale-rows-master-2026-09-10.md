@@ -25,6 +25,47 @@ upstream runner ended with zero samples and the card full.
 | --- | --- | --- | --- | --- | --- |
 | OpenFold3 | 100 / 9.1 vs 139 / 14.0 | 404 / 24.5 vs 629 / 44.2 | 951 / 49.2 (`cueq`), 863 / 42.5 (`cueq-full`) vs 1430 / 79.7 | OOM (78) vs upstream OOM | OOM (110) vs upstream OOM |
 | Boltz-2 | 91 / 12.3 vs 132 / 15.8 | 318 / 21.3 vs 466 / 46.6 | 806 / 39.9 vs upstream OOM | 3081 / 64.2 vs upstream OOM | OOM (85) vs upstream OOM |
+
+### The FoldJAX column above is superseded above 3,012 tokens (2026-09-14)
+
+Three defaults landed after this table was taken -- Boltz-2's bfloat16 pair
+residual (2026-09-11), OpenFold3's partial bfloat16 track (2026-09-12) and its
+layer-norm affine exclusion with the `cueq-full` triangle multiplication
+(2026-09-14) -- and two of the OOM cells above are not OOM any more. Remeasured
+on one snapshot, seed 101, released schedule:
+
+| model | 3012 | 4100 | 4888 |
+| --- | --- | --- | --- |
+| OpenFold3 | **576 / 23.2** (was 951 / 49.2) | **2368 / 43.4** (was OOM at 78) | **1527 / 60.6** (was OOM at 110) |
+| Boltz-2 | **690 / 28.7** (was 806 / 39.9) | **2928 / 50.5** (was 3081 / 64.2) | **1800 / 75.5** (was OOM at 85) |
+
+**Wall time is not monotone in tokens here, and that is the targets rather
+than the ports.** 4,100 is L4000_1gte, a homotetramer of about 1,005 residues
+per chain; 4,888 is L5000_8e2f, one chain of 771 with padding. Different chain
+counts and MSA depths cost differently, so the 4,100 cell being slower than
+4,888 on both ports is a property of the set.
+
+**Accuracy at the newly opened sizes, scored against the deposited entry**
+(permutation-aware CA, five samples):
+
+* 4,888 / 8E2F, one chain of 771: OpenFold3 **2.17-2.38 A**, Boltz-2
+  **2.53-3.07 A**.
+* 4,100 / 1GTE: whole-complex 52.8-54.5 A and per chain 13.7-22.1 A on
+  OpenFold3, and the arm that keeps the layer norms wide reports 13.67-22.12 A
+  -- identical, so this is the target and not the change. Upstream OOMs here,
+  so there is no second implementation to compare against. **Recorded as
+  completed with the accuracy unresolved**, not as a pass.
+
+**One correction to the upstream column, for 3,012 on OpenFold3.** Scored
+whole-chain it reads 18.1 A against the deposited entry, which looks like a
+wrong fold and is not one. Fitting the catalase core (122-753) and reading the
+N-terminal arm (27-121) separately gives core 0.63-0.98 A and arm 56.8-57.1 A:
+upstream misses the same bimodal arm this repository has spent a day
+characterising, at the same magnitude the port misses it at on the seeds where
+it does. The upstream row also ran `seeds: [42]` where every FoldJAX row here
+ran 101 (`inference_query_set.json`), and that arm is a per-seed draw. A
+whole-chain superposition translates one local basin miss into a global error,
+so 6ZTX has to be scored core-fit/arm-reported on both sides.
 | Protenix | 65 / 6.7 vs 96 / 12.6 | 210 / 22.9 vs 242 / 40.8 | 579 / 41.2 vs 650 / 55.9 | 2206 / 73.5 vs 2193 / 86.4 | OOM (94) vs upstream OOM |
 | OpenDDE | 235 / 41.3 vs 247 / 57.0 | OOM (23) vs upstream OOM | OOM (48) vs upstream OOM | OOM (89) vs upstream OOM | - |
 | ESMFold2 | 155 / 14.4 | 451 / 45.0 | OOM (86) | OOM (32) | - |

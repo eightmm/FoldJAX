@@ -36,10 +36,32 @@ class CacheScopeToken(NamedTuple):
 def resolve_triangle_kernel(value: str | None, *, cp_shards: int) -> str:
     """Return the triangle kernel the next trace will actually build.
 
-    With no explicit or ambient choice, serial OpenFold3 uses cuEquivariance.
+    With no explicit or ambient choice, serial OpenFold3 uses ``cueq-full``:
+    cuEquivariance for the triangle attention *and* the triangle
+    multiplication. That is upstream's own arrangement rather than a wider
+    setting -- ``use_cueq_triangle_kernels`` is one flag there and turns on
+    both kernels (``openfold3/tests/test_kernels.py:428-430``), so the
+    attention-only ``cueq`` this port defaulted to until 2026-09-14 is a
+    hybrid upstream cannot express. Protenix and OpenDDE already ship the
+    fused multiplication, so this also stops one port from being the odd one
+    out.
+
+    Measured on the shipped profile at 3,012 tokens on 6ZTX: 617.0 -> 575.9 s
+    and 24,676.7 -> 23,774.0 MiB, with the structure holding at six seeds
+    against the deposited coordinates -- core 0.57-0.99 A, and the one seed
+    that misses the N-terminal arm is 404, the same seed the ``cueq`` arm and
+    the wide-norm arm miss it at.
+
+    The fused multiplication only runs where its widths allow, and
+    ``models/openfold3/models/triangle.py`` holds that test rather than this
+    function: the kernel needs a square projection and a hidden dimension that
+    is a multiple of 32, which the released stack has and a reduced one does
+    not. Upstream carries the same guard and falls back the same way, so this
+    default names the kernel a released run gets while a narrow-width trace
+    keeps working.
+
     Context parallelism instead defaults to XLA because its distributed
     triangle-attention path cannot assume the fused extension is available.
-    These are the existing dispatch semantics, made explicit for cache keys.
     """
 
     # ``triangle_backend`` temporarily changes a process-global variable while
@@ -50,7 +72,7 @@ def resolve_triangle_kernel(value: str | None, *, cp_shards: int) -> str:
         if selected is None:
             selected = os.environ.get(TRIANGLE_BACKEND_ENV)
         if selected is None:
-            return "xla" if cp_shards > 1 else "cueq"
+            return "xla" if cp_shards > 1 else "cueq-full"
         return str(selected).lower()
 
 

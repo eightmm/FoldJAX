@@ -63,6 +63,6 @@ def test_native_rejects_context_parallelism_and_wrong_heads(monkeypatch):
 def test_default_route_does_not_select_native(monkeypatch):
     monkeypatch.delenv("OPENFOLD3_TRIANGLE_BACKEND", raising=False)
     assert not block._native_pair_backend()
-    assert resolve_triangle_kernel(None, cp_shards=1) == "cueq"
+    assert resolve_triangle_kernel(None, cp_shards=1) == "cueq-full"
     with triangle_backend("xla"):
         assert not block._native_pair_backend()

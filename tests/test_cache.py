@@ -800,7 +800,11 @@ def test_openfold3_cache_profile_names_every_static_runtime_route(
     serial = backend.cache_profile(request)
     assert serial["cp_devices"] == 1
     assert serial["cp_layout"] == "serial"
-    assert serial["triangle_kernel"] == "cueq"
+    # The serial default fuses the multiplication too. The profile records
+    # the policy the resolver picked, and `models/openfold3/models/triangle.py`
+    # is where a stack too narrow for the fused kernel falls back -- a shape
+    # fact the released widths never meet.
+    assert serial["triangle_kernel"] == "cueq-full"
     assert serial["representations"] == ()
     assert serial["stop_after"] == "full"
     assert serial["rng_route"] == "native"

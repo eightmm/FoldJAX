@@ -273,8 +273,8 @@ def test_repeated_factories_share_one_trace_and_keep_chemistry_dynamic(
         np.testing.assert_array_equal(second, np.full(4, 4.0, dtype=np.float32))
         np.testing.assert_array_equal(polymer_only, np.full(4, 5.0, dtype=np.float32))
         assert traces == [
-            ("1d", 2, "cueq", True, True, True),
-            ("1d", 2, "cueq", True, True, False),
+            ("1d", 2, "cueq-full", True, True, True),
+            ("1d", 2, "cueq-full", True, True, False),
         ]
     finally:
         inference._compiled_predict.clear_cache()
@@ -603,7 +603,7 @@ def test_default_kernel_resolution_waits_for_temporary_explicit_context(
 
     assert not holder.is_alive()
     assert not resolver.is_alive()
-    assert resolved == ["cueq"]
+    assert resolved == ["cueq-full"]
     assert TRIANGLE_BACKEND_ENV not in os.environ
 
 

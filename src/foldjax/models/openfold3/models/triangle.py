@@ -9,12 +9,16 @@ path, which is what the released non-fused checkpoints store.
 
 from __future__ import annotations
 
+import os
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from foldjax._openfold3_compile import resolve_triangle_kernel
+from foldjax._openfold3_compile import (
+    TRIANGLE_BACKEND_ENV,
+    resolve_triangle_kernel,
+)
 from foldjax.models._cp import (
     CP_COL_AXIS,
     CP_ROW_AXIS,
@@ -29,6 +33,7 @@ from foldjax.models._cp import (
     shard_pair_rows,
     transpose_perm,
 )
+from foldjax.models._cueq import fused_multiplication_fits
 from foldjax.models.openfold3.models.primitives import (
     LayerNormParams,
     LinearParams,
@@ -106,8 +111,18 @@ def triangle_multiplication(
     kernel upstream's ``use_cueq_triangle_kernels`` selects. ``cueq`` alone
     keeps attention fused and this multiplication in XLA, so the two remain
     separately measurable arms.
+
+    The fused kernel takes ``p_in_weight`` as ``(2*D_in, D_in)`` and refuses a
+    hidden dimension that is not a multiple of 32, so it can only run where
+    the triangle multiplication's hidden width equals the pair width. That is
+    a shape fact rather than a policy: the released stack satisfies it and a
+    reduced one does not, and upstream carries the same guard and falls back
+    the same way -- Protenix's port reads it off ``triangular.py:491`` and
+    spells the identical test at
+    ``models/protenix/models/triangle/triangle.py:135``. Falling back here
+    rather than raising is what lets the fused path be the default at all.
     """
-    if resolve_triangle_kernel(None, cp_shards=1) == "cueq-full":
+    if _fused_multiplication_selected(z, params):
         if cp_mesh() is not None:
             raise ValueError(
                 "cueq-full triangle multiplication does not support context "
@@ -148,6 +163,44 @@ def triangle_multiplication(
     x = layer_norm(x, params.layer_norm_out, eps=eps)
     x = linear(x, params.linear_z)
     return x * jax_sigmoid(linear(z, params.linear_g))
+
+
+def _fused_fits(z: jnp.ndarray, params: TriangleMultiplicationParams) -> bool:
+    """Whether cuEquivariance's fused update can take these widths at all.
+
+    The rule is the kernel's, so it lives in
+    :func:`~foldjax.models._cueq.fused_multiplication_fits` where every port
+    that asks reads the same copy. All this adds is where to find the two
+    widths and the affine in *this* port's parameter tree.
+    """
+
+    return fused_multiplication_fits(
+        pair_width=z.shape[-1],
+        hidden_width=params.linear_a_p.weight.shape[0],
+        has_affine=params.layer_norm_in.weight is not None
+        and params.layer_norm_out.weight is not None,
+    )
+
+
+def _fused_multiplication_selected(
+    z: jnp.ndarray, params: TriangleMultiplicationParams
+) -> bool:
+    """Whether this call runs the fused update, and who decided.
+
+    The shape test only overrides the **default**. A caller who named
+    ``cueq-full`` gets the kernel whatever its widths are, so an unsupported
+    stack raises out of the kernel naming what it cannot do rather than
+    quietly running something else -- the same reason there is no fallback
+    when the wheel is missing. The env spelling is what separates the two:
+    :func:`resolve_triangle_kernel` reads it only when no value was passed,
+    so its presence *is* the record that someone chose.
+    """
+
+    if resolve_triangle_kernel(None, cp_shards=1) != "cueq-full":
+        return False
+    if os.environ.get(TRIANGLE_BACKEND_ENV) is not None:
+        return True
+    return _fused_fits(z, params)
 
 
 def _cueq_triangle_multiplication(
