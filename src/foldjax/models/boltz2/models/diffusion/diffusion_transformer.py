@@ -233,8 +233,16 @@ def _attention_pair_bias_no_proj_z_forward(
     v = v.reshape(batch, -1, num_heads, head_dim)
 
     bias = jnp.transpose(bias, (0, 3, 1, 2))
-    bias = jnp.repeat(bias, multiplicity, axis=0)
-    if distributed_pair_bias and cp_layout() == "2d":
+    # The pair bias does not vary across the ``multiplicity`` diffusion samples
+    # of one structure, and the score is an elementwise add, so a batch-1 bias
+    # broadcasts against the sample-batched Q/K/V. Two consumers still need the
+    # batch materialised: a multi-structure bias, whose repeat interleaves the
+    # samples of each structure, and the 2-D CP path, whose ``shard_map``
+    # operand spec names the batch axis.
+    cp_2d = distributed_pair_bias and cp_layout() == "2d"
+    if cp_2d or bias.shape[0] != 1:
+        bias = jnp.repeat(bias, multiplicity, axis=0)
+    if cp_2d:
         q = shard_single(q, token_axis=1)
         k = shard_single(k, token_axis=1)
         v = shard_single(v, token_axis=1)
