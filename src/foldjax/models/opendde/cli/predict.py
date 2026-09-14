@@ -249,7 +249,11 @@ def _predict(
         drop_sampled_msa_source_features,
         sample_opendde_msa_cycle_features,
     )
-    from foldjax.models.protenix.chunking import resolve_chunk_config
+    from foldjax.models.protenix.chunking import (
+        PROTENIX_CHUNK_SIZE_THRESHOLDS,
+        PROTENIX_EXTREME_CHUNK_SIZE,
+        resolve_chunk_config,
+    )
     from foldjax.models.protenix.models.diffusion.diffusion import (
         inference_noise_schedule,
     )
@@ -348,10 +352,18 @@ def _predict(
     # Passing the residue count loses nothing for the structural branch: every
     # call site re-narrows the policy value from its own shape and head count
     # (see the note above), and `_row_block` only ever narrows.
+    #
+    # Upstream's table, named here rather than taken by default, because
+    # Protenix's own callers no longer use it: under the shipped bf16 trunk
+    # `_with_cueq_triangle_defaults` sends this model's triangle
+    # multiplication to the blocked xla path, where these widths bound real
+    # buffers. OpenDDE keeps the transcription byte-for-byte.
     chunks = resolve_chunk_config(
         n_token=n_residue,
         num_samples=num_samples,
         policy=chunk_policy,
+        thresholds=PROTENIX_CHUNK_SIZE_THRESHOLDS,
+        extreme=PROTENIX_EXTREME_CHUNK_SIZE,
         **{k: v for k, v in (chunk_overrides or {}).items() if v is not None},
     )
     return infer(

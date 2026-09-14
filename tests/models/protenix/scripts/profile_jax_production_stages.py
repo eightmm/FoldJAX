@@ -39,7 +39,10 @@ def main() -> None:
     jax.config.update("jax_default_matmul_precision", "default")
 
     from foldjax.models.protenix.bridge.weights_io import load_native_weights
-    from foldjax.models.protenix.chunking import resolve_chunk_config
+    from foldjax.models.protenix.chunking import (
+        PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS,
+        resolve_chunk_config,
+    )
     from foldjax.models.protenix.data.static_io import load_static_feature_npz
     from foldjax.models.protenix.models.diffusion.atom import (
         atom_attention_encoder_prepare_diffusion_cache,
@@ -70,6 +73,8 @@ def main() -> None:
         n_token=n_token,
         num_samples=args.samples,
         policy="auto",
+        # The table the CLI uses, so `auto` here means what `auto` ships.
+        thresholds=PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS,
     )
     s_inputs, input_seconds = warm_measure(
         lambda: input_feature_embedder(

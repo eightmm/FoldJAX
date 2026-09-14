@@ -526,7 +526,10 @@ def _run(
         cache_scope.enter_context(compilation_cache_scope(cache))
         print(f"compile cache: {cache}")
 
-    from foldjax.models.protenix.chunking import resolve_chunk_config
+    from foldjax.models.protenix.chunking import (
+        PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS,
+        resolve_chunk_config,
+    )
     from foldjax.models.protenix.data.featurize_json import featurize_protein_json
     from foldjax.models.protenix.data.output import (
         project_generated_writer_features,
@@ -1053,6 +1056,10 @@ def _run(
             n_token=n_token,
             num_samples=args.num_samples,
             policy=args.chunk_policy,
+            # Measured, not upstream's table: this trunk's triangle ops are
+            # fused, so chunking them costs time and saves no bytes. See the
+            # table's own comment for the numbers.
+            thresholds=PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS,
             triangle_mul_chunk_size=args.triangle_mul_chunk_size,
             triangle_att_q_chunk_size=args.triangle_att_q_chunk_size,
             single_att_q_chunk_size=args.single_att_q_chunk_size,
