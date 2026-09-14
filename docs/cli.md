@@ -385,6 +385,11 @@ seeds at 1,003 and 2,096 tokens and six at 3,012:
 | 2,096 (5DEI) | 402–405 → 262–263 s | 25,066 → 19,107 MiB | 0.45–0.58 Å on both arms |
 | 3,012 (6ZTX) | 949–958 → 658–665 s | 50,412 → 34,893 MiB | 0.55–1.03 Å on both arms |
 
+The bfloat16 column is the arm that panel measured. The profile shipped since
+2026-09-14 is lower again, because the layer-norm affine is no longer narrowed
+and the guard that change forces stops widening two norms inside the denoiser:
+**243.7 s / 13,742.5 MiB at 2,096 and 617.0 s / 24,676.7 MiB at 3,012.**
+
 The accuracy column is per chain against the deposited coordinates under a
 permutation-aware chain assignment — 6ZTX is a homotetramer, and scoring it
 chain-for-chain by label reads a relabelling as a large displacement.

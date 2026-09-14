@@ -369,7 +369,11 @@ and the rest of this section is the measurement that justified it.
 OpenFold3 now defaults its partial token/pair track to bfloat16;
 `--option dtype=float32` restores the publisher's FP32 inference precision.
 A 28-row, three-target panel measured bfloat16 faster and smaller at every
-size with per-chain deposited RMSD the same on both arms at every size. Its
+size with per-chain deposited RMSD the same on both arms at every size. Since
+2026-09-14 it is smaller again -- 24,676.7 MiB at 3,012 tokens against the
+panel's 34,893 -- because the layer-norm affine is excluded from the narrowing
+and the `x.dtype` guard that forces stops widening two norms inside the
+denoiser; `models/openfold3/dtype.py` carries the six-seed acceptance. Its
 one 3,012-token outlier appears in **both** dtypes, one seed of six each, and
 the catalase core folds correctly in all twelve arms — so the miss is the
 target's and not the width's. Six seeds do not estimate a rate, and the

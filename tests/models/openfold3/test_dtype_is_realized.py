@@ -187,6 +187,47 @@ def _leaf_dtypes(tree) -> set:
     }
 
 
+#: The narrowed subtrees that actually hold a `LayerNormParams`, spelled out
+#: rather than discovered: an affine that stops being reached has to fail here
+#: rather than pass by being absent.
+_AFFINE_BEARING = (
+    ("trunk", "msa_module"),
+    ("trunk", "pairformer_stack"),
+    ("trunk", "layer_norm_z"),
+    ("trunk", "layer_norm_s"),
+    ("trunk", "template_embedder"),
+    ("diffusion_conditioning", "layer_norm_z"),
+    ("diffusion_conditioning", "transition_z"),
+    ("pairformer_embedding", "pairformer_stack"),
+)
+
+
+def _split_leaf_dtypes(tree) -> tuple[set, set]:
+    """Return ``(layer-norm affine dtypes, every other leaf's dtype)``.
+
+    The narrowing is not uniform over a subtree: everything narrows except the
+    layer-norm scale and offset, which upstream's ``weight.float()`` reads
+    unrounded off a module autocast never casts. A test that asserted one
+    dtype for a whole subtree would have to be weakened to a two-element set
+    to pass, and a two-element set no longer says which leaf is which.
+    Splitting keeps both halves asserted.
+    """
+    affine: set = set()
+    other: set = set()
+    for node in jax.tree.leaves(
+        tree, is_leaf=lambda node: isinstance(node, LayerNormParams)
+    ):
+        if isinstance(node, LayerNormParams):
+            affine |= {
+                leaf.dtype
+                for leaf in jax.tree.leaves(node)
+                if jnp.issubdtype(getattr(leaf, "dtype", jnp.int32), jnp.floating)
+            }
+        elif jnp.issubdtype(getattr(node, "dtype", jnp.int32), jnp.floating):
+            other.add(node.dtype)
+    return affine, other
+
+
 # ---------------------------------------------------------------- the default
 
 
@@ -321,7 +362,14 @@ def test_the_cast_narrows_exactly_the_named_subtrees() -> None:
     narrowed = cast_narrow_params(params, *_both("bfloat16"))
 
     for path in _NARROWED:
-        assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.bfloat16)}, path
+        affine, other = _split_leaf_dtypes(_select(narrowed, path))
+        # `<=` rather than `==` on both halves, because a path can be all
+        # affine (`trunk.layer_norm_z`) or hold none at all; the third
+        # assertion is what stops an unreachable path passing vacuously, and
+        # `_AFFINE_BEARING` below pins which paths carry an affine.
+        assert other <= {jnp.dtype(jnp.bfloat16)}, path
+        assert affine <= {jnp.dtype(jnp.float32)}, path
+        assert affine or other, path
     for path in _LEFT_WIDE:
         assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.float32)}, path
 
@@ -339,7 +387,14 @@ def test_the_bfloat16_profile_narrows_the_classified_subtrees() -> None:
     narrowed = cast_narrow_params(params, *inference_module.resolve_dtypes(config))
 
     for path in _NARROWED:
-        assert _leaf_dtypes(_select(narrowed, path)) == {jnp.dtype(jnp.bfloat16)}, path
+        affine, other = _split_leaf_dtypes(_select(narrowed, path))
+        # `<=` rather than `==` on both halves, because a path can be all
+        # affine (`trunk.layer_norm_z`) or hold none at all; the third
+        # assertion is what stops an unreachable path passing vacuously, and
+        # `_AFFINE_BEARING` below pins which paths carry an affine.
+        assert other <= {jnp.dtype(jnp.bfloat16)}, path
+        assert affine <= {jnp.dtype(jnp.float32)}, path
+        assert affine or other, path
     for path in _LEFT_WIDE:
         assert _select(narrowed, path) is _select(params, path), path
     assert narrowed.denoiser is params.denoiser
@@ -491,7 +546,9 @@ def test_the_confidence_head_runs_narrow_between_two_float32_boundaries() -> Non
     assert _leaf_dtypes(params.linear_i) == {jnp.dtype(jnp.float32)}
     assert _leaf_dtypes(params.linear_j) == {jnp.dtype(jnp.float32)}
     assert _leaf_dtypes(params.linear_distance) == {jnp.dtype(jnp.float32)}
-    assert _leaf_dtypes(params.pairformer_stack) == {jnp.dtype(jnp.bfloat16)}
+    _affine, other = _split_leaf_dtypes(params.pairformer_stack)
+    assert other == {jnp.dtype(jnp.bfloat16)}
+    assert _affine <= {jnp.dtype(jnp.float32)}
 
     s_conf, z_conf = _confidence_call(params, narrow_dtype("bfloat16"))
     assert s_conf.dtype == jnp.float32
@@ -916,7 +973,9 @@ def test_the_confidence_option_is_realized_as_bfloat16_activations() -> None:
         *resolve_dtypes(config),
     ).pairformer_embedding
 
-    assert _leaf_dtypes(shipped.pairformer_stack) == {jnp.dtype(jnp.bfloat16)}
+    _affine, other = _split_leaf_dtypes(shipped.pairformer_stack)
+    assert other == {jnp.dtype(jnp.bfloat16)}
+    assert _affine <= {jnp.dtype(jnp.float32)}
     for entry in ("linear_i", "linear_j", "linear_distance"):
         assert _leaf_dtypes(getattr(shipped, entry)) == {jnp.dtype(jnp.float32)}, entry
 
@@ -991,15 +1050,19 @@ def test_each_group_narrows_without_the_other() -> None:
     params = _synthetic_inference_params()
 
     trunk_only = cast_narrow_params(params, jnp.bfloat16, None)
-    assert _leaf_dtypes(trunk_only.trunk.pairformer_stack) == {jnp.dtype(jnp.bfloat16)}
+    _affine, other = _split_leaf_dtypes(trunk_only.trunk.pairformer_stack)
+    assert other == {jnp.dtype(jnp.bfloat16)}
+    assert _affine <= {jnp.dtype(jnp.float32)}
     assert trunk_only.pairformer_embedding is params.pairformer_embedding, (
         "the confidence head must be untouched when only the trunk narrows"
     )
 
     confidence_only = cast_narrow_params(params, None, jnp.bfloat16)
-    assert _leaf_dtypes(confidence_only.pairformer_embedding.pairformer_stack) == {
-        jnp.dtype(jnp.bfloat16)
-    }
+    _affine, other = _split_leaf_dtypes(
+        confidence_only.pairformer_embedding.pairformer_stack
+    )
+    assert other == {jnp.dtype(jnp.bfloat16)}
+    assert _affine <= {jnp.dtype(jnp.float32)}
     assert confidence_only.trunk is params.trunk
     assert confidence_only.diffusion_conditioning is params.diffusion_conditioning
     assert _leaf_dtypes(confidence_only.pairformer_embedding.linear_i) == {
@@ -1313,28 +1376,52 @@ def test_a_bfloat16_layer_norm_stays_near_the_float64_reference(mean, ceiling) -
     assert _rms(actual, expected) < ceiling
 
 
-def test_a_narrow_activation_against_wide_parameters_normalises_wide() -> None:
-    """The denoiser's atom encoder, which the guard exists for.
+def test_a_narrow_activation_against_wide_parameters_rounds_once_on_the_way_out(
+) -> None:
+    """The operand signature upstream itself has, and the one this port now has.
 
-    ``cast_narrow_params`` narrows the diffusion conditioning's *pair* branch
-    and pins the whole denoiser float32, so ``atom_features.py:170`` takes a
-    bfloat16 ``zij_trunk`` against a float32 ``layer_norm_z``. Promotion alone
-    left the mean, the variance and the centring narrow there and widened only
-    the affine. Two things are asserted: the normalisation now runs wide --
-    it is exact against float64, because nothing rounds the result -- and the
-    realised output dtype is still float32, so widening the accumulation did
-    not narrow a region this port pins wide. Nothing rounds the result here,
-    so the only error left is float32's own -- four orders of magnitude below
-    the 0.068 the narrow arrangement carried at this mean.
+    Every narrowed region reaches ``layer_norm`` this way once the affine is
+    excluded from the narrowing: a bfloat16 activation against a float32
+    scale, which is exactly what upstream's ``LayerNorm.forward`` sees under
+    autocast. Its rule is taken whole, output cast included, so the guard
+    reads ``x.dtype``: the mean, the variance, the centring and the affine all
+    run in float32 and the result rounds once, at the end.
+
+    Both halves are asserted, because either alone would pass for a wrong
+    arrangement. Bit-identity against ``_upstream_layer_norm`` is what says
+    the *accumulation* is wide -- a narrow accumulation would differ in the
+    fourth digit at this mean, which is the 0.068 the pre-upcast code carried.
+    The output dtype is what says the rounding happens once rather than not at
+    all; returning float32 here is what the promoted-dtype guard used to do,
+    and it is what widened the whole Pairformer the moment the affine stopped
+    being narrowed.
     """
     x, weight, bias = _ln_inputs(mean=50.0, std=1.0)
     actual = layer_norm(x, LayerNormParams(weight=weight, bias=bias), eps=LN_EPS)
-    assert actual.dtype == jnp.float32
-    expected = _float64_layer_norm(x, weight, bias)
+    assert actual.dtype == jnp.bfloat16
     np.testing.assert_array_equal(
         np.asarray(actual, np.float64),
         np.asarray(
-            _upstream_layer_norm(x, weight, bias, out_dtype=jnp.float32), np.float64
+            _upstream_layer_norm(x, weight, bias, out_dtype=jnp.bfloat16), np.float64
         ),
     )
-    assert _rms(actual, expected) < 1e-6
+
+
+def test_the_layer_norm_affine_is_left_float32_in_every_narrowed_subtree() -> None:
+    """Upstream's ``weight.float()`` reads a parameter autocast never casts.
+
+    Narrowing the scale puts a rounding into the port that upstream does not
+    have, and once the accumulation is wide it is the only error left in
+    ``layer_norm``. Both halves are asserted: which subtrees hold an affine at
+    all, so one that stops being reached fails here rather than passing by
+    absence, and that every one of those leaves is float32 while its
+    neighbours are bfloat16.
+    """
+    narrowed = cast_narrow_params(_synthetic_inference_params(), *_both("bfloat16"))
+    bearing = tuple(
+        path for path in _NARROWED if _split_leaf_dtypes(_select(narrowed, path))[0]
+    )
+    assert bearing == _AFFINE_BEARING
+    for path in _AFFINE_BEARING:
+        affine, _other = _split_leaf_dtypes(_select(narrowed, path))
+        assert affine == {jnp.dtype(jnp.float32)}, path

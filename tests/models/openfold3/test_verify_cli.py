@@ -26,7 +26,7 @@ from foldjax.models.openfold3.models.representative_atoms import (
 )
 
 from .feature_fixture import minimal_features
-from .test_dtype_is_realized import _synthetic_inference_params
+from .test_dtype_is_realized import _split_leaf_dtypes, _synthetic_inference_params
 
 
 def _save(tmp_path: Path, state: dict) -> Path:
@@ -171,10 +171,7 @@ def test_verifier_passes_normalized_static_chain_count(
         seen.update(
             n_chain=n_chain,
             asym_id=np.asarray(batch["asym_id"]),
-            trunk_dtype={
-                leaf.dtype
-                for leaf in jax.tree.leaves(params.trunk.pairformer_stack)
-            },
+            trunk_dtype=_split_leaf_dtypes(params.trunk.pairformer_stack),
         )
         values = {"coordinates": np.zeros((1, 2, 3), dtype=np.float32)}
         return SimpleNamespace(_asdict=lambda: values)
@@ -196,4 +193,10 @@ def test_verifier_passes_normalized_static_chain_count(
     # the weights the real entry points narrow. Left uncast, the config would
     # ask for bfloat16 activations against float32 parameters and every
     # matmul would promote back -- a program nothing runs.
-    assert seen["trunk_dtype"] == {np.dtype(narrow_dtype("bfloat16"))}
+    # The layer-norm affine is the deliberate exception and is asserted as
+    # such rather than folded into one set, so a cast that reached it would
+    # still fail here.
+    assert seen["trunk_dtype"] == (
+        {np.dtype(np.float32)},
+        {np.dtype(narrow_dtype("bfloat16"))},
+    )

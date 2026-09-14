@@ -163,47 +163,76 @@ wider, it is free in time (655.17 s wide against 664.61 narrow and 950.84
 float32 at 3,012 tokens), byte-identical in peak at 34,893 MiB, and it emits
 not one instruction under ``dtype="float32"``.
 
-**What was learned about the affine exclusion, which is not in the tree.**
-Excluding ``LayerNormParams`` from ``narrow_floats`` closes the last 1.5x
-above -- twelve of twelve float64 rows bit-identical to upstream -- for
-0.381 MiB of float32 parameters, and it forces the guard in
+**The layer-norm affine is excluded from the narrowing, and that is where
+the memory is.** :func:`narrow_floats` leaves every ``LayerNormParams``
+float32 -- 0.381 MiB across 1,163 affine tensors -- which closes the last
+1.5x above, twelve of twelve float64 rows bit-identical to upstream. The
+0.381 MiB is not the point. Excluding the affine forces the guard in
 :func:`~foldjax.models.openfold3.models.primitives.layer_norm` from the
-promoted dtype to ``x.dtype``. It was reverted on a seed-101 spread reading
-that the second seed did not reproduce; on the two seeds together it is not
-ranked either way, and if anything it is weakly favoured. Two facts about
-it that a future attempt should not have to rediscover:
+promoted dtype to ``x.dtype``, because a float32 affine everywhere would
+otherwise widen every trunk norm and the whole Pairformer with it. Reading
+``x.dtype`` narrows the two stack-level pair norms *inside* the float32
+denoiser, which the promoted guard was widening, and those are large:
 
-* **No site's output width moves.** Censused across ``trunk_cycle`` at the
-  released widths, 62 calls at 13 distinct sites --
+=========================================  ==========  ============
+3,012 tokens, 6ZTX, seed 101               wall        peak
+=========================================  ==========  ============
+promoted guard, affine narrowed (before)   656.7 s     34,893.0 MiB
+``x.dtype`` guard, affine excluded         617.0 s     24,676.7 MiB
+ .. only ``atom_features``'s norm wide     616.6 s     31,134.5 MiB
+ .. only ``diffusion_transformer``'s wide  655.9 s     35,867.2 MiB
+=========================================  ==========  ============
+
+**-29.3% peak and -6.3% wall**, and -28.1% / -7.8% at 2,096 tokens (19,107.3
+-> 13,742.5 MiB, 265.0 -> 243.7 s). The two attribution rows say the bulk
+belongs to ``diffusion_transformer.py``'s stack-level ``layer_norm_z``:
+widening it alone gives the whole saving back and then some, because the
+explicit cast materialises a copy the promoted guard did not. So there is no
+arrangement that keeps that norm wide and keeps the memory, and the question
+is only whether narrowing it holds the structure.
+
+**It does, at six seeds.** Scored against deposited 6ZTX on a
+permutation-aware chain assignment, fitting the catalase core (122-753) and
+reading the N-terminal arm (27-121) separately, five samples per seed:
+
+* the core is 0.58-1.02 A in all six, against 0.56-0.93 A for the arrangement
+  that keeps the norms wide;
+* the arm is 0.38-0.48 A in five of six and 56.67-56.75 A at seed 404 -- and
+  the wide arrangement misses the same arm at **the same seed** by the same
+  amount, 56.70-56.79 A. That is the target's own bimodality reproduced, not
+  a regression introduced here.
+
+**This was reverted once, and how it was reverted is the reusable part.** The
+revert rested on a five-sample within-set spread going 0.747 to 1.823 at one
+seed. That statistic cannot rank two arrangements: its ordering reverses
+between seeds, and the second seed did not reproduce it. A float64 error
+table per operation had also pointed the other way earlier. Per-operation
+error is not per-model error, an arrangement bit-identical to upstream is not
+automatically the one to ship on a port whose other operations are not, and
+neither of those instruments can settle a coordinate question -- what settles
+it is scoring against a structure that exists.
+
+Two facts about the exclusion a future reader should not have to rediscover:
+
+* **No trunk site's output width moves.** Censused across ``trunk_cycle`` at
+  the released widths, 62 calls at 13 distinct sites --
   ``msa.py:83``/``:139``/``:143``, ``triangle.py:119``/``:148``,
   ``triangle_attention.py:189``, ``attention_pair_bias.py:63``/``:72``,
   ``primitives.py`` (AdaLN and the SwiGLU transition),
   ``template_module.py:91``/``:150``, ``trunk.py:175``/``:208`` -- every one
   takes bfloat16 and returns bfloat16 under both guards, and the confidence
-  stack runs the same code. Only the affine column differs. The guard change
-  is therefore not a boundary move; the whole difference is that each trunk
-  norm multiplies by an unrounded scale instead of a bfloat16-rounded one.
+  stack runs the same code. In the trunk the whole difference is that each
+  norm multiplies by an unrounded scale; the width change is in the denoiser.
 * **It changes what ``triangle_kernel=cueq-full`` hands cuEquivariance.**
   ``norm_in_weight``/``norm_out_weight`` become float32 against a bfloat16
-  ``x``. The wrapper neither validates nor casts the pair and its pure-JAX
-  fallback promotes correctly, but the compiled kernel's behaviour on the
-  mix was never read. That is the one thing a restoration owes a GPU row.
-* **At 3,012 tokens the affine choice is not what moved the assembly.** At
-* **The affine choice is not what moved the assembly at 3,012 tokens.** At
-  seed 202 both bfloat16 arms sit about 25 A from the float32 run, 25.09
-  without the exclusion and 24.93 with it. The panel below shows why that
-  distance is not evidence against either of them -- at that seed the
-  float32 run is the one in the alternative basin -- but it does still say
-  the affine is not the variable: both arms answer it the same way.
-**The reusable part.** A float64 error table per operation did not predict
-the sign of the model's response in either direction, and then a
-single-draw spread statistic reversed under a second seed. Per-operation
-error is not per-model error; an arrangement bit-identical to upstream is
-not automatically the one to ship on a port whose other operations are
-not; and a five-sample spread cannot rank two variants. What the ranking
-needed, and never had, was more draws than the instrument could afford per
-candidate -- which is itself the argument for judging an arithmetic change
-on its arithmetic.
+  ``x``. That is upstream's own operand signature -- its module parameters
+  stay float32 under autocast -- so this should make that arm *more* faithful,
+  and it is a candidate explanation for the stable 0.216 A it sits from native
+  cuEq where the XLA-multiplication arm sits at 0.133. The kernel composes
+  ``layer_norm_transpose`` as its own primitive and validates shapes rather
+  than dtypes, and Triton specialises on pointer dtypes, so the mix compiles
+  rather than misreads; whether its internal accumulation matches the pure-JAX
+  reference is still unread, and that is what a ``cueq-full`` promotion owes.
 
 **Why 3,012 tokens and not 2,096, as far as source can say.** Nothing in the
 port keys on token count between the two. ``auto_pair_chunk_size`` is smooth
@@ -263,6 +292,10 @@ permutation-aware chain assignment, which a homotetramer requires: 6ZTX is
 catalase HPII, one sequence in four chains, and scoring it chain-for-chain by
 label reads a relabelling as a large uniform displacement.
 
+The peak column predates the affine exclusion above and is what the arm this
+panel measured actually ran. The shipped profile is lower: 24,676.7 MiB at
+3,012 tokens and 13,742.5 at 2,096, with the wall 617.0 s and 243.7 s.
+
 **The 3,012-token failure is the target's, not the dtype's.** Fitting on the
 catalase core (residues 122-753) and reading the N-terminal arm (27-121)
 separately, over twelve arms of five samples each:
@@ -307,6 +340,8 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from foldjax.models.openfold3.models.primitives import LayerNormParams
+
 #: Accepted spellings, in `foldjax.execution`'s neutral vocabulary. The default
 #: is named here rather than repeated at each caller so the released profile has
 #: one definition.
@@ -342,15 +377,39 @@ def narrow_floats[T](tree: T, dtype: Any) -> T:
     every integer below every float, so an integer one-hot multiplied by a
     bfloat16 weight is already bfloat16, and casting a mask's index arithmetic
     to a float would be a different program.
+
+    A :class:`~foldjax.models.openfold3.models.primitives.LayerNormParams` is
+    the one floating node this does not cast, wherever it appears -- including
+    the two nested inside an ``AdaLNParams``. Upstream's ``LayerNorm.forward``
+    reads ``self.weight.float()`` off a module autocast never casts, so it
+    normalises by the unrounded scale; rounding it here would add a rounding
+    the port's reference does not have, and it is the only error left in
+    ``layer_norm`` once the accumulation is wide. The price is exact rather
+    than estimated: 1,163 affine tensors across the narrowed subtrees of the
+    released checkpoint, 798,252 bytes at float32 against 399,126 at
+    bfloat16, so 0.381 MiB out of a 623 MiB narrowed parameter set. No buffer
+    changes shape -- the affine multiplies a ``[C]`` vector into an
+    already-upcast activation, one broadcast and no copy.
+
+    What it *does* change, and why it is worth 10 GiB at 3,012 tokens, is the
+    guard in :func:`~foldjax.models.openfold3.models.primitives.layer_norm`:
+    with a float32 affine everywhere, a guard that read the promoted dtype
+    would return float32 at every trunk norm and widen the whole Pairformer,
+    so the guard reads ``x.dtype`` instead. That narrows the two stack-level
+    pair norms inside the float32 denoiser, which is where the memory is.
     """
 
     if dtype is None:
         return tree
 
     def cast(value):
+        if isinstance(value, LayerNormParams):
+            return value
         value_dtype = getattr(value, "dtype", None)
         if value_dtype is not None and jnp.issubdtype(value_dtype, jnp.floating):
             return value.astype(dtype)
         return value
 
-    return jax.tree.map(cast, tree)
+    return jax.tree.map(
+        cast, tree, is_leaf=lambda node: isinstance(node, LayerNormParams)
+    )

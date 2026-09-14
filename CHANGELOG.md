@@ -12,6 +12,55 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **OpenFold3 leaves the layer-norm affine float32, which takes 29% off the
+  peak.** `narrow_floats` no longer casts a `LayerNormParams`, so this port
+  now spells upstream's `LayerNorm.forward` in all three of its parts rather
+  than two: the accumulation is float32 (it already was), the affine is read
+  unrounded (`weight.float()`, new), and the result rounds once on the way out
+  at `x.dtype` (`out.to(dtype=d)`, new). The guard moves from the promoted
+  dtype to `x.dtype` for that third part, and **returning float32 for a
+  bfloat16 input is what upstream never does** -- the port was unfaithfully
+  wide, not deliberately so.
+
+  The width that changes is not in the trunk. Censused over `trunk_cycle`,
+  62 calls at 13 sites take bfloat16 and return bfloat16 under both guards.
+  What moves is the two stack-level pair norms *inside* the float32 denoiser,
+  which the promoted guard was widening because a narrowed `zij_trunk` met
+  float32 norm parameters there. At 3,012 tokens on 6ZTX, seed 101:
+
+  | arrangement | wall | peak |
+  | --- | --- | --- |
+  | promoted guard, affine narrowed | 656.7 s | 34,893.0 MiB |
+  | **`x.dtype` guard, affine excluded** | **617.0 s** | **24,676.7 MiB** |
+  | …only `atom_features`'s norm kept wide | 616.6 s | 31,134.5 MiB |
+  | …only `diffusion_transformer`'s kept wide | 655.9 s | 35,867.2 MiB |
+
+  −29.3% peak and −6.3% wall, and −28.1% / −7.8% at 2,096 tokens (19,107.3 →
+  13,742.5 MiB, 265.0 → 243.7 s). The two attribution rows say the bulk is
+  `diffusion_transformer.py`'s stack-level `layer_norm_z`: keeping it wide
+  gives the whole saving back, so there is no arrangement that keeps that norm
+  wide and keeps the memory.
+
+  **Accepted on six seeds against the deposited structure**, which is the
+  instrument the dtype default was settled with, not the within-set spread
+  that reverted this change once. Permutation-aware chain assignment, catalase
+  core (122–753) fitted and the N-terminal arm (27–121) read separately, five
+  samples per seed: the core is 0.58–1.02 Å in all six against 0.56–0.93 Å for
+  the wide arrangement, and the arm is 0.38–0.48 Å in five of six. Seed 404
+  misses the arm at 56.67–56.75 Å — **and the wide arrangement misses the same
+  arm at the same seed by 56.70–56.79 Å.** That is 6ZTX's own bimodality
+  reproduced, not a regression.
+
+  The first attempt at this was reverted on a five-sample within-set spread
+  going 0.747 to 1.823 at one seed, a statistic whose ordering reverses
+  between seeds and which the second seed did not reproduce. Recorded in
+  `models/openfold3/dtype.py`, because the instrument is the reusable part.
+
+  The cost is 0.381 MiB of float32 parameters across 1,163 affine tensors, and
+  no buffer changes shape: the affine multiplies a `[C]` vector into an
+  already-upcast activation.
+
+
 - **OpenFold3 now defaults its partial token/pair track to bfloat16.**
   `--option dtype=float32` restores upstream's `32-true` inference precision.
   A [28-row panel over three targets](docs/openfold3-bf16-default-evidence-2026-09-12.md)

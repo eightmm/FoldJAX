@@ -96,24 +96,38 @@ def layer_norm(
     autocast context". Accumulating narrow instead rounds the mean and the
     variance back before ``x - mean`` and applies the affine narrow as well:
     four extra roundings per norm against upstream's one, at every layer norm
-    in a narrowed region. Protenix's ``layer_norm`` already does this and its
-    bfloat16 arm holds at 3,012 tokens where OpenFold3's drifts.
+    in a narrowed region.
 
-    The arrangement is Protenix's; the guard reads the *promoted* dtype rather
-    than ``x.dtype`` alone, and the difference is forced by this port's
-    parameter split. Protenix narrows parameters and activations together per
-    region, so there ``x.dtype`` settles both questions. Here they come apart:
-    the diffusion conditioning's pair branch is narrowed while the whole
-    denoiser is pinned float32, so a bfloat16 ``zij_trunk`` reaches float32
-    norm parameters at ``atom_features.py:170``. Reading the promotion
-    normalises that site wide too -- it is narrow today, and it is the one
-    place where rounding the *output* to bfloat16, as upstream's
-    ``out.to(dtype=d)`` would, narrows a region this port pins wide. So the
-    accumulation widens everywhere and no realised dtype moves anywhere.
+    Upstream's rule is taken whole, output cast included, and the guard reads
+    ``x.dtype`` because the affine is not a candidate for narrowing:
+    :func:`~foldjax.models.openfold3.dtype.narrow_floats` leaves every
+    ``LayerNormParams`` float32, so this sees upstream's own operand signature
+    -- a bfloat16 activation against a float32 scale -- everywhere, and
+    ``weight.float()`` is the no-op it is upstream. A guard that read the
+    *promoted* dtype instead would return float32 at every trunk norm and
+    widen the whole Pairformer with it, which is the option evaporating rather
+    than working.
+
+    Reading ``x.dtype`` also narrows the two stack-level pair norms inside the
+    float32 denoiser (``atom_features.py``'s trunk conditioning and
+    ``diffusion_transformer.py``'s ``layer_norm_z``), which the promoted guard
+    widened. That is where the memory is: 34,893 -> 24,677 MiB at 3,012 tokens
+    and 19,107 -> 13,743 at 2,096, with the wall 6-8% lower at both. It was
+    reverted once on a five-sample within-set spread, a statistic whose
+    ordering reverses between seeds; scored against the deposited structure
+    instead, three seeds land core 0.58-1.02 A and N-terminal arm 0.38-0.48 A,
+    indistinguishable from the arm that keeps them wide. models/openfold3/
+    dtype.py carries the table.
+
+    Protenix's ``layer_norm`` is the same arrangement with one deliberate
+    difference: it quantises the affine to bfloat16 before upcasting it,
+    because its upstream casts the module and a native bfloat16 LayerNorm
+    therefore holds a rounded scale. OpenFold3's does not -- its parameters
+    stay float32 under autocast -- so quantising here would add a rounding
+    upstream does not have.
     """
-    operands = (x, *(value for value in params if value is not None))
-    output_dtype = jnp.result_type(*operands)
-    if any(value.dtype == jnp.bfloat16 for value in operands):
+    output_dtype = x.dtype
+    if output_dtype == jnp.bfloat16:
         x = x.astype(jnp.float32)
         params = LayerNormParams(
             *(None if value is None else value.astype(jnp.float32) for value in params)

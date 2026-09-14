@@ -40,20 +40,35 @@ from foldjax.models.openfold3.output import (
 )
 
 from .feature_fixture import minimal_features
-from .test_dtype_is_realized import _synthetic_inference_params
+from .test_dtype_is_realized import (
+    _split_leaf_dtypes,
+    _synthetic_inference_params,
+)
 
 
 def _param_dtypes(params) -> dict:
-    """One dtype per group the raw CLI's cast is supposed to reach or skip."""
-    import jax
+    """One dtype per group the raw CLI's cast is supposed to reach or skip.
+
+    Layer-norm scale and offset are reported separately because they are the
+    one thing a narrowed subtree deliberately leaves float32 -- folding them
+    in would make every narrowed group report two dtypes and force this to be
+    weakened to a subset check, which would then pass for a cast that reached
+    them.
+    """
 
     def only(tree):
-        dtypes = {leaf.dtype for leaf in jax.tree.leaves(tree)}
-        assert len(dtypes) == 1, dtypes
-        return dtypes.pop()
+        _affine, other = _split_leaf_dtypes(tree)
+        assert len(other) == 1, other
+        return other.pop()
+
+    def affine_only(tree):
+        affine, _other = _split_leaf_dtypes(tree)
+        assert len(affine) == 1, affine
+        return affine.pop()
 
     return {
         "trunk.pairformer_stack": only(params.trunk.pairformer_stack),
+        "trunk.pairformer_stack affine": affine_only(params.trunk.pairformer_stack),
         "pairformer_embedding.pairformer_stack": only(
             params.pairformer_embedding.pairformer_stack
         ),
@@ -461,6 +476,9 @@ def test_prediction_cli_passes_static_chain_count_and_ignores_masked_atom_paddin
     narrow = np.dtype(narrow_dtype("bfloat16"))
     assert seen["param_dtypes"] == {
         "trunk.pairformer_stack": narrow,
+        # Upstream's `weight.float()` reads a parameter autocast never casts,
+        # so this one stays wide however narrow its neighbours get.
+        "trunk.pairformer_stack affine": np.dtype(np.float32),
         "pairformer_embedding.pairformer_stack": narrow,
         "trunk.input_embedder": np.dtype(np.float32),
         "denoiser": np.dtype(np.float32),
