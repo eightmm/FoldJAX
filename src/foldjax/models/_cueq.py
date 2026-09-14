@@ -183,3 +183,27 @@ def cueq_attention_core(
         precision=precision,
     )
     return output.reshape((*lead, *output.shape[-4:]))
+
+
+#: Why the fused triangle multiplication cannot always run, in one place.
+#:
+#: `cuex.triangle_multiplicative_update` takes `p_in_weight` as
+#: `(2*D_in, D_in)` and its wrapper refuses a hidden dimension that is not a
+#: multiple of 32, so the projection has to be square and the width has to be
+#: aligned. That is the kernel's contract rather than any port's policy:
+#: upstream carries the same guard and falls back the same way, which Protenix
+#: reads off `triangular.py:491`. Spelling it once is what stops two ports
+#: from drifting when the wheel changes its mind -- it was written twice, the
+#: same rule with different variable names, which is the shape a silent drift
+#: takes.
+def fused_multiplication_fits(
+    *, pair_width: int, hidden_width: int, has_affine: bool
+) -> bool:
+    """Whether cuEquivariance's fused update can take these widths at all.
+
+    `has_affine` is the third condition and it is not a width: the kernel
+    computes both layer norms itself, so a stack whose triangle
+    multiplication omits a scale or an offset has nothing to hand it.
+    """
+
+    return has_affine and hidden_width == pair_width and pair_width % 32 == 0

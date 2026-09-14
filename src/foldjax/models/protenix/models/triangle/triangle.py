@@ -28,6 +28,7 @@ from foldjax.models._cp import (
     transpose_perm,
 )
 from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cueq import fused_multiplication_fits
 from foldjax.models.protenix.models.primitives.attention import AttentionParams
 from foldjax.models.protenix.models.primitives.primitives import (
     LayerNormParams,
@@ -131,9 +132,14 @@ def triangle_multiplication(
     # Upstream carries the same guard and falls back the same way: the kernel
     # requires the hidden width to equal the pair width (Protenix says so at
     # triangular.py:491). The template stack has c_z=64, c_hidden=128, so both
-    # sides run the unfused path there -- that is a shape fact, not a policy.
-    cueq_supported = (
-        params.linear_a_p.weight.shape[0] == z.shape[-1] and z.shape[-1] % 32 == 0
+    # sides run the unfused path there -- that is a shape fact, not a policy,
+    # which is why the test itself lives in `models/_cueq.py` and every port
+    # that asks reads one copy of it.
+    cueq_supported = fused_multiplication_fits(
+        pair_width=z.shape[-1],
+        hidden_width=params.linear_a_p.weight.shape[0],
+        has_affine=params.layer_norm_in.weight is not None
+        and params.layer_norm_out.weight is not None,
     )
     if backend == "cueq" and cueq_supported and not cp_active:
         if chunk_size is not None and 0 < chunk_size < z.shape[-3]:
