@@ -917,6 +917,35 @@ def opendde_infer_static(
             jnp.asarray(pair_mask).astype(bool) & residue_padding_pair_mask
         )
     if trunk_dtype is not None:
+        # Every floating leaf, with no exception -- and that is a departure
+        # from upstream worth stating rather than a shape upstream also has.
+        # Upstream narrows *inside* Linear
+        # (`opendde/model/triangular/layers.py:207-223` casts input, weight
+        # and bias to `self.precision` and returns at the incoming width) and
+        # pins the relative-position buffer float32 outright
+        # (`model/modules/embedders.py:155`, closed with `.float()` at
+        # `:301`), so its `--dtype bf16` arm keeps the feature dict float32
+        # and rounds at the GEMM. Casting the dict up front instead rounds the
+        # geometry and the raw fields before the atom encoder sees them, which
+        # reaches distance and one-hot arithmetic and not only the matmuls.
+        #
+        # The three sibling ports each hold that line: Boltz-2 excludes
+        # `("input_embedder", "atom_encoder")` from its cast
+        # (`models/boltz2/.../trunk.py:246-280`), Protenix hands the embedder
+        # the *un-narrowed* dict and restores `restype`/`profile`/
+        # `deletion_mean` explicitly (`models/protenix/models/model.py:506`),
+        # and OpenFold3 keeps `trunk.input_embedder` out of `narrow_floats`
+        # entirely -- where narrowing it took pLDDT from 0.858 to 0.466.
+        #
+        # **Measured here and it changes nothing.** 2026-09-14, one snapshot,
+        # 1,003 tokens on 3OG2: handing the embedder the un-narrowed dict
+        # gives 145.51 s / 21,477.9 MiB against 145.75 / 21,491.8, and CA
+        # RMSD against the deposited entry is 0.73-1.02 A on both arms over
+        # five samples. So this is not a defect to fix on today's evidence --
+        # it is one observation, at one size, on a single chain, and this port
+        # OOMs at 2,096 so there is no larger one to take. Remeasure when that
+        # ceiling moves: OpenFold3's island failed on a multimer at size, not
+        # at 1,003.
         trunk_features = jax.tree.map(
             lambda value: (
                 value.astype(trunk_dtype)
