@@ -42,6 +42,11 @@ _CLI_OPTIONS = {
     # is the spelling that reproduces the native gate on both stages.
     "amp_policy",
     "max_msa_depth",
+    # The seed of the per-cycle random MSA row draw, separately from the
+    # diffusion seed the request already carries. Not a compile option: `seed`
+    # is not one either, and the draw's padded row count already forks the
+    # executable through XLA's own HLO hash inside one cache namespace.
+    "msa_seed",
     "diffusion_attention_backend",
     "trunk_single_attention_backend",
     "trunk_triangle_attention_backend",
@@ -391,6 +396,15 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         _extra_cli_args(options.get("cli_args", ()))
         if "model_name" in options and not isinstance(options["model_name"], str):
             raise ValueError("model_name must be a string")
+        msa_seed = options.get("msa_seed")
+        # `bool` is an `int`, and `--msa-seed True` is not a number argparse
+        # accepts -- it answers with the whole usage dump, which does not say
+        # which argument was wrong. Rejected here for the same reason
+        # `glu_backend` is.
+        if msa_seed is not None and (
+            isinstance(msa_seed, bool) or not isinstance(msa_seed, int)
+        ):
+            raise ValueError("msa_seed must be an integer")
         checkpoint_dir = options.get("esm_checkpoint_dir")
         if checkpoint_dir is not None and not isinstance(checkpoint_dir, (str, Path)):
             raise ValueError("esm_checkpoint_dir must be a path")

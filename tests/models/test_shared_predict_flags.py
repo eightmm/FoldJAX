@@ -252,7 +252,7 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "-h", "--help",
     "--features", "--input-json",
     "--weights", "--out",
-    "--seed", "--seeds",
+    "--seed", "--seeds", "--msa-seed",
     "--output-format",
     "--num-samples", "--n-sample",
     "--num-steps", "--n-step",
@@ -394,7 +394,14 @@ def test_attention_backend_choices_are_pinned_per_port(
     ):
         spec = declared[option_strings]
         assert spec["dest"] == dest
-        assert spec["default"] == "xla_jit"
+        # Protenix released its denoiser attention on tokamax (845971e); the
+        # trunk site and both OpenDDE sites still default to the jitted XLA path.
+        expected_default = (
+            "tokamax"
+            if port == "protenix" and dest == "diffusion_attention_backend"
+            else "xla_jit"
+        )
+        assert spec["default"] == expected_default
         assert spec["choices"] == _ATTENTION_BACKEND_CHOICES[port], (
             port,
             option_strings,

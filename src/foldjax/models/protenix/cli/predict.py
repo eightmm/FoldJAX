@@ -152,6 +152,18 @@ def _run(
     seed_group.add_argument(
         "--seeds", type=int, nargs="+", help="Run every job with each listed seed."
     )
+    # Deliberately outside `seed_group`: this is the other half of a pair, not
+    # an alternative spelling of it. The per-cycle MSA row draw and the
+    # diffusion noise both read `--seed` today, so varying the MSA subset also
+    # redraws every sample and the two effects cannot be separated. Naming this
+    # separately holds one fixed while the other moves.
+    parser.add_argument(
+        "--msa-seed",
+        type=int,
+        help="Seed for the per-cycle random MSA row draw "
+        "(--sample-msa-per-cycle). Defaults to --seed; setting it leaves the "
+        "diffusion RNG on --seed.",
+    )
     parser.add_argument(
         "--output-format",
         choices=("npz", "protenix", "both"),
@@ -1087,7 +1099,11 @@ def _run(
                 cycle_msa_index_tape = sample_msa_cycle_index_tape(
                     features,
                     num_recycles=num_recycles,
-                    seed=seed,
+                    # The only MSA draw in this loop. The diffusion RNG keeps
+                    # `seed` -- both the `PRNGKey` below and the padded noise
+                    # tape above -- so `--msa-seed` moves the row subset and
+                    # nothing else.
+                    seed=seed if args.msa_seed is None else args.msa_seed,
                 )
             output = protenix_predict_static(
                 job_params,

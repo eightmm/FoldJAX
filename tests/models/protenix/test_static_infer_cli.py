@@ -90,7 +90,7 @@ def test_the_model_name_must_be_known_or_explicitly_waived(tmp_path) -> None:
         "--input-atom-heads", "1", "--atom-encoder-heads", "1",
         "--token-heads", "1", "--atom-decoder-heads", "1",
         "--n-queries", "2", "--n-keys", "4",
-        "--sigma-data", "4.0", "--cpu-only",
+        "--sigma-data", "4.0", "--cpu-only", "--diffusion-attention-backend", "xla_jit",
     ]
 
     with pytest.raises(SystemExit, match="cannot tell which Protenix model"):
@@ -140,7 +140,7 @@ def test_static_infer_runs_with_native_weights(tmp_path) -> None:
             "4",
             "--sigma-data",
             "4.0",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
         ]
     )
 
@@ -188,7 +188,7 @@ def test_prepared_params_keep_native_prediction_bytes_identical(
         "4",
         "--sigma-data",
         "4.0",
-        "--cpu-only",
+        "--cpu-only", "--diffusion-attention-backend", "xla_jit",
         "--no-compile-cache",
     ]
 
@@ -307,7 +307,7 @@ def test_output_format_selects_the_static_confidence_detail_profile(
             "--trunk-dtype",
             "fp32",
             "--prewarm-only",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
             "--no-compile-cache",
         ]
     )
@@ -356,7 +356,7 @@ def test_static_infer_routes_compact_msa_storage_to_the_model(
             "--n-cycle",
             "1",
             "--prewarm-only",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
             "--no-compile-cache",
         ]
     )
@@ -367,9 +367,14 @@ def test_static_infer_routes_compact_msa_storage_to_the_model(
     assert captured["deletion_value"].dtype == np.float32
 
 
-def test_static_infer_passes_compact_cycle_msa_indices_to_the_model(
-    tmp_path, monkeypatch
-) -> None:
+def _run_per_cycle_msa_draw(tmp_path, monkeypatch, *, extra_argv=()):
+    """Run the per-cycle MSA path with both random consumers stubbed out.
+
+    Returns ``(sampled, captured)``: the positional record of every
+    ``sample_msa_cycle_index_tape`` call and the keyword arguments the model
+    function received, which is where the diffusion ``key`` arrives.
+    """
+
     from foldjax.models.protenix.models.trunk_blocks.msa import MSACycleIndexTape
 
     weights_path = tmp_path / "toy_weights.pkl"
@@ -429,15 +434,115 @@ def test_static_infer_passes_compact_cycle_msa_indices_to_the_model(
             "--n-keys",
             "4",
             "--prewarm-only",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
             "--no-compile-cache",
+            *extra_argv,
         ]
     )
+    return sampled, captured, tape
+
+
+def _assert_diffusion_seed(captured, expected: int) -> None:
+    """The diffusion RNG the model function was handed came from ``expected``.
+
+    Compared as key data rather than as a seed integer because that is what the
+    model actually receives; a typed key array and a raw ``uint32`` pair are
+    both spellings JAX may hand back depending on its PRNG configuration.
+    """
+
+    import jax
+
+    def data(key):
+        return np.asarray(
+            key if np.asarray(key).dtype == np.uint32 else jax.random.key_data(key)
+        )
+
+    actual = data(captured["key"])
+    assert np.array_equal(actual, data(jax.random.PRNGKey(expected))), actual
+
+
+def test_static_infer_passes_compact_cycle_msa_indices_to_the_model(
+    tmp_path, monkeypatch
+) -> None:
+    sampled, captured, tape = _run_per_cycle_msa_draw(tmp_path, monkeypatch)
 
     assert len(sampled) == 1
     assert sampled[0][1:] == (2, 7, 64)
     assert captured["cycle_msa_index_tape"] is tape
     assert "cycle_msa_features" not in captured
+    # An omitted `--msa-seed` leaves both consumers on `--seeds`, which is the
+    # behaviour every run before the flag existed had.
+    _assert_diffusion_seed(captured, 7)
+
+
+def test_msa_seed_moves_only_the_row_draw(tmp_path, monkeypatch) -> None:
+    """`--msa-seed` redraws the MSA rows and leaves the diffusion RNG alone.
+
+    The point of the separation: an admission test for an MSA-depth cap has to
+    vary the row subset without also redrawing every diffusion sample, or the
+    two effects arrive summed and neither can be read.
+    """
+
+    sampled, captured, _ = _run_per_cycle_msa_draw(
+        tmp_path, monkeypatch, extra_argv=("--msa-seed", "101")
+    )
+
+    assert len(sampled) == 1
+    assert sampled[0][1:] == (2, 101, 64)
+    _assert_diffusion_seed(captured, 7)
+
+
+def test_the_adapter_renders_msa_seed_into_the_native_command(tmp_path, monkeypatch):
+    """`--option msa_seed=N` has to reach argv, and must not fork the cache.
+
+    The benchmark harness spells backend options as `--option k=v`, so the
+    adapter's flag loop is the whole leg between a request and the draw. The
+    second half of the assertion is the reason it is not a compile option:
+    `seed` is not one either, and two MSA draws that differ in padded row
+    count already fork the executable through XLA's own program hash inside
+    one namespace.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from foldjax.backends.protenix import ProtenixBackend
+    from foldjax.schema import PredictionRequest
+
+    seen: list[str] = []
+
+    def native_main(argv):
+        seen.extend(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        cif = out / "job_sample_0.cif"
+        cif.write_text("data_x\n")
+        return [cif]
+
+    monkeypatch.setattr(
+        "foldjax.backends.protenix.import_module",
+        lambda name: SimpleNamespace(main=native_main),
+    )
+    job = tmp_path / "job.json"
+    job.write_text("{}")
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    request = PredictionRequest(
+        model="protenix",
+        input=job,
+        weights=weights,
+        output_dir=tmp_path / "out",
+        seed=101,
+        cache_dir=tmp_path / "cache",
+        options={"msa_seed": 7},
+    )
+    backend = ProtenixBackend()
+    backend.predict(request)
+
+    assert seen[seen.index("--msa-seed") + 1] == "7"
+    assert seen[seen.index("--seed") + 1] == "101"
+    assert "msa_seed" not in backend.cache_profile(request)
+    with pytest.raises(ValueError, match="msa_seed must be an integer"):
+        backend.validate_native_options({"msa_seed": True})
 
 
 def test_static_infer_runs_from_sequence_json_features(tmp_path) -> None:
@@ -483,7 +588,7 @@ def test_static_infer_runs_from_sequence_json_features(tmp_path) -> None:
             "4",
             "--sigma-data",
             "4.0",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
         ]
     )
 
@@ -532,7 +637,7 @@ def test_static_infer_runs_directly_from_sequence_json(tmp_path) -> None:
             "4",
             "--sigma-data",
             "4.0",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
         ]
     )
 
@@ -597,7 +702,7 @@ def test_static_infer_processes_every_job_and_seed(tmp_path, monkeypatch) -> Non
             "2",
             "--n-keys",
             "4",
-            "--cpu-only",
+            "--cpu-only", "--diffusion-attention-backend", "xla_jit",
             "--no-compile-cache",
         ]
     )
@@ -1206,7 +1311,7 @@ def test_static_infer_checks_v2_size_before_loading_weights(tmp_path) -> None:
         str(tmp_path / "out.npz"),
         "--model-name",
         "protenix-v2",
-        "--cpu-only",
+        "--cpu-only", "--diffusion-attention-backend", "xla_jit",
     ]
 
     with pytest.raises(SystemExit) as exc_info:
