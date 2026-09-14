@@ -151,9 +151,9 @@ def boltz2_predict(
         "trunk_atom_attention_backend", None
     )
     attention_backend = str(sample_kwargs.get("attention_backend", "xla"))
-    if attention_backend not in {"flash", "tokamax", "xla"}:
+    if attention_backend not in {"tokamax", "xla"}:
         raise ValueError(
-            "attention_backend must be 'flash', 'tokamax', or 'xla'; "
+            "attention_backend must be 'tokamax' or 'xla'; "
             f"got {attention_backend!r}"
         )
     if trunk_atom_attention_backend == attention_backend:

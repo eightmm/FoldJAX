@@ -65,7 +65,7 @@ def test_checkpoint_diffusion_transformer_layer_matches_boltz_torch(
     )
 
 
-def test_checkpoint_diffusion_transformer_layer_accepts_flash_backend(
+def test_checkpoint_diffusion_transformer_layer_accepts_tokamax_backend(
     checkpoint_state: dict[str, torch.Tensor],
 ) -> None:
     params = map_diffusion_transformer_layer_state_dict(

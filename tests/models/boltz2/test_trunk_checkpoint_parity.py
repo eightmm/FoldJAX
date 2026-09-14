@@ -381,7 +381,7 @@ def test_checkpoint_boltz2_graph_score_lazy_token_bias_matches_full(
     np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), rtol=0, atol=0)
 
 
-def test_checkpoint_boltz2_graph_score_jits_with_flash_backend(
+def test_checkpoint_boltz2_graph_score_jits_with_tokamax_backend(
     checkpoint_state: dict[str, torch.Tensor],
 ) -> None:
     params = map_boltz2_graph_state_dict(

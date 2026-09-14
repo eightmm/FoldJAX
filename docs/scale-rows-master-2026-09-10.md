@@ -594,6 +594,143 @@ fused. `models/_glu.py` asks for a backend change to be treated as a numerics
 change because the two paths apply the activation at different widths; at these
 shapes the change does not reach the confidence head.
 
+### The denoiser attention, adopted on Boltz-2 (2026-09-14, `8da1d69`)
+
+Every row below ran as one wave of concurrently submitted single-card jobs, so
+the arms of a comparison saw the same chassis load. The control spells
+`attention_backend=xla` rather than omitting it, so the label certifies the
+arm; it reproduces the released wall to 0.05% at 2,096 (257.83 against 257.70
+from the GLU wave) and 0.09% at 3,012 (699.99 against 700.62), which is the
+baseline replicating across waves and cards.
+
+| tokens | `attention_backend=xla` | `diffusion_attention_backend=tokamax` | wall | peak |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,003 | 74.78 s / 8453.4 MiB | 71.42 / 8453.4 | **−4.49%** | byte-identical |
+| 2,096 | 257.83 / 18511.1 | 237.17 / 18511.2 | **−8.01%** | +0.1 MiB |
+| 3,012 | 699.99 / 29415.5 | 655.08 / 29415.5 | **−6.42%** | byte-identical |
+
+**The win does not shrink with size, and that is what separates it from the
+fused GLU above.** The GLU went −1.8% at 2,096 to −0.28% at 3,012; this holds
+−4.5 / −8.0 / −6.4 across the series. The GLU is ~2% of the runtime by the
+call-site arithmetic; the denoiser attention is not.
+
+#### The narrow option takes the whole win, on both ports that have it
+
+| port, 2,096 | arm | wall | coordinates vs the control | process floor |
+| --- | --- | ---: | ---: | ---: |
+| Boltz-2 | `diffusion_attention_backend=tokamax` | −8.01% | 0.0233 Å | **1.16x** |
+| Boltz-2 | `attention_backend=tokamax` | −7.99% | 0.0459 Å | 2.3x |
+| Boltz-2 | `diffusion_compute_dtype=bfloat16` | −2.89% | 0.0894 Å | 4.4x |
+| Boltz-2 | `diffusion_attention_backend=triton` + bf16 | **−12.62%** | 0.1899 Å | **9.4x** |
+| Protenix | `diffusion_attention_backend=tokamax` | −6.22% | 0.0158 Å | 1.93x |
+| Protenix | + `trunk_single_attention_backend=tokamax` | −5.40% | 0.0093 Å | 1.13x |
+
+Boltz-2 adopts the narrow option. **Protenix measures the same way and is not
+adopted yet**, for a reason that is about the port's plumbing rather than the
+numbers: `tests/models/protenix/test_cache_profile.py::test_released_default_aliases_reuse_one_real_bounded_native_owner`
+asserts that spelling every released default explicitly and omitting them all
+trace **one** program, and with the flip it traces two. The static arguments of
+the two traces are identical, every printed one including
+`diffusion_attention_backend: 'tokamax'`, so the cause is not a disagreement
+among the four authorities that carry this default -- `models/predict.py`,
+`models/model.py`, `backends/protenix.py` and the shared CLI flag, all four
+aligned. An extra trace of the whole graph is a real per-process cost on a
+shipped default, so the flip waits for the diagnosis rather than for the test
+to be adjusted around it.
+
+The lead is `models/_jit_pool.py:111-115`, which records that in JAX 0.11.1
+**an omitted default, an explicit keyword default and a positional default are
+three distinct jit cache keys**, and that the pool preserves that on purpose
+rather than normalising it away. So the candidate is a call-style difference
+rather than a value difference, which is consistent with the two traces having
+identical static arguments. What has not been shown is where the two requests
+part: the argv renderer emits `--diffusion-attention-backend` whenever the
+option is supplied and the CLI passes the parsed value explicitly either way,
+so both routes look like the same call style from the outside. Whoever picks
+this up should print the pool's cache size and the two `_identity` tuples side
+by side rather than the graph kwargs, which is what this attempt read and what
+sent it past the cause.
+
+The accuracy reading stands either way. Protenix's 1.93x is one sample of five
+-- the other four are 0.0069-0.0092 Å, at its 0.0082 Å floor -- and 0.0158 Å is
+below what the deposited instrument resolves, which reads the three arms
+identically. The wide arm sits closer to the floor but is slower on this port,
+so there is nothing to buy with the extra movement.
+
+One thing the flip attempt established that outlives it: `models/_predict_flags.py`
+is shared by Protenix and OpenDDE, and its `--diffusion-attention-backend`
+default is shared with the `choices` list. Moving the default there would have
+handed `tokamax` to OpenDDE, where it is not in `choices`, so the parser would
+have refused its own default. The docstring had already written the rule down
+for `extra_backends` -- "a kernel is offered on the port whose numbers were
+measured" -- and the default needs the same treatment when this lands.
+
+Widening the option to the trunk and atom attention buys nothing on either
+port -- 237.23 s against 237.17 on Boltz-2, and on Protenix the wide arm is
+*slower* than the narrow one (192.19 against 190.51, against a 0.21% wall
+floor) -- while moving coordinates further. Two ports agreeing makes that a
+property of where the fused kernel pays rather than one port's accident.
+
+The floors are same-configuration replicates: on Boltz-2 the released arm from
+two different waves on two different cards (max 0.0201 Å over five samples),
+on Protenix a second run of the control (max 0.0082 Å). Peak floors are +0.1
+MiB and +28.8 MiB respectively, so neither port's peak moves.
+
+Against the deposited entry, permutation-matched on `label_seq_id`, Boltz-2's
+adopted arm is unchanged sample for sample (0.44/0.43/0.42/0.47/0.43 Å) and so
+are both of Protenix's (0.46/0.52/0.44/0.49/0.47 Å for all three arms).
+Boltz-2's pLDDT, pTM and ipTM distributions sit inside the control's.
+
+**`label_seq_id`, not `auth_seq_id`.** The first scoring pass read 6.02 Å for
+every arm of a 1.3 Å crystal structure, identically, which is the tell: the
+deposited entry numbers 3..607 with 79 unmodelled gaps for 526 residues and
+the prediction numbers 1..524 contiguously, so intersecting author numbers
+pairs residues through a shifting frame and is self-consistently wrong.
+`label_seq_id` is the SEQRES index on both sides and the sequences then match
+from position 1. Chain assignment came out `(A, C, B, D)` in every arm, so the
+permutation-aware step was load-bearing too.
+
+#### `triton` + bfloat16 is the largest unclaimed win here, and what it needs
+
+It is the fastest arm measured on this port at this size, −12.62% with a
+byte-identical peak, and its deposited RMSD is 0.01 Å *better* than the
+control on every sample. It is not adopted, for three reasons that stand
+together.
+
+Its coordinates move **9.4x the process floor**, which is not accuracy
+equivalence -- it is a different arm that happens to land nearby on one
+target, and one target's 0.01 Å is inside that target's own variation. The
+`triton` spelling requires bf16 q/k/v/bias, so it carries
+`diffusion_compute_dtype=bfloat16` with it -- already rejected on its own at
+4.4x the floor for departing upstream's six explicit `.float()` calls
+(`diffusionv2.py:142-170`), one of which is the pair bias at `:160`, and a
+rounded pair bias is what flew a chain 16 Å on this port before. And it is one
+case: 9.4x the floor needs a multi-case accuracy panel to claim, not a single
+homotetramer.
+
+Recorded here so the number is not rediscovered as new: the wall is available,
+the instrument to accept it is not yet run.
+
+#### Upstream AlphaFold 3 already ships the fused kernel, and its denoiser is float32
+
+`'triton'` is not a separate library. AlphaFold 3's
+`GlobalConfig.flash_attention_implementation: tokamax.DotProductAttentionImplementation
+= 'triton'` (`_upstream/.../model_config.py:41-43`) is the `implementation`
+argument to `tokamax.dot_product_attention`, and Boltz-2's `tokamax`, `flash`
+and `triton` spellings all reached the same call. So the question is never
+"triton or tokamax" but whether tokamax attention is wired at all: it is the
+default on AlphaFold 3, the default on Boltz-2 as of this change, available and
+unused on Protenix, and not wired on OpenDDE, whose `attention_kernel` accepts
+only `xla`. OpenFold3 and ESMFold2 have no attention-backend option.
+
+AlphaFold 3 running `bfloat16: 'all'` does **not** make its denoiser bf16.
+`diffusion_head.py:238` opens the bf16 context and `:267-285` casts `act`, both
+trunk conditionings and the sequence mask straight back to float32 inside it.
+The boundary is drawn by tensor origin, not by stage. So the adopted
+`tokamax` arm -- fused attention, float32 denoiser activations -- is the closer
+match to what upstream AlphaFold 3 runs, and `triton` + bf16 is not "the AF3
+configuration" as an earlier reading here had it.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |

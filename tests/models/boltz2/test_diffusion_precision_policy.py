@@ -11,6 +11,9 @@ rather than on a config spelling.
 
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -393,6 +396,38 @@ def test_backend_accepts_an_inherited_diffusion_backend_with_cp() -> None:
     )
 
 
+def test_native_predict_resolves_the_fused_default_away_under_cp() -> None:
+    """`tokamax` is the released value, so the native API cannot refuse it.
+
+    The fused denoiser attention is not partitioned, and the division this port
+    already takes for `triangle_backend` and `glu_backend` (`api.py:1102-1108`)
+    puts the refusal in the adapter's option dict, where an explicit request is
+    still distinguishable from an omitted one, and resolves the default to the
+    blocked XLA path in the model. Asserting the refusal here instead would make
+    context parallelism reject the shipped configuration.
+
+    `test_backend_rejects_unsupported_diffusion_policy` above keeps the adapter
+    half, so the pair states both directions.
+    """
+
+    assert (
+        inspect.signature(api.predict).parameters["diffusion_attention_backend"]
+        .default
+        == "tokamax"
+    )
+    # Reaches featurization rather than the option gate, which is what says the
+    # CP check let it through; the weights path is deliberately absent.
+    with pytest.raises(Exception) as excinfo:
+        api.predict(
+            seq=["ACD"],
+            weights=Path("/nonexistent-weights"),
+            mols=Path("/nonexistent-mols"),
+            diffusion_attention_backend="tokamax",
+            cp_devices=2,
+        )
+    assert "context parallelism" not in str(excinfo.value)
+
+
 def test_backend_option_table_carries_both_diffusion_knobs() -> None:
     backend = Boltz2Backend()
     for name in ("diffusion_attention_backend", "diffusion_compute_dtype"):
@@ -409,10 +444,8 @@ def test_backend_option_table_carries_both_diffusion_knobs() -> None:
             {"diffusion_attention_backend": "triton"},
             "requires diffusion_compute_dtype='bfloat16'",
         ),
-        (
-            {"diffusion_attention_backend": "tokamax", "cp_devices": 2},
-            "context parallelism requires",
-        ),
+        # `tokamax` + CP is refused by the adapter, not here: see
+        # `test_native_predict_resolves_the_fused_default_away_under_cp`.
     ],
 )
 def test_high_level_predict_rejects_unsupported_diffusion_policy(

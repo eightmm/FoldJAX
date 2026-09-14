@@ -57,7 +57,22 @@ COMPUTE_DTYPES = ("bfloat16", "float32")
 #: float32 stream while that was the default, so accepting it now would let
 #: one token mean two programs depending on when the run was recorded.
 PAIR_RESIDUAL_DTYPES = ("auto", "bfloat16", "float32")
-ATTENTION_BACKENDS = ("flash", "tokamax", "xla")
+#: Attention kernel spellings, one vocabulary across the three scopes.
+#:
+#: `xla` is this port's own blocked attention; `tokamax` is
+#: `tokamax.dot_product_attention` with `implementation=None`, so tokamax picks
+#: from its installed order; `triton` is the same call with
+#: `implementation="triton"` pinned, which additionally requires bf16 q/k/v/bias
+#: (`models/primitives/attention_backend.py`). So the three names are one
+#: library and two behaviours, not three libraries -- upstream AlphaFold 3
+#: spells the pinned one `flash_attention_implementation='triton'` and it is the
+#: same tokamax argument.
+#:
+#: The global scope accepts the two that make no promise about operand width;
+#: `triton` is scoped-only for that reason, not by accident. `flash` was a
+#: behaviour-free alias of `tokamax` and is refused now: one kernel with two
+#: spellings splits a compile namespace for nothing.
+ATTENTION_BACKENDS = ("tokamax", "xla")
 TRUNK_ATOM_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 DIFFUSION_ATTENTION_BACKENDS = ("tokamax", "triton", "xla")
 
@@ -625,10 +640,29 @@ def predict(
     #: diffusion, confidence, and affinity re-embedding paths unchanged.
     trunk_atom_attention_backend: str | None = None,
     #: Override only the diffusion score model's attention (token transformer,
-    #: atom encoder, atom decoder). None preserves the global
-    #: ``attention_backend``; a fused spelling is an experiment knob and leaves
-    #: the trunk and confidence Pairformers on their own setting.
-    diffusion_attention_backend: str | None = None,
+    #: atom encoder, atom decoder). `None` follows the global
+    #: ``attention_backend``; a spelling here leaves the trunk and confidence
+    #: Pairformers on their own setting.
+    #:
+    #: The released value is the fused Triton kernel, and the denoiser is the
+    #: only place it pays. Measured on one RTX PRO 6000 Blackwell,
+    #: warm-after-prefill, against ``attention_backend="xla"`` spelled
+    #: explicitly, both arms submitted as one concurrent wave so they saw the
+    #: same chassis load: 74.78 -> 71.42 s at 1,003 tokens (-4.5%),
+    #: 257.83 -> 237.17 at 2,096 (-8.0%) and 699.99 -> 655.08 at 3,012 (-6.4%),
+    #: with the peak byte-identical at 1,003 and 3,012 and +0.1 MiB at 2,096.
+    #: The win does not shrink with size, which is what separates it from the
+    #: fused GLU above.
+    #:
+    #: Widening it to ``attention_backend="tokamax"`` -- the trunk and atom
+    #: attention too -- buys the same wall (237.23 s at 2,096, 0.06 s from
+    #: this) and moves coordinates to 2.3x the process floor where this stays
+    #: at 1.2x, so the narrow option takes the whole win and the wide one only
+    #: adds movement. On 5DEI the deposited CA RMSD is unchanged sample for
+    #: sample (0.44/0.43/0.42/0.47/0.43 A, permutation-matched) and the pLDDT,
+    #: pTM and ipTM distributions sit inside the released arm's.
+    #: Passing ``"xla"`` restores the previous arithmetic exactly.
+    diffusion_attention_backend: str | None = "tokamax",
     triangle_backend: str = "cueq",
     # The transition and triangle-multiplication gated linear units run
     # through the fused Triton kernel, which never materialises the widened
@@ -791,6 +825,14 @@ def predict(
         if diffusion_attention_backend in (None, attention_backend)
         else diffusion_attention_backend
     )
+    # The fused denoiser attention is not partitioned, and it is the released
+    # default, so context parallelism resolves it to the blocked XLA path
+    # rather than refusing the default configuration. This is the same division
+    # `triangle_backend` and `glu_backend` take below: an explicit request is
+    # refused where it is still distinguishable from the default, which is the
+    # adapter's option dict (`backends/boltz2.py`) and not here.
+    if cp_devices > 1 and resolved_diffusion_attention_backend == "tokamax":
+        resolved_diffusion_attention_backend = None
     if (
         resolved_diffusion_attention_backend == "triton"
         and diffusion_compute_dtype != "bfloat16"
@@ -816,6 +858,8 @@ def predict(
             "or null; fused atom attention is not partitioned"
         )
     if cp_devices > 1 and resolved_diffusion_attention_backend not in (None, "xla"):
+        # `tokamax` is resolved away above because it is the default; anything
+        # else reaching here was named and cannot be partitioned.
         raise ValueError(
             "context parallelism requires diffusion_attention_backend='xla' "
             "or null; fused diffusion attention is not partitioned"

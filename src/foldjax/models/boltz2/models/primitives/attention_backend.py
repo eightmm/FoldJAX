@@ -67,7 +67,7 @@ def tokamax_dot_product_attention(
     loudly when that kernel cannot run; it never silently becomes XLA.
     """
 
-    if backend not in ("tokamax", "flash", "triton"):
+    if backend not in ("tokamax", "triton"):
         msg = f"Unsupported attention backend: {backend!r}"
         raise ValueError(msg)
     if backend == "triton":
@@ -109,5 +109,3 @@ def tokamax_dot_product_attention(
     return jnp.where(empty, jnp.zeros_like(out), out)
 
 
-# Back-compat alias: the attention "tokamax" backend was historically "flash".
-flash_dot_product_attention = tokamax_dot_product_attention

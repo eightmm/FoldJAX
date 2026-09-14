@@ -287,7 +287,22 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "matmul_precision": "high",
     "attention_backend": "xla",
     "trunk_atom_attention_backend": None,
-    "diffusion_attention_backend": None,
+    # The one scoped attention that is not `xla`. Measured at three sizes on
+    # this card, against `attention_backend=xla` spelled explicitly and run as
+    # one concurrently-submitted wave so both arms saw the same chassis:
+    # 1,003 74.78 -> 71.42 s (-4.5%), 2,096 257.83 -> 237.17 (-8.0%), 3,012
+    # 699.99 -> 655.08 (-6.4%), with the peak byte-identical at 1,003 and 3,012
+    # and +0.1 MiB at 2,096. Unlike the fused GLU the win does not shrink with
+    # size, which is what makes it worth a default.
+    #
+    # `attention_backend=tokamax` -- the same kernel for the trunk and atom
+    # attention too -- buys the same wall (237.23 s at 2,096, 0.06 s from this)
+    # and moves coordinates 2.3x the process floor where this moves 1.2x. The
+    # narrow option takes the whole win, so the wide one would only add
+    # movement. `diffusion_compute_dtype=bfloat16` is a third of the win at 4.4x
+    # the floor and departs upstream's six explicit `.float()` calls
+    # (`diffusionv2.py:142-170`), so it stays off.
+    "diffusion_attention_backend": "tokamax",
     "diffusion_compute_dtype": "float32",
     # "auto" follows `compute_dtype`; `cache_profile` records the width it
     # resolves to rather than the spelling, so two names for one program do
@@ -501,16 +516,27 @@ class Boltz2Backend(Backend):
         resolved_attention = profile.get(
             "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
         )
-        for scoped in (
-            "trunk_atom_attention_backend",
-            "diffusion_attention_backend",
+        # `trunk_atom_attention_backend` still defaults to `None`, which means
+        # "follow `attention_backend`", so an absent key and the resolved value
+        # name one program and dropping the spelling keeps one namespace.
+        value = profile.get("trunk_atom_attention_backend")
+        if value is None or (
+            type(value) is type(resolved_attention) and value == resolved_attention
         ):
-            value = profile.get(scoped)
-            if value is None or (
-                type(value) is type(resolved_attention)
-                and value == resolved_attention
-            ):
-                profile.pop(scoped, None)
+            profile.pop("trunk_atom_attention_backend", None)
+        # `diffusion_attention_backend` does not default to `None` any more, so
+        # it cannot be treated the same way: absence used to mean "follows
+        # `attention_backend`" and now means `tokamax`. Spell the resolved value
+        # into every profile instead. Records written before the flip have no
+        # key at all, which keeps meaning "predates the scoped default" rather
+        # than quietly aliasing onto one of the two arms.
+        profile["diffusion_attention_backend"] = str(
+            profile.get(
+                "diffusion_attention_backend",
+                _RELEASED_COMPILE_DEFAULTS["diffusion_attention_backend"],
+            )
+            or resolved_attention
+        )
         # Record the pair-residual width the trunk realises, never the
         # spelling that asked for it: "auto" and the arm it resolves to are
         # one program. It is always spelled, including for float32 -- the key
@@ -755,12 +781,13 @@ class Boltz2Backend(Backend):
         }:
             raise ValueError("cp_layout must be one of 'auto', '1d', or '2d'")
         if "attention_backend" in options and options["attention_backend"] not in {
-            "flash",
             "tokamax",
             "xla",
         }:
             raise ValueError(
-                "attention_backend must be one of 'flash', 'tokamax', or 'xla'"
+                "attention_backend must be one of 'tokamax' or 'xla'; 'flash' "
+                "was a behaviour-free alias of 'tokamax' and is no longer "
+                "accepted"
             )
         if (
             "trunk_atom_attention_backend" in options

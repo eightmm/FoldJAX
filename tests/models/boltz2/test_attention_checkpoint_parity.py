@@ -51,7 +51,7 @@ def test_checkpoint_attention_pair_bias_matches_torch(
     )
 
 
-def test_checkpoint_attention_pair_bias_accepts_flash_backend(
+def test_checkpoint_attention_pair_bias_accepts_tokamax_backend(
     attention_state: dict[str, torch.Tensor],
 ) -> None:
     inputs = _attention_inputs(attention_state)

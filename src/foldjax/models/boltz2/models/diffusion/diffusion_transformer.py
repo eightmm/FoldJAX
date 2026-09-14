@@ -249,7 +249,7 @@ def _attention_pair_bias_no_proj_z_forward(
             scale=float(head_dim) ** -0.5,
             inf=inf,
         )
-    elif attention_backend in ("tokamax", "flash", "triton"):
+    elif attention_backend in ("tokamax", "triton"):
         out = tokamax_dot_product_attention(
             q,
             k,

@@ -937,7 +937,7 @@ def test_the_validator_invariant_notices_a_value_the_port_refuses(
     def narrowed(self, options):
         if options.get("attention_backend") == "tokamax":
             raise ValueError(
-                "attention_backend must be one of 'flash', 'xla'"
+                "attention_backend must be one of 'xla'"
             )
         return original(self, options)
 

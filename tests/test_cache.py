@@ -372,7 +372,10 @@ def test_boltz2_managed_defaults_share_the_omitted_cache_namespace(
             "compute_dtype": "bfloat16",
             "attention_backend": "xla",
             "trunk_atom_attention_backend": "xla",
-            "diffusion_attention_backend": "xla",
+            # The released denoiser attention is the fused kernel in its own
+            # right, so the value that shares the omitted namespace here is
+            # `tokamax` and not the global `attention_backend`.
+            "diffusion_attention_backend": "tokamax",
             "diffusion_compute_dtype": "float32",
             "triangle_backend": "cueq",
             "glu_backend": "tokamax",
@@ -435,8 +438,14 @@ def test_boltz2_inherited_diffusion_attention_backend_has_one_cache_identity(
 ) -> None:
     backend = Boltz2Backend()
     omitted = _request(tmp_path)
+    explicit_default = dataclasses.replace(
+        omitted, options={"diffusion_attention_backend": "tokamax"}
+    )
     explicit_none = dataclasses.replace(
         omitted, options={"diffusion_attention_backend": None}
+    )
+    follows_global = dataclasses.replace(
+        omitted, options={"diffusion_attention_backend": "xla"}
     )
     global_tokamax = dataclasses.replace(
         omitted, options={"attention_backend": "tokamax"}
@@ -449,11 +458,28 @@ def test_boltz2_inherited_diffusion_attention_backend_has_one_cache_identity(
         },
     )
 
-    assert backend.cache_profile(explicit_none) == backend.cache_profile(omitted)
+    # Naming the released value is the same program as omitting it.
+    assert backend.cache_profile(explicit_default) == backend.cache_profile(omitted)
+    # `None` still means "follow `attention_backend`", which is `xla` here --
+    # and that is no longer what an omitted option runs. Before the released
+    # denoiser attention became `tokamax` these two were one namespace, so this
+    # pair is the assertion the flip inverted: keep both directions stated, or
+    # a future flip back silently re-aliases them.
+    assert backend.cache_profile(explicit_none) == backend.cache_profile(
+        follows_global
+    )
+    assert backend.cache_profile(explicit_none) != backend.cache_profile(omitted)
+    # With the global already fused, the scoped spelling adds nothing.
     assert backend.cache_profile(repeated_tokamax) == backend.cache_profile(
         global_tokamax
     )
+    assert resolve_cache_dir(explicit_default, backend) == resolve_cache_dir(
+        omitted, backend
+    )
     assert resolve_cache_dir(explicit_none, backend) == resolve_cache_dir(
+        follows_global, backend
+    )
+    assert resolve_cache_dir(explicit_none, backend) != resolve_cache_dir(
         omitted, backend
     )
     assert resolve_cache_dir(repeated_tokamax, backend) == resolve_cache_dir(
@@ -608,7 +634,9 @@ def test_boltz2_diffusion_namespace_records_the_width_not_the_spelling(
         ({}, {"compute_dtype": "float32"}),
         ({}, {"attention_backend": "tokamax"}),
         ({}, {"trunk_atom_attention_backend": "triton"}),
-        ({}, {"diffusion_attention_backend": "tokamax"}),
+        # `tokamax` is the released value for this one, so the distinct
+        # namespace belongs to the spelling that turns it off.
+        ({}, {"diffusion_attention_backend": "xla"}),
         ({}, {"diffusion_compute_dtype": "bfloat16"}),
         ({}, {"triangle_backend": "xla"}),
         ({}, {"glu_backend": "xla"}),

@@ -83,7 +83,7 @@ def attention_pair_bias_forward(
     bias = jnp.transpose(bias, (0, 3, 1, 2))
     bias = jnp.repeat(bias, multiplicity, axis=0)
 
-    if attention_backend in ("tokamax", "flash"):
+    if attention_backend == "tokamax":
         out = tokamax_dot_product_attention(
             q,
             k,

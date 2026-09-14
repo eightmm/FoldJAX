@@ -131,6 +131,19 @@ SHARED_OPTIONS: Mapping[str, Any] = {
     "pair_residual_dtype": "float32",
 }
 
+#: The denoiser half of the pin, separate because `boltz2_trunk_forward` has no
+#: denoiser and refuses the keyword.
+#:
+#: `attention_backend` above stopped reaching the score model the moment the
+#: released `diffusion_attention_backend` became `tokamax` in its own right: the
+#: generic option only redirects while the scoped one is `None`. This is the gap
+#: the note above predicted -- "the next trunk default to move will meet the
+#: same gap" -- and it is pinned by name rather than by hoping the redirect
+#: holds.
+DENOISER_OPTIONS: Mapping[str, Any] = {
+    "diffusion_attention_backend": "xla",
+}
+
 #: Entity-blind secondary guard for tier B: the largest single-atom coordinate
 #: difference over the resolved atoms, unaligned. Entity RMSD averages over an
 #: entity, so one protein atom moved 1 A inside chain A's 755 atoms would only
@@ -428,6 +441,7 @@ def test_tape_pinned_sampler_replay_matches_native_coordinates(
             use_scan=True,
             compute_dtype=jnp.bfloat16,
             **SHARED_OPTIONS,
+            **DENOISER_OPTIONS,
         )
         coordinate = np.asarray(
             jax.device_get(output["sample_atom_coords"]), np.float64
