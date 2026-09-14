@@ -673,16 +673,46 @@ request renders no flag and takes the *CLI parser's* default. That is a real
 disagreement the test is built to catch, and it is why the option needs all four
 sites moved together.
 
-The live candidate for the remaining retrace is structural rather than a value:
-`models/protenix/models/primitives/attention.py:123` routes `xla_jit` through
-`_compiled_attention`, an **inner `jax.jit`**, while `tokamax` traces inline
-into the enclosing graph. The two backends are therefore not two kernels behind
-one call shape -- they are two graph shapes -- which is the same `_jit`-suffix
-axis the naming section above describes, now showing up as a retrace rather than
-as a name. What has *not* been shown is the mechanism by which an inline versus
-nested body changes JAX's dispatch key for the outer call when every compared
-input matches; the one comparison in the probe that truncates is `repr[:70]` on
-the positional parameter pytree, so that is where to look next.
+#### Root cause: the `_jit` suffix is a graph boundary and the fused kernel has none
+
+`JAX_EXPLAIN_CACHE_MISSES=1` names it outright. Counting JAX's own "function is
+being re-defined repeatedly, preventing caching?" reports over one run of that
+test:
+
+| arm | reports | test |
+| --- | ---: | --- |
+| released `xla_jit` | **0** | passes |
+| `tokamax` | **37** | fails, 2 traces |
+| Boltz-2's landed fused denoiser attention | **0** | passes |
+
+Three of the 37 land on our own
+`models/protenix/models/diffusion/transformer.py:245`, the `lax.scan` over the
+diffusion transformer stack whose `body` is defined at `:220`; the rest are
+inside tokamax's `_src/batching.py` and `_src/ops/attention/pallas_triton.py`.
+
+`models/protenix/models/primitives/attention.py:123` and `:244` route `xla_jit`
+through `_compiled_attention` and `_compiled_local_attention` -- **inner
+`jax.jit` wrappers** that re-enter the same function with the suffix stripped.
+`tokamax` has no such variant, so it traces inline. Choosing the fused kernel
+therefore does not swap a kernel behind one call shape: it **removes a graph
+boundary**, and the closures tokamax rebuilds per trace then reach the
+enclosing scan bodies and defeat their tracing cache.
+
+So the `_jit` axis riding inside a kernel option's value vocabulary, which the
+naming section above flagged as a naming problem, is not only a naming problem.
+Boltz-2 is the control: its attention has no inner-jit layer to lose, its
+landed fused default reports zero, and its own end-to-end smoke test passes.
+
+**The fix is to give the fused kernel a `_jit` variant**, and attempting it
+bounded the work. Routing `tokamax_jit` through both compiled wrappers --
+`attention_backend.removesuffix("_jit")` at each, plus the context-parallel
+refusal and the CLI choices -- is a handful of lines, and it reaches the kernel,
+where it fails with `ValueError: not enough values to unpack (expected at least
+2, got 1)`. tokamax takes `*B T N H` where the port carries `[..., H, T, D]` and
+the callers swap axes around the call
+(`models/primitives/attention_tokamax.py`); the two compiled wrappers do not
+present the same rank. Reconciling that layout is the remaining work, and it is
+a scoped edit rather than a search.
 
 The accuracy reading stands either way. Protenix's 1.93x is one sample of five
 -- the other four are 0.0069-0.0092 Å, at its 0.0082 Å floor -- and 0.0158 Å is
