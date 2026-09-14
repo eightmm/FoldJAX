@@ -673,46 +673,57 @@ request renders no flag and takes the *CLI parser's* default. That is a real
 disagreement the test is built to catch, and it is why the option needs all four
 sites moved together.
 
-#### Root cause: the `_jit` suffix is a graph boundary and the fused kernel has none
+#### Retracted: the `_jit` boundary is not the mechanism
 
-`JAX_EXPLAIN_CACHE_MISSES=1` names it outright. Counting JAX's own "function is
-being re-defined repeatedly, preventing caching?" reports over one run of that
-test:
+`JAX_EXPLAIN_CACHE_MISSES=1` counts JAX's own "function is being re-defined
+repeatedly, preventing caching?" reports. Over one run of the test that catches
+this:
 
 | arm | reports | test |
 | --- | ---: | --- |
 | released `xla_jit` | **0** | passes |
 | `tokamax` | **37** | fails, 2 traces |
-| Boltz-2's landed fused denoiser attention | **0** | passes |
+| `tokamax_jit` (added for this) | **37** | fails, 2 traces |
 
 Three of the 37 land on our own
 `models/protenix/models/diffusion/transformer.py:245`, the `lax.scan` over the
-diffusion transformer stack whose `body` is defined at `:220`; the rest are
-inside tokamax's `_src/batching.py` and `_src/ops/attention/pallas_triton.py`.
+diffusion transformer stack whose `body` is defined at `:220`; four are inside
+tokamax's `_src/batching.py` and `_src/ops/attention/pallas_triton.py`, and
+thirty report no location.
 
-`models/protenix/models/primitives/attention.py:123` and `:244` route `xla_jit`
-through `_compiled_attention` and `_compiled_local_attention` -- **inner
-`jax.jit` wrappers** that re-enter the same function with the suffix stripped.
-`tokamax` has no such variant, so it traces inline. Choosing the fused kernel
-therefore does not swap a kernel behind one call shape: it **removes a graph
-boundary**, and the closures tokamax rebuilds per trace then reach the
-enclosing scan bodies and defeat their tracing cache.
+An earlier reading here said the cause was that `xla_jit` routes through
+`_compiled_attention` -- an inner `jax.jit` -- while `tokamax` traces inline, so
+choosing the fused kernel removed a graph boundary. **That was wrong.** Giving
+the fused kernel its own `_jit` variant is a small change --
+`attention_backend.removesuffix("_jit")` at `attention.py:123` and `:244`, the
+context-parallel refusal, the CLI choices -- and it works: the probe runs it at
+rank 4 and rank 5 operands through both compiled wrappers. It also changes
+nothing. `tokamax_jit` produces the same 37 reports at the same sites as bare
+`tokamax`, so the boundary is not what the tracing cache was losing. The kernel
+itself is, wherever it sits.
 
-So the `_jit` axis riding inside a kernel option's value vocabulary, which the
-naming section above flagged as a naming problem, is not only a naming problem.
-Boltz-2 is the control: its attention has no inner-jit layer to lose, its
-landed fused default reports zero, and its own end-to-end smoke test passes.
+**The Boltz-2 control that reading leaned on was vacuous**, which is worth
+stating plainly because it is the same trap this repository has hit before. Its
+end-to-end smoke test reports zero -- and logs **zero** autotuning cache misses
+and zero `PallasTriton` entries, so the fused kernel never fired in it. A test
+that does not reach the code certifies nothing about it. Two further Boltz-2
+files that spell `attention_backend="tokamax"` also fired the kernel zero times,
+so the question of whether the landed Boltz-2 default shows this is **still
+open**.
 
-**The fix is to give the fused kernel a `_jit` variant**, and attempting it
-bounded the work. Routing `tokamax_jit` through both compiled wrappers --
-`attention_backend.removesuffix("_jit")` at each, plus the context-parallel
-refusal and the CLI choices -- is a handful of lines, and it reaches the kernel,
-where it fails with `ValueError: not enough values to unpack (expected at least
-2, got 1)`. tokamax takes `*B T N H` where the port carries `[..., H, T, D]` and
-the callers swap axes around the call
-(`models/primitives/attention_tokamax.py`); the two compiled wrappers do not
-present the same rank. Reconciling that layout is the remaining work, and it is
-a scoped edit rather than a search.
+What is not in doubt is the Boltz-2 default's measured case: -4.49 / -8.01 /
+-6.42% at the three sizes, the peak byte-identical at two of them, coordinates
+at 1.16x the process floor, the deposited RMSD unchanged sample for sample, and
+`tests/parity --run-cpu-parity` 59 passed. Those are end-to-end wall and
+structure measurements and they do not depend on this trace accounting. What a
+defeated tracing cache would cost is compile time across repeated requests in
+one process, which a warm-after-prefill wall measurement is designed not to see.
+
+So the next step is not the `_jit` split. It is to fire the fused kernel on
+Boltz-2 deliberately -- the bench harness does, the unit tests do not -- and
+count the reports there. If Boltz-2 also reports 37, this is a tokamax property
+and belongs upstream; if it reports zero, the difference is in how Protenix
+presents the call and that is where to look.
 
 The accuracy reading stands either way. Protenix's 1.93x is one sample of five
 -- the other four are 0.0069-0.0092 Å, at its 0.0082 Å floor -- and 0.0158 Å is
