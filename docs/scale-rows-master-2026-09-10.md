@@ -1137,6 +1137,44 @@ port did not have (`cli/predict.py:1071/1083/1190` share one); that option
 and the harness are the next patch. The cap stays opt-in until the panel
 passes.
 
+#### The MSA-cap admission test: FAIL at the frozen margin; the cap stays opt-in
+
+Design as agreed with the spec partner, run on `x12-msacap-20260914` (main
+`754134f`): per case, four seed blocks of three arms — A uncapped with MSA
+seed a, B uncapped with MSA seed b, P `max_msa_depth=4096` with MSA seed b —
+all three under upstream's per-cycle row sampling (`--sample-msa-per-cycle`,
+because FoldJAX's released path is full-depth and there `msa_seed` is inert,
+so A and B would be the same program), diffusion RNG fixed at seed 101. The
+statistic is mean d(A, P) − mean d(A, B) over blocks on permutation-aware CA
+RMSD after superposition, with a one-sided 95% block-bootstrap upper bound
+against a margin of 10% of the control distance, frozen before the rows ran.
+
+| case | control mean d(A,B) | statistic | 95% upper bound | verdict | deposited A / B / P |
+| --- | ---: | ---: | ---: | --- | --- |
+| 4REK (500) | 0.300 Å | +0.135 (+45%) | +0.371 (+124%) | FAIL | 1.12 / 1.05 / 1.08 |
+| 3OG2 (1,003) | 0.502 | −0.045 (−9%) | +0.190 (+38%) | FAIL (power) | 0.82 / 0.76 / 0.80 |
+| 5DEI (2,096) | 0.261 | +0.056 (+21%) | +0.099 (+38%) | FAIL | 0.53 / 0.47 / 0.47 |
+
+Read plainly: against the deposited entries the capped arm is as good as the
+uncapped arms on all three cases, but the cap moves the coordinates more than
+an MSA re-draw does on two of the three (by 21% and 45% of the draw distance),
+and the third is a power failure rather than a pass (the point estimate is
+inside the margin; the bound is not). The rule was frozen at 10% and it is not
+met, so the default stays `max_msa_depth=16384`; the cap remains the first
+opt-in knob for a memory-bound Protenix job (`--option max_msa_depth=4096`:
+2k peak 21,225 → 13,754 MiB, 3k 37,539 → 27,059 MiB). On the released
+full-depth path the cap reads 1.03–1.06 Å on 4REK and 0.76–0.86 Å on 3OG2
+against 0.80–0.88 Å uncapped, one draw each.
+
+Two things a later panel would change. More blocks: the bound on 3OG2 is a
+dispersion problem, and the harness prints the margin the observed spread
+would have passed (38%). And the block-level floor is bimodal — some A/B pairs
+land at the process floor (0.03–0.07 Å) because two draws of a uniform size
+in [1, n] can coincide in what they cover — which inflates the ratio on those
+blocks; a design that draws sizes without that coincidence would tighten the
+control. The harness is `tmp/msacap/admit.py` in the session's job directory;
+the option it needs (`msa_seed`) is on main.
+
 ### Closing comparison against upstream, on the defaults as landed (2026-09-14, `0d26624`)
 
 Every row below is one process of the released defaults on main as of
