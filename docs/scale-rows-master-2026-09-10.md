@@ -638,18 +638,51 @@ aligned. An extra trace of the whole graph is a real per-process cost on a
 shipped default, so the flip waits for the diagnosis rather than for the test
 to be adjusted around it.
 
-The lead is `models/_jit_pool.py:111-115`, which records that in JAX 0.11.1
-**an omitted default, an explicit keyword default and a positional default are
-three distinct jit cache keys**, and that the pool preserves that on purpose
-rather than normalising it away. So the candidate is a call-style difference
-rather than a value difference, which is consistent with the two traces having
-identical static arguments. What has not been shown is where the two requests
-part: the argv renderer emits `--diffusion-attention-backend` whenever the
-option is supplied and the CLI passes the parsed value explicitly either way,
-so both routes look like the same call style from the outside. Whoever picks
-this up should print the pool's cache size and the two `_identity` tuples side
-by side rather than the graph kwargs, which is what this attempt read and what
-sent it past the cause.
+#### Diagnosed: the second request hits the pool and JAX retraces anyway
+
+Instrumenting `BoundedJitPool` rather than the graph's kwargs settles where the
+second trace comes from. Per pool invocation, with all four authorities that
+carry this default set to `tokamax` -- `models/predict.py`, `models/model.py`,
+`backends/protenix.py` and the shared CLI flag:
+
+| invocation | pool | owner's jit cache |
+| --- | --- | --- |
+| request 1 | miss | absent → 1 |
+| request 2 | **hit** | **1 → 2** |
+
+So both requests get the **same** owner and JAX traces twice inside it. What the
+pool compares is identical across the two: `jax.config.values`, every static
+keyword by `(type, repr)`, all three positional arguments by
+`(type, repr, committed)`, the keyword names, and the argument counts. The
+pool's identity is therefore **coarser than JAX's own dispatch key** here, which
+is the failure its docstring names -- "hide multiple executables inside one
+owner instead of deduping them" -- seen from the inside.
+
+Two findings fall out on the way.
+
+**The test's own instrumentation compares the wrong pair.** It asserts
+`owner_identities[0] == owner_identities[1]`, and the test's `RecordingPool`
+computes `_identity` once itself and once through `super().__call__`, so indices
+0 and 1 are the *same request* twice. Those two are equal whatever the flip
+does. The comparison that matters is request 1 against request 2.
+
+**Before the four authorities were aligned, the probe named the fifth one
+directly**: with only `backends/protenix.py` flipped, the two requests differed
+by `diffusion_attention_backend: 'xla_jit' vs 'tokamax'`, because the omitted
+request renders no flag and takes the *CLI parser's* default. That is a real
+disagreement the test is built to catch, and it is why the option needs all four
+sites moved together.
+
+The live candidate for the remaining retrace is structural rather than a value:
+`models/protenix/models/primitives/attention.py:123` routes `xla_jit` through
+`_compiled_attention`, an **inner `jax.jit`**, while `tokamax` traces inline
+into the enclosing graph. The two backends are therefore not two kernels behind
+one call shape -- they are two graph shapes -- which is the same `_jit`-suffix
+axis the naming section above describes, now showing up as a retrace rather than
+as a name. What has *not* been shown is the mechanism by which an inline versus
+nested body changes JAX's dispatch key for the outer call when every compared
+input matches; the one comparison in the probe that truncates is `repr[:70]` on
+the positional parameter pytree, so that is where to look next.
 
 The accuracy reading stands either way. Protenix's 1.93x is one sample of five
 -- the other four are 0.0069-0.0092 Å, at its 0.0082 Å floor -- and 0.0158 Å is
