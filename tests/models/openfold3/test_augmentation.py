@@ -153,6 +153,10 @@ def test_direct_traced_zero_quaternion_retains_native_nonfinite_semantics():
     np.testing.assert_allclose(small, normal, rtol=1e-6, atol=1e-6)
 
 
+@pytest.mark.skipif(
+    __import__("jax").default_backend() != "cpu",
+    reason="calibrated on CPU XLA; set JAX_PLATFORMS=cpu",
+)
 @pytest.mark.parametrize(
     "dtype,value", [(jnp.float16, 1000.0), (jnp.float16, 1e-4), (jnp.bfloat16, 1e-20)]
 )

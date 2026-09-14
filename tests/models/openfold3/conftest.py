@@ -109,3 +109,35 @@ def randomized():
         return module.eval()
 
     return _randomize
+
+#: Test modules whose tolerances and bit-equality claims were calibrated on CPU
+#: XLA, and which say so in their own docstrings ("private module formula
+#: tests, not native GPU admission"; "compiled CPU temporary memory"). On a GPU
+#: host JAX picks the GPU backend by default, and these then fail on numbers
+#: that mean nothing about the code -- on the lab server that was 19 of 20
+#: failures in this directory, every one of which passes under
+#: `JAX_PLATFORMS=cpu`. `tests/parity` guards the same way and with the same
+#: message; a skip that names the fix beats a red run nobody can act on.
+_CPU_CALIBRATED_MODULES = frozenset(
+    {
+        "test_native_triangle_ops",
+        "test_native_transition_control",
+        "test_native_triton_norm",
+        "test_distance_bin_projection",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _cpu_calibrated_modules_need_cpu(request):
+    module = request.node.module.__name__.rsplit(".", 1)[-1]
+    if module not in _CPU_CALIBRATED_MODULES:
+        return
+    import jax
+
+    backend = jax.default_backend()
+    if backend != "cpu":
+        pytest.skip(
+            f"{module} is calibrated on CPU XLA and is running on {backend!r}; "
+            "set JAX_PLATFORMS=cpu"
+        )

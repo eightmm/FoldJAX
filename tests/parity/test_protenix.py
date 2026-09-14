@@ -290,6 +290,12 @@ def _replay_coordinates(
         return_trunk=False,
         # As at Tier A: the shipped GLU, written down rather than defaulted.
         glu_backend="xla",
+        # Same reason one layer down. The released denoiser attention is
+        # tokamax's fused kernel now; the capture ran this port's blocked XLA
+        # attention and these tolerances are calibrated against its reduction
+        # order. Tier A needs no pin because `stop_after_trunk` never reaches
+        # the score model.
+        diffusion_attention_backend="xla_jit",
     )
     output = jax.block_until_ready(output)
     # A patch that never fired would leave the CPU-generated schedule in place

@@ -220,7 +220,8 @@ def test_neutral_released_defaults_share_the_native_and_omitted_namespace(
             "model_name": "protenix_base_default_v1.0.0",
             "dtype": "bfloat16",
             "attention_kernel": "auto",
-            "diffusion_attention_backend": "xla_jit",
+            # The released denoiser attention, which is the fused kernel.
+            "diffusion_attention_backend": "tokamax",
             "chunk_policy": "auto",
             "cp_devices": 1,
             "cp_layout": "auto",
@@ -557,11 +558,40 @@ def test_released_default_aliases_reuse_one_real_bounded_native_owner(
                 backend.predict(request)
 
     assert feature_depths == [16384, 16384]
-    assert owner_identities[0] == owner_identities[1]
     np.testing.assert_array_equal(outputs[0], outputs[1])
-    assert counts == {"features": 2, "loads": 1, "traces": 1}
+    # The two assertions that detect a default disagreement, and the reason they
+    # are the ones to keep: a fifth authority carrying a different value for one
+    # of these options makes the identities differ and the pool open a second
+    # owner. That is what caught the CLI parser's `--diffusion-attention-backend`
+    # default when the other four had been moved.
+    assert owner_identities[0] == owner_identities[1]
     assert runner._entry_count() == 1
-    assert runner._cache_size() == 1
+    assert counts["features"] == 2
+    assert counts["loads"] == 1
+    # Two traces inside that one owner, not one. The released denoiser attention
+    # is tokamax's fused kernel, and tokamax rebuilds its closures per trace
+    # (`_src/batching.py`, `_src/ops/attention/pallas_triton.py`), so JAX's own
+    # cache-miss explainer reports "function is being re-defined repeatedly" and
+    # the owner's dispatch cache holds one entry per call. Boltz-2 reports the
+    # same once its kernel actually fires, so this is the library's property and
+    # not this port's.
+    #
+    # It is accepted rather than worked around because it was priced: two
+    # predictions in one interpreter at 1,003 tokens cost 72.07 -> 82.63 s fused
+    # and 74.93 -> 87.33 s unfused, so the *unfused* arm pays the larger
+    # second-call penalty (1.166x against 1.147x) and the fused kernel's
+    # advantage widens from -3.8% to -5.4%. The retrace has no wall consequence
+    # to charge it for.
+    #
+    # And it is one or two, not exactly two: run alone this file sees two, run
+    # after the rest of `tests/models/protenix/` it sees one, because whether
+    # tokamax rebuilds its closures depends on process history the test does
+    # not control. A trace count is therefore not a disagreement detector at
+    # all -- two is also what a real disagreement produces -- which is why the
+    # identity and owner-count assertions above carry that job and this one
+    # only bounds the kernel's own behaviour.
+    assert counts["traces"] in (1, 2)
+    assert runner._cache_size() == counts["traces"]
 
 
 def test_tokamax_attention_stays_in_the_cache_namespace(tmp_path: Path) -> None:
@@ -578,11 +608,26 @@ def test_tokamax_attention_stays_in_the_cache_namespace(tmp_path: Path) -> None:
     backend = ProtenixBackend()
     default = backend.cache_profile(_request(tmp_path))
 
+    # `tokamax` is the released denoiser attention, so the spelling that has to
+    # survive stripping is the one that turns it off. Both directions are stated
+    # so a flip back cannot re-alias them silently.
+    assert "diffusion_attention_backend" not in default
+    assert (
+        backend.cache_profile(
+            _request(
+                tmp_path,
+                output="named-default",
+                options={"diffusion_attention_backend": "tokamax"},
+            )
+        )
+        == default
+    )
+
     for options, name, expected in (
         (
-            {"diffusion_attention_backend": "tokamax"},
+            {"diffusion_attention_backend": "xla_jit"},
             "diffusion_attention_backend",
-            "tokamax",
+            "xla_jit",
         ),
         (
             {"attention_kernel": "tokamax"},

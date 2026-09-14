@@ -751,12 +751,49 @@ It measures -4.49 / -8.01 / -6.42% at three sizes with the peak byte-identical
 at two of them, so on the evidence that decides defaults here the property costs
 nothing that shows.
 
-What remains unmeasured is the only place it could cost: the **wall of a second
-prediction in the same process**. Every bench row is one prediction per process,
-so a retrace per request would not appear in any number in this document. That
-is one measurement -- two predictions in one process, fused against unfused,
-reading the second -- and it decides whether Protenix's -6.22% is free or
-whether both ports are paying a per-request trace that nobody has priced.
+#### Priced: the retrace costs nothing the fused kernel can be charged for
+
+Two predictions inside one interpreter, 1,003 tokens on 3OG2, the two arms
+submitted as one wave on their own cards, reading the **second** call -- the one
+a serving process pays repeatedly and no bench row in this document contains:
+
+| arm | first | second | second/first |
+| --- | ---: | ---: | ---: |
+| `diffusion_attention_backend=tokamax` | 72.07 s / 8453.4 MiB | 82.63 / 10427.0 | **1.1465** |
+| `diffusion_attention_backend=xla` | 74.93 / 8453.4 | 87.33 / 10427.0 | **1.1655** |
+
+**Both arms pay a second-call penalty and the unfused one pays more.** The peak
+grows identically in both (8453.4 -> 10427.0 MiB), so whatever the second call
+retains, it retains the same way with either kernel. The penalty belongs to a
+second prediction in one process, not to the fused kernel, and tokamax's
+per-trace closures cannot be charged for it.
+
+The fused kernel's advantage survives and widens slightly: -3.8% on the first
+call (72.07 against 74.93) and **-5.4% on the second** (82.63 against 87.33).
+
+So the 37 "re-defined repeatedly" reports are a bookkeeping fact with no wall
+consequence, and the Protenix test's two traces are the same fact. **Adopted on
+that basis**: `diffusion_attention_backend` is `tokamax` on this port, and the
+test asserts the two traces the kernel forces with the pricing above written
+beside the assertion.
+
+The guard must not simply be loosened to `traces <= 2`, though: that is exactly
+the count a real default disagreement produces, and this same test caught one --
+the CLI parser's `--diffusion-attention-backend`, the fifth authority, while the
+other four had been moved. The assertions that carry that job are
+`owner_identities[0] == owner_identities[1]` and `runner._entry_count() == 1`,
+because a fifth authority makes the identities differ and the pool open a second
+owner. Both stay; only the trace count and the owner's dispatch-cache size move
+to what the kernel forces.
+
+(An earlier reading here claimed that comparison was itself broken -- that
+`RecordingPool` computes `_identity` twice per request so
+`owner_identities[0] == owner_identities[1]` reads request one against itself.
+That was wrong, and it came from reading the probe's own instrumentation back
+into the test: the probe patched `BoundedJitPool._identity`, which both
+`RecordingPool.__call__` and `BoundedJitPool.__call__` reach, so the probe saw
+four calls. The test appends in `__call__` only, once per request, so indices 0
+and 1 are the two requests and the comparison was always the right one.)
 
 The accuracy reading stands either way. Protenix's 1.93x is one sample of five
 -- the other four are 0.0069-0.0092 Å, at its 0.0082 Å floor -- and 0.0158 Å is

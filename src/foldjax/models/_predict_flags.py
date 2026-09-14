@@ -92,8 +92,9 @@ def add_attention_backends(
     parser: argparse.ArgumentParser,
     *,
     extra_backends: tuple[str, ...] = (),
+    diffusion_default: str = "xla_jit",
 ) -> None:
-    """The two attention kernels both ports expose, with the shared default.
+    """The two attention kernels both ports expose.
 
     `extra_backends` appends per-port values to both choice lists. OpenDDE
     reaches these two sites through Protenix's own attention primitives, so a
@@ -101,12 +102,24 @@ def add_attention_backends(
     which is exactly why the list is a parameter. A kernel is offered on the
     port whose numbers were measured, not on every port whose code path
     happens to reach it.
+
+    `diffusion_default` is a parameter for the same reason, one step on: only
+    Protenix measured the fused denoiser attention, and a shared default would
+    have handed `tokamax` to OpenDDE as well -- where it is not in `choices`, so
+    the parser would have refused its own default. The check below says so
+    rather than leaving that to a confusing argparse error.
     """
     backends = ("xla", "xla_jit", "xla_sdpa") + extra_backends
+    if diffusion_default not in backends:
+        msg = (
+            f"diffusion_default {diffusion_default!r} is not offered on this "
+            f"port; choices are {backends}"
+        )
+        raise ValueError(msg)
     parser.add_argument(
         "--diffusion-attention-backend",
         choices=backends,
-        default="xla_jit",
+        default=diffusion_default,
     )
     parser.add_argument(
         "--trunk-single-attention-backend",

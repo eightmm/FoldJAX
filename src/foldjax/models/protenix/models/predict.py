@@ -60,7 +60,35 @@ def protenix_predict_static(
     # 2,096 tokens and 42,219 -> 38,416 at 3,012, wall unchanged, same-index
     # RMSD 0.007 A at 2k against a 0.185 A within-set spread.
     use_diffusion_efficient_fusion: bool = True,
-    diffusion_attention_backend: str = "xla_jit",
+    #: Which attention the diffusion score model runs. The released value is
+    #: tokamax's fused kernel; `xla_jit` is this port's blocked attention and
+    #: restores the previous arithmetic.
+    #:
+    #: Measured at 2,096 tokens on 5DEI, one RTX PRO 6000 Blackwell,
+    #: warm-after-prefill, every arm submitted as one concurrent wave so they
+    #: saw the same chassis: 203.15 -> 190.51 s, **-6.22%**, against a 0.21%
+    #: wall floor taken from a second run of the control. The peak does not move
+    #: (21,223.1 -> 21,220.1 MiB against a 28.8 MiB floor) -- the 2.2 GiB an
+    #: earlier reading credited to this option was a tree change, which an
+    #: option-free row on the later tree already carried.
+    #:
+    #: Widening it to `trunk_single_attention_backend="tokamax"` as well is
+    #: *slower* (192.19 s) and is not the release. Boltz-2 measured the same
+    #: shape, so the narrow option taking the whole win is where the fused
+    #: kernel pays rather than one port's accident.
+    #:
+    #: Accuracy: permutation-matched CA RMSD against the deposited entry is
+    #: unchanged sample for sample (0.46/0.52/0.44/0.49/0.47 A for the control
+    #: and both fused arms). Coordinates move at most 0.0158 A from the control,
+    #: 1.93x the 0.0082 A process floor, with four of the five samples at floor.
+    #:
+    #: The fused kernel makes the whole graph trace once per call rather than
+    #: once per process, because tokamax rebuilds its closures per trace. That
+    #: is accepted: two predictions in one interpreter cost 72.07 -> 82.63 s
+    #: fused against 74.93 -> 87.33 s unfused at 1,003 tokens, so the unfused
+    #: arm pays the larger second-call penalty and the advantage widens from
+    #: -3.8% to -5.4%. See `tests/models/protenix/test_cache_profile.py`.
+    diffusion_attention_backend: str = "tokamax",
     trunk_single_attention_backend: str = "xla_jit",
     trunk_triangle_attention_backend: str | None = None,
     #: ``None`` follows the trunk backend; see model.py for why this exists.

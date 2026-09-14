@@ -178,7 +178,11 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "matmul_precision": "high",
     "trunk_dtype": "bf16",
     "amp_policy": "auto",
-    "diffusion_attention_backend": "xla_jit",
+    # The released denoiser attention is tokamax's fused kernel; the numbers
+    # are in `models/protenix/models/predict.py`. The trunk's single attention
+    # stays on this port's blocked XLA path, where the fused kernel measured
+    # slower.
+    "diffusion_attention_backend": "tokamax",
     "trunk_single_attention_backend": "xla_jit",
     "chunk_policy": "auto",
     "cp_devices": 1,

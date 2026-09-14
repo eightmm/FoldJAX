@@ -227,6 +227,10 @@ def test_empty_masks_and_nonfinite_logits_keep_their_semantics() -> None:
         assert not np.signbit(np.asarray(value)).any()
 
 
+@pytest.mark.skipif(
+    __import__("jax").default_backend() != "cpu",
+    reason="calibrated on CPU XLA; set JAX_PLATFORMS=cpu",
+)
 def test_scalar_poison_matches_the_legacy_active_row_truth_table(monkeypatch) -> None:
     all_valid = [True, True, True, True]
     all_framed = [[True, True, True, True]]

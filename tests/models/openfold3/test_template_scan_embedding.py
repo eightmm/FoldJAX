@@ -265,6 +265,10 @@ def _run(embedder, batch, params, n_token: int, dtype=jnp.float32) -> np.ndarray
 # --- equality --------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    __import__("jax").default_backend() != "cpu",
+    reason="calibrated on CPU XLA; set JAX_PLATFORMS=cpu",
+)
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16], ids=["fp32", "bf16"])
 @pytest.mark.parametrize(
     ("branch", "n_token"),

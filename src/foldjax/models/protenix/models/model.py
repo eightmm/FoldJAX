@@ -363,7 +363,10 @@ def protenix_infer_static(
     # 2,096 tokens and 42,219 -> 38,416 at 3,012, wall unchanged, same-index
     # RMSD 0.007 A at 2k against a 0.185 A within-set spread.
     use_diffusion_efficient_fusion: bool = True,
-    diffusion_attention_backend: str = "xla_jit",
+    #: Kept in step with `models/predict.py` so a direct caller of this
+    #: function and one arriving through `protenix_predict_static` trace one
+    #: program rather than two.
+    diffusion_attention_backend: str = "tokamax",
     trunk_single_attention_backend: str = "xla_jit",
     trunk_triangle_attention_backend: str | None = None,
     #: Backend for the confidence head's triangle attention. ``None`` follows the
