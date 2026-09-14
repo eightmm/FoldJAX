@@ -799,12 +799,18 @@ The memory difference is not noise: it is the same 2.1 GiB in both wide arms,
 and 128 and 512 land within a mebibyte of each other, which says the width has
 stopped setting the peak by 128 and only 32 is adding to it.
 
-This is not an argument for changing the default. The threshold table is
-upstream's and a test holds it there; a port that quietly runs a different
-schedule than the config it ships is a worse failure than 2 GiB. It is an
-argument for knowing the knob exists in the direction nobody reaches for:
-`--option token_q_chunk_size=512` and its four siblings, at a size where the
-pool is the binding constraint.
+At the time this was not taken as an argument for changing the default: the
+threshold table was upstream's and a test held it there. That reasoning was
+retired on 2026-09-14, when the policy became accuracy equivalence and the
+same knobs were re-measured against no chunking at all, on the fused trunk:
+`chunk_policy=off` gave the same peak to the mebibyte at both 2,096 and 3,012
+tokens and 3.5% less wall at 3,012 on two draws, with coordinates at the
+auto-versus-auto floor. Protenix's `auto` now resolves the five trunk knobs to
+no chunking up to 3,012 tokens (`PROTENIX_MEASURED_CHUNK_SIZE_THRESHOLDS`);
+OpenDDE keeps upstream's table because its blocked triangle path honours the
+widths. Above 3,012 the upstream value stays, unmeasured on that side. The
+ledger is `docs/scale-rows-master-2026-09-10.md`, "Chunk budgets are inert on
+the fused paths".
 
 The baseline is the archive's own 3,012-token record rather than a fresh run,
 which is only safe because the two commits that touched `src/foldjax` since it
