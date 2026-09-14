@@ -991,8 +991,10 @@ never receives the executable built without it.
 cuEquivariance covers Protenix's triangle attention; the global token
 attention and the windowed atom attention of the diffusion encoder and decoder
 still form their score tensor in XLA. `tokamax` routes those two through a
-fused Triton kernel instead. It is opt-in and the default is unchanged
-(`xla_jit` at both sites). The neutral spelling reaches the trunk single
+fused Triton kernel instead. Since 845971e it is the released value at the
+diffusion site (the trunk site stays `xla_jit`); under context parallelism
+an omitted diffusion backend resolves to `xla_jit`, because the fused kernel
+cannot be partitioned. The neutral spelling reaches the trunk single
 attention; the diffusion sites take the port's own
 `--diffusion-attention-backend tokamax`, and the native CLI spells the trunk
 one `--trunk-single-attention-backend tokamax`. The kernel is a bfloat16
@@ -1003,8 +1005,9 @@ upcast or refused. There is no fallback: the implementation is pinned to
 Triton (sm120 here), so a device that cannot run it raises instead of quietly
 running XLA under the tokamax name. A requested query chunk size does not
 reach a kernel that takes the whole query axis and is reported as unused, and
-the backend is refused under context parallelism, which it has not been
-validated against. OpenDDE reaches the same two sites through Protenix's
+an explicitly requested `tokamax` is refused under context parallelism (the
+omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
+sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
 ### Fused gated linear unit (`--option glu_backend=tokamax`, OpenFold3)

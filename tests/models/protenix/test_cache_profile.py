@@ -659,6 +659,93 @@ def test_tokamax_attention_stays_in_the_cache_namespace(tmp_path: Path) -> None:
         assert "tokamax" in choices, dest
 
 
+def test_the_fused_denoiser_default_resolves_away_under_cp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The released kernel must not make `cp_devices=2` refuse itself.
+
+    `diffusion_attention_backend` ships `tokamax`, and the two sites it reaches
+    are refused under a mesh
+    (`models/primitives/attention.py:_reject_tokamax_under_cp`), so `--option
+    cp_devices=2` with no attention option at all failed at start. The adapter
+    resolves the omitted knob to the blocked XLA path; a spelled `tokamax` is
+    still a request the run cannot honour and keeps that refusal.
+
+    Driven through `predict`, because the leg that matters is the rendered
+    argv: the resolution has to reach the native parser, not just the option
+    dict. The stand-in native CLI applies the parser's own default for an
+    absent flag and calls the real guard under a mesh that is active exactly
+    when `--cp-devices` says so, so the refusal here is the shipped one rather
+    than a paraphrase of it.
+    """
+
+    from types import SimpleNamespace
+
+    import foldjax.models.protenix.models.primitives.attention as attention_module
+
+    seen: list[str] = []
+    mesh: list[object | None] = [None]
+    flag = "--diffusion-attention-backend"
+
+    def native_main(argv: list[str], **_ignored: object) -> list[Path]:
+        seen.clear()
+        seen.extend(argv)
+        requested = (
+            int(argv[argv.index("--cp-devices") + 1]) if "--cp-devices" in argv else 1
+        )
+        mesh[0] = object() if requested > 1 else None
+        attention_module._reject_tokamax_under_cp(
+            argv[argv.index(flag) + 1]
+            if flag in argv
+            # An absent flag is the parser default, which is the fused kernel.
+            else backend_impl._RELEASED_COMPILE_DEFAULTS["diffusion_attention_backend"]
+        )
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        structure = out / "tiny_sample_0.cif"
+        structure.write_text("data_x\n", encoding="utf-8")
+        return [structure]
+
+    monkeypatch.setattr(
+        backend_impl, "import_module", lambda _name: SimpleNamespace(main=native_main)
+    )
+    # The guard reads the mesh out of its own module, which keeps this on one
+    # CPU device -- and covers both call sites through the one refusal.
+    monkeypatch.setattr(attention_module, "cp_mesh", lambda: mesh[0])
+    backend = ProtenixBackend()
+
+    context_parallel = _request(tmp_path, output="cp", options={"cp_devices": 2})
+    backend.predict(context_parallel)
+    assert seen[seen.index(flag) + 1] == "xla_jit"
+    # The profile has to name the program that ran, or the resolved run would
+    # load the executable the fused spelling built.
+    assert (
+        backend.cache_profile(context_parallel)["diffusion_attention_backend"]
+        == "xla_jit"
+    )
+    assert backend.cache_profile(context_parallel) == backend.cache_profile(
+        _request(
+            tmp_path,
+            output="cp-named-xla",
+            options={"cp_devices": 2, "diffusion_attention_backend": "xla_jit"},
+        )
+    )
+
+    named = _request(
+        tmp_path,
+        output="cp-named-tokamax",
+        options={"cp_devices": 2, "diffusion_attention_backend": "tokamax"},
+    )
+    with pytest.raises(ValueError, match="not supported under context parallelism"):
+        backend.predict(named)
+    assert seen[seen.index(flag) + 1] == "tokamax"
+
+    serial = _request(tmp_path, output="serial")
+    backend.predict(serial)
+    assert flag not in seen
+    assert "diffusion_attention_backend" not in backend.cache_profile(serial)
+
+
 def _captured_predict_parser() -> argparse.ArgumentParser:
     from tests._parser_capture import capture_parser
 

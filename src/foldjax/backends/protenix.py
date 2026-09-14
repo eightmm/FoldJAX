@@ -196,6 +196,14 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "glu_backend": "xla",
 }
 
+#: What an omitted `diffusion_attention_backend` runs when a context-parallel
+#: mesh is active: this port's own blocked attention, traced, which is what the
+#: guard in `models/primitives/attention.py` names as the supported arm and
+#: what the trunk single attention already defaults to. Spelled rather than
+#: left absent so the resolved value reaches the cache profile too -- the
+#: namespace has to name the program that ran.
+_CP_DIFFUSION_ATTENTION_BACKEND = "xla_jit"
+
 
 def managed_asset_profile(options: dict[str, Any]) -> str:
     """Select managed weights for a released Protenix model variant."""
@@ -427,6 +435,39 @@ class ProtenixBackend(ManagedCcdSession, Backend):
                 "context parallelism requires glu_backend='xla'; a fused GLU "
                 "cannot be partitioned"
             )
+
+    def apply_sampling(self, request: PredictionRequest) -> dict[str, Any]:
+        """Resolve the fused denoiser attention away under context parallelism.
+
+        The released `diffusion_attention_backend` is tokamax's fused kernel,
+        and the two sites it reaches have no ``shard_map`` wrapper -- they see
+        the pair representation already sharded, so
+        `models/primitives/attention.py:28` refuses the kernel under a mesh.
+        Left alone, that refusal rejected the shipped configuration: `--option
+        cp_devices=2` with no attention option at all failed at start.
+
+        An omitted knob is the caller taking the release, so it resolves to the
+        blocked XLA path here, before validation and before either the rendered
+        argv or the cache profile is built. A spelled `tokamax` is a request
+        this run cannot honour and keeps the refusal above; this is the one
+        layer where the two are still distinguishable, because argv and the
+        native parser default read the same string either way. Same division as
+        Boltz-2's (`models/boltz2/api.py:834` resolves, `backends/boltz2.py`
+        refuses the named value).
+
+        `trunk_single_attention_backend` needs none of this: it ships `xla_jit`
+        at the parser, the wrapper signature and the table below, so nothing
+        resolves it into the kernel the guard rejects.
+        """
+
+        options = super().apply_sampling(request)
+        if (
+            "diffusion_attention_backend" not in options
+            and _RELEASED_COMPILE_DEFAULTS["diffusion_attention_backend"] == "tokamax"
+            and _strict_cp_devices(options.get("cp_devices", 1)) > 1
+        ):
+            options["diffusion_attention_backend"] = _CP_DIFFUSION_ATTENTION_BACKEND
+        return options
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, Any]:
         """Keep proven released-default aliases in one cache namespace.
