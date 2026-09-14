@@ -6,6 +6,7 @@ import jax.numpy as jnp
 
 from foldjax.models._cueq import (
     cueq_attention_core,
+    fused_triangle_multiplication,
     load_cueq,
     triangle_multiplication_precision,
 )
@@ -57,21 +58,17 @@ def cueq_triangle_multiplication_forward(
         # entry width loud on first use rather than silent.
         return _cueq_triangle_native_amp(cuex, params, x, mask, direction, eps=eps)
 
-    return cuex.triangle_multiplicative_update(
-        x=x,
+    return fused_triangle_multiplication(
+        x,
         direction=direction,
         mask=mask,
-        norm_in_weight=params["norm_in"]["scale"],
-        norm_in_bias=params["norm_in"]["bias"],
-        p_in_weight=params["p_in"]["kernel"].T,
-        g_in_weight=params["g_in"]["kernel"].T,
-        norm_out_weight=params["norm_out"]["scale"],
-        norm_out_bias=params["norm_out"]["bias"],
-        p_out_weight=params["p_out"]["kernel"].T,
-        g_out_weight=params["g_out"]["kernel"].T,
+        norm_in=(params["norm_in"]["scale"], params["norm_in"]["bias"]),
+        p_in=(params["p_in"]["kernel"].T, None),
+        g_in=(params["g_in"]["kernel"].T, None),
+        norm_out=(params["norm_out"]["scale"], params["norm_out"]["bias"]),
+        p_out=(params["p_out"]["kernel"].T, None),
+        g_out=(params["g_out"]["kernel"].T, None),
         eps=eps,
-        precision=triangle_multiplication_precision(cuex, dtype=x.dtype),
-        fallback=False,
     )
 
 

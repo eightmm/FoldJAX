@@ -23,6 +23,7 @@ import ctypes
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -207,3 +208,51 @@ def fused_multiplication_fits(
     """
 
     return has_affine and hidden_width == pair_width and pair_width % 32 == 0
+
+
+def fused_triangle_multiplication(
+    x: jnp.ndarray,
+    *,
+    direction: str,
+    mask: jnp.ndarray,
+    norm_in: tuple[jnp.ndarray, jnp.ndarray | None],
+    p_in: tuple[jnp.ndarray, jnp.ndarray | None],
+    g_in: tuple[jnp.ndarray, jnp.ndarray | None],
+    norm_out: tuple[jnp.ndarray, jnp.ndarray | None],
+    p_out: tuple[jnp.ndarray, jnp.ndarray | None],
+    g_out: tuple[jnp.ndarray, jnp.ndarray | None],
+    eps: float,
+) -> jnp.ndarray:
+    """One call into cuEquivariance's fused triangle multiplication.
+
+    Each parameter is a ``(weight, bias)`` pair in the kernel's own layout --
+    ``p_in`` and ``g_in`` are the stacked ``(2*D_in, D_in)`` projections, the
+    others ``(D_out, D_in)`` -- and it is the caller's job to get there from its
+    own parameter tree. That is the only thing the three ports differed in:
+    Protenix concatenates its ``a``/``b`` halves and adds a batch axis, Boltz-2
+    transposes ``kernel`` layouts, OpenFold3 carries biases the other two do
+    not. What they must not differ in is here: the precision selected from the
+    operand dtype and ``fallback=False``, so a card that cannot run the kernel
+    says so rather than running XLA under this name.
+
+    A ``None`` bias is passed as ``None``, which is what OpenFold3 already did
+    for a bias-free stack and what its packing test pins; the kernel treats it
+    as absent.
+    """
+
+    cuex = load_cueq()
+    kwargs: dict[str, Any] = {
+        "x": x,
+        "direction": direction,
+        "mask": mask,
+        "eps": eps,
+        "precision": triangle_multiplication_precision(cuex, dtype=x.dtype),
+        "fallback": False,
+    }
+    for name, (weight, bias) in (
+        ("norm_in", norm_in), ("p_in", p_in), ("g_in", g_in),
+        ("norm_out", norm_out), ("p_out", p_out), ("g_out", g_out),
+    ):
+        kwargs[f"{name}_weight"] = weight
+        kwargs[f"{name}_bias"] = bias
+    return cuex.triangle_multiplicative_update(**kwargs)

@@ -219,7 +219,7 @@ def _cueq_triangle_multiplication(
     in one pass and returns the update without the residual. Leading axes
     beyond ``[N, N, C]`` fold into the kernel's batch axis.
     """
-    from foldjax.models._cueq import load_cueq, triangle_multiplication_precision
+    from foldjax.models._cueq import fused_triangle_multiplication
 
     required = {
         "layer_norm_in.weight": params.layer_norm_in.weight,
@@ -232,7 +232,6 @@ def _cueq_triangle_multiplication(
         raise ValueError(f"cueq-full requires affine layer norms; missing {missing}")
     if z.ndim < 3 or z.shape[-3] != z.shape[-2]:
         raise ValueError("triangle multiplication requires square pair axes")
-    cuex = load_cueq()
     lead, (n, channels) = z.shape[:-3], z.shape[-2:]
     x = z.reshape((-1, n, n, channels))
     pair_mask = (
@@ -254,25 +253,17 @@ def _cueq_triangle_multiplication(
 
     p_in_weight, p_in_bias = packed(params.linear_a_p, params.linear_b_p)
     g_in_weight, g_in_bias = packed(params.linear_a_g, params.linear_b_g)
-    out = cuex.triangle_multiplicative_update(
-        x=x,
+    out = fused_triangle_multiplication(
+        x,
         direction="outgoing" if outgoing else "incoming",
         mask=pair_mask,
-        norm_in_weight=params.layer_norm_in.weight,
-        norm_in_bias=params.layer_norm_in.bias,
-        p_in_weight=p_in_weight,
-        p_in_bias=p_in_bias,
-        g_in_weight=g_in_weight,
-        g_in_bias=g_in_bias,
-        norm_out_weight=params.layer_norm_out.weight,
-        norm_out_bias=params.layer_norm_out.bias,
-        p_out_weight=params.linear_z.weight,
-        p_out_bias=params.linear_z.bias,
-        g_out_weight=params.linear_g.weight,
-        g_out_bias=params.linear_g.bias,
+        norm_in=(params.layer_norm_in.weight, params.layer_norm_in.bias),
+        p_in=(p_in_weight, p_in_bias),
+        g_in=(g_in_weight, g_in_bias),
+        norm_out=(params.layer_norm_out.weight, params.layer_norm_out.bias),
+        p_out=(params.linear_z.weight, params.linear_z.bias),
+        g_out=(params.linear_g.weight, params.linear_g.bias),
         eps=eps,
-        precision=triangle_multiplication_precision(cuex, dtype=x.dtype),
-        fallback=False,
     )
     return out.reshape((*lead, n, n, out.shape[-1]))
 
