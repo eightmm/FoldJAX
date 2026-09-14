@@ -1137,6 +1137,60 @@ port did not have (`cli/predict.py:1071/1083/1190` share one); that option
 and the harness are the next patch. The cap stays opt-in until the panel
 passes.
 
+### Closing comparison against upstream, on the defaults as landed (2026-09-14, `0d26624`)
+
+Every row below is one process of the released defaults on main as of
+`0d26624` (snapshot `x11-final-20260914`), seed 101, released schedule, one
+card class; the upstream column is the 2026-09-10 upstream arm on the same
+host (`scale-timing-20260910`, provenance in "Provenance of the upstream arm
+on master"). Wall in seconds, peak in MiB.
+
+| model | tokens | FoldJAX wall | upstream wall | Δ | FoldJAX peak | upstream peak | Δ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Boltz-2 | 1,003 | 71.0 | 132.5 | −46% | 8,453 | 16,162 | −48% |
+| Boltz-2 | 2,096 | 230.9 | 465.6 | −50% | 18,511 | 47,722 | −61% |
+| Boltz-2 | 3,012 | 649.5 | OOM | – | 29,416 | OOM | – |
+| OpenFold3 | 1,003 | 71.0 | 139.1 | −49% | 5,336 | 14,345 | −63% |
+| OpenFold3 | 2,096 | 228.9 | 629.1 | −64% | 13,882 | 45,256 | −69% |
+| OpenFold3 | 3,012 | 580.6 | 1,430.2 | −59% | 23,774 | 81,589 | −71% |
+| Protenix | 1,003 | 59.4 | 96.2 | −38% | 6,404 | 12,932 | −51% |
+| Protenix | 2,096 | 191.0 | 241.9 | −21% | 21,225 | 41,796 | −49% |
+| Protenix | 3,012 | 526.2 | 650.2 | −19% | 37,537 | 57,238 | −34% |
+| OpenDDE | 1,003 | 146.0 | 246.9 | −41% | 21,492 | 58,346 | −63% |
+
+Against the deposited entries (permutation-aware CA RMSD on `label_seq_id`,
+five samples):
+
+| model | 3OG2 (1,003) | 5DEI (2,096) | 6ZTX (3,012) |
+| --- | --- | --- | --- |
+| Boltz-2 | 1.42 0.96 1.22 0.93 0.98 | 0.44 0.43 0.42 0.47 0.42 | 0.62 0.62 0.63 0.66 0.64 |
+| OpenFold3 | 0.81 0.91 0.79 0.85 0.88 | 0.52 0.53 0.54 0.57 0.52 | 0.87 0.64 0.66 0.88 0.90 |
+| Protenix | 0.88 0.80 0.88 0.86 0.85 | 0.46 0.52 0.44 0.49 0.47 | 0.66 0.63 0.61 0.57 0.67 |
+| OpenDDE | 0.91 0.73 0.95 1.02 1.00 | – | – |
+
+Protenix's mean pLDDT on the same rows is 94.58 / 95.17 / 94.28 against
+upstream's 94.71 / 95.12 / 93.55, and OpenDDE's 94.74 against 94.72. The
+structure-level agreement with upstream on these cases is the "Structure
+agreement without a shared tape" section above: cross TM 0.99–1.00 with
+within-arm spread of the same size.
+
+What moved today, in the order it landed: Boltz-2 and Protenix denoiser
+attention on tokamax (`98c5ebd`, `845971e`), one shared call into the fused
+triangle multiplication (`027ff11`), the per-layer bias broadcast on Boltz-2
+(`5c064d3`), Protenix's auto chunk policy off the fused trunk (`cf4360f`), and
+the Protenix `msa_seed` option (`754134f`) that the MSA-cap admission test
+needs. Rejected with numbers: Protenix blocked multiplication, bf16 q/k/v on
+both ports, the chunk sizes inside the plateau, the sm120 autotuner, ESMFold2's
+last f32 norm. Open with a measured lever and a test in flight:
+`max_msa_depth=4096` on Protenix (−35% peak, −6% wall at 2k; −28%, −13% at 3k).
+
+The interface and the program were checked against each other on the final
+snapshot: the tokamax cache-miss census shows the denoiser attention firing at
+three signatures on Boltz-2 and Protenix and none on OpenFold3 (cueq-full), the
+Boltz-2 token bias reaching the kernel as `f32[1, 16, N, N]` where it was
+`[5, 16, N, N]` before `5c064d3`, and `docs/cli.md` now names the Protenix chunk
+default, the Boltz-2 denoiser default and `--msa-seed` (`0f4f3ee`).
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
