@@ -115,6 +115,13 @@ _ZERO_TEMPLATE_PAIR_MARKER = "_foldjax_zero_template_pair_features"
 #: directories without paying that import. A drift test pins the copy.
 _GLU_BACKENDS = ("xla", "tokamax")
 
+#: The released SwiGLU path. Named for the same reason as `_DEFAULT_DTYPE`: the
+#: strip below drops a spelling only because it names the program an omitted
+#: option runs, so it has to read the default rather than repeat it. Spelled as
+#: a literal there, flipping this default would silently alias the *other*
+#: backend into the omitted option's namespace.
+_DEFAULT_GLU_BACKEND = "xla"
+
 #: ``released_config`` values whose explicit spellings are identical to leaving
 #: the public request unset.  Keep these lightweight copies beside the backend
 #: so resolving a cache directory does not import the model/JAX runtime; a test
@@ -398,7 +405,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         # The released SwiGLU is the unfused one, so a request that spells
         # that default out must name the namespace an omitted option names.
         # The fused value is a different program and keeps its own.
-        if str(profile.get("glu_backend", "xla")) == "xla":
+        if (
+            str(profile.get("glu_backend", _DEFAULT_GLU_BACKEND))
+            == _DEFAULT_GLU_BACKEND
+        ):
             profile.pop("glu_backend", None)
         profile["representations"] = _representations.resolve(
             request.representations, _representations.specs_for("openfold3")

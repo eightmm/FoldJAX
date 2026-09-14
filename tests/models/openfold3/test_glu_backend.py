@@ -454,6 +454,22 @@ def test_the_backends_literal_tracks_the_shared_module() -> None:
     assert _GLU_BACKENDS == GLU_BACKENDS
 
 
+def test_the_default_backend_copy_tracks_the_released_config() -> None:
+    """The cache profile drops a spelled default; it must drop the right one.
+
+    `cache_profile` strips `glu_backend` only when the request names the
+    program an omitted option already runs. Reading that value from a literal
+    would, on a default flip, alias the newly non-default backend into the
+    omitted option's namespace -- so the adapter keeps a named copy and this
+    pins it to `InferenceConfig`'s own field default.
+    """
+
+    from foldjax.backends.openfold3 import _DEFAULT_GLU_BACKEND
+    from foldjax.models.openfold3.inference import InferenceConfig
+
+    assert _DEFAULT_GLU_BACKEND == InferenceConfig._field_defaults["glu_backend"]
+
+
 def _forwarding_recorder(monkeypatch, module, name, result):
     """Replace one stage with a recorder of the backend it is handed."""
 

@@ -470,6 +470,130 @@ knobs remove the same small thing and neither reaches the real tenant. The
 knob is free at both sizes and worth switching on for small inputs, but it is
 not the lever the 1k number alone suggested.
 
+The two rows above are superseded by the census below: both were taken before
+the pair-residual default landed, and the 2k pair's arm labels predate the
+default flip to `tokamax`. Re-measured on `8da1d69` the same arm is 257.70 s /
+18511.1 MiB rather than 313.94 / 21778 -- that 56 s and 3.3 GiB is the pair
+residual, not the GLU.
+
+### The fused GLU, closed on all four ports (2026-09-14, `8da1d69`)
+
+Each pair below ran as one wave of concurrently submitted jobs on its own card,
+so the two arms saw the same chassis load. Sampling the cards mid-run, the two
+of a pair stayed within 3.2% of each other on SM clock and swapped which was
+faster between samples, so no arm sat on a systematically throttled card. Four 600 W cards running together are slower
+than a single-card row, so read these against each other and not against the
+scale table above.
+
+| port | default | wall | peak | verdict |
+| --- | --- | --- | --- | --- |
+| Boltz-2 2,096 | `tokamax` | 262.32 → **257.70 s** (−1.8%) | 18511.2 → 18511.1 MiB (−0.1) | keep fused |
+| Boltz-2 3,012 | `tokamax` | 702.62 → **700.62 s** (−0.28%) | 29431.3 → 29415.5 MiB (−15.8) | keep fused, win is gone |
+| OpenFold3 2,096 | `xla` | 228.58 → 246.15 s (**+7.7%**) | 13882.4 → 14005.4 MiB (+123.0) | keep unfused |
+| Protenix 2,096 | `xla` | 203.58 → **192.67 s** (−5.4%) | 21223.1 → **24765.3 MiB (+3542.2)** | keep unfused |
+| OpenDDE | – | – | – | no SwiGLU to fuse |
+
+No default moves. Boltz-2's fused default earns ≤1.8% and never loses;
+OpenFold3's unfused default is confirmed against a 7.7% regression; Protenix
+buys 5.4% for 3.5 GiB on a port that already OOMs at 4,888 tokens (89.4 GiB
+asked of a 97.9 GiB card) and sits at 65-71 GiB at 4,100, so the trade pulls
+the ceiling in for a wall saving smaller than the card-to-card spread at that
+size. OpenDDE has no gated transition at all: `models/structural_tokens.py:151`
+is a plain `linear(silu(hidden), ...)` and the port does not import
+`models/_glu.py`.
+
+Protenix's 3.5 GiB is not an artefact of the arm it was first seen in. The
+earlier reading used `--amp-policy bf16` -- an arm that loses a chain (TM 0.75,
+16.2 Å, below) -- and measured +3525 MiB; the default `auto` arm measures
++3542 MiB. The fused kernel's workspace is the same either way.
+
+#### Why the three ports disagree: call-site count and call shape
+
+tokamax ships tuned autotuning caches for b200 / h100 / tpu7x / tpu_v5 /
+tpu_v5_lite (0.0.14 adds a100 and tpu_v6_lite; 0.1.0 is yanked with no cache
+data). None covers sm_120, so on this card every `gated_linear_unit` call misses
+the cache and `default_config` returns `heuristics_config` rather than
+autotuning -- `_src/config.py:65` sets the fallback to `heuristics`,
+`_src/ops/op.py:501-514` resolves it. One warning per call site per trace makes
+those misses a free census. Boltz-2's warmup and measured processes agree at
+218, so the count is the program's and not a phase artefact.
+
+| port | GLU call sites | dominant shape (count) | float32 sites |
+| --- | ---: | --- | ---: |
+| Boltz-2 | 218 | `bf16[1,62,2096,64] x [64,2,256]` (132) | 2 |
+| OpenFold3 | 20 | `bf16[1,117,2096,128]` (6), `bf16[1,2096,2096,128]` (2) | 6 |
+| Protenix | 15 | `bf16[2096,2096,128] x [128,2,512]` (4) | 4 |
+
+Boltz-2 hands the kernel 62-row MSA chunks and 64-row pair chunks 218 times;
+Protenix and OpenFold3 hand it the whole 2096x2096 pair tensor a handful of
+times. All three scan their block stacks, so the difference is not scan versus
+unroll -- it is whether the transition is chunked before the call. That single
+difference orders the two ports that win something: 218 small calls give
+Boltz-2 a small uniform win, and one huge call gives Protenix a real wall win
+plus a workspace it cannot afford. OpenFold3 sits between them in shape and
+loses on both counts, which the call shapes alone do not account for -- see
+below.
+
+#### The kernel is fast; the ceiling is what settles it
+
+Measured directly at L=2096 and L=3012 on the shapes above, both sides at
+`precision=default` -- which for bfloat16 operands changes nothing, since the
+Triton kernel accumulates in float32 either way:
+
+| shape | XLA | tokamax (heuristic config) | XLA / tokamax |
+| --- | ---: | ---: | ---: |
+| `bf16[1,62,2096,64]` | 0.2340 ms | 0.0863 | 2.71 |
+| `bf16[1,64,2096,128]` | 0.5460 | 0.1861 | 2.93 |
+| `bf16[1,128,2096,128]` | 1.0824 | 0.3140 | 3.45 |
+| `bf16[1,43,3012,64]` | 0.2349 | 0.0892 | 2.63 |
+| `bf16[1,64,3012,128]` | 0.7746 | 0.2449 | 3.16 |
+| `bf16[1,128,3012,128]` | 1.5237 | 0.4505 | 3.38 |
+
+Untuned, the fused kernel is already 2.6-3.5x faster than XLA on bfloat16. That
+is why no per-card autotuning cache was built: the kernel is not what limits the
+win, so tuning it cannot move a default. At 2,096 on Boltz-2 the 218 sites cost
+83.3 ms per program execution under XLA and 28.5 ms under the heuristic kernel;
+the observed end-to-end saving of 4.62 s puts the program at ~84 executions, so
+a kernel with zero cost would save 7.0 s -- 2.7% of 257.7 s, only 0.9 pp beyond
+what the heuristic already delivers. The kernel is a ~2% slice of the runtime on
+the port that calls it most.
+
+On float32 the sign is set by the matmul precision, not by the dtype. Measured
+on the five float32 shapes the three trunks actually call, `xla / tokamax`:
+
+| shape (float32) | `default` | `high` | `highest` |
+| --- | ---: | ---: | ---: |
+| `[1,2096,384] x [384,2,1536]` (Boltz-2 single) | 0.807 | 1.028 | 0.511 |
+| `[1,15736,128] x [128,2,256]` (OpenFold3 atom) | 0.781 | **1.289** | 0.514 |
+| `[5,15736,128] x [128,2,256]` (OpenFold3 atom, 5 samples) | 1.792 | **1.747** | 0.784 |
+| `[5,2096,768] x [768,2,1536]` (Protenix diffusion token) | 1.149 | **1.121** | 0.557 |
+| `[5,2096,384] x [384,2,768]` (Protenix diffusion single) | 0.920 | 0.923 | 0.558 |
+
+Production traces all key `HIGH`, and at `high` the fused kernel wins on three
+of the five and is never worse than 0.92x. At `highest` it loses everywhere by
+1.3-2.0x, which is the three-pass float32 emulation already recorded for the
+fused attention on this port. So `models/_glu.py`'s claim that the fused GLU is
+worth offering on a float32 port stands -- but only away from
+`matmul_precision=highest`, and an earlier reading here that called float32 a
+loss for the kernel was measuring at `default`, which no port runs.
+
+What the float32 table does not explain is OpenFold3's 17.6 s. Six of its twenty
+sites are float32 and at `high` those favour the kernel; twenty sites of any
+shape cannot cost 17.6 s of execution at these per-call times. Total job elapsed
+also moves the other way (601 s unfused vs 600 s fused, against 228.58 vs 246.15
+in the measured window), so the cost shifts between the prefill and measured
+processes rather than appearing as new total work. The measured window is the
+metric every other row in this document uses and the verdict rests on it, but
+the mechanism behind OpenFold3's share of it is not established. It is a fixed
+per-process cost of some kind, not a throughput regression in the kernel.
+
+Neither port's confidence moves. OpenFold3's five samples read pLDDT
+94.275-94.316 unfused and 94.296-94.304 fused, the fused spread sitting inside
+the unfused one; Protenix reads pTM 0.96380-0.96391 unfused and 0.96385-0.96395
+fused. `models/_glu.py` asks for a backend change to be treated as a numerics
+change because the two paths apply the activation at different widths; at these
+shapes the change does not reach the confidence head.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
