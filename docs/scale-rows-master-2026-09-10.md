@@ -1196,6 +1196,15 @@ on master"). Wall in seconds, peak in MiB.
 | Protenix | 3,012 | 526.2 | 650.2 | −19% | 37,537 | 57,238 | −34% |
 | OpenDDE | 1,003 | 146.0 | 246.9 | −41% | 21,492 | 58,346 | −63% |
 
+The upstream wall column is four days older than the FoldJAX column, and
+this card has moved 36% under throttle before, so three of its 2,096-token
+rows were re-run the same evening on the final rows' own native inputs
+(`uprow-recheck.sbatch`, results `*-upstream-recheck.json`): Boltz-2 465.24 s
+/ 47,721.7 MiB, OpenFold3 624.75 / 45,256.2, Protenix 242.49 / 41,795.8 —
+within 1% of the 2026-09-10 walls and identical peaks, so the deltas above
+stand as same-day comparisons at 2k and the 1k/3k walls carry the four-day
+caveat only.
+
 Against the deposited entries (permutation-aware CA RMSD on `label_seq_id`,
 five samples):
 
