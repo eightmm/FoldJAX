@@ -875,6 +875,161 @@ The boundary is drawn by tensor origin, not by stage. So the adopted
 match to what upstream AlphaFold 3 runs, and `triton` + bf16 is not "the AF3
 configuration" as an earlier reading here had it.
 
+### Four open items, run the same evening (2026-09-14, snapshot `8da1d69`)
+
+After the denoiser attention landed on both ports, four things were still
+open: the chunk budgets that were tuned before the fused kernels changed the
+peak composition, the `triton` + bf16 arm that had only one case behind it,
+the OpenDDE blocked-multiplication verdict that had never been tried on
+Protenix, and the ESMFold2 trunk that the closing plan still listed as
+realised f32. All four are closed below. One draw per arm unless a redraw is
+named; wall in seconds, peak in MiB, same card class, released schedule.
+
+#### Chunk budgets are inert on the fused paths
+
+OpenFold3 `pair_chunk_size` (auto is 117 rows at 2,096 and 58 at 3,012, sized
+from a `[rows, heads, N, N]` fp32 score tensor that `cueq-full` never forms):
+
+| tokens | chunk | wall | peak | mean pLDDT |
+| ---: | ---: | ---: | ---: | ---: |
+| 2,096 | 117 (auto) | 231.28 / 229.84 | 13,882.4 / 13,882.4 | 94.29 |
+| 2,096 | 233 | 226.44 / 228.42 | 13,868.5 / 13,868.5 | 94.29 |
+| 2,096 | 466 | 227.63 | 14,705.1 | 94.29 |
+| 2,096 | 0 (off) | 222.68 | 22,967.4 | 94.29 |
+| 3,012 | 58 (auto) | 575.15 | 23,773.9 | 92.187 |
+| 3,012 | 116 | 577.06 | 23,774.0 | 92.188 |
+| 3,012 | 232 | 575.17 | 23,774.0 | 92.187 |
+| 3,012 | 0 (off) | 568.49 | 45,363.2 | 92.188 |
+
+Inside the plateau the chunk size moves nothing on either axis: the peak
+repeats to the MiB across draws and across sizes, and the wall differences
+(230.6 vs 227.4 mean at 2k, −1.4%) sit inside the 1.4–2.0 s within-arm
+spread. Only switching chunking off moves anything, and it buys 1–4% of wall
+for 9–22 GiB. The auto formula's reasoning is wrong — it budgets a tensor that
+no longer exists — but the value it picks lands on the flat part, so the wrong
+reasoning is harmless. No default changes.
+
+Protenix `chunk_policy` (auto sets all five trunk chunk knobs to one size:
+128 at 2,096, 32 at 3,012; off is no chunking):
+
+| tokens | policy | wall | peak |
+| ---: | --- | ---: | ---: |
+| 2,096 | auto | 204.15 | 21,253.7 |
+| 2,096 | off | 207.29 | 21,253.7 |
+| 3,012 | auto | 569.63 (earlier draw 560.13) | 37,539.1 |
+| 3,012 | off | 549.27 | 37,542.0 |
+
+At 2k the two arms peak at the same MiB and the wall favours auto by 1.5%; at
+3k the peak is again identical and the one off draw is 3.6% faster than the
+auto draw, with the auto arm's two draws 1.7% apart. The memory reason for
+the policy is gone at both sizes; whether the 3k wall reading survives a
+redraw decides if `off` becomes the 3k resolution, and that redraw is
+recorded when it lands.
+
+#### `triton` + bf16, five cases: deposited-equal on 5/5, coordinates 0.8–2.9× the floor
+
+The arm is the Boltz-2 `diffusion_attention_backend=triton` spelling, which
+the port ties to `diffusion_compute_dtype=bfloat16`, against today's default
+(`tokamax`, fp32 denoiser); ctl and ctlB are two processes of the default, and
+their same-index movement is the floor. The kernel fires at every size
+(cache-miss census: `q f32[5,254,16,48]` at 254 tokens).
+
+| case | tokens | ctl | ctlB | triton | wall Δ | peak Δ | floor (max) | triton vs ctl (max) | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3DHA | 254 | 17.83 | 17.85 | 16.82 | −5.7% | 0 | 0.070 Å | 0.056 Å | 0.8× |
+| 4REK | 500 | 29.48 | 29.42 | 27.78 | −5.8% | +450 MiB | 0.030 | 0.050 | 1.7× |
+| 3OG2 | 1,003 | 74.33 | 73.84 | 67.56 | −9.1% | 0 | 0.275 | 0.382 | 1.4× |
+| 3LXU | 1,350 | 103.42 | 106.04 | 95.99 | −7.2% | 0 | 0.635 | 1.811 | 2.9× |
+| 5DEI | 2,096 | 239.69 | 237.87 | 227.62 | −5.0% | 0 | 0.141 | 0.258 | 1.8× |
+
+Deposited CA RMSD (permutation-aware, `label_seq_id`) is the same on the
+three arms of every case to within the floor's own movement (0.01–0.06 Å):
+3DHA 0.45–0.55 on all arms, 4REK 0.46–0.55, 3OG2 0.92–1.47, 3LXU 5.20–5.40,
+5DEI per chain identical. The earlier 5DEI draw that read −12.62% and 9.4×
+had a floor of 0.020 Å; this draw's floor on the same case is 0.141 Å, seven
+times larger, so the ratio column is a random variable of the floor draw as
+much as of the arm, and 3LXU is a 5.3 Å target where a 1.8 Å displacement
+between two equally wrong structures is invisible to the deposited score.
+
+What the panel lacks is a weak-interface multimer, which is the exact target
+class where rounding the pair bias to bf16 moved a chain 16 Å on another port,
+and this arm rounds that bias: the `triton` guard requires bf16 q, k, v *and*
+bias, and reaching it requires the whole-denoiser knob (`trunk.py:625-629`),
+which narrows every score-model Linear except two islands. So the arm is two
+variables. It is not adopted as-is. The split — bf16 q/k/v cast at the kernel
+call, bias and denoiser fp32 — is the next measurement, and the audit that
+priced it found that tokamax's Triton kernel also casts the softmax
+probabilities to `v.dtype` before P·V and stores the output in `q.dtype`, so
+the split is not operand rounding alone and gets the same floor test.
+
+#### OpenDDE's blocked multiplication does not transfer to Protenix
+
+OpenDDE routes its triangle multiplication to the blocked XLA path under a
+bf16 trunk (`opendde/models/model.py:373`, measured 2026-08-23 as −13.4% wall
+and −11% peak against cueq at 1,003 residues). Protenix runs the same
+triangle code on the same bf16 trunk and defaults to cueq. Tried on Protenix:
+
+| tokens | arm | wall | peak |
+| ---: | --- | ---: | ---: |
+| 1,003 | cueq (default) | 60.96 | 6,375.6 |
+| 1,003 | blocked (`PROTENIX_TRIANGLE_MULTIPLICATION_BACKEND=xla`) | 60.59 | 6,658.3 |
+| 2,096 | cueq (default, same wave) | 204.15 | 21,253.7 |
+| 2,096 | blocked | 224.38 | 22,347.1 |
+
+A tie at 1k with 283 MiB against blocked, and +9.9% wall with +1.1 GiB at 2k.
+The difference is shape, not code: OpenDDE's pair is 384 channels on
+structural tokens (about twice the residues), Protenix's is 128 channels on
+tokens, and the fused path's `2·(2c)` concatenated projections against the
+blocked path's padded copies scale differently in `c`. Protenix keeps cueq.
+
+#### ESMFold2's trunk is bf16; one f32 buffer remains, and it is not the peak
+
+The closing plan's "realised f32 trunk" was stale: the promotion it referred
+to (mask multiply and an explicit `astype`) was removed in `8e5a246`
+(2026-09-11), and the realised trunk and the persistent pair are bf16 today
+(2,145 MiB at 2,096 tokens). A read-only audit found one long-lived f32
+buffer left: `normalized` at `esmfold2/models/trunk.py:117`, the layer-norm
+output at `[N², 256]`, live across the O(N³) einsum because both consumers
+(`proj_bundle`, `proj_gate`) are separate GEMMs. Narrowing it once after the
+norm is bitwise identical on CPU (both consumers cast to bf16 internally; a
+×2 tripwire fired), upstream-faithful in output and a deliberate divergence in
+realised dtype. Upper bound 982 / 4,290 / 8,860 MiB at 1,003 / 2,096 / 3,012
+tokens, and possibly zero if XLA CSEs the two converts. It is not scheduled:
+ESMFold2's peak is the per-sample diffusion + confidence arena
+(`num_samples · L² · 4c_z`), not the trunk, so a trunk-only narrowing cannot
+move the peak unless the trunk becomes the maximum tenant.
+
+#### sm120 autotuning, priced and not built
+
+AlphaFold 3 persists tokamax autotuning results under `FOLDJAX_HOME`
+(`backends/_tokamax_autotune.py`); the store is model-agnostic in all but
+four seams. The Triton attention search space is `block_q`/`block_k` in
+{16..128}, `num_warps` {1,2,4,8}, `num_stages` {1..4}; split-k is never
+explored, but a tuned config is still not bit-identical to the heuristic one
+because `block_k` sets the online-softmax order. Ceiling: with the 8.01% the
+xla→tokamax move saved at 2k, the kernel's share of the new wall is
+0.0871/(r−1) for an XLA/tokamax speed ratio r — 8.7 / 4.4 / 2.9% at r = 2 / 3
+/ 4 — so a 1.5× tuned-over-heuristic kernel is worth at most ~1.5% of wall,
+against a whole-program warm that costs AF3 326 s at 2k, longer than a
+Boltz-2 prediction at that size. Arithmetic closes it; if ever built it is an
+opt-in `kernel_autotuning`, never a default.
+
+#### The per-step bias work, priced
+
+Both ports run the sampler as one `lax.scan` with the transformer blocks in a
+nested scan (Protenix forces `use_diffusion_scan=True` under `graph_jit`,
+`models/predict.py:217-225`), so the per-block pair-bias projection is
+re-done every step on both ports and XLA's loop-invariant code motion cannot
+reach it. On Boltz-2 that is deliberate (`lazy_token_trans_bias=True`; the
+eager alternative holds `[N, N, 24·16]` f32, 6.7 GB at 2,096 and 36 GB at
+4,888, and bf16 storage is ruled out by the pair-bias rounding finding). The
+priced traffic is ~2.2 GB of `z` reads per layer-step, ~7 s of 257 s at
+2,096 if bandwidth-bound and unfused. Left lazy. What is not deliberate is
+`bias = jnp.repeat(bias, multiplicity, axis=0)` per layer per step
+(`diffusion_transformer.py:236`): five copies of a bias that is identical
+across samples, ~4 s at 2,096 by the same arithmetic, and bit-identical to
+remove if the kernel broadcasts a batch-1 bias. That patch is in flight.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
