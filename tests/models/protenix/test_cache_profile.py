@@ -441,6 +441,10 @@ def test_native_pool_identity_keeps_every_nonalias_static_route_distinct() -> No
     assert len(set(identities)) == len(identities)
 
 
+@pytest.mark.skipif(
+    __import__("jax").default_backend() == "cpu",
+    reason="the released default is tokamax, which has no CPU kernel",
+)
 def test_released_default_aliases_reuse_one_real_bounded_native_owner(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -219,12 +219,14 @@ work; nothing below needs to be set to reach them.
   PAE/PDE logits (`[samples, N, N, 64]` -- tens of GiB at long sequences) are
   returned only on request.
 
-Past 2,560 tokens Protenix and OpenDDE resolve one chunk width for five knobs
-at once, and upstream's value there is 32. Measured at 3,012 tokens, that is
-the most expensive of the widths tried: `--option token_q_chunk_size=512` and
-its four siblings take 2.1 GiB off the peak and cost no time. The default
-stays upstream's, so this is a knob to reach for when the pool is the binding
-constraint, not a setting that is wrong.
+Protenix's `chunk_policy=auto` no longer chunks the trunk up to 3,012 tokens:
+with the fused triangle kernels the five chunk knobs bound nothing that still
+exists, the peak is identical to the mebibyte with chunking off, and off is
+3.5% faster at 3,012 (two draws). Above 3,012 the upstream width (32) stays,
+unmeasured on that side. OpenDDE keeps upstream's whole table because its
+blocked triangle path honours the widths; there, past 2,560 tokens,
+`--option token_q_chunk_size=512` and its four siblings take 2.1 GiB off the
+peak and cost no time.
 [Details](engineering-notes.md#the-chunk-width-above-2560-tokens-costs-memory-rather-than-saving-it).
 
 `--mem-fraction` is the one memory flag that is not about the model. It sets
@@ -498,9 +500,11 @@ model's Linear kernels while the residual stream, the sampler's `atom_coords`
 and the two coordinate projections at its edges stay float32, and `--option
 diffusion_attention_backend={xla,tokamax,triton}` selects the score model's
 attention alone, leaving the float32 trunk and confidence Pairformers on the
-global `attention_backend`. Neither changes any released default, and both are
-part of the compilation-cache identity, so a non-default value never receives
-the executable built without it. Both also reach the affinity re-embedding
+global `attention_backend`. Since 98c5ebd the released value of that second
+knob is `tokamax` (−4.5/−8.0/−6.4% of wall at 1k/2k/3k, coordinates at the
+rerun floor); `diffusion_compute_dtype` still ships float32. Both are part of
+the compilation-cache identity, so a non-default value never receives the
+executable built without it. Both also reach the affinity re-embedding
 run, which uses the same score model.
 
 The two go together. Under the float32 island a fused kernel inherits this
@@ -1161,6 +1165,16 @@ so a deterministic run is repeatable but not the run the parity panel was
 measured on: on a chaotic 3,012-token Protenix case the deterministic port
 landed 5-7 Å from the non-deterministic port and from native, the size of
 native's own basin choices. Read parity residuals with the option off.
+
+### `--msa-seed` (Protenix)
+
+Seeds only the per-cycle MSA row draw (`--sample-msa-per-cycle` on the
+native CLI, or `--option 'cli_args=["--sample-msa-per-cycle"]'` through
+FoldJAX); the diffusion key and the padded noise tape keep `--seed`. Omitted,
+it follows `--seed`. It exists so that an MSA-cap admission test can hold the
+diffusion stream fixed while varying only the alignment draw. On the released
+full-depth path it is inert. Not a compilation-cache option: a draw that
+changes the padded row count already forks the executable.
 
 ### `--max-msa-depth`
 
