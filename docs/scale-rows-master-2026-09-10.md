@@ -1030,6 +1030,113 @@ priced traffic is ~2.2 GB of `z` reads per layer-step, ~7 s of 257 s at
 across samples, ~4 s at 2,096 by the same arithmetic, and bit-identical to
 remove if the kernel broadcasts a batch-1 bias. That patch is in flight.
 
+### The second batch of the evening: two landings, two rejections, one lever found (2026-09-14, later)
+
+The gap hunt continued with a compile-only arena probe and four Opus
+patches, each measured on its own snapshot with two control draws.
+
+#### Landed: the per-layer bias repeat on Boltz-2 (`5c064d3`)
+
+| arm | wall | peak |
+| --- | ---: | ---: |
+| ctl (main) | 239.47 | 18,511.1 |
+| ctlB (main) | 236.85 | 18,511.1 |
+| bias broadcast | 231.22 | 18,511.1 |
+
+−2.4..−2.9% at 2,096 tokens, coordinates 0.028 Å from the control against a
+0.066 Å control-vs-control floor, deposited CA RMSD identical on all five
+samples. tokamax squeezes a size-1 batch axis and maps that operand with
+`in_axes=None`, so the kernel reads one `[H, N, N]` buffer for every sample;
+the xla branch is a broadcasting add. The 2-D context-parallel path keeps
+the repeat because its bias `PartitionSpec` names the batch axis.
+
+#### Landed: Protenix `chunk_policy=auto` stops chunking the fused trunk (`cf4360f`)
+
+The 3,012 redraws confirmed the first draw: auto 569.63 / 568.86 s against
+off 549.27 / 549.19 s (−3.5% twice), peak identical to the mebibyte, and the
+off-vs-auto coordinate movement (0.069–0.072 Å) sits at the auto-vs-auto
+floor (0.070 Å). Protenix's `auto` now resolves the five trunk knobs to no
+chunking up to 3,012 tokens; above that the upstream value stays because
+that side is unmeasured. OpenDDE names upstream's table explicitly and keeps
+it, because its blocked triangle path honours the widths, and two tests hold
+the two callers to the tables they measured.
+
+#### Rejected: bf16 q/k/v at the kernel call, on both ports
+
+The split of the `triton` + bf16 arm that the audit priced: q, k, v cast to
+bfloat16 at the tokamax call, pair bias and the rest of the denoiser fp32.
+tokamax's Triton kernel adds the f32 bias into f32 logits unrounded, but it
+also casts the softmax probabilities to `v.dtype` before P·V and writes the
+output at `q.dtype`, so the split is three roundings, not one.
+
+| port | tokens | ctl | ctlB | bf16 q/k/v | wall Δ | floor | move | ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Protenix | 2,096 | 192.25 | 192.07 | 190.63 | −0.8% | 0.011 Å | 0.254 Å | 23× |
+| Protenix | 1,003 | 60.23 | 59.87 | 58.46 | −2.6% | 0.323 | 0.318 | at floor |
+| Boltz-2 | 2,096 | 231.28 | 231.32 | 230.39 | −0.4% | – | – | – |
+| Boltz-2 | 1,003 | 70.33 | 70.90 | 68.40 | −3.0% | – | – | – |
+
+Under one percent at 2,096 on both ports, and 23× the floor on Protenix.
+The 5–9% of the `triton` + bf16 arm is the bf16 denoiser, not the kernel's
+operand dtype. Neither `tokamax_bf16` spelling is landed.
+
+#### Closed by measurement: OpenDDE's blocked multiplication on Protenix, the sm120 autotuner, ESMFold2's norm
+
+Recorded in the previous section. The blocked path loses at 2,096
+(+9.9% wall, +1.1 GiB); the autotuner is priced at ≤1.5% of wall against a
+326 s warm; ESMFold2's remaining f32 buffer is not the peak tenant.
+
+#### The Protenix arena, read from the compiled program
+
+A compile-only probe (lower and compile the one executable, never run it;
+buffer assignment joined to the loop nest by each `while`'s proved trip
+count) at 2,096 tokens, released defaults:
+
+* temp arena 19.33 GiB, argument 1.29 GiB; 2,604 allocations, parsed bytes
+  equal to `memory_analysis()` exactly.
+* The 24 diffusion blocks are a nested `lax.scan` on the CLI path
+  (`models/predict.py:217-225` forces `use_diffusion_scan=True` under
+  `graph_jit`), so the per-block pair bias is recomputed per step on this
+  port too and nothing pair-shaped is hoisted above the sampler. The K=200
+  loop carries exactly one pair tensor: the pre-normalised `z_norm`,
+  f32[1, 2096, 2096, 128], 2.1 GiB.
+* The two largest values are f32[2096, 2096, 256] at 4.19 GiB each, at entry
+  level: the layer norm of the diffusion pair-conditioning concat
+  (`[z_trunk bf16 | relpe f32]` is f32 by promotion), centered and normalised
+  materialised separately. This is the deliberate fp32 diffusion island;
+  left alone.
+* The top of the arena is the MSA stack: bf16[13267·2096, 64] at 3.3 GiB
+  three times, bf16[8, 13267, 8, 2096] at 3.3 GiB, two 1.66 GiB tenants.
+  n_msa is 13,267 rows here; upstream's policy draws a uniform-random subset
+  size in [1, n_msa] per recycle and pads to the maximum over cycles.
+
+#### The lever that follows: Protenix MSA depth
+
+| tokens | `max_msa_depth` | wall | peak |
+| ---: | ---: | ---: | ---: |
+| 2,096 | 16384 (default) | 190.51 | 21,225.4 |
+| 2,096 | 4096 | 179.06 | 13,754.2 |
+| 2,096 | 2048 | 175.62 | 13,726.8 |
+| 3,012 | 16384 (default, auto chunk) | 569.63 | 37,539.1 |
+| 3,012 | 4096 | 496.55 | 27,058.9 |
+
+−35% peak and −6% wall at 2,096; −28% peak and −13% wall at 3,012. Below
+4096 the peak stops moving, so the next tenant is about 13.7 GiB at 2k. Of
+the ladder, 3DHA (10.2k rows), 4REK (12.9k), 3OG2 (8.8k), 5DEI (13.3k) and
+6ZTX (17.5k) bind at 4096; 3LXU (2.7k) does not.
+
+This is not a kernel or a dtype: it changes what the model reads, so the
+rerun floor is the wrong control and the 2026-08-02 "confidence inside the
+MSA-draw noise band" is not an admission. The admission test (agreed with
+the spec partner) is per-case seed blocks — A uncapped with MSA seed a, B
+uncapped with MSA seed b, P capped with MSA seed b, diffusion RNG held
+fixed — comparing d(A, P) against d(A, B) on deposited CA RMSD, complex and
+per chain, with a frozen 10% margin on the one-sided 95% upper bound over
+blocks. It needs an MSA seed separate from the diffusion seed, which the
+port did not have (`cli/predict.py:1071/1083/1190` share one); that option
+and the harness are the next patch. The cap stays opt-in until the panel
+passes.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
