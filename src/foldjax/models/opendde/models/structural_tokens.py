@@ -184,9 +184,11 @@ def _pair_project_by_role(
 
     Selecting all pair matrices at once creates an ``[N, N, C_out, C_in]``
     tensor.  At the released width and a few hundred structural tokens that is
-    over 100 GiB.  Mapping over structural rows keeps only
-    ``[N, C_out, C_in]`` selected weights live while preserving the exact
-    per-pair linear projection and arbitrary leading batch dimensions.
+    over 100 GiB.  Both branches below avoid it and keep at most one
+    ``[N, C_out, C_in]`` slab of selected weights live, while preserving the
+    exact per-pair linear projection and arbitrary leading batch dimensions:
+    serially by mapping over structural rows, and under context parallelism by
+    scanning the seven column roles.
     """
 
     z = jnp.asarray(z)
@@ -210,18 +212,63 @@ def _pair_project_by_role(
         # partitioner could only satisfy by gathering the whole pair tensor
         # onto every device. Summing over the 7 column roles instead keeps
         # each term a plain batched matmul over rows -- partitionable -- at
-        # the cost of projecting every pair once per role. The selected
-        # weights stay [N, C_out, C_in], never [N, N, C_out, C_in].
-        row_weights = pair_block_proj[role]
-        one_hot_cols = (
-            role[:, None] == jnp.arange(pair_block_proj.shape[1])[None, :]
-        ).astype(z.dtype)
-        out = jnp.zeros(z.shape[:-1] + (pair_block_proj.shape[-2],), dtype=z.dtype)
-        for column_role in range(pair_block_proj.shape[1]):
-            projected = jnp.einsum(
-                "...ijc,ioc->...ijo", z, row_weights[:, column_role]
-            )
-            out = out + projected * one_hot_cols[None, :, column_role, None]
+        # the cost of projecting every pair once per role.
+        #
+        # Each term needs one column role's weights, `[N, C_out, C_in]`, and
+        # both of those two things are load-bearing: the gather takes both
+        # role indices at once, and the seven terms run as a scan. Measured on
+        # this projection alone, 1,024 structural tokens at the released
+        # width, per-device temp on four fake CPU devices:
+        #
+        #   form                                    2-D grid    1-D mesh
+        #   `[role]` then `[:, c]`, unrolled        3,888 MiB   3,336 MiB
+        #   `[role, c]`, unrolled                   3,360 MiB   3,216 MiB
+        #   `[role, c]` in a scan                   1,084 MiB     940 MiB
+        #
+        # Selecting `pair_block_proj[role]` first and slicing the column role
+        # afterwards asks for every role's weights for every row, so the whole
+        # `[N, 7, C_out, C_in]` block is materialised -- `bf16[512,7,384,384]`,
+        # 1,008 MiB per device on the 2x2 grid, the largest single allocation
+        # in the shipped program's arena, linear in the token count (5.9 GiB
+        # per device at 6,144) -- *and* the seven `[N, C_out, C_in]` slices of
+        # it are allocated on top.
+        #
+        # What that is worth in the whole program is smaller than the buffer,
+        # and the next reader should not expect otherwise: OpenDDE's CPU temp
+        # total is unchanged to 64 bytes at 1,024 structural tokens under both
+        # layouts and at 2,048 on the 2x2 grid. The arena's high-water mark is
+        # set by a critical set this short-lived gather is not part of -- on
+        # the 2x2 grid it is packed into an offset 55 other values share -- so
+        # the win is the removal of a per-allocation demand that grows
+        # linearly in the token count, not a drop in the measured peak here.
+        #
+        # Indexing both roles deletes the block but not the seven gathers:
+        # unrolled, they are seven same-shaped reads of the same table, which
+        # XLA is free to schedule together, and seven times 144 MiB is the
+        # 1,008 MiB back again. Iterations of one loop body cannot be merged,
+        # which is the same reason `_triangle_contract` blocks inside a
+        # `lax.scan` rather than an unrolled loop, so under the scan one
+        # role's weights exist at a time by construction.
+        #
+        # The per-element arithmetic is unchanged: the same seven terms,
+        # accumulated in the same ascending role order, verified bit-identical
+        # to the unrolled block form on a 2x2 grid and a 4-device 1-D mesh in
+        # both bfloat16 and float32.
+        n_roles = pair_block_proj.shape[1]
+        one_hot_cols = (role[:, None] == jnp.arange(n_roles)[None, :]).astype(z.dtype)
+
+        def project_column_role(out: jnp.ndarray, column_role: jnp.ndarray):
+            row_weights = pair_block_proj[role, column_role]
+            projected = jnp.einsum("...ijc,ioc->...ijo", z, row_weights)
+            mask = one_hot_cols[:, column_role]
+            return shard_pair_rows(out + projected * mask[None, :, None]), None
+
+        zeros = jnp.zeros(z.shape[:-1] + (pair_block_proj.shape[-2],), dtype=z.dtype)
+        out, _ = jax.lax.scan(
+            project_column_role,
+            shard_pair_rows(zeros),
+            jnp.arange(n_roles),
+        )
         return shard_pair_rows(out)
 
     rows = jnp.moveaxis(z, -3, 0)
