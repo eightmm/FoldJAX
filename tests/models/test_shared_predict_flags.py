@@ -317,7 +317,11 @@ _OPENDDE_FLAG_ORDER: tuple[str, ...] = (
     "--diffusion-attention-backend", "--trunk-single-attention-backend",
     "--structural-single-attention-backend",
     "--no-graph-jit",
-    "--cp-devices", "--cp-layout",
+    "--cp-devices",
+    # A value-taking switch, not Protenix' store_true/store_false pair: this
+    # parser expresses every boolean as `--flag true|false`.
+    "--cp-atom-windows",
+    "--cp-layout",
     "--diffusion-chunk-size",
     "--triangle-mul-chunk-size", "--triangle-att-q-chunk-size",
     "--single-att-q-chunk-size", "--token-q-chunk-size",

@@ -560,9 +560,12 @@ def diffusion_module_f_forward(
     glu_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
-    #: Distribute the atom graph over CP rows. Off by default so OpenDDE's
-    #: diffusion module, which calls straight through here, keeps its
-    #: replicated program; Protenix' own entry point resolves and passes it.
+    #: Distribute the atom graph over CP rows. Off by default because the
+    #: request has to be *resolved* against the shapes before it is honoured,
+    #: and only an entry point knows them: Protenix' and OpenDDE's models each
+    #: resolve it once (OpenDDE against its structural token count) and pass
+    #: the answer. A caller that has not resolved it gets the replicated
+    #: program rather than a `require_atom_windows` failure.
     cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Run the raw Protenix denoising network ``F`` for one noise level."""

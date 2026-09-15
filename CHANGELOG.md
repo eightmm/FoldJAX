@@ -115,6 +115,49 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+- **OpenDDE distributes its diffusion atom graph under context parallelism**,
+  through the same shared adapters Protenix uses -- its diffusion module calls
+  the same Protenix denoiser, and until now its option surface deliberately
+  left the atom graph replicated on every device. `cp_atom_windows` is now on
+  its surface too (`--cp-atom-windows true|false` natively, `--option
+  cp_atom_windows=false` to opt out), on by default, inert without a mesh, and
+  its own compilation namespace either way.
+
+  This is the port the feature was wanted for: OpenDDE has the lowest memory
+  ceiling here -- a serial run OOMs at 2,096 tokens on 96 GiB -- and the
+  purpose of `--cp-devices` on it is to run targets that do not fit one card,
+  which the replicated atom graph worked against.
+
+  **The axis that has to divide the mesh is OpenDDE's *structural* token axis,
+  not its residue one.** The denoiser runs on the expanded structural tokens,
+  so alignment is `n_structural_token % cp_rows == 0` (and `% cp_cols` under
+  `2d`) with the atom axis a multiple of `n_queries * cp_rows`; because the
+  automatic structural padding target is twice the token bucket, an aligned
+  residue count does not imply an aligned structural one. The misalignment
+  warning therefore names `PaddingConfig(atoms=..., structural_tokens=...)` /
+  `--pad-structural-tokens`, and, as on Protenix, a shape that cannot be split
+  warns and runs replicated rather than failing or silently reading as
+  distributed. Reaching the distributed path on an unpadded job is not
+  possible; pin the two axes.
+
+  One composition is OpenDDE's alone and had no coverage anywhere: it always
+  supplies `extra_attn_bias`, a replicated `[N_structural, N_structural]`
+  role-pair bias, to the token attention whose queries the distributed atom
+  graph now delivers CP-row sharded. The compiled SPMD module still contains
+  no full-width token pair bias and no full-width token attention logits, so
+  the replicated bias is sliced rather than collecting them.
+
+  A serial run is byte-identical: the lowered HLO of one OpenDDE denoiser step
+  -- its own conditioning included, not Protenix' network alone -- is compared
+  against `git archive main` in the same interpreter and pinned by hash, and
+  carries no collective and no sharding op. Gated on 1-D x4 and 2x2 CPU meshes
+  on both denoiser attention arms, with and without the `lax.scan` block stack
+  and scanned step loop that `graph_jit` (which CP requires) actually
+  compiles, and with a token query chunk:
+  `tests/models/opendde/test_atom_context_parallel.py`, 14 tests. No GPU
+  measurement, so the per-device claim is structural rather than a measured
+  peak -- and the size it matters at is the one no CPU mesh can measure.
+
 - **Protenix distributes its diffusion atom graph under context parallelism**,
   the way Boltz-2 already did. `cp_atom_windows` is on by default and does
   nothing without a mesh. Under one, the atom-pair cache, the atom single

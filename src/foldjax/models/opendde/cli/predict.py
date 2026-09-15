@@ -219,6 +219,11 @@ def _predict(
     deterministic: bool = False,
     cp_shards: int = 1,
     cp_layout: str = "auto",
+    #: Distribute the diffusion atom graph over the context-parallel rows.
+    #: `opendde_infer_static` resolves the request against the *structural*
+    #: token count and the padded atom count, and warns if the shape cannot
+    #: carry it.
+    cp_atom_windows: bool = True,
     trunk_dtype: Any = None,
     confidence_dtype: Any = None,
     diffusion_autocast: bool = False,
@@ -388,6 +393,7 @@ def _predict(
         cycle_msa_features=sampled or None,
         cp_shards=cp_shards,
         cp_layout=cp_layout,
+        cp_atom_windows=cp_atom_windows,
         trunk_dtype=trunk_dtype,
         confidence_dtype=confidence_dtype,
         diffusion_autocast=diffusion_autocast,
@@ -529,6 +535,24 @@ def main(
         "(context parallelism, the JAX form of upstream's Fold-CP); needs "
         "that many visible devices and trades collective traffic for pair "
         "memory per device",
+    )
+    # Spelled `true`/`false` rather than as Protenix's `--cp-atom-windows` /
+    # `--no-cp-atom-windows` pair: this parser has no store_true/store_false
+    # boolean anywhere, its two existing switches (`--use-template`,
+    # `--use-rna-msa`) both take a value, and the adapter's flag loop renders
+    # `--flag <value>` for every option it carries. The negative-flag
+    # machinery Protenix' adapter needed exists only because its loop drops a
+    # falsey value.
+    parser.add_argument(
+        "--cp-atom-windows",
+        type=_boolean,
+        default=True,
+        help="distribute the diffusion atom graph (atom-pair cache, both atom "
+        "transformer stacks, atom<->token routing) over the context-parallel "
+        "rows; true by default and ignored without --cp-devices > 1. Needs the "
+        "padded atom axis to be a multiple of n-queries times the row count "
+        "and the structural token axis to divide the rows; a shape that "
+        "cannot be split warns and runs replicated",
     )
     parser.add_argument(
         "--cp-layout",
@@ -944,6 +968,7 @@ def main(
                     deterministic=deterministic,
                     cp_shards=args.cp_devices,
                     cp_layout=args.cp_layout,
+                    cp_atom_windows=args.cp_atom_windows,
                     # Without asym_id the per-chain loops cannot be sized on
                     # the host, and the in-graph summaries need exactly that;
                     # fall back to raw logits + host scoring, the old contract.

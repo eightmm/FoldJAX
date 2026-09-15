@@ -39,6 +39,12 @@ _EXPORTED_ENVIRONMENT = (
 _CLI_OPTIONS = {
     "ccd_rdkit_cache",
     "components_cif",
+    # Distribute the diffusion atom graph over CP rows. Released default on:
+    # under a mesh the atom-pair cache, both atom transformer stacks and the
+    # atom<->token routing are split, and a serial run ignores it. Rendered
+    # like this port's other switches -- `--cp-atom-windows true|false` -- so
+    # the flag loop below carries it without a negative-flag vocabulary.
+    "cp_atom_windows",
     "cp_devices",
     "cp_layout",
     "deterministic_ops",
@@ -88,6 +94,7 @@ _RELEASED_COMPILE_DEFAULTS: dict[str, object] = {
     "confidence_dtype": "bf16",
     "diffusion_dtype": "fp32",
     "chunk_policy": "auto",
+    "cp_atom_windows": True,
     "cp_devices": 1,
     "cp_layout": "auto",
     "use_template": False,
@@ -155,6 +162,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         _strict_boolean(options.get("include_raw", False), name="include_raw")
         _strict_boolean(options.get("use_template", False), name="use_template")
         _strict_boolean(options.get("use_rna_msa", False), name="use_rna_msa")
+        _strict_boolean(options.get("cp_atom_windows", True), name="cp_atom_windows")
 
     def cache_profile(self, request: PredictionRequest) -> dict[str, object]:
         """Keep explicit released defaults in the omitted cache namespace.

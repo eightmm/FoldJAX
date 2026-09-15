@@ -109,6 +109,13 @@ def resolve_atom_windows(
     n_token: int,
     n_queries: int,
     n_keys: int,
+    #: Which ``PaddingConfig`` axis the warning tells the caller to pin. The
+    #: denoiser's token axis is not the same axis on every consumer: Protenix'
+    #: is the residue token axis (``tokens``), while OpenDDE diffuses over its
+    #: expanded structural tokens, whose padding axis is ``structural_tokens``
+    #: and whose automatic target is twice the token bucket. Naming the wrong
+    #: one would send a caller to pin an axis that cannot fix the shape.
+    token_axis: str = "tokens",
 ) -> bool:
     """Decide once whether this run distributes its atom graph, and say so.
 
@@ -135,7 +142,7 @@ def resolve_atom_windows(
         f"distributed atom graph: {reason}. The atom graph stays replicated on "
         "every device. Pad the atom axis to a multiple of "
         f"{n_queries * rows} and the token axis to a multiple of "
-        f"{token_multiple} -- PaddingConfig(atoms=..., tokens=...) -- to "
+        f"{token_multiple} -- PaddingConfig(atoms=..., {token_axis}=...) -- to "
         "distribute it.",
         UserWarning,
         stacklevel=3,

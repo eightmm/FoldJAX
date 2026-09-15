@@ -47,6 +47,7 @@ from foldjax.models.opendde.models.structural_tokens import (
     StructuralTokenExpanderParams,
     structural_token_expand,
 )
+from foldjax.models.protenix.models.diffusion._cp import resolve_atom_windows
 from foldjax.models.protenix.models.diffusion.atom import (
     atom_attention_encoder_prepare_diffusion_cache,
 )
@@ -705,6 +706,38 @@ def prepare_structural_features(
     }
 
 
+def _resolve_atom_windows(
+    *,
+    requested: bool,
+    n_atom: int,
+    n_structural_token: int,
+    n_queries: int,
+    n_keys: int,
+) -> bool:
+    """OpenDDE's single atom-graph resolution point.
+
+    A named function rather than an inline call because the port-specific part
+    of the decision is which token axis has to divide the mesh, and that is
+    worth being able to test without running the whole graph. OpenDDE diffuses
+    over its *expanded structural* tokens -- ``diffusion_module_forward``
+    receives ``n_token=n_structural_token`` -- so the alignment requirement and
+    the axis the warning tells a caller to pin are both the structural ones.
+    Naming ``tokens`` here would send a caller to pin the residue axis, which
+    cannot fix the shape: the automatic structural target is twice the token
+    bucket, so an aligned residue count does not imply an aligned structural
+    one.
+    """
+
+    return resolve_atom_windows(
+        requested=bool(requested),
+        n_atom=n_atom,
+        n_token=n_structural_token,
+        n_queries=n_queries,
+        n_keys=n_keys,
+        token_axis="structural_tokens",
+    )
+
+
 def _slice_samples(value, start: int, size: int, *, sample_axis: int = -3):
     """Narrow a supplied noise/augmentation tape to one chunk of samples.
 
@@ -839,6 +872,17 @@ def opendde_infer_static(
     #: only, ``"2d"`` splits rows and columns on Fold-CP's square grid.
     #: Carried as a static argument so a layout change is a retrace.
     cp_layout: str = "1d",
+    #: Distribute the diffusion atom graph -- the atom-pair cache, the atom
+    #: single cache, both atom transformer stacks and the atom<->token routing
+    #: -- over CP rows instead of holding one copy of it on every device.
+    #: Ignored without a mesh. The axis that has to divide the mesh here is the
+    #: *structural* token axis, not the residue one: the denoiser runs on the
+    #: expanded structural tokens (``n_token=n_structural_token`` below), so
+    #: the resolution passes that count and names ``structural_tokens`` as the
+    #: axis to pad. A shape that cannot be split warns and runs replicated
+    #: (see
+    #: `foldjax.models.protenix.models.diffusion._cp.resolve_atom_windows`).
+    cp_atom_windows: bool = True,
 ) -> dict[str, jnp.ndarray]:
     """Run OpenDDE from already-featurized, unbatched static inputs.
 
@@ -1086,6 +1130,17 @@ def opendde_infer_static(
     if structural_pair_mask is not None:
         pair_z = pair_z * structural_pair_mask.astype(pair_z.dtype)[..., None]
     pair_z = shard_pair_rows(pair_z)
+    # Resolved once, here, and threaded on as a concrete bool: the cache below
+    # and the denoiser closure have to agree about whether `p_lm`/`c_l` came
+    # out window- and atom-sharded, and a second resolution could disagree
+    # with the first if the warning had already downgraded it.
+    distribute_atom_windows = _resolve_atom_windows(
+        requested=cp_atom_windows,
+        n_atom=n_atom,
+        n_structural_token=n_structural_token,
+        n_queries=n_queries,
+        n_keys=n_keys,
+    )
     p_lm, c_l = atom_attention_encoder_prepare_diffusion_cache(
         structural_features["atom_to_token_idx"],
         structural_features["ref_pos"],
@@ -1100,6 +1155,7 @@ def opendde_infer_static(
         params=params.diffusion.atom_encoder,
         n_queries=n_queries,
         n_keys=n_keys,
+        cp_atom_windows=distribute_atom_windows,
     )
 
     def denoise_fn(
@@ -1143,6 +1199,7 @@ def opendde_infer_static(
             token_mask=structural_token_mask,
             atom_mask=atom_mask,
             denoiser_autocast=diffusion_autocast,
+            cp_atom_windows=distribute_atom_windows,
         )
 
     def sample(key, init_noise, step_noises, rotations, translations, count):
@@ -1345,6 +1402,7 @@ GRAPH_STATIC_ARGNAMES = (
     "compact_confidence_distance_bins",
     "confidence_dtype",
     "confidence_triangle_attention_backend",
+    "cp_atom_windows",
     "cp_layout",
     "cp_shards",
     "run_confidence_scores",

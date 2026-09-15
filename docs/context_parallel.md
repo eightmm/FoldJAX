@@ -26,7 +26,7 @@ expected explicit collectives for the atom-window adapters.
 |---|---:|---:|---:|---|
 | Boltz-2 | yes | yes | yes | Cannon/ring pair core, CP-row atom windows, halo exchange, sparse token/pair routing |
 | Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
-| OpenDDE | yes | yes | no | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser, with the atom-window option off, so its atom streams remain replicated |
+| OpenDDE | yes | yes | yes | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser with the atom graph distributed over CP rows (`cp_atom_windows`, default on), aligned on the *structural* token axis |
 | OpenFold3 | yes | yes | no | Pair stack, template stack, and confidence pair re-embedding |
 | ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
@@ -122,8 +122,43 @@ arm the released CP path takes, because the adapter resolves an omitted
 `cp_atom_windows` is a compile option on Protenix, defaulting to on. It is
 ignored without a mesh, and the internal keyword it threads through
 `atom_attention_encoder`, `atom_attention_decoder` and
-`diffusion_module_f_forward` defaults to *off*, which is what keeps OpenDDE --
-which calls straight through those -- on the program it already had.
+`diffusion_module_f_forward` defaults to *off* -- because the request has to be
+resolved against the shapes before it is honoured, and only a model entry point
+knows them. A direct caller of those functions therefore gets the replicated
+program rather than a `require_atom_windows` failure.
+
+## OpenDDE atom-window path
+
+OpenDDE's diffusion module calls the same Protenix denoiser, so it distributes
+the same operations through the same adapters. Its option surface carries
+`cp_atom_windows` too -- `--cp-atom-windows true|false` on
+`foldjax-opendde-predict`, `--option cp_atom_windows=false` through the unified
+CLI -- defaulting to on. The spelling differs from Protenix' `--no-…` pair
+because this parser expresses every boolean as a value (`--use-template`,
+`--use-rna-msa`), and its adapter's flag loop renders `--flag <value>`.
+
+One thing is genuinely different, and it is the thing to get right: **the token
+axis that has to divide the mesh is the structural one, not the residue one.**
+OpenDDE diffuses over its expanded structural tokens, so
+`diffusion_module_forward` receives `n_token=n_structural_token` and the
+alignment requirement is `n_structural_token % cp_rows == 0` (and `% cp_cols`
+under `2d`). Automatic padding derives the structural target as twice the token
+bucket, so an aligned residue count does not imply an aligned structural one;
+the misalignment warning accordingly names
+`PaddingConfig(atoms=..., structural_tokens=...)` / `--pad-structural-tokens`.
+The atom requirement is the shared one: a multiple of `n_queries * cp_rows`,
+i.e. 32 times the row count with the released windows.
+
+The second difference is an operand Protenix never supplies: OpenDDE always
+passes `extra_attn_bias`, a replicated `[N_structural, N_structural]` role-pair
+bias, into the token attention whose queries the distributed atom graph now
+delivers CP-row sharded. The compiled SPMD module still contains no full-width
+token pair bias and no full-width token attention logits, so the replicated
+bias is sliced rather than forcing the logits back together
+(`tests/models/opendde/scripts/atom_cp_parity.py`).
+
+`diffusion_dtype=bf16` remains refused under a mesh, unchanged by this: that
+guard is about the denoising network's precision, not its placement.
 
 ## Trunk-only representation capture
 
@@ -170,6 +205,7 @@ uv run pytest -q \
   tests/models/protenix/test_context_parallel.py \
   tests/models/protenix/test_atom_context_parallel.py \
   tests/models/opendde/test_context_parallel.py \
+  tests/models/opendde/test_atom_context_parallel.py \
   tests/models/openfold3/test_context_parallel.py \
   tests/models/esmfold2/test_context_parallel.py
 ```
@@ -201,10 +237,11 @@ configuration as production-ready, measure on that deployment topology:
    diffusion;
 5. 2, 4, and 8 GPUs, plus multi-node runs when those are intended.
 
-For Boltz-2 and Protenix, the pair trunk scales over both two-dimensional mesh
-axes, while atom windows scale over CP rows and are replicated over CP columns.
-OpenDDE and OpenFold3 deliberately retain pair-only CP until their atom graphs
-receive model-specific distributed contracts and checkpoint-level validation.
+For Boltz-2, Protenix and OpenDDE, the pair trunk scales over both
+two-dimensional mesh axes, while atom windows scale over CP rows and are
+replicated over CP columns. OpenFold3 deliberately retains pair-only CP until
+its atom graph receives a model-specific distributed contract and
+checkpoint-level validation.
 
 Protenix' atom-window path has CPU parity, HLO-structure and serial-invariance
 gates (`tests/models/protenix/test_atom_context_parallel.py`, 18 tests on 1-,
@@ -217,3 +254,14 @@ yet. The per-device claim it makes is
 structural -- the compiled SPMD module contains no full-width atom activation,
 atom-pair window cache, or projected token-pair tensor -- not a measured
 peak.
+
+OpenDDE's has the same shape of evidence and the same limit
+(`tests/models/opendde/test_atom_context_parallel.py`, 14 tests: 1-D x4 and 2x2
+CPU meshes, both denoiser attention arms, the scanned block stack and scanned
+step loop `graph_jit` actually compiles, a token query chunk, the serial
+lowering pinned byte-identical to `main` in the same interpreter with zero
+collectives and zero sharding ops, the structural-axis misalignment warning,
+and the compile-namespace spelling). Also structural, also no GPU measurement.
+The target it exists for -- a job that does not fit one card -- is exactly the
+one no CPU mesh can measure, so the memory claim stays a claim about what the
+compiled module does not contain.

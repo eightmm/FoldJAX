@@ -48,6 +48,13 @@ def diffusion_module_f_forward(
     attention_backend: str = "xla",
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
+    #: Distribute the atom graph over CP rows. Off by default, like the shared
+    #: Protenix keyword it forwards: the request is resolved once, against the
+    #: *structural* token count, in
+    #: :func:`foldjax.models.opendde.models.model.opendde_infer_static`, and a
+    #: direct caller that has not checked its shapes should get the replicated
+    #: program rather than a ``require_atom_windows`` failure.
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Run OpenDDE's raw denoising network for one noise level."""
 
@@ -104,6 +111,7 @@ def diffusion_module_f_forward(
         attention_backend=attention_backend,
         token_mask=token_mask,
         atom_mask=atom_mask,
+        cp_atom_windows=cp_atom_windows,
     )
 
 
@@ -145,6 +153,11 @@ def diffusion_module_forward(
     token_mask: jnp.ndarray | None = None,
     atom_mask: jnp.ndarray | None = None,
     denoiser_autocast: bool = False,
+    #: Forwarded verbatim to :func:`diffusion_module_f_forward`; the EDM blend
+    #: below is elementwise on the ``[samples, atoms, 3]`` coordinates, which
+    #: the decoder hands back replicated either way, so this changes the
+    #: network and not the step.
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Run one OpenDDE EDM denoising step.
 
@@ -205,6 +218,7 @@ def diffusion_module_forward(
         attention_backend=attention_backend,
         token_mask=token_mask,
         atom_mask=atom_mask,
+        cp_atom_windows=cp_atom_windows,
     )
     s_ratio = (t_hat_noise_level / sigma_data)[..., None, None].astype(r_update.dtype)
     output = (

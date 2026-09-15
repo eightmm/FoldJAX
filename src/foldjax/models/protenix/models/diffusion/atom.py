@@ -230,8 +230,9 @@ def atom_attention_encoder_prepare_cache(
     is one elementwise chain over them, and constraining only what comes out
     lets every device compute the whole chain at full width and slice -- which
     is a program that reads as distributed and costs what the replicated one
-    costs. Off by default: the input embedder's atom encoder and OpenDDE reach
-    this function too.
+    costs. Off by default: the input embedder's atom encoder reaches this
+    function too and never distributes, and the two diffusion callers pass a
+    value their own entry point has already resolved against the shapes.
     """
 
     if cp_atom_windows and cp_mesh() is not None:
@@ -292,9 +293,11 @@ def atom_attention_encoder_prepare_diffusion_cache(
     """Prepare the reusable coordinate-conditioned atom encoder cache.
 
     ``cp_atom_windows`` distributes the cache over CP rows instead of building
-    one copy per device. It defaults to off so every other caller of this
-    function -- the input embedder and OpenDDE's diffusion module -- keeps the
-    program it has. The three window-shaped inputs are constrained on the way
+    one copy per device. It defaults to off because the request has to be
+    resolved against the shapes first, which only an entry point can do --
+    Protenix' and OpenDDE's models both call this with a resolved value, and
+    the input embedder's encoder never distributes at all. The three
+    window-shaped inputs are constrained on the way
     in rather than only on the way out: the cache is one elementwise chain
     over them, and constraining only the result lets every device compute the
     whole chain and slice, which saves nothing.

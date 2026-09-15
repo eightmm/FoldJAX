@@ -1046,25 +1046,36 @@ omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
 sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
-### Distributed diffusion atom graph (`--no-cp-atom-windows`, Protenix)
+### Distributed diffusion atom graph (`cp_atom_windows`, Protenix and OpenDDE)
 
 On by default and inert without a mesh. With `--cp-devices N` greater than one
 it splits the diffusion atom graph over the context-parallel rows: the
 atom-pair cache, the atom single cache, both atom transformer stacks, the
 atom<->token routing, and the atom windows' view of the token-pair tensor --
 which was the operation that forced the whole projected pair tensor onto every
-device and undid the pair trunk's sharding. `--no-cp-atom-windows`, or
-`--option cp_atom_windows=false`, keeps the old replicated atom graph; both
-spellings are their own compilation namespace.
+device and undid the pair trunk's sharding. `--option cp_atom_windows=false`
+keeps the old replicated atom graph, and each spelling is its own compilation
+namespace.
+
+The native flag differs between the two ports, because their parsers do:
+Protenix takes `--cp-atom-windows` / `--no-cp-atom-windows`, OpenDDE takes
+`--cp-atom-windows true|false` like its other switches. `--option` is the same
+on both.
 
 It needs two axes to divide the mesh: the atom axis a multiple of
 `n_queries * cp_rows` (32 times the row count with the released windows) and
-the token axis a multiple of the rows, and of the columns under
-`--cp-layout 2d`. A shape that cannot be split **warns, names the multiple to
-pad to, and runs replicated** -- which means an unpadded job measures the
-replicated graph, so pin `--pad-atoms` and `--pad-tokens` (or
-`PaddingConfig(atoms=..., tokens=...)`) to reach the distributed one. The
-sampler loop and its noise tape are unchanged. See
+the denoiser's token axis a multiple of the rows, and of the columns under
+`--cp-layout 2d`. **That token axis is not the same axis on both ports.**
+Protenix diffuses over its residue tokens, so pin `--pad-tokens`; OpenDDE
+diffuses over its expanded structural tokens, so pin
+`--pad-structural-tokens`, and an aligned residue count does not imply an
+aligned structural one (the automatic structural target is twice the token
+bucket). A shape that cannot be split **warns, names the multiple and the axis
+to pad, and runs replicated** -- which means an unpadded job measures the
+replicated graph, so pin `--pad-atoms` plus the right token axis (or
+`PaddingConfig(atoms=..., tokens=...)` /
+`PaddingConfig(atoms=..., structural_tokens=...)`) to reach the distributed
+one. The sampler loop and its noise tape are unchanged. See
 [`docs/context_parallel.md`](context_parallel.md).
 
 ### Fused gated linear unit (`--option glu_backend=tokamax`, OpenFold3)
