@@ -213,36 +213,6 @@ def _shard_single(
     return jax.lax.with_sharding_constraint(s, NamedSharding(mesh, spec))
 
 
-def _cast_params(params: object, dtype: jnp.dtype) -> object:
-    """Cast only floating-point leaves of a param pytree to ``dtype``.
-
-    Integer / boolean tables (e.g. embedding index tables stored as floats are
-    still floats and get cast; genuine int tables are left untouched). Weights
-    on disk are unchanged; this is a runtime cast only.
-    """
-
-    def _cast(x: object) -> object:
-        if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating):
-            return x.astype(dtype)
-        return x
-
-    return jax.tree.map(_cast, params)
-
-
-def _cast_float_feats(
-    feats: Mapping[str, jnp.ndarray], dtype: jnp.dtype
-) -> dict[str, jnp.ndarray]:
-    """Cast floating-point feature arrays to ``dtype``; keep ints/bools as-is."""
-
-    out: dict[str, jnp.ndarray] = {}
-    for k, v in feats.items():
-        if hasattr(v, "dtype") and jnp.issubdtype(v.dtype, jnp.floating):
-            out[k] = v.astype(dtype)
-        else:
-            out[k] = v
-    return out
-
-
 def _cast_trunk_params(params: Params, dtype: jnp.dtype) -> Params:
     """Select native AMP Linear kernels, preserving original FP32 islands.
 

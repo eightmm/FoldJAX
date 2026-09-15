@@ -1064,8 +1064,3 @@ def map_template_embedder(
         ),
         linear_t=map_linear(state, _join(prefix, "linear_t"), bias=False),
     )
-
-
-# The old name, kept so existing callers do not break; it described only the
-# single path, which the type outgrew when the pair path was added.
-map_single_conditioning = map_diffusion_conditioning

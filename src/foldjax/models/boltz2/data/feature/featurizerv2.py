@@ -671,18 +671,6 @@ def select_subset_from_mask(mask, p, random: np.random.Generator) -> np.ndarray:
     return new_mask
 
 
-def get_range_bin(value: float, range_dict: dict[tuple[float, float], int], default=0):
-    """Get the bin of a value given a range dictionary."""
-    value = float(value)
-    for k, idx in range_dict.items():
-        if k == "other":
-            continue
-        low, high = k
-        if low <= value < high:
-            return idx
-    return default
-
-
 def process_token_features(  # noqa: C901, PLR0915, PLR0912
     data: Tokenized,
     random: np.random.Generator,

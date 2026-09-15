@@ -74,11 +74,6 @@ def wanted() -> frozenset[str]:
     return _WANTED.get()
 
 
-def is_wanted(name: str) -> bool:
-    """Whether ``name`` would be recorded, for call sites that can skip work."""
-    return name in _WANTED.get()
-
-
 def capture(name: str, value):
     """Record ``value`` under ``name`` if it was asked for; return it either way.
 

@@ -1207,14 +1207,6 @@ def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
     return summary
 
 
-def _result_summary(
-    result: PredictionResult | tuple[PredictionResult, ...],
-) -> dict[str, Any] | list[dict[str, Any]]:
-    if isinstance(result, tuple):
-        return [item.summary() for item in result]
-    return result.summary()
-
-
 def _run_predictions(request: PredictionRequest) -> BatchReport:
     """Execute a request and report what ran, what was reused and what failed.
 

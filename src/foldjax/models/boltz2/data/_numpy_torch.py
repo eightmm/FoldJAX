@@ -79,7 +79,6 @@ int = int32  # noqa: A001 - mirroring torch.int
 short = _DType("int16", np.int16)
 dtype = _DType
 
-_BOOL = bool_
 globals()["bool"] = bool_  # torch.bool, without shadowing the builtin in here
 
 pi = np.pi

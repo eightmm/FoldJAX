@@ -1373,16 +1373,6 @@ def _dedup_sequences(seqs: list[str], descs: list[str]) -> tuple[list[str], list
     return u_seqs, u_descs
 
 
-def _gap_only_chain_features(width: int) -> dict[str, np.ndarray]:
-    """Single gap row used for ligand chains (torch placeholder)."""
-
-    return {
-        "msa": np.full((1, width), _GAP_IDX, dtype=np.int64),
-        "deletion_matrix": np.zeros((1, width), dtype=np.int64),
-        "species": np.array([""], dtype=object),
-    }
-
-
 def _ligand_query_features(width: int) -> dict[str, np.ndarray]:
     """Single query row for a ligand chain = UNK (restype X = 20) per token.
 
@@ -3078,12 +3068,6 @@ def _normalize_sequence(sequence: Any) -> str:
         if aa not in RESTYPE_INDEX:
             raise ValueError(f"unsupported residue: {aa}")
     return sequence
-
-
-def _distogram_rep_atom_name(aa: str) -> str:
-    if aa == "G":
-        return "CA"
-    return "CB"
 
 
 def _encode_elements(elements: list[str]) -> np.ndarray:

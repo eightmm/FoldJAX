@@ -38,11 +38,6 @@ except Exception:  # pragma: no cover
     _PALLAS_AVAILABLE = False
 
 
-def pallas_available() -> bool:
-    """True if the Pallas Triton GPU backend imported."""
-    return _PALLAS_AVAILABLE
-
-
 def _flash_kernel(
     q_ref,  # [block_q, d]
     k_ref,  # [N_k, d]

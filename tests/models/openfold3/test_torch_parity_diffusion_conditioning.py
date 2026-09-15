@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from foldjax.models.openfold3.bridge.torch_mapping import map_single_conditioning
+from foldjax.models.openfold3.bridge.torch_mapping import map_diffusion_conditioning
 from foldjax.models.openfold3.models.diffusion_conditioning import (
     fourier_embedding,
     single_conditioning,
@@ -110,7 +110,7 @@ def test_single_conditioning_matches_transcribed_reference(
         for key, value in module.state_dict().items():
             state[f"{name}.{key}"] = value
 
-    params = map_single_conditioning(state)
+    params = map_diffusion_conditioning(state)
     assert params.transition_s == ()
     actual = single_conditioning(
         jnp.asarray(si_input.numpy()),
@@ -148,7 +148,7 @@ def test_noise_level_changes_the_conditioning(openfold3_source: Path) -> None:
     ):
         for key, value in module.state_dict().items():
             state[f"{name}.{key}"] = value
-    params = map_single_conditioning(state)
+    params = map_diffusion_conditioning(state)
 
     args = (
         jnp.zeros((1, N_TOKEN, C_S_INPUT)),
@@ -184,4 +184,4 @@ def test_mapper_requires_the_fourier_buffers(openfold3_source: Path) -> None:
             state[f"{name}.{key}"] = value
     # Everything present except the Fourier buffers.
     with pytest.raises(KeyError, match="fourier_emb.w"):
-        map_single_conditioning(state)
+        map_diffusion_conditioning(state)

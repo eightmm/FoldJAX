@@ -616,12 +616,6 @@ def _ensure_ccd_locked() -> None:
     _write_marker(runtime_root() / _READY_MARKER)
 
 
-def ensure_ccd() -> None:
-    """Atomically materialize AlphaFold 3's generated chemistry tables."""
-    with _runtime_lock():
-        _ensure_ccd_locked()
-
-
 def ensure_ready() -> None:
     """Prepare a complete vendored runtime once, repairing interrupted work."""
     blocker = runtime_blocker()
