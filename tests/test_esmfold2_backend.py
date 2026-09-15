@@ -587,9 +587,10 @@ def test_padded_split_path_requests_managed_outputs(tmp_path, monkeypatch) -> No
     assert seen["token_shape"] == (1, 8)
     assert seen["atom_shape"] == (1, 64)
     assert seen["msa_shape"] == (1, 4, 8)
+    # No depth at all: padding spells none, so the model keeps the selection
+    # depth in its own settings. `padding.msa` is a capacity for that axis.
     assert seen["kwargs"] == {
         "num_recycles": 9,
-        "max_msa_depth": 4,
         "language_model_tokens": None,
         "preserve_prefix_rng": True,
         "return_distogram_logits": False,

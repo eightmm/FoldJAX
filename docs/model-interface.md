@@ -10,7 +10,7 @@ from foldjax import ExecutionConfig, ModelConfig, get_model
 
 model = get_model(
     "alphafold3",
-    config=ModelConfig(msa_depth=1024, trunk_passes=4),
+    config=ModelConfig(trunk_passes=4),
     execution=ExecutionConfig(padding=True, use_compile_cache=True),
 )
 request = model.plan("job.json", stage="inputs")  # validate without inference
@@ -88,20 +88,19 @@ depth control, not a guarantee of identical selected rows or identical tensors.
 
 | Model | Native depth behavior |
 | --- | --- |
-| AF3 | Model MSA crop; padded preprocessing also has a feature capacity |
-| Boltz2 | Candidate-row cap; trunk subsampling has a separate limit |
+| AF3 | Model MSA crop over the featurizer's 16,384-row pool |
+| Boltz2 | Candidate-row cap (`const.max_msa_seqs`); trunk subsampling has a separate limit |
 | Protenix | Paired/unpaired assembly cap; profile statistics precede cropping |
-| OpenDDE | Candidate-row cap; padded cycle capacity is separate |
+| OpenDDE | Candidate-row cap, then released 1,280-row valid-first sampling on every trunk pass |
 | OpenFold3 | Per-cycle cap, bounded by the adapter at 1024; host union may be larger |
 | ESMFold2 | Per-cycle sampling cap when the checkpoint uses an MSA encoder; profiles remain model-native |
 
-The new handle requires an explicit `ModelConfig(msa_depth=...)` when enabling
-padding, so execution configuration does not silently choose scientific input
-depth. Use 1024 for the agreed common profile, or 1280 for OpenDDE. This requirement
-does not imply that changing padding is scientifically neutral for every native
-preprocessing pipeline. See [padding profiles](token-padding-profiles.md) for
-capacity and masking behavior. The legacy request API retains its existing
-implicit serving-depth defaults.
+`ExecutionConfig(padding=...)` selects shapes only: the MSA axis is padded up
+to a bucket that holds the rows the model would have read anyway, so enabling
+padding needs no `ModelConfig(msa_depth=...)` and never lowers it. `msa_depth`
+remains the scientific choice, and setting it changes the input with padding on
+or off. See [padding profiles](token-padding-profiles.md) for capacity and
+masking behavior.
 
 ## Input representation semantics
 

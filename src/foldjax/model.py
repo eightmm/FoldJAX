@@ -59,8 +59,9 @@ class ModelConfig:
 class ExecutionConfig:
     """Storage/compilation choices; these never select an implicit MSA depth.
 
-    To enable padding, also set ModelConfig.msa_depth explicitly. Existing
-    PredictionRequest padding presets retain their historical behavior.
+    Padding needs no depth of its own: it pads the MSA axis up to a bucket
+    that holds the rows the model would have read anyway, so enabling it
+    leaves ``ModelConfig.msa_depth`` -- the scientific choice -- alone.
     """
 
     padding: PaddingConfig | Mapping[str, Any] | bool | None = False
@@ -119,11 +120,6 @@ class Model:
             raise TypeError("config must be a ModelConfig")
         if not isinstance(self.execution, ExecutionConfig):
             raise TypeError("execution must be an ExecutionConfig")
-        if self.execution.padding is not None and self.config.msa_depth is None:
-            raise ValueError(
-                "padding requires an explicit ModelConfig(msa_depth=...). "
-                "MSA selection depth and execution capacity are separate choices"
-            )
         if not isinstance(self.native_options, Mapping):
             raise TypeError("native_options must be a mapping")
         object.__setattr__(

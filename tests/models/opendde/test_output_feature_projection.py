@@ -394,14 +394,18 @@ def test_padded_cli_releases_source_intermediates_and_model_before_score(
     real_pad = padding_impl.pad_opendde_features
 
     def recording_featurize(job, **kwargs):
-        assert kwargs["max_msa_depth"] == (msa_capacity or 1280)
+        # The featurizer's own cap, whatever the padded MSA capacity is: a
+        # shape target must not select fewer alignment rows.
+        assert kwargs["max_msa_depth"] == 16384
         features = real_featurize(job, **kwargs)
         actual_atoms.append(len(features["atom_to_token_idx"]))
         source_refs.append(weakref.ref(features["template_distogram"]))
         return features
 
     def recording_sample(features, **kwargs):
-        assert kwargs["msa_depth"] == (msa_capacity or 1280)
+        # And the released per-cycle depth, which the padded route takes by
+        # making the same call the unpadded one makes.
+        assert "msa_depth" not in kwargs
         sampled = real_sample(features, **kwargs)
         sampled_refs.extend(weakref.ref(cycle["msa"]) for cycle in sampled)
         return sampled

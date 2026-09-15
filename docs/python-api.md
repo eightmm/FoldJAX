@@ -21,8 +21,9 @@ result = predict(
         num_recycles=10,
         max_msa_depth=8192,
         # Opt-in shape normalization. `padding=True` uses standard buckets;
-        # pinning axes defines one exact serving/cache profile.
-        padding=PaddingConfig(tokens=512, atoms=4096, msa=128),
+        # pinning axes defines one exact serving/cache profile. An MSA pin is
+        # a capacity, so it has to hold the rows `max_msa_depth` lets through.
+        padding=PaddingConfig(tokens=512, atoms=4096, msa=8192),
         # Execution, likewise: dtype, matmul_precision, triangle_kernel,
         # attention_kernel, deterministic. "auto" is the fastest path this
         # build can run -- never a silent fallback to a slower one, and

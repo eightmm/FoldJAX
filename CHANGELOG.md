@@ -10,6 +10,42 @@ unless it says so here, in its own paragraph.
 
 ## Unreleased
 
+### Fixed
+
+- **`--padding` pads the MSA axis instead of capping the input at the profile
+  depth.** A padded run used to hand each port's own row-selection control the
+  padding profile's depth, so it read a different alignment than the same job
+  run without `--padding`: Protenix's and OpenDDE's featurizer assembly cap
+  fell from 16,384 rows to 1,024 and 1,280, Boltz-2's `max_msa_seqs` from
+  16,384 to 1,024, AlphaFold 3's featurizer cropped its 16,384-row pool to
+  1,024, and the shared managed `apply_sampling` injected the same depth for
+  all six models. A 2,096-token Protenix job padded to 2,304 measured a 19%
+  lower peak and coordinates 0.2-0.3 A away from its exact-shape run -- the
+  cap, not the padding. An MSA cap of 4,096 had already failed Protenix's
+  seed-block accuracy admission, so 1,024 was a scientific change arriving
+  through a shape option.
+
+  The MSA axis now resolves like the token and atom axes: the smallest standard
+  bucket (1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192, 16384) that
+  holds every stored row, with the profile's 1,024-row floor (1,280 for
+  OpenDDE) only widening a shallower alignment so one token band still shares
+  an executable. A 3,000-row alignment pads to 4,096 rows with every row kept
+  and the padded suffix masked. `padding.msa` / `--pad-msa` is a capacity for
+  that axis rather than a cap: below the stored rows it is refused, and the
+  message names `--max-msa-depth`, which remains the one option that changes
+  how many rows a model reads -- padded or not.
+
+  OpenFold3 and ESMFold2 were already shape-only, because their per-cycle
+  selection runs before padding in either route, and OpenDDE's released
+  1,280-row valid-first sampling on every trunk pass is likewise its own
+  policy, unchanged: what changed there is that `--pad-msa` no longer
+  resamples it. Two consequences to expect: a padded run on a deep alignment
+  now costs what the unpadded run costs, because the cap was what bought the
+  memory, and the memory admission check now sees the real row count, so a
+  job it previously admitted at 1,024 rows can be refused at its real depth.
+  `ExecutionConfig(padding=...)` no longer requires
+  `ModelConfig(msa_depth=...)`, since padding no longer chooses a depth.
+
 ### Changed
 
 - **The token padding grid steps by 256, so a padded run never pays more than

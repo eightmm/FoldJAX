@@ -246,7 +246,11 @@ def _add_predict_arguments(
     shapes.add_argument(
         "--pad-msa",
         type=int,
-        help="pin the padded MSA row count after max-MSA-depth is applied",
+        help=(
+            "pin the padded MSA row capacity; it pads the rows the model "
+            "already reads and is refused below them, so --max-msa-depth "
+            "stays the only way to read fewer"
+        ),
     )
     shapes.add_argument(
         "--pad-templates",

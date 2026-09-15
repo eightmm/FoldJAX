@@ -48,21 +48,24 @@ def test_all_models_advertise_real_input_stage_and_resolve_all(tmp_path, model):
         handle.plan(tmp_path / "job.json", stage="inputs", outputs="all,pair")
 
 
-def test_model_padding_requires_explicit_scientific_depth(tmp_path):
-    with pytest.raises(ValueError, match="explicit.*msa_depth"):
-        get_model("boltz2", execution=ExecutionConfig(padding=True))
-    handle = get_model(
+def test_model_padding_selects_shapes_without_choosing_an_msa_depth(tmp_path):
+    """Padding is an execution choice and must not imply a scientific one."""
+
+    handle = get_model("boltz2", execution=ExecutionConfig(padding=True))
+    assert handle.config.msa_depth is None
+    assert handle.execution.padding is not None
+    # The scientific depth remains available, and remains a separate choice.
+    depth = get_model(
         "boltz2",
         config=ModelConfig(msa_depth=1024),
         execution=ExecutionConfig(padding=True),
     )
-    assert handle.config.msa_depth == 1024
-    assert handle.execution.padding is not None
-    # Preserve the older interface's serving preset.
+    assert depth.config.msa_depth == 1024
+    # The request-level switch spells no depth either.
     request = PredictionRequest(
         model="boltz2", input=tmp_path / "job.json", padding=True
     )
-    assert get_backend("boltz2").apply_sampling(request)["max_msa_depth"] == 1024
+    assert "max_msa_depth" not in get_backend("boltz2").apply_sampling(request)
 
 
 @pytest.mark.parametrize("field", ["msa_depth", "samples", "steps", "trunk_passes"])

@@ -241,8 +241,11 @@ _PADDING_AXES = (
 class PaddingConfig:
     """Optional shape normalization for reusable JAX executables.
 
-    ``None`` targets use a token bucket with derived atom/LM capacity and
-    fixed native MSA/template limits. Explicit axis targets override this policy.
+    ``None`` targets use a token bucket with derived atom/LM capacity, the
+    smallest MSA bucket holding the rows the model reads, and fixed native
+    template limits. Explicit axis targets override this policy; ``msa`` is a
+    capacity for that axis rather than a row cap, so a target below the stored
+    alignment is refused instead of truncating the input.
     Setting an integer pins that axis to an exact padded size, which is useful
     for warming one known serving profile. The default ``overflow='error'``
     refuses inputs beyond the standard grid before an unplanned large compile;

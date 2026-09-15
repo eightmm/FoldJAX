@@ -1247,7 +1247,7 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
             return None
 
     def fake_featurize(
-        fold_input, *, buckets, overflow, fixed_target, msa_crop_size
+        fold_input, *, buckets, overflow, fixed_target, msa_crop_size=None
     ):
         seen["preflight"] = (buckets, overflow, fixed_target)
         seen["msa_crop_size"] = msa_crop_size
@@ -1305,7 +1305,9 @@ def test_alphafold3_adapter_routes_padding_through_native_inference(
     result = AlphaFold3Backend().predict(request)
 
     assert seen["preflight"] == ((512,), "exact", True)
-    assert seen["msa_crop_size"] == 1024
+    # A padded run leaves the featurizer's MSA pool where the unpadded one
+    # has it: upstream's own crop, not the padding profile's depth.
+    assert seen["msa_crop_size"] is None
     assert bool(seen["model_batch"][_PREFIX_STABLE_NOISE_FEATURE])
     assert _PREFIX_STABLE_NOISE_FEATURE not in seen["extraction_batch"]
     assert result.shape_profile == plan_summary

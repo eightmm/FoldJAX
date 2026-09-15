@@ -141,23 +141,27 @@ shape profile from it. The token grid steps by 256 up to 8,192, so a padded
 run never pays more than 256 tokens of extra work over its exact shape, and a
 deployment can bake one profile per bucket ahead of time (matching the profile
 is necessary for reuse, not sufficient -- see below). Atom storage is
-`24 * tokens`, rounded up to a multiple of 32. MSA capacity is fixed by the backend's active inference limit rather
-than the observed alignment depth; template storage retains the native depth.
+`24 * tokens`, rounded up to a multiple of 32. The MSA axis is padded up to
+the smallest standard bucket that holds the rows the model reads, never down:
+template storage retains the native depth.
 OpenDDE structural tokens use `2 * tokens`. ESMFold2 language-model storage
 reserves `3 * tokens` to include BOS/EOS for every possible protein chain;
 Protenix ESM/ISM uses `min(tokens, provider maximum length)` so its terminal
 native sequence length remains supported even when the token bucket is larger.
 AlphaFold 3 retains its native token-derived atom and fixed-MSA profile.
 
-With the common padded defaults, OpenDDE uses 1,280 MSA rows and the other
-five models use 1,024. AF3's input featurizer and trunk both use 1,024; OpenDDE
-selects 1,280 rows before
-padding sampled cycles. Deeper alignments use the existing native crop/selection
-rules, and shallow inputs receive masked rows. This changes the inference input
-relative to a deeper native MSA. Explicit `--max-msa-depth` and `--pad-msa`
-overrides retain backend-specific semantics; padding OFF retains native defaults.
-MSA capacity stays at the model's fixed default unless explicitly overridden;
-`cache warm` compiles only the requested profile, not all MSA sizes.
+**Padding never changes which alignment rows a model reads.** Each model keeps
+its own depth policy with `--padding` on exactly as with it off -- Protenix and
+OpenDDE their featurizer's 16,384-row assembly cap, Boltz-2 its
+`const.max_msa_seqs`, OpenDDE its released 1,280-row per-cycle sampling,
+OpenFold3 its 1,024 rows per streamed cycle, ESMFold2 and AF3 their released
+selection -- and the MSA axis is then padded up to the smallest bucket (1, 64,
+128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192, 16384) that holds those rows.
+A profile floor of 1,024 rows (1,280 for OpenDDE) only widens a shallower
+alignment so jobs in one token band still share an executable. `--max-msa-depth`
+remains the one option that selects fewer rows, and `--pad-msa` is a capacity
+for the axis: a target below the stored rows is refused rather than truncating
+the input. `cache warm` compiles only the requested profile, not all MSA sizes.
 Protenix padding continues to require its full-depth MSA path. ESMFold2
 variants without active MSA selection require an explicit `--pad-msa` for inputs
 above the automatic capacity; padding does not silently sample those inputs.
@@ -1271,8 +1275,9 @@ Selects the model's native MSA depth control. Candidate assembly, profile
 statistics and per-cycle subsampling differ by model, so this is not a guarantee
 of identical rows or an exact common tensor size. See the
 [model-specific semantics](model-interface.md#msa-selection-and-execution-capacity).
-The legacy request/CLI padding presets supply a serving depth when omitted;
-the new model handle requires an explicit depth when enabling padding.
+This is the only option that changes how many rows reach the model: `--padding`
+pads that axis up to a bucket and leaves the depth alone, whether it is spelled
+here or left at the model's default.
 
 ### `--option msa_deletions={released,restored}` (Boltz-2)
 

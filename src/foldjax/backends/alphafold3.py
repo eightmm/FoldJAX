@@ -36,7 +36,7 @@ from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._compile_policy import compiler_options
-from foldjax.padding import MSA_PROFILE_DEPTH, TOKEN_BUCKETS, PaddingPlan
+from foldjax.padding import TOKEN_BUCKETS, PaddingPlan
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -510,7 +510,7 @@ def _featurize_padded_structure(
     buckets: tuple[int, ...],
     overflow: str,
     fixed_target: bool = False,
-    msa_crop_size: int = MSA_PROFILE_DEPTH,
+    msa_crop_size: int | None = None,
 ) -> tuple[Any, PaddingPlan]:
     """Featurize one job and validate its resolved bucket without inference.
 
@@ -525,12 +525,18 @@ def _featurize_padded_structure(
 
     print(f"Featurising data with {len(fold_input.rng_seeds)} seed(s)...")
     started = time.time()
+    # The crop is omitted rather than derived from the padding profile: it is
+    # the pool the model's own `num_msa` subsamples from, its axis is already
+    # one fixed width whatever the pool, and naming the profile depth here
+    # shrank that pool from upstream's 16,384 rows to 1,024 for padded runs
+    # alone.
+    crop = {} if msa_crop_size is None else {"msa_crop_size": msa_crop_size}
     examples = featurisation.featurise_input(
         fold_input=fold_input,
         buckets=buckets,
         ccd=chemical_components.Ccd(user_ccd=fold_input.user_ccd),
         verbose=True,
-        msa_crop_size=msa_crop_size,
+        **crop,
     )
     plans: list[PaddingPlan] = []
     for example in examples:
@@ -562,7 +568,7 @@ def _prepare_padded_jobs(
     buckets: tuple[int, ...],
     overflow: str,
     fixed_target: bool = False,
-    msa_crop_size: int = MSA_PROFILE_DEPTH,
+    msa_crop_size: int | None = None,
 ) -> tuple[tuple[Any, str, Path, Any, PaddingPlan], ...]:
     """Resolve every neutral job before the first model invocation."""
 
@@ -1253,7 +1259,6 @@ class AlphaFold3Backend(Backend):
                     buckets=buckets,
                     overflow=request.padding.overflow,
                     fixed_target=request.padding.tokens is not None,
-                    msa_crop_size=int(identity_max_msa_depth),
                 )
             else:
                 run_jobs = tuple(

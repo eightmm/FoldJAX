@@ -107,6 +107,37 @@ def test_opendde_msa_padding_preserves_sampled_prefix_and_masks_suffix() -> None
         np.testing.assert_array_equal(after["msa_mask"][5:], 0)
 
 
+def test_opendde_padding_keeps_the_released_cycle_depth_and_pads_above_it() -> None:
+    """Padding must not move OpenDDE's own per-cycle selection.
+
+    Upstream's MSA module subsamples 1,280 valid-first rows on every trunk
+    pass, and the port does the same in both routes -- the unpadded one takes
+    the sampler's default.  `--pad-msa` is a capacity for the resulting axis,
+    so it can widen the masked storage but never resample: a padded run that
+    took `padding.msa` as its sampling depth read a different alignment than
+    the same job run unpadded.
+    """
+
+    deep = _msa_features(2372, tokens=3)
+    unpadded = sample_opendde_msa_cycle_features(deep, num_recycles=2, seed=17)
+    padded_route = sample_opendde_msa_cycle_features(deep, num_recycles=2, seed=17)
+    for one, other in zip(unpadded, padded_route, strict=True):
+        np.testing.assert_array_equal(one["msa"], other["msa"])
+    assert unpadded[0]["msa"].shape == (1280, 3)
+
+    _cycles, plan = pad_opendde_msa_cycle_features(padded_route, PaddingConfig())
+    assert plan.storage == {"msa": 1280}
+    assert plan.target == {"msa": 1280}
+
+    wider, wide_plan = pad_opendde_msa_cycle_features(
+        padded_route, PaddingConfig(msa=2048)
+    )
+    assert wide_plan.target == {"msa": 2048}
+    for cycle, padded in zip(padded_route, wider, strict=True):
+        np.testing.assert_array_equal(padded["msa"][:1280], cycle["msa"])
+        np.testing.assert_array_equal(padded["msa_mask"][1280:], 0)
+
+
 def test_opendde_msa_padding_reports_real_storage_and_target_depths() -> None:
     cycle = _sampled_cycles(4, cycles=1)[0]
     cycle = {name: value.copy() for name, value in cycle.items()}
@@ -157,7 +188,7 @@ def test_opendde_padded_msa_rows_cannot_change_the_pair_update() -> None:
 
 def test_opendde_msa_padding_refuses_shrink_nonprefix_and_capacity_overflow() -> None:
     sampled = _sampled_cycles(3, cycles=1)
-    with pytest.raises(ValueError, match="smaller than the input size 3"):
+    with pytest.raises(ValueError, match="smaller than the 3 stored MSA rows"):
         pad_opendde_msa_cycle_features(sampled, PaddingConfig(msa=2))
 
     broken = {name: value.copy() for name, value in sampled[0].items()}
@@ -171,7 +202,7 @@ def test_opendde_msa_padding_refuses_shrink_nonprefix_and_capacity_overflow() ->
         seed=17,
         msa_depth=20000,
     )
-    with pytest.raises(ValueError, match="padding.msa=1280 is smaller"):
+    with pytest.raises(ValueError, match="exceeds the largest standard bucket"):
         pad_opendde_msa_cycle_features(over_grid, PaddingConfig())
     _padded, plan = pad_opendde_msa_cycle_features(
         over_grid,

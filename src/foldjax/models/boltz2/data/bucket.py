@@ -33,6 +33,7 @@ from foldjax.padding import (
     MSA_PROFILE_DEPTH,
     PaddingPlan,
     resolve_axis,
+    resolve_msa_axis,
     resolve_token_axis,
 )
 from foldjax.schema import PaddingConfig
@@ -358,18 +359,26 @@ def resolve_padding_plan(
     token_target = resolve_axis(
         actual["tokens"], config, "tokens", minimum=storage["tokens"]
     )
-    target = {"tokens": token_target}
-    for axis in ("atoms", "msa"):
-        target[axis] = resolve_token_axis(
-            actual[axis],
+    target = {
+        "tokens": token_target,
+        "atoms": resolve_token_axis(
+            actual["atoms"],
             config,
-            axis,
+            "atoms",
             token_target=token_target,
-            minimum=storage[axis],
-            fixed_size=(MSA_PROFILE_DEPTH if max_msa_depth is None else max_msa_depth)
-            if axis == "msa"
-            else None,
-        )
+            minimum=storage["atoms"],
+        ),
+        # `max_msa_depth` (default `const.max_msa_seqs`) has already chosen the
+        # rows; this axis is padded up to the bucket that holds them, with the
+        # profile depth only as a floor for shallow alignments.
+        "msa": resolve_msa_axis(
+            actual["msa"],
+            config,
+            minimum=storage["msa"],
+            profile_depth=MSA_PROFILE_DEPTH,
+            input_depth=max_msa_depth,
+        ),
+    }
     if target["atoms"] % 32:
         raise ValueError(
             "padding.atoms must be a multiple of 32 for Boltz2 atom windows"

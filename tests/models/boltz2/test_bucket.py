@@ -228,5 +228,38 @@ def test_token_profile_reuses_atom_and_msa_shapes_for_different_inputs():
     assert first.target == second.target == {"tokens": 256, "atoms": 6144, "msa": 1024}
     capped = resolve_padding_plan(_features(msa=2), PaddingConfig(), max_msa_depth=128)
     assert capped.target["msa"] == 128
-    with pytest.raises(ValueError, match="smaller than"):
+    with pytest.raises(ValueError, match="deeper than max_msa_depth=128"):
         resolve_padding_plan(_features(msa=129), PaddingConfig(), max_msa_depth=128)
+
+
+def test_token_profile_pads_a_deep_msa_up_instead_of_capping_the_input():
+    """The featurizer's depth decides the rows; padding only buckets them.
+
+    A 3,000-row alignment used to reach the model as 1,024 rows because the
+    padded profile's depth was also passed to the featurizer as a cap.  The
+    axis now resolves like tokens and atoms: the smallest bucket that holds
+    every stored row.
+    """
+
+    plan = resolve_padding_plan(_features(msa=3000), PaddingConfig())
+    assert plan.actual["msa"] == plan.storage["msa"] == 3000
+    assert plan.target["msa"] == 4096
+
+    padded, _ = pad_feats(
+        _features(msa=3000), plan.target["tokens"], plan.target["atoms"],
+        target_msa=plan.target["msa"],
+    )
+    assert padded["msa"].shape[1] == 4096
+    np.testing.assert_array_equal(
+        np.asarray(padded["msa"][:, :3000, :3]),
+        np.asarray(_features(msa=3000)["msa"]),
+    )
+    np.testing.assert_array_equal(np.asarray(padded["msa_mask"][:, 3000:]), 0)
+
+    # An explicit target is a target, not a cap.
+    with pytest.raises(ValueError, match="never truncates"):
+        resolve_padding_plan(_features(msa=3000), PaddingConfig(msa=2048))
+    assert (
+        resolve_padding_plan(_features(msa=3000), PaddingConfig(msa=8192)).target["msa"]
+        == 8192
+    )

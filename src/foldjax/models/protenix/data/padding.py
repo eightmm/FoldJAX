@@ -23,6 +23,7 @@ from foldjax.padding import (
     MSA_PROFILE_DEPTH,
     PaddingPlan,
     resolve_axis,
+    resolve_msa_axis,
     resolve_token_axis,
 )
 from foldjax.schema import PaddingConfig
@@ -81,7 +82,7 @@ def pad_protenix_features(
     *,
     n_queries: int,
     n_keys: int,
-    msa_depth: int = MSA_PROFILE_DEPTH,
+    max_msa_depth: int | None = None,
 ) -> tuple[dict[str, Any], PaddingPlan]:
     """Pad one generated, unbatched Protenix feature dictionary.
 
@@ -198,13 +199,15 @@ def pad_protenix_features(
     target_atom = resolve_token_axis(
         actual_atom, config, "atoms", token_target=target_token, minimum=storage_atom
     )
-    target_msa = resolve_token_axis(
+    # The MSA axis is padded up, never cropped: `--max-msa-depth` has already
+    # chosen how deep this alignment is, and the profile floor only widens a
+    # shallow one so a token band can share one executable.
+    target_msa = resolve_msa_axis(
         actual_msa,
         config,
-        "msa",
-        token_target=target_token,
         minimum=storage_msa,
-        fixed_size=msa_depth,
+        profile_depth=MSA_PROFILE_DEPTH,
+        input_depth=max_msa_depth,
     )
     target_template = resolve_axis(
         actual_template, config, "templates", minimum=storage_template

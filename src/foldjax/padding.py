@@ -262,6 +262,72 @@ def resolve_axis(
     return _cp_aligned_target(floor, config, axis)
 
 
+def resolve_msa_axis(
+    actual: int,
+    config: PaddingConfig,
+    *,
+    minimum: int | None = None,
+    profile_depth: int = MSA_PROFILE_DEPTH,
+    input_depth: int | None = None,
+    buckets: tuple[int, ...] = MSA_BUCKETS,
+) -> int:
+    """Pad the MSA axis up, and never below the rows the model would read.
+
+    The MSA axis is resolved like the token and atom axes: the target is the
+    smallest bucket that holds every stored row.  ``profile_depth`` is the
+    profile's preferred floor -- a padded run pads *up* to at least that depth
+    so shallow alignments in one token band still share an executable -- and
+    it can never shorten a deeper alignment.  ``input_depth`` is the active
+    native depth control (``--max-msa-depth``), which has already run when the
+    rows counted here were materialised; it bounds the padded capacity so a
+    caller who asked for fewer rows does not get a wider masked axis, and a
+    storage deeper than it is a contradiction rather than something to crop.
+
+    ``padding.msa`` is a target, not a cap: a pin below the stored rows is
+    refused instead of truncating the input, because which rows a model reads
+    is a scientific choice and ``--max-msa-depth`` is the option that makes it.
+    """
+
+    if actual < 0:
+        raise ValueError("actual msa must be non-negative")
+    if profile_depth < 1:
+        raise ValueError("profile_depth must be positive")
+    floor = max(actual, 0 if minimum is None else minimum)
+    if input_depth is not None:
+        if input_depth < 1:
+            raise ValueError("input_depth must be positive")
+        if floor > input_depth:
+            raise ValueError(
+                f"the stored MSA depth {floor} is deeper than "
+                f"max_msa_depth={input_depth}, which selects rows before "
+                "padding resolves its capacity"
+            )
+    requested = config.msa
+    if requested is not None:
+        if requested < floor:
+            raise ValueError(
+                f"padding.msa={requested} is smaller than the {floor} stored "
+                "MSA rows; padding pads this axis and never truncates it, so "
+                "use --max-msa-depth to read fewer rows"
+            )
+        return requested
+    preferred = (
+        profile_depth if input_depth is None else min(profile_depth, input_depth)
+    )
+    start = max(floor, preferred)
+    target = next((candidate for candidate in buckets if candidate >= start), None)
+    if target is None:
+        if config.overflow == "error":
+            raise ValueError(
+                f"input msa size {floor} exceeds the largest standard bucket "
+                f"{buckets[-1] if buckets else 0}; pin padding.msa or use "
+                "overflow='exact'"
+            )
+        target = floor
+    # The mesh never splits this axis, so no alignment rounding here.
+    return target if input_depth is None else max(floor, min(target, input_depth))
+
+
 def resolve_token_axis(
     actual: int,
     config: PaddingConfig,

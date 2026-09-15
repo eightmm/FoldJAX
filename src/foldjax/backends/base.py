@@ -93,16 +93,12 @@ class Backend(ABC):
                     f"{self.name}; pass one of them"
                 )
             options[native] = value
-        if request.padding is not None and "max_msa_depth" in self.sampling_options:
-            from foldjax.padding import MSA_PROFILE_DEPTH, OPENDDE_MSA_PROFILE_DEPTH
-
-            native = self.sampling_options["max_msa_depth"]
-            if options.get(native) is None:
-                options[native] = request.padding.msa or (
-                    OPENDDE_MSA_PROFILE_DEPTH
-                    if self.name == "opendde"
-                    else MSA_PROFILE_DEPTH
-                )
+        # Padding deliberately spells no MSA depth. It selects compiled shapes,
+        # and the depth selects which alignment rows the model reads: deriving
+        # one from the other is how a padded run came to cap a 16,384-row
+        # alignment at the profile's 1,024-row floor. Each port keeps its own
+        # default depth, padded or not, and `max_msa_depth` remains the one
+        # option that changes it.
         return options
 
     def matmul_precision(

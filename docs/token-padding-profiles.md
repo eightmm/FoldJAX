@@ -2,34 +2,36 @@
 
 With `--padding`, the token bucket determines automatic storage capacities.
 Padding remains opt-in, and explicit axis targets take precedence. This policy
-reduces shape variants without changing model weights. The padded MSA input
-limit is 1280 for OpenDDE and 1024 for other models; explicit sampling
-overrides retain their native semantics.
+reduces shape variants without changing model weights or model inputs: the MSA
+axis is padded *up* to a bucket, and no padded run reads fewer alignment rows
+than the same job run unpadded.
 
 | Backend | Atoms | MSA | Other capacity |
 | --- | --- | --- | --- |
-| AlphaFold 3 | native 24T, 32-aligned | 1024 input / 1024 trunk | native templates |
-| Boltz2 | 24T, 32-aligned | 1024 | existing supported axes |
-| Protenix | 24T, 32-aligned | 1024 | templates 4; LM min(T, provider limit) |
-| OpenDDE | 24T, 32-aligned | 1280 sampled cycles | structural tokens 2T |
+| AlphaFold 3 | native 24T, 32-aligned | native 16384-row pool / released trunk crop | native templates |
+| Boltz2 | 24T, 32-aligned | bucket >= stored rows, floor 1024 | existing supported axes |
+| Protenix | 24T, 32-aligned | bucket >= stored rows, floor 1024 | templates 4; LM min(T, provider limit) |
+| OpenDDE | 24T, 32-aligned | bucket >= the released 1280-row cycle sample | structural tokens 2T |
 | OpenFold3 | 24T, 32-aligned | 1024 per streamed cycle | templates 4 |
 | ESMFold2 | 24T, 32-aligned | 1024 | LM 3T for per-chain BOS/EOS |
 
-T is the selected token bucket, not the real sequence length. The common padded
-request defaults its MSA limit to 1280 for OpenDDE and 1024 otherwise.
-Explicit `max_msa_depth` options retain
-native semantics; an explicit MSA padding target supplies the default input cap
-when no separate cap was requested. OpenDDE selects its requested capacity
-before padding sampled cycles. AF3's input
-featurizer is also configured for 1024, not just its trunk selection.
+T is the selected token bucket, not the real sequence length. The MSA buckets
+are 1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192 and 16384, and the
+1024-row floor (1280 for OpenDDE) only widens a shallower alignment so jobs in
+one token band still share an executable. A 3,000-row alignment therefore pads
+to 4,096 rows with every row kept and the suffix masked. `max_msa_depth` is the
+one option that selects fewer rows; `padding.msa` / `--pad-msa` is a capacity
+for the axis and a target below the stored rows is refused, naming
+`--max-msa-depth` as the option that changes the input.
 
-Native MSA selection/cropping still precedes padding where applicable. Shallow
+Native MSA selection/cropping still precedes padding where applicable: OpenDDE
+takes its released 1,280-row valid-first cycle sample -- the same call the
+unpadded route makes -- and OpenFold3 its 1,024 rows per streamed cycle, and
+padding then pads what they selected. Shallow
 MSAs are masked to the chosen storage size. Protenix retains its existing
 full-depth MSA requirement. ESMFold2 variants without an active row-selection
 cap reject oversized MSA storage unless explicitly pinned; padding never invents
-a new sampling route. Padding OFF retains the former native defaults.
-Reducing source MSA depth changes inference inputs; this is an explicitly
-requested policy change, not a claim of prediction equivalence to deeper MSAs.
+a new sampling route. Padding OFF is unchanged.
 
 ## OpenFold3 MSA execution
 
@@ -137,6 +139,32 @@ storage overflow, masks/cropping, native MSA handling, and random-prefix behavio
 Real-weight GPU parity, cache hits, memory, and speed under the new policy have
 not been measured. Masked slots can still consume memory and computation.
 
+## The MSA axis pads up (2026-09-15)
+
+`--padding` used to pass the profile's depth to each port's own row-selection
+control, so a padded run read a different alignment than the unpadded one:
+Protenix and OpenDDE capped their featurizer's 16,384-row assembly at 1,024 and
+1,280 rows, Boltz-2's `max_msa_seqs` fell from 16,384 to 1,024, AlphaFold 3's
+featurizer cropped its 16,384-row pool to 1,024, and the shared managed
+`apply_sampling` injected the same depth for all six models. A 2,096-token
+Protenix job padded to 2,304 measured a 19% lower peak and coordinates
+0.2-0.3 A from its exact run -- all of it the cap, none of it the padding. An
+MSA cap of 4,096 on Protenix had already failed the seed-block accuracy
+admission, so a silent 1,024 is a scientific change wearing a shape option's
+clothes.
+
+The axis now resolves like tokens and atoms, in one shared
+`padding.resolve_msa_axis`: the smallest MSA bucket that holds the stored rows,
+with the profile depth as a floor and an explicit `padding.msa` as a target
+that is refused below the storage. Consequences worth stating: a padded run on
+a deep alignment now costs what the unpadded one costs (the cap was buying the
+memory), the memory admission check sees the real row count, and
+`ExecutionConfig(padding=...)` no longer requires `ModelConfig(msa_depth=...)`.
+OpenFold3 and ESMFold2 were already shape-only -- their per-cycle selection
+runs before padding in both routes -- and OpenDDE's released 1,280-row
+per-cycle sampling is likewise its own policy, unchanged here; what changed
+there is that `--pad-msa` no longer resamples it.
+
 ## Initial token-policy validation (2026-09-08, before MSA unification)
 
 - Full CPU suite: `JAX_PLATFORMS=cpu uv run pytest -q` — 5518 passed,
@@ -178,14 +206,16 @@ MSA crop size and its vendored modification is registered in provenance.
   counts above apply to the preceding token-padding change only.
 - No GPU prediction, cache-hit, or prediction-parity measurement was run.
 
-## Model-specific fixed MSA policy
+## Model-specific MSA policy
 
-OpenDDE uses 1280 rows; all other models retain 1024. MSA capacity no longer
-tracks an input-depth bucket. Shallower inputs use the same masked capacity;
-explicit `--pad-msa` selects another capacity. Native `--max-msa-depth` keeps
-its existing source-selection semantics. Default and explicitly equal limits
-share the same cache profile. Each requested profile is compiled on demand;
-`cache warm` executes only the requested profile, not a sweep of MSA depths.
+The profile floor is 1,280 rows for OpenDDE and 1,024 for the other models, and
+it is a floor rather than a capacity: above it the axis tracks the input-depth
+bucket, so a deeper alignment pads to the bucket that holds it instead of being
+cropped. Shallower inputs use the masked floor; explicit `--pad-msa` selects a
+wider capacity. Native `--max-msa-depth` keeps its existing source-selection
+semantics and is the only way to read fewer rows. Each requested profile is
+compiled on demand; `cache warm` executes only the requested profile, not a
+sweep of MSA depths.
 
 ```bash
 uv run foldjax cache warm --model opendde --input job.yaml --padding

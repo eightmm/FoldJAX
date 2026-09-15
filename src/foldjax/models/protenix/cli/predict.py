@@ -26,18 +26,20 @@ from foldjax.models.protenix.data.compact_categories import (
     compact_ref_atom_category_storage,
     drop_dense_categories_from_writer_snapshot,
 )
-from foldjax.padding import MSA_PROFILE_DEPTH
-from foldjax.schema import PaddingConfig
 
 # Private backend capability: defer request-scoped reuse until after this CLI
 # has parsed argv, selected its platform and materialised ESM conditioning.
 PREPARED_PARAMS_LOADER_API = True
 
+#: The featurizer's own paired/unpaired assembly cap
+#: (`data/featurize_json.py`), resolved here rather than left unset so the
+#: compile profile names the depth the run used. Padding does not appear in
+#: this decision: it pads the MSA axis up to a bucket and never selects rows.
+_DEFAULT_MSA_DEPTH = 16384
 
-def _resolve_msa_depth(value: int | None, padding: PaddingConfig | None) -> int:
-    if value is not None:
-        return value
-    return (padding.msa or MSA_PROFILE_DEPTH) if padding is not None else 16384
+
+def _resolve_msa_depth(value: int | None) -> int:
+    return _DEFAULT_MSA_DEPTH if value is None else value
 
 
 def _load_prepared_params(path: Path, trunk_dtype: str) -> Any:
@@ -542,7 +544,7 @@ def _run(
                 "sampling cannot select padded rows"
             )
 
-    args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth, padding_config)
+    args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth)
 
     guidance_config = None
     if args.guidance_config is not None:
@@ -956,7 +958,7 @@ def _run(
                     padding_config,
                     n_queries=args.n_queries,
                     n_keys=args.n_keys,
-                    msa_depth=args.max_msa_depth,
+                    max_msa_depth=args.max_msa_depth,
                 )
                 language_model_profile = job.get("language_model_profile")
                 if language_model_profile is not None:

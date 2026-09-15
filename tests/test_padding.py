@@ -303,26 +303,36 @@ def test_token_profile_preserves_pins_and_rejects_storage_overflow():
 @pytest.mark.parametrize(
     "model", ["alphafold3", "boltz2", "protenix", "opendde", "openfold3", "esmfold2"]
 )
-def test_padded_backends_resolve_model_msa_depth_and_preserve_overrides(
-    model, tmp_path
-):
+def test_padding_never_spells_an_msa_depth_and_preserves_overrides(model, tmp_path):
+    """A shape switch must not select which alignment rows a model reads.
+
+    Deriving the depth from the padding profile is how ``--padding`` came to
+    cap a 16,384-row Protenix alignment at 1,024 rows -- measured as a 19%
+    lower peak and coordinates 0.2-0.3 A away from the exact run, none of it
+    from padding.  Padding now pads that axis up instead, and the depth stays
+    where the port's own default and ``max_msa_depth`` put it.
+    """
+
     from foldjax.registry import get_backend
 
     path = _input(tmp_path)
     backend = get_backend(model)
     request = PredictionRequest(model=model, input=path, padding=True)
-    default_depth = 1280 if model == "opendde" else 1024
-    assert backend.apply_sampling(request)["max_msa_depth"] == default_depth
-    explicit_default = PredictionRequest(
-        model=model, input=path, padding=True, max_msa_depth=default_depth
-    )
-    assert backend.cache_profile(request) == backend.cache_profile(explicit_default)
+    assert "max_msa_depth" not in backend.apply_sampling(request)
+    # An MSA padding target is a capacity for that axis, not a row selection.
     pinned = PredictionRequest(model=model, input=path, padding=PaddingConfig(msa=64))
-    assert backend.apply_sampling(pinned)["max_msa_depth"] == 64
+    assert "max_msa_depth" not in backend.apply_sampling(pinned)
+    # ... so an MSA target names the same program the token axis does, with
+    # the concrete padded shapes joining the cache namespace at run time.
+    assert backend.cache_profile(pinned) == backend.cache_profile(
+        PredictionRequest(model=model, input=path, padding=PaddingConfig(tokens=512))
+    )
     overridden = PredictionRequest(
         model=model, input=path, padding=True, max_msa_depth=128
     )
     assert backend.apply_sampling(overridden)["max_msa_depth"] == 128
+    # A named depth is a different input, and therefore a different program.
+    assert backend.cache_profile(overridden) != backend.cache_profile(request)
     native = PredictionRequest(
         model=model,
         input=path,
@@ -332,6 +342,62 @@ def test_padded_backends_resolve_model_msa_depth_and_preserve_overrides(
     assert backend.apply_sampling(native)["max_msa_depth"] == 128
     unpadded = PredictionRequest(model=model, input=path)
     assert "max_msa_depth" not in backend.apply_sampling(unpadded)
+
+
+def test_msa_axis_pads_up_to_a_bucket_and_refuses_a_target_below_storage():
+    """The MSA axis follows the token and atom rule: the bucket that fits."""
+
+    from foldjax.padding import (
+        MSA_BUCKETS,
+        MSA_PROFILE_DEPTH,
+        OPENDDE_MSA_PROFILE_DEPTH,
+        cp_aligned_padding,
+        resolve_msa_axis,
+    )
+
+    automatic = PaddingConfig()
+    # Deeper than the profile floor: the next bucket up, never a crop.
+    assert resolve_msa_axis(3000, automatic, minimum=3000) == 4096
+    assert resolve_msa_axis(16384, automatic, minimum=16384) == 16384
+    # Shallower: the profile's preferred floor, so one token band shares one
+    # executable.  OpenDDE's floor is its released per-cycle depth.
+    assert resolve_msa_axis(300, automatic, minimum=300) == MSA_PROFILE_DEPTH
+    assert (
+        resolve_msa_axis(
+            300, automatic, minimum=300, profile_depth=OPENDDE_MSA_PROFILE_DEPTH
+        )
+        == OPENDDE_MSA_PROFILE_DEPTH
+    )
+    assert (
+        resolve_msa_axis(
+            2000, automatic, minimum=2000, profile_depth=OPENDDE_MSA_PROFILE_DEPTH
+        )
+        == 2048
+    )
+    # An active input cap bounds the masked capacity but never the rows.
+    assert resolve_msa_axis(2, automatic, minimum=2, input_depth=128) == 128
+    assert resolve_msa_axis(5, automatic, minimum=5, input_depth=8) == 8
+    with pytest.raises(ValueError, match="deeper than max_msa_depth=128"):
+        resolve_msa_axis(129, automatic, minimum=129, input_depth=128)
+    # A pin is a target.  Below the stored rows it is refused, and the message
+    # names the option that does change the input.
+    assert resolve_msa_axis(300, PaddingConfig(msa=2048), minimum=300) == 2048
+    with pytest.raises(ValueError, match=r"never truncates.*--max-msa-depth"):
+        resolve_msa_axis(3000, PaddingConfig(msa=2048), minimum=3000)
+    # Above the grid the overflow policy decides, as on every other axis.
+    with pytest.raises(ValueError, match="exceeds the largest standard bucket"):
+        resolve_msa_axis(MSA_BUCKETS[-1] + 1, automatic, minimum=MSA_BUCKETS[-1] + 1)
+    assert (
+        resolve_msa_axis(20000, PaddingConfig(overflow="exact"), minimum=20000) == 20000
+    )
+    # The mesh never splits this axis, so alignment must not inflate it.
+    for devices in (2, 3, 4):
+        assert (
+            resolve_msa_axis(
+                300, cp_aligned_padding(automatic, cp_devices=devices), minimum=300
+            )
+            == MSA_PROFILE_DEPTH
+        )
 
 
 def test_token_grid_reaches_past_one_card_and_still_refuses_above_it() -> None:
@@ -570,6 +636,7 @@ def test_a_single_device_resolves_the_profile_every_port_had_before(
         OPENDDE_MSA_PROFILE_DEPTH,
         cp_aligned_padding,
         resolve_axis,
+        resolve_msa_axis,
         resolve_token_axis,
     )
     from foldjax.registry import get_backend
@@ -603,13 +670,11 @@ def test_a_single_device_resolves_the_profile_every_port_had_before(
         for axis in get_backend(model).padding_axes:
             if axis == "tokens":
                 resolved = resolve_axis(tokens, serial, axis)
-            elif axis in {"msa", "templates"}:
+            elif axis == "msa":
+                resolved = resolve_msa_axis(1, serial, profile_depth=depth)
+            elif axis == "templates":
                 resolved = resolve_token_axis(
-                    1,
-                    serial,
-                    axis,
-                    token_target=token_target,
-                    fixed_size=depth if axis == "msa" else 4,
+                    1, serial, axis, token_target=token_target, fixed_size=4
                 )
             else:
                 resolved = resolve_token_axis(

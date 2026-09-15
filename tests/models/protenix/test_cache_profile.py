@@ -76,12 +76,11 @@ def test_cache_defaults_track_native_parser_model_policy_and_cp_resolver(
         if name not in from_the_signature
     }
     assert actual["max_msa_depth"] is None
-    actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None, None)
-    from foldjax.schema import PaddingConfig
-
-    assert predict_cli._resolve_msa_depth(None, PaddingConfig()) == 1024
-    assert predict_cli._resolve_msa_depth(None, PaddingConfig(msa=64)) == 64
-    assert predict_cli._resolve_msa_depth(128, PaddingConfig()) == 128
+    actual["max_msa_depth"] = predict_cli._resolve_msa_depth(None)
+    # The featurizer's own cap, whether or not the run is padded: padding pads
+    # this axis up to a bucket and never selects rows.
+    assert predict_cli._resolve_msa_depth(None) == 16384
+    assert predict_cli._resolve_msa_depth(128) == 128
     expected_from_parser = {
         name: value
         for name, value in backend_impl._RELEASED_COMPILE_DEFAULTS.items()

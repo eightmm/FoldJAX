@@ -724,13 +724,66 @@ def test_padding_pads_exactly_the_fields_that_carry_a_template_axis() -> None:
         assert value.shape[0] == num_templates, name
 
 
+def test_msa_axis_pads_a_deep_alignment_up_instead_of_capping_it():
+    """`--full-depth-msa` decides the rows; padding only buckets them.
+
+    A padded run used to pass the profile's 1,024-row depth to the featurizer
+    as `--max-msa-depth`, so a 16,384-row job reached the model 16x shallower
+    than the same job run unpadded.  The axis now resolves like tokens and
+    atoms: the smallest bucket that holds every stored row, with every row
+    kept and the padded suffix masked.
+    """
+
+    stored = 3000
+    features = _features()
+    for name in ("msa", "has_deletion", "deletion_value"):
+        row = features[name][:1]
+        features[name] = np.repeat(row, stored, axis=0)
+    features["msa"] = (
+        np.arange(stored * 3, dtype=np.int64).reshape(stored, 3) % 31
+    )
+
+    padded, plan = pad_protenix_features(
+        features,
+        PaddingConfig(tokens=8),
+        n_queries=2,
+        n_keys=4,
+        max_msa_depth=16384,
+    )
+
+    assert plan.actual["msa"] == plan.storage["msa"] == stored
+    assert plan.target["msa"] == 4096
+    assert padded["msa"].shape == (4096, 8)
+    np.testing.assert_array_equal(padded["msa"][:stored, :3], features["msa"])
+    np.testing.assert_array_equal(padded["msa_mask"][stored:], 0)
+    np.testing.assert_array_equal(padded["msa_mask"][:stored, :3], 1)
+
+    # An explicit target is a target, not a cap.
+    with pytest.raises(ValueError, match=r"never truncates.*--max-msa-depth"):
+        pad_protenix_features(
+            features,
+            PaddingConfig(tokens=8, msa=2048),
+            n_queries=2,
+            n_keys=4,
+            max_msa_depth=16384,
+        )
+    _wide, wide_plan = pad_protenix_features(
+        features,
+        PaddingConfig(tokens=8, msa=8192),
+        n_queries=2,
+        n_keys=4,
+        max_msa_depth=16384,
+    )
+    assert wide_plan.target["msa"] == 8192
+
+
 @pytest.mark.parametrize("depth", [2, 5])
 def test_token_profile_fixes_atom_and_active_msa_capacity(depth):
     features = _features()
     for name in ("msa", "has_deletion", "deletion_value"):
         features[name] = np.repeat(features[name][:1], depth, axis=0)
     padded, plan = pad_protenix_features(
-        features, PaddingConfig(tokens=8), n_queries=2, n_keys=4, msa_depth=8
+        features, PaddingConfig(tokens=8), n_queries=2, n_keys=4, max_msa_depth=8
     )
     assert plan.target == {"tokens": 8, "atoms": 192, "msa": 8, "templates": 4}
     np.testing.assert_array_equal(padded["ref_pos"][:5], features["ref_pos"])

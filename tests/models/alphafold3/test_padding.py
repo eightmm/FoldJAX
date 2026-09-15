@@ -148,7 +148,7 @@ def test_af3_preflights_every_neutral_job_before_returning_work(
     calls = []
 
     def fake_featurize(
-        fold_input, *, buckets, overflow, fixed_target=False, msa_crop_size=1024
+        fold_input, *, buckets, overflow, fixed_target=False, msa_crop_size=None
     ):
         calls.append(fold_input)
         if fold_input == "late-overflow":
@@ -290,7 +290,11 @@ def test_af3_padded_featurizer_routes_msa_depth_to_pipeline(
     examples, plan = _featurize_padded_structure(
         fold_input, buckets=(8,), overflow="error", **kwargs
     )
-    assert config_seen[0].msa_crop_size == (1024 if msa_depth is None else msa_depth)
+    # Omitting the override keeps upstream's own 16,384-row pool: a padded run
+    # must not crop the MSA the unpadded one reads.
+    assert config_seen[0].msa_crop_size == (
+        16384 if msa_depth is None else msa_depth
+    )
     assert config_seen[0].buckets == (8,)
     assert examples == [example]
     assert plan.summary()["target"]["tokens"] == 8

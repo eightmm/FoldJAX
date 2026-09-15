@@ -7,7 +7,11 @@ from typing import Any
 
 import numpy as np
 
-from foldjax.padding import OPENDDE_MSA_PROFILE_DEPTH, PaddingPlan, resolve_token_axis
+from foldjax.padding import (
+    OPENDDE_MSA_PROFILE_DEPTH,
+    PaddingPlan,
+    resolve_msa_axis,
+)
 from foldjax.schema import PaddingConfig
 
 _MSA_VALUE_FIELDS = ("msa", "has_deletion", "deletion_value")
@@ -74,7 +78,7 @@ def sample_opendde_msa_cycle_features(
     *,
     num_recycles: int,
     seed: int,
-    msa_depth: int = 1280,
+    msa_depth: int = OPENDDE_MSA_PROFILE_DEPTH,
     gap_token: int = 31,
 ) -> tuple[dict[str, np.ndarray], ...]:
     """Build fixed-depth, valid-first MSA samples for every recycle.
@@ -231,13 +235,14 @@ def pad_opendde_msa_cycle_features(
             "OpenDDE sampled MSA token target is smaller than its storage width "
             f"{storage_tokens}: {token_target}"
         )
-    target_depth = resolve_token_axis(
+    # The sampler above has already taken the released per-cycle depth, so
+    # this axis is only ever padded up to the bucket that holds what it
+    # selected; the profile depth is a floor for a shallower alignment.
+    target_depth = resolve_msa_axis(
         actual_depth,
         config,
-        "msa",
         minimum=storage_depth,
-        token_target=token_target,
-        fixed_size=OPENDDE_MSA_PROFILE_DEPTH,
+        profile_depth=OPENDDE_MSA_PROFILE_DEPTH,
     )
     padding_rows = target_depth - storage_depth
     padding_tokens = token_target - storage_tokens

@@ -884,11 +884,9 @@ def predict(
             "or null; fused diffusion attention is not partitioned"
         )
 
-    if padding is not None and max_msa_depth is None:
-        from foldjax.padding import MSA_PROFILE_DEPTH
-
-        max_msa_depth = padding.msa or MSA_PROFILE_DEPTH
-
+    # Padding chooses shapes, not rows: the featurizer keeps its own
+    # `const.max_msa_seqs` default here whether or not this run is padded, and
+    # the padded MSA axis is a bucket above whatever depth that produced.
     feats_np, record_id, struct_dir = featurize(
         input=input,
         seq=seq,

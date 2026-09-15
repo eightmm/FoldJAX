@@ -16,7 +16,6 @@ from foldjax.models.opendde.data.compact_categories import (
 )
 from foldjax.models.protenix.chunking import ChunkPolicyName
 from foldjax.models.protenix.data.template_features import dedup_templates
-from foldjax.padding import OPENDDE_MSA_PROFILE_DEPTH
 from foldjax.schema import PaddingConfig, PredictionError
 
 # Private backend capability: defer request-scoped reuse until after this CLI
@@ -24,10 +23,15 @@ from foldjax.schema import PaddingConfig, PredictionError
 PREPARED_PARAMS_LOADER_API = True
 
 
-def _resolve_msa_depth(value: int | None, padding: PaddingConfig | None) -> int:
-    if value is not None:
-        return value
-    return (padding.msa or OPENDDE_MSA_PROFILE_DEPTH) if padding is not None else 16384
+#: The featurizer's own candidate-row cap (`data/featurize_json.py`), resolved
+#: here rather than left unset so the compile profile names the depth the run
+#: used. Padding is absent from this decision: the per-cycle sampler below
+#: keeps its own released depth, and padding only pads that axis up.
+_DEFAULT_MSA_DEPTH = 16384
+
+
+def _resolve_msa_depth(value: int | None) -> int:
+    return _DEFAULT_MSA_DEPTH if value is None else value
 
 
 def _boolean(value: str) -> bool:
@@ -684,7 +688,7 @@ def main(
         help="Kalign 3.3.5 executable used for exact template realignment",
     )
     args = parser.parse_args(argv)
-    args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth, padding)
+    args.max_msa_depth = _resolve_msa_depth(args.max_msa_depth)
 
     if padding is not None:
         unsupported = sorted(
@@ -873,11 +877,13 @@ def main(
                         make_padded_random_tapes,
                     )
 
+                    # The same call the unpadded route makes, at the same
+                    # released per-cycle depth: `--pad-msa` is a capacity for
+                    # this axis, not a row selection.
                     sampled = sample_opendde_msa_cycle_features(
                         features,
                         num_recycles=args.num_recycles,
                         seed=seed,
-                        msa_depth=padding.msa or OPENDDE_MSA_PROFILE_DEPTH,
                     )
                     padded_features, cycle_msa_features, padding_plan = (
                         pad_opendde_features(
