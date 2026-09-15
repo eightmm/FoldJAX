@@ -36,7 +36,12 @@ from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.cache import compilation_cache_scope
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.models import _representations
-from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
+from foldjax.padding import (
+    PaddingPlan,
+    cp_aligned_padding,
+    resolve_axis,
+    resolve_token_axis,
+)
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -713,7 +718,15 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         padding_plan = None
         if request.padding is not None:
             padding_plan = _padding_plan(
-                features, request.padding, max_msa_depth=config.msa_depth
+                features,
+                # The mesh this run will build decides what its automatic
+                # token and atom targets have to divide.
+                cp_aligned_padding(
+                    request.padding,
+                    cp_devices=int(overrides.get("cp_shards", 1)),
+                    cp_layout=str(overrides.get("cp_layout", "auto")),
+                ),
+                max_msa_depth=config.msa_depth,
             )
             features = data.pad_features(
                 features,

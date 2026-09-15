@@ -48,7 +48,12 @@ from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
-from foldjax.padding import PaddingPlan, resolve_axis, resolve_token_axis
+from foldjax.padding import (
+    PaddingPlan,
+    cp_aligned_padding,
+    resolve_axis,
+    resolve_token_axis,
+)
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -1147,7 +1152,13 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
                 if request.padding is not None:
                     padding_plan = _padding_plan(
                         model_features,
-                        request.padding,
+                        # The mesh this run will build decides what its
+                        # automatic token and atom targets have to divide.
+                        # ESMFold2 shards rows only, so shards are rows.
+                        cp_aligned_padding(
+                            request.padding,
+                            cp_devices=int(overrides.get("cp_shards", 1)),
+                        ),
                         max_msa_depth=active_msa_depth,
                         language_model_tokens=lm_tokens,
                     )

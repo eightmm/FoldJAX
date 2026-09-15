@@ -508,15 +508,24 @@ def _run(
     )
     padding_config = None
     if padding_requested:
+        from foldjax.padding import cp_aligned_padding
         from foldjax.schema import PaddingConfig
 
-        padding_config = PaddingConfig(
-            tokens=args.pad_tokens,
-            atoms=args.pad_atoms,
-            msa=args.pad_msa,
-            templates=args.pad_templates,
-            language_model_tokens=args.pad_language_model_tokens,
-            overflow=args.padding_overflow,
+        # The mesh this run will build decides what the automatic token and
+        # atom targets have to divide; explicit --pad-* values are left as
+        # written.  This is also where the neutral backend's request reaches
+        # this port, so aligning here covers both entry points.
+        padding_config = cp_aligned_padding(
+            PaddingConfig(
+                tokens=args.pad_tokens,
+                atoms=args.pad_atoms,
+                msa=args.pad_msa,
+                templates=args.pad_templates,
+                language_model_tokens=args.pad_language_model_tokens,
+                overflow=args.padding_overflow,
+            ),
+            cp_devices=args.cp_devices,
+            cp_layout=args.cp_layout,
         )
         if args.features is not None:
             raise SystemExit(

@@ -12,6 +12,32 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **Automatic padding aligns the atom and token axes to the context-parallel
+  mesh, and the token grid no longer stops at what fits one card.** With
+  `--padding` / `PaddingConfig` and `cp_devices > 1`, the derived atom target
+  rounds up to a multiple of `32 * cp_rows`, the token bucket to a multiple of
+  `cp_rows`, and OpenDDE's structural target to a multiple of `cp_rows` --
+  `cp_rows` being `cp_devices` under `1d` and its square root under `2d`. That
+  is exactly what the distributed diffusion atom graph requires, so a padded
+  run now gets the distributed graph instead of the warning and the replicated
+  one.
+
+  It was missing by small margins. At 3,012 tokens automatic padding happened
+  to land on 3072/73728 and worked; a pinned `tokens=3012` with an automatic
+  atom axis gave `((24 * 3012 + 31) // 32) * 32 = 72288`, a multiple of 32 and
+  of nothing larger, so four rows could not take it -- 32 atoms short.
+
+  The token grid gains 5,120, 6,144 and 8,192, and each derived grid now
+  reaches that ceiling's own derivation (24x for atoms, 2x for structural
+  tokens). 4,888 tokens -- the largest target in the scale set, and a size the
+  mesh exists to run -- was refused outright by the old 4,096 ceiling. Above
+  the last bucket `overflow="error"` still refuses rather than compiling an
+  unplanned shape.
+
+  Explicit pins keep their meaning: a misaligned pin is not rewritten, and it
+  keeps the warning and the replicated atom graph it has today. `cp_devices=1`
+  resolves every axis of every port to the same numbers as before.
+
 - **A context-parallel run whose device runs out of memory now fails instead of
   hanging.** XLA's collective rendezvous has no terminate timeout by default --
   `xla_gpu_nccl_termination_timeout_seconds` is `-1`, which it reads as "wait

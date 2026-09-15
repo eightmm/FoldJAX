@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -193,14 +194,11 @@ def pad_opendde_features(
     )
     # Generated templates have a fixed four-slot averaging contract.  Keep
     # that depth unchanged while the shared helper pads all residue/atom
-    # schema fields and the templates' token axes.
-    common_config = PaddingConfig(
-        tokens=config.tokens,
-        atoms=config.atoms,
-        msa=1,
-        templates=4,
-        overflow=config.overflow,
-    )
+    # schema fields and the templates' token axes.  Derived from the caller's
+    # profile rather than built fresh: a fresh one drops whatever policy the
+    # profile carries beyond these axes -- today the context-parallel mesh
+    # width the atom target has to divide -- and would do so silently.
+    common_config = replace(config, msa=1, templates=4)
     padded, common_plan = pad_protenix_features(
         common_source,
         common_config,

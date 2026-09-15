@@ -70,6 +70,31 @@ token, giving its structural bound 2T. ESMFold2 may have T one-residue protein
 chains, each with BOS/EOS, giving packed LM bound 3T. Protenix embeds chains
 separately, so its native provider length cap can bound the automatic LM target.
 
+## The grid, and the context-parallel mesh
+
+The token grid is 256, 512, 768, 1,024, 1,536, 2,048, 3,072, 4,096, 5,120,
+6,144, 8,192. It reaches past what one card folds on purpose: context
+parallelism exists to run the targets that do not fit one card, so a grid
+ending at 4,096 refused exactly the sizes the mesh was added for -- 4,888
+tokens with `--padding` was an error rather than a 5,120 profile. Each derived
+grid covers that ceiling's own derivation (24x for atoms, 2x for structural
+tokens). Above the last bucket `overflow="error"` still refuses rather than
+compiling an unplanned shape.
+
+When a request carries `cp_devices > 1`, the automatic targets are rounded up
+to what the mesh divides: the atom target to a multiple of `32 * cp_rows`, the
+token bucket to a multiple of `cp_rows`, and OpenDDE's structural target to a
+multiple of `cp_rows` (`cp_rows` is `cp_devices` under `1d`, its square root
+under `2d`). Those are the distributed diffusion atom graph's own requirements
+-- see [context parallelism](context_parallel.md) -- and the margins are
+small: a pinned `tokens=3012` derives 72,288 atoms, a multiple of 32 and of
+nothing larger, which four rows cannot take.
+
+Explicit pins are never rewritten. A misaligned pin keeps its existing
+outcome, a warning naming the multiple and a replicated atom graph, because a
+pin is a statement about the compiled shape. `cp_devices=1` resolves exactly
+as it did before this policy existed.
+
 ## Compatibility and verification scope
 
 Existing masks, atom-to-token mappings, crop functions, and prefix-preserving

@@ -129,8 +129,10 @@ atom axis must be a multiple of `n_queries * cp_rows` and the token axis must
 divide the rows (and the columns under `2d`). A request that cannot be split
 resolves to the replicated path **with a warning naming the multiple to pad
 to** -- a silent fallback would leave a run that reads as distributed and costs
-what the replicated one costs. Pin `PaddingConfig(atoms=..., tokens=...)` to
-supply the alignment.
+what the replicated one costs. Automatic padding (`--padding` with
+`cp_devices > 1`) derives targets the mesh divides, so it supplies the
+alignment by itself; pin `PaddingConfig(atoms=..., tokens=...)` when a run
+needs one exact shape, and pin it aligned, because a pin is taken as written.
 
 The sampler loop and its RNG tape are unchanged: the noise is drawn and carried
 replicated exactly as before, the denoiser reshards the `[samples, atoms, 3]`
@@ -168,8 +170,10 @@ OpenDDE diffuses over its expanded structural tokens, so
 alignment requirement is `n_structural_token % cp_rows == 0` (and `% cp_cols`
 under `2d`). Automatic padding derives the structural target as twice the token
 bucket, so an aligned residue count does not imply an aligned structural one;
-the misalignment warning accordingly names
-`PaddingConfig(atoms=..., structural_tokens=...)` / `--pad-structural-tokens`.
+automatic padding therefore rounds the structural target up to the rows too,
+and the misalignment warning names
+`PaddingConfig(atoms=..., structural_tokens=...)` / `--pad-structural-tokens`
+for the pinned case.
 The atom requirement is the shared one: a multiple of `n_queries * cp_rows`,
 i.e. 32 times the row count with the released windows.
 
@@ -242,8 +246,8 @@ atom axis must be a multiple of `n_query * cp_rows` and the token axis must
 divide the rows (and the columns under `2d`). Unlike the halo paths there is no
 requirement on `n_key`: a CP row owning a single query block is legal. A request
 that cannot be split resolves to the replicated path **with a warning naming the
-multiples to pad to**; pin `PaddingConfig(atoms=..., tokens=...)` to supply the
-alignment. At the released `n_query=32` on four devices that is
+multiples to pad to**; automatic padding supplies the alignment, and a pin is
+taken as written. At the released `n_query=32` on four devices that is
 `atoms % 128 == 0` and `tokens % 4 == 0`; on a 2x2 grid, `atoms % 64 == 0` and
 `tokens % 2 == 0`.
 

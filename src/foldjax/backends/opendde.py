@@ -15,6 +15,7 @@ from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
+from foldjax.padding import cp_aligned_padding
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -249,6 +250,10 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         ]
         if request.cache_dir is not None:
             argv.extend(("--compile-cache", str(request.cache_dir)))
+        # Read before the loop below pops them into argv: the mesh this run
+        # will build decides what its automatic padding targets must divide.
+        cp_devices = int(options.get("cp_devices", 1))
+        cp_layout = str(options.get("cp_layout", "auto"))
         for key in sorted(_CLI_OPTIONS):
             if key in options:
                 argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))
@@ -317,17 +322,22 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
                         "opendde does not support explicit padding axes: "
                         + ", ".join(unsupported)
                     )
+                padding = cp_aligned_padding(
+                    request.padding,
+                    cp_devices=cp_devices,
+                    cp_layout=cp_layout,
+                )
                 written = (
                     native.main(
                         argv,
-                        padding=request.padding,
+                        padding=padding,
                         padding_profiles=padding_profiles,
                         _prepared_params_loader=session_params_loader,
                     )
                     if use_session_loader
                     else native.main(
                         argv,
-                        padding=request.padding,
+                        padding=padding,
                         padding_profiles=padding_profiles,
                     )
                 )

@@ -19,6 +19,7 @@ from foldjax.execution import DETERMINISTIC_API_OPTION, auto_diffusion_chunk_siz
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
 from foldjax.models.boltz2.weights import resolve_native_weight_bundle
+from foldjax.padding import cp_aligned_padding
 from foldjax.schema import (
     InputRequirement,
     ModelCapabilities,
@@ -1009,7 +1010,19 @@ class Boltz2Backend(Backend):
             out_dir=request.output_dir,
             seed=request.seed,
             compile_cache=request.cache_dir,
-            padding=request.padding,
+            # The mesh this run will build decides what the automatic token and
+            # atom targets have to divide.  The native path aligns the resolved
+            # plan again when it distributes the atom graph; both round to the
+            # same multiples, so the second pass finds nothing left to do.
+            padding=(
+                None
+                if request.padding is None
+                else cp_aligned_padding(
+                    request.padding,
+                    cp_devices=int(options.get("cp_devices", 1)),
+                    cp_layout=str(options.get("cp_layout", "auto")),
+                )
+            ),
             write_fmt=options.pop("write_fmt", "cif"),
             **options,
         )

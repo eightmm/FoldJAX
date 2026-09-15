@@ -4,11 +4,32 @@ The public contract deliberately describes semantic axes rather than array
 positions.  Backends remain responsible for schema-aware padding, masks, RNG
 and output cropping; this module only chooses and reports conservative target
 sizes in one consistent way.
+
+Two policies live here rather than in any one port.  The bucket grids stop
+where they stop on purpose: the token grid used to end at 4,096 because that
+is roughly what one card folds, but context parallelism exists to run the
+targets that do not fit one card, so a grid that ends at what fits one refuses
+exactly the sizes the mesh was added for.  It now reaches 8,192 tokens, and
+every derived grid reaches that token ceiling's own derivation (24x for atoms,
+2x for structural tokens) so no axis can refuse a size the token axis accepts.
+Above the last bucket ``overflow='error'`` still refuses rather than compiling
+an unplanned shape.
+
+The second policy is mesh alignment.  A distributed diffusion atom graph needs
+the padded atom count to divide ``32 * rows`` and the padded token count to
+divide ``rows``; an automatic target that misses those multiples costs a
+replicated atom graph on every device for the sake of a few hundred padded
+atoms.  Automatic targets are therefore rounded up to the mesh's multiples
+when a request carries more than one context-parallel device.  Explicit pins
+are left exactly as written -- a pin is a statement about the compiled shape,
+and a misaligned one keeps its existing outcome of a warning and a replicated
+atom graph rather than silently becoming a different shape.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass, fields, replace
 from typing import Any
 
 from foldjax.schema import PaddingConfig
@@ -16,7 +37,7 @@ from foldjax.schema import PaddingConfig
 MSA_PROFILE_DEPTH = 1024
 OPENDDE_MSA_PROFILE_DEPTH = 1280
 
-TOKEN_BUCKETS = (256, 512, 768, 1024, 1536, 2048, 3072, 4096)
+TOKEN_BUCKETS = (256, 512, 768, 1024, 1536, 2048, 3072, 4096, 5120, 6144, 8192)
 ATOM_BUCKETS = (
     256,
     512,
@@ -34,6 +55,8 @@ ATOM_BUCKETS = (
     49152,
     65536,
     98304,
+    131072,
+    196608,
 )
 MSA_BUCKETS = (1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192, 16384)
 TEMPLATE_BUCKETS = (1, 2, 4)
@@ -49,6 +72,7 @@ STRUCTURAL_TOKEN_BUCKETS = (
     6144,
     8192,
     12288,
+    16384,
 )
 LANGUAGE_MODEL_TOKEN_BUCKETS = (
     128,
@@ -62,6 +86,8 @@ LANGUAGE_MODEL_TOKEN_BUCKETS = (
     3072,
     4096,
     5120,
+    6144,
+    8192,
 )
 
 DEFAULT_BUCKETS: dict[str, tuple[int, ...]] = {
@@ -72,6 +98,109 @@ DEFAULT_BUCKETS: dict[str, tuple[int, ...]] = {
     "structural_tokens": STRUCTURAL_TOKEN_BUCKETS,
     "language_model_tokens": LANGUAGE_MODEL_TOKEN_BUCKETS,
 }
+
+
+#: The query window of every port's atom attention, and therefore the number
+#: of atoms one context-parallel row has to own a whole multiple of.  Boltz-2,
+#: Protenix, OpenDDE and OpenFold3 all window atoms in 32s.
+CP_ATOM_WINDOW = 32
+
+#: The multiple one context-parallel mesh row imposes on each automatic axis.
+#: Only the axes the distributed atom graph reads are listed: the MSA, template
+#: and language-model axes are never split across the mesh, so rounding them up
+#: would buy nothing and cost memory.  ``structural_tokens`` is here because
+#: OpenDDE diffuses over its expanded structural tokens, whose axis -- not
+#: ``tokens`` -- is the one its mesh has to divide.
+_CP_AXIS_UNIT: dict[str, int] = {
+    "tokens": 1,
+    "atoms": CP_ATOM_WINDOW,
+    "structural_tokens": 1,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CPAlignedPadding(PaddingConfig):
+    """A padding profile that also knows how wide the mesh it feeds is.
+
+    A private subclass rather than a public field, because the row count is
+    derived from ``cp_devices`` rather than requested: it must not become a
+    second, silently divergent way to ask for a mesh, and it has no place in
+    the recorded request summary ``PaddingConfig`` serialises.  Every resolver
+    reads it through :func:`cp_rows`, so a plain ``PaddingConfig`` keeps
+    behaving exactly as it did.
+    """
+
+    cp_rows: int = 1
+
+
+def cp_mesh_rows(cp_devices: int, cp_layout: str = "auto") -> int:
+    """Rows of the context-parallel mesh a request would build.
+
+    This mirrors ``foldjax.models._cp.resolve_cp_layout`` and ``cp_grid``
+    deliberately instead of importing them: padding is resolved while a request
+    is still being planned on the host, and that path must not import JAX.  The
+    duplication is a handful of integer rules, and a test pins it against the
+    real resolver.
+    """
+
+    if isinstance(cp_devices, bool) or not isinstance(cp_devices, int):
+        raise ValueError("context-parallel device count must be an integer")
+    if cp_devices < 1:
+        raise ValueError("context-parallel device count must be positive")
+    if cp_layout not in {"auto", "1d", "2d"}:
+        raise ValueError(
+            f"context-parallel layout must be 'auto', '1d', or '2d'; got {cp_layout!r}"
+        )
+    if cp_layout != "2d":
+        # Every port resolves `auto` to the one-dimensional mesh.
+        return cp_devices
+    side = math.isqrt(cp_devices)
+    if cp_devices <= 1 or side * side != cp_devices:
+        raise ValueError(
+            "the two-dimensional layout needs a perfect-square device count "
+            f"greater than one; got {cp_devices}"
+        )
+    return side
+
+
+def cp_aligned_padding(
+    config: PaddingConfig,
+    *,
+    cp_devices: int,
+    cp_layout: str = "auto",
+) -> PaddingConfig:
+    """Return ``config`` with the mesh width its automatic targets must respect.
+
+    A serial request gets its own object back, so a one-device run resolves
+    byte-identically to a run made before this existed.
+    """
+
+    # A serial request has no mesh to divide, so it does not consult the
+    # layout -- not even to reject one a mesh would refuse, which each port
+    # validates for itself. The device count is still checked.
+    rows = cp_mesh_rows(cp_devices, "auto" if cp_devices == 1 else cp_layout)
+    if rows <= 1:
+        return config
+    return _CPAlignedPadding(
+        **{field.name: getattr(config, field.name) for field in fields(PaddingConfig)},
+        cp_rows=rows,
+    )
+
+
+def cp_rows(config: PaddingConfig) -> int:
+    """Mesh rows carried by ``config``; ``1`` for any ordinary profile."""
+
+    rows = getattr(config, "cp_rows", 1)
+    return rows if isinstance(rows, int) and rows > 1 else 1
+
+
+def _cp_aligned_target(target: int, config: PaddingConfig, axis: str) -> int:
+    """Round one automatic target up to what the mesh can divide."""
+
+    multiple = _CP_AXIS_UNIT.get(axis, 0) * cp_rows(config)
+    if multiple <= 1:
+        return target
+    return ((target + multiple - 1) // multiple) * multiple
 
 
 def resolve_axis(
@@ -102,14 +231,14 @@ def resolve_axis(
     candidates = DEFAULT_BUCKETS[axis] if buckets is None else buckets
     target = next((candidate for candidate in candidates if candidate >= floor), None)
     if target is not None:
-        return target
+        return _cp_aligned_target(target, config, axis)
     if config.overflow == "error":
         largest = candidates[-1] if candidates else 0
         raise ValueError(
             f"input {axis} size {floor} exceeds the largest standard bucket "
             f"{largest}; pin padding.{axis} or use overflow='exact'"
         )
-    return floor
+    return _cp_aligned_target(floor, config, axis)
 
 
 def resolve_token_axis(
@@ -139,7 +268,10 @@ def resolve_token_axis(
                 target = token_target
             else:
                 raise ValueError(f"fixed_size is required for {axis}")
-        config = replace(config, **{axis: target})
+        # Aligned before the pin, not after: below this line the axis is
+        # indistinguishable from a caller's explicit pin, which is exactly what
+        # alignment must leave alone.
+        config = replace(config, **{axis: _cp_aligned_target(target, config, axis)})
     return resolve_axis(actual, config, axis, minimum=minimum)
 
 
