@@ -589,3 +589,189 @@ def test_port_query_chunks_reach_the_ring() -> None:
     """
 
     assert "PASS_THROUGH_OK" in _run(_PASS_THROUGH_PROBE, devices=4)
+
+
+# --- the blocks are sequential by construction ------------------------------
+# An unrolled Python loop over the blocks was not enough: the blocks are
+# independent, so XLA scheduled them together and kept every tile live. The
+# 2,096-token 2x2 GPU run then asked for 68.18 GiB against the unblocked
+# path's 56.78 GiB. The loop is a `lax.scan` now, and this is the gate that
+# says so: a while loop whose body holds one block-sized score tile, with
+# nothing of that shape left outside it but the peeled block.
+
+_SEQUENTIAL_BLOCK_PROBE = textwrap.dedent(
+    r"""
+    import functools
+    import os
+    import re
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from foldjax.models._cp import context_parallel
+    from foldjax.models._cp_attention import ring_triangle_attention_2d
+
+    DEVICES = int(os.environ["FOLDJAX_CP_PROBE_DEVICES"])
+    SIDE = int(round(DEVICES ** 0.5))
+    assert SIDE * SIDE == DEVICES
+    assert jax.device_count() == DEVICES, jax.devices()
+
+    rng = np.random.default_rng(20260915)
+    BATCH, HEADS, DIM = 2, 3, 5
+    OUTER, TOKENS = 2 * SIDE, 8 * SIDE
+    LOCAL = TOKENS // SIDE
+    OUTER_LOCAL = OUTER // SIDE
+    # A score tile is the only rank-5 buffer carrying both the local outer
+    # extent and the local key extent, so its query axis can be read straight
+    # off the shape -- as long as the extents that share that shape (the mask
+    # at 1, the transposed K at DIM) are none of the block sizes used below.
+    assert (LOCAL, OUTER_LOCAL, DIM) == (8, 2, 5)
+
+    SHAPE = re.compile(r"\[([0-9,]+)\](?:\{[^}]*\})?\s+([a-z-]+)\(")
+    REFS = re.compile(r"(?:calls|body|condition|to_apply)=\{?%?([\w.\-$]+)")
+    HEADER = re.compile(r"^(ENTRY\s+)?%?([\w.\-$]+)")
+
+    def arr(*shape, scale=0.4):
+        return jnp.asarray(rng.normal(size=shape, scale=scale), dtype=jnp.float32)
+
+    q = arr(BATCH, OUTER, HEADS, TOKENS, DIM)
+    k = arr(BATCH, OUTER, HEADS, TOKENS, DIM)
+    v = arr(BATCH, OUTER, HEADS, TOKENS, DIM)
+    bias = arr(BATCH, 1, HEADS, TOKENS, TOKENS, scale=7.0)
+    keep = rng.random((BATCH, OUTER, TOKENS)) > 0.2
+    keep[..., 0] = True
+    mask = jnp.where(
+        jnp.asarray(keep)[:, :, None, None, :],
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(-1.0e9, dtype=jnp.float32),
+    )
+
+    def parse(text):
+        # HLO text as computations, their callees, the entry, and the names
+        # used as a `while` body.
+        blocks, refs, entry, bodies = {}, {}, None, set()
+        name = None
+        for line in text.splitlines():
+            if line.endswith("{") and not line.startswith(" "):
+                match = HEADER.match(line)
+                name = match.group(2)
+                if match.group(1):
+                    entry = name
+                blocks[name] = []
+            elif line.startswith("}"):
+                name = None
+            elif name is not None:
+                stripped = line.strip()
+                blocks[name].append(stripped)
+                refs.setdefault(name, set()).update(REFS.findall(stripped))
+                bodies.update(re.findall(r"body=%?([\w.\-$]+)", stripped))
+        assert entry is not None, text[:400]
+        return blocks, refs, entry, bodies
+
+    def reachable(refs, roots):
+        seen, stack = set(), list(roots)
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            stack.extend(refs.get(current, ()))
+        return seen
+
+    def score_extents(lines):
+        found = []
+        for line in lines:
+            for dims, _op in SHAPE.findall(line):
+                shape = tuple(int(d) for d in dims.split(","))
+                if (
+                    len(shape) == 5
+                    and shape[-1] == LOCAL
+                    and shape[-4] == OUTER_LOCAL
+                    and shape[-2] not in (1, DIM)
+                ):
+                    found.append(shape[-2])
+        return found
+
+    def arm(block):
+        fn = jax.jit(functools.partial(ring_triangle_attention_2d, q_block=block))
+        with context_parallel(DEVICES, layout="2d"):
+            out = jax.device_get(fn(q, k, v, bias, mask))
+            lowered = fn.lower(q, k, v, bias, mask)
+            low = lowered.compiler_ir(dialect="hlo").as_hlo_text()
+            optimized = lowered.compile().as_text()
+        result = {"out": out, "permutes": low.lower().count("collective-permute")}
+        for label, text in (("lowered", low), ("optimized", optimized)):
+            blocks, refs, entry, bodies = parse(text)
+            inside = reachable(refs, bodies)
+            result[label] = {
+                "bodies": len(bodies),
+                "in_loop": sorted(
+                    {
+                        extent
+                        for name in inside
+                        for extent in score_extents(blocks.get(name, ()))
+                    }
+                ),
+                "entry": score_extents(blocks[entry]),
+            }
+        return result
+
+    off = arm(0)
+    even = arm(2)
+    ragged = arm(3)
+
+    # Positive control. Without a block there is no loop at all and the whole
+    # local query extent really is one buffer in the entry computation, which
+    # is what makes its absence below mean something. One score buffer per
+    # max-pass step and two per accumulate step, per ring step.
+    assert off["optimized"]["bodies"] == 0, off["optimized"]
+    assert set(off["optimized"]["entry"]) == {LOCAL}, off["optimized"]
+    whole_tiles = len(off["optimized"]["entry"])
+    assert whole_tiles == 3 * SIDE, off["optimized"]
+
+    for label, result, block, peel in (
+        ("even", even, 2, 2),
+        ("ragged", ragged, 3, 2),
+    ):
+        low_view = result["lowered"]
+        opt_view = result["optimized"]
+        # One scan per pass per ring step, and the block-sized score tile
+        # lives inside its body.
+        assert low_view["bodies"] == 2 * SIDE, (label, low_view)
+        assert low_view["in_loop"] == [block], (label, low_view)
+        assert opt_view["in_loop"] == [block], (label, opt_view)
+        # Nothing keeps the full local query extent, anywhere.
+        assert LOCAL not in low_view["in_loop"], (label, low_view)
+        assert LOCAL not in low_view["entry"], (label, low_view)
+        assert LOCAL not in opt_view["entry"], (label, opt_view)
+        # Nothing hoisted above the scan: the only score buffers left outside
+        # a loop body are the peeled blocks, and there are exactly as many of
+        # them as the unblocked arm had whole tiles. A hoisted or re-unrolled
+        # block would multiply that count by the number of blocks.
+        assert set(opt_view["entry"]) == {peel}, (label, opt_view)
+        assert len(opt_view["entry"]) == whole_tiles, (label, opt_view)
+        # The rotations are untouched.
+        assert result["permutes"] == off["permutes"], (label, result["permutes"])
+        np.testing.assert_allclose(off["out"], result["out"], atol=1e-6, rtol=1e-6)
+
+    print(
+        "SEQUENTIAL_BLOCK_DEVIATION",
+        [float(np.max(np.abs(off["out"] - one["out"]))) for one in (even, ragged)],
+    )
+    print("SEQUENTIAL_BLOCK_OK")
+    """
+)
+
+
+@pytest.mark.parametrize("devices", [4, 9])
+def test_ring_query_blocks_run_one_at_a_time(devices: int) -> None:
+    """The blocks must be sequential in the program, not merely written so.
+
+    The first landing wrote them as an unrolled Python loop, which reads as
+    blocked and compiles as parallel: on GPU the 2,096-token 2x2 Boltz-2 run
+    asked for 68.18 GiB where the unblocked path asked 56.78 GiB. Only the
+    lowering can tell those apart, so this gate reads it.
+    """
+
+    assert "SEQUENTIAL_BLOCK_OK" in _run(_SEQUENTIAL_BLOCK_PROBE, devices=devices)

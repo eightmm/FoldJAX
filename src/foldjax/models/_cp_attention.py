@@ -342,28 +342,36 @@ def ring_triangle_attention_2d(
         # token extent and made the 2-D layout cost more memory than the 1-D
         # one it exists to beat. The blocks are cut after the rotations, so
         # the schedule above and below is untouched.
+        #
+        # They are a `lax.scan` rather than a Python loop because an unrolled
+        # loop only hints: the blocks are independent, so XLA scheduled them
+        # together and kept every tile live at once. Measured on one GPU,
+        # Boltz-2 at 2,096 tokens on a 2x2 mesh then asked for 68.18 GiB
+        # against the unblocked path's 56.78 GiB -- blocking made it worse. A
+        # scan carries the accumulators, so the compiled program holds one
+        # block's scores at a time by construction.
         local_queries = q_l.shape[-2]
         block = resolve_ring_query_block(local_queries, q_block)
         blocked = block < local_queries
-        starts = range(0, local_queries, block)
-
-        def query_blocks(array):
-            # Every other axis is shared, including the key axis each row
-            # still reduces over whole.
-            if not blocked:
-                return (array,)
-            return tuple(
-                jax.lax.slice_in_dim(
-                    array,
-                    start,
-                    min(start + block, local_queries),
-                    axis=-2,
-                )
-                for start in starts
-            )
-
-        def joined(parts):
-            return parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=-2)
+        # A ragged tail is its own static block, not a padded-and-masked axis:
+        # padding would copy Q and the bias (563 MiB and 17 MiB at 2,096
+        # tokens on a 2x2 mesh) to compute rows that are then discarded, and
+        # each query row is independent anyway, so there is nothing a mask
+        # would have to protect.
+        #
+        # One block is peeled off ahead of the scan, the ragged one where
+        # there is one. Two reasons, and either alone would be enough: a
+        # `shard_map` scan refuses an initial carry that does not already
+        # carry this mesh's varying-ness, which a constant `-inf` buffer does
+        # not; and the peeled block makes the loop's carry depend on a real
+        # tile, so XLA retires that tile before the loop instead of scheduling
+        # the two side by side.
+        full_blocks, remainder = divmod(local_queries, block)
+        block_starts = jnp.arange(full_blocks, dtype=jnp.int32) * block
+        peel_start, peel_size = (
+            (full_blocks * block, remainder) if remainder else (0, block)
+        )
+        scan_starts = block_starts if remainder else block_starts[1:]
 
         def tile_scores(q_b, k_t, bias_b, mask_t):
             scores = jnp.matmul(
@@ -372,6 +380,85 @@ def ring_triangle_attention_2d(
                 precision=precision,
             )
             return scores + bias_b.astype(jnp.float32) + mask_t.astype(jnp.float32)
+
+        def tile_terms(q_b, k_t, v_t, bias_b, mask_t, maximum_b):
+            scores = tile_scores(q_b, k_t, bias_b, mask_t)
+            finite_maximum = jnp.isfinite(maximum_b)
+            positive_infinity = jnp.isposinf(maximum_b)
+            shifted = jnp.where(
+                finite_maximum,
+                scores - maximum_b,
+                -jnp.inf,
+            )
+            probabilities = jnp.where(
+                positive_infinity,
+                jnp.isposinf(scores).astype(jnp.float32),
+                jnp.exp(shifted),
+            )
+            block_normalizer = jnp.sum(
+                probabilities,
+                axis=-1,
+                keepdims=True,
+            )
+            block_output = jnp.matmul(
+                probabilities,
+                v_t.astype(jnp.float32),
+                precision=precision,
+            )
+            return block_output, block_normalizer
+
+        def rows_of(array, start, size):
+            return jax.lax.dynamic_slice_in_dim(array, start, size, axis=-2)
+
+        def write_rows(array, value, start):
+            return jax.lax.dynamic_update_slice_in_dim(array, value, start, axis=-2)
+
+        def one_block_maximum(current, start, size, k_t, bias_t, mask_t):
+            scores = tile_scores(
+                rows_of(q_l, start, size),
+                k_t,
+                rows_of(bias_t, start, size),
+                mask_t,
+            )
+            return write_rows(
+                current,
+                jnp.maximum(
+                    rows_of(current, start, size),
+                    jnp.max(scores, axis=-1, keepdims=True),
+                ),
+                start,
+            )
+
+        def one_block_terms(carry, start, size, k_t, v_t, bias_t, mask_t, maximum):
+            totals, corrections, sums, sum_corrections = carry
+            block_output, block_normalizer = tile_terms(
+                rows_of(q_l, start, size),
+                k_t,
+                v_t,
+                rows_of(bias_t, start, size),
+                mask_t,
+                rows_of(maximum, start, size),
+            )
+            # The same elementwise Neumaier step the unblocked path runs, read
+            # and written on this block's rows: a row belongs to exactly one
+            # block, so neither the block order nor the split changes any
+            # row's sequence of additions.
+            total, correction = _compensated_add(
+                rows_of(totals, start, size),
+                rows_of(corrections, start, size),
+                block_output,
+            )
+            sum_total, sum_correction = _compensated_add(
+                rows_of(sums, start, size),
+                rows_of(sum_corrections, start, size),
+                block_normalizer,
+            )
+            return (
+                write_rows(totals, total, start),
+                write_rows(corrections, correction, start),
+                write_rows(sums, sum_total, start),
+                write_rows(sum_corrections, sum_correction, start),
+            )
 
         # Pass 1 fixes one global row maximum before any exponentials are
         # accumulated. Rotating K/bias/mask through a complete cycle returns
@@ -383,21 +470,35 @@ def ring_triangle_attention_2d(
             dtype=jnp.float32,
         )
         for _ in range(side):
-            tile_maximum = joined(
-                [
-                    jnp.max(
-                        tile_scores(q_b, k_l, bias_b, mask_l),
-                        axis=-1,
-                        keepdims=True,
+            if blocked:
+                maximum = one_block_maximum(
+                    maximum,
+                    peel_start,
+                    peel_size,
+                    k_l,
+                    bias_l,
+                    mask_l,
+                )
+
+                def maximum_step(
+                    current,
+                    start,
+                    k_t=k_l,
+                    bias_t=bias_l,
+                    mask_t=mask_l,
+                ):
+                    return (
+                        one_block_maximum(current, start, block, k_t, bias_t, mask_t),
+                        None,
                     )
-                    for q_b, bias_b in zip(
-                        query_blocks(q_l),
-                        query_blocks(bias_l),
-                        strict=True,
-                    )
-                ]
-            )
-            maximum = jnp.maximum(maximum, tile_maximum)
+
+                maximum, _ = jax.lax.scan(maximum_step, maximum, scan_starts)
+            else:
+                scores = tile_scores(q_l, k_l, bias_l, mask_l)
+                maximum = jnp.maximum(
+                    maximum,
+                    jnp.max(scores, axis=-1, keepdims=True),
+                )
             # A full cycle restores the initial tile ownership. V is not used
             # in the max pass and therefore stays at its initial owner.
             k_l = permute(k_l, kv_hop)
@@ -414,53 +515,72 @@ def ring_triangle_attention_2d(
         # This removes the repeated online-rescaling error that becomes visible
         # after a 3x3 Pairformer stack while preserving the gather-free ring.
         for step in range(side):
-            block_outputs = []
-            block_normalizers = []
-            for q_b, bias_b, maximum_b in zip(
-                query_blocks(q_l),
-                query_blocks(bias_l),
-                query_blocks(maximum),
-                strict=True,
-            ):
-                scores = tile_scores(q_b, k_l, bias_b, mask_l)
-                finite_maximum = jnp.isfinite(maximum_b)
-                positive_infinity = jnp.isposinf(maximum_b)
-                shifted = jnp.where(
-                    finite_maximum,
-                    scores - maximum_b,
-                    -jnp.inf,
+            if blocked:
+                carry = (
+                    output,
+                    output_correction,
+                    normalizer,
+                    normalizer_correction,
                 )
-                probabilities = jnp.where(
-                    positive_infinity,
-                    jnp.isposinf(scores).astype(jnp.float32),
-                    jnp.exp(shifted),
+                carry = one_block_terms(
+                    carry,
+                    peel_start,
+                    peel_size,
+                    k_l,
+                    v_l,
+                    bias_l,
+                    mask_l,
+                    maximum,
                 )
-                block_normalizers.append(
-                    jnp.sum(
-                        probabilities,
-                        axis=-1,
-                        keepdims=True,
+
+                def terms_step(
+                    current,
+                    start,
+                    k_t=k_l,
+                    v_t=v_l,
+                    bias_t=bias_l,
+                    mask_t=mask_l,
+                ):
+                    return (
+                        one_block_terms(
+                            current,
+                            start,
+                            block,
+                            k_t,
+                            v_t,
+                            bias_t,
+                            mask_t,
+                            maximum,
+                        ),
+                        None,
                     )
+
+                carry, _ = jax.lax.scan(terms_step, carry, scan_starts)
+                (
+                    output,
+                    output_correction,
+                    normalizer,
+                    normalizer_correction,
+                ) = carry
+            else:
+                block_output, block_normalizer = tile_terms(
+                    q_l,
+                    k_l,
+                    v_l,
+                    bias_l,
+                    mask_l,
+                    maximum,
                 )
-                block_outputs.append(
-                    jnp.matmul(
-                        probabilities,
-                        v_l.astype(jnp.float32),
-                        precision=precision,
-                    )
+                output, output_correction = _compensated_add(
+                    output,
+                    output_correction,
+                    block_output,
                 )
-            block_output = joined(block_outputs)
-            block_normalizer = joined(block_normalizers)
-            output, output_correction = _compensated_add(
-                output,
-                output_correction,
-                block_output,
-            )
-            normalizer, normalizer_correction = _compensated_add(
-                normalizer,
-                normalizer_correction,
-                block_normalizer,
-            )
+                normalizer, normalizer_correction = _compensated_add(
+                    normalizer,
+                    normalizer_correction,
+                    block_normalizer,
+                )
 
             if step + 1 < side:
                 k_l = permute(k_l, kv_hop)
