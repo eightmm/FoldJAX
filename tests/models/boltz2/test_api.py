@@ -330,6 +330,52 @@ def test_nonsteering_exact_and_bucket_routes_filter_dead_features(
     assert "writer_only" not in seen[0]
 
 
+@pytest.mark.parametrize("block", [None, 0, 128, 512])
+def test_api_forwards_the_triangle_query_block_to_the_model(
+    tmp_path, monkeypatch, block
+) -> None:
+    """The block the 2-D GPU sweep spells has to arrive at the trunk.
+
+    `models/predict.py:284` reads it straight out of these kwargs and hands it
+    to `resolve_long_sequence_chunks`, which is also what feeds the Fold-CP
+    ring's local query block under `cp_layout="2d"`. Without the forward the
+    option would be accepted, cached on, and inert. An omitted request must
+    arrive as `None`, which is the value the rung has always resolved from.
+    """
+    feats = _fake_features(affinity=False)
+    monkeypatch.setattr(api, "featurize", lambda **kwargs: (feats, "job", tmp_path))
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.bridge.native.load_params", lambda path: {"trunk": {}}
+    )
+    seen: list[dict] = []
+
+    def fake_predict(params, model_feats, key, **kwargs):
+        seen.append(dict(kwargs))
+        atoms = model_feats["atom_pad_mask"].shape[-1]
+        tokens = model_feats["token_pad_mask"].shape[-1]
+        return {
+            "sample_atom_coords": jnp.zeros((1, atoms, 3)),
+            "plddt": jnp.ones((1, tokens)),
+            "iptm": jnp.ones((1,)),
+        }
+
+    monkeypatch.setattr(
+        "foldjax.models.boltz2.models.predict.boltz2_predict", fake_predict
+    )
+
+    api.predict(
+        seq=["AC"],
+        weights=tmp_path / "boltz2_conf",
+        mols=tmp_path,
+        out_dir=tmp_path,
+        num_steps=1,
+        **({} if block is None else {"triangle_attention_q_chunk": block}),
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["triangle_attention_q_chunk"] == block
+
+
 def test_api_routes_compact_msa_storage_to_the_model(tmp_path, monkeypatch) -> None:
     feats = _fake_features(affinity=False)
     shape = (1, 3, 2)

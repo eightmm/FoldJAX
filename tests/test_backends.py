@@ -294,6 +294,49 @@ def test_boltz_rejects_a_negative_token_attention_block_before_compiling(
         Boltz2Backend().validate_request(request)
 
 
+def test_boltz_accepts_a_pinned_triangle_attention_q_block_including_dense(
+    tmp_path: Path,
+) -> None:
+    """The GPU sweep spells this one; 0 is the unblocked tile, null the rung.
+
+    Under `cp_layout=2d` it is the only knob that moves the ring's local score
+    tile, whose query axis is already `N/sqrt(cp_devices)` and so never
+    reaches the rung's token gate.
+    """
+    for block in (None, 0, 32, 128, 512):
+        request = dataclasses.replace(
+            _request(tmp_path, "boltz2"),
+            input_format="native",
+            options={"triangle_attention_q_chunk": block},
+        )
+
+        Boltz2Backend().validate_request(request)
+
+
+@pytest.mark.parametrize(
+    ("block", "message"),
+    [
+        (-1, "triangle_attention_q_chunk must be non-negative"),
+        # `True` is an `int` in Python, so a YAML or CLI `true` would
+        # otherwise arrive as the block size 1.
+        (True, "triangle_attention_q_chunk must be an integer"),
+    ],
+)
+def test_boltz_rejects_an_unusable_triangle_attention_q_block(
+    tmp_path: Path,
+    block: object,
+    message: str,
+) -> None:
+    request = dataclasses.replace(
+        _request(tmp_path, "boltz2"),
+        input_format="native",
+        options={"triangle_attention_q_chunk": block},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        Boltz2Backend().validate_request(request)
+
+
 @pytest.mark.parametrize(
     "representations",
     [("single", "pair"), ("single,pair",), ("all",)],

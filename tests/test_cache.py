@@ -622,6 +622,33 @@ def test_boltz2_diffusion_namespace_records_the_width_not_the_spelling(
             backend.validate_native_options({"diffusion_chunk_size": refused})
 
 
+def test_boltz2_profile_spells_the_triangle_query_block_only_when_asked(
+    tmp_path: Path,
+) -> None:
+    """No released width, so absence keeps meaning "the rung decided".
+
+    `models/boltz2/api.py` forwards an omitted option as `None` and
+    `resolve_long_sequence_chunks` is what turns that into a width, per token
+    count -- and under a 2-D mesh into the ring's own default. Recording a
+    number for an omitted request would claim a width the run may not use and
+    would alias every run recorded before the option existed, whose entries
+    have no key at all.
+    """
+
+    backend = Boltz2Backend()
+
+    def profile(**options):
+        return backend.cache_profile(_request(tmp_path, **options))
+
+    assert "triangle_attention_q_chunk" not in profile()
+    for block in (0, 128, 512):
+        spelled = profile(triangle_attention_q_chunk=block)
+        assert spelled["triangle_attention_q_chunk"] == block
+    # Recorded as given, not normalised: 0 is the unblocked tile and `None`
+    # is the rung, so the two must not collapse onto one namespace.
+    assert profile(triangle_attention_q_chunk=0) != profile()
+
+
 @pytest.mark.parametrize(
     ("request_fields", "options"),
     [
@@ -645,6 +672,12 @@ def test_boltz2_diffusion_namespace_records_the_width_not_the_spelling(
         # out of the default rung's cache entry.
         ({}, {"token_attention_chunk": 256}),
         ({}, {"token_attention_chunk": 0}),
+        # The triangle query block is the same kind of knob and the one the
+        # 2-D ring needs: it changes triangle attention's score tile at every
+        # shape whose rung would not have blocked, so a swept width must not
+        # be answered out of the default rung's entry.
+        ({}, {"triangle_attention_q_chunk": 128}),
+        ({}, {"triangle_attention_q_chunk": 0}),
         ({}, {"bucket": True}),
         # Upstream's float32 is a second program -- a different `precision`
         # attribute on every float32 dot, a different cuEquivariance

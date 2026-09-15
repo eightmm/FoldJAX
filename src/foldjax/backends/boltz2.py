@@ -382,6 +382,7 @@ class Boltz2Backend(Backend):
             "return_confidence_logits",
             "steering_args",
             "token_attention_chunk",
+            "triangle_attention_q_chunk",
             "trunk_atom_attention_backend",
             "use_msa_server",
             "write_fmt",
@@ -442,6 +443,14 @@ class Boltz2Backend(Backend):
         "triangle_backend",
         "glu_backend",
         "token_attention_chunk",
+        # A pinned query block is a different triangle-attention program at
+        # every shape whose rung would not have blocked, and under the 2-D
+        # layout it is the only way to move the ring's score tile at all. It
+        # is spelled into the profile only when the request spells it: the
+        # native signature keeps an omitted option as `None` all the way to
+        # `resolve_long_sequence_chunks`, so there is no released width to
+        # record and absence keeps meaning "the rung decided".
+        "triangle_attention_q_chunk",
         "bucket",
         "deterministic",
         # Two policies, two programs: it sets the `precision` attribute on
@@ -774,6 +783,15 @@ class Boltz2Backend(Backend):
                 options["diffusion_chunk_size"],
                 name="diffusion_chunk_size",
                 minimum=1,
+            )
+        if options.get("triangle_attention_q_chunk") is not None:
+            # 0 is the unblocked tile, the measurement baseline for the rung
+            # and for the ring, so the floor is 0 rather than 1. `null` is
+            # left to the rung, as it is on every other option here.
+            _strict_integer(
+                options["triangle_attention_q_chunk"],
+                name="triangle_attention_q_chunk",
+                minimum=0,
             )
         if options.get("token_attention_chunk") is not None:
             # 0 is the unblocked score buffer, which is what every shape at or

@@ -689,6 +689,11 @@ _WHY_NO_STRIP_ENTRY = {
         "max_msa_depth": "no released default a request can spell",
         # api.py:1090 keeps `None` as `None` rather than resolving a width.
         "token_attention_chunk": "no released default a request can spell",
+        # The same shape: api.py forwards `None` untouched, and
+        # `resolve_long_sequence_chunks` (trunk.py:148-165) is what turns an
+        # unset option into the rung's width, per token count. There is no
+        # fixed value a request could spell to mean "omitted".
+        "triangle_attention_q_chunk": "no released default a request can spell",
         # Written unconditionally by the cache_profile override, which records
         # the width each rollout denoises at rather than the spelling that
         # asked for it: api.py:1099 resolves an omitted option from the sample

@@ -685,6 +685,17 @@ def predict(
     #: rounding wherever it changes the block, so it is a measurement and
     #: memory knob, not a parity one.
     token_attention_chunk: int | None = None,
+    #: Query block for triangle attention's own score tile. `None` takes the
+    #: rung policy in `resolve_long_sequence_chunks` (256 rows above 2,048
+    #: tokens, unblocked at or below it), which is what production wants; an
+    #: integer pins the block for every shape and `0` restores the unblocked
+    #: tile. Under `cp_layout="2d"` this is also the block the
+    #: gather-free ring evaluates its local tile in, where the local query
+    #: axis is already `N/sqrt(cp_devices)` and the rung's token gate
+    #: therefore never fires -- which is why a sweep needs to spell it.
+    #: Blocking is exact per query row but not bitwise, so it is a
+    #: measurement and memory knob, not a parity one.
+    triangle_attention_q_chunk: int | None = None,
     #: Context parallelism: shard the pair representations across this many
     #: JAX devices (the JAX form of OpenDDE's Fold-CP). Needs that many
     #: visible devices; the default "cueq" triangle kernel and the default
@@ -1175,6 +1186,14 @@ def predict(
         ),
         "token_attention_chunk": (
             None if token_attention_chunk is None else int(token_attention_chunk)
+        ),
+        # `None` reaches `resolve_long_sequence_chunks` as an unset option and
+        # leaves the rung policy exactly where it was, so an omitted request
+        # compiles the program it compiled before this option existed.
+        "triangle_attention_q_chunk": (
+            None
+            if triangle_attention_q_chunk is None
+            else int(triangle_attention_q_chunk)
         ),
         "confidence_sequentially": num_samples > 1,
         # Resolved from the sample count, at the width every port in this
