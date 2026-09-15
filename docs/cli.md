@@ -1083,7 +1083,9 @@ replicated graph, so pin `--pad-atoms` plus the right token axis (or
 `PaddingConfig(atoms=..., tokens=...)` /
 `PaddingConfig(atoms=..., structural_tokens=...)`) to reach the distributed
 one. The sampler loop and its noise tape are unchanged. See
+[`docs/context_parallel.md`](context_parallel.md).
 
+Alignment under a mesh means
 the token axis a multiple of the rows, and of the columns under
 `--cp-layout 2d`. A shape that cannot be split **warns, names the multiple to
 pad to, and runs replicated** -- which means an unpadded job measures the
