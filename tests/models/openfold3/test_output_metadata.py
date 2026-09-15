@@ -1,4 +1,8 @@
-"""Exact OpenFold3 atom identity and connectivity across feature archives."""
+"""Exact OpenFold3 atom identity and connectivity across feature archives.
+
+Also the paths on either side of them: which file ``save_features`` actually
+wrote, and which names the output writer will accept.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.openfold3.data import (
+    MODEL_FEATURES,
     OUTPUT_PREFIX,
     OutputMetadata,
     featurize_query,
@@ -21,7 +26,12 @@ from foldjax.models.openfold3.inference import Prediction
 from foldjax.models.openfold3.models.representative_atoms import (
     RepresentativeAtomTable,
 )
-from foldjax.models.openfold3.output import write_prediction_outputs
+from foldjax.models.openfold3.output import (
+    _output_path,
+    _safe_output_name,
+    atom_metadata,
+    write_prediction_outputs,
+)
 
 from .feature_fixture import minimal_features
 from .real_targets import requires_real_targets
@@ -245,3 +255,78 @@ assert "torch" not in sys.modules
         stderr=subprocess.STDOUT,
     )
     assert completed.returncode == 0, completed.stdout
+
+
+def test_atom_metadata_ignores_padded_chain_ids() -> None:
+    """Chain letters are assigned over the real chains, in their own order.
+
+    Padding's zero sorts before a real sparse ``asym_id``. Ranking over the
+    padded column instead used to shift the only emitted chain to B.
+    """
+    features = {
+        "ref_atom_name_chars": np.zeros((1, 2, 4, 64), dtype=np.float32),
+        "ref_element": np.zeros((1, 2, 119), dtype=np.float32),
+        "atom_mask": np.asarray([[1, 0]], dtype=np.float32),
+        "atom_to_token_index": np.asarray([[0, 1]], dtype=np.int64),
+        "restype": np.zeros((1, 2, 32), dtype=np.float32),
+        "residue_index": np.asarray([[1, 0]], dtype=np.int64),
+        "asym_id": np.asarray([[8, 0]], dtype=np.int64),
+    }
+
+    assert atom_metadata(features).chain_id.tolist() == ["A"]
+
+
+def test_save_and_load_features_use_the_path_they_report(tmp_path: Path) -> None:
+    """The returned path is the one written, suffix normalization included."""
+    path = save_features(
+        minimal_features(tokens=3, atoms=5),
+        tmp_path / "FEATURES.NPZ",
+        representative_atoms=_table(),
+    )
+
+    assert path == tmp_path / "FEATURES.npz"
+    assert path.is_file()
+    loaded, table = load_features(path)
+    assert set(loaded) == set(MODEL_FEATURES)
+    assert isinstance(table, RepresentativeAtomTable)
+
+
+def test_saving_features_replaces_a_symlink_without_touching_its_target(
+    tmp_path: Path,
+) -> None:
+    """Writing through a symlink would overwrite a file the user owns."""
+    outside = tmp_path / "outside.npz"
+    outside.write_bytes(b"owned by user")
+    target = tmp_path / "features.npz"
+    target.symlink_to(outside)
+
+    path = save_features(
+        minimal_features(tokens=3, atoms=5),
+        target,
+        representative_atoms=_table(),
+    )
+
+    assert path == target and path.is_file() and not path.is_symlink()
+    assert outside.read_bytes() == b"owned by user"
+    assert set(load_features(path)[0]) == set(MODEL_FEATURES)
+
+
+@pytest.mark.parametrize(
+    "name", ["", ".", "..", "../escape", "/tmp/escape", "a/b", "a\\b", "a\nb"]
+)
+def test_output_names_are_single_safe_filename_components(name: str) -> None:
+    """The prediction name reaches a path, so it cannot carry a separator."""
+    with pytest.raises(ValueError, match="one non-empty filename component"):
+        _safe_output_name(name)
+
+
+def test_existing_output_symlinks_are_refused(tmp_path: Path) -> None:
+    """An output slot pre-pointed outside the directory must not be followed."""
+    root = tmp_path / "out"
+    root.mkdir()
+    outside = tmp_path / "outside.npz"
+    outside.touch()
+    (root / "prediction_raw.npz").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="escapes its output directory"):
+        _output_path(root, "prediction_raw.npz")

@@ -2,6 +2,14 @@
 
 Evidence-only inventory of entry points, duplicated helpers, the shared layer and its bypasses, pinning tests, and ranked unification candidates. Produced by a read-only survey agent on master; nothing was edited.
 
+> **Superseded in part.** The six standalone native CLIs this snapshot lists
+> (`openfold3-jax-predict`, `openfold3-jax-verify-checkpoint`,
+> `openfold3-jax-featurize`, `openfold3-jax-inspect-checkpoint`,
+> `opendde-jax-verify-inputs`, `protenix-jax-static-infer`) and their
+> command-specific tests have since been retired; see the CHANGELOG entry
+> "Retired the six standalone native CLIs". Rows naming them describe the tree
+> as of 2026-09-09 and are kept as the survey record, not as current interface.
+
 Evidence-based survey of user-facing and cross-port interface code, for unification and de-duplication. Read-only survey; nothing was edited.
 
 Repository: `/home/jaemin/non-project/optimizing/foldjax`
@@ -60,15 +68,15 @@ The single most important structural fact is that the six backends dispatch thre
 | `boltz-jax-inspect-checkpoint` | `models.boltz2.bridge.checkpoint:main` |
 | `opendde-jax-export-weights` | `models.opendde.bridge.export_weights:main` |
 | `opendde-jax-predict` | `models.opendde.cli.predict:main` |
-| `opendde-jax-verify-inputs` | `models.opendde.cli.verify_inputs:main` |
-| `openfold3-jax-featurize` | `models.openfold3.cli.featurize:entrypoint` |
-| `openfold3-jax-inspect-checkpoint` | `models.openfold3.cli.inspect_checkpoint:entrypoint` |
-| `openfold3-jax-predict` | `models.openfold3.cli.predict:entrypoint` |
-| `openfold3-jax-verify-checkpoint` | `models.openfold3.cli.verify_checkpoint:entrypoint` |
+| `opendde-jax-verify-inputs` | `models.opendde.cli.verify_inputs:main` | **retired**
+| `openfold3-jax-featurize` | `models.openfold3.cli.featurize:entrypoint` | **retired**
+| `openfold3-jax-inspect-checkpoint` | `models.openfold3.cli.inspect_checkpoint:entrypoint` | **retired**
+| `openfold3-jax-predict` | `models.openfold3.cli.predict:entrypoint` | **retired**
+| `openfold3-jax-verify-checkpoint` | `models.openfold3.cli.verify_checkpoint:entrypoint` | **retired**
 | `protenix-jax-export-weights` | `models.protenix.bridge.export_weights:main` |
 | `protenix-jax-featurize-json` | `models.protenix.data.featurize_json:main` |
 | `protenix-jax-predict` | `models.protenix.cli.predict:main` |
-| `protenix-jax-static-infer` | `models.protenix.cli.static_infer:main` |
+| `protenix-jax-static-infer` | `models.protenix.cli.static_infer:main` | **retired**
 
 **esmfold2 and alphafold3 register no console script.** Their only entry surface is the shared `foldjax` CLI and `foldjax.api`. esmfold2 has no `cli/` package at all.
 
@@ -410,9 +418,9 @@ Every file below **collects and runs** in CI. Counts verified by `pytest --colle
 | `tests/test_esmfold2_backend.py` | 51 | anchoring, ccd scope, `_job_chains` |
 | `tests/test_cli.py` | 46 | shared CLI flags, `--option` validation |
 | `tests/test_cli_ergonomics.py` | 45 | shared CLI flag ergonomics |
-| `tests/models/openfold3/test_predict_cli.py` | 44 | port CLI flags |
+| `tests/models/openfold3/test_predict_cli.py` | 44 | port CLI flags | **retired; domain tests relocated**
 | `tests/models/protenix/test_padding.py` | 29 | port CLI argv, padding flags |
-| `tests/models/protenix/test_static_infer_cli.py` | 27 | port CLI flags |
+| `tests/models/protenix/test_predict_cli.py` (was `test_static_infer_cli.py`) | 27 | port CLI flags |
 | `tests/test_output_layout.py` | 27 | `output.normalize` layout |
 | `tests/models/opendde/test_padding.py` | 18 | port CLI argv |
 | `tests/test_execution_vocabulary.py` | 11 | alias vocabulary |
@@ -420,9 +428,9 @@ Every file below **collects and runs** in CI. Counts verified by `pytest --colle
 | `tests/models/opendde/test_predict_cli.py` | 9 | port CLI flags |
 | `tests/test_weight_session.py` | 8 | `PreparedWeightSession` contract |
 | `tests/test_managed_memory.py` | 8 | lease semantics |
-| `tests/models/openfold3/test_verify_cli.py` | 7 | checkpoint CLI |
-| `tests/models/openfold3/test_inspect_cli.py` | 6 | checkpoint CLI |
-| `tests/models/openfold3/test_featurize_cli.py` | 4 | featurize CLI |
+| `tests/models/openfold3/test_verify_cli.py` | 7 | checkpoint CLI | **retired**
+| `tests/models/openfold3/test_inspect_cli.py` | 6 | checkpoint CLI | **retired; `count_blocks` test relocated**
+| `tests/models/openfold3/test_featurize_cli.py` | 4 | featurize CLI | **retired**
 | `tests/models/opendde/test_cache_profile.py` | 3 | released-default strip |
 | `tests/models/boltz2/test_predict_cli.py` | 1 | export CLI |
 
@@ -479,7 +487,7 @@ Literal port-CLI flag strings also appear in `tests/test_backends.py:415,568`, `
 - **Removes:** about 39 lines, and removes a correctness hazard rather than only duplication.
 - **Files:** `src/foldjax/models/openfold3/compilation.py:21-80`, `src/foldjax/models/protenix/cli/predict.py:451-456`, `src/foldjax/backends/openfold3.py:605`, `src/foldjax/backends/protenix.py:422-431`. Target: `src/foldjax/cache.py:195-227`.
 - **Shape:** both port CLIs call `cache.compilation_cache_scope` instead of mutating config. This is delete-and-redirect, not extract.
-- **Gating tests:** `tests/test_cache.py` (96), `tests/models/openfold3/test_stable_compile.py`, `tests/models/protenix/test_static_infer_cli.py` (27).
+- **Gating tests:** `tests/test_cache.py` (96), `tests/models/openfold3/test_stable_compile.py`, `tests/models/protenix/test_predict_cli.py` (27).
 - **Risk:** low under the managed path, medium for direct CLI callers. The standalone CLIs are the reason this code exists, so the redirect must keep them working without `foldjax.api`.
 - **Coverage:** neutral for the backend edits; the `models/` deletions shrink an unmeasured tree.
 
@@ -506,7 +514,7 @@ Literal port-CLI flag strings also appear in `tests/test_backends.py:415,568`, `
 
 - **Removes:** potentially 90 to 110 lines of overlapping flag declarations, plus the two argv render loops. Highest value and highest risk.
 - **Files:** `src/foldjax/models/protenix/cli/predict.py:75-380` (306 lines, 88 flags), `src/foldjax/models/opendde/cli/predict.py:423-594` (172 lines, 41 flags), `src/foldjax/backends/protenix.py:26-52,439-447`, `src/foldjax/backends/opendde.py:37-64,275-277`. 32 flags and 15 option keys are shared.
-- **Gating tests:** `tests/test_backends.py` (216), `tests/models/opendde/test_predict_cli.py` (9), `tests/models/protenix/test_static_infer_cli.py` (27), `tests/models/protenix/test_padding.py` (29), `tests/models/opendde/test_padding.py` (18), `tests/models/protenix/test_output_feature_projection.py`, `tests/models/opendde/test_parity_matched_tape.py`.
+- **Gating tests:** `tests/test_backends.py` (216), `tests/models/opendde/test_predict_cli.py` (9), `tests/models/protenix/test_predict_cli.py` (27), `tests/models/protenix/test_padding.py` (29), `tests/models/opendde/test_padding.py` (18), `tests/models/protenix/test_output_feature_projection.py`, `tests/models/opendde/test_parity_matched_tape.py`.
 - **Risk:** high. These parsers are the live `foldjax predict` path for two of six models, not legacy code. They are also what forces the environment save-and-restore in both `backends/opendde.py:386-403` and `tests/conftest.py:57`.
 - **Coverage:** grows the denominator if any shared builder lands in `src/foldjax/`.
 - **Recommendation: split this.** Phase one is a shared flag-group builder for the 32 common flags, which is mechanical and testable against the existing CLI suites. Phase two, converting either port from `module.main(argv)` to a function API so the environment dance can be deleted, is separate work deserving its own plan and its own review.

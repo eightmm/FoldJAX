@@ -171,20 +171,17 @@ Issues = "https://github.com/eightmm/foldjax/issues"
 [project.scripts]
 foldjax = "foldjax.cli:entrypoint"
 # Native per-model entry points, preserved from the vendored ports so their own
-# docs and error messages stay accurate.
+# docs and error messages stay accurate. The two `*-jax-predict` scripts are
+# also what `foldjax predict` drives in-process for those ports. The standalone
+# diagnostic and featurization commands were retired: `foldjax predict`,
+# `foldjax doctor` and the per-port Python API cover what they did.
 boltz-jax-export-weights = "foldjax.models.boltz2.bridge.export_weights:main"
 boltz-jax-inspect-checkpoint = "foldjax.models.boltz2.bridge.checkpoint:main"
 opendde-jax-export-weights = "foldjax.models.opendde.bridge.export_weights:main"
 opendde-jax-predict = "foldjax.models.opendde.cli.predict:main"
-opendde-jax-verify-inputs = "foldjax.models.opendde.cli.verify_inputs:main"
-openfold3-jax-featurize = "foldjax.models.openfold3.cli.featurize:entrypoint"
-openfold3-jax-inspect-checkpoint = "foldjax.models.openfold3.cli.inspect_checkpoint:entrypoint"
-openfold3-jax-predict = "foldjax.models.openfold3.cli.predict:entrypoint"
-openfold3-jax-verify-checkpoint = "foldjax.models.openfold3.cli.verify_checkpoint:entrypoint"
 protenix-jax-export-weights = "foldjax.models.protenix.bridge.export_weights:main"
 protenix-jax-featurize-json = "foldjax.models.protenix.data.featurize_json:main"
 protenix-jax-predict = "foldjax.models.protenix.cli.predict:main"
-protenix-jax-static-infer = "foldjax.models.protenix.cli.static_infer:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

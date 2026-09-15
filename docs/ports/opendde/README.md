@@ -221,10 +221,14 @@ The final gate is intentionally expressed as commands rather than a fixed test
 count, which changes as chemistry and intake cases are added. Actual-checkpoint
 inference has been verified on CPU and on the single GPU described below.
 
-The released-example preprocessing matrix can be reproduced with
-`opendde-jax-verify-inputs` after setting the six asset environment variables
-corresponding to the CLI options above. The checked matrix covers 8 JSON files
-and 10 jobs: all features are finite and `torch_imported=false`. OpenDDE 1.1.1
+The released-example preprocessing matrix can be reproduced by walking the
+examples directory through `foldjax.models.opendde.data.featurize_json`
+(`load_jobs` then `featurize_opendde_json`) after setting the six asset
+environment variables corresponding to the CLI options above; the standalone
+`opendde-jax-verify-inputs` command that used to wrap that loop was retired.
+The checked matrix covers 8 JSON files and 10 jobs: all features are finite and
+no job imports torch -- `tests/models/opendde/test_featurize_json.py` holds that
+last property as a subprocess gate. OpenDDE 1.1.1
 performs a second sequence deduplication after Kalign realignment, so 5A9R is a
 duplicate of 5A9S in 9FM7 and 1QPZ is a duplicate of 1JFT in
 MGYP004658859411; each case has three coordinate-backed rows plus one zero

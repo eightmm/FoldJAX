@@ -1048,7 +1048,8 @@ def load_feature_archive(
     if table is None:
         raise ValueError(
             "OpenFold3 feature archive has no embedded chemistry table; "
-            "re-create it with openfold3-jax-featurize"
+            "re-create it with "
+            "foldjax.models.openfold3.data.featurize_query_with_metadata"
         )
     from foldjax.models.openfold3.data.validation import validate_features
 

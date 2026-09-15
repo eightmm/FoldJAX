@@ -825,7 +825,8 @@ def resolve_model_prefix(state: Mapping[str, Any], prefix: str | None = None) ->
     if detected is None:
         raise KeyError(
             "no pairformer_stack.blocks.* keys, so this is not an OpenFold3 "
-            "model checkpoint; inspect it with openfold3-jax-inspect-checkpoint"
+            "model checkpoint; inspect it with "
+            "foldjax.models.openfold3.bridge.checkpoint.describe"
         )
     return detected
 

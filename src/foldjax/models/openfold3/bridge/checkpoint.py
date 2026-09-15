@@ -131,3 +131,19 @@ def detect_fused_tri_mul(state: Mapping[str, np.ndarray]) -> bool | None:
     if unfused and not fused:
         return False
     return None
+
+
+def count_blocks(state: Mapping[str, np.ndarray], root: str) -> int | None:
+    """Return the number of ``root.N`` blocks, or ``None`` if ``root`` is absent.
+
+    Reports the depth a checkpoint was produced at, which is what
+    :data:`~foldjax.models.openfold3.inference.RELEASED_BLOCK_COUNTS` is
+    compared against before any parameter layout is assumed.
+    """
+    indices = set()
+    for key in state:
+        if f"{root}." in key:
+            tail = key.split(f"{root}.", 1)[1].split(".", 1)[0]
+            if tail.isdigit():
+                indices.add(int(tail))
+    return len(indices) or None

@@ -185,6 +185,57 @@ def test_openfold3_now_honours_the_msa_cap_it_used_to_refuse(tmp_path: Path) -> 
     assert OpenFold3Backend().apply_sampling(request)["max_msa_depth"] == 1024
 
 
+def test_openfold3_clamps_a_cap_above_the_released_msa_depth(tmp_path: Path) -> None:
+    """Above the released depth the cap is the released depth, not the request.
+
+    The weights were produced at 1024 rows; asking for more would compile a
+    program for rows the checkpoint has no profile for.
+    """
+    from foldjax.backends.openfold3 import OpenFold3Backend
+
+    backend = OpenFold3Backend()
+
+    def cap(depth: int) -> object:
+        request = PredictionRequest(
+            model="openfold3",
+            input=_job_file(tmp_path),
+            weights=_weights(tmp_path),
+            max_msa_depth=depth,
+        )
+        return backend.apply_sampling(request)["max_msa_depth"]
+
+    assert cap(128) == 128
+    assert cap(2048) == 1024
+
+
+def test_openfold3_translates_recycles_but_keeps_the_native_count(
+    tmp_path: Path,
+) -> None:
+    """The neutral knob counts recycles; the native option counts cycles.
+
+    Upstream's ``num_recycles`` is the number of trunk *passes*, one more than
+    the neutral knob's recycles, so the two spellings must not resolve alike.
+    """
+    from foldjax.backends.openfold3 import OpenFold3Backend
+
+    backend = OpenFold3Backend()
+    neutral = PredictionRequest(
+        model="openfold3",
+        input=_job_file(tmp_path),
+        weights=_weights(tmp_path),
+        num_recycles=3,
+    )
+    native = PredictionRequest(
+        model="openfold3",
+        input=_job_file(tmp_path),
+        weights=_weights(tmp_path),
+        options={"num_recycles": 3},
+    )
+
+    assert backend.apply_sampling(neutral)["num_recycles"] == 4
+    assert backend.apply_sampling(native)["num_recycles"] == 3
+
+
 def test_knobs_must_be_positive(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="num_samples must be at least 1"):
         PredictionRequest(model="opendde", input=_job_file(tmp_path), num_samples=0)

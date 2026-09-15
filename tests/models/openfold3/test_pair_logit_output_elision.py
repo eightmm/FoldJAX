@@ -18,6 +18,10 @@ from foldjax.models.openfold3.models.heads import (
     predicted_distance_error_head,
 )
 from foldjax.models.openfold3.models.primitives import LayerNormParams, LinearParams
+from foldjax.models.openfold3.output import (
+    DEFAULT_ARRAY_BUDGET_BYTES,
+    plan_returned_pair_logits,
+)
 
 SAMPLES = 5
 TOKENS = 32
@@ -155,3 +159,58 @@ def test_managed_budget_sink_boundaries(
     assert managed.returned_pair_logits == ()
     assert inference._sink_pae_metrics(direct) is default_sink
     assert inference._sink_pae_metrics(managed) is managed_sink
+
+
+def test_the_default_budget_is_what_the_config_plans_against() -> None:
+    """The writer cannot save an array the compiled graph never returned.
+
+    So the config's retention has to be the planner's answer for the same
+    budget, and lifting the budget has to restore every pair logit rather than
+    only the ones the writer would have kept.
+    """
+    n_token = 2076
+    budgeted = released_config(n_token=n_token, n_atom=1)
+    unrestricted = released_config(n_token=n_token, n_atom=1, max_array_bytes=None)
+
+    assert budgeted.returned_pair_logits == plan_returned_pair_logits(
+        n_token=n_token,
+        num_samples=budgeted.num_samples,
+        max_bytes=DEFAULT_ARRAY_BUDGET_BYTES,
+    )
+    assert budgeted.returned_pair_logits == ("distogram_logits",)
+    assert unrestricted.returned_pair_logits == (
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+    )
+    assert budgeted.returned_representations == ()
+    assert unrestricted.returned_representations == ()
+
+
+def test_pair_logit_planner_keeps_the_exact_budget_boundary() -> None:
+    """Exactly at the budget everything is kept; one byte under, PAE goes."""
+    n_token = 3
+    num_samples = 2
+    bins = 1
+    pair = n_token * n_token
+    pae_bytes = num_samples * pair * bins * 4
+    pde_bytes = pae_bytes
+    distogram_bytes = pair * bins * 4
+    exact_budget = 64 * 2**20 + pae_bytes + pde_bytes + distogram_bytes
+    kwargs = {
+        "n_token": n_token,
+        "num_samples": num_samples,
+        "pae_bins": bins,
+        "pde_bins": bins,
+        "distogram_bins": bins,
+    }
+
+    assert plan_returned_pair_logits(max_bytes=exact_budget, **kwargs) == (
+        "pae_logits",
+        "pde_logits",
+        "distogram_logits",
+    )
+    assert plan_returned_pair_logits(max_bytes=exact_budget - 1, **kwargs) == (
+        "pde_logits",
+        "distogram_logits",
+    )

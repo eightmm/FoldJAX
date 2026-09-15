@@ -24,8 +24,8 @@ Two properties matter more than the plumbing:
   the option reaches the compiler rather than only reaching ``jax.jit``.
 
 The rest is this port's own plumbing: which executables carry it, which paths
-refuse it because they own no executable, and how it travels from a request or
-argv into the graph identity.
+refuse it because they own no executable, and how it travels from a request
+into the graph identity.
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ from foldjax.backends import openfold3 as openfold3_backend
 from foldjax.backends.openfold3 import OpenFold3Backend
 from foldjax.models._compile_policy import DETERMINISTIC_COMPILER_OPTIONS
 from foldjax.models.openfold3 import inference, streaming
-from foldjax.models.openfold3.cli import predict as predict_cli
 from foldjax.schema import PredictionRequest
 from tests.models.openfold3.test_stable_compile import _config, _table
 
@@ -233,53 +232,3 @@ def test_off_shares_the_cache_namespace_with_an_unasked_run(tmp_path: Path) -> N
     assert "deterministic" not in off
     assert on["deterministic"] is True
     assert on != unset
-
-
-def test_the_cli_flag_defaults_to_off() -> None:
-    """Off is the shipped run, so it is the parser's answer when unasked."""
-    parser = predict_cli._parser()
-    action = next(
-        action for action in parser._actions if action.dest == "deterministic_ops"
-    )
-
-    assert action.default == "off"
-    assert tuple(action.choices) == ("off", "on")
-
-
-def test_the_cli_rejects_a_value_outside_the_vocabulary(tmp_path: Path) -> None:
-    """Not a silent off: a misspelled value must not look like a normal run."""
-    with pytest.raises(SystemExit) as failure:
-        predict_cli._parser().parse_args(
-            [
-                str(tmp_path / "features.npz"),
-                "--checkpoint",
-                str(tmp_path / "weights.pt"),
-                "-o",
-                str(tmp_path / "out"),
-                "--deterministic-ops",
-                "yes",
-            ]
-        )
-
-    assert failure.value.code == 2
-
-
-def test_the_cli_refuses_the_eager_path_before_reading_features(
-    tmp_path: Path, capsys
-) -> None:
-    """``--no-compile`` is the CLI's eager path; the pair cannot be honoured."""
-    exit_code = predict_cli.main(
-        [
-            str(tmp_path / "missing.npz"),
-            "--checkpoint",
-            str(tmp_path / "weights.pt"),
-            "-o",
-            str(tmp_path / "out"),
-            "--no-compile",
-            "--deterministic-ops",
-            "on",
-        ]
-    )
-
-    assert exit_code == 1
-    assert "deterministic reductions" in capsys.readouterr().out

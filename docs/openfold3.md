@@ -8,11 +8,22 @@ uv sync --extra openfold3-preprocess
 foldjax predict --model openfold3 --input job.yaml
 ```
 
-The same Torch-free NumPy/JAX featurizer is also available as a split step when
-you want to reuse an archive and its embedded chemistry table:
+The same Torch-free NumPy/JAX featurizer is also reachable directly when you
+want to build an archive once and reuse it, chemistry table included:
+
+```python
+from foldjax.models.openfold3.data import (
+    featurize_query_with_metadata,
+    save_features,
+)
+
+features, output_metadata = featurize_query_with_metadata(
+    "openfold3-query.json", query_id="ubq"
+)
+save_features(features, "features.npz", output_metadata=output_metadata)
+```
 
 ```bash
-openfold3-jax-featurize openfold3-query.json -o features.npz
 foldjax predict --model openfold3 --input features.npz \
   --input-format openfold3-features
 ```
@@ -224,15 +235,15 @@ persistent cache is on by default and namespaced per model, weight identity and
 compile-relevant options. An eligible, readable entry can reuse that compilation
 in a later process; a missing or rejected entry recompiles it.
 
-The standalone `openfold3-jax-predict` command also enables the persistent
-cache by default. Use `--cache-dir` to choose its location or `--no-cache` for
-an intentionally ephemeral run.
+Use `foldjax predict --cache-dir` to choose its location or `--no-cache` for an
+intentionally ephemeral run.
 
-Its raw-array output has an explicit 4 GiB default budget. Before compilation,
-that same budget removes PAE, PDE, or distogram per-bin logits that the writer
-would discard, so large unused arrays do not cross the JIT boundary. Pass
-`--all-arrays` to disable both limits and retain all three distributions. This
-does not include trunk representations, which remain controlled separately by
+Raw-array output has an explicit 4 GiB default budget. Before compilation, that
+same budget removes PAE, PDE, or distogram per-bin logits that the writer would
+discard, so large unused arrays do not cross the JIT boundary. Pass
+`-o all_arrays=true` to disable both limits and retain all three distributions
+(`released_config(max_array_bytes=None)` from the Python API). This does not
+include trunk representations, which remain controlled separately by
 `--representations`. At the released five samples and 64 bins, the three pair
 distributions total more than 10 GiB at 2,000 tokens, so the override can raise
 device and host memory as well as output size substantially.

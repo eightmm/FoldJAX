@@ -189,6 +189,51 @@ unless it says so here, in its own paragraph.
   omitted `dtype` and an explicit `bfloat16` name one namespace. The cost is
   one cold compile per shape.
 
+### Removed
+
+- **The six standalone native CLIs are gone, as an interface removal.** The
+  console scripts `openfold3-jax-predict`, `openfold3-jax-verify-checkpoint`,
+  `openfold3-jax-featurize`, `openfold3-jax-inspect-checkpoint`,
+  `opendde-jax-verify-inputs` and `protenix-jax-static-infer` no longer exist,
+  and neither do their modules: `foldjax.models.openfold3.cli` is removed
+  entirely, along with `foldjax.models.opendde.cli.verify_inputs` and
+  `foldjax.models.protenix.cli.static_infer`. Importing any of them now raises
+  `ModuleNotFoundError`.
+
+  None of the six was the unified path. `opendde-jax-predict` and
+  `protenix-jax-predict` stay, because `foldjax predict` *is* those two --
+  the backend renders argv and calls their `main()` in-process -- and the
+  remaining export/inspection scripts stay as they were.
+
+  What replaces each:
+
+  - `openfold3-jax-predict` -> `foldjax predict --model openfold3`, including
+    `--input-format openfold3-features` for a feature archive. Its
+    `--all-arrays` is `-o all_arrays=true`; `--cache-dir` / `--no-cache` are
+    the unified flags of the same name. `--repeats` and `--no-compile` were
+    measurement conveniences and have no unified equivalent.
+  - `openfold3-jax-featurize` -> `foldjax predict` featurizes raw jobs itself;
+    to build an archive explicitly, call
+    `foldjax.models.openfold3.data.featurize_query_with_metadata` and
+    `save_features` (and `attach_msas` for `--msa-server`).
+  - `openfold3-jax-verify-checkpoint` -> `foldjax doctor` for the environment
+    and asset side; for the graph side, compare
+    `foldjax.models.openfold3.bridge.checkpoint.count_blocks` against
+    `RELEASED_BLOCK_COUNTS` and then call `map_inference_params`, which is
+    exactly what the command did.
+  - `openfold3-jax-inspect-checkpoint` ->
+    `foldjax.models.openfold3.bridge.checkpoint`'s `describe`, `iter_shapes`,
+    `detect_fused_tri_mul` and `count_blocks`.
+  - `opendde-jax-verify-inputs` -> `foldjax.models.opendde.data.featurize_json`
+    (`load_jobs`, `featurize_opendde_json`) over the input directory.
+  - `protenix-jax-static-infer` -> `protenix-jax-predict`, which it had been a
+    deprecated alias for.
+
+  `count_blocks` moved from the retired inspection CLI to
+  `foldjax.models.openfold3.bridge.checkpoint`, beside `describe` and
+  `iter_shapes`, so the operation and its test outlive the command that used to
+  own them.
+
 ### Validation checkpoint (2026-09-05)
 
 - Recorded independent preprocessing across 202 comparable model/input cells,

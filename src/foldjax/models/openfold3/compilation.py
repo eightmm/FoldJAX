@@ -31,10 +31,11 @@ def default_cache_dir() -> Path:
     standalone package keeps using it rather than silently recompiling into a
     new location.
 
-    The native ``openfold3-jax-predict`` path uses this default. Predictions
-    driven through `foldjax predict` are given a cache directory that
-    `api.predict` has already namespaced per model, weight identity, and
-    compile-relevant options.
+    Callers of this port's own Python API -- `enable_compilation_cache` with
+    no directory -- get this default. Predictions driven through
+    `foldjax predict` are given a cache directory that `api.predict` has
+    already namespaced per model, weight identity, and compile-relevant
+    options.
     """
     explicit = os.environ.get("OPENFOLD3_JAX_CACHE")
     if explicit:

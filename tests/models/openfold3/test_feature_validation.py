@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from foldjax.models.openfold3.data import MODEL_FEATURES, load_feature_archive
 from foldjax.models.openfold3.data.featurize import load_features, save_features
 from foldjax.models.openfold3.data.validation import validate_features
 from foldjax.models.openfold3.models.representative_atoms import (
@@ -128,4 +129,48 @@ def test_archive_loader_enforces_the_feature_abi(tmp_path) -> None:
     )
     path = save_features(features, tmp_path / "invalid.npz", representative_atoms=table)
     with pytest.raises(ValueError, match="token_bonds.*expected"):
+        load_features(path)
+
+
+def test_an_incomplete_archive_names_what_it_lacks(tmp_path) -> None:
+    """A missing feature must fail at load, naming the absent features.
+
+    Left to the model it surfaces as a ``KeyError`` inside a traced function,
+    minutes into a compile, naming one feature rather than the file that lacks
+    every other one.
+    """
+    path = tmp_path / "features.npz"
+    np.savez(path, token_mask=np.ones((1, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="feature archive is missing") as error:
+        load_feature_archive(path)
+
+    # The message has to name what is absent, and there is a lot absent here.
+    assert "ref_pos" in str(error.value)
+    assert len(MODEL_FEATURES) > 30
+
+
+def test_archive_requires_an_embedded_chemistry_table(tmp_path) -> None:
+    """Without it the representative-atom table would have to be guessed."""
+    path = tmp_path / "legacy.npz"
+    np.savez(path, **_features())
+
+    with pytest.raises(ValueError, match="no embedded chemistry table"):
+        load_features(path)
+
+
+def test_archive_rejects_a_malformed_embedded_chemistry_table(tmp_path) -> None:
+    """A truncated column is refused rather than read as a shorter table."""
+    table = RepresentativeAtomTable(
+        *(np.zeros(32, dtype=np.float32) for _ in RepresentativeAtomTable._fields)
+    )
+    path = save_features(
+        _features(), tmp_path / "bad.npz", representative_atoms=table
+    )
+    with np.load(path, allow_pickle=False) as loaded:
+        payload = {name: loaded[name] for name in loaded.files}
+    payload["chemistry.cb_mask"] = np.zeros(31, dtype=np.float32)
+    np.savez(path, **payload)
+
+    with pytest.raises(ValueError, match="no embedded chemistry table"):
         load_features(path)

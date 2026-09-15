@@ -1495,11 +1495,13 @@ def released_config(
     returns all three distributions; callers must also give the writer the same
     value if they intend to persist them.
 
-    Verify against the checkpoint before trusting this: run
-    ``openfold3-jax-inspect-checkpoint`` and check the block counts against
-    ``pairformer 48``, ``msa_module 4``, ``diffusion_transformer 24`` and
-    ``atom_transformer 3``. A mismatch means the weights use a different config
-    than upstream's default, and these values must not be used.
+    Verify against the checkpoint before trusting this: read its block counts
+    with :func:`~foldjax.models.openfold3.bridge.checkpoint.count_blocks` and
+    check them against ``pairformer 48``, ``msa_module 4``,
+    ``diffusion_transformer 24`` and ``atom_transformer 3`` -- the
+    :data:`RELEASED_BLOCK_COUNTS` mapping below. A mismatch means the weights
+    use a different config than upstream's default, and these values must not
+    be used.
     """
     # `memory_budget` decides *whether* to block the row loop and this stores
     # what it decided: an int or None, the same field either way, so the

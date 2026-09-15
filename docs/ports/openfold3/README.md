@@ -275,7 +275,7 @@ mapping and can summarize one before any layout is assumed:
 
 ```python
 from foldjax.models.openfold3.bridge.checkpoint import (
-    describe, detect_fused_tri_mul, load_checkpoint,
+    count_blocks, describe, detect_fused_tri_mul, iter_shapes, load_checkpoint,
 )
 
 state = load_checkpoint("openfold3.safetensors")
@@ -283,15 +283,11 @@ print(describe(state, depth=2))        # top-level structure
 print(detect_fused_tri_mul(state))     # True / False / None
 ```
 
-One command surveys a checkpoint before anything is mapped:
-
-```bash
-openfold3-jax-inspect-checkpoint weights.safetensors --depth 2
-openfold3-jax-inspect-checkpoint weights.pt --grep pairformer --limit 20
-```
-
-It reports tensor and parameter counts, the top-level structure, per-stack block
-counts, and the triangular-multiplication layout.
+`iter_shapes(state, "pairformer")` filters key/shape pairs the same way, and
+`count_blocks(state, "pairformer_stack.blocks")` reports the depth the
+checkpoint was produced at. Together they survey a checkpoint -- top-level
+structure, per-stack tensor and block counts, and the triangular-multiplication
+layout -- before anything is mapped.
 
 **Every parameter of the released model is read by the inference path** (416 of
 416 unique tensors; the other 131 in a `state_dict` are `sample_diffusion`
@@ -332,14 +328,24 @@ written = write_prediction_outputs(prediction, batch, "out/", name="ubq")
 One mmCIF per diffusion sample with pLDDT in the B-factor column, a confidence JSON
 with per-sample pTM/ipTM/mean-pLDDT ranked by the AF3 ranking score, and the raw
 arrays. Atom identity is decoded back out of the features rather than tracked
-alongside them, so it cannot drift from what the model was given. `openfold3-jax-predict`
-does the same from a feature `.npz` and a checkpoint.
+alongside them, so it cannot drift from what the model was given. `foldjax
+predict --input-format openfold3-features` does the same from a feature `.npz`
+and a checkpoint.
 
 ## From a sequence
 
 ```bash
 uv sync --extra openfold3-preprocess    # NumPy/JAX raw-job featurization
-openfold3-jax-featurize openfold3-query.json -o ubq.npz
+```
+
+```python
+from foldjax.models.openfold3.data import (
+    featurize_query_with_metadata,
+    save_features,
+)
+
+features, metadata = featurize_query_with_metadata("openfold3-query.json")
+save_features(features, "ubq.npz", output_metadata=metadata)
 ```
 
 `openfold3-query.json` is upstream's native `{"queries": ...}` format, not
@@ -350,24 +356,31 @@ FoldJAX's common job schema. Alignments and templates ride along per chain:
   "sequence": "MQIFVK...", "main_msa_file_paths": ["aln/colabfold_main.a3m"]}]}}}
 ```
 
-Search alignments automatically with `--msa-server` (public ColabFold MMseqs2)
+Search alignments automatically with `attach_msas` (public ColabFold MMseqs2)
 or supply your own. The client lives in `foldjax.search`, shared with the other
 JAX ports rather than copied into each.
 
-```bash
-uv sync --extra openfold3-preprocess
-openfold3-jax-featurize openfold3-query.json -o ubq.npz --msa-server
+```python
+import json
+from pathlib import Path
+
+from foldjax.models.openfold3.data import attach_msas
+
+spec = attach_msas(
+    json.loads(Path("openfold3-query.json").read_text()),
+    alignment_dir="ubq.msa",
+)
 ```
 
-`--paired-msa` is off by default: pairing needs taxonomy-annotated headers, and an
+`paired=` is off by default: pairing needs taxonomy-annotated headers, and an
 alignment that cannot be paired collapses the MSA to the query sequence alone with
 no error at all.
 
 Alignment files are selected by **stem** -- `colabfold_main`, `uniref90_hits`, and
 the other database names -- because that is how upstream selects them; an
 unrecognized name is refused with the accepted list rather than silently ignored.
-With no alignments the MSA is the query alone and accuracy drops sharply, so both
-the featurizer and the CLI say so.
+With no alignments the MSA is the query alone and accuracy drops sharply, so the
+featurizer warns rather than folding a query-only alignment silently.
 
 Featurization uses FoldJAX's one-query NumPy/JAX orchestration while reusing the
 vendored publisher chemistry and parsing routines. It does not instantiate the
@@ -415,9 +428,9 @@ its values changes the result without changing the graph. `run.lower(...).compil
 keeps the same public `(key, batch, params)` call shape and recreates the exact CP
 placement selected during lowering.
 
-**Cache the compile.** The FoldJAX backend and `openfold3-jax-predict` enable a
-persistent cache by default because every uncached process pays this dominant
-cost again. Direct library callers opt in explicitly:
+**Cache the compile.** The FoldJAX backend enables a persistent cache by
+default because every uncached process pays this dominant cost again. Direct
+library callers opt in explicitly:
 
 ```python
 from foldjax.models.openfold3 import enable_compilation_cache
@@ -458,21 +471,27 @@ yet fit on a 96 GiB card at that revision. Current FoldJAX benchmark rows reach
 See the current guide for present coverage. `PROJECT.md` retains the historical
 gap list that applied when this measurement was written.
 
-Once weights are available, a second command runs every check that needs them, in
-the order that fails cheapest first — block counts against the released
-architecture, then the trunk mapper, then optionally the forward pass:
+Once weights are available, the checks that need them run in the order that
+fails cheapest first — block counts against the released architecture, then the
+trunk mapper, then the forward pass:
 
-```bash
-openfold3-jax-verify-checkpoint of3-ob-2025-06-30-174k.pt
-openfold3-jax-verify-checkpoint of3-ob-2025-06-30-174k.pt --batch batch.npz --tokens 384 --atoms 3072
+```python
+from foldjax.models.openfold3.bridge.checkpoint import count_blocks, load_checkpoint
+from foldjax.models.openfold3.bridge.torch_mapping import map_inference_params
+from foldjax.models.openfold3.inference import RELEASED_BLOCK_COUNTS
+
+state = load_checkpoint("of3-ob-2025-06-30-174k.pt")
+for root, expected in RELEASED_BLOCK_COUNTS.items():
+    assert count_blocks(state, root) == expected, root
+params = map_inference_params(state, None)   # raises on any unmapped group
 ```
 
-It exits non-zero on a block-count mismatch rather than mapping a checkpoint the
-released config does not describe, and reports the shape and finiteness of every
-`Prediction` field. It does **not** check structural accuracy — that needs a
-reference structure, so RMSD and clashes are still unverified. `--batch` takes a featurized batch as `.npz`;
-build one with `openfold3-jax-featurize` or pass a raw job through the common
-FoldJAX prediction API.
+Stop at the block-count step rather than mapping a checkpoint the released
+config does not describe; `map_inference_params` then raises on a missing or
+unexpectedly-shaped key in any of the seven parameter groups. Neither checks
+structural accuracy — that needs a reference structure, so RMSD and clashes are
+still unverified. `foldjax doctor` reports the environment and asset side of the
+same question without loading the graph.
 
 `safetensors` uses its NumPy loader; a `.pt`/`.ckpt` file uses FoldJAX's
 restricted archive reader and does not import torch. Publisher-reference parity

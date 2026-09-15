@@ -1,3 +1,12 @@
+"""The native Protenix prediction CLI, and the static predict path it drives.
+
+`foldjax predict --model protenix` renders argv and calls this ``main`` in
+process, so what is pinned here is the unified path's own behaviour: preprocessing
+order, ESM provider lifetime, weight-size checks, and the arguments that reach
+`models/predict.py`. The file was named after `protenix-jax-static-infer`, a
+deprecated alias that has since been retired.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +17,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.protenix.bridge.weights_io import save_native_weights
-from foldjax.models.protenix.cli.static_infer import main
+from foldjax.models.protenix.cli.predict import main
 from foldjax.models.protenix.data.featurize_json import featurize_protein_json
 from foldjax.models.protenix.data.static_io import save_static_feature_npz
 from foldjax.models.protenix.models.primitives.primitives import LinearParams
@@ -17,7 +26,7 @@ from foldjax.models.protenix.models.trunk_blocks.embedders import RelativePositi
 from .test_model import _toy_features, _toy_params
 
 
-def test_static_infer_help_exits_without_runtime_imports(capsys) -> None:
+def test_predict_help_exits_without_runtime_imports(capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["--help"])
 
@@ -46,7 +55,7 @@ def test_static_infer_help_exits_without_runtime_imports(capsys) -> None:
     assert "--prewarm-only" in out
 
 
-def test_static_infer_rejects_non_object_guidance_config(tmp_path) -> None:
+def test_predict_rejects_non_object_guidance_config(tmp_path) -> None:
     config = tmp_path / "guidance.json"
     config.write_text("[]", encoding="utf-8")
 
@@ -103,7 +112,7 @@ def test_the_model_name_must_be_known_or_explicitly_waived(tmp_path) -> None:
         assert data["coordinate"].shape == (1, 3, 3)
 
 
-def test_static_infer_runs_with_native_weights(tmp_path) -> None:
+def test_predict_runs_with_native_weights(tmp_path) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     features_path = tmp_path / "toy_features.npz"
     out_path = tmp_path / "out.npz"
@@ -214,7 +223,7 @@ def test_prepared_params_keep_native_prediction_bytes_identical(
             assert loaded[name].tobytes() == injected[name].tobytes(), name
 
 
-def test_static_infer_prewarm_populates_graph_without_writing_output(
+def test_predict_prewarm_populates_graph_without_writing_output(
     tmp_path, monkeypatch, capsys
 ) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
@@ -315,7 +324,7 @@ def test_output_format_selects_the_static_confidence_detail_profile(
     assert captured["return_confidence_details"] is expected_details
 
 
-def test_static_infer_routes_compact_msa_storage_to_the_model(
+def test_predict_routes_compact_msa_storage_to_the_model(
     tmp_path, monkeypatch
 ) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
@@ -461,7 +470,7 @@ def _assert_diffusion_seed(captured, expected: int) -> None:
     assert np.array_equal(actual, data(jax.random.PRNGKey(expected))), actual
 
 
-def test_static_infer_passes_compact_cycle_msa_indices_to_the_model(
+def test_predict_passes_compact_cycle_msa_indices_to_the_model(
     tmp_path, monkeypatch
 ) -> None:
     sampled, captured, tape = _run_per_cycle_msa_draw(tmp_path, monkeypatch)
@@ -545,7 +554,7 @@ def test_the_adapter_renders_msa_seed_into_the_native_command(tmp_path, monkeypa
         backend.validate_native_options({"msa_seed": True})
 
 
-def test_static_infer_runs_from_sequence_json_features(tmp_path) -> None:
+def test_predict_runs_from_sequence_json_features(tmp_path) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     features_path = tmp_path / "json_features.npz"
     out_path = tmp_path / "out.npz"
@@ -598,7 +607,7 @@ def test_static_infer_runs_from_sequence_json_features(tmp_path) -> None:
         assert data["summary_plddt"].shape == (1,)
 
 
-def test_static_infer_runs_directly_from_sequence_json(tmp_path) -> None:
+def test_predict_runs_directly_from_sequence_json(tmp_path) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     input_json = tmp_path / "input.json"
     out_path = tmp_path / "out.npz"
@@ -646,7 +655,7 @@ def test_static_infer_runs_directly_from_sequence_json(tmp_path) -> None:
         assert data["summary_plddt"].shape == (1,)
 
 
-def test_static_infer_processes_every_job_and_seed(tmp_path, monkeypatch) -> None:
+def test_predict_processes_every_job_and_seed(tmp_path, monkeypatch) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     input_json = tmp_path / "input.json"
     out_dir = tmp_path / "outputs"
@@ -715,7 +724,7 @@ def test_static_infer_processes_every_job_and_seed(tmp_path, monkeypatch) -> Non
             assert (prediction_dir / "raw_output.npz").is_file()
 
 
-def test_static_infer_uses_model_seeds_from_direct_json(tmp_path, monkeypatch) -> None:
+def test_predict_uses_model_seeds_from_direct_json(tmp_path, monkeypatch) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
     input_json = tmp_path / "input.json"
     out_dir = tmp_path / "outputs"
@@ -776,7 +785,7 @@ def test_static_infer_uses_model_seeds_from_direct_json(tmp_path, monkeypatch) -
         ),
     ],
 )
-def test_static_infer_uses_model_sampler_defaults_unless_overridden(
+def test_predict_uses_model_sampler_defaults_unless_overridden(
     tmp_path, monkeypatch, extra_args, expected
 ) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
@@ -831,7 +840,7 @@ def test_static_infer_uses_model_sampler_defaults_unless_overridden(
         ("protenix_mini_ism_v0.5.0", "esm2-3b-ism"),
     ],
 )
-def test_static_infer_adds_esm_for_esm_model(
+def test_predict_adds_esm_for_esm_model(
     tmp_path, monkeypatch, model_name, provider_name
 ) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
@@ -891,7 +900,7 @@ def test_static_infer_adds_esm_for_esm_model(
     assert captured["esm_token_embedding"].shape == (1, 2560)
 
 
-def test_static_infer_releases_esm_provider_before_structure_weights(
+def test_predict_releases_esm_provider_before_structure_weights(
     tmp_path, monkeypatch
 ) -> None:
     from foldjax.models.protenix.cli.predict import main as predict_main
@@ -949,7 +958,7 @@ def test_static_infer_releases_esm_provider_before_structure_weights(
     assert provider_refs[0]() is None
 
 
-def test_static_infer_pads_mini_esm_language_model_and_reports_profile(
+def test_predict_pads_mini_esm_language_model_and_reports_profile(
     tmp_path, monkeypatch
 ) -> None:
     from foldjax.models.protenix.cli.predict import main as predict_main
@@ -1126,7 +1135,7 @@ def test_static_esm_features_bypass_language_model_checkpoint(
 
 
 @pytest.mark.parametrize("mode", ["local", "remote"])
-def test_static_infer_applies_enabled_msa_search_before_featurization(
+def test_predict_applies_enabled_msa_search_before_featurization(
     tmp_path, monkeypatch, mode
 ) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
@@ -1208,7 +1217,7 @@ def test_static_infer_applies_enabled_msa_search_before_featurization(
     assert any(call[0] == "apply" for call in calls)
 
 
-def test_static_infer_orders_msa_template_and_rna_preprocessing(
+def test_predict_orders_msa_template_and_rna_preprocessing(
     tmp_path, monkeypatch
 ) -> None:
     weights_path = tmp_path / "toy_weights.pkl"
@@ -1288,7 +1297,7 @@ def test_static_infer_orders_msa_template_and_rna_preprocessing(
     assert applies == ["msa-apply", "template-apply", "rna-apply"]
 
 
-def test_static_infer_checks_v2_size_before_loading_weights(tmp_path) -> None:
+def test_predict_checks_v2_size_before_loading_weights(tmp_path) -> None:
     """The size check runs first, and no longer stops the run by itself.
 
     It used to refuse above 2,560 tokens. That limit is upstream's memory

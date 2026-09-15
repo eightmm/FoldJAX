@@ -19,6 +19,7 @@ import pytest
 from foldjax.models.openfold3.data import (
     MODEL_FEATURES,
     featurize_query,
+    normalize_asym_ids,
     pad_features,
     save_features,
 )
@@ -126,6 +127,73 @@ def test_padding_preserves_the_masks(features: dict) -> None:
     assert float(padded["max_atom_per_token_mask"].sum()) == float(
         features["atom_mask"].sum()
     )
+
+
+@pytest.mark.parametrize("size", [32, 39, 119])
+def test_padding_uses_declared_axes_when_dimensions_collide(size: int) -> None:
+    """Fixed channel widths and equal token/atom counts remain unambiguous.
+
+    At these sizes the token count equals a fixed channel width -- 32 restypes,
+    39 distogram bins, 119 elements -- so a padder that inferred which axis to
+    grow from the array's own shape would grow the channel axis instead.
+    """
+    features = {
+        "token_mask": np.ones((1, size), dtype=np.float32),
+        "atom_mask": np.ones((1, size), dtype=np.float32),
+        "num_atoms_per_token": np.zeros((1, size), dtype=np.int32),
+        "restype": np.zeros((1, size, 32), dtype=np.float32),
+        "ref_pos": np.zeros((1, size, 3), dtype=np.float32),
+        "ref_element": np.zeros((1, size, 119), dtype=np.float32),
+        "template_distogram": np.zeros(
+            (1, 1, size, size, 39), dtype=np.float32
+        ),
+        "token_bonds": np.zeros((1, size, size), dtype=np.float32),
+        "max_atom_per_token_mask": np.zeros((1, size * 23), dtype=np.float32),
+    }
+
+    padded = pad_features(features, n_token=size + 1, n_atom=size + 2)
+
+    assert padded["token_mask"].shape == (1, size + 1)
+    assert padded["atom_mask"].shape == (1, size + 2)
+    assert padded["restype"].shape == (1, size + 1, 32)
+    assert padded["ref_pos"].shape == (1, size + 2, 3)
+    assert padded["ref_element"].shape == (1, size + 2, 119)
+    assert padded["template_distogram"].shape == (
+        1,
+        1,
+        size + 1,
+        size + 1,
+        39,
+    )
+    assert padded["token_bonds"].shape == (1, size + 1, size + 1)
+
+
+def test_chain_ids_are_normalized_from_real_tokens_only() -> None:
+    """``asym_id`` becomes a dense 0-based index over the *unpadded* chains.
+
+    The static chain count the graph compiles against comes from the same call,
+    so a padded token counted as a chain would compile a program for a molecule
+    that is not there.
+    """
+    features = {
+        "token_mask": np.asarray([[1, 1, 1, 0, 0]], dtype=np.float32),
+        "asym_id": np.asarray([[9, 3, 9, -7, 99]], dtype=np.int64),
+    }
+
+    normalized, n_chain = normalize_asym_ids(features)
+
+    np.testing.assert_array_equal(normalized["asym_id"], [[1, 0, 1, 0, 0]])
+    np.testing.assert_array_equal(features["asym_id"], [[9, 3, 9, -7, 99]])
+    assert n_chain == 2
+
+    monomer, monomer_n_chain = normalize_asym_ids(
+        {
+            "token_mask": np.asarray([[1, 1, 0]], dtype=np.float32),
+            "asym_id": np.asarray([[42, 42, 999]], dtype=np.int64),
+        }
+    )
+    np.testing.assert_array_equal(monomer["asym_id"], [[0, 0, 0]])
+    assert monomer_n_chain == 1
 
 
 def test_padding_down_is_refused(features: dict) -> None:

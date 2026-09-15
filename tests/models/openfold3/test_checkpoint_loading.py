@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from foldjax.models.openfold3.bridge.checkpoint import (
+    count_blocks,
     describe,
     detect_fused_tri_mul,
     iter_shapes,
@@ -91,6 +92,24 @@ def test_iter_shapes_filters_and_sorts() -> None:
         "linear_b_p",
     ]
     assert all(shape == (4, 4) for _key, shape in pairs)
+
+
+def test_counts_blocks_per_stack() -> None:
+    """The depth a checkpoint was produced at, read off its keys.
+
+    Distinct indices rather than matching keys: every block contributes many
+    tensors, so counting keys would report the tensor count per stack.
+    """
+    state = {
+        "trunk.pairformer_stack.blocks.0.tri_mul_out.linear_a_p.weight": np.zeros(1),
+        "trunk.pairformer_stack.blocks.0.tri_mul_out.linear_b_p.weight": np.zeros(1),
+        "trunk.pairformer_stack.blocks.1.tri_mul_out.linear_a_p.weight": np.zeros(1),
+        "trunk.msa_module.blocks.0.outer_product_mean.linear_1.weight": np.zeros(1),
+    }
+
+    assert count_blocks(state, "pairformer_stack.blocks") == 2
+    assert count_blocks(state, "msa_module.blocks") == 1
+    assert count_blocks(state, "template_pair_stack.blocks") is None
 
 
 def test_detects_the_unfused_layout() -> None:

@@ -956,7 +956,8 @@ def write_prediction_outputs(
             "OpenFold3 features have no exact output metadata; using the canonical "
             "feature fallback, which may label ligands or modified residues as UNK "
             "and cannot emit covalent bonds. Re-create the archive with "
-            "openfold3-jax-featurize for chemically faithful output.",
+            "foldjax.models.openfold3.data.featurize_query_with_metadata "
+            "for chemically faithful output.",
             RuntimeWarning,
             stacklevel=2,
         )
