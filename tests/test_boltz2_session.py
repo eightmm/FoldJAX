@@ -220,7 +220,10 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                     write_fmt=None,
                     _runtime=backend,
                     cp_devices=4,
-                    cp_layout="auto" if seed == 0 else "1d",
+                    # Two spellings of one topology: on four devices `auto`
+                    # resolves to the square grid on this port, so these two
+                    # runs must share one loaded parameter set and one trace.
+                    cp_layout="auto" if seed == 0 else "2d",
                     cp_atom_windows=False,
                     attention_backend="xla",
                     triangle_backend="xla",
@@ -241,7 +244,10 @@ _FORCED_CP_SESSION_PROBE = textwrap.dedent(
                 write_fmt=None,
                 _runtime=backend,
                 cp_devices=4,
-                cp_layout="2d",
+                # And the other topology, which is the row mesh now that the
+                # grid is what an omitted layout builds: a second load and a
+                # second trace.
+                cp_layout="1d",
                 cp_atom_windows=False,
                 attention_backend="xla",
                 triangle_backend="xla",
@@ -368,8 +374,11 @@ def test_cache_defaults_are_pinned_to_the_native_predict_signature() -> None:
     for name, expected in released.items():
         assert type(actual[name]) is type(expected)
     assert actual == released
-    for cp_devices in (1, 2, 4, 9):
-        assert native_api._resolve_cp_layout("auto", cp_devices) == "1d"
+    # `cp_layout` has no released default to pin against the signature: the
+    # resolver expands `auto` per device count, to the square grid where the
+    # count is a square and the 1-D mesh otherwise.
+    for cp_devices, expected in ((1, "1d"), (2, "1d"), (3, "1d"), (4, "2d"), (9, "2d")):
+        assert native_api._resolve_cp_layout("auto", cp_devices) == expected
         assert native_api._resolve_cp_layout("1d", cp_devices) == "1d"
 
 

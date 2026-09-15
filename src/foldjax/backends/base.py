@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from foldjax import execution, memory_policy
+from foldjax.padding import square_grid_auto_layout
 from foldjax.schema import (
     ModelCapabilities,
     PredictionRequest,
@@ -71,6 +72,28 @@ def validate_memory_policy_options(options: Mapping[str, Any]) -> None:
     """
     memory_policy.parse_check_mode(options.get("memory_check"))
     memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
+
+
+def square_grid_cp_layout(options: Mapping[str, Any]) -> str | None:
+    """The layout a square-grid port's resolver builds for this request.
+
+    ``None`` when there is no distributed layout to name: a serial request, and
+    a ``cp_devices`` this adapter cannot read as a device count. A malformed
+    count then keeps its own cache namespace rather than borrowing a resolved
+    one, and the port itself reports the value.
+
+    For OpenDDE and Boltz-2 an omitted ``cp_layout`` resolves to the square
+    grid on a perfect-square count (`models/opendde/models/model.py`,
+    `models/boltz2/api.py`), so both the recorded namespace and the padding
+    alignment have to be resolved here rather than assumed one-dimensional.
+    An explicit spelling is returned as written, including one the port will
+    refuse, because it is the request's own identity.
+    """
+    devices = options.get("cp_devices", 1)
+    if isinstance(devices, bool) or not isinstance(devices, int) or devices <= 1:
+        return None
+    layout = str(options.get("cp_layout", "auto"))
+    return square_grid_auto_layout(devices) if layout == "auto" else layout
 
 
 class Backend(ABC):

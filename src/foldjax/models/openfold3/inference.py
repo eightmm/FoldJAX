@@ -198,10 +198,11 @@ class InferenceConfig(NamedTuple):
     #: rows only; ``"2d"`` is Fold-CP's square grid, which splits columns too
     #: and drops the per-device pair cost from ``O(N^2/P)`` with a full-width
     #: row of tiles to ``O(N^2/P)`` outright, at the price of a Cannon ring in
-    #: the triangle multiplication. ``"auto"`` currently resolves to ``"1d"``
-    #: whatever the shard count -- see :func:`resolve_cp_layout` for why the
-    #: better layout is not yet the default. ``"2d"`` needs a square shard
-    #: count, which is the only shape the ring schedules accept.
+    #: the triangle multiplication. ``"auto"`` resolves to ``"1d"`` whatever
+    #: the shard count on this port -- see :func:`resolve_cp_layout` for why
+    #: the better layout is not its default, while it is OpenDDE's and
+    #: Boltz-2's. ``"2d"`` needs a square shard count, which is the only shape
+    #: the ring schedules accept.
     cp_layout: str = "auto"
     #: Split the diffusion atom graph -- the atom-pair block cache, both atom
     #: transformer stacks, and the atom<->token routing -- over the CP rows
@@ -1603,13 +1604,16 @@ def resolve_cp_layout(config: InferenceConfig) -> str:
     """Turn ``config.cp_layout`` into a layout :func:`context_parallel` accepts.
 
     ``"auto"`` stays on the 1-D layout. The square grid is the better design
-    and is verified on CPU meshes, but every published measurement of this
-    feature was taken on the 1-D layout, and a default that silently changes
-    the program would make those numbers describe a configuration nobody can
-    reproduce; it flips once the square grid has its own GPU evidence. An
-    explicit ``"1d"``/``"2d"`` is passed through and validated by
-    ``context_parallel``, so ``"2d"`` on a non-square shard count still fails
-    loudly instead of quietly falling back.
+    and is verified on CPU meshes, but it has no GPU measurement on this port:
+    the four-card deployment node measured OpenDDE and Boltz-2, whose ``auto``
+    now picks the grid on a perfect-square count
+    (`foldjax.padding.square_grid_auto_layout`), and Protenix, which measured
+    better on the 1-D mesh. Until OpenFold3 has its own numbers, a default that
+    silently changed the program would make every published figure for this
+    port describe a configuration nobody measured. An explicit
+    ``"1d"``/``"2d"`` is passed through and validated by ``context_parallel``,
+    so ``"2d"`` on a non-square shard count still fails loudly instead of
+    quietly falling back.
     """
     if config.cp_layout != "auto":
         return config.cp_layout

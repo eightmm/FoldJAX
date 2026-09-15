@@ -17,6 +17,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    square_grid_cp_layout,
     validate_memory_policy_options,
 )
 from foldjax.execution import DETERMINISTIC_API_OPTION, auto_diffusion_chunk_size
@@ -523,12 +524,21 @@ class Boltz2Backend(Backend):
         The native API resolves omitted options to these exact values before it
         builds either retained runner identity.  Naming them explicitly must
         therefore not select another persistent cache directory.  Likewise,
-        its context-parallel resolver maps both ``auto`` and ``1d`` to ``1d``
-        for serial and multi-device runs.  Other conditional aliases remain
-        distinct here even where a current control-flow branch ignores them.
+        its context-parallel resolver maps ``auto`` and ``1d`` to ``1d`` on a
+        serial run, and on a distributed one the resolved layout is recorded
+        instead: ``auto`` is the square grid on a perfect-square device count
+        (``api._resolve_cp_layout``), so an omitted layout and an explicit
+        ``1d`` on four devices are two programs and absence has to keep one
+        meaning.  Other conditional aliases remain distinct here even where a
+        current control-flow branch ignores them.
         """
 
         profile = super().cache_profile(request)
+        # Read before the strips below remove the spelling: `auto` and `1d`
+        # are the same 1-D program on a non-square count and two different
+        # programs on a square one, so which of them was asked for cannot be
+        # recovered once both are stripped.
+        resolved_cp_layout = square_grid_cp_layout(profile)
         resolved_attention = profile.get(
             "attention_backend", _RELEASED_COMPILE_DEFAULTS["attention_backend"]
         )
@@ -623,6 +633,8 @@ class Boltz2Backend(Backend):
         )
         if profile.get("cp_layout") == "1d":
             profile.pop("cp_layout")
+        if resolved_cp_layout is not None:
+            profile["cp_layout"] = resolved_cp_layout
         return profile
 
     def _drop_runner(self, role: str) -> None:
@@ -1009,16 +1021,21 @@ class Boltz2Backend(Backend):
             seed=request.seed,
             compile_cache=request.cache_dir,
             # The mesh this run will build decides what the automatic token and
-            # atom targets have to divide.  The native path aligns the resolved
-            # plan again when it distributes the atom graph; both round to the
-            # same multiples, so the second pass finds nothing left to do.
+            # atom targets have to divide.  The layout is resolved rather than
+            # taken as spelled, because an omitted one builds the square grid
+            # on a perfect-square count and the grid aligns to its side: an
+            # omitted layout and an explicit `2d` therefore pad to the same
+            # shapes.  The native path aligns the resolved plan again when it
+            # distributes the atom graph; both round to the same multiples, so
+            # the second pass finds nothing left to do.
             padding=(
                 None
                 if request.padding is None
                 else cp_aligned_padding(
                     request.padding,
                     cp_devices=int(options.get("cp_devices", 1)),
-                    cp_layout=str(options.get("cp_layout", "auto")),
+                    cp_layout=square_grid_cp_layout(options)
+                    or str(options.get("cp_layout", "auto")),
                 )
             ),
             write_fmt=options.pop("write_fmt", "cif"),

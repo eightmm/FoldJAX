@@ -290,14 +290,21 @@ def test_single_shard_predict_flag_is_validated() -> None:
     [
         ("auto", 1, "1d"),
         ("auto", 2, "1d"),
-        ("auto", 4, "1d"),
-        ("auto", 9, "1d"),
+        ("auto", 3, "1d"),
+        ("auto", 4, "2d"),
+        ("auto", 9, "2d"),
         ("1d", 4, "1d"),
         ("2d", 4, "2d"),
     ],
 )
 def test_cp_layout_resolution(layout: str, devices: int, expected: str) -> None:
-    """``auto`` stays reproducible until square-grid GPU evidence is recorded."""
+    """``auto`` picks the grid on a square count and the 1-D mesh otherwise.
+
+    The grid is this port's default on four cards because it is what fits: a
+    2,096-token 5DEI runs at 16.6 GiB per device there against 19.0 in the 1-D
+    layout and 18.5 serial. An explicit spelling stays exactly as written, on
+    every count.
+    """
     from foldjax.models.boltz2.api import _resolve_cp_layout
 
     assert _resolve_cp_layout(layout, devices) == expected

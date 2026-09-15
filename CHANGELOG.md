@@ -48,6 +48,45 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **`cp_layout=auto` builds the square grid on OpenDDE and Boltz-2 when the
+  device count is a perfect square.** Four cards are a 2x2 mesh there unless
+  `cp_layout=1d` asks otherwise; nine are 3x3. Every other count stays
+  one-dimensional, Protenix and OpenFold3 keep `auto = 1d`, an explicit
+  `1d`/`2d` is unchanged everywhere, and `cp_devices=1` is the serial program
+  it always was.
+
+  The 1-D default was held because every published number for the feature had
+  been taken there. On the four-card deployment node (4 x 96 GiB, a 2,096-token
+  5DEI) the grid is now what fits: OpenDDE completes at 32.1 GiB per device
+  where the serial run, 1-D on two cards and 1-D on four cards all run out of
+  memory, at 0.59-0.75 A CA RMSD to the deposited structure against a 0.007 A
+  two-process floor; Boltz-2 runs at 16.6 GiB per device against 19.0 in the
+  1-D layout and 18.5 serial, with coordinates within 0.11 A of its serial run
+  on one sample and deposited RMSD unchanged to two decimals. Protenix measured
+  the other way on the same node -- 11.6 GiB against 10.7 -- so it keeps rows,
+  and OpenFold3's grid is unmeasured there.
+
+  **The grid is slower**: Boltz-2 at this size costs about 3.5x the serial wall
+  time. It is chosen for the memory ceiling, which is what context parallelism
+  exists for here -- fitting targets that otherwise do not run -- so ask for
+  `1d` on a square count when the job already fits and wall time is what
+  matters.
+
+  Two consequences to expect. A distributed run now records the layout it
+  resolved in its compile-cache namespace rather than relying on `auto` and
+  `1d` naming one mesh: on a square count an omitted layout shares its
+  namespace with an explicit `2d` and an explicit `1d` gets its own, a
+  non-square distributed run records `1d` where it recorded nothing before (so
+  its warm cache is cold once), and a serial run keeps exactly the namespace it
+  had. And automatic padding follows the resolved layout, so an omitted layout
+  and an explicit `2d` pad to the same shapes -- a 2x2 grid aligns to its side
+  rather than to the device count. `cp_layout=2d` on a non-square count is also
+  refused by OpenDDE's resolver now, which is the same error a little earlier:
+  before the mesh is built instead of while it is. `foldjax-opendde-predict
+  --help` already described this rule -- "'auto' picks 2d when the device count
+  is a perfect square" -- while the resolver returned rows; the help text is now
+  true.
+
 - **The token padding grid steps by 256, so a padded run never pays more than
   one step of padded work.** `--padding` / `PaddingConfig` now select from 32
   buckets -- 256 to 8,192 in 256s -- instead of the 11-bucket geometric grid.

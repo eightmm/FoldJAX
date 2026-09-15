@@ -46,6 +46,7 @@ from foldjax.models.boltz2.data.ownership import (
     compact_token_to_rep_atom_storage,
     drop_token_to_rep_atom_storage,
 )
+from foldjax.padding import square_grid_auto_layout
 from foldjax.schema import PaddingConfig
 
 #: Trunk dtypes `predict` accepts, as names rather than `jnp` dtypes so that
@@ -387,8 +388,9 @@ def _resolve_cp_layout(layout: str, cp_devices: int) -> str:
 
     ``"1d"`` splits pair rows only; ``"2d"`` is Fold-CP's square grid, which
     splits both pair axes and needs a perfect-square device count. ``"auto"``
-    resolves to ``"1d"`` -- see the comment on that branch for why the grid is
-    opt-in rather than automatic.
+    resolves to the grid on a square count and to ``"1d"`` on every other one
+    (:func:`foldjax.padding.square_grid_auto_layout`), which is the rule this
+    port's adapter resolves on the host for the same request.
 
     An explicit ``"2d"`` on a non-square count is refused here rather than left
     to ``context_parallel``, which is only reached after featurization -- an
@@ -400,13 +402,16 @@ def _resolve_cp_layout(layout: str, cp_devices: int) -> str:
     side = math.isqrt(cp_devices)
     square = cp_devices > 1 and side * side == cp_devices
     if layout == "auto":
-        # "auto" stays on the 1-D layout. The square grid is the better design
-        # and is gated on CPU meshes at 2x2 and 3x3, but every published
-        # measurement of this feature was taken on the 1-D layout, and a
-        # default that silently changes the program would make those numbers
-        # describe a configuration nobody can reproduce. It flips once the
-        # grid has its own GPU evidence; "2d" asks for it explicitly.
-        return "1d"
+        # The grid, on a square count. What held this on the 1-D mesh was that
+        # every published measurement had been taken there; on the four-card
+        # deployment node (4 x 96 GiB, 2x2) a 2,096-token 5DEI now runs at
+        # 16.6 GiB per device against 19.0 in the 1-D layout and 18.5 serial,
+        # with coordinates within 0.11 A of the serial run on one sample and
+        # the deposited RMSD unchanged to two decimals (0.44 0.43 0.42 0.47
+        # 0.43). The grid is the slower program -- 3.5x serial wall at this
+        # size -- and is chosen for the memory ceiling, which is what context
+        # parallelism exists for.
+        return square_grid_auto_layout(cp_devices)
     if layout == "2d" and not square:
         raise ValueError(
             "cp_layout='2d' needs a square cp_devices greater than 1 "

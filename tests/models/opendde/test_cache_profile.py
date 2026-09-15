@@ -59,9 +59,16 @@ def test_cache_defaults_track_the_native_parser_and_cp_resolver(monkeypatch) -> 
     assert actual["trunk_dtype"] == "bf16"
     assert actual["deterministic_ops"] == "off"
     assert set(actual) <= set(OpenDDEBackend.compile_options)
-    assert model_impl._resolve_cp_layout("auto") == "1d"
-    assert model_impl._resolve_cp_layout("1d") == "1d"
-    assert model_impl._resolve_cp_layout("2d") == "2d"
+    # `auto` is the square grid where a square grid exists, and the 1-D mesh
+    # everywhere else; an explicit spelling is untouched, and an explicit `2d`
+    # on a count that cannot be squared is refused at the resolver rather than
+    # inside `context_parallel`.
+    for devices, expected in ((1, "1d"), (2, "1d"), (3, "1d"), (4, "2d"), (9, "2d")):
+        assert model_impl._resolve_cp_layout("auto", devices) == expected
+        assert model_impl._resolve_cp_layout("1d", devices) == "1d"
+    assert model_impl._resolve_cp_layout("2d", 4) == "2d"
+    with pytest.raises(ValueError, match="perfect-square"):
+        model_impl._resolve_cp_layout("2d", 3)
 
 
 def _request(tmp_path: Path, *, output: str = "out") -> PredictionRequest:
@@ -159,7 +166,7 @@ def test_released_default_cache_aliases_reuse_one_bounded_native_owner(
             chunks.token_q_chunk_size,
             chunks.diffusion_chunk_size,
             kwargs["cp_shards"],
-            model_impl._resolve_cp_layout(kwargs["cp_layout"]),
+            model_impl._resolve_cp_layout(kwargs["cp_layout"], kwargs["cp_shards"]),
             kwargs["run_confidence_scores"],
             kwargs["return_confidence_logits"],
             kwargs["return_confidence_details"],

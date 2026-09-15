@@ -312,8 +312,10 @@ def released_defaults_that_fork(port: str, profile_of) -> list[str]:
     The strip tables exist so that spelling the value the native runner would
     have resolved anyway names the same namespace as omitting it. A port can
     also reach that by resolving the value into the profile unconditionally,
-    which is what OpenFold3 does for `cp_layout` and Boltz-2 does for
-    `pair_residual_dtype`; either mechanism satisfies the contract.
+    which is what OpenFold3, OpenDDE and Boltz-2 do for `cp_layout` (the last
+    two for distributed runs only, since their `auto` picks the mesh from the
+    device count) and Boltz-2 also does for `pair_residual_dtype`; either
+    mechanism satisfies the contract.
 
     A compile option with a real (non-`None`) default on the native parser and
     neither mechanism does not: `--option name=<the released value>` forks the

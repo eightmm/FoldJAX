@@ -46,8 +46,9 @@ SERIAL_DIFFUSION_LOWERING_SHA256 = (
 )
 
 #: Mesh arms. 96 atoms over 24 structural tokens with a 4/8 window divides both
-#: a 1-D four-row split and a 2x2 grid; ``cp_layout="auto"`` selects the 1-D one
-#: on this port (``_resolve_cp_layout``), so that is the released arm.
+#: a 1-D four-row split and a 2x2 grid. Both are spelled, and on four devices
+#: the grid is now the one ``cp_layout="auto"`` selects on this port
+#: (``_resolve_cp_layout``), so the released arm is the second entry.
 MESH_ARMS = ((4, "1d"), (4, "2d"))
 
 #: Attention arms. ``xla_jit`` is this port's released

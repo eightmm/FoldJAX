@@ -15,6 +15,7 @@ from foldjax.models._compile_policy import policy_pools, select
 from foldjax.models._cp import (
     context_parallel,
     replicate_tree,
+    resolve_cp_layout,
     shard_pair_rows,
 )
 from foldjax.models._cp import (
@@ -79,6 +80,7 @@ from foldjax.models.protenix.models.trunk_blocks.trunk import (
 from foldjax.models.protenix.relative_position import (
     normalize_relative_position_storage,
 )
+from foldjax.padding import square_grid_auto_layout
 
 
 class OpenDDEInferenceParams(NamedTuple):
@@ -1487,20 +1489,25 @@ def _infer_pool(deterministic: bool) -> BoundedJitPool:
     )
 
 
-def _resolve_cp_layout(layout: str) -> str:
-    """Resolve OpenDDE's native context-parallel layout alias."""
+def _resolve_cp_layout(layout: str, n_devices: int) -> str:
+    """Resolve OpenDDE's native context-parallel layout alias.
 
-    if layout == "auto":
-        # "auto" stays on the 1-D layout for now. The 2-D grid is the better
-        # design and is verified on CPU meshes at 2x2 and 3x3, but every
-        # measurement published for this feature -- the size ladders, the
-        # per-device peaks -- was taken on the 1-D layout, and a default that
-        # silently changes the program would make those numbers describe a
-        # configuration nobody can reproduce. Ask for "2d" explicitly; this
-        # flips once the square grid has its own GPU parity and memory
-        # evidence.
-        return "1d"
-    return layout
+    ``auto`` now picks the square grid on a perfect-square device count and the
+    one-dimensional mesh on every other count, because the grid has the
+    evidence the 1-D default was held for: on the four-card deployment node
+    (4 x 96 GiB, 2x2 mesh) a 2,096-token 5DEI completes at 32.1 GiB per device
+    where the serial run, 1-D on two cards and 1-D on four cards all run out of
+    memory, with 0.59-0.75 A CA RMSD to the deposited structure against a
+    0.007 A two-process floor. The grid is the slower program and is chosen for
+    the memory ceiling: context parallelism exists to fit targets that
+    otherwise do not run.
+
+    An explicit ``"2d"`` on a non-square count is refused here rather than
+    inside :func:`context_parallel`, and ``auto`` never reaches that refusal
+    because a non-square count resolves it to ``"1d"``.
+    """
+
+    return resolve_cp_layout(layout, n_devices, auto=square_grid_auto_layout(n_devices))
 
 
 def opendde_infer_compiled(
@@ -1565,7 +1572,7 @@ def opendde_infer_compiled(
     )
     param_arrays, treedef, flags = split_static_flags(params)
     cp = int(kwargs.pop("cp_shards", 1))
-    layout = _resolve_cp_layout(str(kwargs.pop("cp_layout", "auto")))
+    layout = _resolve_cp_layout(str(kwargs.pop("cp_layout", "auto")), cp)
     # The capture set has to be live while the program is *traced*, not
     # while it runs: a tap records a tracer of the graph being built. On a
     # cache hit nothing is traced and the compiled program already returns

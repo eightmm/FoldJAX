@@ -544,6 +544,40 @@ def test_cp_mesh_rows_matches_the_layout_the_real_resolver_builds() -> None:
         cp_mesh_rows(4, "grid")
 
 
+def test_the_square_grid_auto_rule_is_the_layout_a_grid_port_resolves() -> None:
+    """The host-side rule OpenDDE's and Boltz-2's resolvers read for `auto`.
+
+    Two properties: the count it calls square, and that feeding its answer back
+    to the mesh-row rule gives the grid's side rather than one row per device.
+    An adapter resolves the layout before asking for an alignment, so a port
+    whose `auto` is the grid pads to the same shapes as an explicit `2d`.
+    """
+
+    import math
+
+    from foldjax.padding import cp_mesh_rows, square_grid_auto_layout
+
+    for devices, expected in (
+        (1, "1d"),
+        (2, "1d"),
+        (3, "1d"),
+        (4, "2d"),
+        (6, "1d"),
+        (8, "1d"),
+        (9, "2d"),
+        (16, "2d"),
+    ):
+        layout = square_grid_auto_layout(devices)
+        assert layout == expected, devices
+        assert cp_mesh_rows(devices, layout) == (
+            math.isqrt(devices) if expected == "2d" else devices
+        )
+    with pytest.raises(ValueError, match="must be positive"):
+        square_grid_auto_layout(0)
+    with pytest.raises(ValueError, match="must be an integer"):
+        square_grid_auto_layout(True)
+
+
 @pytest.mark.parametrize(
     "cp_devices,cp_layout,rows", [(4, "1d", 4), (4, "2d", 2), (3, "auto", 3)]
 )
@@ -783,6 +817,22 @@ def test_the_opendde_backend_hands_its_native_path_a_mesh_aware_profile(
     )
 
     assert "--cp-devices" in seen["argv"]
+    # Four devices with an omitted layout are a 2x2 grid on this port, and the
+    # grid aligns to its side: two rows, not one row per device. An explicit
+    # `1d` still asks for the four-row mesh and gets its alignment.
+    assert cp_rows(seen["padding"]) == 2
+
+    seen.clear()
+    OpenDDEBackend().predict(
+        PredictionRequest(
+            model="opendde",
+            input=input_path,
+            weights=weights_path,
+            output_dir=tmp_path / "out-rows",
+            padding=True,
+            options={"cp_devices": 4, "cp_layout": "1d"},
+        )
+    )
     assert cp_rows(seen["padding"]) == 4
 
 
@@ -824,4 +874,18 @@ def test_the_boltz2_backend_hands_its_native_api_a_mesh_aware_profile(
         )
     )
 
+    # The 2x2 grid this port's omitted layout now builds aligns to two rows.
+    assert cp_rows(seen["padding"]) == 2
+
+    seen.clear()
+    Boltz2Backend().predict(
+        PredictionRequest(
+            model="boltz2",
+            input=_input(tmp_path),
+            weights=weights,
+            output_dir=tmp_path / "out-rows",
+            padding=True,
+            options={"mols": mols, "cp_devices": 4, "cp_layout": "1d"},
+        )
+    )
     assert cp_rows(seen["padding"]) == 4

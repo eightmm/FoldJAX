@@ -11,7 +11,12 @@ from pathlib import Path
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, SAMPLING_OPTIONS, Backend
+from foldjax.backends.base import (
+    MATMUL_PRECISION_OPTION,
+    SAMPLING_OPTIONS,
+    Backend,
+    square_grid_cp_layout,
+)
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
@@ -164,10 +169,17 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         """Keep explicit released defaults in the omitted cache namespace.
 
         The native parser supplies these exact values before chunk resolution
-        and whole-model inference. Its compiled wrapper also resolves both
-        ``cp_layout=auto`` and ``cp_layout=1d`` to the same 1-D mesh. Strip only
-        exact type-and-value matches; non-default, malformed, conditional, and
-        ambient graph choices retain their separate identities.
+        and whole-model inference. Strip only exact type-and-value matches;
+        non-default, malformed, conditional, and ambient graph choices retain
+        their separate identities.
+
+        ``cp_layout`` is recorded resolved for every distributed run, because
+        this port's ``auto`` is the square grid on a perfect-square device
+        count (`models/opendde/models/model.py:_resolve_cp_layout`): omitting
+        it and asking for ``1d`` on four devices are two programs now, and
+        absence has to keep one meaning. A serial run keeps the alias it had --
+        the layout decides nothing without a mesh -- so every namespace
+        recorded before this one is still the namespace it was.
         """
 
         profile = super().cache_profile(request)
@@ -175,6 +187,9 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
         self.validate_native_options(options)
         self._strip_released_defaults(profile, _RELEASED_COMPILE_DEFAULTS)
         self._strip_released_defaults(profile, {"cp_layout": "1d"})
+        resolved_cp_layout = square_grid_cp_layout(options)
+        if resolved_cp_layout is not None:
+            profile["cp_layout"] = resolved_cp_layout
         profile["return_confidence_details"] = _strict_boolean(
             options.get("include_raw", False), name="include_raw"
         )
@@ -247,8 +262,14 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
             argv.extend(("--compile-cache", str(request.cache_dir)))
         # Read before the loop below pops them into argv: the mesh this run
         # will build decides what its automatic padding targets must divide.
+        # Resolved, not as spelled: an omitted layout builds the square grid on
+        # a perfect-square count here, and the grid's two-row alignment is what
+        # its padding has to meet -- so an omitted layout and an explicit `2d`
+        # pad to the same shapes.
         cp_devices = int(options.get("cp_devices", 1))
-        cp_layout = str(options.get("cp_layout", "auto"))
+        cp_layout = square_grid_cp_layout(options) or str(
+            options.get("cp_layout", "auto")
+        )
         for key in sorted(_CLI_OPTIONS):
             if key in options:
                 argv.extend((f"--{key.replace('_', '-')}", str(options.pop(key))))

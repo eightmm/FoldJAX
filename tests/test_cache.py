@@ -518,9 +518,19 @@ def test_boltz2_inherited_atom_attention_backend_has_one_cache_identity(
     )
 
 
-def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
+def test_boltz2_cache_profile_records_the_cp_layout_its_resolver_builds(
     tmp_path: Path,
 ) -> None:
+    """Every distributed run names its mesh; only one alias survives the flip.
+
+    ``auto`` resolves to the square grid on a perfect-square device count on
+    this port, so on four devices an omitted layout and an explicit ``2d`` are
+    one program while an explicit ``1d`` is a second one -- the reverse of what
+    the released default used to alias. The layout is therefore spelled rather
+    than stripped whenever there is a mesh, which also keeps absence meaning
+    "recorded before the grid became the default" rather than becoming a third
+    name for one of the two layouts.
+    """
     backend = Boltz2Backend()
     request = _request(tmp_path)
     cp_omitted = dataclasses.replace(request, options={"cp_devices": 4})
@@ -540,6 +550,7 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
 
     assert backend.cache_profile(cp_omitted) == {
         "cp_devices": 4,
+        "cp_layout": "2d",
         "num_recycles": 5,
         "pair_residual_dtype": "bfloat16",
         "diffusion_chunk_size": None,
@@ -547,9 +558,22 @@ def test_boltz2_cache_profile_normalizes_only_proven_cp_layout_aliases(
         "matmul_precision": "high",
     }
     assert backend.cache_profile(cp_auto) == backend.cache_profile(cp_omitted)
-    assert backend.cache_profile(cp_rows) == backend.cache_profile(cp_omitted)
-    assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_rows, backend)
-    assert resolve_cache_dir(cp_grid, backend) != resolve_cache_dir(cp_rows, backend)
+    assert backend.cache_profile(cp_grid) == backend.cache_profile(cp_omitted)
+    assert backend.cache_profile(cp_rows)["cp_layout"] == "1d"
+    assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_grid, backend)
+    assert resolve_cache_dir(cp_rows, backend) != resolve_cache_dir(cp_grid, backend)
+    # A count with no square resolves the other way, and the layout is still
+    # recorded: two devices are one mesh whichever spelling asked for it.
+    two_omitted = dataclasses.replace(request, options={"cp_devices": 2})
+    two_rows = dataclasses.replace(
+        request, options={"cp_devices": 2, "cp_layout": "1d"}
+    )
+    assert backend.cache_profile(two_omitted)["cp_layout"] == "1d"
+    assert resolve_cache_dir(two_rows, backend) == resolve_cache_dir(
+        two_omitted, backend
+    )
+    # A serial run has no mesh to name, so it keeps the namespace it had.
+    assert "cp_layout" not in backend.cache_profile(request)
     # CP currently resolves the released cueq default to XLA internally. Keep
     # an explicitly requested XLA route separate until that conditional alias
     # has its own whole-control-flow proof.
@@ -747,9 +771,15 @@ def test_opendde_released_defaults_share_the_omitted_cache_namespace(
     assert resolve_cache_dir(neutral, backend) == resolve_cache_dir(omitted, backend)
 
 
-def test_opendde_cache_profile_normalizes_only_proven_cp_layout_aliases(
+def test_opendde_cache_profile_records_the_cp_layout_its_resolver_builds(
     tmp_path: Path,
 ) -> None:
+    """The same rule as Boltz-2, because the same resolver decision was taken.
+
+    ``auto`` builds the square grid on a perfect-square count here too, so the
+    omitted namespace is the grid's on four devices and an explicit ``1d`` is
+    its own program rather than an alias for the default.
+    """
     backend = OpenDDEBackend()
     request = dataclasses.replace(_request(tmp_path), model="opendde")
     cp_omitted = dataclasses.replace(request, options={"cp_devices": 4})
@@ -759,12 +789,26 @@ def test_opendde_cache_profile_normalizes_only_proven_cp_layout_aliases(
     cp_rows = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "1d"})
     cp_grid = dataclasses.replace(request, options={"cp_devices": 4, "cp_layout": "2d"})
 
-    expected = {"cp_devices": 4, "return_confidence_details": False}
+    expected = {
+        "cp_devices": 4,
+        "cp_layout": "2d",
+        "return_confidence_details": False,
+    }
     assert backend.cache_profile(cp_omitted) == expected
     assert backend.cache_profile(cp_auto) == expected
-    assert backend.cache_profile(cp_rows) == expected
-    assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_rows, backend)
-    assert resolve_cache_dir(cp_grid, backend) != resolve_cache_dir(cp_rows, backend)
+    assert backend.cache_profile(cp_grid) == expected
+    assert backend.cache_profile(cp_rows)["cp_layout"] == "1d"
+    assert resolve_cache_dir(cp_auto, backend) == resolve_cache_dir(cp_grid, backend)
+    assert resolve_cache_dir(cp_rows, backend) != resolve_cache_dir(cp_grid, backend)
+    two_omitted = dataclasses.replace(request, options={"cp_devices": 2})
+    two_rows = dataclasses.replace(
+        request, options={"cp_devices": 2, "cp_layout": "1d"}
+    )
+    assert backend.cache_profile(two_omitted)["cp_layout"] == "1d"
+    assert resolve_cache_dir(two_rows, backend) == resolve_cache_dir(
+        two_omitted, backend
+    )
+    assert "cp_layout" not in backend.cache_profile(request)
 
 
 @pytest.mark.parametrize(

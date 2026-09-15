@@ -154,6 +154,31 @@ class _CPAlignedPadding(PaddingConfig):
     cp_rows: int = 1
 
 
+def square_grid_auto_layout(cp_devices: int) -> str:
+    """Which layout ``cp_layout="auto"`` names on a port that picks the grid.
+
+    ``"2d"`` on a perfect-square device count greater than one (4, 9, 16, ...)
+    and ``"1d"`` on every other count, a square being the only shape the ring
+    schedules accept.  OpenDDE and Boltz-2 resolve ``auto`` through this;
+    Protenix and OpenFold3 keep the shared one-dimensional default.  Which
+    ports read it, and the per-device measurements that decided each of those
+    answers, are recorded beside the ports' own resolvers and in
+    ``docs/context_parallel.md`` -- not here, so that a remeasurement moves
+    the prose it belongs to.
+
+    The rule lives in this module rather than beside the meshes because an
+    adapter resolves it while a request is still being planned on the host,
+    and that path must not import JAX.
+    """
+
+    if isinstance(cp_devices, bool) or not isinstance(cp_devices, int):
+        raise ValueError("context-parallel device count must be an integer")
+    if cp_devices < 1:
+        raise ValueError("context-parallel device count must be positive")
+    side = math.isqrt(cp_devices)
+    return "2d" if cp_devices > 1 and side * side == cp_devices else "1d"
+
+
 def cp_mesh_rows(cp_devices: int, cp_layout: str = "auto") -> int:
     """Rows of the context-parallel mesh a request would build.
 
@@ -162,6 +187,13 @@ def cp_mesh_rows(cp_devices: int, cp_layout: str = "auto") -> int:
     is still being planned on the host, and that path must not import JAX.  The
     duplication is a handful of integer rules, and a test pins it against the
     real resolver.
+
+    ``cp_layout`` is the layout the mesh will actually be built with, so
+    ``auto`` here means the shared one-dimensional default.  A port whose
+    ``auto`` picks the square grid resolves it -- through
+    :func:`square_grid_auto_layout` -- before asking for an alignment, so that
+    an omitted layout and an explicit ``2d`` pad to the same shapes on the same
+    device count.
     """
 
     if isinstance(cp_devices, bool) or not isinstance(cp_devices, int):
@@ -173,7 +205,8 @@ def cp_mesh_rows(cp_devices: int, cp_layout: str = "auto") -> int:
             f"context-parallel layout must be 'auto', '1d', or '2d'; got {cp_layout!r}"
         )
     if cp_layout != "2d":
-        # Every port resolves `auto` to the one-dimensional mesh.
+        # One row per device, which is what `auto` still means for every port
+        # that has not measured the grid (`square_grid_auto_layout`).
         return cp_devices
     side = math.isqrt(cp_devices)
     if cp_devices <= 1 or side * side != cp_devices:

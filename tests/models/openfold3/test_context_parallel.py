@@ -543,10 +543,13 @@ def test_two_dimensional_pairformer_holds_on_a_three_by_three_grid() -> None:
 def test_auto_layout_stays_on_the_one_dimensional_default() -> None:
     """``auto`` must not silently change the program anyone has measured.
 
-    The square grid is the better layout and is gated above, but every published
-    number for this feature was taken on the 1-D layout, so ``auto`` stays there
-    until the grid has its own GPU evidence. This pins that as a decision rather
-    than an accident: flipping the default should require editing this test.
+    The square grid is the better layout and is gated above, but this port has
+    no GPU measurement of it: the four-card deployment node has 2-D evidence
+    for OpenDDE and Boltz-2, whose ``auto`` now picks the grid, and Protenix
+    measured better on the 1-D mesh there. OpenFold3 is the one port neither
+    measurement covers, so ``auto`` stays on rows here until it does. This pins
+    that as a decision rather than an accident: flipping the default should
+    require editing this test and quoting the measurement.
     """
     from foldjax.models.openfold3.inference import (
         InferenceConfig,

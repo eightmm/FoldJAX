@@ -31,10 +31,41 @@ expected explicit collectives for the atom-window adapters.
 | ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
 
-`auto` currently resolves to `1d`. Use `2d` explicitly only with a
-perfect-square device count. This preserves the published one-dimensional
-configuration until the square-grid path has been measured on the deployment
-GPUs.
+`cp_layout` chooses the mesh, and `auto` is resolved per port:
+
+| Model | `auto` on a perfect-square count (4, 9, 16, ...) | `auto` on any other count |
+|---|---|---|
+| OpenDDE | `2d` | `1d` |
+| Boltz-2 | `2d` | `1d` |
+| Protenix | `1d` | `1d` |
+| OpenFold3 | `1d` | `1d` |
+| ESMFold2 | -- (no `cp_layout` option: 1-D only) | -- |
+
+An explicit `1d` or `2d` is passed through unchanged on every port; `2d` on a
+non-square device count is refused rather than degraded to rows; and
+`cp_devices=1` is the serial program whatever the layout says. What runs is
+recorded resolved rather than as spelled -- the compiled program's static
+topology, the out-of-memory diagnosis, and the compile-cache namespace the
+adapters write -- so an omitted layout shares a namespace with the explicit
+spelling that builds the same mesh, and the other spelling keeps its own.
+
+OpenDDE and Boltz-2 pick the grid because it is what fits on the four-card
+deployment node (4 x 96 GiB, 2x2 mesh, a 2,096-token 5DEI). OpenDDE completes
+there at 32.1 GiB per device where the serial run, 1-D on two cards and 1-D on
+four cards all run out of memory, at 0.59-0.75 Å CA RMSD to the deposited
+structure against a 0.007 Å two-process floor. Boltz-2 runs at 16.6 GiB per
+device against 19.0 in the 1-D layout and 18.5 serial, with coordinates within
+0.11 Å of its serial run on one sample and deposited RMSD unchanged to two
+decimals (0.44 0.43 0.42 0.47 0.43). Protenix measured the other way on the
+same node -- 11.6 GiB per device in the grid against 10.7 in the 1-D layout --
+so it keeps rows, and OpenFold3's grid is unmeasured there.
+
+**The grid is the slower program.** Boltz-2 at 2,096 tokens costs about 3.5x
+the serial wall time in it, and the 1-D layout is not free either. The layout
+is chosen for the memory ceiling and nothing else, which is what context
+parallelism is for here: fitting targets that otherwise do not run. On a square
+device count where the job already fits and wall time is what matters, ask for
+`1d` explicitly.
 
 ## Runtime and input placement
 
@@ -364,10 +395,11 @@ transformer, and atom decoder under both layouts rather than testing only the
 routing primitives. These gates do not claim CUDA/NCCL throughput or
 multi-node reliability.
 
-## Deployment validation still required
+## Deployment validation: what the 2-D default rests on, and what is still open
 
-Before selecting `2d` automatically or describing a particular cluster
-configuration as production-ready, measure on that deployment topology:
+The list below is what a deployment topology has to be measured for before
+`2d` is selected automatically on it, or before that configuration is called
+production-ready:
 
 1. serial versus 1D versus 2D output parity with identical parameters and
    random tapes;
@@ -377,6 +409,16 @@ configuration as production-ready, measure on that deployment topology:
 4. repeated-run finiteness and determinism, especially through OpenDDE
    diffusion;
 5. 2, 4, and 8 GPUs, plus multi-node runs when those are intended.
+
+Items 1 and 2 are answered for OpenDDE and Boltz-2 on one topology -- the
+four-card 96 GiB node, a 2x2 mesh, one 2,096-token target -- and that is the
+whole basis of their `auto = 2d`, quoted above. It is a memory-ceiling result:
+the grid runs a job the other layouts do not, and it is slower. Everything else
+on the list is open, for every port: 8 GPUs, multi-node, other targets and
+token counts, and the run-to-run determinism reservation recorded in
+`PROJECT.md`. Protenix has the measurement and it went the other way;
+OpenFold3's grid has no GPU measurement at all. Neither default moves without
+its own numbers.
 
 For Boltz-2, Protenix, OpenDDE and OpenFold3, the pair trunk scales over both
 two-dimensional mesh axes, while atom windows scale over CP rows and are

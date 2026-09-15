@@ -939,14 +939,14 @@ def protenix_infer_compiled(
     cp = int(kwargs.pop("cp_shards", 1))
     layout = str(kwargs.pop("cp_layout", "auto"))
     if layout == "auto":
-        # "auto" stays on the 1-D layout for now. The 2-D grid is the better
-        # design and is verified on CPU meshes at 2x2 and 3x3, but every
-        # measurement published for this feature -- the size ladders, the
-        # per-device peaks -- was taken on the 1-D layout, and a default that
-        # silently changes the program would make those numbers describe a
-        # configuration nobody can reproduce. Ask for "2d" explicitly; this
-        # flips once the square grid has its own GPU parity and memory
-        # evidence.
+        # "auto" stays on the 1-D layout on this port, and here that is a
+        # measurement rather than caution: on the four-card deployment node
+        # (4 x 96 GiB, 2x2 mesh) a 2,096-token 5DEI took 11.6 GiB per device
+        # in the grid against 10.7 in the 1-D layout, so the grid costs memory
+        # here instead of saving it. OpenDDE and Boltz-2 measured the other
+        # way on the same node and their `auto` picks the grid
+        # (`foldjax.padding.square_grid_auto_layout`). Ask for "2d"
+        # explicitly; this flips if a Protenix measurement ever inverts.
         layout = "1d"
     # The capture set has to be live while the program is *traced*: a tap
     # records a tracer of the graph being built, not a value from a run.
