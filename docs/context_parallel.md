@@ -26,13 +26,8 @@ expected explicit collectives for the atom-window adapters.
 |---|---:|---:|---:|---|
 | Boltz-2 | yes | yes | yes | Cannon/ring pair core, CP-row atom windows, halo exchange, sparse token/pair routing |
 | Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
-<<<<<<< ours
 | OpenDDE | yes | yes | yes | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser with the atom graph distributed over CP rows (`cp_atom_windows`, default on), aligned on the *structural* token axis |
-| OpenFold3 | yes | yes | no | Pair stack, template stack, and confidence pair re-embedding |
-=======
-| OpenDDE | yes | yes | no | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser, with the atom-window option off, so its atom streams remain replicated |
 | OpenFold3 | yes | yes | yes | Pair stack, template stack, confidence pair re-embedding; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) with an index-driven ring gather instead of a halo |
->>>>>>> theirs
 | ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
 
@@ -320,19 +315,11 @@ configuration as production-ready, measure on that deployment topology:
    diffusion;
 5. 2, 4, and 8 GPUs, plus multi-node runs when those are intended.
 
-<<<<<<< ours
-For Boltz-2, Protenix and OpenDDE, the pair trunk scales over both
-two-dimensional mesh axes, while atom windows scale over CP rows and are
-replicated over CP columns. OpenFold3 deliberately retains pair-only CP until
-its atom graph receives a model-specific distributed contract and
-checkpoint-level validation.
-=======
-For Boltz-2, Protenix and OpenFold3, the pair trunk scales over both
+For Boltz-2, Protenix, OpenDDE and OpenFold3, the pair trunk scales over both
 two-dimensional mesh axes, while atom windows scale over CP rows and are
 replicated over CP columns. The *Atom-window CP* column of the table above is
 the authority on which models distribute their atom graph and which still hold
 it whole on every device.
->>>>>>> theirs
 
 Protenix' atom-window path has CPU parity, HLO-structure and serial-invariance
 gates (`tests/models/protenix/test_atom_context_parallel.py`, 18 tests on 1-,
@@ -346,7 +333,6 @@ structural -- the compiled SPMD module contains no full-width atom activation,
 atom-pair window cache, or projected token-pair tensor -- not a measured
 peak.
 
-<<<<<<< ours
 OpenDDE's has the same shape of evidence and the same limit
 (`tests/models/opendde/test_atom_context_parallel.py`, 14 tests: 1-D x4 and 2x2
 CPU meshes, both denoiser attention arms, the scanned block stack and scanned
@@ -357,7 +343,7 @@ and the compile-namespace spelling). Also structural, also no GPU measurement.
 The target it exists for -- a job that does not fit one card -- is exactly the
 one no CPU mesh can measure, so the memory claim stays a claim about what the
 compiled module does not contain.
-=======
+
 OpenFold3's atom-window path has the same three kinds of gate
 (`tests/models/openfold3/test_atom_context_parallel.py`, 11 tests): the serial
 denoiser lowering is pinned byte-identical to `git archive main` and carries no
@@ -385,4 +371,3 @@ gathered K/V (`[S, H, N_token, d]`, linear in the token count, the same
 remainder Protenix has), the replicated `[S, N_atom, 3]` coordinate update the
 sampler carries, and the token-shaped `token_mask` / `num_atoms_per_token` the
 sharded bodies need whole. No GPU measurement yet.
->>>>>>> theirs

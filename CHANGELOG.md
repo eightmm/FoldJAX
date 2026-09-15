@@ -115,7 +115,6 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
-<<<<<<< ours
 - **OpenDDE distributes its diffusion atom graph under context parallelism**,
   through the same shared adapters Protenix uses -- its diffusion module calls
   the same Protenix denoiser, and until now its option surface deliberately
@@ -158,7 +157,7 @@ unless it says so here, in its own paragraph.
   `tests/models/opendde/test_atom_context_parallel.py`, 14 tests. No GPU
   measurement, so the per-device claim is structural rather than a measured
   peak -- and the size it matters at is the one no CPU mesh can measure.
-=======
+
 - **OpenFold3 distributes its diffusion atom graph under context parallelism**,
   the way Boltz-2 and Protenix already did. `cp_atom_windows` is on by default,
   is available as `--cp-atom-windows` / `--no-cp-atom-windows` and as
@@ -203,7 +202,6 @@ unless it says so here, in its own paragraph.
   and 3x3 meshes to FP32 reduction-order tolerance
   (`tests/models/openfold3/test_atom_context_parallel.py`, 11 tests). No GPU
   measurement yet: the per-device claim is structural, not a measured peak.
->>>>>>> theirs
 
 - **Protenix distributes its diffusion atom graph under context parallelism**,
   the way Boltz-2 already did. `cp_atom_windows` is on by default and does
