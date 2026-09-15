@@ -169,6 +169,15 @@ def main() -> int:
     from foldjax.schema import PredictionRequest
 
     options = _parse_cli_options(list(args.option))
+    # Same reason `foldjax predict` does this while resolving arguments: XLA
+    # reads XLA_FLAGS when the backend initialises, and resolving the request
+    # below initialises it (memory admission reads the device's pool). A CP
+    # row that composes the bound any later gets the "wait forever" default
+    # and one rank's OOM hangs the others until the job's time cap.
+    from foldjax import oom as _oom
+
+    if int(options.get("cp_devices", 1) or 1) > 1 and _oom.gpu_is_possible():
+        _oom.set_rendezvous_timeout()
     case = next(item for item in cases() if item.name == args.case)
     # A benchmark row is a (weights, schedule) pair, so Protenix's two
     # supported checkpoints are two rows. FoldJAX spells the second as a
