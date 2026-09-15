@@ -17,6 +17,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from foldjax._fsutil import sha256_file as _sha256_file
+
 from .msa import SearchError
 
 _HIT_ID = re.compile(
@@ -28,7 +30,6 @@ _MAX_TEMPLATE_CANDIDATES = 20
 _RELEASE_DATES_ENV = "PROTENIX_TEMPLATE_RELEASE_DATES_FILE"
 _OBSOLETE_PDBS_ENV = "PROTENIX_TEMPLATE_OBSOLETE_FILE"
 _KALIGN_BINARY_ENV = "PROTENIX_KALIGN_BINARY"
-_FILE_HASH_CHUNK_BYTES = 1 << 20
 #: Oldest Kalign this path accepts. It was an exact pin, and that was wrong
 #: in a way worth recording: neither Protenix nor AlphaFold 3 asks for a
 #: version -- upstream Protenix only asserts that a binary path was given --
@@ -67,14 +68,6 @@ _PROTEIN_3TO1 = {
     "TRP": "W",
     "TYR": "Y",
 }
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(_FILE_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 @dataclass(frozen=True)

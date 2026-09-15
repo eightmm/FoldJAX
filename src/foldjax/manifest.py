@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from foldjax._fsutil import sha256_file as _sha256_file
 from foldjax.redaction import public_options
 from foldjax.schema import PredictionRequest, PredictionResult
 
@@ -98,14 +99,6 @@ def _weight_stat_signature(path: Path) -> tuple[Any, ...] | None:
         )
     except (OSError, RuntimeError):
         return None
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _signature_record(signature: tuple[Any, ...]) -> dict[str, Any]:

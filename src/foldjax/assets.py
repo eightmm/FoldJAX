@@ -12,7 +12,6 @@ downloaded from its own publisher under that project's terms.
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import http.client
 import json
 import math
@@ -27,6 +26,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from foldjax._fsutil import nonempty_file as _nonempty_file
+from foldjax._fsutil import sha256_file as _digest
 from foldjax.paths import assets_dir, downloads_dir, weights_dir
 
 _CHUNK = 1 << 20
@@ -954,13 +955,6 @@ _AF3_PARAMETER_PATTERNS = (
     # by upstream's own parameter selector.
     re.compile(r"(?P<model>.*)\.bin\]\.(?P<index>\d+)$"),
 )
-
-
-def _nonempty_file(path: Path) -> bool:
-    try:
-        return path.is_file() and path.stat().st_size > 0
-    except OSError:
-        return False
 
 
 def _alphafold3_ready(root: Path) -> bool:
@@ -1967,14 +1961,6 @@ def profile_status(model: str) -> tuple[dict[str, object], ...]:
 # --------------------------------------------------------------------------
 # Download
 # --------------------------------------------------------------------------
-
-
-def _digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        while chunk := handle.read(_CHUNK):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _same_file_contents(first: Path, second: Path, item: Download) -> bool:

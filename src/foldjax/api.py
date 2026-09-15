@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from foldjax import memory_policy, progress
+from foldjax._fsutil import nonempty_file as _nonempty_file
 from foldjax.backends.base import Backend
 from foldjax.cache import (
     cache_namespace,
@@ -44,6 +45,7 @@ from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
 from foldjax.registry import get_backend
 from foldjax.schema import (
+    JOB_DOCUMENT_SUFFIXES,
     BatchReport,
     PredictionError,
     PredictionFailure,
@@ -54,9 +56,6 @@ from foldjax.schema import (
     Representations,
 )
 
-#: Suffixes that can hold the common FoldJAX schema.
-_STRUCTURED_SUFFIXES = frozenset({".json", ".yaml", ".yml"})
-
 
 def detect_input_format(path: Path) -> str:
     """Return ``"foldjax"`` for the common schema, ``"native"`` otherwise.
@@ -65,7 +64,7 @@ def detect_input_format(path: Path) -> str:
     uses JSON or YAML, and only the common schema is a mapping with
     ``entities``. Anything unreadable as JSON/YAML is native by definition.
     """
-    if path.suffix.lower() not in _STRUCTURED_SUFFIXES:
+    if path.suffix.lower() not in JOB_DOCUMENT_SUFFIXES:
         return "native"
     try:
         document = read_job_document(path)
@@ -249,14 +248,6 @@ class _ScalarBackendSource:
         """Release an unused probe when resume avoids execution entirely."""
 
         self._first = None
-
-
-def _nonempty_file(path: Path) -> bool:
-    """Whether an artifact is a regular, non-empty file right now."""
-    try:
-        return path.is_file() and path.stat().st_size > 0
-    except OSError:
-        return False
 
 
 def _resolve_artifact_path(
