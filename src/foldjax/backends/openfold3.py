@@ -109,8 +109,8 @@ _MATMUL_PRECISION = "high"
 _RELEASED_MSA_DEPTH = 1024
 #: The common API defaults to structures and normalized confidence scores; retaining
 #: OpenFold3's quadratic per-bin pair distributions is an explicit ``all_arrays``
-#: native option. Keep the same opt-in on the raw ``openfold3-jax-predict`` entry
-#: point and do not make every managed prediction retain the arrays merely to write
+#: native option. Keep it opt-in and do not make every managed prediction retain
+#: the arrays merely to write
 #: an otherwise-unreferenced archive. ``released_config`` interprets this as a
 #: pair-logit budget only; coordinates and scalar/per-atom confidence outputs are
 #: still written regardless of this value.
