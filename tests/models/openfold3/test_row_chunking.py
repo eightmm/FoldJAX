@@ -241,3 +241,27 @@ def test_released_config_chunks_by_size_and_honours_an_override() -> None:
         released_config(n_token=2076, n_atom=1, pair_chunk_size=64).pair_chunk_size
         == 64
     )
+    # And `0` is how a request spells the unblocked loop, which the automatic
+    # path no longer resolves to inside the validated domain: it survives into
+    # the config as its own value, so it names its own program rather than
+    # borrowing the one an omitted option builds.
+    assert (
+        released_config(n_token=2076, n_atom=1, pair_chunk_size=0).pair_chunk_size == 0
+    )
+
+
+def test_a_zero_width_applies_the_function_once() -> None:
+    """`0` is the explicit "do not block" spelling, so it must reach
+    `map_row_chunks` as the unblocked path and not as a zero-row loop."""
+    pair = jnp.arange(6 * 6 * 2, dtype=jnp.float32).reshape(6, 6, 2)
+    calls = []
+
+    def body(block):
+        calls.append(block.shape[0])
+        return block * 2
+
+    for width in (0, None):
+        calls.clear()
+        result = map_row_chunks(body, pair, chunk_size=width)
+        np.testing.assert_array_equal(np.asarray(result), np.asarray(pair) * 2)
+        assert calls == [6], width

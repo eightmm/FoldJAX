@@ -1271,16 +1271,30 @@ maximum of two phases, not their sum: at 2,096 tokens the MSA stack sets it
 at full depth (21.2 GiB with 13,267 rows) and the pair phase takes over
 below about 8,000 rows (14.7 GiB at 8,192, 13.75 at 4,096, 13.73 at 2,048).
 
-OpenFold3 is the one port where admission also selects: inside the
-validated domain it runs unchunked when that upper estimate fits, else a
-fixed 128-row pair chunk. 128 replaces the score-tensor formula because it
-was never worse over five sizes and won where the formula lost: 1,003
-tokens 4,317 MiB against the formula's 5,336 (−19%) and off's 6,195, wall
-equal; 4,100 tokens 2,267 s / 42,469 MiB against 2,368 / 44,442; 4,888
-tokens 1,418 s / 59,215 against 1,527 / 62,054; the 2k and 3k plateaus
-contain it. Below 1,003 tokens the old unblocked program stays (the CPU
-parity captures pin it). Coordinates at 1k: 128 vs the formula 0.019 Å,
-off vs the formula 0.0175 Å, deposited identical.
+OpenFold3 resolves one configuration rather than selecting between two
+(2026-09-16): inside the validated domain the automatic answer is the
+fixed 128-row pair chunk at every size and whatever the card reports, and
+admission is then the same verdict-only comparison the other two laws get.
+The unchunked loop was the automatic answer whenever its own upper estimate
+fit, and on a 96 GiB card that bought seconds for gigabytes: at 2,096
+tokens (5DEI, same snapshot) unchunked is 220.85 s / 22,967 MiB against
+blocked-128's 228.5 s / 13,990 MiB — +65% peak for −3.4% wall — and at
+1,003 tokens the wall is equal (71.6 against 72.0 s) for 6,195 against
+4,317 MiB; at 4,100 and 4,888 only the blocked arm runs at all. Memory is
+what these defaults are judged on, so the seconds do not buy the
+gigabytes. `OPENFOLD3_UNCHUNKED_PEAK` stays as the estimate for a run that
+asks for the unblocked loop by name (`--option pair_chunk_size=0`); it is
+no longer a candidate, so `--memory-check` now reaches this port like the
+other two and an over-budget estimate is a refusal.
+
+128 replaces the score-tensor formula because it was never worse over five
+sizes and won where the formula lost: 1,003 tokens 4,317 MiB against the
+formula's 5,336 (−19%) and off's 6,195, wall equal; 4,100 tokens 2,267 s /
+42,469 MiB against 2,368 / 44,442; 4,888 tokens 1,418 s / 59,215 against
+1,527 / 62,054; the 2k and 3k plateaus contain it. Below 1,003 tokens the
+old unblocked program stays (the CPU parity captures pin it, and the
+blocked arm has no measurement there). Coordinates at 1k: 128 vs the
+formula 0.019 Å, off vs the formula 0.0175 Å, deposited identical.
 
 Checked on the card with explicit budgets (5DEI, 2,096 tokens):
 
@@ -1289,8 +1303,8 @@ Checked on the card with explicit budgets (5DEI, 2,096 tokens):
 | Protenix | 18 GiB | over_budget | refused before compile: "19.9 GiB + 1.0 GiB allowance against a 16.2 GiB threshold" |
 | Protenix | 18 GiB, `--memory-check=warn` | over_budget, warned | ran, 191.9 s / 21,223 MiB |
 | Protenix | 30 GiB | fits | ran, 192.9 s / 21,225 MiB |
-| OpenFold3 | 20 GiB | chunked (128) | 228.5 s / 13,990 MiB |
-| OpenFold3 | 40 GiB | unchunked | 225.0 s / 22,967 MiB |
+| OpenFold3 | 20 GiB | fits, chunked (128) | 228.5 s / 13,990 MiB |
+| OpenFold3 | 40 GiB | fits, chunked (128) — unchunked before 2026-09-16 | same program as the row above; the unchunked arm this budget used to select ran 225.0 s / 22,967 MiB |
 | Boltz-2 | 18 GiB | over_budget | refused before compile |
 
 Two knobs measured for Boltz-2 and found inert for memory (its peak is the

@@ -196,6 +196,11 @@ PROTENIX_PEAK = PeakLaw(
 #: The linear term earns its place: fitted as `a + c*n^2` the same five points
 #: read 14% high at 1,003 tokens -- where the whole peak is 4.3 GiB -- and the
 #: allowance comes out larger rather than smaller.
+#:
+#: This is the law the automatic path estimates against, because from 1,003
+#: tokens up the blocked loop *is* the automatic configuration
+#: (`inference.resolve_pair_chunk_size`). It is the only OpenFold3 candidate
+#: admission is given, so its verdict is a verdict and not a choice.
 OPENFOLD3_CHUNKED_PEAK = PeakLaw(
     model="openfold3",
     profile="released schedule, 5 samples, pair stack blocked at 128 rows",
@@ -217,12 +222,20 @@ OPENFOLD3_CHUNKED_PEAK = PeakLaw(
 #: and an exact fit has no residual at all -- a zero margin rather than a
 #: better law.
 #:
+#: **Not an automatic candidate.** Against the blocked arm at the same sizes
+#: this configuration costs 44% more peak at 1,003 tokens (6,195 against
+#: 4,317 MiB) for equal wall time (71.6 against 72.0 s) and 65% more at 2,096
+#: (22,967 against 13,990 MiB) for 3.4% less (220.85 against 228.5 s), and at
+#: 4,100 and 4,888 it has no measurement at all while the blocked arm runs.
+#: Memory is what these defaults are judged on, so the automatic answer is the
+#: blocked loop at every size in the validated domain and nothing selects
+#: between the two. The law stays because it is still the estimate for a run
+#: that spells the unblocked loop explicitly (`pair_chunk_size=0`), and
+#: because `tests/calibrate_memory_policy.py` re-derives it from those three
+#: measurements.
+#:
 #: Nothing was measured above 3,012 tokens unblocked, so the domain stops
-#: there and the binary choice is only offered where both arms exist. This
-#: law's lower bound is load-bearing in the other direction too: below 1,003
-#: tokens the *blocked* arm is the one with no measurement, and
-#: `inference._blocked_width` reads this bound to keep those sizes on the
-#: unblocked program they already compiled.
+#: there.
 OPENFOLD3_UNCHUNKED_PEAK = PeakLaw(
     model="openfold3",
     profile="released schedule, 5 samples, unchunked pair stack",
@@ -230,13 +243,6 @@ OPENFOLD3_UNCHUNKED_PEAK = PeakLaw(
     domain_tokens=(1003, 3012),
     allowance_bytes=215 * _MIB,
     calibration_id=f"openfold3-unchunked-{_CALIBRATION}",
-)
-
-#: Fastest first: the first candidate whose upper estimate fits is selected, so
-#: the order is the preference order and not a search.
-OPENFOLD3_CANDIDATES = (
-    ("unchunked", OPENFOLD3_UNCHUNKED_PEAK),
-    ("chunked", OPENFOLD3_CHUNKED_PEAK),
 )
 
 #: The sample count every law above was fitted at.
@@ -295,12 +301,15 @@ def resolve_memory_policy(
     budget_bytes: int | None,
     candidates: Sequence[tuple[str, PeakLaw]],
 ) -> MemoryDecision:
-    """Pick the fastest candidate whose upper estimate fits the budget.
+    """Say whether a configuration's upper estimate fits the budget.
 
-    ``candidates`` is ordered fastest-first. A candidate is admitted when its
-    upper estimate is at most :data:`ADMISSION_FRACTION` of ``budget_bytes``;
-    the first admitted one is selected. With none admitted the state is
-    ``over_budget``.
+    A candidate is admitted when its upper estimate is at most
+    :data:`ADMISSION_FRACTION` of ``budget_bytes``; ``candidates`` is walked in
+    order and the first admitted one is selected. With none admitted the state
+    is ``over_budget``. Every port here passes exactly one candidate -- the
+    configuration it is about to run -- so the result is a verdict on that
+    configuration rather than a choice between several, and the sequence is
+    what carries that one estimate into the manifest under its own name.
 
     The state is ``unknown``, and the caller must proceed, whenever the
     comparison cannot be made: no budget, a token count outside any

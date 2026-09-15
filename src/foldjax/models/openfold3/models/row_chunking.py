@@ -52,8 +52,10 @@ def map_row_chunks(
             live at ``-3`` in one and ``-2`` in the other. Passing a single axis for
             both would chunk the mask along its channel-less second token axis and
             silently compute the wrong thing.
-        chunk_size: rows per block. ``None`` or a value at least the row count
-            applies ``function`` once, which is the fastest and highest-peak path.
+        chunk_size: rows per block. ``None``, a value at or below zero -- ``0``
+            is how a request spells "do not block" -- or a value at least the row
+            count applies ``function`` once, which is the quickest and
+            highest-peak path.
         row_axes: the row axis of each array, or one axis used for all of them.
         out_row_axis: the row axis of the result. Defaults to ``row_axes[0]``.
 

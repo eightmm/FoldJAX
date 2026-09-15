@@ -260,25 +260,34 @@ had finished.
 `--memory-check` says what happens when it does not fit. `refuse`, the
 default, raises before the weights load rather than after the first compile,
 and names what it estimated, what it compared against, and the levers.
-`warn` prints the same message and lets the allocator answer. The flag reaches
-Boltz-2 and Protenix -- the two that can refuse; OpenFold3 rejects it, because
-it has a cheaper configuration to fall back to and therefore never refuses.
+`warn` prints the same message and lets the allocator answer. All three of the
+models that carry a law accept it. OpenFold3 used to reject it, because it had
+a cheaper configuration of the same prediction to fall back to; it no longer
+selects between configurations, so an over-budget estimate there is a refusal
+like anywhere else.
 
 `--memory-budget-gib` plans against a stated ceiling instead of the one this
 card reports, and the smaller of the two wins. It is how you ask whether a job
 would fit a card you are not on, and it is accepted by all three.
 
-Nothing is narrowed automatically to make a job fit. `--max-msa-depth` does
-lower a Protenix estimate, and the refusal message says so, but it lowers it
-by changing the input: fewer alignment rows is a different prediction rather
-than the same one in less memory, and it failed this repository's own accuracy
-admission test. The one configuration the policy does choose by itself is
-OpenFold3's pair-stack row loop, where both arms are the same prediction: from
-1,003 tokens -- the smallest size both were measured at -- it runs the loop
-whole when the unblocked estimate fits and blocks it at 128 rows otherwise,
-which at that size is 4.3 GiB against 6.2. Below 1,003 tokens the loop runs
-whole whatever the card, because that is the program those sizes already
-compiled and 128 rows has no measurement there.
+Nothing is narrowed automatically to make a job fit, and nothing is chosen by
+the card either. `--max-msa-depth` does lower a Protenix estimate, and the
+refusal message says so, but it lowers it by changing the input: fewer
+alignment rows is a different prediction rather than the same one in less
+memory, and it failed this repository's own accuracy admission test.
+
+OpenFold3's pair-stack row loop used to be the exception -- the one
+configuration admission picked, running the loop whole whenever the unblocked
+estimate fit. It no longer is. From 1,003 tokens up the loop is blocked at 128
+rows at every size and whatever the card reports, because running it whole
+costs far more memory than it buys: at 2,096 tokens (5DEI, same snapshot)
+whole is 220.85 s / 22,967 MiB against blocked 228.5 s / 13,990 MiB -- 65%
+more peak for 3.4% less wall -- and at 1,003 tokens the wall time is equal
+(71.6 against 72.0 s) for 6,195 MiB against 4,317. At 4,100 and 4,888 tokens
+only the blocked arm has ever completed. Below 1,003 tokens the loop still
+runs whole whatever the card, because that is the program those sizes already
+compiled and 128 rows has no measurement there. `--option pair_chunk_size=0`
+runs it whole deliberately at any size; any other integer pins that width.
 
 Design notes: [docs/engineering-notes.md](engineering-notes.md).
 

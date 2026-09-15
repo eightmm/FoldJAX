@@ -71,7 +71,9 @@ BOLTZ2_POINTS = (
 )
 
 #: OpenFold3 with the pair-stack row loop blocked at the resolved width of 128
-#: rows (`inference.RESOLVED_PAIR_CHUNK_SIZE`), released schedule.
+#: rows (`inference.RESOLVED_PAIR_CHUNK_SIZE`), released schedule. This is the
+#: automatic configuration from 1,003 tokens up, so this is the law admission
+#: is given.
 OF3_CHUNKED_POINTS = (
     (1003, None, 4316.7),
     (2096, None, 13882.0),
@@ -88,9 +90,11 @@ OF3_CHUNKED_POINTS = (
 #: allowance rather than a better one.
 #:
 #: Nothing was measured above 3,012 tokens on this arm, so
-#: :data:`domain_tokens` stops there and the binary choice is offered only
-#: where both arms exist. Above it the blocked width is the answer whatever
-#: the budget.
+#: :data:`domain_tokens` stops there. This arm is not an automatic candidate:
+#: it costs 44% more peak at 1,003 tokens for equal wall time and 65% more at
+#: 2,096 for 3.4% less, so the blocked width is the automatic answer at every
+#: size in the validated domain and this law is the estimate for a run that
+#: asks for the unblocked loop by name.
 OF3_UNCHUNKED_POINTS = (
     (1003, None, 6194.6),
     (2096, None, 22967.0),

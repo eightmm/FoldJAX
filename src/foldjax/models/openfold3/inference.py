@@ -14,7 +14,7 @@ from __future__ import annotations
 import functools
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -134,11 +134,13 @@ class InferenceConfig(NamedTuple):
     confidence_no_bin: int = 39
     experimentally_resolved_bins: int = 2
     # Rows of the pair representation to process at a time, upstream's
-    # ``settings.memory.eval.chunk_size``. ``None`` processes them in one go, which is
-    # fastest and peaks highest; it reaches both triangle attention and the pair
-    # transition. Above ~800 tokens it decides whether the target runs at all, so
-    # ``released_config`` picks it from the token count by default -- see
-    # ``auto_pair_chunk_size`` and models/row_chunking.py.
+    # ``settings.memory.eval.chunk_size``. It reaches both triangle attention and
+    # the pair transition. ``None`` -- or ``0``, which is how a request spells it --
+    # processes them in one go: quickest at equal size and highest by a long way
+    # in peak, which is why ``released_config`` does not resolve to it inside the
+    # validated domain. There it resolves to ``RESOLVED_PAIR_CHUNK_SIZE`` from the
+    # token count alone -- see ``resolve_pair_chunk_size`` and
+    # models/row_chunking.py.
     pair_chunk_size: int | None = None
     # Token count above which confidence re-embedding runs one diffusion sample
     # at a time. FoldJAX defaults this to zero after the released n=5 A/B showed
@@ -431,16 +433,16 @@ class Prediction(NamedTuple):
 #: block does cost -- the row loop's temporaries, chiefly the pair transition's
 #: widened ``[rows, N, 4 * C_z]`` intermediate and the attention's working set.
 #:
-#: A proxy is all it ever was, and the automatic path no longer uses it: the
-#: width a blocked run takes is now the measured :data:`RESOLVED_PAIR_CHUNK_SIZE`
-#: and whether to block at all is asked of the allocator in
-#: :func:`resolve_pair_chunk_size`. This remains the default for a caller who
-#: asks :func:`auto_pair_chunk_size` for a width derived from a byte budget.
+#: A proxy is all it ever was, and the automatic path no longer uses it: inside
+#: the validated domain a run takes the measured
+#: :data:`RESOLVED_PAIR_CHUNK_SIZE` and nothing is derived from a byte budget
+#: (:func:`resolve_pair_chunk_size`). This remains the default for a caller who
+#: asks :func:`auto_pair_chunk_size` for a width derived from one.
 PAIR_SCORE_BUDGET_BYTES = 8 * 2**30
 
-#: Rows per pair-stack block when the loop is blocked at all, from 1,003
-#: tokens up -- see :func:`_blocked_width` for why smaller targets keep the
-#: unblocked program they already had.
+#: Rows per pair-stack block, which from 1,003 tokens up is the width every
+#: automatic run takes -- see :func:`_blocked_width` for why smaller targets
+#: keep the unblocked program they already had.
 #:
 #: A constant rather than a formula because it was swept, and the formula's
 #: answer was never the better one. Measured at the released defaults, 128 rows
@@ -508,16 +510,16 @@ def auto_pair_chunk_size(
     blocks either way, but 575 pads to 1150 and wastes a fifth of the work, while 483
     pads to nothing.
 
-    Returns ``None`` -- meaning do not chunk, the fastest path -- when the whole
-    thing already fits.
+    Returns ``None`` -- meaning do not chunk -- when the whole thing already
+    fits the budget.
 
-    **Not the automatic path.** ``released_config`` resolves a blocked run to
-    :data:`RESOLVED_PAIR_CHUNK_SIZE`, which was swept against this formula and
-    is never worse; see that constant's table, and
-    :func:`resolve_pair_chunk_size` for what chooses between blocked and not.
-    This is kept for a caller who wants a width derived from a byte budget --
-    a different trunk width, a different head count, a deliberate experiment --
-    and for the tests that pin the derivation.
+    **Not the automatic path.** ``released_config`` resolves to
+    :data:`RESOLVED_PAIR_CHUNK_SIZE` inside the validated domain, which was
+    swept against this formula and is never worse; see that constant's table,
+    and :func:`resolve_pair_chunk_size` for the domain. This is kept for a
+    caller who wants a width derived from a byte budget -- a different trunk
+    width, a different head count, a deliberate experiment -- and for the
+    tests that pin the derivation.
 
     An earlier version of this port recorded that chunking changed neither peak nor
     speed. That was a measurement error: peak was being read from the allocator's
@@ -546,67 +548,78 @@ def resolve_pair_chunk_size(
     n_token: int,
     *,
     budget: memory_policy.MemoryBudget | None,
+    mode: str = memory_policy.DEFAULT_CHECK_MODE,
+    off_profile: Sequence[str] = (),
 ) -> int | None:
-    """Block the pair-stack row loop only when running it whole cannot fit.
+    """Block the pair-stack row loop, and admit the run that will do it.
 
-    Blocking is not free. It caps the row loop's temporaries exactly and it
-    serializes what was one call into several, so running the loop whole is the
-    faster path and blocking it is a price paid for memory. Measured at 2,096
-    tokens the price buys 8.9 GiB (22,967 -> 13,882 MiB) and at 3,012 it buys
-    21.1 GiB -- worth paying on a card that needs it, and worth nothing on one
-    that does not.
+    Inside the validated domain the width is not a decision: from 1,003 tokens
+    up the automatic answer is :data:`RESOLVED_PAIR_CHUNK_SIZE`, whatever the
+    card reports. Running the loop whole is 3.4% quicker at 2,096 tokens
+    (220.85 against 228.5 s) and costs 65% more peak for it (22,967 against
+    13,990 MiB); at 1,003 tokens the wall time is equal (71.6 against 72.0 s)
+    and it still costs 6,195 MiB against 4,317; at 4,100 and 4,888 only the
+    blocked arm has ever run. Memory is what these defaults are judged on, so
+    seconds at that exchange rate do not buy the gigabytes, and a deployment
+    card with room to spare is room for the next job rather than a reason to
+    spend it here. :data:`memory_policy.OPENFOLD3_UNCHUNKED_PEAK` keeps the
+    unblocked arm's estimate for a caller who asks for it by name; it is not a
+    candidate here.
 
-    So the choice is binary, between two configurations that each have their
-    own fitted peak law: run the loop whole when *its* upper estimate fits the
-    admission threshold, and otherwise block it at
-    :data:`RESOLVED_PAIR_CHUNK_SIZE`. There is no third answer -- the width is
-    a measured constant rather than something to search -- and no refusal:
-    there is always a configuration below this one, so a peak estimate is never
-    this port's reason not to run.
+    What ``budget`` buys is therefore the check and not the width. With one
+    configuration to estimate, admission is what it is on every other port:
+    the blocked law's upper estimate against the threshold, ``fits`` silently,
+    ``over_budget`` refused under ``mode="refuse"`` and warned under
+    ``"warn"``, ``unknown`` warned once where no law covers the size -- above
+    4,888 tokens, and below 1,003 where the blocked arm has no measurement
+    either. ``off_profile`` names what about this run the law was not fitted
+    at, which downgrades a refusal to a warning.
 
-    Outside the token range both laws cover, or with no readable ceiling, the
-    answer is whatever that size already compiled and a one-time warning naming
-    the state ``unknown``: blocked above 3,012 tokens, where the unblocked arm
-    has no measurement at all, and unblocked below 1,003, where it is the
-    blocked arm that has none. :func:`_blocked_width` holds that line.
-
-    ``budget`` of ``None`` means the caller is not asking: the blocked loop,
-    silently. That is what ``released_config`` does for every caller that is
-    not about to predict, so inspecting a checkpoint does not initialize a
-    device to decide a width it will never use.
+    ``budget`` of ``None`` means the caller is not asking: the width, silently.
+    That is what ``released_config`` does for every caller that is not about to
+    predict, so inspecting a checkpoint does not initialize a device to check a
+    run it will never make.
     """
-    if budget is None:
-        return _blocked_width(n_token)
-    decision = memory_policy.admit(
-        model="openfold3",
-        n_token=n_token,
-        msa_rows=None,
-        candidates=memory_policy.OPENFOLD3_CANDIDATES,
-        budget=budget,
-        mode="warn",
-    )
-    if decision.selected == "unchunked":
-        return None
+    if budget is not None:
+        memory_policy.admit(
+            model="openfold3",
+            n_token=n_token,
+            msa_rows=None,
+            candidates=(("chunked", memory_policy.OPENFOLD3_CHUNKED_PEAK),),
+            budget=budget,
+            mode=mode,
+            levers=(
+                (
+                    "--option diffusion_chunk_size=N denoises N samples at a "
+                    "time instead of all of them, which narrows the sample "
+                    "axis without dropping a prediction (the law above was "
+                    "fitted with it off, the way the released five-sample "
+                    "schedule leaves it)"
+                ),
+            ),
+            off_profile=off_profile,
+        )
     return _blocked_width(n_token)
 
 
 def _blocked_width(n_token: int) -> int | None:
-    """The blocked width, or ``None`` where blocking is not the answer.
+    """The blocked width, or ``None`` where blocking has no measurement.
 
-    Below the smallest token count the unblocked arm was measured at, the
-    automatic answer stays the one it has always been: unblocked. The byte
-    budget this replaced returned ``None`` for every size below roughly a
-    thousand tokens, those are the sizes almost every run and every CPU parity
-    capture uses, and 128 rows being better at 1,003 tokens says nothing about
-    500 -- changing the program the common case compiles on an extrapolation is
-    the one move this whole policy exists to avoid.
+    Below the smallest token count the *blocked* arm was measured at -- the
+    lower bound of its own law -- the automatic answer stays the one it has
+    always been: unblocked. The byte budget this replaced returned ``None`` for
+    every size below roughly a thousand tokens, those are the sizes almost
+    every run and every CPU parity capture uses, and 128 rows being better at
+    1,003 tokens says nothing about 500 -- changing the program the common case
+    compiles on an extrapolation is the one move this whole policy exists to
+    avoid.
 
     And a block at least as wide as the loop is not a block: ``map_row_chunks``
     applies the function once either way, so spelling a width there would fork
     ``_PredictGraphIdentity`` -- and with it the in-process JIT owner -- for a
     program that is the same one.
     """
-    validated_from, _ = memory_policy.OPENFOLD3_UNCHUNKED_PEAK.domain_tokens
+    validated_from, _ = memory_policy.OPENFOLD3_CHUNKED_PEAK.domain_tokens
     if n_token < validated_from or RESOLVED_PAIR_CHUNK_SIZE >= n_token:
         return None
     return RESOLVED_PAIR_CHUNK_SIZE
@@ -1468,6 +1481,7 @@ def released_config(
     num_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
     memory_budget: memory_policy.MemoryBudget | None = None,
+    memory_check: str = memory_policy.DEFAULT_CHECK_MODE,
     per_sample_token_cutoff: int | None = 0,
     diffusion_chunk_size: int | None | str = "auto",
     msa_depth: int | None = RELEASED_MSA_DEPTH,
@@ -1496,6 +1510,13 @@ def released_config(
     returns all three distributions; callers must also give the writer the same
     value if they intend to persist them.
 
+    ``memory_budget`` and ``memory_check`` are the admission pair, and they
+    reach only the ``"auto"`` spelling of ``pair_chunk_size``: a caller who
+    pins a width has chosen a configuration no law here was fitted at, so it
+    is run as asked rather than estimated. ``pair_chunk_size=0`` is how the
+    unblocked loop is spelled explicitly; its own estimate is
+    :data:`memory_policy.OPENFOLD3_UNCHUNKED_PEAK`.
+
     Verify against the checkpoint before trusting this: read its block counts
     with :func:`~foldjax.models.openfold3.bridge.checkpoint.count_blocks` and
     check them against ``pairformer 48``, ``msa_module 4``,
@@ -1504,13 +1525,46 @@ def released_config(
     use a different config than upstream's default, and these values must not
     be used.
     """
-    # `memory_budget` decides *whether* to block the row loop and this stores
-    # what it decided: an int or None, the same field either way, so the
-    # resolved config -- which is `_PredictGraphIdentity`'s own key -- carries a
-    # realized width and never a sentinel. Two budgets that reach the same
-    # width therefore build the same program and share its cache entry.
+    # The width is a function of `n_token` alone, and this stores what it
+    # resolved to: an int or None, the same field either way, so the resolved
+    # config -- which is `_PredictGraphIdentity`'s own key -- carries a
+    # realized width and never a sentinel. `memory_budget` no longer changes
+    # it; what it does is admit the run, which is why it is read here, where
+    # the sample count and the stages that put the law off profile are known.
     resolved_chunk: int | None = (
-        resolve_pair_chunk_size(n_token, budget=memory_budget)
+        resolve_pair_chunk_size(
+            n_token,
+            budget=memory_budget,
+            mode=memory_check,
+            off_profile=memory_policy.off_profile_reason(
+                num_samples=num_samples,
+                # Each of these leaves the run *below* the configuration the
+                # law was fitted at, so the estimate reads high and a refusal
+                # drawn from it would refuse a run that fits. `dtype` is
+                # deliberately not here: a float32 trunk needs *more* than the
+                # law says, not less, so its refusals stay binding.
+                extras=tuple(
+                    reason
+                    for reason, active in (
+                        # The arena is split across devices.
+                        ("context parallelism", cp_shards > 1),
+                        # Returns before the sampler and the confidence heads,
+                        # which is where most of the fitted peak lives.
+                        (
+                            "a trunk-only graph",
+                            stop_after_trunk or stop_after_inputs,
+                        ),
+                        # The law was fitted with the sample axis whole.
+                        (
+                            "a chunked diffusion sample axis",
+                            diffusion_chunk_size != "auto"
+                            and diffusion_chunk_size is not None,
+                        ),
+                    )
+                    if active
+                ),
+            ),
+        )
         if isinstance(pair_chunk_size, str)
         else pair_chunk_size
     )

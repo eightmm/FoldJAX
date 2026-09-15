@@ -240,13 +240,15 @@ rollout steps, 4 cycles), on real depositions:
 | 3QEX | 966 | 8029 | 292 s | 108 s | 26.1 GiB | 0.200 |
 | 5WLH | 1494 | 13071 | 451 s | 273 s | 37.4 GiB | 0.203 |
 
-Longer targets need `pair_chunk_size`, which `released_config` selects from the token
-count. Triangle attention's scores are `[rows, heads, N, N]` -- cubic in token count
--- so one *unchunked* pair block needs 267 GiB of temporaries at 2076 tokens against
-41 GiB at 256 rows. Because the chunk shrinks as the target grows, peak memory rises
-more slowly than the token count squared: 966 to 1494 tokens is 1.55x the tokens and
-only 1.44x the peak, where quadratic would be 2.39x. What is bounded is the score
-tensor, not the sequence length.
+Longer targets need `pair_chunk_size`, which `released_config` resolves from the
+token count alone: 128 rows from 1,003 tokens up, unblocked below that. Blocking the
+row loop caps the block's temporaries -- the pair transition's widened intermediate
+and triangle attention's working set -- so peak memory rises more slowly than the
+token count squared: 966 to 1494 tokens is 1.55x the tokens and only 1.44x the peak,
+where quadratic would be 2.39x. Running the loop whole is quicker by a hair and
+costs far more for it (2,096 tokens: 220.85 s / 22,967 MiB against 228.5 s /
+13,990 MiB), which is why no budget resolves to it; `pair_chunk_size=0` is the
+explicit spelling.
 
 pLDDT levelling off at ~0.20 is what single-sequence input should give on targets this
 size, not a size-dependent defect -- a defect would not level off.

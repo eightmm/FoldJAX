@@ -195,17 +195,39 @@ absent.
 `num_samples`, `no_rollout_steps` and `num_cycles`. `--max-msa-depth` narrows the
 released `msa_depth` setting and subsamples on the host before device transfer.
 
-Backend options: `query_id`, `ccd_file_path`, `pair_chunk_size`, `prefix`,
-`no_compile`, and the three native sampling spellings. `ccd_file_path` applies
-only while preprocessing raw input; a feature archive already contains fixed
-chemistry and rejects that option rather than ignoring it.
+Backend options: `query_id`, `ccd_file_path`, `pair_chunk_size`,
+`memory_budget_gib`, `memory_check`, `prefix`, `no_compile`, and the three
+native sampling spellings. `ccd_file_path` applies only while preprocessing raw
+input; a feature archive already contains fixed chemistry and rejects that
+option rather than ignoring it.
 
-`pair_chunk_size` is worth knowing about. Triangle attention's scores are
-`[rows, heads, N, N]` — cubic in token count — so one *unchunked* pair block
-needs 267 GiB of temporaries at 2076 tokens against 41 GiB at 256 rows.
-`released_config` picks a chunk from the token count, and because the chunk
-shrinks as the target grows, peak memory rises more slowly than the square of
-the token count: 966 to 1494 tokens is 1.55x the tokens and only 1.44x the peak.
+`pair_chunk_size` is worth knowing about. It blocks the pair stack's row loop,
+which caps the row block's temporaries — chiefly the pair transition's widened
+intermediate and triangle attention's working set — exactly. Omitted, it
+resolves from the token count alone: **128 rows from 1,003 tokens up**, and
+unblocked below that, where 128 has no measurement and the CPU parity captures
+pin the unblocked program. No budget changes that answer. Running the loop
+whole is quicker by a hair and costs far more memory for it — at 2,096 tokens
+220.85 s / 22,967 MiB against 228.5 s / 13,990 MiB, and at 1,003 tokens equal
+wall time for 6,195 MiB against 4,317 — and at 4,100 and 4,888 tokens only the
+blocked arm has completed at all.
+
+`--option pair_chunk_size=0` is the explicit spelling for the unblocked loop,
+at any size; any other integer pins that width. Omitted and explicit stay
+distinguishable at both layers that carry the choice. The compiled program's
+identity carries the *resolved* width, so an omitted option gives 128 inside
+the validated domain and `None` below it, and `0` gives `0`. The cache
+namespace and the manifest's `options` record the request's *spelling* —
+nothing when omitted, the integer when pinned — so a pinned `128` still names
+its own namespace, and the manifest's `memory` block names the configuration
+that was estimated (`chunked`).
+
+`--option memory_budget_gib=N` and `--option memory_check={refuse,warn}` (the
+`--memory-budget-gib` and `--memory-check` flags) admit the run against the
+blocked loop's fitted peak law before anything large is allocated. With one
+automatic configuration there is nothing cheaper to fall back to, so an
+over-budget estimate refuses by default; see
+[docs/cli.md](cli.md#memory).
 
 ## Alignments are selected by filename
 

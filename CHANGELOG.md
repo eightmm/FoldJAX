@@ -72,6 +72,41 @@ unless it says so here, in its own paragraph.
   grid is a separate, deliberately frozen interface and keeps its own
   1-to-1,024 MSA ladder, cap included.
 
+- **OpenFold3 resolves the blocked 128-row pair stack inside the validated
+  domain instead of the unchunked loop that fits.** From 1,003 tokens up an
+  omitted `pair_chunk_size` now blocks the pair-stack row loop at 128 rows at
+  every size and whatever the card reports. It used to run the loop whole
+  whenever that configuration's own upper estimate fit the admission
+  threshold, and on the 96 GiB deployment card that traded gigabytes for
+  seconds: at 2,096 tokens (5DEI, same snapshot) whole is 220.85 s /
+  22,967 MiB against blocked 228.5 s / 13,990 MiB -- 65% more peak for 3.4%
+  less wall -- and at 1,003 tokens the wall time is equal (71.6 against
+  72.0 s) for 6,195 MiB against 4,317. At 4,100 and 4,888 tokens only the
+  blocked arm has ever completed. Memory is what these defaults are judged on.
+
+  Below 1,003 tokens nothing changes: the loop still runs whole whatever the
+  card, because that is the program those sizes already compiled and 128 rows
+  has no measurement there. The CPU parity captures sit in that range and are
+  untouched.
+
+  Two consequences. `--option pair_chunk_size=0` is the explicit spelling for
+  the unblocked loop, at any size, and any other integer still pins that width
+  -- an explicitly pinned width is run as asked and not estimated. And
+  `--memory-check` now reaches OpenFold3, which used to reject it: with one
+  automatic configuration there is nothing cheaper to fall back to, so an
+  over-budget estimate refuses before the weights load rather than selecting a
+  second configuration. `--memory-budget-gib` no longer changes what the port
+  compiles at all, only whether it starts. The resolved width is a function of
+  the token count, so the compiled program's identity carries 128 inside the
+  domain, `None` below it, and an explicit `0` as itself; the cache namespace
+  and the manifest's `options` go on recording the request's spelling --
+  absent when omitted, the integer when pinned -- so omitted and explicit stay
+  distinguishable there too, and the manifest's `memory` block names the
+  estimated configuration `chunked`.
+  `memory_policy.OPENFOLD3_UNCHUNKED_PEAK` stays as the estimate for a run
+  that asks for the unblocked loop by name, and is no longer an automatic
+  candidate.
+
 - **`cp_layout=auto` builds the square grid on OpenDDE and Boltz-2 when the
   device count is a perfect square.** Four cards are a 2x2 mesh there unless
   `cp_layout=1d` asks otherwise; nine are 3x3. Every other count stays

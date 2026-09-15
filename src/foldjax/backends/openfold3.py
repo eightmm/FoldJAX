@@ -37,6 +37,7 @@ from foldjax.backends.base import (
     MATMUL_PRECISION_OPTION,
     SAMPLING_OPTIONS,
     Backend,
+    validate_memory_policy_options,
 )
 from foldjax.cache import compilation_cache_scope
 from foldjax.execution import DETERMINISTIC_API_OPTION
@@ -265,14 +266,16 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "glu_backend",
             "no_compile",
             "pair_chunk_size",
-            # A planning ceiling for the chunk decision below. Not a compile
-            # option: two budgets that resolve to the same width must share the
-            # cache entry, and the width itself is what forks the program.
-            # `memory_check` is deliberately absent -- this port selects a
-            # configuration rather than refusing a run, so there is nothing for
-            # a refuse/warn switch to do, and an accepted no-op is worse than a
-            # rejected option.
+            # Admission against this card's own ceiling. Neither is a compile
+            # option: they decide whether the run starts, never what it
+            # compiles -- the resolved pair width is a function of the token
+            # count alone -- so two runs that differ only in a budget or a
+            # mode must share one cache namespace. `memory_check` reaches this
+            # port like the other two: with the blocked loop the only
+            # automatic configuration there is, an over-budget estimate has
+            # nothing cheaper to fall back to and so is a refusal.
             "memory_budget_gib",
+            "memory_check",
             "diffusion_chunk_size",
             "all_arrays",
             "prefix",
@@ -445,6 +448,10 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
 
     def validate_native_options(self, options: dict[str, Any]) -> None:
         _compile_enabled(dict(options))
+        # Both memory-policy values are knowable without a device, so a
+        # malformed one is reported by `foldjax plan` rather than after the
+        # featurizer.
+        validate_memory_policy_options(options)
         if "all_arrays" in options:
             _strict_boolean(options["all_arrays"], name="all_arrays")
         if "cp_atom_windows" in options:
@@ -634,12 +641,17 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         budget_gib = memory_policy.parse_budget_gib(
             options.pop("memory_budget_gib", None)
         )
+        overrides["memory_check"] = memory_policy.parse_check_mode(
+            options.pop("memory_check", None)
+        )
         if chunk is not None:
             overrides["pair_chunk_size"] = int(chunk)
         else:
-            # Only when the caller has not pinned a width: reading the device is
-            # what decides the automatic one, and a pinned width is the answer
-            # already.
+            # Only when the caller has not pinned a width. The laws describe
+            # the automatic configuration; a pinned width -- `0` for the
+            # unblocked loop, any other integer for a width nothing was
+            # measured at -- is the caller's own, so it is run as asked and
+            # not estimated, and the device is not read to estimate it.
             overrides["memory_budget"] = memory_policy.device_memory_budget(
                 override_gib=budget_gib
             )
