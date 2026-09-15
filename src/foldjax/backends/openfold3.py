@@ -32,7 +32,12 @@ from foldjax._openfold3_compile import (
 from foldjax.backends._ccd_session import WeightSessionHooks
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.backends.base import (
+    GLU_BACKENDS,
+    MATMUL_PRECISION_OPTION,
+    SAMPLING_OPTIONS,
+    Backend,
+)
 from foldjax.cache import compilation_cache_scope
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.models import _representations
@@ -123,8 +128,10 @@ _ZERO_TEMPLATE_PAIR_MARKER = "_foldjax_zero_template_pair_features"
 
 #: Values ``glu_backend`` accepts, copied rather than imported: the shared
 #: :mod:`foldjax.models._glu` pulls in JAX, and this module resolves cache
-#: directories without paying that import. A drift test pins the copy.
-_GLU_BACKENDS = ("xla", "tokamax")
+#: directories without paying that import. A drift test pins the copy. The copy
+#: is the adapters' one in :mod:`foldjax.backends.base`; the check and the
+#: message below stay this port's own.
+_GLU_BACKENDS = GLU_BACKENDS
 
 #: The released SwiGLU path. Named for the same reason as `_DEFAULT_DTYPE`: the
 #: strip below drops a spelling only because it names the program an omitted
@@ -280,12 +287,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
     # ever fail. `max_msa_depth` overrides `released_config`'s `msa_depth`, which
     # already carries upstream's own 1024; the knob narrows a setting the model
     # has rather than imposing one it lacks.
-    sampling_options = {
-        "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
-        "max_msa_depth": "max_msa_depth",
-    }
+    sampling_options = SAMPLING_OPTIONS
     # OpenFold3 selects its triangle kernel from an environment variable rather
     # than an argument, because the switch has to reach every triangle attention
     # in the model -- the template stack and the confidence head included --

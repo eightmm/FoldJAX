@@ -11,10 +11,14 @@ from typing import Any
 
 import numpy as np
 
-from foldjax import memory_policy
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.backends.base import (
+    MATMUL_PRECISION_OPTION,
+    SAMPLING_OPTIONS,
+    Backend,
+    validate_memory_policy_options,
+)
 from foldjax.execution import DETERMINISTIC_API_OPTION, auto_diffusion_chunk_size
 from foldjax.manifest import document_uses_key, path_stat_identity
 from foldjax.models import _representations
@@ -389,12 +393,7 @@ class Boltz2Backend(Backend):
             "write_fmt",
         }
     )
-    sampling_options = {
-        "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
-        "max_msa_depth": "max_msa_depth",
-    }
+    sampling_options = SAMPLING_OPTIONS
     # Neutral knob -> (this port's name, {neutral value: its value}). Boltz-2
     # already spells the values the neutral way; the names are its own.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {
@@ -770,8 +769,7 @@ class Boltz2Backend(Backend):
     def validate_native_options(self, options: dict[str, object]) -> None:
         # Here rather than at the admission check: `foldjax plan` runs this and
         # never reaches one, so a misspelled mode fails while planning.
-        memory_policy.parse_check_mode(options.get("memory_check"))
-        memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
+        validate_memory_policy_options(options)
         if "num_steps" in options:
             # The published Karras schedule divides by ``num_steps - 1``.  One
             # step therefore produces a NaN schedule and only fails after an

@@ -9,7 +9,7 @@ from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
-from foldjax import execution
+from foldjax import execution, memory_policy
 from foldjax.schema import (
     ModelCapabilities,
     PredictionRequest,
@@ -30,6 +30,47 @@ MATMUL_PRECISION_OPTION: dict[str, tuple[str, dict[str, str]]] = {
         {"highest": "highest", "high": "high"},
     )
 }
+
+#: The four neutral sampling knobs, for the ports that spell all four the
+#: neutral way.
+#:
+#: One shared object rather than six identical literals, for the reason
+#: `MATMUL_PRECISION_OPTION` gives: a port that renames one of these declares
+#: its own map, so six copies of the *identity* map are six chances to drop a
+#: knob from one of them instead of a record of anything. This is not the
+#: `Backend.sampling_options` default, which stays empty: that default is the
+#: open contract a third-party adapter inherits, and inheriting four knobs
+#: would translate them into native options a backend never claimed to run
+#: rather than refusing them.
+SAMPLING_OPTIONS: dict[str, str] = {
+    "num_samples": "num_samples",
+    "num_steps": "num_steps",
+    "num_recycles": "num_recycles",
+    "max_msa_depth": "max_msa_depth",
+}
+
+#: The values `glu_backend` accepts, spelled here rather than imported from
+#: :data:`foldjax.models._glu.GLU_BACKENDS`.
+#:
+#: Reading the authority imports JAX, and the adapters resolve cache
+#: directories without loading a model runtime -- which is why they carry
+#: copies of native defaults at all. One copy rather than three: each port
+#: still names it, keeps its own check and its own message, and pins this
+#: tuple to `_glu`'s in its own drift test.
+GLU_BACKENDS: tuple[str, ...] = ("xla", "tokamax")
+
+
+def validate_memory_policy_options(options: Mapping[str, Any]) -> None:
+    """Reject a malformed memory-policy option while planning.
+
+    Admission itself needs a device and runs at prediction time; the mode and
+    the budget are knowable without one, so the ports that accept them parse
+    both here, where `foldjax plan` reaches the error. One helper rather than
+    the same two calls in two adapters: the pair carries an order -- the mode
+    is reported before the budget -- and two copies can disagree about it.
+    """
+    memory_policy.parse_check_mode(options.get("memory_check"))
+    memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
 
 
 class Backend(ABC):

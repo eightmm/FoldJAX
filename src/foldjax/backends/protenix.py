@@ -8,11 +8,16 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from foldjax import memory_policy
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.backends.base import (
+    GLU_BACKENDS,
+    MATMUL_PRECISION_OPTION,
+    SAMPLING_OPTIONS,
+    Backend,
+    validate_memory_policy_options,
+)
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
@@ -121,13 +126,15 @@ _FLAG_OPTIONS = frozenset({"strict_token_limit"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})
 
-#: Spelled out rather than imported from :data:`foldjax.models._glu.GLU_BACKENDS`,
-#: which cannot be read without importing JAX -- and cache planning runs before
-#: any model runtime is loaded, which is the reason this module carries its own
-#: copies of the native defaults at all. `tests/models/protenix/test_glu_backend.py`
-#: asserts the two tuples are equal, so a value added there and not here fails
-#: rather than drifts.
-_GLU_BACKENDS = ("xla", "tokamax")
+#: Taken from the adapters' shared copy rather than imported from
+#: :data:`foldjax.models._glu.GLU_BACKENDS`, which cannot be read without
+#: importing JAX -- and cache planning runs before any model runtime is loaded,
+#: which is the reason this module carries its own copies of the native defaults
+#: at all. `tests/models/protenix/test_glu_backend.py` asserts this tuple and
+#: `_glu`'s are equal, so a value added there and not to the shared copy fails
+#: rather than drifts. The name stays because the check and its message below
+#: are this port's own.
+_GLU_BACKENDS = GLU_BACKENDS
 
 
 def _strict_cp_devices(value: Any) -> int:
@@ -323,12 +330,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         "language_model_tokens",
     )
     native_options = frozenset(_CLI_OPTIONS | {"cli_args", "output_format"})
-    sampling_options = {
-        "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
-        "max_msa_depth": "max_msa_depth",
-    }
+    sampling_options = SAMPLING_OPTIONS
     # Protenix spells both the names and the values its own way: `bf16` for the
     # dtype, and `_jit` suffixes on the kernels for the traced variants.
     execution_options = {
@@ -450,8 +452,7 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         # Here rather than at the parser for the reason `glu_backend` gives,
         # and here rather than at the admission check because `foldjax plan`
         # runs this and never reaches one.
-        memory_policy.parse_check_mode(options.get("memory_check"))
-        memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
+        validate_memory_policy_options(options)
         output_format = options.get("output_format", "protenix")
         if output_format not in {"npz", "protenix", "both"}:
             raise ValueError(

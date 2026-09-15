@@ -31,7 +31,7 @@ from foldjax.backends._tokamax_autotune import (
 )
 from foldjax.backends._tokamax_autotune import install_store as _install_tokamax_store
 from foldjax.backends._weight_session import WeightAnchors
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, SAMPLING_OPTIONS, Backend
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -818,12 +818,7 @@ class AlphaFold3Backend(Backend):
     # are set the same way. They were previously reported as unsupported, which
     # made AlphaFold 3 the one backend that could not be held to the same
     # schedule as the others, and so could not be benchmarked against them.
-    sampling_options: dict[str, str] = {
-        "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
-        "max_msa_depth": "max_msa_depth",
-    }
+    sampling_options = SAMPLING_OPTIONS
     # AlphaFold 3 runs `bfloat16: 'all'` inside the model it ships, so there is
     # no dtype for a caller to choose here; the knob would be a lie.
     execution_options: dict[str, tuple[str, dict[str, Any]]] = {

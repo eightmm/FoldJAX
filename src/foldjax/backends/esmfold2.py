@@ -43,7 +43,12 @@ import numpy as np
 from foldjax.backends._ccd_session import ManagedCcdMemory
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.backends.base import (
+    GLU_BACKENDS,
+    MATMUL_PRECISION_OPTION,
+    SAMPLING_OPTIONS,
+    Backend,
+)
 from foldjax.execution import DETERMINISTIC_API_OPTION
 from foldjax.manifest import path_stat_identity
 from foldjax.models import _representations
@@ -93,13 +98,16 @@ _FIXED_COMPILE_DEFAULTS = {
     "confidence_dtype": "float32",
 }
 
-#: The values `glu_backend` accepts, spelled here rather than imported.
+#: The values `glu_backend` accepts, named here from the adapters' shared copy
+#: rather than imported from the model package.
 #:
 #: `foldjax.models._glu.GLU_BACKENDS` is the authority, but importing it pulls
 #: JAX into option planning, which this module keeps free of the model
 #: runtime for the same reason `_FIXED_COMPILE_DEFAULTS` is a literal. A drift
-#: test pins this tuple to that one.
-_GLU_BACKENDS = ("xla", "tokamax")
+#: test pins this tuple to that one. The check and its message below are this
+#: port's own -- it names the values joined rather than as a tuple -- so only
+#: the vocabulary is shared.
+_GLU_BACKENDS = GLU_BACKENDS
 
 
 def _checked_glu_backend(value: object) -> str:
@@ -448,12 +456,7 @@ class ESMFold2Backend(ManagedCcdMemory, Backend):
     # not simply a rename: the model resubsamples that many MSA rows *per trunk
     # loop* rather than cutting the alignment once, which is the same policy
     # Boltz-2 uses and the opposite of a head-of-file cut.
-    sampling_options = {
-        "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
-        "max_msa_depth": "max_msa_depth",
-    }
+    sampling_options = SAMPLING_OPTIONS
     # No `attention_kernel`: the port's attention is XLA's, and the fused and
     # cuEquivariance paths the torch model selected between do not exist here.
     # `no_language_model` is not a performance knob -- it changes which model

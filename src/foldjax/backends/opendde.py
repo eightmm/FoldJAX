@@ -11,7 +11,7 @@ from pathlib import Path
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
-from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
+from foldjax.backends.base import MATMUL_PRECISION_OPTION, SAMPLING_OPTIONS, Backend
 from foldjax.execution import DETERMINISTIC_ARGV_OPTION
 from foldjax.models import _representations
 from foldjax.models._managed_memory import lease as managed_memory_lease
@@ -112,12 +112,7 @@ class OpenDDEBackend(ManagedCcdSession, Backend):
     # have end-to-end masks and are cropped before public output.
     padding_axes = ("tokens", "atoms", "msa", "structural_tokens")
     native_options = frozenset(_CLI_OPTIONS | {"include_raw"})
-    sampling_options = {
-        "num_samples": "num_samples",
-        "num_steps": "num_steps",
-        "num_recycles": "num_recycles",
-        "max_msa_depth": "max_msa_depth",
-    }
+    sampling_options = SAMPLING_OPTIONS
     # OpenDDE has no triangle-kernel option of its own -- it drives Protenix's
     # trunk but exposes only the chunk sizes -- so `triangle_kernel` is absent
     # here and asking for it is an error rather than a silent no-op.
