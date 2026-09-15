@@ -69,3 +69,153 @@ def test_the_reverse_maps_are_consistent() -> None:
         # round-trips only when the residue has one name -- which every
         # standard one does.
         assert chemistry.RES_TYPE_TO_LETTER[index] == letter
+
+
+# ---------------------------------------------------------------------------
+# The contents these tables had as literals in revision 5849258, before the
+# seven duplicated ones were derived from `all_atom_constants`.
+# ---------------------------------------------------------------------------
+
+#: The canonical tables carry one row more -- `"MSE": 14` and its heavy atoms --
+#: and every consumer here is written against the MSE-free form, so these are
+#: checked against the previous literals. Checking them against
+#: `all_atom_constants` instead would be checking the derivation against itself.
+_RESIDUE_TO_RES_TYPE_BEFORE = {
+    "ALA": 2,
+    "ARG": 3,
+    "ASN": 4,
+    "ASP": 5,
+    "CYS": 6,
+    "GLN": 7,
+    "GLU": 8,
+    "GLY": 9,
+    "HIS": 10,
+    "ILE": 11,
+    "LEU": 12,
+    "LYS": 13,
+    "MET": 14,
+    "PHE": 15,
+    "PRO": 16,
+    "SER": 17,
+    "THR": 18,
+    "TRP": 19,
+    "TYR": 20,
+    "VAL": 21,
+}
+
+_HEAVY_ATOMS_BEFORE = {
+    "ALA": ["N", "CA", "C", "O", "CB"],
+    "ARG": ["N", "CA", "C", "O", "CB", "CG", "CD", "NE", "CZ", "NH1", "NH2"],
+    "ASN": ["N", "CA", "C", "O", "CB", "CG", "OD1", "ND2"],
+    "ASP": ["N", "CA", "C", "O", "CB", "CG", "OD1", "OD2"],
+    "CYS": ["N", "CA", "C", "O", "CB", "SG"],
+    "GLN": ["N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "NE2"],
+    "GLU": ["N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "OE2"],
+    "GLY": ["N", "CA", "C", "O"],
+    "HIS": ["N", "CA", "C", "O", "CB", "CG", "ND1", "CD2", "CE1", "NE2"],
+    "ILE": ["N", "CA", "C", "O", "CB", "CG1", "CG2", "CD1"],
+    "LEU": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2"],
+    "LYS": ["N", "CA", "C", "O", "CB", "CG", "CD", "CE", "NZ"],
+    "MET": ["N", "CA", "C", "O", "CB", "CG", "SD", "CE"],
+    "PHE": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ"],
+    "PRO": ["N", "CA", "C", "O", "CB", "CG", "CD"],
+    "SER": ["N", "CA", "C", "O", "CB", "OG"],
+    "THR": ["N", "CA", "C", "O", "CB", "OG1", "CG2"],
+    "TRP": [
+        "N",
+        "CA",
+        "C",
+        "O",
+        "CB",
+        "CG",
+        "CD1",
+        "CD2",
+        "NE1",
+        "CE2",
+        "CE3",
+        "CZ2",
+        "CZ3",
+        "CH2",
+    ],
+    "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
+    "VAL": ["N", "CA", "C", "O", "CB", "CG1", "CG2"],
+    "UNK": ["N", "CA", "C", "O"],
+}
+
+_ONE_TO_THREE_BEFORE = {
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "Q": "GLN",
+    "E": "GLU",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
+    "X": "UNK",
+}
+
+_ESM_VOCAB_BEFORE = {
+    "L": 4,
+    "A": 5,
+    "G": 6,
+    "V": 7,
+    "S": 8,
+    "E": 9,
+    "R": 10,
+    "T": 11,
+    "I": 12,
+    "D": 13,
+    "P": 14,
+    "K": 15,
+    "Q": 16,
+    "N": 17,
+    "F": 18,
+    "Y": 19,
+    "M": 20,
+    "H": 21,
+    "W": 22,
+    "C": 23,
+    "X": 3,
+}
+
+
+def test_the_mse_free_tables_keep_their_previous_contents() -> None:
+    """The two tables that differ from the canonical ones, by value and by key."""
+    assert chemistry.PROTEIN_RESIDUE_TO_RES_TYPE == _RESIDUE_TO_RES_TYPE_BEFORE
+    assert chemistry.PROTEIN_HEAVY_ATOMS == _HEAVY_ATOMS_BEFORE
+    assert "MSE" not in chemistry.PROTEIN_RESIDUE_TO_RES_TYPE
+    assert "MSE" not in chemistry.PROTEIN_HEAVY_ATOMS
+
+
+def test_the_re_exported_tables_keep_their_previous_contents() -> None:
+    """The five that were already identical, so a re-export cannot drift them."""
+    assert chemistry.MOL_TYPE_PROTEIN == 0
+    assert chemistry.PROTEIN_UNK_RES_TYPE == 22
+    assert chemistry.MSA_GAP_TOKEN_ID == 1
+    assert chemistry.PROTEIN_1TO3 == _ONE_TO_THREE_BEFORE
+    assert chemistry.ESM_PROTEIN_VOCAB == _ESM_VOCAB_BEFORE
+
+
+def test_methionine_still_owns_res_type_14() -> None:
+    """The reverse maps invert this module's table, not the canonical one.
+
+    `MSE` and `MET` share index 14. Inverting a table that carried `MSE` last
+    would name selenomethionine in every methionine of every output PDB
+    (`pdb.py:117` reads `RES_TYPE_TO_3LETTER`), and would send the a3m query
+    row's letter map the same way.
+    """
+    assert chemistry.RES_TYPE_TO_3LETTER[14] == "MET"
+    assert chemistry.RES_TYPE_TO_LETTER[14] == "M"
+    assert chemistry.RES_TYPE_TO_3LETTER[chemistry.PROTEIN_UNK_RES_TYPE] == "UNK"

@@ -1,134 +1,55 @@
 """ESMFold2's protein chemistry tables, vendored so nothing needs torch.
 
-Copied verbatim from Biohub's `transformers.models.esmfold2.protein_utils`
-(Apache-2.0, Copyright 2026 Biohub) by `scripts/generate_esmfold2_chemistry.py`,
-which reads the installed module rather than transcribing it -- the reference
-conformer block alone is three hundred lines of coordinates, and a hand copy is
-three hundred chances to be silently wrong. Upstream's file imports torch for
-its featuriser; only the tables are taken, so this one imports nothing.
+The reference conformers, charges and element numbers below are copied verbatim
+from Biohub's `transformers.models.esmfold2.protein_utils` (Apache-2.0,
+Copyright 2026 Biohub) by `scripts/generate_esmfold2_chemistry.py`, which reads
+the installed module rather than transcribing it -- the conformer block alone is
+three hundred lines of coordinates, and a hand copy is three hundred chances to
+be silently wrong. Upstream's file imports torch for its featuriser; only the
+tables are taken.
+
+The residue vocabularies are not vendored twice. `all_atom_constants` already
+carries the same seven, from Biohub's own ESMFold2 checkout, and the two sources
+agree on every entry except one row: the canonical tables map `MSE`
+(selenomethionine) onto methionine, and upstream's featuriser tables have no
+such row. This module keeps them MSE-free, which is what its consumers are
+written against -- `features.py` builds three-letter codes from a one-letter
+sequence, so `PROTEIN_1TO3` never yields `MSE` and the bare `PROTEIN_HEAVY_ATOMS`
+subscript beside it cannot miss, while the structure path normalises `MSE` to
+`MET` before it looks anything up (`all_atom.py:287`). Keeping the row out is
+also what keeps `RES_TYPE_TO_3LETTER[14]` at `MET`: `MSE` and `MET` share that
+index, so inverting a table that carried `MSE` last would name selenomethionine
+in every methionine of every output PDB (`pdb.py:117`).
 
 `tests/models/esmfold2/test_chemistry.py` re-derives every entry from the
 installed module when it is present, so a checkout that has upstream cannot
 drift from it and one that does not still runs.
 
-Do not edit by hand. Regenerate.
+The literal tables below are generated. Do not edit those by hand. Regenerate.
 """
 
 from __future__ import annotations
 
+from foldjax.models.esmfold2.data import all_atom_constants as _constants
+
 #: `mol_type`'s protein code, the unknown-residue index, the MSA gap.
-MOL_TYPE_PROTEIN = 0
-PROTEIN_UNK_RES_TYPE = 22
-MSA_GAP_TOKEN_ID = 1
+MOL_TYPE_PROTEIN = _constants.MOL_TYPE_PROTEIN
+PROTEIN_UNK_RES_TYPE = _constants.PROTEIN_UNK_RES_TYPE
+MSA_GAP_TOKEN_ID = _constants.MSA_GAP_TOKEN_ID
 
-PROTEIN_1TO3 = {
-    "A": "ALA",
-    "R": "ARG",
-    "N": "ASN",
-    "D": "ASP",
-    "C": "CYS",
-    "Q": "GLN",
-    "E": "GLU",
-    "G": "GLY",
-    "H": "HIS",
-    "I": "ILE",
-    "L": "LEU",
-    "K": "LYS",
-    "M": "MET",
-    "F": "PHE",
-    "P": "PRO",
-    "S": "SER",
-    "T": "THR",
-    "W": "TRP",
-    "Y": "TYR",
-    "V": "VAL",
-    "X": "UNK",
-}
+PROTEIN_1TO3 = _constants.PROTEIN_1TO3
+ESM_PROTEIN_VOCAB = _constants.ESM_PROTEIN_VOCAB
 
+#: The two canonical tables that carry a row this path never reaches, without it.
 PROTEIN_RESIDUE_TO_RES_TYPE = {
-    "ALA": 2,
-    "ARG": 3,
-    "ASN": 4,
-    "ASP": 5,
-    "CYS": 6,
-    "GLN": 7,
-    "GLU": 8,
-    "GLY": 9,
-    "HIS": 10,
-    "ILE": 11,
-    "LEU": 12,
-    "LYS": 13,
-    "MET": 14,
-    "PHE": 15,
-    "PRO": 16,
-    "SER": 17,
-    "THR": 18,
-    "TRP": 19,
-    "TYR": 20,
-    "VAL": 21,
+    name: res_type
+    for name, res_type in _constants.PROTEIN_RESIDUE_TO_RES_TYPE.items()
+    if name != "MSE"
 }
-
-ESM_PROTEIN_VOCAB = {
-    "L": 4,
-    "A": 5,
-    "G": 6,
-    "V": 7,
-    "S": 8,
-    "E": 9,
-    "R": 10,
-    "T": 11,
-    "I": 12,
-    "D": 13,
-    "P": 14,
-    "K": 15,
-    "Q": 16,
-    "N": 17,
-    "F": 18,
-    "Y": 19,
-    "M": 20,
-    "H": 21,
-    "W": 22,
-    "C": 23,
-    "X": 3,
-}
-
 PROTEIN_HEAVY_ATOMS = {
-    "ALA": ["N", "CA", "C", "O", "CB"],
-    "ARG": ["N", "CA", "C", "O", "CB", "CG", "CD", "NE", "CZ", "NH1", "NH2"],
-    "ASN": ["N", "CA", "C", "O", "CB", "CG", "OD1", "ND2"],
-    "ASP": ["N", "CA", "C", "O", "CB", "CG", "OD1", "OD2"],
-    "CYS": ["N", "CA", "C", "O", "CB", "SG"],
-    "GLN": ["N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "NE2"],
-    "GLU": ["N", "CA", "C", "O", "CB", "CG", "CD", "OE1", "OE2"],
-    "GLY": ["N", "CA", "C", "O"],
-    "HIS": ["N", "CA", "C", "O", "CB", "CG", "ND1", "CD2", "CE1", "NE2"],
-    "ILE": ["N", "CA", "C", "O", "CB", "CG1", "CG2", "CD1"],
-    "LEU": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2"],
-    "LYS": ["N", "CA", "C", "O", "CB", "CG", "CD", "CE", "NZ"],
-    "MET": ["N", "CA", "C", "O", "CB", "CG", "SD", "CE"],
-    "PHE": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ"],
-    "PRO": ["N", "CA", "C", "O", "CB", "CG", "CD"],
-    "SER": ["N", "CA", "C", "O", "CB", "OG"],
-    "THR": ["N", "CA", "C", "O", "CB", "OG1", "CG2"],
-    "TRP": [
-        "N",
-        "CA",
-        "C",
-        "O",
-        "CB",
-        "CG",
-        "CD1",
-        "CD2",
-        "NE1",
-        "CE2",
-        "CE3",
-        "CZ2",
-        "CZ3",
-        "CH2",
-    ],
-    "TYR": ["N", "CA", "C", "O", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
-    "VAL": ["N", "CA", "C", "O", "CB", "CG1", "CG2"],
-    "UNK": ["N", "CA", "C", "O"],
+    name: atoms
+    for name, atoms in _constants.PROTEIN_HEAVY_ATOMS.items()
+    if name != "MSE"
 }
 
 PROTEIN_REF_POS = {

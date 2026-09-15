@@ -11,10 +11,14 @@ https://github.com/Biohub/esm/blob/main/THIRD_PARTY_NOTICE.md
 This is an independent community JAX reimplementation and is not an official
 Biohub project.
 
-The chemistry reference tables in data/chemistry.py are generated from
-Biohub's ESMFold2 support in the Transformers project. That source is
-Copyright 2026 Biohub and is licensed under the Apache License, Version 2.0:
+The reference conformers, charges and element numbers in data/chemistry.py are
+generated from Biohub's ESMFold2 support in the Transformers project. That
+source is Copyright 2026 Biohub and is licensed under the Apache License,
+Version 2.0:
 https://github.com/huggingface/transformers
+The residue vocabularies that module exposes are derived from
+data/all_atom_constants.py, vendored from the MIT-licensed model repository
+above, rather than carried a second time.
 
 ESMFold2 and ESMC-6B model weights are downloaded separately from their
 publishers and are not distributed with FoldJAX. Their repository terms apply
