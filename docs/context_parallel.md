@@ -26,8 +26,13 @@ expected explicit collectives for the atom-window adapters.
 |---|---:|---:|---:|---|
 | Boltz-2 | yes | yes | yes | Cannon/ring pair core, CP-row atom windows, halo exchange, sparse token/pair routing |
 | Protenix | yes | yes | yes | Pair trunk and confidence pair path use the common pair core; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) |
+<<<<<<< ours
 | OpenDDE | yes | yes | yes | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser with the atom graph distributed over CP rows (`cp_atom_windows`, default on), aligned on the *structural* token axis |
 | OpenFold3 | yes | yes | no | Pair stack, template stack, and confidence pair re-embedding |
+=======
+| OpenDDE | yes | yes | no | Structural-token refinement uses the Protenix pair primitives; its diffusion module calls the same Protenix denoiser, with the atom-window option off, so its atom streams remain replicated |
+| OpenFold3 | yes | yes | yes | Pair stack, template stack, confidence pair re-embedding; the diffusion atom graph is distributed over CP rows (`cp_atom_windows`, default on) with an index-driven ring gather instead of a halo |
+>>>>>>> theirs
 | ESMFold2 | yes | no | no | Pair-row constraint path; no two-dimensional triangle-attention ring |
 | AlphaFold3 | no | no | no | The vendored publisher runtime is not rewritten for FoldJAX CP |
 
@@ -160,6 +165,83 @@ bias is sliced rather than forcing the logits back together
 `diffusion_dtype=bf16` remains refused under a mesh, unchanged by this: that
 guard is about the denoising network's precision, not its placement.
 
+## OpenFold3 atom-window path
+
+OpenFold3's diffusion atom graph is split over CP rows too, and the mechanism
+differs from Boltz-2's and Protenix' in one place that decides everything else.
+
+**OpenFold3's key windows are not a fixed offset from their query block.**
+`models/openfold3/models/atom_blocks.py:block_indices` *shifts* a window rather
+than clipping it: a block that would start before atom 0 slides right, and a
+block that would run past the last real atom slides left to end there. So a
+query block lying entirely inside the atom padding reads the last `n_key`
+*real* atoms, however far away they are — measured on 96 atoms with 60 real and
+a 4/8 window, blocks 15..23 all read atoms 52..59, three whole blocks away. The
+shift is derived from `jnp.sum(atom_mask)`, so it is a traced value: there is no
+static halo width that covers it. The key side is therefore an **index-driven
+ring gather** over rotating atom shards
+(`models/_cp_atom.py:gather_atom_windows_local`), which puts no bound at all on
+where a key may live. The query side is a pure local reshape.
+
+The second difference is structural: the whole atom stage runs inside *one*
+`shard_map` body per encoder/decoder rather than one per arithmetic stage.
+OpenFold3 reaches its blocking through four shared primitives, and each of them
+dispatches on an `AtomBlockPlan` installed task-locally by the enclosing
+sharded body (`models/openfold3/models/atom_cp.py`) — the same `ContextVar`
+device Protenix uses for its window trunk builder, and for the same reason: the
+plan holds that body's tracers, so it cannot be threaded through signatures the
+input embedder, the trunk and the frame builder also call. With no plan
+installed all four keep their historical single path.
+
+Per stage (`file:line` at the dispatch):
+
+- key blocks and the block pair mask — `atom_blocks.py:122`
+  (`single_rep_to_blocks`), five call sites between the reference-feature
+  embedder, the atom-pair conditioning and both cross-attention stacks;
+- the atom-pair conditioning cache is born window-sharded and never assembled:
+  every `[N_blocks, N_query, N_key, c]` tensor in the encoder is a CP-row slice;
+- the token-pair gather — `atom_blocks.py:176` (`pair_rep_to_blocks`) — rotates
+  pair-row tiles and reduces over pair columns, so the projected
+  `[N_token, N_token, c_atom_pair]` tensor is never held whole. This is the
+  operation that previously forced a full-pair gather per device;
+- the token→atom broadcast — `atomize.py:48` — rotates the linear token shards.
+  `token_mask` and `num_atoms_per_token` enter the body *replicated*, so the
+  prefix-validity threshold `positions < sum(counts)` is the same whole
+  reduction the serial path performs rather than a per-shard count;
+- the atom→token mean — `atomize.py:147` — keeps OpenFold3's deliberate
+  one-hot contraction (a GPU scatter-add's summation order is not reproducible
+  and the rollout amplifies it) and reduce-scatters `totals` and `counts` over
+  CP rows. The overflow bin masked atoms are routed to is dropped *before* the
+  `psum_scatter`, because `n_token + 1` does not divide the rows;
+- the token transformer's queries follow the scatter onto CP rows
+  (`denoiser.py:140`, `:156`) and its per-block pair bias is a projection of the
+  pair-sharded conditioning (`denoiser.py:116`), so under the square grid the
+  bias and the token logits are split on both pair axes.
+
+Two shapes have to divide the mesh, and there is no fallback that hides it: the
+atom axis must be a multiple of `n_query * cp_rows` and the token axis must
+divide the rows (and the columns under `2d`). Unlike the halo paths there is no
+requirement on `n_key`: a CP row owning a single query block is legal. A request
+that cannot be split resolves to the replicated path **with a warning naming the
+multiples to pad to**; pin `PaddingConfig(atoms=..., tokens=...)` to supply the
+alignment. At the released `n_query=32` on four devices that is
+`atoms % 128 == 0` and `tokens % 4 == 0`; on a 2x2 grid, `atoms % 64 == 0` and
+`tokens % 2 == 0`.
+
+The sampler loop and its RNG tape are unchanged: the coordinate state stays
+replicated (`[samples, atoms, 3]` is linear in the atom count and three channels
+wide), the encoder's `shard_map` reshards the coordinates it is handed, and the
+decoder's update is replicated again on the way out.
+
+`cp_atom_windows` is a compile option on OpenFold3, defaulting to on, resolved
+once in `inference.py:_predict_from_trunk` before the rollout body is defined so
+the misalignment warning is emitted once and outside `lax.scan`. The internal
+keyword it threads through `denoise`, `atom_attention_encoder` and
+`atom_attention_decoder` defaults to *off*, which is what keeps the input
+embedder's atom encoder — and every direct caller — on the program it had. Both
+atom transformer stacks already default to `scan_blocks=True`, so the ring
+gathers' `ppermute` runs inside a `lax.scan` body inside the `shard_map`.
+
 ## Trunk-only representation capture
 
 `stop_after="trunk"` is a distinct compiled graph. It returns before the
@@ -207,6 +289,7 @@ uv run pytest -q \
   tests/models/opendde/test_context_parallel.py \
   tests/models/opendde/test_atom_context_parallel.py \
   tests/models/openfold3/test_context_parallel.py \
+  tests/models/openfold3/test_atom_context_parallel.py \
   tests/models/esmfold2/test_context_parallel.py
 ```
 
@@ -237,11 +320,19 @@ configuration as production-ready, measure on that deployment topology:
    diffusion;
 5. 2, 4, and 8 GPUs, plus multi-node runs when those are intended.
 
+<<<<<<< ours
 For Boltz-2, Protenix and OpenDDE, the pair trunk scales over both
 two-dimensional mesh axes, while atom windows scale over CP rows and are
 replicated over CP columns. OpenFold3 deliberately retains pair-only CP until
 its atom graph receives a model-specific distributed contract and
 checkpoint-level validation.
+=======
+For Boltz-2, Protenix and OpenFold3, the pair trunk scales over both
+two-dimensional mesh axes, while atom windows scale over CP rows and are
+replicated over CP columns. The *Atom-window CP* column of the table above is
+the authority on which models distribute their atom graph and which still hold
+it whole on every device.
+>>>>>>> theirs
 
 Protenix' atom-window path has CPU parity, HLO-structure and serial-invariance
 gates (`tests/models/protenix/test_atom_context_parallel.py`, 18 tests on 1-,
@@ -255,6 +346,7 @@ structural -- the compiled SPMD module contains no full-width atom activation,
 atom-pair window cache, or projected token-pair tensor -- not a measured
 peak.
 
+<<<<<<< ours
 OpenDDE's has the same shape of evidence and the same limit
 (`tests/models/opendde/test_atom_context_parallel.py`, 14 tests: 1-D x4 and 2x2
 CPU meshes, both denoiser attention arms, the scanned block stack and scanned
@@ -265,3 +357,32 @@ and the compile-namespace spelling). Also structural, also no GPU measurement.
 The target it exists for -- a job that does not fit one card -- is exactly the
 one no CPU mesh can measure, so the memory claim stays a claim about what the
 compiled module does not contain.
+=======
+OpenFold3's atom-window path has the same three kinds of gate
+(`tests/models/openfold3/test_atom_context_parallel.py`, 11 tests): the serial
+denoiser lowering is pinned byte-identical to `git archive main` and carries no
+collective or sharding annotation; a live four-device mesh with
+`cp_atom_windows` off lowers to that same program, so the option rather than
+the mesh is what distributes the graph; and one denoiser step, the encoder, the
+decoder and a three-step sampler agree with serial on 1-D x4, 2x2 and 3x3
+meshes to FP32 reduction-order tolerance. Two of those arms pad the atom axis
+so that query blocks fall off the real atoms (90 and 60 real of 96), which is
+the property an index-driven gather satisfies and a halo of any static width
+does not -- an all-real fixture would pass against either. The per-device claim
+is structural in the same sense as Protenix': the compiled SPMD module contains
+no `[S, N_atom, c_atom]` activation, no `[S, N_blocks, N_query, N_key, c_pair]`
+cache, no projected `[S, N_token, N_token, c_pair]` tensor, no
+`[S, H, N_token, N_token]` token bias and no `[S, N_atom, N_token + 1]`
+atom-by-token one-hot. That gate lowers with the features as *traced arguments*
+rather than closed-over literals: with them as constants XLA folds
+`atom_to_token_index` through the aggregate's one-hot and the block tables, and
+a full-width tensor then appears as a `constant` — or vanishes — for reasons the
+real program does not share. Measured: the literal-batch module carries a
+folded `f32[S, N_atom, N_token]` constant the traced one does not.
+
+What is still full-width per device, deliberately: the token attention's
+gathered K/V (`[S, H, N_token, d]`, linear in the token count, the same
+remainder Protenix has), the replicated `[S, N_atom, 3]` coordinate update the
+sampler carries, and the token-shaped `token_mask` / `num_atoms_per_token` the
+sharded bodies need whole. No GPU measurement yet.
+>>>>>>> theirs

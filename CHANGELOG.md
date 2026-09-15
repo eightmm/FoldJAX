@@ -115,6 +115,7 @@ unless it says so here, in its own paragraph.
 
 ### Added
 
+<<<<<<< ours
 - **OpenDDE distributes its diffusion atom graph under context parallelism**,
   through the same shared adapters Protenix uses -- its diffusion module calls
   the same Protenix denoiser, and until now its option surface deliberately
@@ -157,6 +158,52 @@ unless it says so here, in its own paragraph.
   `tests/models/opendde/test_atom_context_parallel.py`, 14 tests. No GPU
   measurement, so the per-device claim is structural rather than a measured
   peak -- and the size it matters at is the one no CPU mesh can measure.
+=======
+- **OpenFold3 distributes its diffusion atom graph under context parallelism**,
+  the way Boltz-2 and Protenix already did. `cp_atom_windows` is on by default,
+  is available as `--cp-atom-windows` / `--no-cp-atom-windows` and as
+  `--option cp_atom_windows=...`, and does nothing without a mesh. Under one,
+  the atom-pair block cache, the atom single conditioning, both atom
+  transformer stacks, the atom<->token routing and the atom blocks' view of the
+  token-pair tensor are split over the CP rows instead of being held whole on
+  every device. The compiled SPMD module then contains no per-device
+  `[S, N_atom, c_atom]` activation, no `[S, N_blocks, N_query, N_key, c_pair]`
+  cache, no projected `[S, N_token, N_token, c_pair]` tensor, no
+  `[S, H, N_token, N_token]` token bias, and no `all-gather` in the atom path.
+
+  **The key windows needed a different mechanism from the other two ports, and
+  the reason is a property of OpenFold3's blocking rather than a choice.**
+  `atom_blocks.block_indices` *shifts* a key window instead of clipping it, by
+  an amount derived from `jnp.sum(atom_mask)`: a block that would run past the
+  last real atom slides left to end there, so a query block lying inside the
+  atom padding reads the last `n_key` real atoms however far away they are.
+  Measured on 96 atoms with 60 real and a 4/8 window, blocks 15..23 all read
+  atoms 52..59 -- three whole blocks away, and the distance is a traced value,
+  so no static halo width covers it. The key side is therefore an index-driven
+  ring gather over rotating atom shards, not Boltz-2's and Protenix' halo
+  exchange. Two parity arms pad the atom axis precisely so those shifted blocks
+  exist (90 and 60 real atoms of 96); an all-real fixture would have passed
+  against a halo.
+
+  Two shapes must divide the mesh: the atom axis a multiple of
+  `n_query * cp_rows` (128 on four devices at the released `n_query=32`), the
+  token axis a multiple of the rows (and the columns under `2d`). Unlike the
+  halo ports there is no requirement involving `n_key`. A shape that cannot be
+  split **warns, names the multiples to pad to, and runs replicated** rather
+  than failing or silently reading as distributed; pin `--pad-atoms` /
+  `--pad-tokens` or `PaddingConfig(atoms=..., tokens=...)` to supply the
+  alignment.
+
+  The serial program is unchanged, and that is pinned rather than asserted: the
+  serial denoiser's normalised HLO is byte-identical to a `git archive main`
+  tree and carries no collective and no sharding annotation, and a live
+  four-device mesh with the option off lowers to that same program -- so the
+  option, not the mesh, is what distributes the graph. CPU: one denoiser step,
+  the encoder, the decoder and a three-step sampler match serial on 1-D x4, 2x2
+  and 3x3 meshes to FP32 reduction-order tolerance
+  (`tests/models/openfold3/test_atom_context_parallel.py`, 11 tests). No GPU
+  measurement yet: the per-device claim is structural, not a measured peak.
+>>>>>>> theirs
 
 - **Protenix distributes its diffusion atom graph under context parallelism**,
   the way Boltz-2 already did. `cp_atom_windows` is on by default and does

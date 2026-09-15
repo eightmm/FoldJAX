@@ -1046,7 +1046,11 @@ omitted default resolves to `xla_jit` there). OpenDDE reaches the same two
 sites through Protenix's
 primitives but does not offer the value: it has not been measured there.
 
+<<<<<<< ours
 ### Distributed diffusion atom graph (`cp_atom_windows`, Protenix and OpenDDE)
+=======
+### Distributed diffusion atom graph (`cp_atom_windows`, Protenix and OpenFold3)
+>>>>>>> theirs
 
 On by default and inert without a mesh. With `--cp-devices N` greater than one
 it splits the diffusion atom graph over the context-parallel rows: the
@@ -1064,6 +1068,7 @@ on both.
 
 It needs two axes to divide the mesh: the atom axis a multiple of
 `n_queries * cp_rows` (32 times the row count with the released windows) and
+<<<<<<< ours
 the denoiser's token axis a multiple of the rows, and of the columns under
 `--cp-layout 2d`. **That token axis is not the same axis on both ports.**
 Protenix diffuses over its residue tokens, so pin `--pad-tokens`; OpenDDE
@@ -1076,6 +1081,22 @@ replicated graph, so pin `--pad-atoms` plus the right token axis (or
 `PaddingConfig(atoms=..., tokens=...)` /
 `PaddingConfig(atoms=..., structural_tokens=...)`) to reach the distributed
 one. The sampler loop and its noise tape are unchanged. See
+=======
+the token axis a multiple of the rows, and of the columns under
+`--cp-layout 2d`. A shape that cannot be split **warns, names the multiple to
+pad to, and runs replicated** -- which means an unpadded job measures the
+replicated graph, so pin `--pad-atoms` and `--pad-tokens` (or
+`PaddingConfig(atoms=..., tokens=...)`) to reach the distributed one. On four
+devices that is `--pad-atoms` a multiple of 128 and `--pad-tokens` a multiple of
+4; on a 2x2 grid, 64 and 2. The sampler loop and its noise tape are unchanged.
+
+Protenix and OpenFold3 reach the same split through different key-window
+mechanisms. Protenix' windows sit at a fixed offset from their query block, so
+it exchanges a fixed-width halo. OpenFold3 *shifts* a window to keep it inside
+the real atoms, by an amount derived from the atom mask, so a block in the atom
+padding can read atoms an arbitrary distance away and no static halo covers it;
+its key side rotates the atom shards and gathers by index instead. See
+>>>>>>> theirs
 [`docs/context_parallel.md`](context_parallel.md).
 
 ### Fused gated linear unit (`--option glu_backend=tokamax`, OpenFold3)

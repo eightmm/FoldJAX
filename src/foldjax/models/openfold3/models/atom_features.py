@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh
 from foldjax.models.openfold3.models.atom_blocks import (
     pair_rep_to_blocks,
     single_rep_to_blocks,
@@ -269,6 +270,7 @@ def atom_attention_encoder(
     inf: float = 1e9,
     eps: float = 1e-5,
     glu_backend: str = "xla",
+    cp_atom_windows: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Run the atom attention encoder (AF3 Algorithm 5).
 
@@ -286,11 +288,39 @@ def atom_attention_encoder(
         zij_trunk: trunk pair representation, required with ``rl``.
         inf: masking constant.
         eps: layer norm epsilon.
+        cp_atom_windows: split the atom graph over the context-parallel rows
+            instead of holding one copy of it per device. Meaningful only in
+            diffusion mode (``rl`` given) and only under an active mesh;
+            ``False`` -- every other caller, the input embedder included --
+            keeps the program it has.
 
     Returns:
         ``(ai, ql, cl, plm)``: token representation, atom single representation,
         atom single conditioning and blocked atom pair conditioning.
     """
+    if cp_atom_windows and cp_mesh() is not None:
+        from foldjax.models.openfold3.models.atom_cp import atom_attention_encoder_cp
+
+        if rl is None or si_trunk is None or zij_trunk is None:
+            raise ValueError(
+                "a distributed atom graph is only implemented for the diffusion "
+                "atom encoder; the input embedder's encoder stays replicated"
+            )
+        return atom_attention_encoder_cp(
+            batch,
+            params,
+            n_query=n_query,
+            n_key=n_key,
+            no_heads=no_heads,
+            n_token=n_token,
+            rl=rl,
+            si_trunk=si_trunk,
+            zij_trunk=zij_trunk,
+            inf=inf,
+            eps=eps,
+            glu_backend=glu_backend,
+        )
+
     from foldjax.models.openfold3.models.atomize import aggregate_atom_feat_to_tokens
 
     atom_mask = batch["atom_mask"]
@@ -378,6 +408,7 @@ def atom_attention_decoder(
     inf: float = 1e9,
     eps: float = 1e-5,
     glu_backend: str = "xla",
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Decode token activations back to per-atom coordinate updates.
 
@@ -396,9 +427,30 @@ def atom_attention_decoder(
         inf: masking constant.
         eps: layer norm epsilon.
 
+        cp_atom_windows: keep the atom stream on the context-parallel rows;
+            the coordinate update is replicated again on the way out.
+
     Returns:
         ``[..., N_atom, 3]`` coordinate update.
     """
+    if cp_atom_windows and cp_mesh() is not None:
+        from foldjax.models.openfold3.models.atom_cp import atom_attention_decoder_cp
+
+        return atom_attention_decoder_cp(
+            batch,
+            ai,
+            ql,
+            cl,
+            plm,
+            params,
+            n_query=n_query,
+            n_key=n_key,
+            no_heads=no_heads,
+            inf=inf,
+            eps=eps,
+            glu_backend=glu_backend,
+        )
+
     ql = ql + broadcast_token_feat_to_atoms(
         batch["token_mask"],
         batch["num_atoms_per_token"],

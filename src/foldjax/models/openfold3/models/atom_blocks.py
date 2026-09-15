@@ -17,6 +17,8 @@ import math
 
 import jax.numpy as jnp
 
+from foldjax.models.openfold3.models.atom_cp import atom_block_plan
+
 
 def query_block_padding(n_atom: int, n_query: int) -> int:
     """Return the right padding that makes ``n_atom`` divisible by ``n_query``."""
@@ -39,6 +41,12 @@ def block_indices(
         ``safe_indices`` is clamped into ``[0, n_atom - 1]`` so it is always a
         legal gather; ``invalid_mask`` marks the positions that were out of range
         before clamping and whose gathered values must be zeroed.
+
+    ``n_atom`` is a *reduction over the whole atom axis*, so this function is
+    the reason a context-parallel atom graph builds its window tables outside
+    the sharded body: called with a sharded mask it would silently place every
+    window in the tail of the structure against a per-shard atom count. See
+    :func:`foldjax.models.openfold3.models.atom_cp.block_gather_tables`.
     """
     batch_dims = atom_mask.shape[:-1]
     n_atom_padded = atom_mask.shape[-1]
@@ -111,6 +119,9 @@ def single_rep_to_blocks(
         ``[..., N_blocks, N_query, C]``, ``[..., N_blocks, N_key, C]`` and
         ``[..., N_blocks, N_query, N_key]``.
     """
+    plan = atom_block_plan()
+    if plan is not None:
+        return plan.single_rep_to_blocks(ql, atom_mask, n_query=n_query, n_key=n_key)
     batch_dims = ql.shape[:-2]
     n_atom, n_dim = ql.shape[-2:]
     num_blocks = math.ceil(n_atom / n_query)
@@ -159,6 +170,15 @@ def pair_rep_to_blocks(
     Returns:
         ``[..., N_blocks, N_query, N_key, C]`` atom pair conditioning.
     """
+    plan = atom_block_plan()
+    if plan is not None:
+        return plan.pair_rep_to_blocks(
+            zij_trunk,
+            atom_to_token_index,
+            atom_mask,
+            n_query=n_query,
+            n_key=n_key,
+        )
     batch_dims = zij_trunk.shape[:-3]
     n_atom = atom_to_token_index.shape[-1]
     num_blocks = math.ceil(n_atom / n_query)

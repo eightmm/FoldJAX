@@ -179,12 +179,27 @@ def cross_attention_pair_bias(
         ``[..., N_atom, C_q]`` update, unblocked and trimmed back to ``N_atom``.
     """
     from foldjax.models.openfold3.models.atom_blocks import single_rep_to_blocks
+    from foldjax.models.openfold3.models.atom_cp import atom_block_plan
 
     if s is None:
         raise ValueError("s is required by OpenFold3 v0.5 cross attention")
 
     n_atom, n_dim = a.shape[-2:]
     if mask is None:
+        if atom_block_plan() is not None:
+            # A distributed atom graph builds its key-side mask once, outside
+            # the sharded body, from the mask the enclosing encoder/decoder was
+            # given -- the whole atom axis is what `block_indices` reduces over.
+            # An all-ones substitute made here would be a *different* key mask
+            # from the plan's, and the disagreement would change numbers rather
+            # than shapes. Both diffusion callers always pass `batch`'s atom
+            # mask, so this is unreachable on that path; failing loudly keeps it
+            # unreachable rather than quietly wrong.
+            raise ValueError(
+                "a distributed atom graph needs the atom mask the plan was "
+                "built from; sequence-local cross attention was called without "
+                "one"
+            )
         mask = jnp.ones(a.shape[:-1], dtype=a.dtype)
 
     a_q, a_k, block_mask = single_rep_to_blocks(a, mask, n_query=n_query, n_key=n_key)

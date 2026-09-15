@@ -55,6 +55,7 @@ from foldjax.models.openfold3.dtype import (
     narrow_dtype,
     narrow_floats,
 )
+from foldjax.models.openfold3.models.atom_cp import resolve_atom_windows
 from foldjax.models.openfold3.models.augmentation import (
     AugmentationTape,
     centre_random_augmentation,
@@ -202,6 +203,13 @@ class InferenceConfig(NamedTuple):
     #: better layout is not yet the default. ``"2d"`` needs a square shard
     #: count, which is the only shape the ring schedules accept.
     cp_layout: str = "auto"
+    #: Split the diffusion atom graph -- the atom-pair block cache, both atom
+    #: transformer stacks, and the atom<->token routing -- over the CP rows
+    #: instead of holding one copy of it on every device. Ignored without a
+    #: mesh, and resolved down to False with a warning when the atom or token
+    #: axis cannot be split (see
+    #: ``models/openfold3/models/atom_cp.py:resolve_atom_windows``).
+    cp_atom_windows: bool = True
     #: Whether any active token needs the geometry-dependent atomized frame.
     #: This is derived from host features by production entry points. Keeping it
     #: static removes the sample-by-token-by-atom nearest-neighbour graph for
@@ -1145,6 +1153,18 @@ def _predict_from_trunk(
         )
     )
 
+    # Resolved once, here rather than inside `denoise_fn`: the rollout calls
+    # that body once per step (and once per compiled scan trace), so a warning
+    # raised there would either repeat or -- worse -- be emitted from inside a
+    # `lax.scan` trace where it says nothing about the run. `n_atom` is the
+    # batch's padded atom axis, which is what the mesh has to divide.
+    distribute_atom_windows = resolve_atom_windows(
+        requested=bool(config.cp_atom_windows),
+        n_atom=int(batch["atom_mask"].shape[-1]),
+        n_token=config.n_token,
+        n_query=config.n_query,
+    )
+
     def denoise_fn(xl_noisy: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
         # The single path is the only one that reads the noise level, so it is the
         # only one that has to be rebuilt per step. It is still sample-independent:
@@ -1177,6 +1197,7 @@ def _predict_from_trunk(
             n_token=config.n_token,
             sigma_data=config.sigma_data,
             glu_backend=config.glu_backend,
+            cp_atom_windows=distribute_atom_windows,
         )
 
     if config.stop_after_trunk:
@@ -1451,6 +1472,7 @@ def released_config(
     msa_depth: int | None = RELEASED_MSA_DEPTH,
     cp_shards: int = 1,
     cp_layout: str = "auto",
+    cp_atom_windows: bool = True,
     returned_representations: tuple[str, ...] = (),
     return_plddt_logits: bool = False,
     stop_after_trunk: bool = False,
@@ -1553,6 +1575,7 @@ def released_config(
         msa_depth=msa_depth,
         cp_shards=cp_shards,
         cp_layout=cp_layout,
+        cp_atom_windows=cp_atom_windows,
         returned_representations=returned_representations,
         return_plddt_logits=return_plddt_logits,
         stop_after_trunk=stop_after_trunk,

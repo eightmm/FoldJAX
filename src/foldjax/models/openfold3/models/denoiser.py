@@ -21,6 +21,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
+from foldjax.models._cp import cp_mesh, shard_pair_rows, shard_single
 from foldjax.models.openfold3.models.atom_features import (
     AtomAttentionDecoderParams,
     AtomAttentionEncoderParams,
@@ -73,6 +74,7 @@ def denoise(
     mask_transition: bool = True,
     eps: float = 1e-5,
     glu_backend: str = "xla",
+    cp_atom_windows: bool = False,
 ) -> jnp.ndarray:
     """Denoise one set of noisy coordinates.
 
@@ -93,14 +95,25 @@ def denoise(
         inf: masking constant.
         mask_transition: upstream's ``_mask_trans``.
         eps: layer norm epsilon.
+        cp_atom_windows: split the diffusion atom graph over the
+            context-parallel rows. Ignored without a mesh; the caller resolves
+            the request against the shapes once, outside the rollout (see
+            ``models/openfold3/models/atom_cp.py:resolve_atom_windows``).
 
     Returns:
         ``[..., N_atom, 3]`` denoised coordinates.
     """
+    distributed = bool(cp_atom_windows) and cp_mesh() is not None
     atom_mask = batch["atom_mask"]
     xl_noisy = xl_noisy * atom_mask[..., None]
     rl_noisy = scale_noisy_positions(xl_noisy, t, sigma_data=sigma_data)
 
+    if distributed:
+        # The token transformer's per-block pair bias is a projection of this
+        # tensor and the encoder's atom-pair gather rotates its row tiles, so
+        # constraining it here is what keeps both reading a pair-sharded
+        # operand rather than a collected one.
+        zij = shard_pair_rows(zij)
     ai, ql, cl, plm = atom_attention_encoder(
         batch,
         params.atom_attn_enc,
@@ -114,10 +127,17 @@ def denoise(
         inf=inf,
         eps=eps,
         glu_backend=glu_backend,
+        cp_atom_windows=cp_atom_windows,
     )
 
     # The conditioned single representation is added on top of the encoder output.
     ai = ai + linear(layer_norm(si, params.layer_norm_s, eps=eps), params.linear_s)
+
+    if distributed:
+        # The reduce-scatter already delivered this on CP rows; saying so keeps
+        # the token attention's queries on the same axis its pair-bias rows are
+        # split along.
+        ai = shard_single(ai)
 
     ai = diffusion_transformer(
         ai,
@@ -132,6 +152,8 @@ def denoise(
         glu_backend=glu_backend,
     )
     ai = layer_norm(ai, params.layer_norm_a, eps=eps)
+    if distributed:
+        ai = shard_single(ai)
 
     rl_update = atom_attention_decoder(
         batch,
@@ -146,6 +168,7 @@ def denoise(
         inf=inf,
         eps=eps,
         glu_backend=glu_backend,
+        cp_atom_windows=cp_atom_windows,
     )
 
     xl_out = combine_denoiser_output(xl_noisy, rl_update, t, sigma_data=sigma_data)

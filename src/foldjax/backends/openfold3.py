@@ -58,6 +58,11 @@ _COMPILE_OPTIONS = (
     "max_msa_depth",
     "cp_devices",
     "cp_layout",
+    # Distribute the diffusion atom graph over CP rows. Released default on:
+    # under a mesh the atom-pair block cache, both atom transformer stacks and
+    # the atom<->token routing are split, and a serial run ignores it. Two
+    # atom-graph programs must not share one cache namespace.
+    "cp_atom_windows",
     "triangle_kernel",
     "glu_backend",
     "all_arrays",
@@ -138,6 +143,10 @@ _RELEASED_COMPILE_DEFAULTS = {
     # executable rather than on the model configuration. It is here because
     # ``off`` has to name the same cache scope as an unasked run.
     "deterministic": False,
+    # ``released_config``'s value, so an explicit ``true`` must name the
+    # namespace an omitted option selects. ``false`` is a different program and
+    # keeps its own.
+    "cp_atom_windows": True,
 }
 
 
@@ -238,6 +247,7 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             # gap the `sampling_options` comment records, where a knob the
             # backend advertised could only ever fail.
             "confidence_dtype",
+            "cp_atom_windows",
             "cp_devices",
             "cp_layout",
             "glu_backend",
@@ -430,6 +440,8 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         _compile_enabled(dict(options))
         if "all_arrays" in options:
             _strict_boolean(options["all_arrays"], name="all_arrays")
+        if "cp_atom_windows" in options:
+            _strict_boolean(options["cp_atom_windows"], name="cp_atom_windows")
         # The neutral translation already rejects an unknown `dtype`; this
         # reaches the native spelling, which bypasses it, and it is the only
         # check `confidence_dtype` gets before the config is built. Compared
@@ -639,6 +651,11 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
         cp_layout = options.pop("cp_layout", None)
         if cp_layout is not None:
             overrides["cp_layout"] = str(cp_layout)
+        atom_windows = options.pop("cp_atom_windows", None)
+        if atom_windows is not None:
+            overrides["cp_atom_windows"] = _strict_boolean(
+                atom_windows, name="cp_atom_windows"
+            )
         glu_backend = options.pop("glu_backend", None)
         if glu_backend is not None:
             overrides["glu_backend"] = str(glu_backend)

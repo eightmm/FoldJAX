@@ -97,6 +97,11 @@ def test_backend_cache_defaults_track_released_config_signature() -> None:
         # `released_config`, so it has no signature default to track. It is
         # listed here so that asking for `off` names the shipped namespace.
         "deterministic": False,
+        # Pinned to the signature rather than spelled `True`: flipping the
+        # model's default would otherwise leave the strip aliasing the *other*
+        # atom-graph program into the omitted option's namespace, which is the
+        # defect this whole assertion exists to catch.
+        "cp_atom_windows": signature["cp_atom_windows"].default,
     }
 
     # `dtype` is a string, so it misses the int/bool coercion above and is

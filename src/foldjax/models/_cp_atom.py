@@ -283,7 +283,7 @@ def single_to_keys_cp(
     )(single)
 
 
-def _ring_gather_local(
+def ring_gather_local(
     source: jax.Array,
     indices: jax.Array,
     valid: jax.Array,
@@ -291,7 +291,13 @@ def _ring_gather_local(
     axis_name: str,
     axis_size: int,
 ) -> jax.Array:
-    """Gather arbitrary global indices while rotating equal source shards."""
+    """Gather arbitrary global indices while rotating equal source shards.
+
+    Public because a model whose whole atom stage runs inside one
+    ``shard_map`` body cannot reach the wrappers below -- a nested
+    ``shard_map`` over the same mesh axis is not a program JAX emits -- and
+    needs the body itself.
+    """
 
     source_size = source.shape[1]
     owner = jax.lax.axis_index(axis_name)
@@ -336,7 +342,7 @@ def gather_tokens_to_atoms_cp(
     axis_name = atom_axis_name()
 
     def local(values_local, indices_local, valid_local):
-        return _ring_gather_local(
+        return ring_gather_local(
             values_local,
             indices_local,
             valid_local,
@@ -379,7 +385,7 @@ def gather_atoms_to_tokens_cp(
     axis_name = atom_axis_name()
 
     def local(values_local, indices_local, valid_local):
-        return _ring_gather_local(
+        return ring_gather_local(
             values_local,
             indices_local,
             valid_local,
@@ -467,6 +473,123 @@ def scatter_atoms_to_tokens_mean_cp(
     )(atom_values, token_indices, valid)
 
 
+def gather_token_pairs_to_windows_local(
+    pair_local: jax.Array,
+    query_indices: jax.Array,
+    query_valid: jax.Array,
+    key_indices: jax.Array,
+    key_valid: jax.Array,
+    *,
+    rows: int,
+    row_axis: str,
+) -> jax.Array:
+    """One device's share of the sparse token-pair lookup.
+
+    Split out of :func:`gather_token_pairs_to_atom_windows_cp` so a model
+    whose whole atom stage is one ``shard_map`` body can call the body rather
+    than nest another ``shard_map`` over the same mesh axis.  The wrapper
+    below is this function plus the specs, so both callers emit the same ops.
+    """
+
+    row_tile = pair_local.shape[1]
+    col_tile = pair_local.shape[2]
+    row_owner = jax.lax.axis_index(row_axis)
+    col_owner = (
+        jax.lax.axis_index(CP_COL_AXIS)
+        if cp_layout() == "2d"
+        else jnp.asarray(0, dtype=jnp.int32)
+    )
+    result = jnp.zeros(
+        query_indices.shape + (key_indices.shape[-1], pair_local.shape[-1]),
+        dtype=pair_local.dtype,
+    )
+    pair_work = pair_local
+    batch_index = jnp.arange(pair_local.shape[0])[:, None, None, None]
+
+    for step in range(rows):
+        q_index = query_indices - row_owner * row_tile
+        k_index = key_indices - col_owner * col_tile
+        q_owned = (q_index >= 0) & (q_index < row_tile) & query_valid
+        k_owned = (k_index >= 0) & (k_index < col_tile) & key_valid
+        q_take = jnp.clip(q_index, 0, row_tile - 1)
+        k_take = jnp.clip(k_index, 0, col_tile - 1)
+        values = pair_work[
+            batch_index,
+            q_take[:, :, :, None],
+            k_take[:, :, None, :],
+        ]
+        owned = q_owned[:, :, :, None] & k_owned[:, :, None, :]
+        result = result + values * owned[..., None].astype(values.dtype)
+        if step + 1 < rows:
+            pair_work = jax.lax.ppermute(
+                pair_work,
+                axis_name=row_axis,
+                perm=_ring_permutation(rows, +1),
+            )
+            row_owner = (row_owner - 1) % rows
+
+    if cp_layout() == "2d":
+        result = jax.lax.psum(result, CP_COL_AXIS)
+    return result
+
+
+def gather_atom_windows_local(
+    atom_local: jax.Array,
+    indices: jax.Array,
+    valid: jax.Array,
+    *,
+    axis_name: str,
+    axis_size: int,
+) -> jax.Array:
+    """Gather ``[B, W, K]`` global atom indices from rotating atom shards.
+
+    The halo in :func:`single_to_keys_local` assumes the key window of a query
+    block is a fixed offset from that block.  OpenFold3's key windows are
+    *shifted* to stay inside the real atoms, by an amount derived from
+    ``sum(atom_mask)``: a block past the last real atom reads the last ``n_key``
+    real atoms, however far away those are, and the distance is a traced value
+    rather than a static one.  So the source shard rotates instead, which puts
+    no bound at all on where a key may live.
+
+    ``jnp.where`` rather than a multiply: the slots this zeroes are exactly the
+    padded lanes, and ``0 * nan`` is ``nan``.
+    """
+
+    if atom_local.ndim != 3:
+        raise ValueError(f"atom values must be [B, A, C], got {atom_local.shape}")
+    if indices.ndim != 3 or indices.shape != valid.shape:
+        raise ValueError("window indices and validity must both be [B, W, K]")
+    if indices.shape[0] != atom_local.shape[0]:
+        raise ValueError("window indices and atom values must share the batch axis")
+    batch, windows, keys = indices.shape
+    local_atoms = atom_local.shape[1]
+    channels = atom_local.shape[-1]
+    owner = jax.lax.axis_index(axis_name)
+    result = jnp.zeros((batch, windows, keys, channels), dtype=atom_local.dtype)
+    work = atom_local
+    for step in range(axis_size):
+        local_index = indices - owner * local_atoms
+        owned = (local_index >= 0) & (local_index < local_atoms) & valid
+        clipped = jnp.clip(local_index, 0, local_atoms - 1)
+        # Gathered straight into ``[B, W, K, C]`` by broadcasting the source's
+        # key axis, rather than through a flat ``[B, W * K, C]`` buffer. Same
+        # values -- and the shape the lowering then shows is four-dimensional,
+        # so a per-device shape assertion cannot confuse it with the atom
+        # stream it is gathered from. (``W * K`` equals the local atom count
+        # exactly when the CP row count equals ``n_key / n_query``, which a
+        # 2x2 grid on a 4/8 window does.)
+        gathered = jnp.take_along_axis(work[:, :, None, :], clipped[..., None], axis=1)
+        result = jnp.where(owned[..., None], gathered, result)
+        if step + 1 < axis_size:
+            work = jax.lax.ppermute(
+                work,
+                axis_name=axis_name,
+                perm=_ring_permutation(axis_size, +1),
+            )
+            owner = (owner - 1) % axis_size
+    return result
+
+
 def gather_token_pairs_to_atom_windows_cp(
     pair_values: jax.Array,
     query_indices: jax.Array,
@@ -511,46 +634,15 @@ def gather_token_pairs_to_atom_windows_cp(
     pair_layout = pair_spec(4, row_axis=1, col_axis=2)
 
     def local(pair_local, q_local, q_valid_local, k_local, k_valid_local):
-        row_tile = pair_local.shape[1]
-        col_tile = pair_local.shape[2]
-        row_owner = jax.lax.axis_index(row_axis)
-        col_owner = (
-            jax.lax.axis_index(CP_COL_AXIS)
-            if cp_layout() == "2d"
-            else jnp.asarray(0, dtype=jnp.int32)
+        return gather_token_pairs_to_windows_local(
+            pair_local,
+            q_local,
+            q_valid_local,
+            k_local,
+            k_valid_local,
+            rows=rows,
+            row_axis=row_axis,
         )
-        result = jnp.zeros(
-            q_local.shape + (k_local.shape[-1], pair_local.shape[-1]),
-            dtype=pair_local.dtype,
-        )
-        pair_work = pair_local
-        batch_index = jnp.arange(pair_local.shape[0])[:, None, None, None]
-
-        for step in range(rows):
-            q_index = q_local - row_owner * row_tile
-            k_index = k_local - col_owner * col_tile
-            q_owned = (q_index >= 0) & (q_index < row_tile) & q_valid_local
-            k_owned = (k_index >= 0) & (k_index < col_tile) & k_valid_local
-            q_take = jnp.clip(q_index, 0, row_tile - 1)
-            k_take = jnp.clip(k_index, 0, col_tile - 1)
-            values = pair_work[
-                batch_index,
-                q_take[:, :, :, None],
-                k_take[:, :, None, :],
-            ]
-            owned = q_owned[:, :, :, None] & k_owned[:, :, None, :]
-            result = result + values * owned[..., None].astype(values.dtype)
-            if step + 1 < rows:
-                pair_work = jax.lax.ppermute(
-                    pair_work,
-                    axis_name=row_axis,
-                    perm=_ring_permutation(rows, +1),
-                )
-                row_owner = (row_owner - 1) % rows
-
-        if cp_layout() == "2d":
-            result = jax.lax.psum(result, CP_COL_AXIS)
-        return result
 
     return jax.shard_map(
         local,

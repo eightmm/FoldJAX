@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
+from foldjax.models.openfold3.models.atom_cp import atom_block_plan
+
 
 def broadcast_token_feat_to_atoms(
     token_mask: jnp.ndarray,
@@ -42,6 +44,16 @@ def broadcast_token_feat_to_atoms(
     """
     if token_feat.ndim < 2:
         raise ValueError("token_feat must have a trailing feature axis")
+
+    plan = atom_block_plan()
+    if plan is not None:
+        return plan.broadcast_token_feat(
+            token_mask,
+            num_atoms_per_token,
+            token_feat,
+            atom_to_token_index,
+            n_atom=n_atom,
+        )
 
     token_feat = token_feat * token_mask[..., None]
     n_token = token_mask.shape[-1]
@@ -131,6 +143,17 @@ def aggregate_atom_feat_to_tokens(
     """
     if aggregate not in ("mean", "sum"):
         raise ValueError(f"invalid aggregation function: {aggregate}")
+
+    plan = atom_block_plan()
+    if plan is not None:
+        return plan.aggregate_atom_feat_to_tokens(
+            atom_feat,
+            atom_to_token_index,
+            atom_mask,
+            n_token=n_token,
+            aggregate=aggregate,
+            eps=eps,
+        )
 
     mask = atom_mask.astype(atom_feat.dtype)
     atom_feat = atom_feat * mask[..., None]

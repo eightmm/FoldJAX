@@ -86,6 +86,24 @@ def _parser() -> argparse.ArgumentParser:
         "'2d' is Fold-CP's square grid and splits columns too (needs a square "
         "device count); 'auto' is '1d' until the grid has its own GPU numbers",
     )
+    atom_windows_group = parser.add_mutually_exclusive_group()
+    atom_windows_group.add_argument(
+        "--cp-atom-windows",
+        dest="cp_atom_windows",
+        action="store_true",
+        help="distribute the diffusion atom graph (atom-pair block cache, both "
+        "atom transformer stacks, atom<->token routing) over the "
+        "context-parallel rows; the default, and ignored without "
+        "--cp-devices > 1",
+    )
+    atom_windows_group.add_argument(
+        "--no-cp-atom-windows",
+        dest="cp_atom_windows",
+        action="store_false",
+        help="keep the diffusion atom graph replicated on every "
+        "context-parallel device",
+    )
+    parser.set_defaults(cp_atom_windows=True)
     parser.add_argument(
         "--cache-dir",
         type=Path,
@@ -240,6 +258,10 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
             return 1
         overrides["cp_shards"] = args.cp_devices
         overrides["cp_layout"] = args.cp_layout
+    # Passed whatever the device count: `released_config` records the request
+    # and the resolution happens against the shapes, so a serial run keeps the
+    # value in its config without it changing anything.
+    overrides["cp_atom_windows"] = args.cp_atom_windows
     wanted_representations = _representations.resolve(
         args.representations, _representations.specs_for("openfold3")
     )
