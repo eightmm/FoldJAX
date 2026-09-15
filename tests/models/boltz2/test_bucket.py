@@ -243,13 +243,13 @@ def test_token_profile_pads_a_deep_msa_up_instead_of_capping_the_input():
 
     plan = resolve_padding_plan(_features(msa=3000), PaddingConfig())
     assert plan.actual["msa"] == plan.storage["msa"] == 3000
-    assert plan.target["msa"] == 4096
+    assert plan.target["msa"] == 3072
 
     padded, _ = pad_feats(
         _features(msa=3000), plan.target["tokens"], plan.target["atoms"],
         target_msa=plan.target["msa"],
     )
-    assert padded["msa"].shape[1] == 4096
+    assert padded["msa"].shape[1] == 3072
     np.testing.assert_array_equal(
         np.asarray(padded["msa"][:, :3000, :3]),
         np.asarray(_features(msa=3000)["msa"]),

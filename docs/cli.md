@@ -156,8 +156,10 @@ OpenDDE their featurizer's 16,384-row assembly cap, Boltz-2 its
 `const.max_msa_seqs`, OpenDDE its released 1,280-row per-cycle sampling,
 OpenFold3 its 1,024 rows per streamed cycle, ESMFold2 and AF3 their released
 selection -- and the MSA axis is then padded up to the smallest bucket (1, 64,
-128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192, 16384) that holds those rows.
-A profile floor of 1,024 rows (1,280 for OpenDDE) only widens a shallower
+128, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
+14336, 16384) that holds those rows. Above 2,048 rows that ladder steps by
+2,048, so a padded run pays at most one step over the rows it stored. A profile
+floor of 1,024 rows (1,280 for OpenDDE) only widens a shallower
 alignment so jobs in one token band still share an executable. `--max-msa-depth`
 remains the one option that selects fewer rows, and `--pad-msa` is a capacity
 for the axis: a target below the stored rows is refused rather than truncating

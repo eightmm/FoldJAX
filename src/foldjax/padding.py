@@ -79,7 +79,34 @@ ATOM_BUCKETS = (
     131072,
     196608,
 )
-MSA_BUCKETS = (1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192, 16384)
+
+#: The same bound on waste the token grid carries, applied to alignment rows:
+#: the sub-2,048 rungs are unchanged -- they include the released profile
+#: depths, 1,024 and OpenDDE's 1,280 -- and above 2,048 the step is a constant
+#: 2,048 rows, so no padded run pays more than one step over the rows it
+#: stored.  The geometric tail this replaced charged a 13,267-row 5DEI
+#: alignment the whole 8,192 -> 16,384 doubling: +33% peak (28,202 against
+#: 21,225 MiB) for padding nobody asked for, because the MSA stack is what
+#: sets the Protenix peak at 2k tokens and its law term is linear in rows.
+MSA_BUCKETS = (
+    1,
+    64,
+    128,
+    256,
+    512,
+    768,
+    1024,
+    1280,
+    2048,
+    3072,
+    4096,
+    6144,
+    8192,
+    10240,
+    12288,
+    14336,
+    16384,
+)
 TEMPLATE_BUCKETS = (1, 2, 4)
 STRUCTURAL_TOKEN_BUCKETS = (
     256,

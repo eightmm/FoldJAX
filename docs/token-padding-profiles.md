@@ -16,13 +16,16 @@ than the same job run unpadded.
 | ESMFold2 | 24T, 32-aligned | 1024 | LM 3T for per-chain BOS/EOS |
 
 T is the selected token bucket, not the real sequence length. The MSA buckets
-are 1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192 and 16384, and the
-1024-row floor (1280 for OpenDDE) only widens a shallower alignment so jobs in
-one token band still share an executable. A 3,000-row alignment therefore pads
-to 4,096 rows with every row kept and the suffix masked. `max_msa_depth` is the
-one option that selects fewer rows; `padding.msa` / `--pad-msa` is a capacity
-for the axis and a target below the stored rows is refused, naming
-`--max-msa-depth` as the option that changes the input.
+are 1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 6144, 8192, 10240,
+12288, 14336 and 16384 -- the released profile depths below 2,048 rows, then a
+constant 2,048-row step, so no padded run pays more than one step over the rows
+it stored -- and the 1024-row floor (1280 for OpenDDE) only widens a shallower
+alignment so jobs in one token band still share an executable. A 3,000-row
+alignment therefore pads to 3,072 rows with every row kept and the suffix
+masked. `max_msa_depth` is the one option that selects fewer rows;
+`padding.msa` / `--pad-msa` is a capacity for the axis and a target below the
+stored rows is refused, naming `--max-msa-depth` as the option that changes the
+input.
 
 Native MSA selection/cropping still precedes padding where applicable: OpenDDE
 takes its released 1,280-row valid-first cycle sample -- the same call the

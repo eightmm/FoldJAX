@@ -26,14 +26,14 @@ unless it says so here, in its own paragraph.
   through a shape option.
 
   The MSA axis now resolves like the token and atom axes: the smallest standard
-  bucket (1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 4096, 8192, 16384) that
-  holds every stored row, with the profile's 1,024-row floor (1,280 for
-  OpenDDE) only widening a shallower alignment so one token band still shares
-  an executable. A 3,000-row alignment pads to 4,096 rows with every row kept
-  and the padded suffix masked. `padding.msa` / `--pad-msa` is a capacity for
-  that axis rather than a cap: below the stored rows it is refused, and the
-  message names `--max-msa-depth`, which remains the one option that changes
-  how many rows a model reads -- padded or not.
+  bucket (1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 6144, 8192,
+  10240, 12288, 14336, 16384) that holds every stored row, with the profile's
+  1,024-row floor (1,280 for OpenDDE) only widening a shallower alignment so
+  one token band still shares an executable. A 3,000-row alignment pads to
+  3,072 rows with every row kept and the padded suffix masked. `padding.msa` /
+  `--pad-msa` is a capacity for that axis rather than a cap: below the stored
+  rows it is refused, and the message names `--max-msa-depth`, which remains
+  the one option that changes how many rows a model reads -- padded or not.
 
   OpenFold3 and ESMFold2 were already shape-only, because their per-cycle
   selection runs before padding in either route, and OpenDDE's released
@@ -47,6 +47,30 @@ unless it says so here, in its own paragraph.
   `ModelConfig(msa_depth=...)`, since padding no longer chooses a depth.
 
 ### Changed
+
+- **The MSA padding ladder steps by 2,048 rows above 2,048.** The rungs are now
+  1, 64, 128, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 6144, 8192, 10240,
+  12288, 14336 and 16384. Below 2,048 nothing moved -- those are the released
+  profile depths, 1,024 and OpenDDE's 1,280 -- and above it the constant step
+  gives the alignment axis the bound on waste the token grid already had: a
+  padded run pays at most one 2,048-row step over the rows it stored.
+
+  The geometric tail charged a whole doubling. Now that `--padding` pads the
+  MSA axis up instead of capping the input (above), a 2,096-token 5DEI job with
+  13,267 stored rows landed on 16,384 and paid 28,202 MiB of peak against
+  21,225 MiB for its exact shape -- +33%, for padding nobody asked for, because
+  the MSA stack is what sets the Protenix peak at this size and its law term
+  (7.32e-4 x M x N MiB) is linear in rows. The same job now pads to 14,336.
+
+  Alignments deeper than 2,048 rows and no deeper than 14,336 now resolve to a
+  new rung -- 13,267 rows to 14,336 rather than 16,384 -- which is a different
+  compiled program, so those jobs compile once at the narrower shape. Nothing
+  at or below 2,048 rows moved, and nothing above 14,336 did either: 16,384 is
+  still the rung every alignment between 14,337 and 16,384 rows lands on. The
+  resolved MSA target is part of every plan's shape summary, so which rung a
+  run took is reported rather than inferred. Boltz-2's legacy `bucket=true`
+  grid is a separate, deliberately frozen interface and keeps its own
+  1-to-1,024 MSA ladder, cap included.
 
 - **`cp_layout=auto` builds the square grid on OpenDDE and Boltz-2 when the
   device count is a perfect square.** Four cards are a 2x2 mesh there unless

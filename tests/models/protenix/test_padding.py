@@ -752,8 +752,8 @@ def test_msa_axis_pads_a_deep_alignment_up_instead_of_capping_it():
     )
 
     assert plan.actual["msa"] == plan.storage["msa"] == stored
-    assert plan.target["msa"] == 4096
-    assert padded["msa"].shape == (4096, 8)
+    assert plan.target["msa"] == 3072
+    assert padded["msa"].shape == (3072, 8)
     np.testing.assert_array_equal(padded["msa"][:stored, :3], features["msa"])
     np.testing.assert_array_equal(padded["msa_mask"][stored:], 0)
     np.testing.assert_array_equal(padded["msa_mask"][:stored, :3], 1)

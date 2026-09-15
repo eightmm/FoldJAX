@@ -357,8 +357,14 @@ def test_msa_axis_pads_up_to_a_bucket_and_refuses_a_target_below_storage():
 
     automatic = PaddingConfig()
     # Deeper than the profile floor: the next bucket up, never a crop.
-    assert resolve_msa_axis(3000, automatic, minimum=3000) == 4096
+    assert resolve_msa_axis(3000, automatic, minimum=3000) == 3072
     assert resolve_msa_axis(16384, automatic, minimum=16384) == 16384
+    # Above 2,048 rows the ladder steps by 2,048, so no padded run pays more
+    # than one step: the 5DEI alignment that used to pay the whole
+    # 8,192 -> 16,384 doubling (+33% peak) now pads by 1,069 rows.
+    assert resolve_msa_axis(13267, automatic, minimum=13267) == 14336
+    assert resolve_msa_axis(8193, automatic, minimum=8193) == 10240
+    assert resolve_msa_axis(2049, automatic, minimum=2049) == 3072
     # Shallower: the profile's preferred floor, so one token band shares one
     # executable.  OpenDDE's floor is its released per-cycle depth.
     assert resolve_msa_axis(300, automatic, minimum=300) == MSA_PROFILE_DEPTH
