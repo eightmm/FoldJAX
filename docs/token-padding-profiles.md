@@ -72,8 +72,19 @@ separately, so its native provider length cap can bound the automatic LM target.
 
 ## The grid, and the context-parallel mesh
 
-The token grid is 256, 512, 768, 1,024, 1,536, 2,048, 3,072, 4,096, 5,120,
-6,144, 8,192. It reaches past what one card folds on purpose: context
+The token grid steps by 256 from 256 to 8,192 -- 32 buckets -- so a bucket
+costs at most one step of padded work over the exact shape: 256 tokens, 12.5%
+at 2k. That bound is the rule; the list of sizes follows from it. A geometric
+grid had no such bound, and its gap between 2,048 and 3,072 was the whole cost
+of padding: a 2,096-token Protenix job landed on 3,072 and measured +97% wall
+and +44% peak against its exact shape (376 s / 30.6 GiB versus 191 s / 21.2
+GiB), with the deposited structure unchanged. It now lands on 2,304. The price
+is 32 executables per model to bake rather than 11, which `cache warm`
+amortises: a bucket is baked once and then hit by every job in its 256-token
+band, which is what lets a deployment pre-bake per bucket and run padded by
+default.
+
+The grid ends at 8,192 rather than at what one card folds on purpose: context
 parallelism exists to run the targets that do not fit one card, so a grid
 ending at 4,096 refused exactly the sizes the mesh was added for -- 4,888
 tokens with `--padding` was an error rather than a 5,120 profile. Each derived
@@ -89,6 +100,19 @@ under `2d`). Those are the distributed diffusion atom graph's own requirements
 -- see [context parallelism](context_parallel.md) -- and the margins are
 small: a pinned `tokens=3012` derives 72,288 atoms, a multiple of 32 and of
 nothing larger, which four rows cannot take.
+
+Alignment composes with a 256-step grid, and it is the one thing that can move
+an automatic target off the grid. A bucket `256 * k` divides every
+power-of-two row count, and its derived atom target `6,144 * k` divides
+`32 * cp_rows` for every `cp_rows` that divides 192, so two, three, four, six
+and eight rows leave a bucket's own atom target alone. A row count with an odd
+factor the bucket index lacks does round the token target past its bucket, by
+at most `cp_rows - 1` tokens: with three rows 2,048 becomes 2,049 (and its
+atom target derives from 2,049), while 2,304 -- `256 * 9`, the bucket a
+2,096-token job selects -- is one of the ten buckets three rows already
+divide, so a 3x3 mesh gets the bucket itself, 2,304 tokens and 55,296 atoms.
+The one-step bound is therefore a statement about the bucket, not about every
+mesh width.
 
 Explicit pins are never rewritten. A misaligned pin keeps its existing
 outcome, a warning naming the multiple and a replicated atom graph, because a

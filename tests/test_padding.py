@@ -317,9 +317,7 @@ def test_padded_backends_resolve_model_msa_depth_and_preserve_overrides(
         model=model, input=path, padding=True, max_msa_depth=default_depth
     )
     assert backend.cache_profile(request) == backend.cache_profile(explicit_default)
-    pinned = PredictionRequest(
-        model=model, input=path, padding=PaddingConfig(msa=64)
-    )
+    pinned = PredictionRequest(model=model, input=path, padding=PaddingConfig(msa=64))
     assert backend.apply_sampling(pinned)["max_msa_depth"] == 64
     overridden = PredictionRequest(
         model=model, input=path, padding=True, max_msa_depth=128
@@ -341,18 +339,101 @@ def test_token_grid_reaches_past_one_card_and_still_refuses_above_it() -> None:
 
     from foldjax.padding import TOKEN_BUCKETS
 
-    assert TOKEN_BUCKETS[-3:] == (5120, 6144, 8192)
+    assert TOKEN_BUCKETS[0] == 256
+    assert TOKEN_BUCKETS[-1] == 8192
     assert list(TOKEN_BUCKETS) == sorted(set(TOKEN_BUCKETS))
     automatic = PaddingConfig()
     # 4,888 tokens is the largest target in the scale set, and the reason the
-    # grid moved: it was refused outright while a four-device mesh exists to
-    # run exactly that size.
+    # grid reaches past one card: it was refused outright while a four-device
+    # mesh exists to run exactly that size.
     assert resolve_axis(4888, automatic, "tokens") == 5120
-    assert resolve_axis(5121, automatic, "tokens") == 6144
-    assert resolve_axis(6145, automatic, "tokens") == 8192
+    assert resolve_axis(5121, automatic, "tokens") == 5376
+    assert resolve_axis(6145, automatic, "tokens") == 6400
     with pytest.raises(ValueError, match="largest standard bucket 8192"):
         resolve_axis(8193, automatic, "tokens")
     assert resolve_axis(8193, PaddingConfig(overflow="exact"), "tokens") == 8193
+
+
+def test_a_token_bucket_costs_at_most_one_256_token_step() -> None:
+    """The grid's contract is the bound, not the list of sizes.
+
+    A geometric grid let a job pay for a whole doubling: 2,096 tokens landed
+    on 3,072, measured at +97% wall and +44% peak against the exact shape on
+    Protenix.  A constant step bounds that at one step everywhere, which is
+    what lets padding be the normal way to run rather than an option.
+    """
+
+    from foldjax.padding import TOKEN_BUCKETS
+
+    assert len(TOKEN_BUCKETS) == 32
+    assert {
+        later - earlier for earlier, later in zip(TOKEN_BUCKETS, TOKEN_BUCKETS[1:])
+    } == {256}
+    automatic = PaddingConfig()
+    assert resolve_axis(2096, automatic, "tokens") == 2304
+    assert resolve_axis(3012, automatic, "tokens") == 3072
+    assert resolve_axis(4888, automatic, "tokens") == 5120
+    # The bound itself, over every size the grid accepts.
+    for actual in range(1, TOKEN_BUCKETS[-1] + 1):
+        assert resolve_axis(actual, automatic, "tokens") - actual < 256
+    # ... and the worst case at 2k is one step of quadratic work, not a
+    # doubling: 12.5% of 2,048 rather than 50%.
+    assert (resolve_axis(2049, automatic, "tokens") - 2048) / 2048 == 0.125
+
+
+@pytest.mark.parametrize("cp_devices,cp_layout", [(3, "auto"), (3, "1d"), (9, "2d")])
+def test_three_mesh_rows_compose_with_a_256_token_grid(
+    cp_devices: int, cp_layout: str
+) -> None:
+    """256 is not a multiple of 3, so pin what three rows actually do.
+
+    ``_cp_aligned_target`` rounds a bucket hit up to the next multiple of
+    ``rows``; it never refuses one.  Ten of the thirty-two buckets are
+    multiples of 3 already -- the bucket index has to carry the factor, since
+    256 does not -- and 2,304 (``256 * 9``) is one of them, so at 2,096 tokens
+    three rows get the bucket itself.  For the other twenty-two the target
+    lands one or two tokens above its bucket, which the tail of this test
+    pins, because that is the case a 256 grid does not cover by construction.
+    """
+
+    from foldjax.padding import cp_aligned_padding, resolve_token_axis
+
+    config = cp_aligned_padding(
+        PaddingConfig(), cp_devices=cp_devices, cp_layout=cp_layout
+    )
+    tokens = resolve_axis(2096, config, "tokens")
+    assert tokens == 2304
+    assert tokens % 3 == 0
+    # 24 * 2304 = 55,296 is a multiple of 32 and of 32 * 3, so the atom axis
+    # needs no rounding either.
+    assert resolve_token_axis(1, config, "atoms", token_target=tokens) == 55296
+    assert resolve_token_axis(1, config, "structural_tokens", token_target=tokens) == (
+        4608
+    )
+
+    # A bucket three rows do not divide: 2,000 -> 2,048 -> 2,049, and the atom
+    # target then derives from 2,049 and does need its own rounding.
+    off_grid = resolve_axis(2000, config, "tokens")
+    assert off_grid == 2049
+    assert resolve_token_axis(1, config, "atoms", token_target=off_grid) == 49248
+
+
+def test_a_bucket_derives_an_atom_target_every_plausible_mesh_divides() -> None:
+    """``24 * 256 = 6,144 = 32 * 192``, so a bucket's atom target divides
+    ``32 * rows`` for every ``rows`` that divides 192.  The geometric grid had
+    this too -- every one of its buckets was a multiple of 256 -- and the
+    256-step grid preserves it rather than gaining it."""
+
+    from foldjax.padding import cp_aligned_padding, resolve_token_axis
+
+    assert resolve_token_axis(1, PaddingConfig(), "atoms", token_target=2304) == 55296
+    for cp_devices in (2, 3, 4, 6, 8):
+        config = cp_aligned_padding(PaddingConfig(), cp_devices=cp_devices)
+        assert resolve_token_axis(1, config, "atoms", token_target=2304) == 55296
+    # Five rows do not divide 192; the shared rule then rounds up, as it did
+    # before this grid existed.
+    five = cp_aligned_padding(PaddingConfig(), cp_devices=5)
+    assert resolve_token_axis(1, five, "atoms", token_target=2304) == 55360
 
 
 def test_derived_grids_cover_the_largest_token_bucket() -> None:

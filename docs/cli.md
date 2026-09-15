@@ -137,8 +137,11 @@ uv run foldjax predict --model boltz2 --input job.yaml --padding
 
 With no padding flag, the exact historical model path and shapes are unchanged.
 With `--padding`, each backend selects a token bucket and derives a complete
-shape profile from it. Atom storage is `24 * tokens`, rounded up to a multiple
-of 32. MSA capacity is fixed by the backend's active inference limit rather
+shape profile from it. The token grid steps by 256 up to 8,192, so a padded
+run never pays more than 256 tokens of extra work over its exact shape, and a
+deployment can bake one profile per bucket ahead of time (matching the profile
+is necessary for reuse, not sufficient -- see below). Atom storage is
+`24 * tokens`, rounded up to a multiple of 32. MSA capacity is fixed by the backend's active inference limit rather
 than the observed alignment depth; template storage retains the native depth.
 OpenDDE structural tokens use `2 * tokens`. ESMFold2 language-model storage
 reserves `3 * tokens` to include BOS/EOS for every possible protein chain;
@@ -1332,9 +1335,9 @@ blocked it at 64, which brings the same buffer down to 80 MiB, so a
 did not. The rung removes that cliff: above 1,024 tokens the query axis is
 blocked at 128, the same width the trunk Pairformer's own single-attention has
 always used, and the buffer grows linearly rather than quadratically -- 160 MiB
-at 2,048 instead of 2.50 GiB. Under bucketed padding the rung reaches exactly
-two token buckets, 1,536 and 2,048; 1,024 and everything below it is on the
-same program as before.
+at 2,048 instead of 2.50 GiB. Under bucketed padding the rung reaches the four
+token buckets above 1,024 and at or below 2,048 -- 1,280, 1,536, 1,792 and
+2,048; 1,024 and everything below it is on the same program as before.
 
 Blocking splits independent query rows and each row's softmax still reduces
 over the whole key axis, so the arithmetic is exact -- but it is not bitwise,

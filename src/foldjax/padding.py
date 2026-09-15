@@ -5,13 +5,22 @@ positions.  Backends remain responsible for schema-aware padding, masks, RNG
 and output cropping; this module only chooses and reports conservative target
 sizes in one consistent way.
 
-Two policies live here rather than in any one port.  The bucket grids stop
-where they stop on purpose: the token grid used to end at 4,096 because that
-is roughly what one card folds, but context parallelism exists to run the
-targets that do not fit one card, so a grid that ends at what fits one refuses
-exactly the sizes the mesh was added for.  It now reaches 8,192 tokens, and
-every derived grid reaches that token ceiling's own derivation (24x for atoms,
-2x for structural tokens) so no axis can refuse a size the token axis accepts.
+Two policies live here rather than in any one port.  The first is the token
+grid, whose rule is a bound on waste rather than a list of sizes: it steps by
+256 from 256 to 8,192, so a bucket costs at most one step of padded work --
+256 tokens, <=12.5% at 2k -- over the exact shape.  A geometric grid has no
+such bound, and the gap it left between 2,048 and 3,072 was the whole cost of
+padding: a 2,096-token Protenix job landed on 3,072 and paid +97% wall and
++44% peak against its exact shape for padding nobody asked for.  The price of
+the constant step is more executables to bake, 32 per model rather than 11,
+which ``cache warm`` amortises -- a bucket is baked once and then hit by every
+job in its 256-token band, which is what makes padding the normal way to run
+rather than a shape-normalising option.
+
+The grid ends at 8,192 rather than at what one card folds because context
+parallelism exists to run the targets that do not fit one card, and every
+derived grid reaches that token ceiling's own derivation (24x for atoms, 2x
+for structural tokens) so no axis can refuse a size the token axis accepts.
 Above the last bucket ``overflow='error'`` still refuses rather than compiling
 an unplanned shape.
 
@@ -24,6 +33,16 @@ when a request carries more than one context-parallel device.  Explicit pins
 are left exactly as written -- a pin is a statement about the compiled shape,
 and a misaligned one keeps its existing outcome of a warning and a replicated
 atom graph rather than silently becoming a different shape.
+
+Alignment is the one thing that can move an automatic target off the grid, and
+it mostly does not have to: a bucket ``256 * k`` already divides every
+power-of-two row count, and its derived atom target ``6,144 * k`` divides
+``32 * rows`` for every ``rows`` that divides 192, so two, three, four, six
+and eight rows leave a bucket's own atom target alone.  A row count with an odd
+factor the bucket index lacks does round the token target past its bucket, by
+at most ``rows - 1`` tokens: three rows take 2,048 to 2,049 but leave 2,304
+(``256 * 9``) alone.  The one-step bound above is therefore a statement about
+the bucket, not about every mesh width.
 """
 
 from __future__ import annotations
@@ -37,7 +56,9 @@ from foldjax.schema import PaddingConfig
 MSA_PROFILE_DEPTH = 1024
 OPENDDE_MSA_PROFILE_DEPTH = 1280
 
-TOKEN_BUCKETS = (256, 512, 768, 1024, 1536, 2048, 3072, 4096, 5120, 6144, 8192)
+#: A constant 256-token step to 8,192, so no job pays more than one step of
+#: padded work; the docstring explains why the step beats a geometric grid.
+TOKEN_BUCKETS = tuple(range(256, 8192 + 1, 256))
 ATOM_BUCKETS = (
     256,
     512,

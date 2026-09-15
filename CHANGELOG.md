@@ -12,6 +12,41 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **The token padding grid steps by 256, so a padded run never pays more than
+  one step of padded work.** `--padding` / `PaddingConfig` now select from 32
+  buckets -- 256 to 8,192 in 256s -- instead of the 11-bucket geometric grid.
+  The bound is the point: a bucket costs at most 256 tokens over the exact
+  shape, 12.5% at 2k, where a doubling could cost 50%.
+
+  The old grid's gap between 2,048 and 3,072 was the whole cost of padding. A
+  2,096-token Protenix job landed on 3,072 and ran 376 s at a 30.6 GiB peak
+  against 191 s and 21.2 GiB for its exact shape -- +97% wall, +44% peak -- for
+  padding nothing asked for, with the deposited structure unchanged. It now
+  lands on 2,304, and every size in the grid's range is within one step of its
+  bucket. Sizes on the old grid resolve exactly as before, because every old
+  bucket is a multiple of 256: 3,012 still selects 3,072 and 4,888 still
+  selects 5,120.
+
+  The derived axes follow the token bucket as they always have (atoms
+  `24 * tokens` rounded to 32, OpenDDE's structural tokens `2 * tokens`, the
+  language-model axes per port), the MSA and template grids are untouched, and
+  above 8,192 `overflow="error"` still refuses rather than compiling an
+  unplanned shape. AlphaFold 3's native featurizer bucket list is this grid,
+  so its `--padding` runs step by 256 too.
+
+  The price is executables: 32 profiles per model to bake rather than 11.
+  `cache warm` amortises that -- a bucket is baked once and then hit by every
+  job in its 256-token band -- which is what makes running padded by default,
+  with one pre-baked executable per bucket, cheaper than running exact shapes.
+
+  Mesh alignment is unchanged and composes: a bucket `256 * k` divides every
+  power-of-two row count, and its atom target `6,144 * k` divides
+  `32 * cp_rows` for every `cp_rows` dividing 192. A row count with an odd
+  factor the bucket index lacks still rounds the token target up to at most
+  `cp_rows - 1` tokens above its bucket -- with three rows 2,048 becomes 2,049
+  -- while a 3x3 mesh at 2,096 tokens gets the bucket itself, 2,304 tokens and
+  55,296 atoms.
+
 - **Automatic padding aligns the atom and token axes to the context-parallel
   mesh, and the token grid no longer stops at what fits one card.** With
   `--padding` / `PaddingConfig` and `cp_devices > 1`, the derived atom target
