@@ -4,10 +4,9 @@ from pathlib import Path
 import numpy as np
 
 from foldjax.models.boltz2.data import const
-from foldjax.models.boltz2.data._torch import Tensor, torch
+from foldjax.models.boltz2.data._torch import torch
 from foldjax.models.boltz2.data.feature.featurizerv2 import Boltz2Featurizer
 from foldjax.models.boltz2.data.mol import load_canonicals, load_molecules
-from foldjax.models.boltz2.data.pad import pad_to_max
 from foldjax.models.boltz2.data.tokenize.boltz2 import Boltz2Tokenizer
 from foldjax.models.boltz2.data.types import (
     MSA,
@@ -102,51 +101,6 @@ def load_input(
         templates=templates,
         extra_mols=extra_mols,
     )
-
-
-def collate(data: list[dict[str, Tensor]]) -> dict[str, Tensor]:
-    """Collate the data.
-
-    Parameters
-    ----------
-    data : List[Dict[str, Tensor]]
-        The data to collate.
-
-    Returns
-    -------
-    Dict[str, Tensor]
-        The collated data.
-
-    """
-    # Get the keys
-    keys = data[0].keys()
-
-    # Collate the data
-    collated = {}
-    for key in keys:
-        values = [d[key] for d in data]
-
-        if key not in [
-            "all_coords",
-            "all_resolved_mask",
-            "crop_to_all_atom_map",
-            "chain_symmetries",
-            "amino_acids_symmetries",
-            "ligand_symmetries",
-            "record",
-            "affinity_mw",
-        ]:
-            # Check if all have the same shape
-            shape = values[0].shape
-            if not all(v.shape == shape for v in values):
-                values, _ = pad_to_max(values, 0)
-            else:
-                values = torch.stack(values, dim=0)
-
-        # Stack the values
-        collated[key] = values
-
-    return collated
 
 
 class PredictionDataset(torch.utils.data.Dataset):
@@ -314,133 +268,3 @@ class PredictionDataset(torch.utils.data.Dataset):
 
         """
         return len(self.manifest.records)
-
-
-class _PredictionLoader:
-    """Small re-iterable batch loader for the framework-free inference API."""
-
-    def __init__(self, dataset: PredictionDataset) -> None:
-        self.dataset = dataset
-
-    def __iter__(self):
-        for index in range(len(self.dataset)):
-            yield collate([self.dataset[index]])
-
-    def __len__(self) -> int:
-        return len(self.dataset)
-
-
-class Boltz2InferenceDataModule:
-    """Framework-free compatibility wrapper for Boltz2 inference data.
-
-    FoldJAX indexes :class:`PredictionDataset` directly. This wrapper preserves
-    the useful upstream construction API without importing Lightning or a
-    PyTorch ``DataLoader`` merely because those packages happen to be installed.
-    """
-
-    def __init__(
-        self,
-        manifest: Manifest,
-        target_dir: Path,
-        msa_dir: Path,
-        mol_dir: Path,
-        num_workers: int,
-        constraints_dir: Path | None = None,
-        template_dir: Path | None = None,
-        extra_mols_dir: Path | None = None,
-        override_method: str | None = None,
-        affinity: bool = False,
-    ) -> None:
-        """Initialize the DataModule.
-
-        Parameters
-        ----------
-        manifest : Manifest
-            The manifest to load data from.
-        target_dir : Path
-            The path to the target directory.
-        msa_dir : Path
-            The path to the msa directory.
-        mol_dir : Path
-            The path to the moldir.
-        num_workers : int
-            The number of workers to use.
-        constraints_dir : Optional[Path]
-            The path to the constraints directory.
-        template_dir : Optional[Path]
-            The path to the template directory.
-        extra_mols_dir : Optional[Path]
-            The path to the extra molecules directory.
-        override_method : Optional[str]
-            The method to override.
-
-        """
-        self.num_workers = num_workers
-        self.manifest = manifest
-        self.target_dir = target_dir
-        self.msa_dir = msa_dir
-        self.mol_dir = mol_dir
-        self.constraints_dir = constraints_dir
-        self.template_dir = template_dir
-        self.extra_mols_dir = extra_mols_dir
-        self.override_method = override_method
-        self.affinity = affinity
-
-    def predict_dataloader(self):
-        """Return a re-iterable stream of single-record inference batches.
-
-        Returns
-        -------
-        _PredictionLoader
-            The framework-free inference loader.
-
-        """
-        dataset = PredictionDataset(
-            manifest=self.manifest,
-            target_dir=self.target_dir,
-            msa_dir=self.msa_dir,
-            mol_dir=self.mol_dir,
-            constraints_dir=self.constraints_dir,
-            template_dir=self.template_dir,
-            extra_mols_dir=self.extra_mols_dir,
-            override_method=self.override_method,
-            affinity=self.affinity,
-        )
-        return _PredictionLoader(dataset)
-
-    def transfer_batch_to_device(
-        self,
-        batch: dict,
-        device: torch.device,
-        dataloader_idx: int,  # noqa: ARG002
-    ) -> dict:
-        """Transfer a batch to the given device.
-
-        Parameters
-        ----------
-        batch : Dict
-            The batch to transfer.
-        device : torch.device
-            The device to transfer to.
-        dataloader_idx : int
-            The dataloader index.
-
-        Returns
-        -------
-        np.Any
-            The transferred batch.
-
-        """
-        for key in batch:
-            if key not in [
-                "all_coords",
-                "all_resolved_mask",
-                "crop_to_all_atom_map",
-                "chain_symmetries",
-                "amino_acids_symmetries",
-                "ligand_symmetries",
-                "record",
-                "affinity_mw",
-            ]:
-                batch[key] = batch[key].to(device)
-        return batch
