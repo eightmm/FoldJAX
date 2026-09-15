@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
+
+from foldjax import oom
 
 #: Mesh axis of the one-dimensional layout.
 CP_AXIS = "cp"
@@ -262,6 +265,53 @@ def exchange_failure(
     )
 
 
+def backends_are_initialized() -> bool:
+    """Whether JAX already has a backend, so ``XLA_FLAGS`` has been read.
+
+    `jax.extend.backend` exports no such predicate, and `get_backend()` would
+    answer the question by initialising the very thing it is asked about. So
+    this reads the private function JAX uses for its own "must be set before
+    JAX is initialized" validators (`jax/_src/xla_bridge.py:759`). An answer it
+    cannot get is taken as "already up": that costs a bound this process could
+    have had, while the opposite mistake claims one it does not have.
+    """
+
+    try:
+        from jax._src import xla_bridge
+
+        return bool(xla_bridge.backends_are_initialized())
+    except Exception:  # noqa: BLE001 - a private predicate is allowed to move
+        return True
+
+
+def unbounded_rendezvous_warning(*, platform: str, devices: int) -> str | None:
+    """Say that XLA's rendezvous cannot be bounded any more, or ``None``.
+
+    ``None`` off GPU, where there is no NCCL rendezvous to bound, and whenever
+    the bound is already in `XLA_FLAGS` or was declined. Raises for a
+    `FOLDJAX_CP_RENDEZVOUS_TIMEOUT` that cannot mean seconds, which is
+    `foldjax.oom.rendezvous_timeout_seconds` refusing a typo rather than
+    quietly running unbounded.
+    """
+
+    if not oom.is_gpu_platform(platform):
+        return None
+    if oom.rendezvous_timeout_is_set() or oom.rendezvous_timeout_seconds() is None:
+        return None
+    return (
+        f"context parallelism over {devices} GPUs started after JAX had "
+        "initialised its backend, so FoldJAX could not bound XLA's collective "
+        f"rendezvous: --{oom.RENDEZVOUS_FLAG} keeps its default of -1, which "
+        "means wait forever. If one device then runs out of memory the others "
+        "wait at that rendezvous until the job is killed. Nothing inside this "
+        "process can still change it -- XLA read XLA_FLAGS when the backend "
+        "came up -- so launch the next run with "
+        f"XLA_FLAGS=--{oom.RENDEZVOUS_FLAG}={oom.CP_RENDEZVOUS_SECONDS}, or "
+        "run it through `foldjax predict --option cp_devices=N`, which sets "
+        "the flag while it still can."
+    )
+
+
 @contextlib.contextmanager
 def context_parallel(
     n_devices: int,
@@ -275,6 +325,13 @@ def context_parallel(
     serial null context.  Contexts never nest, including a nominal one-device
     context inside a distributed one: allowing that would make the yielded
     value disagree with what :func:`cp_mesh` reports.
+
+    A distributed context also bounds XLA's collective rendezvous, so that one
+    device running out of memory ends the job with the allocator's diagnosis
+    instead of leaving the other devices waiting forever
+    (``foldjax.oom.CP_RENDEZVOUS_SECONDS``), and records the topology for that
+    diagnosis to name. The bound only lands while no backend exists; a context
+    entered after that warns instead, because `XLA_FLAGS` is read once.
     """
 
     if cp_runtime() is not None:
@@ -283,6 +340,15 @@ def context_parallel(
     if n_devices == 1:
         yield None
         return
+
+    # Last call for XLA's rendezvous bound, and only if nothing has initialised
+    # a backend yet: the device query below initialises one, and `XLA_FLAGS` is
+    # parsed there. The platform is not knowable at this point for the same
+    # reason -- asking would initialise the backend -- so a process that is not
+    # pinned to the CPU gets the flag and the flag is inert if it lands off GPU.
+    backend_was_initialized = backends_are_initialized()
+    if not backend_was_initialized and oom.gpu_is_possible():
+        oom.set_rendezvous_timeout()
 
     pool = list(jax.devices()) if devices is None else list(devices)
     if len(pool) < n_devices:
@@ -297,10 +363,23 @@ def context_parallel(
     else:
         mesh = Mesh(chosen, (CP_AXIS,))
 
+    if backend_was_initialized:
+        # Nothing can be set now, so say what it costs and how to get it. The
+        # devices are in hand here, so the platform is read rather than guessed.
+        late = unbounded_rendezvous_warning(
+            platform=str(chosen.flat[0].platform), devices=n_devices
+        )
+        if late is not None:
+            warnings.warn(late, RuntimeWarning, stacklevel=3)
+
     if os.environ.get("FOLDJAX_SKIP_MESH_CHECK", "") not in ("1", "true", "TRUE"):
         verify_mesh_exchange(mesh)
 
-    token = _RUNTIME.set(CPRuntime(mesh=mesh, layout=resolved_layout))
+    runtime = CPRuntime(mesh=mesh, layout=resolved_layout)
+    # Outlives the context on purpose: an OOM under this mesh is diagnosed in
+    # `foldjax.api`, after the context has unwound.
+    oom.record_mesh(layout=runtime.layout, devices=runtime.shards, grid=runtime.grid)
+    token = _RUNTIME.set(runtime)
     try:
         yield mesh
     finally:

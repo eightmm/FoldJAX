@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -1124,3 +1125,92 @@ def test_runtime_gc_dry_run_reports_without_removing(
 
     assert old.is_dir(), "a dry run must not remove anything"
     assert "would remove" in capsys.readouterr().out
+
+
+def _predict_argv(tmp_path: Path, *options: str) -> list[str]:
+    """One prediction invocation, with whatever `--option`s a test needs."""
+    argv = [
+        "predict",
+        "--model",
+        "protenix",
+        "--input",
+        str(tmp_path / "job.json"),
+        "--weights",
+        str(tmp_path / "weights"),
+        "--output-dir",
+        str(tmp_path / "out"),
+    ]
+    for option in options:
+        argv += ["--option", option]
+    return argv
+
+
+def _reached_predict(tmp_path: Path, monkeypatch, *options: str) -> dict[str, object]:
+    """Run a prediction whose backend is a stub, and report the environment."""
+    (tmp_path / "job.json").write_text("{}")
+    (tmp_path / "weights").mkdir(exist_ok=True)
+    seen: dict[str, object] = {}
+
+    def fake_predict(request):
+        from foldjax.schema import BatchReport, PredictionResult
+
+        seen["xla_flags"] = os.environ.get("XLA_FLAGS", "")
+        seen["jax_imported"] = "jax" in sys.modules
+        return BatchReport(
+            results=(PredictionResult(model="protenix", output_dir=request.output_dir),)
+        )
+
+    monkeypatch.setattr("foldjax.cli.predict_batch", fake_predict)
+    assert main(_predict_argv(tmp_path, *options)) == 0
+    return seen
+
+
+def test_predict_bounds_the_collective_rendezvous_before_jax_is_imported(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """The CLI is the only place this bound can still be taken.
+
+    XLA parses `XLA_FLAGS` when the backend initialises, and reads the
+    rendezvous terminate timeout out of it once. A CLI prediction has a backend
+    long before `models/_cp.context_parallel` runs, so a request for context
+    parallelism has to reach the variable here -- before JAX is so much as
+    imported, which is what `jax_imported` pins.
+    """
+    from foldjax import oom
+
+    monkeypatch.delenv(oom.RENDEZVOUS_ENV, raising=False)
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.delenv("JAX_PLATFORM_NAME", raising=False)
+    monkeypatch.setenv("XLA_FLAGS", "")
+    monkeypatch.delitem(sys.modules, "jax", raising=False)
+
+    seen = _reached_predict(tmp_path, monkeypatch, "cp_devices=4")
+    capsys.readouterr()
+
+    assert f"--{oom.RENDEZVOUS_FLAG}={oom.CP_RENDEZVOUS_SECONDS}" in seen["xla_flags"]
+    assert seen["jax_imported"] is False
+
+
+@pytest.mark.parametrize("options", [(), ("cp_devices=1",), ("num_steps=20",)])
+def test_a_serial_prediction_leaves_xla_flags_alone(
+    tmp_path: Path, monkeypatch, capsys, options: tuple[str, ...]
+) -> None:
+    """One device has no rendezvous, so nothing process-wide is touched."""
+    from foldjax import oom
+
+    monkeypatch.delenv(oom.RENDEZVOUS_ENV, raising=False)
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.setenv("XLA_FLAGS", "")
+
+    seen = _reached_predict(tmp_path, monkeypatch, *options)
+    capsys.readouterr()
+
+    assert seen["xla_flags"] == ""
+
+
+def test_discovery_commands_do_not_bound_anything(monkeypatch, capsys) -> None:
+    """`XLA_FLAGS` is process-wide; only a command that owns the process sets it."""
+    monkeypatch.setenv("XLA_FLAGS", "")
+    assert main(["models"]) == 0
+    capsys.readouterr()
+    assert os.environ["XLA_FLAGS"] == ""

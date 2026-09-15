@@ -38,6 +38,7 @@ from foldjax.manifest import (
 )
 from foldjax.manifest import write as write_manifest
 from foldjax.models._representations import archive_headers, archive_identity
+from foldjax.oom import clear_mesh_record
 from foldjax.oom import diagnose as diagnose_oom
 from foldjax.output import normalize as normalize_output
 from foldjax.paths import compile_cache_dir
@@ -1006,6 +1007,11 @@ def _predict_once(
     # previous seed's. A backend with no fitted law records nothing and the
     # block stays null, which is the honest answer rather than a stale one.
     memory_policy.clear_record()
+    # And so an OOM here is attributed to this prediction's mesh, or to no mesh
+    # when it ran serially. The record outlives the context that set it, which
+    # is what makes it readable below; that is also what would let the previous
+    # prediction's topology describe this one's failure.
+    clear_mesh_record()
     try:
         with (
             timeline.stage("predict"),

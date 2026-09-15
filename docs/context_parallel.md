@@ -55,6 +55,30 @@ already sharded on their atom axis. They are not first copied in full to every
 device. Under a two-dimensional mesh, atom/query data are sharded over CP rows
 and replicated over CP columns.
 
+## Failing on a device that runs out of memory
+
+XLA's collective rendezvous waits forever by default
+(`xla_gpu_nccl_termination_timeout_seconds` is `-1`), so a device whose
+allocator failed used to leave the others waiting there until the scheduler
+killed the job. `foldjax predict --option cp_devices=N` and `foldjax cache
+warm` compose `--xla_gpu_nccl_termination_timeout_seconds=600` into
+`XLA_FLAGS` before JAX loads; `FOLDJAX_CP_RENDEZVOUS_TIMEOUT` changes that
+number, a negative value declines the bound, and a value already in
+`XLA_FLAGS` is kept.
+
+The flag is read once, when the backend initialises. A run that reaches
+`context_parallel` with a backend already up -- the Python API, and the native
+`--cp-devices` command lines, which load weights first -- cannot be given the
+bound from inside the process; it is warned instead, and the fix is
+`XLA_FLAGS=--xla_gpu_nccl_termination_timeout_seconds=600` in that run's
+launcher environment. A process pinned to the CPU is left alone: there is no
+NCCL rendezvous to bound, and `XLA_FLAGS` would reach every child it spawns.
+
+An out-of-memory failure that surfaces as a Python error also reports which
+mesh produced it, since the figures it quotes are one device's budget rather
+than the job's. When the bound fires instead, XLA ends the process from its
+own rendezvous and that log carries XLA's allocator message.
+
 ## Boltz-2 atom-window path
 
 Boltz-2 distributes the atom diffusion graph rather than only the pair trunk:

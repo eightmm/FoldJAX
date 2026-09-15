@@ -1952,6 +1952,40 @@ def _apply_mem_fraction(requested: float | None) -> None:
         oom.set_mem_fraction(oom.PREDICT_MEM_FRACTION)
 
 
+def _requested_cp_devices(args: argparse.Namespace) -> int:
+    """How many devices this invocation asked context parallelism for.
+
+    Read from the raw ``--option`` strings rather than from a resolved request,
+    because the answer is needed before JAX is imported and resolving a request
+    imports the backend. A malformed option is left at 1 and reported by the
+    request build, which is where option errors are phrased.
+    """
+    try:
+        options = _options(list(getattr(args, "option", None) or []))
+    except ValueError:
+        return 1
+    try:
+        return int(options.get("cp_devices", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _apply_rendezvous_timeout(args: argparse.Namespace) -> None:
+    """Bound XLA's collective rendezvous before anything imports JAX.
+
+    Same argument as `_apply_mem_fraction`, and the same restriction to the
+    CLI: this is process-wide, and a library that set it on import would be
+    deciding for a host application. It has to happen here because XLA parses
+    ``XLA_FLAGS`` when the backend initialises -- by the time
+    `models/_cp.context_parallel` runs, a CLI prediction has long had one --
+    and without it one device's OOM leaves the rest waiting forever
+    (`foldjax.oom.CP_RENDEZVOUS_SECONDS`). A value the caller already set for
+    the flag wins.
+    """
+    if _requested_cp_devices(args) > 1 and oom.gpu_is_possible():
+        oom.set_rendezvous_timeout()
+
+
 def _plan_summary(request: PredictionRequest) -> dict[str, Any]:
     summary = {
         "model": request.model,
@@ -2032,6 +2066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.command == "cache" and args.cache_command == "warm"
     ):
         _apply_mem_fraction(args.mem_fraction)
+        _apply_rendezvous_timeout(args)
     elif args.command == "plan":
         _validate_mem_fraction(args.mem_fraction)
     if args.command == "models":

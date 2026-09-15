@@ -8,6 +8,8 @@ device, so it was 1.6 GiB short of a ceiling with 24 GiB of the card behind it.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from foldjax import oom
@@ -261,3 +263,144 @@ def test_the_advice_names_the_sample_axis_lever_a_caller_can_actually_type(
     assert message is not None
     assert "diffusion_chunk_size" in message
     assert "model-specific" in message
+
+
+# ---------------------------------------------------------------------------
+# The rendezvous bound: an OOM that hangs cannot be diagnosed at all
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mesh_record():
+    """A clean CP record before and after, since it outlives its context."""
+    oom.clear_mesh_record()
+    yield oom.record_mesh
+    oom.clear_mesh_record()
+
+
+def test_the_rendezvous_bound_reaches_xla_flags_exactly_once(monkeypatch) -> None:
+    """Twice called, once composed -- and the caller's own flags survive.
+
+    Two callers ask for this bound, `foldjax.cli` while it resolves arguments
+    and `models/_cp.context_parallel` when it finds no backend yet, and a CLI
+    run reaches both. A second `--xla_gpu_nccl_termination_timeout_seconds` in
+    `XLA_FLAGS` is not a duplicate XLA ignores: the later value wins, so a
+    composer that appended blindly would decide which one that is by accident.
+    """
+    monkeypatch.delenv(oom.RENDEZVOUS_ENV, raising=False)
+    monkeypatch.setenv("XLA_FLAGS", "--xla_force_host_platform_device_count=4")
+
+    first = oom.set_rendezvous_timeout()
+    second = oom.set_rendezvous_timeout()
+
+    flags = os.environ["XLA_FLAGS"]
+    assert first == flags
+    assert second is None, "nothing left to write"
+    assert flags.count(oom.RENDEZVOUS_FLAG) == 1
+    assert f"--{oom.RENDEZVOUS_FLAG}={oom.CP_RENDEZVOUS_SECONDS}" in flags
+    assert "--xla_force_host_platform_device_count=4" in flags
+
+
+def test_a_rendezvous_bound_the_caller_chose_is_left_alone(monkeypatch) -> None:
+    """Someone who set this flag has a reason, as with the pool fraction."""
+    monkeypatch.delenv(oom.RENDEZVOUS_ENV, raising=False)
+    chosen = f"--{oom.RENDEZVOUS_FLAG}=30"
+    monkeypatch.setenv("XLA_FLAGS", chosen)
+
+    assert oom.set_rendezvous_timeout() is None
+    assert os.environ["XLA_FLAGS"] == chosen
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [("45", 45), ("", oom.CP_RENDEZVOUS_SECONDS), ("-1", None)],
+)
+def test_the_rendezvous_bound_is_overridable_and_can_be_declined(
+    monkeypatch, value: str, seconds: int | None
+) -> None:
+    """A negative value is XLA's own spelling of "wait forever"."""
+    monkeypatch.setenv(oom.RENDEZVOUS_ENV, value)
+    monkeypatch.setenv("XLA_FLAGS", "")
+
+    assert oom.rendezvous_timeout_seconds() == seconds
+
+    oom.set_rendezvous_timeout()
+    if seconds is None:
+        assert oom.RENDEZVOUS_FLAG not in os.environ["XLA_FLAGS"]
+    else:
+        assert f"--{oom.RENDEZVOUS_FLAG}={seconds}" in os.environ["XLA_FLAGS"]
+
+
+@pytest.mark.parametrize("bad", ["0", "soon", "600s", "6.5"])
+def test_a_rendezvous_bound_that_cannot_mean_seconds_is_refused(
+    monkeypatch, bad: str
+) -> None:
+    """Including `0`, which to XLA is a zero-second timeout and not "off"."""
+    monkeypatch.setenv(oom.RENDEZVOUS_ENV, bad)
+    monkeypatch.setenv("XLA_FLAGS", "")
+
+    with pytest.raises(ValueError, match=oom.RENDEZVOUS_ENV):
+        oom.set_rendezvous_timeout()
+    assert os.environ["XLA_FLAGS"] == ""
+
+
+@pytest.mark.parametrize(
+    ("platforms", "possible"),
+    [(None, True), ("", True), ("cuda", True), ("cuda,cpu", True), ("cpu", False)],
+)
+def test_only_a_process_that_could_reach_a_gpu_is_given_a_gpu_flag(
+    monkeypatch, platforms: str | None, possible: bool
+) -> None:
+    """`XLA_FLAGS` is inherited by every child, so a CPU run is left alone.
+
+    The flag itself is inert off GPU. What is not inert is the variable: a
+    CPU-pinned test process that composed it would hand a `--xla_gpu_*` flag to
+    every probe subprocess it spawns.
+    """
+    monkeypatch.delenv("JAX_PLATFORM_NAME", raising=False)
+    if platforms is None:
+        monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    else:
+        monkeypatch.setenv("JAX_PLATFORMS", platforms)
+
+    assert oom.gpu_is_possible() is possible
+
+
+def test_an_oom_under_a_mesh_is_named_as_one_device_of_it(
+    monkeypatch, mesh_record
+) -> None:
+    """The figures are one device's budget, and the levers are CP's own.
+
+    `_pool_card_and_used` reads device 0, so under a mesh the statistics need
+    not even come from the allocator that failed. Saying so is the difference
+    between a per-device number and a wrong total.
+    """
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
+    monkeypatch.setattr(
+        oom, "_pool_card_and_used", lambda: (int(0.9 * CARD), CARD, int(60 * GIB))
+    )
+    mesh_record(layout="2d", devices=4, grid=(2, 2))
+
+    message = oom.diagnose(
+        RuntimeError("RESOURCE_EXHAUSTED: Out of memory trying to allocate 56.78GiB.")
+    )
+
+    assert message is not None
+    assert "one device of a 4-device context-parallel mesh" in message
+    assert "2d layout, 2x2 grid" in message
+    assert "cp_devices" in message and "cp_layout" in message
+
+
+def test_a_serial_oom_says_nothing_about_a_mesh(monkeypatch, mesh_record) -> None:
+    """The record outlives its context, so a stale one would describe this."""
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.9")
+    monkeypatch.setattr(
+        oom, "_pool_card_and_used", lambda: (int(0.9 * CARD), CARD, int(60 * GIB))
+    )
+
+    message = oom.diagnose(
+        RuntimeError("RESOURCE_EXHAUSTED: Out of memory trying to allocate 56.78GiB.")
+    )
+
+    assert message is not None
+    assert "context-parallel" not in message

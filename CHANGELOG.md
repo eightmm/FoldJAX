@@ -12,6 +12,35 @@ unless it says so here, in its own paragraph.
 
 ### Changed
 
+- **A context-parallel run whose device runs out of memory now fails instead of
+  hanging.** XLA's collective rendezvous has no terminate timeout by default --
+  `xla_gpu_nccl_termination_timeout_seconds` is `-1`, which it reads as "wait
+  forever" -- so one device's allocator failure left the other devices waiting
+  at the rendezvous until the scheduler killed the job: two hours, three times
+  in one day on 2- and 4-GPU runs. Since CP is for targets that do not fit one
+  card, an out-of-memory failure under it is an expected outcome that has to
+  end the job with the allocator's diagnosis.
+
+  `foldjax predict --option cp_devices=N` and `foldjax cache warm` now compose
+  `--xla_gpu_nccl_termination_timeout_seconds=600` into `XLA_FLAGS` while they
+  resolve arguments, before anything imports JAX. A value already in
+  `XLA_FLAGS` is kept, and `FOLDJAX_CP_RENDEZVOUS_TIMEOUT` tunes the one
+  FoldJAX writes -- a negative value declines the bound, as it does for XLA,
+  and `0` is refused because to XLA it means a zero-second timeout.
+
+  The bound can only be taken before a backend exists: XLA parses `XLA_FLAGS`
+  when it initialises and reads this flag once. `context_parallel` therefore
+  sets it only when it is entered before that moment, which the Python API and
+  the native `--cp-devices` command lines usually are not, and otherwise warns
+  on a GPU mesh with the launcher variable to set. A process pinned to the CPU
+  is left alone, because `XLA_FLAGS` reaches every child it spawns.
+
+  An out-of-memory report that does reach Python now also says it came from one
+  device of the mesh, with the layout and grid it ran, and names `cp_devices`
+  and `cp_layout` as the levers. When the new bound fires instead, XLA ends the
+  process itself, so that log carries XLA's allocator message rather than this
+  explanation.
+
 - **OpenFold3 leaves the layer-norm affine float32, which takes 29% off the
   peak.** `narrow_floats` no longer casts a `LayerNormParams`, so this port
   now spells upstream's `LayerNorm.forward` in all three of its parts rather
