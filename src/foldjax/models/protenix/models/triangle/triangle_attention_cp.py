@@ -41,7 +41,13 @@ def triangle_attention(
     q_chunk_size: int | None = None,
     attention_backend: str | None = None,
 ) -> jnp.ndarray:
-    """Use the exact 2-D Fold-CP ring when a square mesh is active."""
+    """Use the exact 2-D Fold-CP ring when a square mesh is active.
+
+    ``q_chunk_size`` reaches the ring as its local query block: inside one
+    ring step the key axis is already local, so splitting the query rows
+    bounds the score tile without touching the rotation schedule. ``None``
+    leaves the ring's own default in force.
+    """
 
     if cp_layout() != "2d":
         return _triangle_attention(
@@ -96,6 +102,7 @@ def triangle_attention(
         value,
         triangle_bias,
         mask_bias,
+        q_block=q_chunk_size,
     )
     out = jnp.swapaxes(out, -2, -3)
     if params.attention.linear_g is not None:

@@ -675,6 +675,7 @@ def _triangle_attention_ring_2d(
     num_heads: int,
     mask_bias: jnp.ndarray,
     triangle_bias: jnp.ndarray,
+    q_block: int | None = None,
 ) -> jnp.ndarray:
     """Two-dimensional Protenix attention without a full-column gather."""
 
@@ -689,6 +690,7 @@ def _triangle_attention_ring_2d(
         v,
         triangle_bias,
         mask_bias,
+        q_block=q_block,
     )
     out = jnp.swapaxes(out, -2, -3)
     if params.attention.linear_g is not None:
@@ -746,12 +748,15 @@ def _triangle_attention_cp(
     triangle_bias = jnp.expand_dims(triangle_bias, axis=-4)
 
     if cp_layout() == "2d":
+        # The query chunk still bounds the score tile inside one ring step;
+        # only the outer row loop is unavailable once both axes are tiled.
         out = _triangle_attention_ring_2d(
             x,
             params,
             num_heads,
             mask_bias,
             triangle_bias,
+            q_block=q_chunk_size,
         )
         if not starting:
             out = jnp.swapaxes(out, -2, -3)

@@ -4,6 +4,10 @@ The pair representation is tiled over a square ``cp_row x cp_col`` mesh.
 Queries stay resident while key, value, mask and pair-bias tiles rotate through
 a ring. An fp32 online-softmax accumulator makes the result mathematically
 equivalent to dense attention without materialising a full token axis.
+
+Each ring step evaluates its local tile in blocks of query rows, so the live
+score tensor is ``q_block x (N/s)^2 x heads`` rather than the whole
+``(N/s)^3 x heads`` tile. See :func:`resolve_ring_query_block`.
 """
 
 from __future__ import annotations
@@ -194,6 +198,35 @@ def online_softmax_update(
     )
 
 
+#: Query rows per local score block inside one ring step. The serial and 1-D
+#: paths use the same 512 for their inner query chunk.
+RING_QUERY_BLOCK = 512
+
+
+def resolve_ring_query_block(local_queries: int, q_block: int | None = None) -> int:
+    """Return the query-row block one local ring tile is evaluated in.
+
+    The serial and 1-D paths bound their score tensor with
+    ``resolve_triangle_attention_q_chunk``, whose gate -- 512 rows once the
+    sequence passes 2,048 tokens -- reads the *global* token count. That gate
+    cannot be reused verbatim here, because the ring's query axis is already
+    ``N / sqrt(P)``: at the sizes for which a square mesh is chosen for its
+    memory (2,096 tokens over a 2x2 mesh leaves 1,048 local rows) it would
+    never fire and the tile would stay whole. The default is therefore the
+    same 512 rows applied unconditionally to the local axis and clamped to it.
+
+    A non-positive block, or one covering the whole local axis, means a single
+    block. That case takes the unblocked path below and lowers to the exact
+    program this ring had before blocking existed.
+    """
+
+    if q_block is None:
+        return min(RING_QUERY_BLOCK, local_queries)
+    if q_block <= 0 or q_block >= local_queries:
+        return local_queries
+    return q_block
+
+
 def ring_triangle_attention_2d(
     query: jax.Array,
     key: jax.Array,
@@ -202,6 +235,7 @@ def ring_triangle_attention_2d(
     mask_bias: jax.Array,
     *,
     precision: jax.lax.Precision | None = None,
+    q_block: int | None = None,
 ) -> jax.Array:
     """Run exact gather-free triangle attention on a square two-dimensional mesh.
 
@@ -210,6 +244,14 @@ def ring_triangle_attention_2d(
         query/key/value  [..., outer, heads, token, channels]
         triangle_bias   [..., 1, heads, query_token, key_token]
         mask_bias       [..., outer, 1, 1, key_token]
+
+    ``q_block`` sets the query rows per local score block; see
+    :func:`resolve_ring_query_block` for the default. Blocking leaves the
+    communication schedule untouched -- it happens inside one ring step, after
+    the rotations have already placed the tile -- and each query row still
+    reduces over the same whole local key axis, so the arithmetic is unchanged.
+    Floating-point results can still move by the last bits, because XLA picks
+    its contraction schedule from the operand extents.
     """
 
     if cp_layout() != "2d":
@@ -294,6 +336,43 @@ def ring_triangle_attention_2d(
         v_l = permute(v_l, diagonal_init)
         mask_l = permute(mask_l, diagonal_init)
 
+        # Blocking the local query rows is what keeps the score tile off the
+        # device: one ring step would otherwise materialise
+        # f32[..., rows, heads, N/s, N/s] whole, which is cubic in the local
+        # token extent and made the 2-D layout cost more memory than the 1-D
+        # one it exists to beat. The blocks are cut after the rotations, so
+        # the schedule above and below is untouched.
+        local_queries = q_l.shape[-2]
+        block = resolve_ring_query_block(local_queries, q_block)
+        blocked = block < local_queries
+        starts = range(0, local_queries, block)
+
+        def query_blocks(array):
+            # Every other axis is shared, including the key axis each row
+            # still reduces over whole.
+            if not blocked:
+                return (array,)
+            return tuple(
+                jax.lax.slice_in_dim(
+                    array,
+                    start,
+                    min(start + block, local_queries),
+                    axis=-2,
+                )
+                for start in starts
+            )
+
+        def joined(parts):
+            return parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=-2)
+
+        def tile_scores(q_b, k_t, bias_b, mask_t):
+            scores = jnp.matmul(
+                q_b.astype(jnp.float32),
+                jnp.swapaxes(k_t.astype(jnp.float32), -1, -2),
+                precision=precision,
+            )
+            return scores + bias_b.astype(jnp.float32) + mask_t.astype(jnp.float32)
+
         # Pass 1 fixes one global row maximum before any exponentials are
         # accumulated. Rotating K/bias/mask through a complete cycle returns
         # every tile to its initial owner, so pass 2 needs no saved full-width
@@ -304,16 +383,21 @@ def ring_triangle_attention_2d(
             dtype=jnp.float32,
         )
         for _ in range(side):
-            scores = jnp.matmul(
-                q_l.astype(jnp.float32),
-                jnp.swapaxes(k_l.astype(jnp.float32), -1, -2),
-                precision=precision,
+            tile_maximum = joined(
+                [
+                    jnp.max(
+                        tile_scores(q_b, k_l, bias_b, mask_l),
+                        axis=-1,
+                        keepdims=True,
+                    )
+                    for q_b, bias_b in zip(
+                        query_blocks(q_l),
+                        query_blocks(bias_l),
+                        strict=True,
+                    )
+                ]
             )
-            scores = scores + bias_l.astype(jnp.float32) + mask_l.astype(jnp.float32)
-            maximum = jnp.maximum(
-                maximum,
-                jnp.max(scores, axis=-1, keepdims=True),
-            )
+            maximum = jnp.maximum(maximum, tile_maximum)
             # A full cycle restores the initial tile ownership. V is not used
             # in the max pass and therefore stays at its initial owner.
             k_l = permute(k_l, kv_hop)
@@ -330,34 +414,43 @@ def ring_triangle_attention_2d(
         # This removes the repeated online-rescaling error that becomes visible
         # after a 3x3 Pairformer stack while preserving the gather-free ring.
         for step in range(side):
-            scores = jnp.matmul(
-                q_l.astype(jnp.float32),
-                jnp.swapaxes(k_l.astype(jnp.float32), -1, -2),
-                precision=precision,
-            )
-            scores = scores + bias_l.astype(jnp.float32) + mask_l.astype(jnp.float32)
-            finite_maximum = jnp.isfinite(maximum)
-            positive_infinity = jnp.isposinf(maximum)
-            shifted = jnp.where(
-                finite_maximum,
-                scores - maximum,
-                -jnp.inf,
-            )
-            probabilities = jnp.where(
-                positive_infinity,
-                jnp.isposinf(scores).astype(jnp.float32),
-                jnp.exp(shifted),
-            )
-            block_normalizer = jnp.sum(
-                probabilities,
-                axis=-1,
-                keepdims=True,
-            )
-            block_output = jnp.matmul(
-                probabilities,
-                v_l.astype(jnp.float32),
-                precision=precision,
-            )
+            block_outputs = []
+            block_normalizers = []
+            for q_b, bias_b, maximum_b in zip(
+                query_blocks(q_l),
+                query_blocks(bias_l),
+                query_blocks(maximum),
+                strict=True,
+            ):
+                scores = tile_scores(q_b, k_l, bias_b, mask_l)
+                finite_maximum = jnp.isfinite(maximum_b)
+                positive_infinity = jnp.isposinf(maximum_b)
+                shifted = jnp.where(
+                    finite_maximum,
+                    scores - maximum_b,
+                    -jnp.inf,
+                )
+                probabilities = jnp.where(
+                    positive_infinity,
+                    jnp.isposinf(scores).astype(jnp.float32),
+                    jnp.exp(shifted),
+                )
+                block_normalizers.append(
+                    jnp.sum(
+                        probabilities,
+                        axis=-1,
+                        keepdims=True,
+                    )
+                )
+                block_outputs.append(
+                    jnp.matmul(
+                        probabilities,
+                        v_l.astype(jnp.float32),
+                        precision=precision,
+                    )
+                )
+            block_output = joined(block_outputs)
+            block_normalizer = joined(block_normalizers)
             output, output_correction = _compensated_add(
                 output,
                 output_correction,

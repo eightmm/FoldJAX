@@ -252,7 +252,9 @@ def _triangle_attention_cp(
 
     if cp_layout() == "2d":
         # Keep both pair axes tiled for the whole softmax. Q stays resident;
-        # K/V, mask and triangle bias rotate through the square mesh.
+        # K/V, mask and triangle bias rotate through the square mesh. The
+        # inner query chunk still applies: it bounds the score tile inside one
+        # ring step, where no communication depends on it.
         out = _attention_ring_2d(
             params["mha"],
             q_x=x,
@@ -260,6 +262,7 @@ def _triangle_attention_cp(
             tri_bias=triangle_bias,
             mask_bias=mask_bias,
             precision=precision,
+            q_block=q_chunk_size,
         )
         if not starting:
             out = jnp.swapaxes(out, -2, -3)
@@ -324,6 +327,7 @@ def _attention_ring_2d(
     mask_bias: jnp.ndarray,
     *,
     precision: jax.lax.Precision,
+    q_block: int | None = None,
 ) -> jnp.ndarray:
     """Project and run the exact two-dimensional Fold-CP attention ring."""
 
@@ -370,6 +374,7 @@ def _attention_ring_2d(
         tri_bias,
         mask_bias,
         precision=precision,
+        q_block=q_block,
     )
     out = jnp.swapaxes(out, -2, -3)
     gate = _sigmoid(gate)

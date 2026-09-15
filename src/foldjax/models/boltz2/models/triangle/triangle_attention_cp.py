@@ -53,12 +53,13 @@ def triangle_attention_forward(
 ) -> jnp.ndarray:
     """Dispatch Boltz triangle attention to serial/1-D or the 2-D ring.
 
-    ``chunk_size`` and ``q_chunk_size`` are intentionally unused on the ring
-    path: the local ``N/sqrt(P)`` key tile is the score-memory bound, and
-    splitting that tile would add launch overhead without reducing global
-    communication. ``native_amp`` is likewise unused there: the ring applies
-    its own query scale in the caller's dtype and has no autocast branch to
-    select.
+    ``q_chunk_size`` reaches the ring as its local query block: it bounds the
+    score tile inside one ring step, where the key axis is already local and
+    no rotation depends on the split. ``None`` leaves the ring's own default
+    (:func:`~foldjax.models._cp_attention.resolve_ring_query_block`) in force.
+    ``chunk_size`` -- the outer triangle-batch chunk -- stays unused on this
+    path, and so does ``native_amp``: the ring applies its own query scale in
+    the caller's dtype and has no autocast branch to select.
     """
 
     if cp_layout() != "2d":
@@ -148,6 +149,7 @@ def triangle_attention_forward(
         triangle_bias,
         mask_bias,
         precision=precision,
+        q_block=q_chunk_size,
     )
     out = jnp.swapaxes(out, -2, -3)
 
