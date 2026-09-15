@@ -30,6 +30,22 @@ from foldjax._fsutil import nonempty_file as _nonempty_file
 from foldjax._fsutil import sha256_file as _digest
 from foldjax.paths import assets_dir, downloads_dir, weights_dir
 
+# The profile identifiers, and which profiles each model accepts, live in the
+# port table with the rest of the per-port facts. They keep their historical
+# spelling here -- `assets.RELEASED_PROFILE` is what the CLI reads.
+from foldjax.portspec import (
+    OPENDDE_ABAG_PROFILE,
+    PORTS,
+    PROTENIX_BASE_20250630_PROFILE,
+    PROTENIX_MINI_ESM_PROFILE,
+    PROTENIX_MINI_ISM_PROFILE,
+    PROTENIX_V2_PROFILE,
+    RELEASED_PROFILE,
+    STRUCTURE_ONLY_PROFILE,
+    StagingSpec,
+    provider,
+)
+
 _CHUNK = 1 << 20
 #: Seconds a socket may stall before the attempt is abandoned. Generous, since
 #: a large file over a slow link is not the same thing as a stalled one.
@@ -38,24 +54,6 @@ _TIMEOUT = 120
 #: the whole fetch again by hand.
 _ATTEMPTS = 3
 _CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
-
-RELEASED_PROFILE = "released"
-STRUCTURE_ONLY_PROFILE = "structure-only"
-#: Protenix's other public base checkpoint: the same 368M architecture as the
-#: release, trained to a 2025-06-30 wwPDB cutoff instead of AlphaFold 3's
-#: 2021-09-30. Upstream recommends it "for practical application scenarios" and
-#: keeps the default for benchmarks, because a fair comparison against
-#: AlphaFold 3 needs the matching cutoff. That is why this is a profile rather
-#: than the default: it predicts better on recent targets and worse on the one
-#: question the benchmark table asks.
-#: Protenix's current release, announced 2026-04-08 with a technical report:
-#: the same blocks at c_z=256 with `hidden_scale_up`, 464M parameters against
-#: the base model's 368M, and clear gains on antibody-antigen targets.
-PROTENIX_V2_PROFILE = "v2"
-PROTENIX_BASE_20250630_PROFILE = "base-20250630"
-PROTENIX_MINI_ESM_PROFILE = "mini-esm-v0.5.0"
-PROTENIX_MINI_ISM_PROFILE = "mini-ism-v0.5.0"
-OPENDDE_ABAG_PROFILE = "abag"
 
 # Alternate checkpoints use isolated storage roots so their conversion
 # manifests and native files cannot overwrite the released default.
@@ -809,15 +807,26 @@ _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_BASE_20250630_MODEL] = (
 )
 _PROTENIX_PROFILE_BY_INTERNAL_MODEL[_PROTENIX_V2_MODEL] = PROTENIX_V2_PROFILE
 
+#: Storage root -> (public model, the profile that root *is*). These are not
+#: models: they exist so an alternate checkpoint's converted files cannot
+#: overwrite the release's, and both naming a profile and reporting a public
+#: label follow from the same pair.
+_INTERNAL_ASSET_ROOTS: dict[str, tuple[str, str]] = {
+    **{
+        internal: ("protenix", profile)
+        for internal, profile in _PROTENIX_PROFILE_BY_INTERNAL_MODEL.items()
+    },
+    _OPENDDE_ABAG_MODEL: ("opendde", OPENDDE_ABAG_PROFILE),
+}
+#: A killed variant conversion stages under one shared name for every root.
+_PROTENIX_VARIANT_STAGING = (StagingSpec(".foldjax-protenix-variant-*"),)
+
 
 def _public_model_name(model: str) -> str:
     """Hide profile-specific storage roots from user-facing model labels."""
 
-    if model in _PROTENIX_PROFILE_BY_INTERNAL_MODEL:
-        return "protenix"
-    if model == _OPENDDE_ABAG_MODEL:
-        return "opendde"
-    return model
+    internal = _INTERNAL_ASSET_ROOTS.get(model)
+    return model if internal is None else internal[0]
 
 
 def _stage_esmfold2(
@@ -1710,9 +1719,10 @@ REGISTRY: dict[str, ModelAssets] = {
 }
 
 
-def _opendde_abag_assets() -> ModelAssets:
+def _opendde_abag_assets(spec: ModelAssets, profile: str) -> ModelAssets:
     """The released ABAG checkpoint in its own conversion/provenance root."""
 
+    assert profile == OPENDDE_ABAG_PROFILE
     base = REGISTRY["opendde"]
     shared = tuple(item for item in base.downloads if item.shared)
     native = "opendde_abag.jax"
@@ -1734,7 +1744,7 @@ def _opendde_abag_assets() -> ModelAssets:
     )
 
 
-def _protenix_v2_assets() -> ModelAssets:
+def _protenix_v2_assets(spec: ModelAssets, profile: str) -> ModelAssets:
     """Protenix v2: the same code path, wider weights, its own storage root.
 
     The port needs no architecture change for this. Its blocks read their
@@ -1743,6 +1753,7 @@ def _protenix_v2_assets() -> ModelAssets:
     with the checkpoint. What the model name carries is the rest of v2: its
     sampler schedule and the 2,560-token limit `runtime_policy` enforces.
     """
+    assert profile == PROTENIX_V2_PROFILE
     base = REGISTRY["protenix"]
     shared = tuple(item for item in base.downloads if item.shared)
     native = "protenix-v2.jax"
@@ -1766,13 +1777,14 @@ def _protenix_v2_assets() -> ModelAssets:
     )
 
 
-def _protenix_base_20250630_assets() -> ModelAssets:
+def _protenix_base_20250630_assets(spec: ModelAssets, profile: str) -> ModelAssets:
     """The release entry with its checkpoint swapped and its own storage root.
 
     Everything else is shared: the same converter, the same CCD and template
     assets, the same architecture. Only the published file and where its
     converted form lands differ.
     """
+    assert profile == PROTENIX_BASE_20250630_PROFILE
     base = REGISTRY["protenix"]
     shared = tuple(item for item in base.downloads if item.shared)
     native = "protenix_base_20250630_v1.0.0.jax"
@@ -1794,7 +1806,7 @@ def _protenix_base_20250630_assets() -> ModelAssets:
     )
 
 
-def _protenix_variant_assets(profile: str) -> ModelAssets:
+def _protenix_variant_assets(spec: ModelAssets, profile: str) -> ModelAssets:
     variant = _PROTENIX_VARIANTS[profile]
     base = REGISTRY["protenix"]
     shared = tuple(item for item in base.downloads if item.shared)
@@ -1824,7 +1836,33 @@ def _protenix_variant_assets_for_internal_model(model: str) -> ModelAssets:
         profile = _PROTENIX_PROFILE_BY_INTERNAL_MODEL[model]
     except KeyError as error:
         raise ValueError(f"unknown internal Protenix asset root: {model}") from error
-    return _protenix_variant_assets(profile)
+    return _protenix_variant_assets(REGISTRY["protenix"], profile)
+
+
+def _esmfold2_structure_only_assets(spec: ModelAssets, profile: str) -> ModelAssets:
+    """The release with ESMC-6B removed, and a readiness check that allows it."""
+
+    # Each fixed-profile builder is bound to the one profile the table maps to
+    # it: swapping two entries there would otherwise build the wrong bundle
+    # under the right name.
+    assert profile == STRUCTURE_ONLY_PROFILE
+    downloads = tuple(
+        item for item in spec.downloads if not item.name.startswith("esmc/")
+    )
+    requires = tuple(item for item in spec.requires if not item.startswith("esmc/"))
+    return dataclasses.replace(
+        spec,
+        downloads=downloads,
+        requires=requires,
+        ready_check=_esmfold2_structure_only_ready,
+        notes=(
+            "ESMFold2 structure-only profile: the 940 MB structure checkpoint, "
+            "config and 417 MB all-biomolecule CCD, without ESMC-6B. This "
+            "profile is valid only with "
+            "no_language_model=true and predicts a deliberately different model "
+            "from the released structure+ESMC bundle."
+        ),
+    )
 
 
 def available() -> tuple[str, ...]:
@@ -1834,9 +1872,10 @@ def available() -> tuple[str, ...]:
 def available_profiles(model: str) -> tuple[str, ...]:
     """Return the managed asset profiles accepted for one model.
 
-    Every model keeps the compatible ``released`` default. ESMFold2 additionally
-    exposes ``structure-only`` for the explicit no-language-model variant, which
-    avoids downloading or requiring ESMC-6B.
+    Every model keeps the compatible ``released`` default first. ESMFold2
+    additionally exposes ``structure-only`` for the explicit no-language-model
+    variant, which avoids downloading or requiring ESMC-6B. The per-model list
+    is `foldjax.portspec`'s `asset_profiles`.
     """
     from foldjax.registry import normalize_model_name
 
@@ -1846,42 +1885,22 @@ def available_profiles(model: str) -> tuple[str, ...]:
             f"{normalized} has no managed assets; supply --weights explicitly "
             f"(managed: {', '.join(available())})"
         )
-    if normalized == "esmfold2":
-        return (RELEASED_PROFILE, STRUCTURE_ONLY_PROFILE)
-    if normalized == "opendde":
-        return (RELEASED_PROFILE, OPENDDE_ABAG_PROFILE)
-    if normalized == "protenix":
-        return (
-            RELEASED_PROFILE,
-            PROTENIX_V2_PROFILE,
-            PROTENIX_BASE_20250630_PROFILE,
-            PROTENIX_MINI_ESM_PROFILE,
-            PROTENIX_MINI_ISM_PROFILE,
-        )
-    return (RELEASED_PROFILE,)
+    return PORTS[normalized].asset_profiles
 
 
 def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
     """Return the managed files for ``profile`` (the release by default)."""
     from foldjax.registry import normalize_model_name
 
-    internal_profile = _PROTENIX_PROFILE_BY_INTERNAL_MODEL.get(model)
-    if internal_profile is not None:
+    internal = _INTERNAL_ASSET_ROOTS.get(model)
+    if internal is not None:
+        normalized, internal_profile = internal
         if profile is not None and profile != internal_profile:
             raise ValueError(
                 f"internal asset root {model!r} belongs to profile "
                 f"{internal_profile!r}, not {profile!r}"
             )
-        normalized = "protenix"
         profile = internal_profile
-    elif model == _OPENDDE_ABAG_MODEL:
-        if profile is not None and profile != OPENDDE_ABAG_PROFILE:
-            raise ValueError(
-                f"internal asset root {model!r} belongs to profile "
-                f"{OPENDDE_ABAG_PROFILE!r}, not {profile!r}"
-            )
-        normalized = "opendde"
-        profile = OPENDDE_ABAG_PROFILE
     else:
         normalized = normalize_model_name(model)
     if normalized not in REGISTRY:
@@ -1899,36 +1918,11 @@ def assets_for(model: str, *, profile: str | None = None) -> ModelAssets:
     spec = REGISTRY[normalized]
     if selected == RELEASED_PROFILE:
         return spec
-
-    if normalized == "protenix":
-        if selected == PROTENIX_V2_PROFILE:
-            return _protenix_v2_assets()
-        if selected == PROTENIX_BASE_20250630_PROFILE:
-            return _protenix_base_20250630_assets()
-        return _protenix_variant_assets(selected)
-
-    if normalized == "opendde":
-        return _opendde_abag_assets()
-
-    downloads = tuple(
-        item for item in spec.downloads if not item.name.startswith("esmc/")
-    )
-    requires = tuple(
-        item for item in spec.requires if not item.startswith("esmc/")
-    )
-    return dataclasses.replace(
-        spec,
-        downloads=downloads,
-        requires=requires,
-        ready_check=_esmfold2_structure_only_ready,
-        notes=(
-            "ESMFold2 structure-only profile: the 940 MB structure checkpoint, "
-            "config and 417 MB all-biomolecule CCD, without ESMC-6B. This "
-            "profile is valid only with "
-            "no_language_model=true and predicts a deliberately different model "
-            "from the released structure+ESMC bundle."
-        ),
-    )
+    # Every other profile is built by its own declared provider: one filters the
+    # release, three name their own downloads, one is parameterised by the
+    # profile string. They share only this signature.
+    builder = provider(PORTS[normalized].asset_profile_providers[selected])
+    return builder(spec, selected)
 
 
 def profile_status(model: str) -> tuple[dict[str, object], ...]:
@@ -2050,18 +2044,18 @@ def _conversion_lock(model: str) -> Iterator[None]:
 def _cleanup_abandoned_staging(model: str) -> None:
     """Remove only FoldJAX-owned temp trees after exclusive model locking."""
     root = weights_dir(model)
-    candidates: list[Path] = []
-    if model == "boltz2":
-        candidates.extend(root.parent.glob(".foldjax-boltz-native-*"))
-        candidates.extend(root.glob(".foldjax-mols-*"))
-    elif model in {"opendde", "protenix"}:
-        candidates.extend(root.glob(f".foldjax-{model}-native-*"))
+    spec = PORTS.get(model)
+    if spec is not None:
+        staging = spec.asset_staging
     elif model in _PROTENIX_PROFILE_BY_INTERNAL_MODEL:
-        candidates.extend(root.glob(".foldjax-protenix-variant-*"))
-    elif model in {"esmfold2", "openfold3"}:
-        candidates.extend(root.glob(".foldjax-stage-*"))
-        if model == "esmfold2":
-            candidates.extend((root / "esmc").glob(".foldjax-stage-*"))
+        staging = _PROTENIX_VARIANT_STAGING
+    else:
+        staging = ()
+    candidates: list[Path] = [
+        candidate
+        for item in staging
+        for candidate in item.directory(root).glob(item.pattern)
+    ]
     for candidate in candidates:
         if candidate.is_symlink() or candidate.is_file():
             candidate.unlink(missing_ok=True)

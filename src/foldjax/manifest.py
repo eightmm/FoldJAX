@@ -22,12 +22,13 @@ import re
 import stat
 import tempfile
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from foldjax._fsutil import sha256_file as _sha256_file
+from foldjax.portspec import PORTS, provider
 from foldjax.redaction import public_options
 from foldjax.schema import PredictionRequest, PredictionResult
 
@@ -520,30 +521,32 @@ def _uses_ccd_chemistry(request: PredictionRequest) -> bool:
     return visit(document)
 
 
-def _implicit_ccd_assets(request: PredictionRequest) -> list[Path] | None:
-    """Managed/environment CCD files model featurization may read."""
-    if request.model == "openfold3":
-        # Portable feature archives already embed their chemistry and never
-        # enter the Biotite-backed raw-input preprocessor.
-        if (
-            request.input_format == "openfold3-features"
-            or request.input.suffix.lower() == ".npz"
-        ):
-            return []
-        configured = request.options.get("ccd_file_path")
-        if configured is not None:
-            try:
-                return [Path(configured)]
-            except TypeError:
-                return None
+def _openfold3_ccd_assets(request: PredictionRequest) -> list[Path] | None:
+    """OpenFold3's chemistry input: configured, ambient, or unverifiable."""
+    # Portable feature archives already embed their chemistry and never
+    # enter the Biotite-backed raw-input preprocessor.
+    if (
+        request.input_format == "openfold3-features"
+        or request.input.suffix.lower() == ".npz"
+    ):
+        return []
+    configured = request.options.get("ccd_file_path")
+    if configured is not None:
         try:
-            from biotite.structure.info import ccd as biotite_ccd
-
-            return [Path(biotite_ccd._CCD_FILE)]  # noqa: SLF001 - runtime input
-        except (AttributeError, ImportError, TypeError):
+            return [Path(configured)]
+        except TypeError:
             return None
+    try:
+        from biotite.structure.info import ccd as biotite_ccd
 
-    if request.model not in {"protenix", "opendde"} or not _uses_ccd_chemistry(request):
+        return [Path(biotite_ccd._CCD_FILE)]  # noqa: SLF001 - runtime input
+    except (AttributeError, ImportError, TypeError):
+        return None
+
+
+def _ccd_chemistry_assets(request: PredictionRequest) -> list[Path] | None:
+    """The managed/environment CCD pair the Protenix-family featurizer reads."""
+    if not _uses_ccd_chemistry(request):
         return []
     from foldjax.paths import assets_dir
 
@@ -568,6 +571,22 @@ def _implicit_ccd_assets(request: PredictionRequest) -> list[Path] | None:
         if selected is not None:
             assets.append(selected)
     return assets
+
+
+def _implicit_ccd_assets(request: PredictionRequest) -> list[Path] | None:
+    """Managed/environment CCD files model featurization may read.
+
+    The three chemistry routes are materially different -- a self-contained
+    feature archive, a Biotite ambient file, a managed RDKit/components pair --
+    so `foldjax.portspec` names one resolver per port rather than describing
+    them. A port that declares none reads no CCD asset.
+    """
+    spec = PORTS.get(request.model or "")
+    reference = None if spec is None else spec.manifest_ccd_assets
+    if reference is None:
+        return []
+    resolver: Callable[[PredictionRequest], list[Path] | None] = provider(reference)
+    return resolver(request)
 
 
 def alphafold3_effective_libcifpp_directory(
@@ -710,100 +729,154 @@ def _boltz_weight_bundle(
     return [weights], [sidecar]
 
 
-def _implicit_weight_assets(
+def _boltz2_weight_assets(
     request: PredictionRequest,
 ) -> tuple[list[Path], list[Path]] | None:
-    """Companion checkpoint/config files read beyond ``request.weights``."""
+    """The Boltz checkpoint's sidecar, plus the affinity bundle when asked for."""
     assert request.weights is not None
     paths: list[Path] = []
     missing: list[Path] = []
-    if request.model == "boltz2":
-        primary_bundle = _boltz_weight_bundle(request.weights)
-        if primary_bundle is None:
-            return None
-        primary, primary_missing = primary_bundle
-        try:
-            recorded_weight = request.weights.resolve(strict=True)
-        except (OSError, RuntimeError):
-            recorded_weight = None
-        paths.extend(
-            path
-            for path in primary
-            if recorded_weight is None or path.resolve() != recorded_weight
+    primary_bundle = _boltz_weight_bundle(request.weights)
+    if primary_bundle is None:
+        return None
+    primary, primary_missing = primary_bundle
+    try:
+        recorded_weight = request.weights.resolve(strict=True)
+    except (OSError, RuntimeError):
+        recorded_weight = None
+    paths.extend(
+        path
+        for path in primary
+        if recorded_weight is None or path.resolve() != recorded_weight
+    )
+    missing.extend(primary_missing)
+    affinity_requested = request.stop_after == "full" and document_uses_key(
+        request, "affinity"
+    )
+    if affinity_requested:
+        configured = request.options.get("affinity_weights")
+        affinity = (
+            Path(configured)
+            if configured is not None
+            else request.weights.with_name("boltz2_aff")
         )
-        missing.extend(primary_missing)
-        affinity_requested = request.stop_after == "full" and document_uses_key(
-            request, "affinity"
-        )
-        if affinity_requested:
-            configured = request.options.get("affinity_weights")
-            affinity = (
-                Path(configured)
-                if configured is not None
-                else request.weights.with_name("boltz2_aff")
-            )
-            affinity_bundle = _boltz_weight_bundle(affinity)
-            if affinity_bundle is None:
-                return None
-            bundle, bundle_missing = affinity_bundle
-            if not bundle:
-                return None
-            paths.extend(bundle)
-            missing.extend(bundle_missing)
-    elif request.model == "esmfold2":
-        from foldjax.backends.esmfold2 import _esmc_asset_paths
-
-        root = request.weights.parent if request.weights.is_file() else request.weights
-        structure = root / "model.safetensors"
-        config = root / "config.json"
-        if not structure.is_file() or not config.is_file():
+        affinity_bundle = _boltz_weight_bundle(affinity)
+        if affinity_bundle is None:
             return None
-        paths.extend((structure, config))
-        if request.options.get("no_language_model") is not True:
-            configured = request.options.get("esmc_weights")
-            try:
-                esmc = Path(configured) if configured is not None else root / "esmc"
-            except TypeError:
-                return None
-            selected_esmc = _esmc_asset_paths(esmc)
-            if selected_esmc is None:
-                return None
-            paths.extend(selected_esmc)
-    elif request.model == "protenix":
-        model_name = request.options.get("model_name", "auto")
-        if model_name == "auto":
-            from foldjax.models.protenix.runtime_policy import (
-                infer_model_name_from_path,
-            )
-
-            model_name = infer_model_name_from_path(request.weights)
-        if isinstance(model_name, str) and (
-            "_esm_" in model_name or "_ism_" in model_name
-        ):
-            # Managed profiles make this directory explicit and the generic
-            # option scanner binds the complete tree. Legacy explicit weights
-            # infer it from the primary checkpoint's parent instead.
-            if request.options.get("esm_checkpoint_dir") is None:
-                publisher_name = (
-                    "esm2_t36_3B_UR50D_ism.pt"
-                    if "_ism_" in model_name
-                    else "esm2_t36_3B_UR50D.pt"
-                )
-                official = request.weights.parent / publisher_name
-                stem = official.with_suffix("")
-                candidates = (
-                    stem.with_suffix(".safetensors"),
-                    stem.with_suffix(".npz"),
-                    official,
-                )
-                checkpoint = next(
-                    (candidate for candidate in candidates if candidate.is_file()),
-                    None,
-                )
-                if checkpoint is None:
-                    return None
-                paths.append(checkpoint)
+        bundle, bundle_missing = affinity_bundle
+        if not bundle:
+            return None
+        paths.extend(bundle)
+        missing.extend(bundle_missing)
     return paths, missing
+
+
+def _esmfold2_weight_assets(
+    request: PredictionRequest,
+) -> tuple[list[Path], list[Path]] | None:
+    """The structure checkpoint's config, and ESMC unless it is switched off."""
+    assert request.weights is not None
+    from foldjax.backends.esmfold2 import _esmc_asset_paths
+
+    paths: list[Path] = []
+    root = request.weights.parent if request.weights.is_file() else request.weights
+    structure = root / "model.safetensors"
+    config = root / "config.json"
+    if not structure.is_file() or not config.is_file():
+        return None
+    paths.extend((structure, config))
+    if request.options.get("no_language_model") is not True:
+        configured = request.options.get("esmc_weights")
+        try:
+            esmc = Path(configured) if configured is not None else root / "esmc"
+        except TypeError:
+            return None
+        selected_esmc = _esmc_asset_paths(esmc)
+        if selected_esmc is None:
+            return None
+        paths.extend(selected_esmc)
+    return paths, []
+
+
+def _protenix_weight_assets(
+    request: PredictionRequest,
+) -> tuple[list[Path], list[Path]] | None:
+    """The ESM/ISM encoder a mini-variant checkpoint loads beside itself."""
+    assert request.weights is not None
+    model_name = request.options.get("model_name", "auto")
+    if model_name == "auto":
+        from foldjax.models.protenix.runtime_policy import (
+            infer_model_name_from_path,
+        )
+
+        model_name = infer_model_name_from_path(request.weights)
+    if not isinstance(model_name, str) or not (
+        "_esm_" in model_name or "_ism_" in model_name
+    ):
+        return [], []
+    # Managed profiles make this directory explicit and the generic
+    # option scanner binds the complete tree. Legacy explicit weights
+    # infer it from the primary checkpoint's parent instead.
+    if request.options.get("esm_checkpoint_dir") is not None:
+        return [], []
+    publisher_name = (
+        "esm2_t36_3B_UR50D_ism.pt"
+        if "_ism_" in model_name
+        else "esm2_t36_3B_UR50D.pt"
+    )
+    official = request.weights.parent / publisher_name
+    stem = official.with_suffix("")
+    candidates = (
+        stem.with_suffix(".safetensors"),
+        stem.with_suffix(".npz"),
+        official,
+    )
+    checkpoint = next(
+        (candidate for candidate in candidates if candidate.is_file()),
+        None,
+    )
+    if checkpoint is None:
+        return None
+    return [checkpoint], []
+
+
+def _implicit_weight_assets(
+    request: PredictionRequest,
+) -> tuple[list[Path], list[Path]] | None:
+    """Companion checkpoint/config files read beyond ``request.weights``.
+
+    Each port reads a different companion set under different conditions, so
+    `foldjax.portspec` names a resolver rather than describing one. A port that
+    declares none reads nothing beyond the checkpoint it was given.
+    """
+    assert request.weights is not None
+    spec = PORTS.get(request.model or "")
+    reference = None if spec is None else spec.manifest_weight_assets
+    if reference is None:
+        return [], []
+    resolver: Callable[
+        [PredictionRequest], tuple[list[Path], list[Path]] | None
+    ] = provider(reference)
+    return resolver(request)
+
+
+def implementation_dependency_paths(model: str) -> tuple[Path, ...]:
+    """Implementation files whose content changes one model's predictions.
+
+    Recorded as run inputs with the same weight as the checkpoint: a numerical
+    repair changes what a model predicts while the request's options stay
+    identical, so a result produced before it must not satisfy a resume made
+    after it. Which files and why is `foldjax.portspec`'s `manifest_sources`;
+    the order is that table's, and `_input_dependencies` sorts by resolved path
+    before persisting, so it is for reading rather than for identity.
+    """
+    spec = PORTS.get(model)
+    if spec is None:
+        return ()
+    package = Path(__file__).parent
+    return tuple(
+        path for source in spec.manifest_sources for path in source.resolve(package)
+    )
 
 
 def _input_dependencies(
@@ -884,81 +957,7 @@ def _input_dependencies(
 
         paths.extend((VENDORED_RUNNER, build.source_package()))
         paths.extend(runtime_paths.values())
-    if request.model == "opendde":
-        # Omitted options can change meaning when the native precision default
-        # changes. Bind both policy definitions so a legacy BF16 result cannot
-        # satisfy an otherwise identical request whose default is now FP32.
-        package = Path(__file__).parent
-        paths.extend(
-            (
-                package / "backends/opendde.py",
-                package / "models/opendde/cli/predict.py",
-                package / "models/opendde/models/geometry.py",
-                package / "models/opendde/models/sampling.py",
-                package / "models/opendde/models/model.py",
-            )
-        )
-    if request.model == "boltz2":
-        # Native AMP/normalization repairs can change predictions with identical
-        # request options. Stat only source files, not mutable __pycache__ trees.
-        package = Path(__file__).parent / "models/boltz2"
-        paths.extend((package / "api.py", package / "compile_policy.py"))
-        paths.extend(sorted((package / "models").rglob("*.py")))
-    if request.model == "openfold3":
-        # Sample-chunk/augmentation repairs change ordinary predictions without
-        # changing request options; a pre-repair result must not satisfy resume.
-        package = Path(__file__).parent / "models/openfold3"
-        paths.extend(
-            package / name
-            for name in ("inference.py", "models/augmentation.py", "models/sampler.py")
-        )
-    if request.model == "esmfold2":
-        # Native autocast routing and dropout opmath change ordinary predictions
-        # as well as fixed-tape replay, without changing request options.
-        package = Path(__file__).parent / "models/esmfold2"
-        paths.extend(
-            package / name
-            for name in (
-                "inference.py",
-                "models/esmc.py",
-                "models/model.py",
-                "models/diffusion.py",
-                "models/trunk.py",
-                "models/primitives.py",
-            )
-        )
-        # Both the CUDA norm implementation and its CP routing affect ESM
-        # outputs even though they live outside this model's source directory.
-        paths.extend(
-            (
-                package.parent / "boltz2/models/primitives/native_amp_norm.py",
-                package.parent / "_cp.py",
-            )
-        )
-    if request.model in {"opendde", "protenix"}:
-        # Both ports use this head. Old results predate the corrected directed
-        # pair initialization and must not survive an otherwise identical resume.
-        paths.append(
-            Path(__file__).parent / "models/protenix/models/heads/confidence.py"
-        )
-    if request.model == "protenix":
-        # Rigid augmentation and native mixed-precision conditioning changed
-        # predictions without changing request options or checkpoint bytes.
-        package = Path(__file__).parent / "models/protenix/models"
-        paths.extend(
-            package / name
-            for name in (
-                "model.py",
-                "predict.py",
-                "diffusion/diffusion.py",
-                "trunk_blocks/trunk.py",
-                "heads/head.py",
-            )
-        )
-    if request.model in {"boltz2", "opendde", "protenix", "openfold3"}:
-        # FFI precision corrections change predictions without changing options:
-        # old outputs can contain TF32 attention or zero BF16 triangle updates.
-        paths.append(Path(__file__).parent / "models/_cueq.py")
+    paths.extend(implementation_dependency_paths(request.model or ""))
     weight_bundle = _implicit_weight_assets(request)
     if weight_bundle is None:
         return {"verifiable": False, "artifacts": []}

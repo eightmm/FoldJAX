@@ -4,50 +4,36 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from importlib import import_module
+from typing import TYPE_CHECKING
 
-from foldjax.backends.base import Backend
+from foldjax.portspec import ALIASES, PORTS, provider
 from foldjax.schema import ModelCapabilities, ModelInfo, RuntimeInfo
 
-BackendFactory = Callable[[], Backend]
+if TYPE_CHECKING:
+    # `Backend` appears here only in annotations, and `from __future__ import
+    # annotations` leaves those as strings. Importing it for real would put
+    # `foldjax.backends` in the way of every module that asks the registry for
+    # a model name -- the registry is the lazy one precisely so naming a model
+    # costs nothing.
+    from foldjax.backends.base import Backend
 
-_ALIASES = {
-    "af3": "alphafold3",
-    "alphafold-3": "alphafold3",
-    "alphafold3": "alphafold3",
-    "boltz": "boltz2",
-    "boltz2": "boltz2",
-    "boltz-jax": "boltz2",
-    "open-dde": "opendde",
-    "opendde": "opendde",
-    "opendde-jax": "opendde",
-    "protenix": "protenix",
-    "protenix-jax": "protenix",
-    "esmfold2": "esmfold2",
-    "esm-fold2": "esmfold2",
-    "esmfold-2": "esmfold2",
-    "openfold3": "openfold3",
-    "of3": "openfold3",
-    "openfold-3": "openfold3",
-    "openfold3-jax": "openfold3",
-}
-_IMPORTS = {
-    "alphafold3": ("foldjax.backends.alphafold3", "AlphaFold3Backend"),
-    "boltz2": ("foldjax.backends.boltz2", "Boltz2Backend"),
-    "opendde": ("foldjax.backends.opendde", "OpenDDEBackend"),
-    "protenix": ("foldjax.backends.protenix", "ProtenixBackend"),
-    "openfold3": ("foldjax.backends.openfold3", "OpenFold3Backend"),
-    "esmfold2": ("foldjax.backends.esmfold2", "ESMFold2Backend"),
-}
+BackendFactory = Callable[[], "Backend"]
+
 _OVERRIDES: dict[str, BackendFactory] = {}
 
 
 def available_models() -> tuple[str, ...]:
-    return tuple(sorted(_IMPORTS))
+    return tuple(sorted(PORTS))
 
 
 def normalize_model_name(name: str) -> str:
-    normalized = _ALIASES.get(name.strip().lower())
+    """Resolve one accepted spelling to its canonical model id.
+
+    The only normaliser in FoldJAX. `foldjax.portspec` is keyed by canonical
+    ids and never resolves an alias itself, so every module that receives a
+    user-supplied name comes through here first.
+    """
+    normalized = ALIASES.get(name.strip().lower())
     if normalized is None:
         raise ValueError(
             f"unknown model {name!r}; choose one of {', '.join(available_models())}"
@@ -59,8 +45,7 @@ def get_backend(name: str) -> Backend:
     normalized = normalize_model_name(name)
     if normalized in _OVERRIDES:
         return _OVERRIDES[normalized]()
-    module_name, class_name = _IMPORTS[normalized]
-    return getattr(import_module(module_name), class_name)()
+    return provider(PORTS[normalized].backend)()
 
 
 def capabilities(name: str) -> ModelCapabilities:

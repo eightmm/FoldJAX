@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from foldjax.models.boltz2.data.identifiers import validate_ccd_identifier
+from foldjax.portspec import PORTS, provider
 from foldjax.schema import MSA_POLICIES, ModelCapabilities, _strict_boolean
 
 _ENTITY_TYPES = ("protein", "dna", "rna", "ligand")
@@ -439,6 +439,17 @@ def _validate(
 ) -> None:
     """Check the common document against what ``model`` can express."""
     options = options or {}
+    # Only Boltz-2 resolves a CCD code against its own chemistry archive, and
+    # only it therefore validates the identifier here. The validator is named by
+    # the port table and imported at this call rather than at module import, so
+    # the model-neutral input layer does not load a port to translate for
+    # another one.
+    spec = PORTS.get(model)
+    validate_ccd = (
+        provider(spec.input_ccd_validator)
+        if spec is not None and spec.input_ccd_validator is not None
+        else None
+    )
     use_template = False
     use_rna_msa = False
     if model == "opendde":
@@ -483,10 +494,8 @@ def _validate(
                 raise ValueError("ligand entity requires ccd or smiles")
             if entity.get("ccd") and entity.get("smiles"):
                 raise ValueError("ligand entity accepts either ccd or smiles, not both")
-            if model == "boltz2" and entity.get("ccd"):
-                entity["ccd"] = validate_ccd_identifier(
-                    entity["ccd"], field="ligand CCD code"
-                )
+            if validate_ccd is not None and entity.get("ccd"):
+                entity["ccd"] = validate_ccd(entity["ccd"], field="ligand CCD code")
             feature = "ligand_ccd" if entity.get("ccd") else "ligand_smiles"
             if feature not in target.features:
                 _reject(model, feature, "supply the other ligand representation")
@@ -524,9 +533,9 @@ def _validate(
                 f"remove it from entity {_ids(entity)[0]!r}",
             )
         modifications = _modifications(entity)
-        if model == "boltz2":
+        if validate_ccd is not None:
             for ccd, _ in modifications:
-                validate_ccd_identifier(ccd, field="modification CCD code")
+                validate_ccd(ccd, field="modification CCD code")
 
         for template in _templates(entity):
             feature = "templates" if template["mapping"] else "templates_unmapped"
@@ -630,7 +639,7 @@ def _alphafold3_template_path(
 
 
 def _alphafold3(
-    job: dict[str, Any], base: Path, seed: int, destination: Path
+    job: dict[str, Any], base: Path, *, seed: int, destination: Path
 ) -> dict[str, Any]:
     sequences = []
     for entity_index, entity in enumerate(job["entities"]):
@@ -707,7 +716,13 @@ def _alphafold3(
     return native
 
 
-def _boltz(job: dict[str, Any], base: Path) -> dict[str, Any]:
+def _boltz(
+    job: dict[str, Any],
+    base: Path,
+    *,
+    seed: int = 0,
+    destination: Path | None = None,
+) -> dict[str, Any]:
     sequences = []
     for entity in job["entities"]:
         kind = entity["type"]
@@ -802,7 +817,7 @@ def _protenix_templates(
 
 
 def _protenix(
-    job: dict[str, Any], base: Path, seed: int, destination: Path
+    job: dict[str, Any], base: Path, *, seed: int, destination: Path
 ) -> list[dict[str, Any]]:
     sequences = []
     # Protenix addresses covalent bonds by 1-based entity number and copy index
@@ -1217,7 +1232,9 @@ def _write_text_atomic(path: Path, text: str) -> None:
         os.replace(staged, path)
 
 
-def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, Any]:
+def _openfold3(
+    job: dict[str, Any], base: Path, *, seed: int = 0, destination: Path
+) -> dict[str, Any]:
     """Build OpenFold3's inference query document."""
     chains: list[dict[str, Any]] = []
     for entity_index, entity in enumerate(job["entities"]):
@@ -1257,6 +1274,25 @@ def _openfold3(job: dict[str, Any], base: Path, destination: Path) -> dict[str, 
 
     query: dict[str, Any] = {"chains": chains}
     return {"queries": {str(job.get("name", "query")): query}}
+
+
+def _esmfold2(
+    job: dict[str, Any],
+    base: Path,
+    *,
+    seed: int = 0,
+    destination: Path | None = None,
+) -> dict[str, Any]:
+    """ESMFold2 has no dialect to translate into: the adapter reads this schema.
+
+    Unlike every generated native dialect this is otherwise a direct copy, so
+    MSA paths are resolved now: relocating the generated document must not
+    change which alignment it names.
+    """
+    for entity in job["entities"]:
+        if entity.get("unpaired_msa"):
+            entity["unpaired_msa"] = _path(entity["unpaired_msa"], base)
+    return job
 
 
 def common_schema_features(model: str) -> tuple[str, ...]:
@@ -1386,23 +1422,11 @@ def materialize_native_input(
     elif msa == "none":
         _warn_single_sequence(job, model)
 
-    if model == "esmfold2":
-        # No dialect to translate into: the adapter consumes this schema.
-        # Unlike every generated native dialect, this is otherwise a direct
-        # copy; resolve MSA paths now so relocating the generated document does
-        # not change which alignment it names.
-        for entity in job["entities"]:
-            if entity.get("unpaired_msa"):
-                entity["unpaired_msa"] = _path(entity["unpaired_msa"], base)
-        document: Any = job
-    elif model == "alphafold3":
-        document = _alphafold3(job, base, seed, output_dir)
-    elif model == "boltz2":
-        document = _boltz(job, base)
-    elif model in {"opendde", "protenix"}:
-        document = _protenix(job, base, seed, output_dir)
-    else:
-        document = _openfold3(job, base, output_dir)
+    # Which writer, and its suffix, are the port table's; OpenDDE reads the
+    # Protenix dialect, so the two entries name one writer rather than a
+    # membership test here.
+    writer = provider(PORTS[model].input_dialect)
+    document: Any = writer(job, base, seed=seed, destination=output_dir)
     path = output_dir / f"{model}_input{target.suffix}"
     text = document if isinstance(document, str) else json.dumps(document, indent=2)
     _write_text_atomic(path, text)
