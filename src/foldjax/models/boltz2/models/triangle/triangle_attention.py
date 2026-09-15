@@ -15,7 +15,7 @@ from foldjax.models._cp import (
     pair_row_spec,
     shard_pair_rows,
 )
-from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
 from foldjax.models.boltz2.models.primitives._common import (
     layer_norm as _shared_layer_norm,
 )
@@ -253,8 +253,12 @@ def _triangle_attention_cp(
     if cp_layout() == "2d":
         # Keep both pair axes tiled for the whole softmax. Q stays resident;
         # K/V, mask and triangle bias rotate through the square mesh. The
-        # inner query chunk still applies: it bounds the score tile inside one
-        # ring step, where no communication depends on it.
+        # block still applies, and it is the outer loop: one block of local
+        # pair rows projects its own Q/K/V and runs the whole rotation, so the
+        # projections, the score tile and the accumulators are bounded
+        # together and no communication depends on the split. `q_chunk_size`
+        # sets that row block here, where the serial path spends it on the
+        # query rows inside one triangle-batch chunk instead.
         out = _attention_ring_2d(
             params["mha"],
             q_x=x,
@@ -329,57 +333,54 @@ def _attention_ring_2d(
     precision: jax.lax.Precision,
     q_block: int | None = None,
 ) -> jnp.ndarray:
-    """Project and run the exact two-dimensional Fold-CP attention ring."""
+    """Project and run the exact two-dimensional Fold-CP attention ring.
+
+    The projections happen inside the ring's row block, which is why they are
+    a closure here: one block of pair rows projects its own Q/K/V and gate,
+    and nothing full-width stays live across the rotation but the output.
+    """
 
     no_heads = tri_bias.shape[2]
     c_hidden = params["linear_g"]["kernel"].shape[-1] // no_heads
-    qg = _linear(
-        q_x,
-        jnp.concatenate(
-            (params["linear_q"]["kernel"], params["linear_g"]["kernel"]),
-            axis=-1,
-        ),
-        precision,
-    )
-    q, gate = jnp.split(qg, 2, axis=-1)
-    kv = _linear(
-        kv_x,
-        jnp.concatenate(
-            (params["linear_k"]["kernel"], params["linear_v"]["kernel"]),
-            axis=-1,
-        ),
-        precision,
-    )
-    k, v = jnp.split(kv, 2, axis=-1)
-    q = jnp.swapaxes(
-        q.reshape(q.shape[:-1] + (no_heads, c_hidden)),
-        -2,
-        -3,
-    )
-    k = jnp.swapaxes(
-        k.reshape(k.shape[:-1] + (no_heads, c_hidden)),
-        -2,
-        -3,
-    )
-    v = jnp.swapaxes(
-        v.reshape(v.shape[:-1] + (no_heads, c_hidden)),
-        -2,
-        -3,
-    )
-    q = q / jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
-    out = ring_triangle_attention_2d(
-        q,
-        k,
-        v,
+
+    def split_heads(array: jnp.ndarray) -> jnp.ndarray:
+        array = array.reshape(array.shape[:-1] + (no_heads, c_hidden))
+        return jnp.swapaxes(array, -2, -3)
+
+    def project(mha, rows):
+        q_rows, kv_rows = rows
+        qg = _linear(
+            q_rows,
+            jnp.concatenate(
+                (mha["linear_q"]["kernel"], mha["linear_g"]["kernel"]),
+                axis=-1,
+            ),
+            precision,
+        )
+        q, gate = jnp.split(qg, 2, axis=-1)
+        kv = _linear(
+            kv_rows,
+            jnp.concatenate(
+                (mha["linear_k"]["kernel"], mha["linear_v"]["kernel"]),
+                axis=-1,
+            ),
+            precision,
+        )
+        k, v = jnp.split(kv, 2, axis=-1)
+        q = split_heads(q)
+        q = q / jnp.sqrt(jnp.asarray(c_hidden, dtype=q.dtype))
+        return q, split_heads(k), split_heads(v), split_heads(_sigmoid(gate))
+
+    out = ring_triangle_attention_2d_from_pair(
+        (q_x, kv_x),
         tri_bias,
         mask_bias,
+        params,
+        project=project,
         precision=precision,
         q_block=q_block,
     )
     out = jnp.swapaxes(out, -2, -3)
-    gate = _sigmoid(gate)
-    gate = gate.reshape(gate.shape[:-1] + (no_heads, c_hidden))
-    out = out * gate
     out = out.reshape(out.shape[:-2] + (c_hidden * no_heads,))
     return _linear(out, params["linear_o"]["kernel"], precision)
 

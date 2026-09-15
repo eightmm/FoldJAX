@@ -11,7 +11,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
-from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
 from foldjax.models.openfold3.models.attention import flatten_heads, split_heads
 from foldjax.models.openfold3.models.primitives import (
     jax_sigmoid,
@@ -46,6 +46,12 @@ def triangle_attention(
     rotate around the mesh. A fused local attention backend is rejected: it
     normalises one key tile before the online softmax can combine all ring
     steps, so using it would change the function.
+
+    ``chunk_size`` reaches the ring as its local row block, the axis the
+    chunked serial path blocks as well: the rotation happens inside that loop,
+    so one block bounds its own projections, its score tile and its
+    accumulators. ``None`` leaves the ring's own rule
+    (:func:`~foldjax.models._cp_attention.resolve_ring_row_block`) in force.
     """
 
     if cp_layout() != "2d":
@@ -86,22 +92,31 @@ def triangle_attention(
     triangle_bias = _project_triangle_bias(x, params, transpose_bias)
     triangle_bias = jnp.expand_dims(triangle_bias, -4)
 
-    query = jnp.swapaxes(split_heads(linear(x, params.mha.linear_q), no_heads), -2, -3)
-    key = jnp.swapaxes(split_heads(linear(x, params.mha.linear_k), no_heads), -2, -3)
-    value = jnp.swapaxes(split_heads(linear(x, params.mha.linear_v), no_heads), -2, -3)
-    query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
+    def project(mha, rows):
+        def heads(array: jnp.ndarray) -> jnp.ndarray:
+            return jnp.swapaxes(split_heads(array, no_heads), -2, -3)
 
-    out = ring_triangle_attention_2d(
-        query,
-        key,
-        value,
+        query = heads(linear(rows, mha.linear_q))
+        query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
+        gate = None
+        if mha.linear_g is not None:
+            gate = heads(jax_sigmoid(linear(rows, mha.linear_g)))
+        return (
+            query,
+            heads(linear(rows, mha.linear_k)),
+            heads(linear(rows, mha.linear_v)),
+            gate,
+        )
+
+    out = ring_triangle_attention_2d_from_pair(
+        x,
         triangle_bias,
         mask_bias,
+        params.mha,
+        project=project,
+        q_block=chunk_size,
     )
     out = jnp.swapaxes(out, -2, -3)
-    if params.mha.linear_g is not None:
-        gate = split_heads(jax_sigmoid(linear(x, params.mha.linear_g)), no_heads)
-        out = out * gate
     out = linear(flatten_heads(out), params.mha.linear_o)
 
     if not starting:

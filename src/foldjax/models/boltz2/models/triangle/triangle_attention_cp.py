@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
-from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
 from foldjax.models.boltz2.models.primitives._common import layer_norm as _layer_norm
 from foldjax.models.boltz2.models.primitives._common import sigmoid as _sigmoid
 from foldjax.models.boltz2.models.triangle.triangle_attention import (
@@ -53,13 +53,18 @@ def triangle_attention_forward(
 ) -> jnp.ndarray:
     """Dispatch Boltz triangle attention to serial/1-D or the 2-D ring.
 
-    ``q_chunk_size`` reaches the ring as its local query block: it bounds the
-    score tile inside one ring step, where the key axis is already local and
-    no rotation depends on the split. ``None`` leaves the ring's own default
-    (:func:`~foldjax.models._cp_attention.resolve_ring_query_block`) in force.
-    ``chunk_size`` -- the outer triangle-batch chunk -- stays unused on this
-    path, and so does ``native_amp``: the ring applies its own query scale in
-    the caller's dtype and has no autocast branch to select.
+    ``q_chunk_size`` reaches the ring as its local row block. The axis it
+    blocks there is the pair row, not the query row it splits on the serial
+    path: the rotation happens inside the row loop, so one block bounds its
+    own projections, its score tile and its accumulators, and no rotation
+    depends on the split. It is this knob and not ``chunk_size`` -- which is
+    the serial path's own row chunk -- because this is the one already wired
+    to the ring, and the ring has no separate triangle-batch axis left to
+    chunk. ``None`` leaves the ring's own rule
+    (:func:`~foldjax.models._cp_attention.resolve_ring_row_block`) in force.
+    ``chunk_size`` stays unused on this path, and so does ``native_amp``: the
+    ring applies its own query scale in the caller's dtype and has no
+    autocast branch to select.
     """
 
     if cp_layout() != "2d":
@@ -109,53 +114,49 @@ def triangle_attention_forward(
 
     no_heads = triangle_bias.shape[-3]
     hidden = params["mha"]["linear_g"]["kernel"].shape[-1] // no_heads
-    qg = _linear(
-        x,
-        jnp.concatenate(
-            (
-                params["mha"]["linear_q"]["kernel"],
-                params["mha"]["linear_g"]["kernel"],
-            ),
-            axis=-1,
-        ),
-        precision,
-    )
-    query, gate = jnp.split(qg, 2, axis=-1)
-    kv = _linear(
-        x,
-        jnp.concatenate(
-            (
-                params["mha"]["linear_k"]["kernel"],
-                params["mha"]["linear_v"]["kernel"],
-            ),
-            axis=-1,
-        ),
-        precision,
-    )
-    key, value = jnp.split(kv, 2, axis=-1)
 
     def split_heads(array: jax.Array) -> jax.Array:
         array = array.reshape(array.shape[:-1] + (no_heads, hidden))
         return jnp.swapaxes(array, -2, -3)
 
-    query = split_heads(query)
-    key = split_heads(key)
-    value = split_heads(value)
-    query = query / jnp.sqrt(jnp.asarray(hidden, dtype=query.dtype))
-    out = ring_triangle_attention_2d(
-        query,
-        key,
-        value,
+    def project(mha, rows):
+        qg = _linear(
+            rows,
+            jnp.concatenate(
+                (mha["linear_q"]["kernel"], mha["linear_g"]["kernel"]),
+                axis=-1,
+            ),
+            precision,
+        )
+        query, gate = jnp.split(qg, 2, axis=-1)
+        kv = _linear(
+            rows,
+            jnp.concatenate(
+                (mha["linear_k"]["kernel"], mha["linear_v"]["kernel"]),
+                axis=-1,
+            ),
+            precision,
+        )
+        key, value = jnp.split(kv, 2, axis=-1)
+        query = split_heads(query)
+        query = query / jnp.sqrt(jnp.asarray(hidden, dtype=query.dtype))
+        return (
+            query,
+            split_heads(key),
+            split_heads(value),
+            split_heads(_sigmoid(gate)),
+        )
+
+    out = ring_triangle_attention_2d_from_pair(
+        x,
         triangle_bias,
         mask_bias,
+        params["mha"],
+        project=project,
         precision=precision,
         q_block=q_chunk_size,
     )
     out = jnp.swapaxes(out, -2, -3)
-
-    gate = _sigmoid(gate)
-    gate = gate.reshape(gate.shape[:-1] + (no_heads, hidden))
-    out = out * gate
     out = out.reshape(out.shape[:-2] + (no_heads * hidden,))
     out = _linear(out, params["mha"]["linear_o"]["kernel"], precision)
     if not starting:

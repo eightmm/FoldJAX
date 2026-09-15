@@ -79,6 +79,41 @@ mesh produced it, since the figures it quotes are one device's budget rather
 than the job's. When the bound fires instead, XLA ends the process from its
 own rendezvous and that log carries XLA's allocator message.
 
+## The two-dimensional ring's row block
+
+Triangle attention is a batch of independent attentions, one per row of the
+pair representation, and nothing in its softmax crosses a row. The serial and
+1-D paths use that to bound memory: they loop over blocks of rows, projecting
+`q`/`k`/`v` for one block inside the loop, so the projections and the
+`[rows, heads, N, N]` score tensor are bounded together.
+
+The 2-D ring does the same, with the whole rotation inside the row loop. One
+block of local rows projects its own `q`, `k`, `v` and gate, runs both ring
+passes over every key tile, and writes its rows of the output; the loop is a
+`lax.scan`, because an unrolled Python loop lets XLA schedule the blocks
+together and keep every block's tile live at once. Communication is unchanged
+in bytes -- every skew and hop keeps a device's grid row, so slicing the rows
+before the skew sends the same payload in more, smaller `collective-permute`s
+-- and the two loop-invariant bias skews are hoisted above the loop. Wall time
+may grow; the layout exists for targets that otherwise do not run.
+
+What the loop then holds is the output destination, at the value dtype, plus
+the pre-projection pair tile it slices and the bias. Blocking the *query* axis
+instead, which this ring did before, bounded only the score tile: at 1,024
+OpenDDE structural tokens on a 2x2 CPU mesh the pass-2 loop carried five
+`f32[512, 12, 512, 32]` tensors -- `q`, `k`, `v`, the accumulator and its
+Neumaier correction -- 1,969.0 MiB, quadratic in the local width and 67.5 GiB
+per device at 6,144 structural tokens. The row block leaves 627.3 MiB of that
+carry, of which 192 MiB is the destination.
+
+The block is one knob, and it is the one each port already had:
+`triangle_att_q_chunk_size` (Protenix, OpenDDE), `q_chunk_size` (Boltz-2) and
+`chunk_size` (OpenFold3) reach `resolve_ring_row_block`, which follows the
+serial path's rule -- `rows * heads` near 288, capped at 64 rows, narrowed
+further when one block's score tile would pass 8 GiB, floored at 8 rows. A
+non-positive value asks for one block, which is the unblocked ring and the
+program the ring lowered to before blocking existed.
+
 ## Boltz-2 atom-window path
 
 Boltz-2 distributes the atom diffusion graph rather than only the pair trunk:

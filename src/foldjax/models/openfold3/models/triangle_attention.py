@@ -23,7 +23,7 @@ from foldjax.models._cp import (
     pair_row_spec,
     shard_pair_rows,
 )
-from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
 from foldjax.models.openfold3.models.attention import (
     AttentionParams,
     attention,
@@ -330,23 +330,40 @@ def _ring_attention(
     params: AttentionParams,
     *,
     no_heads: int,
+    q_block: int | None = None,
 ) -> jnp.ndarray:
-    """Exact two-dimensional ring counterpart of dense AF3 attention."""
+    """Exact two-dimensional ring counterpart of dense AF3 attention.
 
-    query = jnp.swapaxes(split_heads(linear(x, params.linear_q), no_heads), -2, -3)
-    key = jnp.swapaxes(split_heads(linear(x, params.linear_k), no_heads), -2, -3)
-    value = jnp.swapaxes(split_heads(linear(x, params.linear_v), no_heads), -2, -3)
-    query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
-    out = ring_triangle_attention_2d(
-        query,
-        key,
-        value,
+    ``q_block`` is the local pair rows one ring block runs, the axis the
+    chunked serial path also blocks; the projections happen inside the block,
+    which is why they are a closure here.
+    """
+
+    def project(mha, rows):
+        def heads(array: jnp.ndarray) -> jnp.ndarray:
+            return jnp.swapaxes(split_heads(array, no_heads), -2, -3)
+
+        query = heads(linear(rows, mha.linear_q))
+        query = query / jnp.sqrt(jnp.asarray(query.shape[-1], dtype=query.dtype))
+        gate = None
+        if mha.linear_g is not None:
+            gate = heads(jax_sigmoid(linear(rows, mha.linear_g)))
+        return (
+            query,
+            heads(linear(rows, mha.linear_k)),
+            heads(linear(rows, mha.linear_v)),
+            gate,
+        )
+
+    out = ring_triangle_attention_2d_from_pair(
+        x,
         triangle_bias,
         mask_bias,
+        params,
+        project=project,
+        q_block=q_block,
     )
     out = jnp.swapaxes(out, -2, -3)
-    if params.linear_g is not None:
-        out = out * split_heads(jax_sigmoid(linear(x, params.linear_g)), no_heads)
     return linear(flatten_heads(out), params.linear_o)
 
 
@@ -403,6 +420,7 @@ def _triangle_attention_cp(
             triangle_bias,
             params.mha,
             no_heads=no_heads,
+            q_block=chunk_size,
         )
         if not starting:
             out = jnp.swapaxes(out, -2, -3)

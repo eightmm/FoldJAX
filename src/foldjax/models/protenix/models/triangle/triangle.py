@@ -27,7 +27,7 @@ from foldjax.models._cp import (
     shard_pair_rows,
     transpose_perm,
 )
-from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
 from foldjax.models._cueq import fused_multiplication_fits
 from foldjax.models.protenix.models.primitives.attention import AttentionParams
 from foldjax.models.protenix.models.primitives.primitives import (
@@ -680,23 +680,31 @@ def _triangle_attention_ring_2d(
     """Two-dimensional Protenix attention without a full-column gather."""
 
     scale = float(params.attention.linear_k.weight.shape[0] // num_heads) ** -0.5
-    q = _project_heads(x, params.attention.linear_q, num_heads)
-    k = _project_heads(x, params.attention.linear_k, num_heads)
-    v = _project_heads(x, params.attention.linear_v, num_heads)
-    q = q * jnp.asarray(scale, dtype=q.dtype)
-    out = ring_triangle_attention_2d(
-        q,
-        k,
-        v,
+
+    def project(attention, rows):
+        q = _project_heads(rows, attention.linear_q, num_heads)
+        q = q * jnp.asarray(scale, dtype=q.dtype)
+        gate = None
+        if attention.linear_g is not None:
+            gate = sigmoid(linear(rows, attention.linear_g))
+            gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
+            gate = jnp.swapaxes(gate, -2, -3)
+        return (
+            q,
+            _project_heads(rows, attention.linear_k, num_heads),
+            _project_heads(rows, attention.linear_v, num_heads),
+            gate,
+        )
+
+    out = ring_triangle_attention_2d_from_pair(
+        x,
         triangle_bias,
         mask_bias,
+        params.attention,
+        project=project,
         q_block=q_block,
     )
     out = jnp.swapaxes(out, -2, -3)
-    if params.attention.linear_g is not None:
-        gate = sigmoid(linear(x, params.attention.linear_g))
-        gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
-        out = out * gate
     out = out.reshape(out.shape[:-2] + (-1,))
     return linear(out, params.attention.linear_o)
 
@@ -748,8 +756,12 @@ def _triangle_attention_cp(
     triangle_bias = jnp.expand_dims(triangle_bias, axis=-4)
 
     if cp_layout() == "2d":
-        # The query chunk still bounds the score tile inside one ring step;
-        # only the outer row loop is unavailable once both axes are tiled.
+        # The blocked row loop runs here too: it is the ring that rotates
+        # inside it, one block of local rows at a time, and the row block is
+        # what bounds the projections, the score tile and the accumulators
+        # together. The rows a device owns never change during a rotation --
+        # every skew and hop keeps the grid row -- so the loop slices a
+        # shard-local axis.
         out = _triangle_attention_ring_2d(
             x,
             params,

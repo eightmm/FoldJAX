@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from foldjax.models._cp import cp_layout, shard_pair_rows
-from foldjax.models._cp_attention import ring_triangle_attention_2d
+from foldjax.models._cp_attention import ring_triangle_attention_2d_from_pair
 from foldjax.models.protenix.models.primitives.primitives import (
     layer_norm,
     linear,
@@ -43,10 +43,12 @@ def triangle_attention(
 ) -> jnp.ndarray:
     """Use the exact 2-D Fold-CP ring when a square mesh is active.
 
-    ``q_chunk_size`` reaches the ring as its local query block: inside one
-    ring step the key axis is already local, so splitting the query rows
-    bounds the score tile without touching the rotation schedule. ``None``
-    leaves the ring's own default in force.
+    ``q_chunk_size`` reaches the ring as its local row block, the same axis it
+    blocks on the serial path: the ring rotates inside the row loop, so one
+    block bounds the projections, the score tile and the accumulators at once
+    without touching the rotation schedule. ``None`` leaves the ring's own
+    rule (:func:`~foldjax.models._cp_attention.resolve_ring_row_block`) in
+    force.
     """
 
     if cp_layout() != "2d":
@@ -93,22 +95,29 @@ def triangle_attention(
 
     hidden = params.attention.linear_k.weight.shape[0] // num_heads
     scale = jnp.asarray(hidden**-0.5, dtype=x.dtype)
-    query = _project_heads(x, params.attention.linear_q, num_heads) * scale
-    key = _project_heads(x, params.attention.linear_k, num_heads)
-    value = _project_heads(x, params.attention.linear_v, num_heads)
-    out = ring_triangle_attention_2d(
-        query,
-        key,
-        value,
+
+    def project(attention, rows):
+        gate = None
+        if attention.linear_g is not None:
+            gate = sigmoid(linear(rows, attention.linear_g))
+            gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
+            gate = jnp.swapaxes(gate, -2, -3)
+        return (
+            _project_heads(rows, attention.linear_q, num_heads) * scale,
+            _project_heads(rows, attention.linear_k, num_heads),
+            _project_heads(rows, attention.linear_v, num_heads),
+            gate,
+        )
+
+    out = ring_triangle_attention_2d_from_pair(
+        x,
         triangle_bias,
         mask_bias,
+        params.attention,
+        project=project,
         q_block=q_chunk_size,
     )
     out = jnp.swapaxes(out, -2, -3)
-    if params.attention.linear_g is not None:
-        gate = sigmoid(linear(x, params.attention.linear_g))
-        gate = gate.reshape(gate.shape[:-1] + (num_heads, -1))
-        out = out * gate
     out = out.reshape(out.shape[:-2] + (-1,))
     out = linear(out, params.attention.linear_o)
     if not starting:
