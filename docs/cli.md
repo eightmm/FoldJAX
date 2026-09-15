@@ -1085,8 +1085,8 @@ replicated graph, so pin `--pad-atoms` plus the right token axis (or
 one. The sampler loop and its noise tape are unchanged. See
 [`docs/context_parallel.md`](context_parallel.md).
 
-Alignment under a mesh means
-the token axis a multiple of the rows, and of the columns under
+Alignment under a mesh needs the padded atom count a multiple of 32 × the CP
+rows and the token axis a multiple of the rows, and of the columns under
 `--cp-layout 2d`. A shape that cannot be split **warns, names the multiple to
 pad to, and runs replicated** -- which means an unpadded job measures the
 replicated graph, so pin `--pad-atoms` and `--pad-tokens` (or
