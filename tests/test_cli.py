@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -1206,6 +1207,42 @@ def test_a_serial_prediction_leaves_xla_flags_alone(
     capsys.readouterr()
 
     assert seen["xla_flags"] == ""
+
+
+def test_importing_the_cli_does_not_import_jax() -> None:
+    """The allocator and rendezvous bounds have to be set before JAX loads.
+
+    `_apply_mem_fraction` and `_apply_rendezvous_timeout` mutate state that
+    XLA reads exactly once, when the backend initialises, so they are only
+    effective while JAX is unimported -- which means importing the CLI, and
+    everything the CLI imports, must not import it either. The subprocess is
+    the point: an in-process check cannot see a top-level `import jax` in a
+    module that some earlier test already imported.
+
+    `cache_gc` and `doctor` are named separately because they were lifted out
+    of `cli.py`, and a module that is only reached through a lazy dispatch is
+    exactly where such an import goes unnoticed.
+    """
+    script = r"""
+import sys
+
+import foldjax.cache_gc
+import foldjax.cli
+import foldjax.doctor
+
+leaked = sorted(
+    name for name in sys.modules if name == "jax" or name.startswith("jax.")
+)
+assert not leaked, leaked
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert completed.returncode == 0, completed.stdout
 
 
 def test_discovery_commands_do_not_bound_anything(monkeypatch, capsys) -> None:

@@ -254,11 +254,11 @@ def test_doctor_reports_the_runtime_and_what_is_missing(capsys) -> None:
 def test_doctor_reports_a_missing_raw_preprocess_distribution(
     monkeypatch, capsys
 ) -> None:
-    from foldjax import cli
+    from foldjax import doctor
 
-    installed_version = cli._distribution_version
+    installed_version = doctor._distribution_version
     monkeypatch.setattr(
-        cli,
+        doctor,
         "_distribution_version",
         lambda name: None if name == "biotite" else installed_version(name),
     )
@@ -275,9 +275,9 @@ def test_doctor_reports_a_missing_raw_preprocess_distribution(
 
 
 def test_doctor_reports_incompatible_extra_versions(monkeypatch, capsys) -> None:
-    from foldjax import cli
+    from foldjax import doctor
 
-    monkeypatch.setattr(cli, "_distribution_version", lambda _name: "0.0.0")
+    monkeypatch.setattr(doctor, "_distribution_version", lambda _name: "0.0.0")
 
     assert main(["doctor", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -549,13 +549,13 @@ def test_cache_gc_fails_closed_when_usage_scan_is_incomplete(monkeypatch) -> Non
 
 
 def test_cache_gc_keeps_a_path_replaced_after_planning(monkeypatch, capsys) -> None:
-    from foldjax import cli, paths
+    from foldjax import cache_gc, paths
 
     root = paths.compile_cache_dir()
     root.mkdir(parents=True)
     entry = root / "entry.bin"
     entry.write_bytes(b"old")
-    real_entries = cli._cache_gc_entries
+    real_entries = cache_gc._cache_gc_entries
 
     def replace_after_listing(root_fd):
         entries = real_entries(root_fd)
@@ -563,7 +563,7 @@ def test_cache_gc_keeps_a_path_replaced_after_planning(monkeypatch, capsys) -> N
         entry.write_bytes(b"new")
         return entries
 
-    monkeypatch.setattr(cli, "_cache_gc_entries", replace_after_listing)
+    monkeypatch.setattr(cache_gc, "_cache_gc_entries", replace_after_listing)
 
     assert main(["cache", "gc", "--older-than", "0", "--apply"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -577,7 +577,7 @@ def test_cache_gc_keeps_a_path_replaced_after_planning(monkeypatch, capsys) -> N
 def test_cache_gc_root_swap_cannot_escape_the_pinned_directory(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    from foldjax import cli, paths
+    from foldjax import cache_gc, paths
 
     root = paths.compile_cache_dir()
     root.mkdir(parents=True)
@@ -588,7 +588,7 @@ def test_cache_gc_root_swap_cannot_escape_the_pinned_directory(
     victim = outside / "entry.bin"
     victim.write_bytes(b"must survive")
     moved_root = tmp_path / "pinned-cache"
-    real_entries = cli._cache_gc_entries
+    real_entries = cache_gc._cache_gc_entries
 
     def swap_after_listing(root_fd):
         entries = real_entries(root_fd)
@@ -596,7 +596,7 @@ def test_cache_gc_root_swap_cannot_escape_the_pinned_directory(
         root.symlink_to(outside, target_is_directory=True)
         return entries
 
-    monkeypatch.setattr(cli, "_cache_gc_entries", swap_after_listing)
+    monkeypatch.setattr(cache_gc, "_cache_gc_entries", swap_after_listing)
 
     assert main(["cache", "gc", "--max-size", "1K", "--apply"]) == 0
     payload = json.loads(capsys.readouterr().out)
