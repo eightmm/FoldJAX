@@ -24,21 +24,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     """Register the opt-in parity flag where pytest will actually parse it.
 
     Only conftests on the rootdir chain (and in `test*` directories named as
-    args) are consulted for options. This file is one; a `tests/models/<name>/`
-    conftest is not, because it is reached through `models/`. Registering it in
-    one of those meant `pytest --run-official-parity` from the repository root --
-    the documented command -- failed with "unrecognized arguments", so the flag
-    worked only when that one directory was named explicitly.
+    args) are consulted for options. `tests/parity/conftest.py` is reached
+    through `tests/`, so registering it there made `pytest --run-cpu-parity`
+    from the repository root -- the documented command -- fail to parse.
+
+    There is no `--run-official-parity` beside it. It was registered here and
+    read nowhere: the sole `official_parity` test gates itself on the assets it
+    needs (`pytest.skip` when the publisher CCD files are absent), which is the
+    condition that actually decides whether it can run. A flag would have
+    skipped it on machines that do have them. Select it by marker --
+    `-m official_parity` or `-m 'not official_parity'` -- which needs no option.
     """
-    parser.addoption(
-        "--run-official-parity",
-        action="store_true",
-        default=False,
-        help="run tests that require official model assets or an upstream checkout",
-    )
-    # Same reason, one directory further down: `tests/parity/conftest.py` is
-    # reached through `tests/`, so registering it there made
-    # `pytest --run-cpu-parity` from the root fail to parse.
     parser.addoption(
         "--run-cpu-parity",
         action="store_true",

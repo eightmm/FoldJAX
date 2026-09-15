@@ -403,7 +403,7 @@ Matmul precision is the clearest existing success: one option table, one resolve
 
 **The only collection gate** is `tests/models/conftest.py:20-52`, which drops 24 boltz2 torch-parity files when `find_spec("torch")` is `None`. torch is in no install profile, so those 24 files never run in CI. A second job `imports` builds a wheel and smoke-tests `foldjax --help` and `foldjax models --json`.
 
-`tests/conftest.py:25-40` registers `--run-official-parity`; tests marked `official_parity` skip inside without it.
+There is no `--run-official-parity` flag. This line claimed one; it was registered in `tests/conftest.py` and read nowhere, and has since been removed. The sole `official_parity` test gates itself on the publisher CCD assets it needs and skips when they are absent; `-m official_parity` / `-m 'not official_parity'` selects the marker without an option.
 
 Every file below **collects and runs** in CI. Counts verified by `pytest --collect-only`.
 
