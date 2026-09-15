@@ -1238,6 +1238,213 @@ Boltz-2 token bias reaching the kernel as `f32[1, 16, N, N]` where it was
 `[5, 16, N, N]` before `5c064d3`, and `docs/cli.md` now names the Protenix chunk
 default, the Boltz-2 denoiser default and `--msa-seed` (`0f4f3ee`).
 
+### VRAM-aware admission and the memory laws (2026-09-15, `e610cab`)
+
+The chunk and memory defaults above were decided on 96 GiB cards. The
+policy that adapts them to the card is admission, not knob-turning: each
+port estimates its peak from a law fitted on this ledger's rows, compares
+the upper estimate with 0.9 × the allocator's ceiling (`bytes_limit`, which
+is the memory fraction × the card with preallocation on or off), and reports
+`fits`, `over_budget` or `unknown` before anything large is allocated.
+`over_budget` refuses with the estimate, the threshold, the pool and the
+levers named (`--memory-check=warn` downgrades it); `unknown` (no budget, or
+a size outside the fitted domain) proceeds with one warning; nothing that
+changes the input is ever applied automatically — the MSA cap that failed
+its admission test stays opt-in. `--memory-budget-gib` plans against an
+explicit budget (min with the pool when the pool is known), and the run
+manifest records the decision.
+
+| law | form (MiB) | allowance | domain |
+| --- | --- | ---: | --- |
+| Boltz-2 (5 samples) | 3910 + 4.58·N + 4.33e-7·N³ | 1,006 | 1,003–4,888 |
+| Protenix | max(1235 + 2.85e-3·N², 7.32e-4·M·N), M = processed MSA rows | 1,018 | 1,003–3,012 |
+| OpenFold3 chunked (128 rows) | 1460 + 0.875·N + 2.23e-3·N² | 783 | 1,003–4,888 |
+| OpenFold3 unchunked | 1438 + 4.85e-3·N² | 215 | 1,003–3,012 |
+
+The allowance is the largest in-sample underestimate plus the measured
+repeat spread; leave-one-size-out folds are printed by the calibration
+script as an extrapolation diagnostic and not used, because the rule that
+used them refused a run that had completed (Boltz-2 at 4,888, 77.3 GiB
+measured). Every fit point is admitted at this host's threshold; the
+tightest is that same row with 900 MiB to spare. Protenix's peak is the
+maximum of two phases, not their sum: at 2,096 tokens the MSA stack sets it
+at full depth (21.2 GiB with 13,267 rows) and the pair phase takes over
+below about 8,000 rows (14.7 GiB at 8,192, 13.75 at 4,096, 13.73 at 2,048).
+
+OpenFold3 is the one port where admission also selects: inside the
+validated domain it runs unchunked when that upper estimate fits, else a
+fixed 128-row pair chunk. 128 replaces the score-tensor formula because it
+was never worse over five sizes and won where the formula lost: 1,003
+tokens 4,317 MiB against the formula's 5,336 (−19%) and off's 6,195, wall
+equal; 4,100 tokens 2,267 s / 42,469 MiB against 2,368 / 44,442; 4,888
+tokens 1,418 s / 59,215 against 1,527 / 62,054; the 2k and 3k plateaus
+contain it. Below 1,003 tokens the old unblocked program stays (the CPU
+parity captures pin it). Coordinates at 1k: 128 vs the formula 0.019 Å,
+off vs the formula 0.0175 Å, deposited identical.
+
+Checked on the card with explicit budgets (5DEI, 2,096 tokens):
+
+| port | budget | decision | outcome |
+| --- | ---: | --- | --- |
+| Protenix | 18 GiB | over_budget | refused before compile: "19.9 GiB + 1.0 GiB allowance against a 16.2 GiB threshold" |
+| Protenix | 18 GiB, `--memory-check=warn` | over_budget, warned | ran, 191.9 s / 21,223 MiB |
+| Protenix | 30 GiB | fits | ran, 192.9 s / 21,225 MiB |
+| OpenFold3 | 20 GiB | chunked (128) | 228.5 s / 13,990 MiB |
+| OpenFold3 | 40 GiB | unchunked | 225.0 s / 22,967 MiB |
+| Boltz-2 | 18 GiB | over_budget | refused before compile |
+
+Two knobs measured for Boltz-2 and found inert for memory (its peak is the
+trunk pair arena): `token_attention_chunk=256` (234.0 s / 18,511 MiB) and
+`diffusion_chunk_size=1` (306.7 s / 18,511 MiB, +33% wall). No automatic
+memory lever exists on that port; the admission only refuses or warns.
+
+### Context parallelism on the deployment cards (2026-09-15)
+
+The purpose of context parallelism here is to run targets that do not fit
+one card; wall time is secondary. Both collective probes passed on this
+node (row-sharded f32[N, 256] gathered by replication and reduced, 8 rows
+to 64 MiB, on GPU0–1 (PCIe-switch pair) and on all four cards across the
+host bridge). Released defaults, 5 samples, seed 101, coordinates against
+the serial row of the same snapshot (the serial rerun floors are 0.011 Å
+Protenix, 0.066 Å Boltz-2, ~0.03 Å OpenFold3, 0.52 Å OpenDDE):
+
+| port | tokens | cards, layout | wall | peak per device | serial peak | move vs serial |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Protenix | 2,096 | 2, 1-D | 230.2 | 13,179 | 21,225 | 0.023 Å |
+| Protenix | 2,096 | 4, 1-D | 356.7 | 10,663 | 21,225 | 0.016 Å |
+| OpenDDE | 1,003 | 2, 1-D | 154.8 | 14,515 | 21,492 | 0.098 Å |
+| Boltz-2 | 2,096 | 2, 1-D | 430.1 | 17,086 | 18,511 | 0.035 Å |
+| Boltz-2 | 2,096 | 4, 1-D | 545.6 | 19,040 | 18,511 | – |
+| OpenFold3 | 2,096 | 2, 1-D | 395.6 | 13,566 | 13,882 | 0.030 Å |
+| OpenFold3 | 2,096 | 4, 1-D | 442.7 | 11,489 | 13,882 | – |
+
+Accuracy holds on every completed row. Per-device memory falls with the
+card count on Protenix and OpenDDE, whose peaks are pair-shaped; it barely
+moves on Boltz-2 and OpenFold3 under 1-D because the 1-D triangle
+multiplication all-gathers a full-width operand and the fused kernels
+resolve to XLA under a mesh.
+
+Two defects were found and fixed the same day. Protenix refused to start
+under CP with no attention option because its released `tokamax` default is
+not partitionable; it now resolves to `xla_jit` under a mesh, the rule
+Boltz-2 already applied (`834c55b`). And the 2-D layout hung a 4-card
+Boltz-2 run at 2,096 tokens: GPU 0 asked for 56.78 GiB and the other three
+ranks waited forever at the NCCL clique rendezvous. That size is not an atom
+tensor; it is the 2-D ring triangle attention forming its whole local score
+tile, f32[B, N/s, H, N/s, N/s], 17.15 GiB at 2×2 with about three co-live,
+where the serial and 1-D paths chunk the query axis. The ring now computes
+its tile in query blocks (`dcfe0f0`; single-block lowering byte-identical to
+the old ring; 8.38 GiB at the default block of 512, and smaller with the
+per-port query-chunk option). The 2-D rows are re-run on that fix below.
+
+Distributed atom graph on Protenix (`a750737`): the diffusion atom
+encoder/decoder windows, atom-pair conditioning, atom↔token routing and the
+token transformer's pair bias are sharded under a mesh (option
+`cp_atom_windows`, default on; the serial denoiser lowering is pinned
+byte-identical to the previous program). It needs the padded atom count to
+divide 32 × the CP rows and the token count to divide the rows, which
+`--padding` (automatic) satisfies; a misaligned shape warns once and runs the
+replicated graph. The same graph landed on OpenDDE (`b2cac84`, aligned on
+structural tokens) and OpenFold3 (`74fdb6e`, index-driven ring gather).
+Measured at 3,012 tokens on 4 cards, 1-D, `--padding` (6ZTX):
+
+| port | atom graph | wall | peak per device | serial padded |
+| --- | --- | ---: | ---: | ---: |
+| Protenix | distributed | 858.2 | 11,413 | 27,163 |
+| Protenix | replicated | 1,453.8 | 12,012 | 27,163 |
+| OpenFold3 | distributed | 1,059.3 | 28,024 | 37,414 |
+| OpenFold3 | replicated | 1,076.7 | 28,024 | 37,414 |
+
+On Protenix the distributed graph is 41% faster than the replicated one and
+closer to the serial coordinates (0.026 Å against 0.853 Å; deterministic
+ops on all three arms). On OpenFold3 at this size the pair stack sets the
+peak, so the atom graph moves neither number; its value there is
+structural. OpenFold3's 6ZTX rows moved 0.77–3.54 Å same-index against a
+serial that reproduces itself bitwise, with the deposited scores landing in
+the same two basins (0.63 and 0.90 Å): a chaotic target where CP's
+reduction order flips one sample's basin, not a floor and not a defect.
+
+**The 2-D layout, three fixes deep.** The query-block ring (`dcfe0f0`) kept
+its blocks co-live because an unrolled loop lets XLA schedule them
+together (GPU 0 asked 68.18 GiB); `bef3922` made the blocks a `lax.scan`,
+and Boltz-2 2,096 on 2×2 then completed at 18,437 MiB per device (block
+512) and 16,659 (block 128, −10% against serial). OpenDDE 2,096 still ran
+out of memory, 106.46 GiB on every rank padded and 98.6 GiB unpadded, with
+the arena at half of serial where a 2×2 grid should quarter it. A CPU probe
+with four fake devices read the post-SPMD HLO (sharding is decided before
+backend fusion, so per-device shapes transfer even though bytes do not): no
+pair tensor was replicated. The ring's second-pass `while` carried five
+unblocked f32[N/2, H, N/2, 32] tensors — q, k, v, the accumulator and its
+correction — because the 2-D path had given up the row loop the serial and
+1-D paths run (24 rows for 12 heads); 67.5 of the 106 GiB. And OpenDDE's
+role-conditioned pair projection gathered its weights as [N/2, 7, 384, 384]
+under a mesh, 5.9 GiB where 0.84 would do. `c26c998` makes the local row
+block the ring's outermost loop (projection inside the block; carry 3.14×
+smaller at two sizes, bit-identical across 120 arms including 3×3 meshes),
+and `356f404` indexes both roles inside a `lax.scan` over the seven roles
+(indexing alone is not enough: unrolled, XLA co-schedules the seven
+gathers). Rows on `7bb0838`, 2,096 tokens, 4 cards, 2×2, no padding:
+
+| port | wall | peak per device | serial | 1-D on 4 cards | move vs serial |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| OpenDDE | 1,770.2 | 32,068 | OOM (87 GiB arena) | OOM | – (deposited 0.59–0.75 Å) |
+| Boltz-2 (block 128) | 973.0 | 16,642 | 18,511 | 19,040 | 0.112 Å, deposited identical |
+| Protenix | 559.9 | 11,572 | 21,225 | 10,663 | 0.014 Å, deposited identical |
+
+OpenDDE at 2,096 residues is the first target on this node that no other
+layout runs: serial, 1-D on two cards and 1-D on four all die on the
+k·N_st² arena plus the 1-D triangle multiplication's full-width gather.
+That row is the reason `cp_layout=auto` now resolves to the 2-D grid on
+square device counts for OpenDDE and Boltz-2 (the two ports where 2-D wins
+or is the only fit) and stays 1-D for Protenix (1-D 10.7 GiB against 2-D
+11.6) and OpenFold3 (2-D unmeasured). 2-D is slower — 3.5× serial wall on
+Boltz-2 — and is chosen for the ceiling, which is what CP is for here.
+
+**Ceilings.** Protenix 8E2F at 4,888 tokens asks 94 GiB serial and dies on
+a 96 GiB card. On four cards, 1-D: unpadded, the atom graph replicated
+(37,422 atoms are not 128-aligned), the warmup completed in about 75
+minutes and the measured pass timed out; padded to the 5,120 bucket
+(122,880 atoms, atom graph distributed) the measured pass took 2,286 s at
+26,511 MiB per device. Deposited CA RMSD 4.41/4.35/3.59/4.05/4.68 Å against
+4.17/4.14/3.67/3.86/4.54 unpadded — the same band; the two-process floor at
+this size under bf16 diffusion without deterministic ops is 1.2–2.7 Å, so
+same-index numbers are not read there. OpenFold3 serial on the same target
+scores 2.17–2.38 and Boltz-2 2.53–3.07.
+
+A rank that runs out of memory used to leave the other ranks waiting
+forever at the NCCL clique rendezvous (XLA's terminate timeout defaults to
+−1). `foldjax predict` and `cache warm` now compose
+`--xla_gpu_nccl_termination_timeout_seconds=600` into `XLA_FLAGS` before
+JAX is imported when `cp_devices` > 1 (`1f23f1b`; `FOLDJAX_CP_RENDEZVOUS_TIMEOUT`
+overrides, a negative value declines); the bench harness does the same
+(`5849258`, verified: the first row on it ended on its OOM within a minute
+instead of at the time cap). A process that already has a backend can only
+warn.
+
+**Padding on the 256-token grid.** The old bucket ladder (2,048 → 3,072)
+made a 2,096-token job pay +88–112% wall and +44–156% peak on three ports;
+the ladder is now every 256 tokens to 8,192 (`7631016`), and CP-aware
+targets round to the mesh (`37eeec8`). Same-snapshot cost at 2,096 → 2,304
+(5DEI): OpenFold3 +30% wall, +12.7% peak (25,885 against 22,967
+unchunked), coordinates 0.02 Å, deposited identical. Protenix and Boltz-2's
+first padded rows looked better than that (−19% peak; +0.05 Å deposited on
+every Boltz-2 sample) because `--padding` was silently capping the MSA
+depth at the 1,024-row profile — the cap that failed its seed-block
+admission at 4,096 — on Protenix, Boltz-2, OpenDDE (one of two places) and
+AlphaFold 3, while OpenFold3 and ESMFold2 select their rows before padding
+either way. `09b361a` pads the MSA axis to the bucket at or above the rows
+the unpadded run would process; the profile depth is a floor, never a cap;
+an explicit `msa` target below storage is refused naming `--max-msa-depth`
+as the input-changing knob. Re-measured on that fix, Protenix 235.4 s / 28,202 MiB (+23% wall, +33%
+peak: its MSA axis went 13,267 → 16,384 rows, the ladder's coarsest step,
+and the MSA stack is its 2k peak) and Boltz-2 277.2 s / 21,715 MiB (+20%,
++17%: the token step plus the fixed 24× atom axis), both with coordinates
+at the serial floor (0.013 and 0.033 Å) and deposited scores identical to
+the exact runs. Padding stays opt-in — a compile-cache benefit is not worth
+a tax on every single-shape run — and `foldjax cache warm` bakes the
+bucketed executables for deployments that want them. A finer MSA ladder
+above 8,192 rows would bound Protenix's padded cost to one step.
+
 ### Boltz-2, 2,096 tokens (5DEI)
 
 | cell | wall s | vs released | peak MiB | same-index RMSD vs released |
