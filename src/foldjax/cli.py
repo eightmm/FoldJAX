@@ -15,7 +15,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
-from foldjax import assets, manifest, oom, paths, progress, report
+from foldjax import assets, manifest, memory_policy, oom, paths, progress, report
 from foldjax.api import predict_batch, resolve_requests
 from foldjax.job import Job
 from foldjax.redaction import public_options
@@ -273,6 +273,23 @@ def _add_predict_arguments(
         "share the device with another process",
     )
     execution.add_argument(
+        "--memory-check",
+        choices=memory_policy.CHECK_MODES,
+        default=memory_policy.DEFAULT_CHECK_MODE,
+        help="what to do when a model's fitted peak law says the run does not "
+        "fit this device: refuse before the weights and the graph (default), "
+        "or warn and let the allocator answer. Boltz-2 and Protenix accept it; "
+        "OpenFold3 rejects it, because it selects a cheaper configuration of "
+        "the same prediction instead of refusing",
+    )
+    execution.add_argument(
+        "--memory-budget-gib",
+        type=float,
+        help="plan against this much device memory rather than what the "
+        "allocator reports; the smaller of the two is used. Useful for asking "
+        "whether a job would fit a card you are not on",
+    )
+    execution.add_argument(
         "--cache-dir",
         type=Path,
         help=f"compile cache root (default {paths.compile_cache_dir()})",
@@ -521,6 +538,41 @@ def _options(items: list[str]) -> dict[str, Any]:
     return options
 
 
+def _memory_options(
+    args: argparse.Namespace, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Fold the two memory flags into the backend options, if they were given.
+
+    Only when given. ``request.options`` is part of the identity a finished
+    manifest is matched against, so injecting the default unconditionally would
+    make every run already on disk stop matching and `--resume` redo it. The
+    ports carry the same default themselves, which is what makes the omission
+    and the spelling the same run.
+
+    A flag and an ``--option`` of the same name are rejected rather than
+    silently ordered, the way the neutral sampling knobs are.
+    """
+    given = {
+        "memory_check": (
+            None
+            if getattr(args, "memory_check", memory_policy.DEFAULT_CHECK_MODE)
+            == memory_policy.DEFAULT_CHECK_MODE
+            else args.memory_check
+        ),
+        "memory_budget_gib": getattr(args, "memory_budget_gib", None),
+    }
+    for key, value in given.items():
+        if value is None:
+            continue
+        if key in options:
+            raise ValueError(
+                f"--{key.replace('_', '-')} and --option {key}= set the same "
+                "thing; pass one of them"
+            )
+        options[key] = value
+    return options
+
+
 #: Extensions read as FASTA. Converted to a common-schema job file before the
 #: request is built, so `plan`, the manifest and the input digest all describe
 #: the document the model actually saw.
@@ -655,7 +707,7 @@ def _request(args: argparse.Namespace) -> PredictionRequest:
         max_msa_depth=args.max_msa_depth,
         cache_dir=args.cache_dir,
         use_compile_cache=not getattr(args, "no_cache", False),
-        options=_options(args.option),
+        options=_memory_options(args, _options(args.option)),
         padding=padding,
         msa=args.msa,
         representations=getattr(args, "representations", None),

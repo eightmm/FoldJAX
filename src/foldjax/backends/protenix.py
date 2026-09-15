@@ -8,6 +8,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from foldjax import memory_policy
 from foldjax.backends._ccd_session import ManagedCcdSession
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import PreparedWeightSession
@@ -33,6 +34,11 @@ _CLI_OPTIONS = {
     "num_recycles",
     "model_name",
     "strict_token_limit",
+    # Admission against this card's own ceiling, rather than against the
+    # 2,560-token constant `strict_token_limit` restores. Neither is a compile
+    # option: they decide whether the run starts, never what it compiles.
+    "memory_check",
+    "memory_budget_gib",
     "esm_checkpoint_dir",
     "trunk_dtype",
     # Which stages run under the BF16 autocast. Released default `auto`
@@ -416,6 +422,11 @@ class ProtenixBackend(ManagedCcdSession, Backend):
         checkpoint_dir = options.get("esm_checkpoint_dir")
         if checkpoint_dir is not None and not isinstance(checkpoint_dir, (str, Path)):
             raise ValueError("esm_checkpoint_dir must be a path")
+        # Here rather than at the parser for the reason `glu_backend` gives,
+        # and here rather than at the admission check because `foldjax plan`
+        # runs this and never reaches one.
+        memory_policy.parse_check_mode(options.get("memory_check"))
+        memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
         output_format = options.get("output_format", "protenix")
         if output_format not in {"npz", "protenix", "both"}:
             raise ValueError(

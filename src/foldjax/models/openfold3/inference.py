@@ -22,6 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax._openfold3_compile import (
     canonical_cache_scope,
     inspect_cache_scope,
@@ -411,16 +412,56 @@ class Prediction(NamedTuple):
     plddt_logits: jnp.ndarray | None = None
 
 
-#: Bytes the triangle-attention score tensor is allowed to reach before
-#: :func:`auto_pair_chunk_size` starts chunking. 8 GiB leaves room for the rest of
-#: the block, the diffusion path and the weights on a 96 GiB card; it is a budget,
-#: not a measured constant, and the caller can override it.
+#: Bytes one pair-stack row block is allowed to cost, which is how
+#: :func:`auto_pair_chunk_size` turns a token count into a row width.
+#:
+#: The name is historical and the tensor it names is not what this bounds. The
+#: released triangle kernel is cuEquivariance's fused path, which never forms
+#: the ``[rows, heads, N, N]`` score tensor at all; ``heads * N^2 * 4`` survives
+#: here as the sizing proxy, because it is still proportional to what a row
+#: block does cost -- the row loop's temporaries, chiefly the pair transition's
+#: widened ``[rows, N, 4 * C_z]`` intermediate and the attention's working set.
+#:
+#: A proxy is all it ever was, and the automatic path no longer uses it: the
+#: width a blocked run takes is now the measured :data:`RESOLVED_PAIR_CHUNK_SIZE`
+#: and whether to block at all is asked of the allocator in
+#: :func:`resolve_pair_chunk_size`. This remains the default for a caller who
+#: asks :func:`auto_pair_chunk_size` for a width derived from a byte budget.
 PAIR_SCORE_BUDGET_BYTES = 8 * 2**30
 
-#: Triangle attention head count in the released architecture. Named because
-#: ``auto_pair_chunk_size`` needs it before an ``InferenceConfig`` exists to read it
-#: from; ``test_released_config`` checks the config's copy against upstream.
-_RELEASED_PAIR_HEADS = 4
+#: Rows per pair-stack block when the loop is blocked at all, from 1,003
+#: tokens up -- see :func:`_blocked_width` for why smaller targets keep the
+#: unblocked program they already had.
+#:
+#: A constant rather than a formula because it was swept, and the formula's
+#: answer was never the better one. Measured at the released defaults, 128 rows
+#: against the budget-derived width (wall seconds / peak MiB):
+#:
+#: ===== ================== ==================
+#: token 128 rows           budget-derived
+#: ===== ================== ==================
+#: 1003  72.03 / 4316.7     71.0 / 5335.8 (502 rows)
+#: 2096  13882 (plateau)    13882 (117..466 rows all identical)
+#: 3012  23774 (plateau)    23774 (58..232 rows all identical)
+#: 4100  2266.81 / 42468.6  2368 / 44442 (58 rows)
+#: 4888  1417.79 / 59214.8  1527 / 62054 (58 rows)
+#: ===== ================== ==================
+#:
+#: 128 is never worse and is materially better at both ends: 19% less peak at
+#: 1,003 tokens, and 4-7% less wall time with 4% less peak at 4,100 and 4,888,
+#: where the budget formula's cubic denominator had collapsed the width to 58
+#: rows and paid for it in loop iterations. In the middle the peak is flat
+#: across a wide band of widths -- every width in 117..466 at 2k and 58..232 at
+#: 3k gives the identical peak -- and 128 lies inside both plateaus, which is
+#: why one number serves the whole range.
+#:
+#: Blocking is arithmetically exact but not bitwise (`models/row_chunking.py`):
+#: at 1,003 tokens 128 rows moves coordinates 0.019 A against the old width,
+#: and unblocked moves them 0.0175 A against the same reference -- tiling noise
+#: of the same size either way, with an unchanged RMSD to the deposited
+#: structure.
+RESOLVED_PAIR_CHUNK_SIZE = 128
+
 # Upstream's inference-only MSA subsampler selects this many rows. Raw FoldJAX
 # preprocessing uses the same value before one-hot expansion; feature-archive
 # generation remains uncapped unless its caller opts in explicitly.
@@ -461,6 +502,14 @@ def auto_pair_chunk_size(
     Returns ``None`` -- meaning do not chunk, the fastest path -- when the whole
     thing already fits.
 
+    **Not the automatic path.** ``released_config`` resolves a blocked run to
+    :data:`RESOLVED_PAIR_CHUNK_SIZE`, which was swept against this formula and
+    is never worse; see that constant's table, and
+    :func:`resolve_pair_chunk_size` for what chooses between blocked and not.
+    This is kept for a caller who wants a width derived from a byte budget --
+    a different trunk width, a different head count, a deliberate experiment --
+    and for the tests that pin the derivation.
+
     An earlier version of this port recorded that chunking changed neither peak nor
     speed. That was a measurement error: peak was being read from the allocator's
     pool size, which had been preallocated and so was flat regardless. The knob
@@ -482,6 +531,76 @@ def auto_pair_chunk_size(
     # Same block count, rows spread evenly, so the last block carries no padding
     # the earlier ones did not.
     return -(-n_token // blocks)
+
+
+def resolve_pair_chunk_size(
+    n_token: int,
+    *,
+    budget: memory_policy.MemoryBudget | None,
+) -> int | None:
+    """Block the pair-stack row loop only when running it whole cannot fit.
+
+    Blocking is not free. It caps the row loop's temporaries exactly and it
+    serializes what was one call into several, so running the loop whole is the
+    faster path and blocking it is a price paid for memory. Measured at 2,096
+    tokens the price buys 8.9 GiB (22,967 -> 13,882 MiB) and at 3,012 it buys
+    21.1 GiB -- worth paying on a card that needs it, and worth nothing on one
+    that does not.
+
+    So the choice is binary, between two configurations that each have their
+    own fitted peak law: run the loop whole when *its* upper estimate fits the
+    admission threshold, and otherwise block it at
+    :data:`RESOLVED_PAIR_CHUNK_SIZE`. There is no third answer -- the width is
+    a measured constant rather than something to search -- and no refusal:
+    there is always a configuration below this one, so a peak estimate is never
+    this port's reason not to run.
+
+    Outside the token range both laws cover, or with no readable ceiling, the
+    answer is whatever that size already compiled and a one-time warning naming
+    the state ``unknown``: blocked above 3,012 tokens, where the unblocked arm
+    has no measurement at all, and unblocked below 1,003, where it is the
+    blocked arm that has none. :func:`_blocked_width` holds that line.
+
+    ``budget`` of ``None`` means the caller is not asking: the blocked loop,
+    silently. That is what ``released_config`` does for every caller that is
+    not about to predict, so inspecting a checkpoint does not initialize a
+    device to decide a width it will never use.
+    """
+    if budget is None:
+        return _blocked_width(n_token)
+    decision = memory_policy.admit(
+        model="openfold3",
+        n_token=n_token,
+        msa_rows=None,
+        candidates=memory_policy.OPENFOLD3_CANDIDATES,
+        budget=budget,
+        mode="warn",
+    )
+    if decision.selected == "unchunked":
+        return None
+    return _blocked_width(n_token)
+
+
+def _blocked_width(n_token: int) -> int | None:
+    """The blocked width, or ``None`` where blocking is not the answer.
+
+    Below the smallest token count the unblocked arm was measured at, the
+    automatic answer stays the one it has always been: unblocked. The byte
+    budget this replaced returned ``None`` for every size below roughly a
+    thousand tokens, those are the sizes almost every run and every CPU parity
+    capture uses, and 128 rows being better at 1,003 tokens says nothing about
+    500 -- changing the program the common case compiles on an extrapolation is
+    the one move this whole policy exists to avoid.
+
+    And a block at least as wide as the loop is not a block: ``map_row_chunks``
+    applies the function once either way, so spelling a width there would fork
+    ``_PredictGraphIdentity`` -- and with it the in-process JIT owner -- for a
+    program that is the same one.
+    """
+    validated_from, _ = memory_policy.OPENFOLD3_UNCHUNKED_PEAK.domain_tokens
+    if n_token < validated_from or RESOLVED_PAIR_CHUNK_SIZE >= n_token:
+        return None
+    return RESOLVED_PAIR_CHUNK_SIZE
 
 
 def _per_sample_confidence(config: InferenceConfig) -> bool:
@@ -1326,6 +1445,7 @@ def released_config(
     num_samples: int = 5,
     num_steps: int = 200,
     pair_chunk_size: int | None | str = "auto",  # "auto" resolves from n_token
+    memory_budget: memory_policy.MemoryBudget | None = None,
     per_sample_token_cutoff: int | None = 0,
     diffusion_chunk_size: int | None | str = "auto",
     msa_depth: int | None = RELEASED_MSA_DEPTH,
@@ -1359,8 +1479,13 @@ def released_config(
     ``atom_transformer 3``. A mismatch means the weights use a different config
     than upstream's default, and these values must not be used.
     """
+    # `memory_budget` decides *whether* to block the row loop and this stores
+    # what it decided: an int or None, the same field either way, so the
+    # resolved config -- which is `_PredictGraphIdentity`'s own key -- carries a
+    # realized width and never a sentinel. Two budgets that reach the same
+    # width therefore build the same program and share its cache entry.
     resolved_chunk: int | None = (
-        auto_pair_chunk_size(n_token, no_heads=_RELEASED_PAIR_HEADS)
+        resolve_pair_chunk_size(n_token, budget=memory_budget)
         if isinstance(pair_chunk_size, str)
         else pair_chunk_size
     )

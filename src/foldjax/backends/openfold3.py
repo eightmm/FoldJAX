@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax._openfold3_compile import (
     resolve_triangle_kernel,
 )
@@ -242,6 +243,14 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             "glu_backend",
             "no_compile",
             "pair_chunk_size",
+            # A planning ceiling for the chunk decision below. Not a compile
+            # option: two budgets that resolve to the same width must share the
+            # cache entry, and the width itself is what forks the program.
+            # `memory_check` is deliberately absent -- this port selects a
+            # configuration rather than refusing a run, so there is nothing for
+            # a refuse/warn switch to do, and an accepted no-op is worse than a
+            # rejected option.
+            "memory_budget_gib",
             "diffusion_chunk_size",
             "all_arrays",
             "prefix",
@@ -603,8 +612,18 @@ class OpenFold3Backend(WeightSessionHooks, Backend):
             if key in options
         }
         chunk = options.pop("pair_chunk_size", None)
+        budget_gib = memory_policy.parse_budget_gib(
+            options.pop("memory_budget_gib", None)
+        )
         if chunk is not None:
             overrides["pair_chunk_size"] = int(chunk)
+        else:
+            # Only when the caller has not pinned a width: reading the device is
+            # what decides the automatic one, and a pinned width is the answer
+            # already.
+            overrides["memory_budget"] = memory_policy.device_memory_budget(
+                override_gib=budget_gib
+            )
         # Left unset the config resolves it from the sample count, the way
         # Protenix does, so the shipped five-sample run is untouched and only a
         # caller who raises the count pays for the loop.

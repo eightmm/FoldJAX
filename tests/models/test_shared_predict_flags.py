@@ -268,6 +268,9 @@ _PROTENIX_FLAG_ORDER: tuple[str, ...] = (
     "--template-search-command", "--template-search-version",
     "--template-search-cache-dir", "--template-mmcif-dir",
     "--strict-token-limit",
+    # Beside the token limit because they answer the same question from a
+    # measurement instead of a constant.
+    "--memory-check", "--memory-budget-gib",
     "--full-depth-msa", "--sample-msa-per-cycle",
     "--msa-row-alignment", "--max-msa-padding-rows",
     "--input-atom-heads", "--atom-encoder-heads",

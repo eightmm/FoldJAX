@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from foldjax import progress
+from foldjax import memory_policy, progress
 from foldjax.backends.base import Backend
 from foldjax.cache import (
     cache_namespace,
@@ -1002,6 +1002,10 @@ def _predict_once(
         request = dataclasses.replace(
             request, cache_dir=resolve_cache_dir(request, backend)
         )
+    # So the `memory` block records this prediction's decision and not the
+    # previous seed's. A backend with no fitted law records nothing and the
+    # block stays null, which is the honest answer rather than a stale one.
+    memory_policy.clear_record()
     try:
         with (
             timeline.stage("predict"),

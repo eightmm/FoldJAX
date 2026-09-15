@@ -235,6 +235,42 @@ than JAX's own 0.75: one prediction owns the process, and a quarter of the card
 held in reserve is what stops jobs that would otherwise fit. Lower it to share
 the device with another process.
 
+Three models carry a fitted peak law, so they can answer *before* the run
+whether it fits: Boltz-2, OpenFold3 and Protenix. Each law is a curve through
+this repository's own measurements at 1,003 to 4,888 tokens, widened by the
+worst it underestimates any of them and by the spread a repeated measurement
+shows, and a run is admitted when that upper estimate is inside 0.9 of what
+`bytes_limit` reports for the card (`src/foldjax/memory_policy.py`,
+re-derivable with `python tests/calibrate_memory_policy.py`, which prints the
+verdict for every fit point). Every measured run that completed is admitted by
+construction; a held-out error is reported by that script as a diagnostic for
+unmeasured sizes and deliberately not carried as margin, because at the
+largest measured size it is an extrapolation and it refused a Boltz-2 run that
+had finished.
+
+`--memory-check` says what happens when it does not fit. `refuse`, the
+default, raises before the weights load rather than after the first compile,
+and names what it estimated, what it compared against, and the levers.
+`warn` prints the same message and lets the allocator answer. The flag reaches
+Boltz-2 and Protenix -- the two that can refuse; OpenFold3 rejects it, because
+it has a cheaper configuration to fall back to and therefore never refuses.
+
+`--memory-budget-gib` plans against a stated ceiling instead of the one this
+card reports, and the smaller of the two wins. It is how you ask whether a job
+would fit a card you are not on, and it is accepted by all three.
+
+Nothing is narrowed automatically to make a job fit. `--max-msa-depth` does
+lower a Protenix estimate, and the refusal message says so, but it lowers it
+by changing the input: fewer alignment rows is a different prediction rather
+than the same one in less memory, and it failed this repository's own accuracy
+admission test. The one configuration the policy does choose by itself is
+OpenFold3's pair-stack row loop, where both arms are the same prediction: from
+1,003 tokens -- the smallest size both were measured at -- it runs the loop
+whole when the unblocked estimate fits and blocks it at 128 rows otherwise,
+which at that size is 4.3 GiB against 6.2. Below 1,003 tokens the loop runs
+whole whatever the card, because that is the program those sizes already
+compiled and 128 rows has no measurement there.
+
 Design notes: [docs/engineering-notes.md](engineering-notes.md).
 
 ### Input and trunk arrays without a structure

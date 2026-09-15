@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax.backends._representations import _representations_result
 from foldjax.backends._weight_session import WeightAnchors
 from foldjax.backends.base import MATMUL_PRECISION_OPTION, Backend
@@ -365,6 +366,12 @@ class Boltz2Backend(Backend):
             "feature_cache",
             "glu_backend",
             "mols",
+            # Admission against this card's own ceiling. Neither is a compile
+            # option: they decide whether the run starts, never what it
+            # compiles, so two runs that differ only in a budget must share one
+            # cache namespace.
+            "memory_check",
+            "memory_budget_gib",
             "msa_api_key_header",
             "msa_api_key_value",
             "msa_deletions",
@@ -751,6 +758,10 @@ class Boltz2Backend(Backend):
         return runner
 
     def validate_native_options(self, options: dict[str, object]) -> None:
+        # Here rather than at the admission check: `foldjax plan` runs this and
+        # never reaches one, so a misspelled mode fails while planning.
+        memory_policy.parse_check_mode(options.get("memory_check"))
+        memory_policy.parse_budget_gib(options.get("memory_budget_gib"))
         if "num_steps" in options:
             # The published Karras schedule divides by ``num_steps - 1``.  One
             # step therefore produces a NaN schedule and only fails after an

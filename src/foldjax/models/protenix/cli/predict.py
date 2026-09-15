@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from foldjax import memory_policy
 from foldjax.models import _predict_flags, _representations
 from foldjax.models._feature_storage import compact_msa_storage
 from foldjax.models._glu import GLU_BACKENDS
@@ -236,6 +237,22 @@ def _run(
         "That limit is a memory budget -- its own message says 'It might cause "
         "OOM' -- and nothing in the architecture is bounded by token count, so "
         "FoldJAX warns and runs instead. Use this to get upstream's behaviour",
+    )
+    # Beside the token limit above because they answer the same question with a
+    # measurement instead of a constant: this port's own fitted peak law against
+    # the ceiling the allocator reports for this card.
+    parser.add_argument(
+        "--memory-check",
+        choices=memory_policy.CHECK_MODES,
+        default=memory_policy.DEFAULT_CHECK_MODE,
+        help="what to do when the estimated peak does not fit the device: "
+        "refuse before the weights are loaded, or warn and run anyway",
+    )
+    parser.add_argument(
+        "--memory-budget-gib",
+        type=float,
+        help="plan against this much device memory instead of what the "
+        "allocator reports; the smaller of the two is used",
     )
     msa_group.add_argument(
         "--full-depth-msa",
@@ -986,6 +1003,43 @@ def _run(
         args.no_confidence or args.no_confidence_scores
     ):
         raise SystemExit("protenix output format requires confidence scores")
+
+    # Admission, before the structure checkpoint reaches the device below and
+    # long before the first trace. Both shapes the peak law needs are final
+    # here: `restype` carries the token count the program will be compiled for
+    # (the padding target when padding is on), and `msa` carries the row count
+    # it will receive -- after `--max-msa-depth`, after serving padding, and
+    # after the row-alignment bucket, all of which have already run. Nothing is
+    # narrowed to make a job fit; the only outcomes are proceed and refuse.
+    memory_budget = memory_policy.device_memory_budget(
+        override_gib=args.memory_budget_gib
+    )
+    off_profile = memory_policy.off_profile_reason(
+        num_samples=args.num_samples,
+        # Upstream's random per-cycle depths gather a narrower slice than the
+        # argument carries, so the row count read below is an upper bound on
+        # what the trunk actually holds and the estimate reads high.
+        extras=()
+        if args.full_depth_msa
+        else ("--no-full-depth-msa, which samples fewer rows than it stores",),
+    )
+    for job in jobs:
+        job_features = job["features"]
+        msa = job_features.get("msa")
+        memory_policy.admit(
+            model="protenix",
+            n_token=int(job_features["restype"].shape[-2]),
+            msa_rows=None if msa is None else int(msa.shape[-2]),
+            candidates=(("released", memory_policy.PROTENIX_PEAK),),
+            budget=memory_budget,
+            mode=args.memory_check,
+            levers=(
+                "--max-msa-depth lowers the estimate, but by changing the "
+                "input: fewer alignment rows is a different prediction, not "
+                "the same one in less memory",
+            ),
+            off_profile=off_profile,
+        )
 
     # ESM/ISM conditioning is fully materialised in each job's compact
     # ``esm_token_embedding`` by this point.  Drop both the direct provider and

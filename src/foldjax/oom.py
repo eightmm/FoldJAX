@@ -96,16 +96,28 @@ def _requested_bytes(message: str) -> int | None:
     return int(float(value) * scale) if scale else None
 
 
-def _pool_card_and_used() -> tuple[int | None, int | None, int | None]:
+def _pool_card_and_used(
+    *, require_preallocated: bool = True
+) -> tuple[int | None, int | None, int | None]:
     """The allocator's ceiling, the device's capacity and what is held, in bytes.
 
     ``bytes_limit`` is the pool and ``bytes_in_use`` is what it currently holds.
     JAX exposes no device total, so the card is recovered from the fraction that
     produced the pool -- exact when preallocation is on, which is the case this
-    diagnosis is about. With preallocation off there is no pool to be short of,
-    so everything comes back ``None`` and the caller says nothing.
+    diagnosis is about.
+
+    ``require_preallocated`` is what separates the two readers. Measured with
+    both settings, ``bytes_limit`` is the fraction times the card either way
+    (0.9 -> 91,779,760,128 B; 0.25 -> 25,495,076,864 B), so the *ceiling* is
+    always readable and a preflight can compare against it. What preallocation
+    off removes is the reserved pool: nothing is held up front, so
+    ``bytes_in_use`` after a failure no longer says how much of the ceiling the
+    run had already taken, which is the number :func:`diagnose` reasons with.
     """
-    if os.environ.get(_PREALLOCATE_ENV, "").lower() in {"false", "0"}:
+    if require_preallocated and os.environ.get(_PREALLOCATE_ENV, "").lower() in {
+        "false",
+        "0",
+    }:
         return None, None, None
     try:
         import jax
@@ -126,14 +138,19 @@ def _pool_card_and_used() -> tuple[int | None, int | None, int | None]:
 
 
 def device_budget() -> tuple[int | None, int | None]:
-    """The allocator's pool and the device's capacity in bytes, or ``None``s.
+    """The allocator's ceiling and the device's capacity in bytes, or ``None``s.
 
     A public read of the same numbers :func:`diagnose` uses after a failure, so
-    a caller can ask *before* one. Returns ``None`` when preallocation is off:
-    there is no pool to be measured against, and a preflight that guessed one
-    would be inventing its own ceiling.
+    a caller can ask *before* one -- which is what `foldjax.memory_policy`
+    admits runs against.
+
+    Read whenever ``bytes_limit`` is present, preallocation on or off. This
+    used to return ``None`` with preallocation off, on the reasoning that there
+    is no pool to be short of. The ceiling is there either way; only the
+    reserved pool is not. Both are ``None`` on a platform that reports no
+    memory statistics at all, CPU among them.
     """
-    pool, card, _ = _pool_card_and_used()
+    pool, card, _ = _pool_card_and_used(require_preallocated=False)
     return pool, card
 
 

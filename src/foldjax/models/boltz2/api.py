@@ -31,6 +31,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax.execution import auto_diffusion_chunk_size
 from foldjax.models import _capture, _representations
 from foldjax.models._feature_storage import compact_msa_storage
@@ -721,6 +722,13 @@ def predict(
     write_fmt: str | None = None,
     max_msa_depth: int | None = None,
     msa_deletions: str = "released",
+    #: What to do when this port's fitted peak law says the run does not fit
+    #: the device: refuse before the graph is built, or warn and let the
+    #: allocator answer. See `foldjax.memory_policy`.
+    memory_check: str = memory_policy.DEFAULT_CHECK_MODE,
+    #: Plan against this much device memory rather than what the allocator
+    #: reports, when that is smaller.
+    memory_budget_gib: float | None = None,
     _runtime: Any | None = None,
 ) -> dict[str, Any]:
     """Run end-to-end Boltz-2 inference.
@@ -1043,6 +1051,40 @@ def predict(
             padding_plan.target["atoms"],
             target_msa=padding_plan.target["msa"],
         )
+
+    # Admission, with the compiled token count final: every source of a
+    # padding plan -- an explicit one, the legacy bucket, and the context
+    # parallel alignment -- has been folded in above, and nothing
+    # activation-sized has been traced or placed. The weights are already on
+    # the device by this point; moving the check above them would mean hoisting
+    # the plan resolution over the feature-selection compaction it reads, which
+    # is a larger change than the seconds it would save on a refusal.
+    memory_policy.admit(
+        model="boltz2",
+        n_token=int(feats_np["token_pad_mask"].shape[-1]),
+        msa_rows=None,
+        candidates=(("released", memory_policy.BOLTZ2_PEAK),),
+        budget=memory_policy.device_memory_budget(override_gib=memory_budget_gib),
+        mode=memory_check,
+        off_profile=memory_policy.off_profile_reason(
+            num_samples=num_samples,
+            extras=tuple(
+                reason
+                for reason, active in (
+                    # A second program with its own shapes, run after this one.
+                    ("an affinity stage the law does not cover", affinity_requested),
+                    # Eager, and it multiplies the sample axis by the particle
+                    # count.
+                    ("Feynman-Kac steering", steering_active),
+                    # No diffusion and no confidence: most of the peak is gone.
+                    (f"stop_after={stop_after!r}", stop_after != "full"),
+                    # The arena is split across devices.
+                    ("context parallelism", cp_devices > 1),
+                )
+                if active
+            ),
+        ),
+    )
 
     # The public featurizer keeps publisher-native int64/float masks.  The
     # model immediately narrows the residue ids for indexing and casts binary

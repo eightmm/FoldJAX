@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 
+from foldjax import memory_policy
 from foldjax.models import _predict_flags, _representations
 
 
@@ -253,6 +254,13 @@ def _run(argv: Sequence[str] | None, *, cache_scope: ExitStack) -> int:
     # explicit budget so --all-arrays cannot ask the writer for outputs the graph
     # discarded before inference started.
     overrides["max_array_bytes"] = array_budget_bytes
+    if "pair_chunk_size" not in overrides:
+        # This entry point is about to predict, so asking the allocator what it
+        # will give costs nothing it was not going to pay. `released_config`'s
+        # other callers -- checkpoint inspection, featurization -- pass no
+        # budget and keep the historical chunked default without touching a
+        # device.
+        overrides["memory_budget"] = memory_policy.device_memory_budget()
     config = released_config(n_token=n_token, n_atom=n_atom, **overrides)
     raw = prepare_msa_cycle_features(
         raw,

@@ -143,6 +143,21 @@ def stat_identity_matches(path: Path, expected: Mapping[str, Any]) -> bool:
     return current is not None and _exact_value(current, expected)
 
 
+def memory_profile() -> dict[str, Any] | None:
+    """What the memory policy decided for this prediction, or ``None``.
+
+    Read from `foldjax.memory_policy` rather than threaded up from the port
+    that decided it, for the same reason :func:`device_peak_bytes` reads the
+    device here: the number is produced several layers below the manifest --
+    inside a native CLI, for one port -- and `foldjax.api` clears it before
+    each prediction so a stale decision cannot be attributed to the next run.
+    """
+    from foldjax import memory_policy
+
+    recorded = memory_policy.recorded()
+    return dict(recorded) if recorded is not None else None
+
+
 def device_peak_bytes() -> int | None:
     """The device allocator's high-water mark, or None when there is no device.
 
@@ -1224,6 +1239,12 @@ def describe_run(
         # it from outside, and from outside the only visible memory number is
         # JAX's preallocated pool -- the same figure whatever the job.
         "cost": dict(cost) if cost else None,
+        # What the memory policy decided before the run, next to what the run
+        # then cost. `cost.peak_bytes` is the measurement and this is the
+        # prediction, so keeping both is what lets a later reader ask whether
+        # the law was right -- which is the only way its coefficients ever get
+        # corrected. `None` when this model has no fitted law.
+        "memory": memory_profile(),
         "samples": [_sample_record(sample, directory) for sample in result.samples],
         # Which sample this model ranks first, by the score it ranks with. A
         # pointer rather than a second copy of the coordinates: the top-ranked
